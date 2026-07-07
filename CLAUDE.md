@@ -1,21 +1,22 @@
+@AGENTS.md
+
 # Claude Code Notes
 
-Claude Code agents should treat `AGENTS.md` as the primary repository instruction file. This file only records Claude-specific additions and differences.
+This file provides Claude Code-specific guidance for this repository. Shared project rules live in `AGENTS.md`, which is included above via `@AGENTS.md`.
 
 ## Required Baseline
 
-Read `AGENTS.md` before making changes. Its product scope, architecture, repository layout, safety boundaries, and development guidelines apply to Claude Code work in this repo.
+Treat `AGENTS.md` as the canonical shared instruction entrypoint. Do not duplicate or reinterpret its product scope, architecture, repository layout, safety boundaries, or development guidelines here.
 
 ## Claude-Specific Context Order
 
 When starting a task, use this reading order:
 
-1. `AGENTS.md`
-2. The user request
-3. The relevant design document under `docs/design/`
-4. Existing code in the touched area
+1. The user request
+2. The relevant design document under `docs/design/`
+3. Existing code in the touched area
 
-Do not duplicate or reinterpret the general rules from `AGENTS.md` here. If a rule should apply to every agent, update `AGENTS.md` instead.
+If a rule should apply to every agent, update `AGENTS.md` instead of adding it to this file.
 
 ## Claude-Specific Notes
 
