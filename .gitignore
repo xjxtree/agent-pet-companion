@@ -8,6 +8,7 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 .build/
+**/.build/
 .swiftpm/
 
 # Rust

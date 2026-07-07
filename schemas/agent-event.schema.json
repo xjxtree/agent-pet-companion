@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/agent-event.schema.json",
+  "title": "Agent Pet Companion Agent Event",
+  "type": "object",
+  "required": ["id", "source", "event_type", "title", "created_at"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^evt_[a-z0-9]+$" },
+    "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
+    "project_path": { "type": ["string", "null"] },
+    "session_id": { "type": ["string", "null"] },
+    "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
+    "title": { "type": "string" },
+    "detail": { "type": ["string", "null"] },
+    "payload_json": { "type": "object" },
+    "created_at": { "type": "string" }
+  }
+}

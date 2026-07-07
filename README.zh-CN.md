@@ -4,7 +4,7 @@
 
 Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App。你可以用 AI 创建高画质个性化桌宠，把它放在桌面上，并让它响应 Agent 的工作状态。
 
-本项目已开源，目前处于早期开发阶段，暂未提供可安装的公开版本。
+本项目已开源，目前处于本地 V1 开发阶段，暂未提供可安装的公开版本。仓库中已经包含可运行的 SwiftPM macOS App、Rust PetCore daemon、CLI、schema 和阶段验证脚本。
 
 ## 产品简介
 
@@ -28,8 +28,8 @@ Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App
 
 Agent Pet Companion 会监听受支持的本地 Agent 事件通道，并把 Agent 状态映射为桌宠动作：
 
-- 开始处理：thinking
-- 执行工具：working
+- 开始处理：start
+- 执行工具：tool
 - 等待确认：waiting
 - 待查看：review
 - 完成：done
@@ -46,17 +46,26 @@ Agent Pet Companion 会监听受支持的本地 Agent 事件通道，并把 Agen
 
 Windows、云端账号、公共宠物分享和公共素材库不在首个版本范围内。
 
-## 安装
+## 本地开发
 
 当前暂未发布可安装版本。
 
-首个版本完成后，将通过 GitHub Releases 提供安装包：
+在 macOS 本地开发时：
+
+```bash
+./script/test_all.sh
+./script/build_and_run.sh --verify
+```
+
+`script/build_and_run.sh` 会构建 Rust workspace、构建 SwiftPM GUI App、生成 `dist/AgentPetCompanion.app`，并把 `petcore` 与 `petcore-cli` 一起打包后通过 `/usr/bin/open` 启动。
+
+首个签名版本完成后，将通过 GitHub Releases 提供安装包：
 
 1. 下载签名后的 macOS 安装包。
 2. 将 Agent Pet Companion 移动到 `Applications`。
 3. 打开 App，并按应用内的连接检查完成配置。
 
-源码构建方式会在 macOS App 和本地服务实现后补充。
+当前 AI 生成验证使用确定性的本地生成器；未配置 `CODEX_APP_SERVER_CMD` 时，Codex App Server probe 使用 mock fallback。真实 stdio Codex App Server 的接入边界已封装在 PetCore 中，不需要改变 UI 流程。
 
 ## 使用方式
 

@@ -333,7 +333,7 @@ agent-pet-studio
 2. 按风格预设生成宠物 brief。
 3. 为 7 个状态生成动作设计。
 4. 调用 Codex 可用的图像生成能力输出帧素材。
-5. 调用 `petcore-cli asset validate` 校验素材。
+5. 调用 `petcore-cli petpack validate` 校验素材。
 6. 调用 `petcore-cli petpack build` 打包。
 7. 把生成进度写入会话与 PetCore。
 
@@ -696,4 +696,3 @@ V1 固定遵守：
 - Claude Code Hooks：支持在 SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop 等生命周期点执行 hooks。
 - Pi Coding Agent：支持 extensions、skills、prompt templates、themes；RPC mode 支持 JSON over stdin/stdout。
 - OpenCode：支持 plugins、headless server、SDK、programmatic control。
-

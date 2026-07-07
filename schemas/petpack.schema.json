@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/petpack.schema.json",
+  "title": "Agent Pet Companion Petpack Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "style",
+    "quality",
+    "render_size",
+    "fps_profiles",
+    "default_fps_profile",
+    "states",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "apc.petpack.v1" },
+    "id": { "type": "string", "pattern": "^pet_[a-z0-9]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "style": { "type": "string", "minLength": 1 },
+    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "render_size": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "fps_profiles": {
+      "type": "object",
+      "required": ["standard", "smooth"],
+      "properties": {
+        "standard": { "const": 12 },
+        "smooth": { "const": 20 }
+      }
+    },
+    "default_fps_profile": { "enum": ["standard", "smooth"] },
+    "states": {
+      "type": "array",
+      "minItems": 7,
+      "items": {
+        "type": "object",
+        "required": ["name", "frames_dir", "loop"],
+        "properties": {
+          "name": { "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"] },
+          "frames_dir": { "type": "string" },
+          "loop": { "type": "boolean" }
+        }
+      }
+    },
+    "created_at": { "type": "string" }
+  }
+}

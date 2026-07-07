@@ -4,13 +4,13 @@
 
 Agent Pet Companion is a native macOS desktop pet app for people who work with coding agents. Create a high-quality AI pet, place it on your desktop, and let it react to what your agents are doing.
 
-The project is open source and currently in early development. A public installable release is not available yet.
+The project is open source and currently in local V1 development. A public installable release is not available yet, but the repository now contains a runnable SwiftPM macOS app, Rust PetCore daemon, CLI, schemas, and phase validation scripts.
 
 ## What It Does
 
 - Creates personalized desktop pets from your description, style preference, image quality choice, and optional reference images.
 - Displays a high-quality floating pet overlay on macOS.
-- Lets the pet react to coding-agent activity such as thinking, tool execution, waiting for confirmation, review needed, completion, and failure.
+- Lets the pet react to coding-agent activity such as start, tool execution, waiting for confirmation, review needed, completion, and failure.
 - Keeps pets in a local library so you can enable, remove, inspect, or export them.
 - Provides connection checks for Codex, Claude Code, Pi Coding Agent, and OpenCode.
 
@@ -28,8 +28,8 @@ The pet appears as a floating macOS overlay. You can drag it around, resize it f
 
 Agent Pet Companion listens to supported local agent event channels and maps agent states to pet animations:
 
-- Started work: thinking
-- Running tools: working
+- Started work: start
+- Running tools: tool
 - Waiting for confirmation: waiting
 - Needs review: review
 - Completed: done
@@ -46,17 +46,26 @@ Your generated pets stay on your Mac. The library is designed for enabling a pet
 
 Windows, cloud accounts, public pet sharing, and public asset galleries are not part of the initial release scope.
 
-## Installation
+## Local Development
 
 No public build is available yet.
 
-When the first release is ready, installation will be provided through GitHub Releases:
+For local development on macOS:
+
+```bash
+./script/test_all.sh
+./script/build_and_run.sh --verify
+```
+
+`script/build_and_run.sh` builds the Rust workspace, builds the SwiftPM GUI app, stages `dist/AgentPetCompanion.app`, bundles `petcore` and `petcore-cli`, and launches the app through `/usr/bin/open`.
+
+When the first signed release is ready, installation will be provided through GitHub Releases:
 
 1. Download the signed macOS release package.
 2. Move Agent Pet Companion to `Applications`.
 3. Open the app and follow the in-app connection checks.
 
-Source builds will be documented after the macOS app and local service are implemented.
+Current AI generation validation uses a deterministic local generator and a mock Codex App Server probe when `CODEX_APP_SERVER_CMD` is not configured. The integration boundary is in PetCore so a real stdio Codex App Server can be wired in without changing the UI flow.
 
 ## Basic Usage
 

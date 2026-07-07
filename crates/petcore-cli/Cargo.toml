@@ -1,0 +1,14 @@
+[package]
+name = "petcore-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+petcore = { path = "../petcore" }
+petcore-types = { path = "../petcore-types" }
+serde_json.workspace = true
+
+[[bin]]
+name = "petcore-cli"
+path = "src/main.rs"
