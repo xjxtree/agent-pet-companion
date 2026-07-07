@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+._*
+
+# Xcode / Swift
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+.build/
+.swiftpm/
+
+# Rust
+target/
+
+# JavaScript tooling, if added later
+node_modules/
+dist/
+coverage/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.log
+
+# Generated pet assets
+*.petpack
+tmp/
+temp/
