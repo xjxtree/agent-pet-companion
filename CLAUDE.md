@@ -1,30 +1,25 @@
 # Claude Code Notes
 
-This repo contains the planning foundation for Agent Pet Companion. It is currently initialized with design docs and repository guidance; implementation should follow the staged V1 plan.
+Claude Code agents should treat `AGENTS.md` as the primary repository instruction file. This file only records Claude-specific additions and differences.
 
-## Read First
+## Required Baseline
 
-1. `README.md`
-2. `docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md`
-3. `docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md`
-4. `docs/design/AgentPetCompanion_ImplementationPlan_V2.md`
-5. `AGENTS.md`
+Read `AGENTS.md` before making changes. Its product scope, architecture, repository layout, safety boundaries, and development guidelines apply to Claude Code work in this repo.
 
-## Working Agreement
+## Claude-Specific Context Order
 
-- Treat the design documents as the product and architecture baseline.
-- Keep changes phase-oriented. M0 comes before M1, M1 before M2, and so on.
-- Use SwiftUI/AppKit/Metal for the macOS shell and overlay when that code exists.
-- Use Rust for PetCore, CLI, shared types, local IPC, event aggregation, and petpack validation.
-- Do not introduce cloud accounts, hosted backends, public galleries, sharing, Petdex import, or Windows UI for V1.
-- Do not inspect or copy auth, token, cookie, API key, or secret files from any supported agent.
+When starting a task, use this reading order:
 
-## Expected Validation
+1. `AGENTS.md`
+2. The user request
+3. The relevant design document under `docs/design/`
+4. Existing code in the touched area
 
-For future code changes, prefer local checks that match the touched area:
+Do not duplicate or reinterpret the general rules from `AGENTS.md` here. If a rule should apply to every agent, update `AGENTS.md` instead.
 
-- Swift/macOS: build and test the Xcode project or package target.
-- Rust: `cargo fmt`, `cargo clippy`, and `cargo test` for the relevant workspace crates.
-- Docs-only changes: verify links and confirm copied assets still resolve from Markdown.
+## Claude-Specific Notes
 
-When validation cannot run because the relevant project skeleton does not exist yet, state that clearly in the final response.
+- Keep responses explicit about whether a requested behavior is planned, implemented, or not yet available.
+- For docs-only changes, verify Markdown links and referenced assets when practical.
+- For future code changes, report the exact Swift, Rust, or integration checks that were run. If the project skeleton needed for a check does not exist yet, say that directly.
+- When working on Claude Code integration later, keep it in `plugins/claude-code/` and follow the shared event model defined by the active schemas and design docs.
