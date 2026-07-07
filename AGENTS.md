@@ -8,7 +8,6 @@ Before changing product or architecture behavior, read the relevant design docs:
 
 - Product design: `docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md`
 - Technical design: `docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md`
-- Implementation plan: `docs/design/AgentPetCompanion_ImplementationPlan_V2.md`
 
 The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope.
 
@@ -22,7 +21,7 @@ The V1 scope is intentionally narrow. Do not add public galleries, sharing/commu
 
 ## Repository Layout
 
-Follow the implementation plan unless the codebase establishes a better local pattern:
+Use the planned repository layout below unless the codebase establishes a better local pattern:
 
 ```text
 apps/macos/
@@ -40,7 +39,7 @@ docs/
 
 ## Development Guidelines
 
-- Keep changes scoped to the current phase and its acceptance criteria.
+- Keep changes scoped to the user's request, the product baseline, and the architecture already present in the repo.
 - Prefer typed schemas and structured parsers over ad hoc string parsing.
 - Keep user-facing text bilingual when it belongs in public documentation or product onboarding.
 - Avoid committing generated build output, local credentials, `.env` files, DerivedData, or temporary pet assets.
