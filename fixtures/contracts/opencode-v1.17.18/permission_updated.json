@@ -1,0 +1,17 @@
+{
+  "type": "permission.updated",
+  "properties": {
+    "id": "permission-secret-id",
+    "type": "bash",
+    "sessionID": "opencode-session-permission",
+    "messageID": "message-secret-id",
+    "callID": "call-secret-id",
+    "title": "opencode-secret-permission-title",
+    "metadata": {
+      "command": "TOKEN=opencode-secret-command-do-not-persist"
+    },
+    "time": {
+      "created": 1752120000000
+    }
+  }
+}

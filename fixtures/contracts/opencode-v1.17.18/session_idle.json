@@ -1,0 +1,6 @@
+{
+  "type": "session.idle",
+  "properties": {
+    "sessionID": "opencode-session-idle"
+  }
+}

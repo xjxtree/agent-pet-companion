@@ -9,17 +9,18 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://example.invalid/agent-pet-companion"
+repository = "https://github.com/xjxtree/agent-pet-companion"
 
 [workspace.dependencies]
 hex = "0.4"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1", features = ["event", "fs", "net", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

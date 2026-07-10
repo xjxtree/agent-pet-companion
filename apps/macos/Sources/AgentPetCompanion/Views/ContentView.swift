@@ -9,17 +9,10 @@ struct ContentView: View {
                 .frame(width: 226)
             Divider()
             mainContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(red: 0.92, green: 0.97, blue: 1.0)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

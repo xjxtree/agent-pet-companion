@@ -1,18 +1,84 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/agent-event.schema.json",
-  "title": "Agent Pet Companion Agent Event",
+  "title": "Agent Pet Companion Normalized Persisted Event",
+  "description": "The complete normalized event record exposed by PetCore and persisted in SQLite. Display copy and payload metadata use closed vocabularies; raw hook input is never represented by this schema.",
   "type": "object",
-  "required": ["id", "source", "event_type", "title", "created_at"],
+  "required": [
+    "id",
+    "source",
+    "project_path",
+    "session_id",
+    "event_type",
+    "title",
+    "detail",
+    "payload_json",
+    "created_at"
+  ],
   "properties": {
-    "id": { "type": "string", "pattern": "^evt_[a-z0-9]+$" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 256 },
     "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
-    "project_path": { "type": ["string", "null"] },
-    "session_id": { "type": ["string", "null"] },
+    "project_path": { "type": ["string", "null"], "maxLength": 1024 },
+    "session_id": { "type": ["string", "null"], "maxLength": 256 },
     "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
     "title": { "type": "string" },
-    "detail": { "type": ["string", "null"] },
-    "payload_json": { "type": "object" },
-    "created_at": { "type": "string" }
+    "detail": { "type": "null" },
+    "payload_json": { "$ref": "#/$defs/persistedEnvelope" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "oneOf": [
+    { "properties": { "event_type": { "const": "start" }, "title": { "const": "开始处理" } } },
+    { "properties": { "event_type": { "const": "tool" }, "title": { "const": "执行工具" } } },
+    { "properties": { "event_type": { "const": "waiting" }, "title": { "const": "等待确认" } } },
+    { "properties": { "event_type": { "const": "review" }, "title": { "const": "待查看" } } },
+    { "properties": { "event_type": { "const": "done" }, "title": { "const": "完成" } } },
+    { "properties": { "event_type": { "const": "failed" }, "title": { "const": "失败" } } }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "persistedEnvelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "external_event_id",
+        "source_event",
+        "tool_name",
+        "outcome",
+        "diagnostic"
+      ],
+      "properties": {
+        "schema_version": { "const": "apc.agent-event.v1" },
+        "external_event_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source_event": {
+          "enum": [
+            "start", "tool", "waiting", "review", "done", "failed",
+            "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+            "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure",
+            "session_start", "before_agent_start", "agent_start", "tool_call",
+            "tool_execution_start", "tool_execution_end", "agent_settled",
+            "session.created", "session.status", "session.idle", "session.error",
+            "permission.asked", "permission.updated", "permission.replied",
+            "tool.execute.before", "tool.execute.after", "connection.test", "legacy",
+            "unclassified"
+          ]
+        },
+        "tool_name": {
+          "type": ["string", "null"],
+          "enum": ["shell", "filesystem", "editor", "search", "network", "agent", "other", null]
+        },
+        "outcome": {
+          "type": ["string", "null"],
+          "enum": [
+            "started", "completed", "permission_requested", "tool_failure",
+            "api_failure", "settled", "created", "idle", "busy", "retry",
+            "permission_replied", "permission_replied_once", "permission_replied_always",
+            "permission_replied_allow", "permission_replied_deny", "permission_replied_reject",
+            "started_without_args", "session_failure", "unknown", null
+          ]
+        },
+        "diagnostic": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
   }
 }

@@ -9,6 +9,9 @@ petcore = { path = "../petcore" }
 petcore-types = { path = "../petcore-types" }
 serde_json.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "petcore-cli"
 path = "src/main.rs"

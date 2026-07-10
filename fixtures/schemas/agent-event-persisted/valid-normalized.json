@@ -1,0 +1,18 @@
+{
+  "id": "normalized-event-1",
+  "source": "codex",
+  "project_path": null,
+  "session_id": "session-1",
+  "event_type": "tool",
+  "title": "执行工具",
+  "detail": null,
+  "payload_json": {
+    "schema_version": "apc.agent-event.v1",
+    "external_event_id": "normalized-event-1",
+    "source_event": "PreToolUse",
+    "tool_name": "shell",
+    "outcome": "started",
+    "diagnostic": false
+  },
+  "created_at": "2026-07-10T00:00:00Z"
+}

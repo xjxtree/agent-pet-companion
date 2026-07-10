@@ -1,0 +1,10 @@
+{
+  "source": "codex",
+  "event_type": "tool",
+  "payload": {
+    "source_event": "PostToolUse",
+    "tool_name": "Bash",
+    "outcome": "completed",
+    "raw_command": "must fail closed"
+  }
+}

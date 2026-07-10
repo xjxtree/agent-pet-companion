@@ -1,0 +1,180 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "control.disabled" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Off" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已关闭" } }
+      }
+    },
+    "control.enabled" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "On" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已开启" } }
+      }
+    },
+    "control.event.label" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Event: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "事件：%@" } }
+      }
+    },
+    "control.quality.label" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Quality: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "画质：%@" } }
+      }
+    },
+    "control.selected" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Selected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已选择" } }
+      }
+    },
+    "control.source.label" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Source: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "来源：%@" } }
+      }
+    },
+    "control.style.label" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Style: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "风格：%@" } }
+      }
+    },
+    "control.unselected" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not selected" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未选择" } }
+      }
+    },
+    "error.petpack.import_failed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Import failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "导入失败" } }
+      }
+    },
+    "library.empty.action" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create a pet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建宠物" } }
+      }
+    },
+    "library.empty.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create a pet or import an app-owned .petpack." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建宠物，或导入本 App 自有格式的 .petpack。" } }
+      }
+    },
+    "library.empty.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Your pet library is empty" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宠物库为空" } }
+      }
+    },
+    "library.format.app_owned" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "App-owned .petpack" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本 App 自有 .petpack" } }
+      }
+    },
+    "library.import.action" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Import app-owned .petpack" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "导入本 App .petpack" } }
+      }
+    },
+    "library.import.in_progress" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Importing .petpack" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在导入 .petpack" } }
+      }
+    },
+    "library.import.message" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Select one or more app-owned .petpack files." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请选择一个或多个本 App 自有格式的 .petpack 文件。" } }
+      }
+    },
+    "library.import.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Import app-owned .petpack" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "导入本 App .petpack" } }
+      }
+    },
+    "library.specification.unavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not reported by the local service" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地服务未报告" } }
+      }
+    },
+    "library.state.idle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Idle" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "空闲" } }
+      }
+    },
+    "library.state.not_active" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not the active pet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "非当前宠物，不显示全局事件" } }
+      }
+    },
+    "library.validation.invalid" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Asset warning" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "资源告警" } }
+      }
+    },
+    "library.validation.unverified_title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Incomplete specification" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "规格未完整报告" } }
+      }
+    },
+    "library.validation.unverified" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No damage was reported in this snapshot, but the local service did not provide a complete asset specification, so validation remains unavailable." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本次快照未报告损坏，但本地服务未提供完整资源规格，当前只能视为未经校验。" } }
+      }
+    },
+    "nav.behavior" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enable & Behavior" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用与行为" } }
+      }
+    },
+    "nav.connections" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Agent Connections" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Agent 连接" } }
+      }
+    },
+    "nav.studio" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pet Studio" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宠物 Studio" } }
+      }
+    },
+    "studio.picker.label" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pet Studio section" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宠物 Studio 分区" } }
+      }
+    },
+    "studio.tab.library" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pet Library" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宠物库" } }
+      }
+    },
+    "studio.tab.new" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

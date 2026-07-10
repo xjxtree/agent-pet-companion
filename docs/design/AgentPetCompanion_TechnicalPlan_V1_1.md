@@ -96,6 +96,13 @@ V1 以 Apple Silicon MacBook 为主要优化目标，性能预算固定为：
 | 12 FPS 原画 | ≤ 6% | ≤ 320 MB | 环形缓存 |
 | 20 FPS 原画 | ≤ 9% | ≤ 420 MB | 环形缓存 |
 
+预算的验收口径固定如下，避免用理论像素缓存替代真实运行时测量：
+
+1. CPU 是悬浮层进入稳定状态后至少 30 秒内的进程累计 CPU time 增量除以实测窗口；重复采样同时记录瞬时峰值，但以上述窗口平均值执行上表门禁。
+2. “Renderer 内存”是同一 App 进程在“悬浮层隐藏、无活动帧”的稳定 RSS 中位数之上，播放目标画质时的 RSS 峰值增量；同时单独记录绝对 App RSS。
+3. 验收必须同时记录驻留解码帧缓存、Metal device 当前分配、drawable texture 实际分配与进程 RSS 增量。`width × height × 4 × frames` 只用于容量规划，不能单独证明满足预算。
+4. 隐藏悬浮层单独验证 CPU 平均占用 `< 1%`。流畅档还要求 20 FPS 时间线的实测播放帧率不低于 18 FPS。
+
 超过预算时，内部自动执行保护策略：
 
 ```text
@@ -138,7 +145,7 @@ V1 以 Apple Silicon MacBook 为主要优化目标，性能预算固定为：
 ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌────────────┐
 │ Codex    │  │ Claude Code│  │ Pi Agent │  │ OpenCode   │
 │ Plugin   │  │ Hooks      │  │ Extension│  │ Plugin     │
-│ AppServer│  │            │  │ RPC      │  │            │
+│ AppServer│  │            │  │ V1 observe│ │            │
 └──────────┘  └────────────┘  └──────────┘  └────────────┘
 ```
 
@@ -195,27 +202,27 @@ Agent 连接
 `.petpack` 是 zip 包，内部结构固定：
 
 ```text
-<pet-id>.petpack/
-  manifest.json
-  brief.json
-  assets/
-    frames/
-      idle/
-      start/
-      tool/
-      waiting/
-      review/
-      done/
-      failed/
-    preview/
-      cover.png
-      animated_preview.webp
-  source/
-    prompt.md
-    references/
-    skill_session.jsonl
-  build/
-    validation.json
+manifest.json
+brief.json
+assets/
+  frames/
+    idle/
+    start/
+    tool/
+    waiting/
+    review/
+    done/
+    failed/
+  preview/
+    cover.png
+    animated_preview.webp
+source/
+  prompt.md
+  source.json
+  references/
+  skill_session.jsonl
+build/
+  validation.json
 ```
 
 ### 5.1 manifest.json
@@ -285,7 +292,6 @@ V1 固定生成 7 个状态：
 | 风格预设 | 写实 / 半写实 / 现代 / 像素 / 动漫 / 不指定 |
 | 图像画质 | 标清 / 高清 / 超清 / 原画 |
 | 参考图 | 可上传多张 |
-| 备注 | 可选补充 |
 
 点击「开始生成」后，App 创建 AI 会话。
 
@@ -317,7 +323,7 @@ PetCore 校验并打包 .petpack
 
 ### 6.3 Codex App Server 用途
 
-Codex App Server 用于在 App 内嵌入 Codex 会话能力，包括认证、会话历史、approval 和 streamed agent events。Codex App Server 使用 JSON-RPC 2.0，并支持 stdio、Unix socket、WebSocket 等 transport；V1 固定使用 stdio transport，由 PetCore 启动和管理。
+Codex App Server 用于在 App 内嵌入 Codex 会话能力，包括认证、会话历史、approval 和 streamed agent events。其 V1 边界是逐行 JSON 的 stdio request/notification 协议，不假定标准 JSON-RPC `jsonrpc` header，也不宣称未实现的 Unix socket/WebSocket transport；进程由 PetCore 启动和管理。
 
 ### 6.4 Pet Studio Skill
 
@@ -395,17 +401,33 @@ frame_index = floor(elapsed_seconds × target_fps) % frame_count
 
 ### 8.1 统一事件模型
 
-所有 Agent 事件统一转换为：
+事件管线固定分成三个不可混用的边界：
+
+| 边界 | Schema | 规则 |
+|---|---|---|
+| Agent 原始 Hook 输入 | `schemas/agent-hook-input.schema.json` | 只存在于 source-specific adapter 进程内，可包含上游扩展字段，不得直接进入 PetCore 或落库 |
+| 严格 ingest | `schemas/agent-event-ingest.schema.json` | 只接受固定顶层字段与小型 envelope；未知顶层/嵌套字段 fail closed；`title`、`detail`、`payload_json` 仅作旧客户端类型兼容，仍会重新归一化 |
+| 归一化/持久化/对外展示 | `schemas/agent-event.schema.json` | 完整 closed-world record；显示文案、生命周期、工具类别和结果均使用有限词表 |
+
+所有 Agent 事件最终统一转换为：
 
 ```json
 {
   "id": "evt_01jz...",
   "source": "codex",
-  "project_path": "/Users/me/project",
+  "project_path": null,
   "session_id": "session_xxx",
   "event_type": "tool",
   "title": "执行工具",
-  "detail": "Bash",
+  "detail": null,
+  "payload_json": {
+    "schema_version": "apc.agent-event.v1",
+    "external_event_id": "evt_01jz...",
+    "source_event": "PreToolUse",
+    "tool_name": "shell",
+    "outcome": "started",
+    "diagnostic": false
+  },
   "created_at": "2026-07-07T00:00:00Z"
 }
 ```
@@ -421,6 +443,8 @@ done
 failed
 ```
 
+外部 `title`/`detail` 不作为展示文案或数据库内容；`title` 始终由 `event_type` 生成，`detail` 在 V1 归一化记录中为 `null`。`source_event` 只保留已知官方 lifecycle 名称，未知值变为 `unclassified`；工具名只归为 `shell`、`filesystem`、`editor`、`search`、`network`、`agent`、`other`；结果只保留 Schema 中的有限枚举，未知值变为 `unknown`。这使 prompt、命令、参数、输出、路径别名和任意上游字符串不能借显示字段或 metadata alias 回流到 event/recent-visible record。
+
 ### 8.2 事件到宠物状态映射
 
 | AgentEvent | 宠物状态 |
@@ -433,6 +457,8 @@ failed
 | failed | failed |
 
 若行为页关闭某个事件类型，该事件只入库，不触发宠物动作。
+
+PetCore 先按 `source + normalized session` 使用事件时间与持久化 sequence 选出各会话最新事件，再在未过期候选中按 `failed > waiting > review > tool > start > done`、事件时间、sequence 仲裁唯一 `active_agent_state`。`start/tool/waiting/review` lease 为 30 秒，`done/failed` 为 5 秒；终态过期后不会让同会话的旧工作态“复活”。macOS 只消费该 canonical state，不再自行按本地数组时间/优先级重算。
 
 ### 8.3 Codex 接入
 
@@ -447,22 +473,24 @@ agent-pet-companion/
 
 运行时状态感知使用 plugin-bundled hooks。Codex 官方 hooks 文档说明：插件启用后，Codex 可以从插件根目录加载 lifecycle hooks；默认会查找 `hooks/hooks.json`，也可在 `.codex-plugin/plugin.json` 指定 hooks 路径。插件 hooks 仍需用户 review/trust 后才会运行。
 
+V1 仅注册当前官方 hook 名称。`PostToolUse` 只证明工具活动完成，不等同于用户 review；Codex hooks 没有独立失败事件，因此 hook 能力不宣称 `review`/`failed`，这些状态只能由受支持的 App Server/event stream 补足。
+
 宠物生成使用 Codex App Server。Codex App Server 是 Codex rich clients 使用的深度集成接口，适合认证、会话历史、approval 和 streamed agent events。
 
 ### 8.4 Claude Code 接入
 
-Claude Code 接入使用 hooks。Claude Code hooks 是在生命周期事件中自动执行的 shell command、HTTP endpoint 或 LLM prompt；官方事件包括 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`Stop`、`StopFailure` 等。
+Claude Code 接入使用 hooks。Claude Code hooks 是在生命周期事件中自动执行的 shell command、HTTP endpoint 或 LLM prompt；V1 区分代表 API turn 失败的 `StopFailure` 与代表工具失败的 `PostToolUseFailure`。command hook 使用 quiet、async、5 秒上限配置。
 
 V1 安装方式：
 
 ```text
-~/.claude/settings.json 写入 Agent Pet Companion hooks
-hook command 调用 petcore-cli agent ingest
+${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json 写入 Agent Pet Companion hooks
+hook command 调用 petcore-cli agent hook；原始 prompt/args/output 仅在进程内提炼，不写入事件 payload
 ```
 
 ### 8.5 Pi Coding Agent 接入
 
-Pi 接入使用 Extension + RPC。Pi 是 minimal agent harness，可通过 TypeScript extensions、skills、prompt templates、themes 扩展；RPC mode 支持 JSON over stdin/stdout，适合嵌入其他应用或自定义 UI。
+Pi V1 只使用 Extension 观察现有会话。完成状态来自 `agent_settled`，工具失败来自 `tool_execution_end.isError`；`session_shutdown` 和 `agent_end` 都不被误判为完成。等待确认必须由真实 `tool_call` + `ctx.ui.confirm()`/RPC UI 子协议桥表达，V1 尚未提供该桥时明确报告 unsupported。
 
 V1 安装方式：
 
@@ -471,6 +499,8 @@ V1 安装方式：
 ```
 
 Extension 监听 Pi lifecycle events，并把事件发送到 PetCore 本地事件接口。
+
+Pi 的 strict LF JSONL RPC client 尚未实现，V1 不把 `pi --help` 中出现 RPC 文案当作已实现或健康探测。
 
 ### 8.6 OpenCode 接入
 
@@ -482,7 +512,7 @@ V1 安装方式：
 ~/.config/opencode/plugins/agent-pet-companion.js
 ```
 
-Plugin 把 OpenCode session、tool、permission、finish、error 等事件转换为 PetCore 统一事件。
+Plugin 固定兼容 OpenCode v1.17.18：通用事件读取 `{type, properties}`，direct tool before 读取 `input.{tool,sessionID,callID}` 与 `output.args`，after 不假定存在 `output.error`。`permission.asked/updated/replied` 采用显式兼容映射，replied 会清除 waiting。Server 健康只在显式 opt-in 后，由有界进程实际取得 `/global/health` 的有效 JSON 才标记为 runtime verified。
 
 ---
 
@@ -509,7 +539,7 @@ App 与 PetCore 使用 Unix Domain Socket：
 ~/Library/Application Support/AgentPetCompanion/run/petcore.sock
 ```
 
-Agent hooks、plugins、extensions 优先调用 `petcore-cli agent ingest`。对不方便调用 CLI 的 JS 插件，PetCore 同时提供 loopback HTTP endpoint：
+Agent hooks、plugins、extensions 优先调用 `petcore-cli agent hook`，由版本化 adapter 在内存中把原始 Hook 输入提炼为严格 ingest envelope；原始 prompt、args、command、output、transcript、environment 和未知扩展字段不会跨过 adapter 边界。诊断/测试可使用显式 `agent ingest`，但同样按严格 Schema 对未知字段 fail closed；对不方便调用 CLI 的 JS 插件，PetCore 同时提供 loopback HTTP endpoint：
 
 ```text
 http://127.0.0.1:<dynamic-port>/agent-events
@@ -544,6 +574,9 @@ CREATE TABLE pets (
   render_height INTEGER NOT NULL,
   petpack_path TEXT NOT NULL,
   cover_path TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  generator TEXT,
+  provenance TEXT,
   active INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -555,28 +588,55 @@ CREATE TABLE generation_jobs (
   session_id TEXT,
   job_dir TEXT NOT NULL,
   result_pet_id TEXT,
+  retry_of_job_id TEXT,
+  owner_instance_id TEXT,
+  heartbeat_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE agent_events (
+CREATE TABLE generation_messages (
   id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  kind TEXT,
+  content TEXT NOT NULL,
+  progress REAL NOT NULL,
+  created_at TEXT NOT NULL,
+  diagnostic_json TEXT,
+  UNIQUE(job_id, sequence)
+);
+
+CREATE TABLE agent_events (
+  row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_event_id TEXT NOT NULL,
   source TEXT NOT NULL,
   project_path TEXT,
   session_id TEXT,
+  session_key TEXT NOT NULL,
   event_type TEXT NOT NULL,
   title TEXT,
   detail TEXT,
   payload_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  UNIQUE(source, session_key, external_event_id)
 );
 
 CREATE TABLE settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL
+);
+
+CREATE TABLE state_revision (
+  singleton INTEGER PRIMARY KEY,
+  revision INTEGER NOT NULL
 );
 ```
+
+`generation_messages` 是生成会话消息的唯一真相源；JSONL 只是兼容迁移和有界诊断镜像。事件原始记录按 10,000 行/30 天保留，按日来源/类型计数可在原始行淘汰后继续保留。旧事件隐私迁移先写持久 phase marker，再 checkpoint + `VACUUM` + truncate WAL；只有清理完成后才推进 SQLite `user_version`，中途崩溃会在下次启动重试。
 
 ---
 
@@ -587,7 +647,9 @@ CREATE TABLE settings (
 ```json
 {
   "enabled": true,
-  "mouse_passthrough": false,
+  "status_bubble": true,
+  "click_menu": true,
+  "mouse_passthrough": true,
   "auto_hide": false,
   "fps_profile": "standard",
   "sources": {
@@ -607,13 +669,15 @@ CREATE TABLE settings (
 }
 ```
 
+行为修改只使用 `behavior.patch { expected_revision, changes }`。`expected_revision` 是 Behavior 自身的 CAS revision，不受 Agent 事件等无关全局写入影响；冲突返回明确错误，客户端刷新后按字段重试。通用 `settings.update` 不能写 product settings。`auto_hide` 只表示“没有 canonical active Agent state 时隐藏状态气泡”，不会隐藏 idle 宠物；宠物可见性始终由 `enabled` 控制。
+
 显示尺寸不进入设置。尺寸保存在 overlay placement：
 
 ```json
 {
-  "x": 1180,
-  "y": 720,
-  "scale": 1.35,
+  "x": 0,
+  "y": 0,
+  "scale": 0.72,
   "display_id": "main"
 }
 ```
@@ -628,8 +692,8 @@ Agent 连接页只检查宠物响应所需条件。
 |---|---|
 | Codex | CLI 是否存在、plugin 是否安装、hooks 是否启用、hooks 是否已信任、App Server 是否可启动、Pet Studio Skill 是否存在 |
 | Claude Code | CLI 是否存在、settings hooks 是否写入、hook command 是否可执行、事件回传是否成功 |
-| Pi Coding Agent | CLI 是否存在、extension 是否安装、RPC 是否可启动、事件回传是否成功 |
-| OpenCode | CLI 是否存在、plugin 是否安装、plugin 是否加载、事件回传是否成功 |
+| Pi Coding Agent | CLI 是否存在、extension 是否安装/真实加载、事件回传是否成功；RPC 与 waiting bridge 明确标注 unsupported |
+| OpenCode | CLI 是否存在、plugin 是否安装/加载、事件回传是否成功；Server 仅在 opt-in `/global/health` 探测后标记 runtime verified |
 
 每个检查项只有三种状态：
 
@@ -661,7 +725,7 @@ V1 固定遵守：
 
 1. 用户填写初始表单后能创建 AI 会话。
 2. Studio 能显示 AI 会话消息、生成进度、错误提示。
-3. AI 会话能生成 `.petpack`。
+3. AI 会话能保存明确标注的确定性本地预览；只有图像能力工具生成完整、可见差异的 7 状态帧并通过 provenance/参考图语义校验后，才标记为已验证 AI source 并生成 `.petpack`。
 4. 生成完成后宠物自动进入宠物库。
 5. 宠物库能启用、删除、查看基本信息。
 
@@ -682,17 +746,18 @@ V1 固定遵守：
 
 ### 14.4 性能
 
-1. 默认高清 + 12 FPS 下 CPU 平均占用不超过 4%。
-2. 超清 + 20 FPS 下 Renderer 内存不超过 260 MB。
-3. 原画 + 20 FPS 下 Renderer 内存不超过 420 MB。
+1. 默认高清 + 12 FPS 下，稳定播放至少 30 秒的 CPU 采样平均值不超过 4%。
+2. 超清 + 20 FPS 下，相对隐藏悬浮层稳定 RSS 基线的 Renderer RSS 峰值增量不超过 260 MB。
+3. 原画 + 20 FPS 下，相对隐藏悬浮层稳定 RSS 基线的 Renderer RSS 峰值增量不超过 420 MB。
 4. App 主界面滚动、切换页面不受悬浮层动画影响。
+5. 性能验收同时保留隐藏基线、绝对 App RSS、RSS 峰值增量、CPU 平均/峰值、采样数、采样间隔、实测 FPS、驻留解码缓存与 Metal/drawable 实分配遥测；估算缓存不能代替实测门禁。
 
 ---
 
 ## 15. 参考依据
 
-- OpenAI Codex App Server：用于产品内深度集成 Codex，会话、approval、streamed agent events，协议为 JSON-RPC 2.0。
+- OpenAI Codex App Server：用于产品内深度集成 Codex，会话、approval、streamed agent events；V1 使用逐行 JSON stdio request/notification 边界，不要求标准 JSON-RPC `jsonrpc` header。
 - OpenAI Codex Hooks：支持 plugin-bundled lifecycle hooks，默认读取 plugin root 下的 `hooks/hooks.json`。
 - Claude Code Hooks：支持在 SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop 等生命周期点执行 hooks。
-- Pi Coding Agent：支持 extensions、skills、prompt templates、themes；RPC mode 支持 JSON over stdin/stdout。
-- OpenCode：支持 plugins、headless server、SDK、programmatic control。
+- Pi Coding Agent：V1 使用 Extension；RPC mode 的 strict LF JSONL/UI 子协议属于未实现能力，不作健康声明。
+- OpenCode：V1 plugin 契约固定在 v1.17.18；headless server 只通过 opt-in `/global/health` 探测验证。

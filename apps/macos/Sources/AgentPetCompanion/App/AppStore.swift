@@ -2,129 +2,727 @@ import AgentPetCompanionCore
 import AppKit
 import Combine
 import Foundation
+import UniformTypeIdentifiers
+
+struct AppStoreBootstrapHooks {
+    typealias EnsureRunning = @Sendable () async -> ServiceStartResult
+    typealias Recover = @Sendable () async -> ServiceStartResult
+    typealias RefreshSnapshot = @MainActor (AppStore) async throws -> Void
+    typealias OnReady = @MainActor (AppStore) async -> Void
+
+    let ensureRunning: EnsureRunning
+    let recover: Recover
+    let refreshSnapshot: RefreshSnapshot
+    let onReady: OnReady
+}
 
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selection: NavigationSection = .studio
     @Published var studioTab: StudioTab = .new
-    @Published var descriptionText = "安静陪伴的东方幻想角色，工作时衣摆发光，等待确认时抬头提醒。"
-    @Published var selectedStyle: StylePreset = .semiRealistic
-    @Published var selectedQuality: QualityLevel = .high
-    @Published var referenceImages: [String] = []
+    @Published private(set) var descriptionText = PetStudioDefaults.descriptionText
+    @Published private(set) var selectedStyle: StylePreset = .semiRealistic
+    @Published private(set) var selectedQuality: QualityLevel = .high
+    @Published private(set) var referenceImages: [String] = []
     @Published var behavior = BehaviorSettings()
-    @Published var pets: [PetSummary] = DemoData.pets
+    @Published private(set) var activeAgentState: ActiveAgentState?
+    @Published private(set) var overlayVisibility = OverlayVisibility()
+    @Published var pets: [PetSummary] = []
+    @Published private(set) var petAssetWarningIndex = PetAssetWarningIndex()
     @Published var events: [AgentEvent] = []
+    @Published var recentEvents: [AgentEvent] = []
     @Published var connections: [AgentConnectionStatus] = []
-    @Published var generationMessages: [GenerationMessage] = DemoData.initialMessages
-    @Published var generationJobID: String?
-    @Published var generationProgress = 0.0
-    @Published var isGenerating = false
+    @Published private(set) var generationSession = GenerationSession()
+    @Published var generationReplyText = ""
     @Published var statusText = "正在初始化"
-    @Published var overlayScale = 1.0
+    @Published var serviceStatusText = "正在初始化"
+    @Published var overlayScale = OverlayGeometry.defaultScale
     @Published var overlayVisible = true
+    @Published var overlayScreenFrame = CGRect(x: 780, y: 140, width: 704, height: 640)
+    @Published var overlayScreenVisibleFrame = NSScreen.main?.visibleFrame ?? .zero
+    @Published var overlayPetScreenCenter = CGPoint.zero
+    @Published var overlayBubbleDismissed = false
+    @Published var overlayDismissedBubbleEventIDs: Set<String> = []
+    @Published var overlayPointerNearPet = false
+    @Published var overlayPetDragInProgress = false
+    @Published var overlayResizeInProgress = false
+    @Published var petOperationIDs: Set<String> = []
+    @Published var isImportingPetpack = false
+    @Published var connectionOperationSources: Set<AgentSource> = []
 
-    private let client = PetCoreClient()
-    private let processManager = PetCoreProcessManager()
-    private let overlayController = PetOverlayController()
+    private let client: PetCoreClient
+    private let overlayController: PetOverlayController
+    private let bootstrapHooks: AppStoreBootstrapHooks
     private var refreshTask: Task<Void, Never>?
+    private var overlayPetPositionInitialized = false
+    private var overlayPlacementLoaded = false
+    private var isApplyingOverlayPlacement = false
+    private var overlayPlacementSaveTask: Task<Void, Never>?
+    private var stateRevision = ""
+    private var behaviorRevision = "0"
+    private var behaviorMutationTask: Task<Void, Never>?
+    private var mainWindowPresenter: (() -> Void)?
+    private var generationMessagesTask: Task<Void, Never>?
+    private var runtimeBootstrapCompleted = false
+    private var recoverySequence: UInt64 = 0
+    private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
 
-    var activePet: PetSummary? {
-        pets.first(where: \.active) ?? pets.first
+    init() {
+        let processManager = PetCoreProcessManager()
+        let bootstrapCoordinator = PetCoreAppBootstrapCoordinator(
+            ensureRunning: { await processManager.ensureRunning() }
+        )
+        client = PetCoreClient()
+        overlayController = PetOverlayController()
+        bootstrapHooks = AppStoreBootstrapHooks(
+            ensureRunning: { await bootstrapCoordinator.ensureRunning() },
+            recover: { await bootstrapCoordinator.recover() },
+            refreshSnapshot: { store in try await store.refreshSnapshot() },
+            onReady: { store in await store.completeRuntimeBootstrap() }
+        )
     }
 
-    func bootstrap() async {
-        processManager.startIfNeeded()
+    init(
+        client: PetCoreClient = PetCoreClient(),
+        bootstrapHooks: AppStoreBootstrapHooks
+    ) {
+        self.client = client
+        overlayController = PetOverlayController()
+        self.bootstrapHooks = bootstrapHooks
+    }
+
+    var activePet: PetSummary? {
+        pets.first(where: \.active)
+    }
+
+    var activeOverlayEvent: AgentEvent? {
+        activeAgentState?.event
+    }
+
+    var activeAgentEventText: String {
+        activeOverlayEvent.map { "\($0.source.title) · \($0.title)" } ?? "暂无活跃 Agent 事件"
+    }
+
+    var overlayBubbleEvents: [AgentEvent] {
+        guard let event = activeAgentState?.event,
+              !overlayDismissedBubbleEventIDs.contains(event.id)
+        else {
+            return []
+        }
+        return [event]
+    }
+
+    var overlayBubbleContents: [OverlayBubbleContent] {
+        guard overlayVisibility.statusBubbleVisible, !overlayBubbleDismissed else {
+            return []
+        }
+        if let event = overlayBubbleEvents.first {
+            return [OverlayBubbleContent(event: event)]
+        }
+        return activeAgentState == nil ? [.idle] : []
+    }
+
+    var canStartGeneration: Bool {
+        !generationSession.isActive
+            && !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var isWaitingForGenerationInput: Bool {
+        generationSession.state == .waitingForInput
+    }
+
+    var canSendGenerationReply: Bool {
+        generationSession.canSendReply
+    }
+
+    var canRetryGeneration: Bool {
+        generationSession.canRetry
+    }
+
+    var generationStateTitle: String {
+        switch generationSession.state {
+        case .idle: "尚未开始"
+        case .starting: "正在启动"
+        case .running: "正在生成"
+        case .waitingForInput: "等待补充信息"
+        case .cancelling: "正在取消"
+        case .succeeded: "生成完成"
+        case .failed: "生成失败"
+        case .cancelled: "已取消"
+        }
+    }
+
+    func setMainWindowPresenter(_ presenter: @escaping () -> Void) {
+        mainWindowPresenter = presenter
+    }
+
+    func presentMainWindow() {
+        if frontExistingMainWindow() {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        if let mainWindowPresenter {
+            mainWindowPresenter()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func frontExistingMainWindow() -> Bool {
+        guard let window = NSApp.windows.first(where: { $0.title == "Agent Pet Companion" }) else {
+            return false
+        }
+        window.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    func bootstrapIfNeeded() async {
+        switch await bootstrapHooks.ensureRunning() {
+        case .alreadyHealthy, .started:
+            setServiceStatus("本地服务运行中")
+            guard !runtimeBootstrapCompleted else { return }
+            runtimeBootstrapCompleted = true
+            await bootstrapHooks.onReady(self)
+        case let .failed(reason):
+            setServiceStatus(reason)
+        }
+    }
+
+    private func completeRuntimeBootstrap() async {
         overlayController.show(store: self)
         await refresh()
+        refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                await self?.refresh()
-                await self?.refreshGenerationMessages()
+                await self?.waitForStateChange()
             }
         }
     }
 
     func refresh() async {
         do {
-            let result = try await requestPetCore(method: "state.snapshot")
-            let data = try JSONSerialization.data(withJSONObject: result)
-            let snapshot = try JSONDecoder().decode(StateSnapshot.self, from: data)
-            behavior = snapshot.behavior
-            pets = snapshot.pets.isEmpty ? pets : snapshot.pets
-            events = snapshot.events
-            connections = snapshot.connections
-            statusText = "本地服务运行中"
+            try await bootstrapHooks.refreshSnapshot(self)
+            setServiceStatus("本地服务运行中")
         } catch {
-            statusText = "本地服务未连接，显示演示数据"
+            setServiceStatus("本地服务未连接")
+            _ = await recoverServiceConnection()
         }
     }
 
+    func recoverServiceConnection() async -> Bool {
+        if let serviceRecovery {
+            return await serviceRecovery.task.value
+        }
+
+        recoverySequence &+= 1
+        let id = recoverySequence
+        let task = Task { @MainActor [weak self] in
+            await self?.runServiceRecovery() ?? false
+        }
+        serviceRecovery = (id, task)
+        let recovered = await task.value
+        if serviceRecovery?.id == id {
+            serviceRecovery = nil
+        }
+        return recovered
+    }
+
+    private func runServiceRecovery() async -> Bool {
+        switch await bootstrapHooks.recover() {
+        case .alreadyHealthy, .started:
+            do {
+                try await bootstrapHooks.refreshSnapshot(self)
+                setServiceStatus("本地服务运行中")
+                return true
+            } catch {
+                setServiceStatus("本地服务未连接")
+                return false
+            }
+        case let .failed(reason):
+            setServiceStatus(reason)
+            return false
+        }
+    }
+
+    private func refreshSnapshot() async throws {
+        let result = try await requestPetCore(method: "state.snapshot")
+        try applyStateSnapshot(result)
+        setServiceStatus("本地服务运行中")
+    }
+
+    private func waitForStateChange() async {
+        // With no time-limited active state, the daemon revision wakes this
+        // request immediately. A longer idle wait avoids decoding and
+        // republishing an unchanged full snapshot every three seconds while
+        // still keeping generation and event-expiry paths responsive.
+        let timeoutMs = if generationSession.isActive {
+            1_000
+        } else if activeAgentState != nil {
+            3_000
+        } else {
+            30_000
+        }
+        do {
+            let result = try await requestPetCore(
+                method: "state.wait",
+                params: [
+                    "after_revision": stateRevision,
+                    "timeout_ms": timeoutMs
+                ],
+                timeout: .seconds(35)
+            )
+            try applyStateSnapshot(result)
+            setServiceStatus("本地服务运行中")
+        } catch {
+            setServiceStatus("本地服务未连接")
+            if !(await recoverServiceConnection()) {
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func setServiceStatus(_ value: String) {
+        let shouldMirrorToStatus = statusText == serviceStatusText
+            || statusText == "正在初始化"
+            || statusText.hasPrefix("本地服务")
+        serviceStatusText = value
+        if shouldMirrorToStatus {
+            statusText = value
+        }
+    }
+
+    private func applyStateSnapshot(_ result: Any) throws {
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let snapshot = try JSONDecoder().decode(StateSnapshot.self, from: data)
+        if let activeGeneration = snapshot.activeGeneration {
+            reconcileActiveGeneration(activeGeneration)
+        }
+        let previousActiveEventID = activeAgentState?.event.id
+        let previousEventIDs = Set(events.map(\.id))
+        let nextEventIDs = Set(snapshot.events.map(\.id))
+        behavior = snapshot.behavior
+        behaviorRevision = snapshot.behaviorRevision ?? behaviorRevision
+        activeAgentState = snapshot.activeAgentState
+        overlayVisibility = snapshot.overlayVisibility ?? OverlayVisibility(
+            petVisible: snapshot.behavior.enabled,
+            statusBubbleVisible: snapshot.behavior.showsStatusBubble(
+                hasActiveEvent: snapshot.activeAgentState != nil,
+                dismissed: false
+            )
+        )
+        pets = snapshot.pets
+        petAssetWarningIndex = PetAssetWarningIndex(snapshot.petAssetWarnings ?? [])
+        events = snapshot.events
+        overlayDismissedBubbleEventIDs.formIntersection(nextEventIDs)
+        if !nextEventIDs.isSubset(of: previousEventIDs) {
+            overlayBubbleDismissed = false
+        }
+        if previousActiveEventID != activeAgentState?.event.id {
+            overlayBubbleDismissed = false
+        }
+        recentEvents = snapshot.recentEvents ?? snapshot.events
+        connections = mergedConnectionSnapshot(snapshot.connections)
+        sortConnections()
+        stateRevision = snapshot.revision ?? stateRevision
+        let snapshotPlacement = snapshot.overlayPlacement ?? OverlayPlacement()
+        if !overlayPlacementLoaded {
+            applyOverlayPlacement(snapshotPlacement)
+        } else if shouldApplyRemoteOverlayPlacement(snapshotPlacement) {
+            applyOverlayPlacement(snapshotPlacement)
+        }
+        syncOverlayVisibilityForBehavior()
+    }
+
+    private func reconcileActiveGeneration(_ snapshot: ActiveGenerationSnapshot) {
+        let previousJobID = generationSession.jobID
+        _ = reduceGeneration(.restore(GenerationSessionRestore(snapshot: snapshot)))
+        if previousJobID != snapshot.jobID {
+            generationReplyText = ""
+        }
+    }
+
+    func updateGenerationDescription(_ value: String) {
+        guard !generationSession.isActive else { return }
+        descriptionText = value
+    }
+
+    func selectGenerationStyle(_ style: StylePreset) {
+        guard !generationSession.isActive else { return }
+        selectedStyle = style
+    }
+
+    func selectGenerationQuality(_ quality: QualityLevel) {
+        guard !generationSession.isActive else { return }
+        selectedQuality = quality
+    }
+
     func startGeneration() {
+        guard canStartGeneration else {
+            statusText = generationSession.isActive ? generationStateTitle : "请先填写宠物描述"
+            return
+        }
+        let description = descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
         let form = GenerationForm(
-            description: descriptionText,
+            description: description,
             style: selectedStyle.rawValue,
             quality: selectedQuality,
-            referenceImages: referenceImages,
-            note: nil
+            referenceImages: referenceImages
         )
-        isGenerating = true
-        generationProgress = 0.08
-        generationMessages = [
-            GenerationMessage(role: "user", content: "按表单创建一个\(selectedStyle.rawValue)桌宠。", progress: 0.05, createdAt: "")
-        ]
+        beginGeneration(with: form, initialMessage: "按表单创建一个\(selectedStyle.rawValue)桌宠。")
+    }
+
+    func clearStudioForm() {
+        guard !generationSession.isActive else {
+            statusText = "活动任务使用已提交表单，完成或取消后才能清空草稿"
+            return
+        }
+        descriptionText = PetStudioDefaults.descriptionText
+        referenceImages.removeAll()
+        generationReplyText = ""
+        statusText = "已清空新建表单"
+    }
+
+    func retryGeneration() {
+        guard let form = generationSession.submittedForm else {
+            startGeneration()
+            return
+        }
+        guard generationSession.canRetry else {
+            statusText = generationSession.isActive ? generationStateTitle : "当前会话不可重试"
+            return
+        }
+        beginGeneration(
+            with: form,
+            initialMessage: "重试上一份表单创建一个\(form.style)桌宠。",
+            retryOfJobID: generationSession.jobID
+        )
+        statusText = "正在重试 AI 辅助会话"
+    }
+
+    private func beginGeneration(
+        with form: GenerationForm,
+        initialMessage: String,
+        retryOfJobID: String? = nil
+    ) {
+        let initialUserMessage = GenerationMessage(
+            role: "user",
+            content: initialMessage,
+            progress: 0.05,
+            createdAt: ""
+        )
+        _ = reduceGeneration(.startRequested(form: form, initialMessage: initialUserMessage))
+        generationReplyText = ""
         studioTab = .new
 
         Task {
             do {
                 let formData = try JSONEncoder().encode(form)
                 let formObject = try JSONSerialization.jsonObject(with: formData)
-                let result = try await requestPetCore(method: "generation.start", params: formObject)
-                if let dict = result as? [String: Any], let jobID = dict["job_id"] as? String {
-                    generationJobID = jobID
-                    generationProgress = 0.18
+                let result: Any
+                if let retryOfJobID {
+                    result = try await requestPetCore(
+                        method: "generation.retry",
+                        params: [
+                            "job_id": retryOfJobID,
+                            "form": formObject
+                        ]
+                    )
+                } else {
+                    result = try await requestPetCore(method: "generation.start", params: formObject)
                 }
-                await refreshGenerationMessages()
+                guard let dict = result as? [String: Any],
+                      let jobID = dict["job_id"] as? String,
+                      !jobID.isEmpty
+                else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                _ = reduceGeneration(.startAccepted(jobID: jobID))
             } catch {
-                generationMessages.append(GenerationMessage(role: "assistant", content: "生成启动失败：\(error.localizedDescription)", progress: 1, createdAt: ""))
-                isGenerating = false
+                let failure = GenerationMessage(
+                    role: "assistant",
+                    content: "生成启动失败：\(error.localizedDescription)",
+                    progress: 1,
+                    createdAt: "",
+                    kind: "generation_failed"
+                )
+                _ = reduceGeneration(.startFailed(message: failure))
             }
         }
     }
 
     func refreshGenerationMessages() async {
-        guard let generationJobID else { return }
+        guard let generationJobID = generationSession.jobID else { return }
         do {
             let result = try await requestPetCore(method: "generation.messages", params: ["job_id": generationJobID])
             let data = try JSONSerialization.data(withJSONObject: result)
             let messages = try JSONDecoder().decode([GenerationMessage].self, from: data)
-            if !messages.isEmpty {
-                generationMessages = messages
-                generationProgress = messages.map(\.progress).max() ?? generationProgress
-                isGenerating = generationProgress < 1
-                if generationProgress >= 1 {
-                    await refresh()
-                    studioTab = .library
-                }
-            }
+            await applyGenerationMessages(messages)
         } catch {
             statusText = "生成消息暂不可用"
         }
     }
 
-    func updateBehavior(_ next: BehaviorSettings) {
-        behavior = next
-        overlayVisible = next.enabled
-        overlayController.setVisible(next.enabled)
-        Task {
-            do {
-                let data = try JSONEncoder().encode(next)
-                let object = try JSONSerialization.jsonObject(with: data)
-                _ = try await requestPetCore(method: "behavior.update", params: object)
-            } catch {
-                statusText = "设置保存失败"
+    private func startGenerationMessageStream(jobID: String) {
+        generationMessagesTask?.cancel()
+        generationMessagesTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let shouldContinue = await self?.waitForGenerationMessages(jobID: jobID) ?? false
+                if !shouldContinue {
+                    break
+                }
             }
         }
+    }
+
+    private func waitForGenerationMessages(jobID: String) async -> Bool {
+        guard generationSession.jobID == jobID else { return false }
+        do {
+            let result = try await requestPetCore(
+                method: "generation.messages.wait",
+                params: [
+                    "job_id": jobID,
+                    "after_revision": generationSession.messageRevision,
+                    "timeout_ms": 30_000
+                ],
+                timeout: .seconds(35)
+            )
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let snapshot = try JSONDecoder().decode(GenerationMessagesSnapshot.self, from: data)
+            await applyGenerationMessages(snapshot.messages, revision: snapshot.revision)
+            return generationSession.isActive && generationSession.jobID == jobID
+        } catch {
+            statusText = "生成消息暂不可用"
+            try? await Task.sleep(for: .seconds(1))
+            return generationSession.isActive && generationSession.jobID == jobID
+        }
+    }
+
+    private func applyGenerationMessages(
+        _ messages: [GenerationMessage],
+        revision: String? = nil
+    ) async {
+        let effects = reduceGeneration(.messagesReceived(messages, revision: revision))
+        if effects.contains(.refreshSnapshot) {
+            await refresh()
+        }
+        if generationSession.state == .succeeded {
+            studioTab = .library
+        }
+    }
+
+    func sendGenerationReply() {
+        let content = generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return }
+        guard generationSession.canSendReply else {
+            statusText = "请先等待 AI 追问或生成成功"
+            return
+        }
+        guard let generationJobID = generationSession.jobID else {
+            statusText = "请先发起 AI 辅助会话"
+            return
+        }
+        let previousState = generationSession.state
+        _ = reduceGeneration(.replySubmitted)
+        generationReplyText = ""
+
+        Task {
+            do {
+                let result = try await requestPetCore(
+                    method: "generation.reply",
+                    params: ["job_id": generationJobID, "content": content]
+                )
+                let data = try JSONSerialization.data(withJSONObject: result)
+                let messages = try JSONDecoder().decode([GenerationMessage].self, from: data)
+                await applyGenerationMessages(messages)
+                if generationSession.isActive {
+                    _ = reduceGeneration(.resetMessageRevision)
+                    startGenerationMessageStream(jobID: generationJobID)
+                }
+            } catch {
+                _ = reduceGeneration(.replyFailed(restoring: previousState))
+                statusText = "发送失败：\(error.localizedDescription)"
+                generationReplyText = content
+            }
+        }
+    }
+
+    func cancelGeneration() {
+        guard generationSession.canCancel,
+              let generationJobID = generationSession.jobID
+        else {
+            return
+        }
+        _ = reduceGeneration(.cancelRequested)
+        statusText = "正在取消生成"
+        Task {
+            do {
+                let result = try await requestPetCore(method: "generation.cancel", params: ["job_id": generationJobID])
+                let data = try JSONSerialization.data(withJSONObject: result)
+                let messages = try JSONDecoder().decode([GenerationMessage].self, from: data)
+                if !messages.isEmpty {
+                    await applyGenerationMessages(messages)
+                } else {
+                    let effects = reduceGeneration(.cancelConfirmed)
+                    if effects.contains(.refreshSnapshot) {
+                        await refresh()
+                    }
+                }
+                statusText = "已取消生成"
+            } catch {
+                _ = reduceGeneration(.cancelFailed)
+                statusText = "取消失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func openGenerationHistory(for pet: PetSummary) {
+        statusText = "正在打开 \(pet.name) 的生成会话"
+        Task {
+            do {
+                let result = try await requestPetCore(
+                    method: "generation.for_pet",
+                    params: ["pet_id": pet.id]
+                )
+                let data = try JSONSerialization.data(withJSONObject: result)
+                let history = try JSONDecoder().decode(GenerationHistory.self, from: data)
+                guard history.found, let jobID = history.jobId else {
+                    statusText = "\(pet.name) 没有关联的生成会话"
+                    return
+                }
+
+                let restoredState = restoredGenerationState(
+                    status: history.status,
+                    messages: history.messages
+                )
+                let restore = GenerationSessionRestore(
+                    state: restoredState,
+                    jobID: jobID,
+                    submittedForm: history.form,
+                    messages: history.messages,
+                    progress: history.messages.last?.progress ?? (restoredState.isTerminal ? 1 : 0),
+                    messageRevision: ""
+                )
+                _ = reduceGeneration(.restore(restore))
+                generationReplyText = ""
+                selection = .studio
+                studioTab = .new
+                statusText = "已打开 \(pet.name) 的生成会话"
+            } catch {
+                statusText = "打开生成会话失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    @discardableResult
+    private func reduceGeneration(
+        _ action: GenerationSessionAction
+    ) -> GenerationSessionEffects {
+        var next = generationSession
+        let effects = next.reduce(action)
+        generationSession = next
+        if effects.contains(.stopMessageStream) {
+            generationMessagesTask?.cancel()
+        }
+        if effects.contains(.startMessageStream), let jobID = generationSession.jobID {
+            startGenerationMessageStream(jobID: jobID)
+        }
+        return effects
+    }
+
+    private func restoredGenerationState(
+        status: String?,
+        messages: [GenerationMessage]
+    ) -> GenerationSessionState {
+        if GenerationConversation.needsUserInput(messages) {
+            return .waitingForInput
+        }
+        if GenerationConversation.succeeded(messages) {
+            return .succeeded
+        }
+        if GenerationConversation.cancelled(messages) {
+            return .cancelled
+        }
+        if GenerationConversation.failed(messages) {
+            return .failed
+        }
+        return switch status {
+        case "pending": .starting
+        case "running": .running
+        case "waiting_for_user": .waitingForInput
+        case "completed": .succeeded
+        case "failed": .failed
+        case "canceled", "cancelled": .cancelled
+        default: .idle
+        }
+    }
+
+    func updateBehavior(_ next: BehaviorSettings) {
+        let patch = BehaviorSettingsPatch(from: behavior, to: next)
+        guard !patch.isEmpty else { return }
+        behavior = next
+        syncOverlayVisibilityForBehavior()
+        let predecessor = behaviorMutationTask
+        behaviorMutationTask = Task { [weak self] in
+            _ = await predecessor?.value
+            guard let self else { return }
+            await persistBehaviorPatch(patch, optimisticBehavior: next)
+        }
+    }
+
+    private func persistBehaviorPatch(
+        _ patch: BehaviorSettingsPatch,
+        optimisticBehavior: BehaviorSettings
+    ) async {
+        for attempt in 0..<2 {
+            do {
+                let data = try JSONEncoder().encode(patch)
+                let changes = try JSONSerialization.jsonObject(with: data)
+                let result = try await requestPetCore(
+                    method: "behavior.patch",
+                    params: [
+                        "expected_revision": behaviorRevision,
+                        "changes": changes
+                    ]
+                )
+                let resultData = try JSONSerialization.data(withJSONObject: result)
+                let updated = try JSONDecoder().decode(
+                    VersionedBehaviorSettings.self,
+                    from: resultData
+                )
+                behaviorRevision = updated.revision
+                if behavior == optimisticBehavior {
+                    behavior = updated.behavior
+                    syncOverlayVisibilityForBehavior()
+                }
+                statusText = "设置已保存"
+                return
+            } catch let PetCoreClientError.rpcError(message)
+                where attempt == 0 && message.contains("behavior revision conflict") {
+                do {
+                    try await refreshSnapshot()
+                } catch {
+                    statusText = "设置冲突且刷新失败：\(error.localizedDescription)"
+                    return
+                }
+            } catch {
+                statusText = "设置保存失败：\(error.localizedDescription)"
+                try? await refreshSnapshot()
+                return
+            }
+        }
+    }
+
+    private func syncOverlayVisibilityForBehavior() {
+        overlayVisibility = OverlayVisibility(
+            petVisible: behavior.enabled,
+            statusBubbleVisible: behavior.showsStatusBubble(
+                hasActiveEvent: activeAgentState != nil,
+                dismissed: false
+            )
+        )
+        overlayVisible = overlayVisibility.petVisible
+        overlayController.setVisible(overlayVisibility.petVisible)
+        overlayController.updateLayout()
     }
 
     func setSource(_ source: AgentSource, enabled: Bool) {
@@ -140,51 +738,304 @@ final class AppStore: ObservableObject {
     }
 
     func activatePet(_ pet: PetSummary) {
-        pets = pets.map { item in
-            var copy = item
-            copy.active = item.id == pet.id
-            return copy
-        }
+        guard !pet.active else { return }
+        petOperationIDs.insert(pet.id)
+        statusText = "正在启用 \(pet.name)"
         Task {
-            _ = try? await requestPetCore(method: "pet.activate", params: ["id": pet.id])
-            await refresh()
+            defer { petOperationIDs.remove(pet.id) }
+            do {
+                _ = try await requestPetCore(method: "pet.activate", params: ["id": pet.id])
+                try await refreshSnapshot()
+                statusText = "已启用 \(pet.name)"
+            } catch {
+                statusText = "启用失败：\(error.localizedDescription)"
+                await refresh()
+            }
         }
     }
 
     func deletePet(_ pet: PetSummary) {
-        pets.removeAll { $0.id == pet.id }
+        petOperationIDs.insert(pet.id)
+        statusText = "正在删除 \(pet.name)"
         Task {
-            _ = try? await requestPetCore(method: "pet.delete", params: ["id": pet.id])
-            await refresh()
+            defer { petOperationIDs.remove(pet.id) }
+            do {
+                let result = try await requestPetCore(method: "pet.delete", params: ["id": pet.id])
+                try await refreshSnapshot()
+                let deletedAssets = (result as? [String: Any])?["deleted_assets"] as? Bool ?? true
+                statusText = deletedAssets
+                    ? "已删除 \(pet.name)"
+                    : "已删除 \(pet.name)，部分本地资源待下次清理"
+            } catch {
+                statusText = "删除失败：\(error.localizedDescription)"
+                await refresh()
+            }
+        }
+    }
+
+    func importPetpacks() {
+        let panel = NSOpenPanel()
+        panel.title = APCLocalization.text(.libraryImportTitle)
+        panel.prompt = APCLocalization.text(.libraryImportAction)
+        panel.message = APCLocalization.text(.libraryImportMessage)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.resolvesAliases = true
+        panel.canCreateDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.allowedContentTypes = [PetpackImportPolicy.contentType]
+
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls.filter { PetpackImportPolicy.acceptsFileName($0.lastPathComponent) }
+        guard !urls.isEmpty else {
+            statusText = "\(APCLocalization.text(.errorPetpackImportFailed))：\(APCLocalization.text(.libraryImportMessage))"
+            return
+        }
+
+        isImportingPetpack = true
+        statusText = urls.count == 1 ? "正在导入本 App .petpack" : "正在导入 \(urls.count) 个本 App .petpack"
+        Task {
+            defer { isImportingPetpack = false }
+            var importedCount = 0
+            var failures: [String] = []
+
+            for url in urls {
+                do {
+                    _ = try await requestPetCore(
+                        method: "petpack.import",
+                        params: ["path": url.standardizedFileURL.path]
+                    )
+                    importedCount += 1
+                } catch {
+                    failures.append("\(url.lastPathComponent)：\(error.localizedDescription)")
+                }
+            }
+
+            if importedCount > 0 {
+                do {
+                    try await refreshSnapshot()
+                    studioTab = .library
+                } catch {
+                    await refresh()
+                }
+            }
+
+            if failures.isEmpty {
+                statusText = importedCount == 1 ? "已导入本 App .petpack" : "已导入 \(importedCount) 个本 App .petpack"
+            } else if importedCount > 0 {
+                statusText = "已导入 \(importedCount) 个，\(failures.count) 个失败：\(failures[0])"
+            } else {
+                statusText = "导入失败：\(failures.first ?? "请选择有效的本 App .petpack")"
+            }
+        }
+    }
+
+    func exportPet(_ pet: PetSummary) {
+        let sourceURL = URL(fileURLWithPath: pet.petpackPath)
+        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
+            statusText = "导出失败：找不到本 App .petpack"
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "导出本 App .petpack"
+        panel.prompt = "导出"
+        panel.nameFieldStringValue = "\(safeExportName(pet.name)).petpack"
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [PetpackImportPolicy.contentType]
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        do {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            statusText = "已导出 \(destinationURL.lastPathComponent)"
+        } catch {
+            statusText = "导出失败：\(error.localizedDescription)"
         }
     }
 
     func repairConnection(_ source: AgentSource) {
+        connectionOperationSources.insert(source)
+        statusText = "正在修复 \(source.title)"
         Task {
-            _ = try? await requestPetCore(method: "connections.repair", params: ["source": source.rawValue])
-            await refresh()
+            defer { connectionOperationSources.remove(source) }
+            do {
+                let result = try await requestPetCore(method: "connections.repair", params: ["source": source.rawValue])
+                let status = try updateConnectionStatus(from: result)
+                let unresolvedCount = unresolvedConnectionItemCount(status)
+                statusText = unresolvedCount == 0
+                    ? "\(source.title) 修复完成"
+                    : "\(source.title) 修复已执行，仍有 \(unresolvedCount) 项待处理"
+            } catch {
+                statusText = "\(source.title) 修复失败：\(error.localizedDescription)"
+                await refresh()
+            }
+        }
+    }
+
+    func repairConnections(_ sources: [AgentSource]) {
+        let uniqueSources = AgentSource.allCases.filter { sources.contains($0) }
+        guard !uniqueSources.isEmpty else {
+            statusText = "没有需要修复的连接"
+            return
+        }
+        for source in uniqueSources {
+            connectionOperationSources.insert(source)
+        }
+        statusText = "正在修复 \(uniqueSources.count) 个 Agent 连接"
+        Task {
+            defer {
+                for source in uniqueSources {
+                    connectionOperationSources.remove(source)
+                }
+            }
+
+            var repaired: [String] = []
+            var pending: [String] = []
+            var failed: [String] = []
+            for source in uniqueSources {
+                do {
+                    let result = try await requestPetCore(method: "connections.repair", params: ["source": source.rawValue])
+                    let status = try updateConnectionStatus(from: result)
+                    if unresolvedConnectionItemCount(status) == 0 {
+                        repaired.append(source.shortTitle)
+                    } else {
+                        pending.append(source.shortTitle)
+                    }
+                } catch {
+                    failed.append(source.shortTitle)
+                }
+            }
+            sortConnections()
+            if failed.isEmpty && pending.isEmpty {
+                statusText = "连接修复完成：\(repaired.joined(separator: "、"))"
+            } else if failed.isEmpty {
+                statusText = "修复已执行，仍需处理：\(pending.joined(separator: "、"))"
+            } else {
+                statusText = "部分连接修复失败：\(failed.joined(separator: "、"))"
+                await refresh()
+            }
+        }
+    }
+
+    func uninstallConnection(_ source: AgentSource) {
+        connectionOperationSources.insert(source)
+        statusText = "正在卸载 \(source.title)"
+        Task {
+            defer { connectionOperationSources.remove(source) }
+            do {
+                let result = try await requestPetCore(method: "connections.uninstall", params: ["source": source.rawValue])
+                try updateConnectionStatus(from: result)
+                statusText = "\(source.title) 已卸载"
+            } catch {
+                statusText = "\(source.title) 卸载失败：\(error.localizedDescription)"
+                await refresh()
+            }
+        }
+    }
+
+    func uninstallConnections(_ sources: [AgentSource]) {
+        let uniqueSources = AgentSource.allCases.filter { sources.contains($0) }
+        guard !uniqueSources.isEmpty else {
+            statusText = "没有可卸载的连接"
+            return
+        }
+        for source in uniqueSources {
+            connectionOperationSources.insert(source)
+        }
+        statusText = "正在卸载 \(uniqueSources.count) 个 Agent 连接"
+        Task {
+            defer {
+                for source in uniqueSources {
+                    connectionOperationSources.remove(source)
+                }
+            }
+
+            var uninstalled: [String] = []
+            var failed: [String] = []
+            for source in uniqueSources {
+                do {
+                    let result = try await requestPetCore(
+                        method: "connections.uninstall",
+                        params: ["source": source.rawValue]
+                    )
+                    try updateConnectionStatus(from: result)
+                    uninstalled.append(source.shortTitle)
+                } catch {
+                    failed.append(source.shortTitle)
+                }
+            }
+            sortConnections()
+            if failed.isEmpty {
+                statusText = "连接卸载完成：\(uninstalled.joined(separator: "、"))"
+            } else {
+                statusText = "部分连接卸载失败：\(failed.joined(separator: "、"))"
+                await refresh()
+            }
         }
     }
 
     func checkConnection(_ source: AgentSource) {
+        connectionOperationSources.insert(source)
+        statusText = "正在检查 \(source.title)"
         Task {
-            _ = try? await requestPetCore(method: "connections.check", params: ["source": source.rawValue])
-            await refresh()
+            defer { connectionOperationSources.remove(source) }
+            do {
+                let result = try await requestPetCore(method: "connections.check", params: ["source": source.rawValue])
+                try updateConnectionStatus(from: result)
+                statusText = "\(source.title) 检查完成"
+            } catch {
+                statusText = "连接检查失败：\(error.localizedDescription)"
+            }
         }
     }
 
-    func ingestDemoEvent(_ event: AgentEventKind, source: AgentSource = .claudeCode) {
+    func checkAllConnections() {
+        let sources = AgentSource.allCases
+        for source in sources {
+            connectionOperationSources.insert(source)
+        }
+        statusText = "正在检查 \(sources.count) 个 Agent 连接"
         Task {
-            _ = try? await requestPetCore(
-                method: "agent.ingest",
-                params: [
-                    "source": source.rawValue,
-                    "event_type": event.rawValue,
-                    "title": event.title,
-                    "detail": source.title
-                ]
-            )
-            await refresh()
+            defer {
+                for source in sources {
+                    connectionOperationSources.remove(source)
+                }
+            }
+            do {
+                let result = try await requestPetCore(method: "connections.check")
+                let data = try JSONSerialization.data(withJSONObject: result)
+                connections = try JSONDecoder().decode([AgentConnectionStatus].self, from: data)
+                sortConnections()
+                statusText = "连接检查完成"
+            } catch {
+                statusText = "连接检查失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func sendConnectionTestEvent(_ source: AgentSource) {
+        connectionOperationSources.insert(source)
+        statusText = "正在发送 \(source.title) 测试事件"
+        Task {
+            defer { connectionOperationSources.remove(source) }
+            do {
+                let result = try await requestPetCore(
+                    method: "connections.test",
+                    params: ["source": source.rawValue]
+                )
+                let triggered = (result as? [String: Any])?["triggered"] as? Bool ?? false
+                await refresh()
+                statusText = triggered
+                    ? "\(source.title) 测试事件已触发桌宠"
+                    : "\(source.title) 测试事件已写入，当前响应过滤未触发"
+            } catch {
+                statusText = "\(source.title) 测试事件失败：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -196,16 +1047,387 @@ final class AppStore: ObservableObject {
 
     func resizeOverlay(delta: CGSize) {
         let change = (delta.width + delta.height) / 420
-        overlayScale = min(1.8, max(0.65, overlayScale + change))
-        overlayController.updateScale(overlayScale)
+        setOverlayScale(overlayScale + change)
     }
 
-    private func requestPetCore(method: String, params: Any = [:]) async throws -> Any {
-        let client = self.client
+    func updateOverlayPlacement(frame: CGRect, visibleFrame: CGRect?) {
+        recordOverlayPanelFrame(frame, visibleFrame: visibleFrame)
+        ensureOverlayPetPosition(in: overlayScreenVisibleFrame)
+    }
+
+    func recordOverlayPanelFrame(_ frame: CGRect, visibleFrame: CGRect?) {
+        let nextVisibleFrame = visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+        if !rect(overlayScreenFrame, nearlyEquals: frame) {
+            overlayScreenFrame = frame
+        }
+        if !rect(overlayScreenVisibleFrame, nearlyEquals: nextVisibleFrame) {
+            overlayScreenVisibleFrame = nextVisibleFrame
+        }
+    }
+
+    func moveOverlayPet(to proposedCenter: CGPoint, visibleFrame: CGRect?, commit: Bool = true) {
+        let targetScreen = screen(containing: proposedCenter)
+            ?? screen(matchingVisibleFrame: visibleFrame)
+            ?? screen(containing: overlayPetScreenCenter)
+            ?? NSScreen.main
+        let targetVisibleFrame = targetScreen?.visibleFrame ?? visibleFrame ?? overlayScreenVisibleFrame
+        guard !targetVisibleFrame.isEmpty else {
+            overlayPetScreenCenter = proposedCenter
+            overlayPetPositionInitialized = true
+            return
+        }
+        overlayScreenVisibleFrame = targetVisibleFrame
+        overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
+            proposedCenter,
+            scale: overlayScale,
+            visibleFrame: targetVisibleFrame,
+            clickMenuEnabled: behavior.clickMenu
+        )
+        overlayPetPositionInitialized = true
+        if commit {
+            overlayController.updateLayout()
+            scheduleOverlayPlacementSave()
+        } else {
+            overlayController.updateLayoutDuringInteraction()
+        }
+    }
+
+    func ensureOverlayPetPosition(in visibleFrame: CGRect) {
+        guard !visibleFrame.isEmpty else { return }
+        if overlayPetPositionInitialized {
+            overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
+                overlayPetScreenCenter,
+                scale: overlayScale,
+                visibleFrame: visibleFrame,
+                clickMenuEnabled: behavior.clickMenu
+            )
+        } else {
+            overlayPetScreenCenter = OverlayGeometry.defaultPetScreenCenter(
+                in: visibleFrame,
+                scale: overlayScale
+            )
+            overlayPetPositionInitialized = true
+        }
+    }
+
+    func resizeOverlay(from initialScale: CGFloat, translation: CGSize, commit: Bool = true) {
+        let change = (translation.width + translation.height) / 520
+        setOverlayScale(initialScale + change, commit: commit)
+    }
+
+    func resizeOverlay(from initialScale: CGFloat, screenTranslation: CGSize, commit: Bool = true) {
+        let change = (screenTranslation.width + screenTranslation.height) / 520
+        setOverlayScale(initialScale + change, commit: commit)
+    }
+
+    func setOverlayScale(_ scale: CGFloat, commit: Bool = true) {
+        overlayScale = OverlayGeometry.clampedScale(scale)
+        if commit {
+            let visibleFrame = screen(containing: overlayPetScreenCenter)?.visibleFrame ?? overlayScreenVisibleFrame
+            ensureOverlayPetPosition(in: visibleFrame)
+            overlayController.updateScale(overlayScale)
+            scheduleOverlayPlacementSave()
+        } else {
+            overlayController.updateScaleDuringInteraction(overlayScale)
+        }
+    }
+
+    func adjustOverlayScale(by step: CGFloat) {
+        setOverlayScale(overlayScale + step)
+    }
+
+    func updateOverlayLayout() {
+        overlayController.updateLayout()
+    }
+
+    func dismissOverlayBubble(eventID: String) {
+        if eventID == OverlayBubbleContent.idle.id {
+            overlayBubbleDismissed = true
+        } else {
+            overlayDismissedBubbleEventIDs.insert(eventID)
+        }
+        overlayController.updateLayout()
+    }
+
+    func dismissAllOverlayBubbles() {
+        overlayBubbleDismissed = true
+        overlayController.updateLayout()
+    }
+
+    func setOverlayPointerNearPet(_ value: Bool) {
+        if overlayPointerNearPet != value {
+            overlayPointerNearPet = value
+            overlayController.refreshPointerPassthrough()
+        }
+    }
+
+    func setOverlayPetDragInProgress(_ value: Bool) {
+        if overlayPetDragInProgress != value {
+            overlayPetDragInProgress = value
+            overlayController.updateLayoutDuringInteraction()
+            overlayController.refreshPointerPassthrough()
+        }
+    }
+
+    func setOverlayResizeInProgress(_ value: Bool) {
+        if overlayResizeInProgress != value {
+            overlayResizeInProgress = value
+            overlayController.updateLayoutDuringInteraction()
+            overlayController.refreshPointerPassthrough()
+        }
+    }
+
+    private func rect(_ lhs: CGRect, nearlyEquals rhs: CGRect, tolerance: CGFloat = 0.5) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) <= tolerance
+            && abs(lhs.origin.y - rhs.origin.y) <= tolerance
+            && abs(lhs.size.width - rhs.size.width) <= tolerance
+            && abs(lhs.size.height - rhs.size.height) <= tolerance
+    }
+
+    func chooseReferenceImages() {
+        guard !generationSession.isActive else {
+            statusText = "活动任务的参考图已冻结"
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "选择参考图"
+        panel.prompt = "选择"
+        panel.message = "选择用于角色形象或风格参考的图片"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image]
+
+        guard panel.runModal() == .OK else { return }
+        addReferenceImageURLs(panel.urls)
+    }
+
+    func addReferenceImageURLs(_ urls: [URL]) {
+        guard !generationSession.isActive else {
+            statusText = "活动任务的参考图已冻结"
+            return
+        }
+        var existing = Set(referenceImages)
+        let imagePaths = urls
+            .filter(Self.isSupportedImageURL)
+            .map { $0.standardizedFileURL.path }
+        var addedCount = 0
+
+        for path in imagePaths where !existing.contains(path) {
+            referenceImages.append(path)
+            existing.insert(path)
+            addedCount += 1
+        }
+
+        if imagePaths.isEmpty {
+            statusText = "请选择图片文件"
+        } else if addedCount == 0 {
+            statusText = "参考图已在列表中"
+        } else {
+            statusText = "已添加 \(addedCount) 张参考图"
+        }
+    }
+
+    func removeReferenceImage(_ path: String) {
+        guard !generationSession.isActive else {
+            statusText = "活动任务的参考图已冻结"
+            return
+        }
+        referenceImages.removeAll { $0 == path }
+        statusText = "已移除参考图"
+    }
+
+    private static func isSupportedImageURL(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path)
+        else {
+            return false
+        }
+        let fileExtension = url.pathExtension.lowercased()
+        if let type = UTType(filenameExtension: fileExtension), type.conforms(to: .image) {
+            return true
+        }
+        return ["png", "jpg", "jpeg", "heic", "webp", "gif", "tiff", "bmp"].contains(fileExtension)
+    }
+
+    private func safeExportName(_ name: String) -> String {
+        let illegalCharacters = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        let cleaned = name
+            .components(separatedBy: illegalCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "AgentPet" : cleaned
+    }
+
+    private func applyOverlayPlacement(_ placement: OverlayPlacement) {
+        isApplyingOverlayPlacement = true
+        defer {
+            isApplyingOverlayPlacement = false
+            overlayPlacementLoaded = true
+        }
+
+        let persistedCenter = CGPoint(x: placement.x, y: placement.y)
+        let screen = screen(matchingDisplayID: placement.displayId)
+            ?? screen(containing: persistedCenter)
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        let visibleFrame = screen?.visibleFrame
+            ?? (overlayScreenVisibleFrame.isEmpty ? .zero : overlayScreenVisibleFrame)
+        guard !visibleFrame.isEmpty else { return }
+
+        let persistedScale = CGFloat(placement.scale)
+        let targetScale = OverlayGeometry.resolvedInitialScale(
+            persistedScale: persistedScale,
+            hasPersistedPosition: persistedCenter != .zero
+        )
+        overlayScale = targetScale
+
+        if persistedCenter == .zero {
+            overlayPetScreenCenter = OverlayGeometry.defaultPetScreenCenter(
+                in: visibleFrame,
+                scale: targetScale
+            )
+        } else {
+            overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
+                persistedCenter,
+                scale: targetScale,
+                visibleFrame: visibleFrame,
+                clickMenuEnabled: behavior.clickMenu
+            )
+        }
+        overlayPetPositionInitialized = true
+        overlayController.updateScale(targetScale)
+
+        let normalizedPlacement = currentOverlayPlacement()
+        Task { [weak self] in
+            await self?.saveOverlayPlacement(normalizedPlacement)
+        }
+    }
+
+    private func shouldApplyRemoteOverlayPlacement(_ placement: OverlayPlacement) -> Bool {
+        guard overlayPlacementLoaded, !isApplyingOverlayPlacement else { return false }
+        guard !overlayPetDragInProgress, !overlayResizeInProgress else { return false }
+
+        let current = currentOverlayPlacement()
+        let positionChanged = abs(current.x - placement.x) > 0.5
+            || abs(current.y - placement.y) > 0.5
+        let scaleChanged = abs(current.scale - placement.scale) > 0.0001
+        return positionChanged || scaleChanged || current.displayId != placement.displayId
+    }
+
+    private func scheduleOverlayPlacementSave() {
+        guard overlayPlacementLoaded && !isApplyingOverlayPlacement else { return }
+        let placement = currentOverlayPlacement()
+        overlayPlacementSaveTask?.cancel()
+        overlayPlacementSaveTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+            await self?.saveOverlayPlacement(placement)
+        }
+    }
+
+    private func saveOverlayPlacement(_ placement: OverlayPlacement) async {
+        do {
+            let data = try JSONEncoder().encode(placement)
+            let object = try JSONSerialization.jsonObject(with: data)
+            _ = try await requestPetCore(method: "overlay.placement.update", params: object)
+        } catch {
+            statusText = "桌宠位置保存失败"
+        }
+    }
+
+    @discardableResult
+    private func updateConnectionStatus(from result: Any) throws -> AgentConnectionStatus {
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let status = try JSONDecoder().decode(AgentConnectionStatus.self, from: data)
+        connections.removeAll { $0.source == status.source }
+        connections.append(status)
+        sortConnections()
+        return status
+    }
+
+    private func unresolvedConnectionItemCount(_ status: AgentConnectionStatus) -> Int {
+        status.items.filter { $0.status != .ok }.count
+    }
+
+    private func sortConnections() {
+        connections.sort {
+            let lhs = AgentSource.allCases.firstIndex(of: $0.source) ?? 0
+            let rhs = AgentSource.allCases.firstIndex(of: $1.source) ?? 0
+            return lhs < rhs
+        }
+    }
+
+    private func mergedConnectionSnapshot(_ snapshotConnections: [AgentConnectionStatus]) -> [AgentConnectionStatus] {
+        let existingRuntime = Dictionary(
+            uniqueKeysWithValues: connections
+                .filter { $0.checkMode == .runtime }
+                .map { ($0.source, $0) }
+        )
+
+        return snapshotConnections.map { incoming in
+            let lightCheckFoundNoIssues = incoming.checkMode == .light
+                && incoming.items.allSatisfy { $0.status == .ok }
+            if lightCheckFoundNoIssues, let runtime = existingRuntime[incoming.source] {
+                return runtime
+            }
+            return incoming
+        }
+    }
+
+    private func currentOverlayPlacement() -> OverlayPlacement {
+        OverlayPlacement(
+            x: Double(overlayPetScreenCenter.x),
+            y: Double(overlayPetScreenCenter.y),
+            scale: Double(overlayScale),
+            displayId: currentDisplayID(for: overlayPetScreenCenter)
+        )
+    }
+
+    private func currentDisplayID(for point: CGPoint) -> String {
+        let screen = screen(containing: point) ?? NSScreen.main
+        let number = screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        return number?.stringValue ?? "main"
+    }
+
+    private func screen(containing point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(point) }
+    }
+
+    private func screen(matchingDisplayID displayID: String) -> NSScreen? {
+        if displayID == "main" {
+            return NSScreen.main
+        }
+        return NSScreen.screens.first { screen in
+            let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            return number?.stringValue == displayID
+        }
+    }
+
+    private func screen(matchingVisibleFrame visibleFrame: CGRect?) -> NSScreen? {
+        guard let visibleFrame, !visibleFrame.isEmpty else { return nil }
+        return NSScreen.screens.first { screen in
+            screen.visibleFrame == visibleFrame || screen.visibleFrame.intersects(visibleFrame)
+        }
+    }
+
+    private func requestPetCore(
+        method: String,
+        params: Any = [:],
+        timeout: Duration = .seconds(5)
+    ) async throws -> Any {
         let paramsData = try JSONSerialization.data(withJSONObject: params)
-        let responseData = try await Task.detached(priority: .userInitiated) {
-            try client.requestData(method: method, paramsJSONData: paramsData)
-        }.value
+        let responseData = try await client.requestData(
+            method: method,
+            paramsJSONData: paramsData,
+            timeout: timeout
+        )
         guard
             let object = try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
         else {
@@ -219,20 +1441,39 @@ final class AppStore: ObservableObject {
 }
 
 private struct StateSnapshot: Codable {
+    var revision: String?
+    var changed: Bool?
     var behavior: BehaviorSettings
+    var behaviorRevision: String?
+    var overlayPlacement: OverlayPlacement?
     var pets: [PetSummary]
+    var petAssetWarnings: [PetAssetWarning]?
+    var activeGeneration: ActiveGenerationSnapshot?
+    var activeAgentState: ActiveAgentState?
+    var overlayVisibility: OverlayVisibility?
     var events: [AgentEvent]
+    var recentEvents: [AgentEvent]?
     var connections: [AgentConnectionStatus]
+
+    enum CodingKeys: String, CodingKey {
+        case revision
+        case changed
+        case behavior
+        case behaviorRevision = "behavior_revision"
+        case overlayPlacement = "overlay_placement"
+        case pets
+        case petAssetWarnings = "pet_asset_warnings"
+        case activeGeneration = "active_generation"
+        case activeAgentState = "active_agent_state"
+        case overlayVisibility = "overlay_visibility"
+        case events
+        case recentEvents = "recent_events"
+        case connections
+    }
 }
 
-enum DemoData {
-    static let pets: [PetSummary] = [
-        PetSummary(id: "demo_cloud", name: "Cloud Maiden", style: "半写实", quality: .ultra, renderSize: .init(width: 768, height: 832), petpackPath: "", coverPath: "", active: true, createdAt: "2026-07-07T00:00:00Z"),
-        PetSummary(id: "demo_pixel", name: "Pixel Mochi", style: "像素", quality: .high, renderSize: .init(width: 384, height: 416), petpackPath: "", coverPath: "", active: false, createdAt: "2026-07-07T00:00:00Z"),
-        PetSummary(id: "demo_neon", name: "Neon Cat", style: "现代", quality: .high, renderSize: .init(width: 384, height: 416), petpackPath: "", coverPath: "", active: false, createdAt: "2026-07-07T00:00:00Z")
-    ]
-
-    static let initialMessages = [
-        GenerationMessage(role: "assistant", content: "内置 Skill 待启动。填写左侧表单后，后续制作流程在这里完成。", progress: 0, createdAt: "")
-    ]
+private struct GenerationMessagesSnapshot: Codable {
+    var revision: String?
+    var changed: Bool?
+    var messages: [GenerationMessage]
 }

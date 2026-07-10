@@ -1,0 +1,6 @@
+{
+  "session_id": "claude-session-prompt",
+  "hook_event_name": "UserPromptSubmit",
+  "cwd": "/private/tmp/project",
+  "prompt": "claude-secret-prompt-do-not-persist"
+}

@@ -1,0 +1,8 @@
+{
+  "type": "permission.replied",
+  "properties": {
+    "sessionID": "opencode-session-permission",
+    "permissionID": "permission-secret-id",
+    "response": "once"
+  }
+}

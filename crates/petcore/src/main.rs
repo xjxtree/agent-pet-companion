@@ -19,7 +19,9 @@ fn run() -> petcore::Result<()> {
                 match arg.as_str() {
                     "--home" => {
                         let home = args.next().ok_or_else(|| {
-                            petcore::PetCoreError::InvalidRequest("--home requires a path".to_string())
+                            petcore::PetCoreError::InvalidRequest(
+                                "--home requires a path".to_string(),
+                            )
                         })?;
                         std::env::set_var("APC_HOME", home);
                     }
@@ -38,6 +40,7 @@ fn run() -> petcore::Result<()> {
         }
         "init" => {
             let paths = AppPaths::from_env()?;
+            let _instance_guard = daemon::instance_lock::InstanceGuard::acquire(&paths)?;
             paths.ensure()?;
             petcore::db::Database::new(paths.db_path).init()?;
             Ok(())

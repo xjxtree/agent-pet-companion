@@ -1,0 +1,7 @@
+{
+  "name": "agent-pet-companion",
+  "version": "0.1.0",
+  "description": "Forward supported Codex lifecycle states to Agent Pet Companion.",
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/"
+}

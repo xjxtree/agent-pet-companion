@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Rust, Swift, schemas and packaging
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      APC_VALIDATE_HOST_UI: "0"
+      APC_VALIDATE_OVERLAY_RUNTIME: "0"
+      APC_VALIDATE_OVERLAY_INTERACTION: "0"
+      APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
+      APC_VALIDATE_REAL_APP_SERVER: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Xcode and Swift baseline
+        run: |
+          xcodebuild -version
+          swift --version
+          test "$(xcodebuild -version | awk '/Xcode/{print int($2)}')" -ge 16
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust and Swift build products
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-
+
+      - name: Validate default test isolation
+        run: ./script/validate_test_isolation.sh
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run strict Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+      - name: Run Swift tests
+        working-directory: apps/macos
+        run: swift test
+
+      - name: Validate JSON Schema fixtures
+        run: ./script/validate_schema_fixtures.sh
+
+      - name: Check shell and Python syntax
+        run: ./script/validate_source_syntax.sh
+
+      - name: Build and validate development app bundle
+        run: ./script/build_app_bundle.sh --configuration debug
+
+      - name: Validate build-script safety and bundle
+        run: |
+          ./script/validate_build_scripts_safety.sh
+          ./script/validate_app_bundle.sh --development
+
+      - name: Reject tracked build output and caches
+        run: |
+          if git ls-files | grep -E '(^|/)(__pycache__/|[^/]+\.py[co]$|DerivedData/|target/|\.build/|[^/]+\.petpack$|generation-jobs/)'; then
+            echo 'Tracked generated output or cache detected' >&2
+            exit 1
+          fi
+
+      - name: Verify clean generated state
+        run: git diff --check

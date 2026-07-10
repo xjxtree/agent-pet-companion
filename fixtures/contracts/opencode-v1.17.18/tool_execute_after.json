@@ -1,0 +1,18 @@
+{
+  "type": "tool.execute.after",
+  "input": {
+    "tool": "bash",
+    "sessionID": "opencode-session-tool",
+    "callID": "opencode-secret-call-id",
+    "args": {
+      "command": "TOKEN=opencode-secret-command-do-not-persist"
+    }
+  },
+  "output": {
+    "title": "Bash",
+    "output": "opencode-secret-output-do-not-persist",
+    "metadata": {
+      "exit": 0
+    }
+  }
+}

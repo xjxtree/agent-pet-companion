@@ -5,68 +5,20 @@ struct BehaviorSettingsView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        PageScroll {
             HeaderView(title: "启用与行为", subtitle: "控制宠物何时响应") {
-                SecondaryActionButton(title: "触发演示事件", systemImage: "bolt.fill") {
-                    store.ingestDemoEvent(.tool)
-                }
+                EmptyView()
             }
 
-            HStack(alignment: .top, spacing: 18) {
-                Surface {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("启用")
-                            .font(.title3.bold())
-                        SettingToggle(title: "启用桌宠", detail: "显示当前宠物悬浮层", value: store.behavior.enabled) { value in
-                            var next = store.behavior
-                            next.enabled = value
-                            store.updateBehavior(next)
-                        }
-                        SettingToggle(title: "状态气泡", detail: "显示简短任务状态", value: store.behavior.statusBubble) { value in
-                            var next = store.behavior
-                            next.statusBubble = value
-                            store.updateBehavior(next)
-                        }
-                        SettingToggle(title: "点击菜单", detail: "点击宠物打开快捷菜单", value: store.behavior.clickMenu) { value in
-                            var next = store.behavior
-                            next.clickMenu = value
-                            store.updateBehavior(next)
-                        }
-                        Divider()
-                        Text("桌宠交互")
-                            .font(.headline)
-                        HStack(spacing: 10) {
-                            InteractionTile(title: "拖动", detail: "移动位置", systemImage: "hand.draw")
-                            InteractionTile(title: "悬停", detail: "显示缩放手柄", systemImage: "cursorarrow.motionlines")
-                            InteractionTile(title: "缩放", detail: "右下角拖拽", systemImage: "arrow.up.left.and.arrow.down.right")
-                        }
-                        Divider()
-                        Picker("帧率", selection: Binding(
-                            get: { store.behavior.fpsProfile },
-                            set: { profile in
-                                var next = store.behavior
-                                next.fpsProfile = profile
-                                store.updateBehavior(next)
-                            }
-                        )) {
-                            ForEach(FpsProfile.allCases) { profile in
-                                Text("\(profile.title) · \(profile.fps) FPS").tag(profile)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 18) {
+                    enableSurface
+                    sourcesSurface
                 }
 
-                Surface {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("响应来源")
-                            .font(.title3.bold())
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                            ForEach(AgentSource.allCases) { source in
-                                SourceToggle(source: source)
-                            }
-                        }
-                    }
+                VStack(alignment: .leading, spacing: 18) {
+                    enableSurface
+                    sourcesSurface
                 }
             }
 
@@ -74,7 +26,7 @@ struct BehaviorSettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("响应事件")
                         .font(.title3.bold())
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
                         ForEach(AgentEventKind.allCases) { event in
                             EventToggle(event: event)
                         }
@@ -82,8 +34,80 @@ struct BehaviorSettingsView: View {
                 }
             }
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 28)
+    }
+
+    private var enableSurface: some View {
+        Surface {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("启用")
+                    .font(.title3.bold())
+                SettingToggle(title: "启用桌宠", detail: "显示当前宠物悬浮层", value: store.behavior.enabled) { value in
+                    var next = store.behavior
+                    next.enabled = value
+                    store.updateBehavior(next)
+                }
+                SettingToggle(title: "状态气泡", detail: "显示简短任务状态", value: store.behavior.statusBubble) { value in
+                    var next = store.behavior
+                    next.statusBubble = value
+                    store.updateBehavior(next)
+                }
+                SettingToggle(title: "自动收起气泡", detail: "空闲时隐藏气泡，有事件时自动显示", value: store.behavior.autoHide) { value in
+                    var next = store.behavior
+                    next.autoHide = value
+                    store.updateBehavior(next)
+                }
+                SettingToggle(title: "点击菜单", detail: "点击宠物打开快捷菜单", value: store.behavior.clickMenu) { value in
+                    var next = store.behavior
+                    next.clickMenu = value
+                    store.updateBehavior(next)
+                }
+                SettingToggle(title: "透明区域穿透", detail: "桌宠周围空白不拦截其他 App", value: store.behavior.mousePassthrough) { value in
+                    var next = store.behavior
+                    next.mousePassthrough = value
+                    store.updateBehavior(next)
+                }
+                Divider()
+                Text("桌宠交互")
+                    .font(.headline)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 10)], spacing: 10) {
+                    InteractionTile(title: "拖动", detail: "移动位置", systemImage: "hand.draw")
+                    InteractionTile(title: "悬停", detail: "显示缩放手柄", systemImage: "cursorarrow.motionlines")
+                    InteractionTile(title: "缩放", detail: "右下角拖拽", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                Divider()
+                Picker("帧率", selection: Binding(
+                    get: { store.behavior.fpsProfile },
+                    set: { profile in
+                        var next = store.behavior
+                        next.fpsProfile = profile
+                        store.updateBehavior(next)
+                    }
+                )) {
+                    ForEach(FpsProfile.allCases) { profile in
+                        Text("\(profile.title) · \(profile.fps) FPS").tag(profile)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityLabel("桌宠动画帧率")
+                .accessibilityValue("\(store.behavior.fpsProfile.title)，\(store.behavior.fpsProfile.fps) FPS")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var sourcesSurface: some View {
+        Surface {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("响应来源")
+                    .font(.title3.bold())
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
+                    ForEach(AgentSource.allCases) { source in
+                        SourceToggle(source: source)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -98,14 +122,23 @@ struct SettingToggle: View {
             onChange(newValue)
         })) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
+                HStack {
+                    Text(title)
+                        .font(.headline)
+                    Spacer()
+                    Text(UIControlSemantics.toggleValue(isOn: value))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .toggleStyle(.switch)
+        .tint(APCDesign.accent)
+        .accessibilityLabel(title)
+        .accessibilityValue(UIControlSemantics.toggleValue(isOn: value))
         .padding(.vertical, 6)
         .overlay(alignment: .bottom) { Divider() }
     }
@@ -148,12 +181,15 @@ struct SourceToggle: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(source.title)
                     .font(.headline)
-                Text(store.behavior.sources[source, default: true] ? "已连接" : "已关闭")
+                Text("\(UIControlSemantics.toggleValue(isOn: isEnabled)) · \(sourceDetail)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .toggleStyle(.switch)
+        .tint(APCDesign.accent)
+        .accessibilityLabel(UIControlSemantics.sourceLabel(source))
+        .accessibilityValue("\(UIControlSemantics.toggleValue(isOn: isEnabled))，\(sourceDetail)")
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -161,6 +197,28 @@ struct SourceToggle: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
         )
     }
+
+    private var isEnabled: Bool {
+        store.behavior.sources[source, default: true]
+    }
+
+    private var sourceDetail: String {
+        guard let status = store.connections.first(where: { $0.source == source }) else {
+            return "连接待检查"
+        }
+        let badItems = status.items.filter { $0.status != .ok }
+        guard !badItems.isEmpty else {
+            if status.checkMode == .light {
+                return "待完整检查"
+            }
+            return "连接正常"
+        }
+        if badItems.contains(where: { $0.status == .missing }) {
+            return "未检测到"
+        }
+        return "需修复"
+    }
+
 }
 
 struct EventToggle: View {
@@ -168,23 +226,22 @@ struct EventToggle: View {
     var event: AgentEventKind
 
     var body: some View {
-        HStack {
-            Button {
-                store.ingestDemoEvent(event)
-            } label: {
-                Image(systemName: "play.fill")
-                    .foregroundStyle(APCDesign.accent)
+        Toggle(isOn: Binding(
+            get: { isEnabled },
+            set: { store.setEvent(event, enabled: $0) }
+        )) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title)
+                    .font(.headline)
+                Text(UIControlSemantics.toggleValue(isOn: isEnabled))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            Text(event.title)
-                .font(.headline)
-            Spacer()
-            Toggle("", isOn: Binding(
-                get: { store.behavior.events[event, default: true] },
-                set: { store.setEvent(event, enabled: $0) }
-            ))
-            .toggleStyle(.switch)
         }
+        .toggleStyle(.switch)
+        .tint(APCDesign.accent)
+        .accessibilityLabel(UIControlSemantics.eventLabel(event))
+        .accessibilityValue(UIControlSemantics.toggleValue(isOn: isEnabled))
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(
@@ -192,5 +249,9 @@ struct EventToggle: View {
                 .fill(Color(nsColor: .controlBackgroundColor))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
         )
+    }
+
+    private var isEnabled: Bool {
+        store.behavior.events[event, default: true]
     }
 }
