@@ -25,7 +25,7 @@ jobs:
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify Xcode and Swift baseline
         run: |
