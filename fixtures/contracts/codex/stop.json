@@ -1,0 +1,6 @@
+{
+  "session_id": "codex-session-stop",
+  "hook_event_name": "Stop",
+  "cwd": "/private/tmp/project",
+  "stop_hook_active": false
+}

@@ -1,0 +1,5 @@
+{
+  "session_id": "claude-session-api-failure",
+  "hook_event_name": "StopFailure",
+  "error": "claude-secret-api-error-do-not-persist"
+}

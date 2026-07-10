@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/agent-event-ingest.schema.json",
+  "title": "Agent Pet Companion Strict Event Ingest",
+  "description": "The fail-closed boundary accepted by agent.ingest after a raw hook adapter has discarded prompts, arguments, commands, outputs, transcripts, environment data, and other arbitrary fields. Deprecated title/detail and payload_json aliases are type-checked but normalized again and never trusted as display or persisted vocabulary.",
+  "type": "object",
+  "required": ["source", "event_type"],
+  "properties": {
+    "id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+    "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
+    "project_path": { "type": ["string", "null"] },
+    "session_id": { "type": ["string", "null"], "maxLength": 256 },
+    "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
+    "title": { "type": ["string", "null"], "deprecated": true },
+    "detail": { "type": ["string", "null"], "deprecated": true },
+    "payload": { "$ref": "#/$defs/strictEnvelopeInput" },
+    "payload_json": { "$ref": "#/$defs/strictEnvelopeInput", "deprecated": true },
+    "created_at": { "type": "string" }
+  },
+  "not": { "required": ["payload", "payload_json"] },
+  "additionalProperties": false,
+  "$defs": {
+    "strictEnvelopeInput": {
+      "type": "object",
+      "properties": {
+        "schema_version": { "const": "apc.agent-event.v1" },
+        "external_event_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+        "source_event": { "type": ["string", "null"] },
+        "tool_name": { "type": ["string", "null"] },
+        "outcome": { "type": ["string", "null"] },
+        "diagnostic": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

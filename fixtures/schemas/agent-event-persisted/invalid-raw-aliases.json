@@ -1,0 +1,18 @@
+{
+  "id": "normalized-event-invalid-1",
+  "source": "pi",
+  "project_path": null,
+  "session_id": null,
+  "event_type": "failed",
+  "title": "RAW_TITLE_ALIAS_SENTINEL",
+  "detail": "RAW_DETAIL_ALIAS_SENTINEL",
+  "payload_json": {
+    "schema_version": "apc.agent-event.v1",
+    "external_event_id": "normalized-event-invalid-1",
+    "source_event": "RAW_SOURCE_EVENT_ALIAS_SENTINEL",
+    "tool_name": "RAW_TOOL_NAME_ALIAS_SENTINEL",
+    "outcome": "RAW_OUTCOME_ALIAS_SENTINEL",
+    "diagnostic": true
+  },
+  "created_at": "2026-07-10T00:00:00Z"
+}

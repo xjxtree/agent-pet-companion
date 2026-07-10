@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/agent-hook-input.schema.json",
+  "title": "Agent Pet Companion Raw Hook Input",
+  "description": "Untrusted, source-specific hook input. It exists only inside an adapter process and must be converted to the strict ingest schema before crossing into PetCore.",
+  "type": "object",
+  "additionalProperties": true
+}

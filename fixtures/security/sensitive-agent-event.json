@@ -1,0 +1,25 @@
+{
+  "id": "external-sensitive-event-1",
+  "session_id": "session-security-1",
+  "event_type": "tool",
+  "title": "Running a bounded tool",
+  "detail": "shell",
+  "payload": {
+    "source_event": "PostToolUse",
+    "tool_name": "shell",
+    "outcome": "completed",
+    "diagnostic": false,
+    "prompt": "FORBIDDEN_PROMPT_VALUE_7f16",
+    "tool_input": {
+      "command": "FORBIDDEN_COMMAND_VALUE_b8c2",
+      "env": {
+        "API_KEY": "FORBIDDEN_API_KEY_VALUE_4a91"
+      }
+    },
+    "tool_response": {
+      "output": "FORBIDDEN_TOOL_RESPONSE_VALUE_19df"
+    },
+    "transcript_path": "/tmp/FORBIDDEN_TRANSCRIPT_PATH_82e1.jsonl",
+    "output": "FORBIDDEN_ARBITRARY_OUTPUT_VALUE_d611"
+  }
+}

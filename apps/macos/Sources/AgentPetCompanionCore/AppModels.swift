@@ -57,6 +57,10 @@ public enum StylePreset: String, CaseIterable, Identifiable, Codable, Sendable {
     public var id: String { rawValue }
 }
 
+public enum PetStudioDefaults {
+    public static let descriptionText = ""
+}
+
 public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable {
     case standard
     case high
@@ -190,7 +194,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         enabled: Bool = true,
         statusBubble: Bool = true,
         clickMenu: Bool = true,
-        mousePassthrough: Bool = false,
+        mousePassthrough: Bool = true,
         autoHide: Bool = false,
         fpsProfile: FpsProfile = .standard,
         sources: [AgentSource: Bool] = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { ($0, true) }),
@@ -219,21 +223,22 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try container.decode(Bool.self, forKey: .enabled)
-        statusBubble = try container.decode(Bool.self, forKey: .statusBubble)
-        clickMenu = try container.decode(Bool.self, forKey: .clickMenu)
-        mousePassthrough = try container.decode(Bool.self, forKey: .mousePassthrough)
-        autoHide = try container.decode(Bool.self, forKey: .autoHide)
-        fpsProfile = try container.decode(FpsProfile.self, forKey: .fpsProfile)
+        let defaults = BehaviorSettings()
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
+        statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble) ?? defaults.statusBubble
+        clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu) ?? defaults.clickMenu
+        mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough) ?? defaults.mousePassthrough
+        autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide) ?? defaults.autoHide
+        fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile) ?? defaults.fpsProfile
 
-        let rawSources = try container.decode([String: Bool].self, forKey: .sources)
+        let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources) ?? [:]
         sources = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { source in
-            (source, rawSources[source.rawValue] ?? false)
+            (source, rawSources[source.rawValue] ?? defaults.sources[source, default: true])
         })
 
-        let rawEvents = try container.decode([String: Bool].self, forKey: .events)
+        let rawEvents = try container.decodeIfPresent([String: Bool].self, forKey: .events) ?? [:]
         events = Dictionary(uniqueKeysWithValues: AgentEventKind.allCases.map { event in
-            (event, rawEvents[event.rawValue] ?? false)
+            (event, rawEvents[event.rawValue] ?? defaults.events[event, default: true])
         })
     }
 
@@ -254,6 +259,107 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
             forKey: .events
         )
     }
+
+    public func showsStatusBubble(hasActiveEvent: Bool, dismissed: Bool) -> Bool {
+        enabled && statusBubble && !dismissed && (!autoHide || hasActiveEvent)
+    }
+}
+
+public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
+    public var enabled: Bool?
+    public var statusBubble: Bool?
+    public var clickMenu: Bool?
+    public var mousePassthrough: Bool?
+    public var autoHide: Bool?
+    public var fpsProfile: FpsProfile?
+    public var sources: [AgentSource: Bool]?
+    public var events: [AgentEventKind: Bool]?
+
+    public init(from previous: BehaviorSettings, to next: BehaviorSettings) {
+        enabled = previous.enabled == next.enabled ? nil : next.enabled
+        statusBubble = previous.statusBubble == next.statusBubble ? nil : next.statusBubble
+        clickMenu = previous.clickMenu == next.clickMenu ? nil : next.clickMenu
+        mousePassthrough = previous.mousePassthrough == next.mousePassthrough
+            ? nil
+            : next.mousePassthrough
+        autoHide = previous.autoHide == next.autoHide ? nil : next.autoHide
+        fpsProfile = previous.fpsProfile == next.fpsProfile ? nil : next.fpsProfile
+        let changedSources = next.sources.filter { previous.sources[$0.key] != $0.value }
+        sources = changedSources.isEmpty ? nil : changedSources
+        let changedEvents = next.events.filter { previous.events[$0.key] != $0.value }
+        events = changedEvents.isEmpty ? nil : changedEvents
+    }
+
+    public var isEmpty: Bool {
+        enabled == nil
+            && statusBubble == nil
+            && clickMenu == nil
+            && mousePassthrough == nil
+            && autoHide == nil
+            && fpsProfile == nil
+            && sources?.isEmpty != false
+            && events?.isEmpty != false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case statusBubble = "status_bubble"
+        case clickMenu = "click_menu"
+        case mousePassthrough = "mouse_passthrough"
+        case autoHide = "auto_hide"
+        case fpsProfile = "fps_profile"
+        case sources
+        case events
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
+        statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble)
+        clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
+        mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough)
+        autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide)
+        fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile)
+        let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources)
+        sources = rawSources.map { values in
+            Dictionary(uniqueKeysWithValues: values.compactMap { key, value in
+                AgentSource(rawValue: key).map { ($0, value) }
+            })
+        }
+        let rawEvents = try container.decodeIfPresent([String: Bool].self, forKey: .events)
+        events = rawEvents.map { values in
+            Dictionary(uniqueKeysWithValues: values.compactMap { key, value in
+                AgentEventKind(rawValue: key).map { ($0, value) }
+            })
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(enabled, forKey: .enabled)
+        try container.encodeIfPresent(statusBubble, forKey: .statusBubble)
+        try container.encodeIfPresent(clickMenu, forKey: .clickMenu)
+        try container.encodeIfPresent(mousePassthrough, forKey: .mousePassthrough)
+        try container.encodeIfPresent(autoHide, forKey: .autoHide)
+        try container.encodeIfPresent(fpsProfile, forKey: .fpsProfile)
+        if let sources {
+            try container.encode(
+                Dictionary(uniqueKeysWithValues: sources.map { ($0.key.rawValue, $0.value) }),
+                forKey: .sources
+            )
+        }
+        if let events {
+            try container.encode(
+                Dictionary(uniqueKeysWithValues: events.map { ($0.key.rawValue, $0.value) }),
+                forKey: .events
+            )
+        }
+    }
+}
+
+public struct VersionedBehaviorSettings: Codable, Equatable, Sendable {
+    public var behavior: BehaviorSettings
+    public var revision: String
 }
 
 public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
@@ -264,6 +370,9 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
     public var renderSize: RenderSize
     public var petpackPath: String
     public var coverPath: String
+    public var origin: PetOrigin
+    public var generator: String?
+    public var provenance: String?
     public var active: Bool
     public var createdAt: String
 
@@ -275,6 +384,9 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         renderSize: RenderSize,
         petpackPath: String,
         coverPath: String,
+        origin: PetOrigin = .externalImport,
+        generator: String? = nil,
+        provenance: String? = nil,
         active: Bool,
         createdAt: String
     ) {
@@ -285,6 +397,9 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         self.renderSize = renderSize
         self.petpackPath = petpackPath
         self.coverPath = coverPath
+        self.origin = origin
+        self.generator = generator
+        self.provenance = provenance
         self.active = active
         self.createdAt = createdAt
     }
@@ -297,8 +412,116 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         case renderSize = "render_size"
         case petpackPath = "petpack_path"
         case coverPath = "cover_path"
+        case origin
+        case generator
+        case provenance
         case active
         case createdAt = "created_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        style = try container.decode(String.self, forKey: .style)
+        quality = try container.decode(QualityLevel.self, forKey: .quality)
+        renderSize = try container.decode(RenderSize.self, forKey: .renderSize)
+        petpackPath = try container.decode(String.self, forKey: .petpackPath)
+        coverPath = try container.decode(String.self, forKey: .coverPath)
+        origin = try container.decodeIfPresent(PetOrigin.self, forKey: .origin) ?? .externalImport
+        generator = try container.decodeIfPresent(String.self, forKey: .generator)
+        provenance = try container.decodeIfPresent(String.self, forKey: .provenance)
+        active = try container.decode(Bool.self, forKey: .active)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
+
+    public var generationSourceTitle: String {
+        switch origin {
+        case .verifiedSkillSource:
+            "已验证 Skill 来源"
+        case .generatedByPetcoreJob:
+            provenance == "skill-full-source" ? "App 内生成" : "本地动画预览"
+        case .externalImport:
+            "外部导入"
+        }
+    }
+
+    public var generationSourceDetail: String {
+        let claimed = [generator, provenance].compactMap { $0 }.joined(separator: " · ")
+        switch origin {
+        case .verifiedSkillSource:
+            return claimed.isEmpty ? "已通过 App Server Skill source 校验" : "已验证 · \(claimed)"
+        case .generatedByPetcoreJob:
+            if provenance == "deterministic_preview" || provenance == "local_form" {
+                return claimed.isEmpty ? "确定性预览，不代表 AI 图像生成" : "确定性预览 · \(claimed)"
+            }
+            if provenance == "codex_app_server_brief" {
+                return claimed.isEmpty ? "AI brief + 本地预览渲染" : "AI brief + 本地预览 · \(claimed)"
+            }
+            return claimed.isEmpty ? "由本 App generation job 写入" : "App job · \(claimed)"
+        case .externalImport:
+            return claimed.isEmpty ? "外部 .petpack 未记录包内声明" : "外部导入 · 包内声明：\(claimed)"
+        }
+    }
+}
+
+public struct PetAssetWarning: Codable, Hashable, Sendable {
+    public var petId: String
+    public var code: String
+    public var fingerprint: String
+    public var message: String
+
+    public init(petId: String, code: String, fingerprint: String, message: String) {
+        self.petId = petId
+        self.code = code
+        self.fingerprint = fingerprint
+        self.message = message
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case petId = "pet_id"
+        case code
+        case fingerprint
+        case message
+    }
+}
+
+public struct PetAssetWarningIndex: Equatable, Sendable {
+    private var warningsByPetID: [String: PetAssetWarning]
+
+    public init(_ warnings: [PetAssetWarning] = []) {
+        warningsByPetID = Dictionary(warnings.map { ($0.petId, $0) }, uniquingKeysWith: { _, latest in latest })
+    }
+
+    public subscript(petID: String) -> PetAssetWarning? {
+        warningsByPetID[petID]
+    }
+}
+
+public enum PetOrigin: String, Codable, Hashable, Sendable {
+    case externalImport = "external_import"
+    case generatedByPetcoreJob = "generated_by_petcore_job"
+    case verifiedSkillSource = "verified_skill_source"
+}
+
+public struct OverlayPlacement: Codable, Hashable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var scale: Double
+    public var displayId: String
+
+    public init(x: Double = 0, y: Double = 0, scale: Double = 0.72, displayId: String = "main") {
+        self.x = x
+        self.y = y
+        self.scale = scale
+        self.displayId = displayId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case x
+        case y
+        case scale
+        case displayId = "display_id"
     }
 }
 
@@ -320,26 +543,306 @@ public struct AgentEvent: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+public struct ActiveAgentState: Codable, Equatable, Sendable {
+    public var state: String
+    public var source: AgentSource
+    public var sessionID: String?
+    public var sourceSessionSequence: UInt64
+    public var priority: UInt16
+    public var leaseSeconds: Int
+    public var expiresAt: String
+    public var event: AgentEvent
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case source
+        case sessionID = "session_id"
+        case sourceSessionSequence = "source_session_sequence"
+        case priority
+        case leaseSeconds = "lease_seconds"
+        case expiresAt = "expires_at"
+        case event
+    }
+}
+
+public struct OverlayVisibility: Codable, Equatable, Sendable {
+    public var petVisible: Bool
+    public var statusBubbleVisible: Bool
+
+    public init(petVisible: Bool = true, statusBubbleVisible: Bool = true) {
+        self.petVisible = petVisible
+        self.statusBubbleVisible = statusBubbleVisible
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case petVisible = "pet_visible"
+        case statusBubbleVisible = "status_bubble_visible"
+    }
+}
+
 public struct GenerationMessage: Codable, Identifiable, Hashable, Sendable {
-    public var id = UUID()
+    public var id: String
     public var role: String
     public var content: String
     public var progress: Double
     public var createdAt: String
+    public var kind: String?
 
-    public init(id: UUID = UUID(), role: String, content: String, progress: Double, createdAt: String) {
+    public init(id: String = UUID().uuidString, role: String, content: String, progress: Double, createdAt: String, kind: String? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.progress = progress
         self.createdAt = createdAt
+        self.kind = kind
     }
 
     enum CodingKeys: String, CodingKey {
+        case id
         case role
         case content
         case progress
         case createdAt = "created_at"
+        case kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        progress = try container.decode(Double.self, forKey: .progress)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind)
+        let suppliedID = try container.decodeIfPresent(String.self, forKey: .id)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        id = suppliedID.flatMap { $0.isEmpty ? nil : $0 }
+            ?? Self.legacyID(
+                role: role,
+                content: content,
+                progress: progress,
+                createdAt: createdAt,
+                kind: kind
+            )
+    }
+
+    private static func legacyID(
+        role: String,
+        content: String,
+        progress: Double,
+        createdAt: String,
+        kind: String?
+    ) -> String {
+        let canonical = [
+            role,
+            content,
+            String(progress.bitPattern, radix: 16),
+            createdAt,
+            kind ?? "",
+        ].joined(separator: "\u{1F}")
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in canonical.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "msg_legacy_\(String(hash, radix: 16))"
+    }
+}
+
+public enum GenerationConversation {
+    private static let completedKind = "generation_completed"
+    private static let failedKind = "generation_failed"
+    private static let canceledKind = "generation_canceled"
+    private static let inputRequestKind = "input_request"
+    private static let terminalKinds: Set<String> = [completedKind, failedKind, canceledKind]
+
+    public static func succeeded(_ messages: [GenerationMessage]) -> Bool {
+        latestTerminalKind(messages) == completedKind
+    }
+
+    public static func needsUserInput(_ messages: [GenerationMessage]) -> Bool {
+        guard let lastMessage = messages.last else { return false }
+        return lastMessage.role == "assistant" && lastMessage.kind == inputRequestKind
+    }
+
+    public static func terminalUnsuccessful(_ messages: [GenerationMessage]) -> Bool {
+        guard let kind = latestTerminalKind(messages) else { return false }
+        return kind == failedKind || kind == canceledKind
+    }
+
+    public static func cancelled(_ messages: [GenerationMessage]) -> Bool {
+        latestTerminalKind(messages) == canceledKind
+    }
+
+    public static func failed(_ messages: [GenerationMessage]) -> Bool {
+        latestTerminalKind(messages) == failedKind
+    }
+
+    public static func canSendReply(_ messages: [GenerationMessage]) -> Bool {
+        succeeded(messages) || needsUserInput(messages)
+    }
+
+    public static func activeStepIndex(messages: [GenerationMessage], progress: Double) -> Int {
+        if succeeded(messages) {
+            return 3
+        }
+        if needsUserInput(messages) {
+            return 1
+        }
+        if terminalUnsuccessful(messages) {
+            return 2
+        }
+
+        switch progress {
+        case 0..<0.25:
+            return 0
+        case 0.25..<0.60:
+            return 1
+        case 0.60..<0.96:
+            return 2
+        default:
+            return 3
+        }
+    }
+
+    private static func latestTerminalKind(_ messages: [GenerationMessage]) -> String? {
+        guard let message = messages.last, message.role == "assistant" else {
+            return nil
+        }
+        if let kind = message.kind, terminalKinds.contains(kind) {
+            return kind
+        }
+        if message.progress >= 1 {
+            if legacyCompletion(message.content) {
+                return completedKind
+            }
+            if legacyCancelation(message.content) {
+                return canceledKind
+            }
+            if message.kind != inputRequestKind {
+                return failedKind
+            }
+        }
+        return nil
+    }
+
+    private static func legacyCompletion(_ content: String) -> Bool {
+        content.contains("完成，可在宠物库启用")
+            || content.contains("已保存入库并已启用")
+            || content.contains("petpack-source，并已启用")
+    }
+
+    private static func legacyCancelation(_ content: String) -> Bool {
+        content.contains("已取消生成")
+    }
+}
+
+public struct GenerationHistory: Codable, Sendable {
+    public var found: Bool
+    public var petId: String
+    public var jobId: String?
+    public var status: String?
+    public var sessionId: String?
+    public var resultPetId: String?
+    public var retryOfJobId: String?
+    public var createdAt: String?
+    public var updatedAt: String?
+    public var form: GenerationForm?
+    public var messages: [GenerationMessage]
+
+    public init(
+        found: Bool,
+        petId: String,
+        jobId: String? = nil,
+        status: String? = nil,
+        sessionId: String? = nil,
+        resultPetId: String? = nil,
+        retryOfJobId: String? = nil,
+        createdAt: String? = nil,
+        updatedAt: String? = nil,
+        form: GenerationForm? = nil,
+        messages: [GenerationMessage] = []
+    ) {
+        self.found = found
+        self.petId = petId
+        self.jobId = jobId
+        self.status = status
+        self.sessionId = sessionId
+        self.resultPetId = resultPetId
+        self.retryOfJobId = retryOfJobId
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.form = form
+        self.messages = messages
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case found
+        case petId = "pet_id"
+        case jobId = "job_id"
+        case status
+        case sessionId = "session_id"
+        case resultPetId = "result_pet_id"
+        case retryOfJobId = "retry_of_job_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case form
+        case messages
+    }
+}
+
+public enum ActiveGenerationStatus: String, Codable, Hashable, Sendable {
+    case pending
+    case running
+    case waitingForUser = "waiting_for_user"
+}
+
+public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
+    public var jobID: String
+    public var status: ActiveGenerationStatus
+    public var form: GenerationForm
+    public var sessionID: String?
+    public var resultPetID: String?
+    public var ownerInstanceID: String?
+    public var heartbeatAt: String
+    public var messageRevision: String
+    public var messages: [GenerationMessage]
+    public var inputRequest: GenerationMessage?
+
+    public init(
+        jobID: String,
+        status: ActiveGenerationStatus,
+        form: GenerationForm,
+        sessionID: String? = nil,
+        resultPetID: String? = nil,
+        ownerInstanceID: String? = nil,
+        heartbeatAt: String,
+        messageRevision: String,
+        messages: [GenerationMessage],
+        inputRequest: GenerationMessage? = nil
+    ) {
+        self.jobID = jobID
+        self.status = status
+        self.form = form
+        self.sessionID = sessionID
+        self.resultPetID = resultPetID
+        self.ownerInstanceID = ownerInstanceID
+        self.heartbeatAt = heartbeatAt
+        self.messageRevision = messageRevision
+        self.messages = messages
+        self.inputRequest = inputRequest
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case status
+        case form
+        case sessionID = "session_id"
+        case resultPetID = "result_pet_id"
+        case ownerInstanceID = "owner_instance_id"
+        case heartbeatAt = "heartbeat_at"
+        case messageRevision = "message_revision"
+        case messages
+        case inputRequest = "input_request"
     }
 }
 
@@ -370,22 +873,84 @@ public enum CheckStatus: String, Codable, Hashable, Sendable {
     }
 }
 
+public enum ConnectionCheckMode: String, Codable, Hashable, Sendable {
+    case light
+    case runtime
+
+    public var title: String {
+        switch self {
+        case .light: "轻量定位"
+        case .runtime: "完整检查"
+        }
+    }
+}
+
 public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
     public var id: AgentSource { source }
     public var source: AgentSource
     public var items: [ConnectionCheckItem]
     public var installPaths: [String]
+    public var checkMode: ConnectionCheckMode
+    public var checkedAt: String?
 
-    public init(source: AgentSource, items: [ConnectionCheckItem], installPaths: [String]) {
+    public init(
+        source: AgentSource,
+        items: [ConnectionCheckItem],
+        installPaths: [String],
+        checkMode: ConnectionCheckMode = .runtime,
+        checkedAt: String? = nil
+    ) {
         self.source = source
         self.items = items
         self.installPaths = installPaths
+        self.checkMode = checkMode
+        self.checkedAt = checkedAt
     }
 
     enum CodingKeys: String, CodingKey {
         case source
         case items
         case installPaths = "install_paths"
+        case checkMode = "check_mode"
+        case checkedAt = "checked_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(AgentSource.self, forKey: .source)
+        items = try container.decode([ConnectionCheckItem].self, forKey: .items)
+        installPaths = try container.decode([String].self, forKey: .installPaths)
+        checkMode = try container.decodeIfPresent(ConnectionCheckMode.self, forKey: .checkMode) ?? .runtime
+        checkedAt = try container.decodeIfPresent(String.self, forKey: .checkedAt)
+    }
+
+    public var hasInstalledConnectorArtifacts: Bool {
+        items.contains { item in
+            connectorArtifactItemNames.contains(item.name) && item.status == .ok
+        }
+    }
+
+    public var hasRepairableConnectorIssue: Bool {
+        !installPaths.isEmpty && items.contains { item in
+            repairableConnectorItemNames.contains(item.name) && item.status == .needsFix
+        }
+    }
+
+    private var connectorArtifactItemNames: Set<String> {
+        switch source {
+        case .codex:
+            return ["插件源", "Hook", "Pet Studio Skill", "Codex marketplace", "Codex 插件安装"]
+        case .claudeCode:
+            return ["Hooks", "事件通道", "Claude settings.json"]
+        case .pi:
+            return ["Extension", "RPC"]
+        case .opencode:
+            return ["Plugin", "OpenCode Server"]
+        }
+    }
+
+    private var repairableConnectorItemNames: Set<String> {
+        connectorArtifactItemNames.union(["本地事件 CLI"])
     }
 }
 
@@ -394,14 +959,12 @@ public struct GenerationForm: Codable, Equatable, Sendable {
     public var style: String
     public var quality: QualityLevel
     public var referenceImages: [String]
-    public var note: String?
 
-    public init(description: String, style: String, quality: QualityLevel, referenceImages: [String], note: String?) {
+    public init(description: String, style: String, quality: QualityLevel, referenceImages: [String]) {
         self.description = description
         self.style = style
         self.quality = quality
         self.referenceImages = referenceImages
-        self.note = note
     }
 
     enum CodingKeys: String, CodingKey {
@@ -409,6 +972,5 @@ public struct GenerationForm: Codable, Equatable, Sendable {
         case style
         case quality
         case referenceImages = "reference_images"
-        case note
     }
 }

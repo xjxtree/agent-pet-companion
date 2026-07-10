@@ -1,0 +1,20 @@
+{
+  "schema_version": "apc.petpack.v1",
+  "id": "pet_fixture1",
+  "name": "Fixture Pet",
+  "style": "semi-realistic",
+  "quality": "standard",
+  "render_size": { "width": 192, "height": 208 },
+  "fps_profiles": { "standard": 12, "smooth": 20 },
+  "default_fps_profile": "standard",
+  "states": [
+    { "name": "idle", "frames_dir": "assets/frames/idle", "loop": true },
+    { "name": "start", "frames_dir": "assets/frames/start", "loop": false },
+    { "name": "tool", "frames_dir": "assets/frames/tool", "loop": true },
+    { "name": "waiting", "frames_dir": "assets/frames/waiting", "loop": true },
+    { "name": "review", "frames_dir": "assets/frames/review", "loop": true },
+    { "name": "done", "frames_dir": "assets/frames/done", "loop": false },
+    { "name": "failed", "frames_dir": "assets/frames/failed", "loop": true }
+  ],
+  "created_at": "2026-07-10T00:00:00Z"
+}

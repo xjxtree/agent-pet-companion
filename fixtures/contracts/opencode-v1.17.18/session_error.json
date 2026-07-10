@@ -1,0 +1,12 @@
+{
+  "type": "session.error",
+  "properties": {
+    "sessionID": "opencode-session-error",
+    "error": {
+      "name": "UnknownError",
+      "data": {
+        "message": "opencode-secret-error-do-not-persist"
+      }
+    }
+  }
+}

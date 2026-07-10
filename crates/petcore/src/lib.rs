@@ -1,10 +1,18 @@
+pub mod adapter_contracts;
+pub mod agent_state;
+pub mod app_server;
 pub mod connections;
 pub mod daemon;
 pub mod db;
+pub mod event_envelope;
 pub mod generation;
+pub mod launch_agent;
 pub mod metrics;
 pub mod paths;
+pub mod pet_revision;
 pub mod petpack;
+pub mod process_runner;
+pub mod reference_images;
 pub mod rpc;
 
 use thiserror::Error;
@@ -27,6 +35,8 @@ pub enum PetCoreError {
     InvalidRequest(String),
     #[error("validation failed: {0}")]
     Validation(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 pub fn now_rfc3339() -> String {

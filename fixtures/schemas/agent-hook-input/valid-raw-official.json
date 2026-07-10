@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "session_id": "raw-hook-session",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "RAW_HOOK_COMMAND_REMAINS_INSIDE_ADAPTER"
+  },
+  "arbitrary_upstream_extension": true
+}

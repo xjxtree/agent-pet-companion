@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 public enum PetCoreClientError: Error, LocalizedError {
@@ -20,13 +19,22 @@ public enum PetCoreClientError: Error, LocalizedError {
 }
 
 public struct PetCoreClient: Sendable {
-    public var socketPath: String
+    public let socketPath: String
+    private let transport: PetCoreTransport
 
     public init(socketPath: String = PetCoreClient.defaultSocketPath()) {
         self.socketPath = socketPath
+        transport = PetCoreTransport(socketPath: socketPath)
     }
 
     public static func defaultSocketPath() -> String {
+        if let override = ProcessInfo.processInfo.environment["APC_HOME"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+                .appendingPathComponent("run", isDirectory: true)
+                .appendingPathComponent("petcore.sock")
+                .path
+        }
+
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base
@@ -36,9 +44,16 @@ public struct PetCoreClient: Sendable {
             .path
     }
 
-    public func request(method: String, params: Any = [:]) throws -> Any {
-        let paramsData = try JSONSerialization.data(withJSONObject: params)
-        let response = try requestData(method: method, paramsJSONData: paramsData)
+    public func request(
+        method: String,
+        paramsJSONData: Data? = nil,
+        timeout: Duration = .seconds(5)
+    ) async throws -> Any {
+        let response = try await requestData(
+            method: method,
+            paramsJSONData: paramsJSONData,
+            timeout: timeout
+        )
         guard
             let object = try JSONSerialization.jsonObject(with: response) as? [String: Any]
         else {
@@ -50,78 +65,11 @@ public struct PetCoreClient: Sendable {
         return object["result"] ?? NSNull()
     }
 
-    public func requestData(method: String, paramsJSONData: Data? = nil) throws -> Data {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        if fd < 0 {
-            throw PetCoreClientError.connectFailed(String(cString: strerror(errno)))
-        }
-        defer { close(fd) }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let maxPath = MemoryLayout.size(ofValue: address.sun_path)
-        if socketPath.utf8.count >= maxPath {
-            throw PetCoreClientError.socketPathTooLong
-        }
-
-        _ = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: maxPath) { rawPointer in
-                socketPath.withCString { source in
-                    strncpy(rawPointer, source, maxPath - 1)
-                }
-            }
-        }
-
-        let connectResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-                Darwin.connect(fd, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        if connectResult != 0 {
-            throw PetCoreClientError.connectFailed(String(cString: strerror(errno)))
-        }
-
-        let params: Any
-        if let paramsJSONData {
-            params = try JSONSerialization.jsonObject(with: paramsJSONData)
-        } else {
-            params = [:]
-        }
-
-        let payload: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": "swift",
-            "method": method,
-            "params": params
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        var bytes = [UInt8](data)
-        bytes.append(10)
-        try bytes.withUnsafeBytes { rawBuffer in
-            guard let baseAddress = rawBuffer.baseAddress else { return }
-            var written = 0
-            while written < rawBuffer.count {
-                let result = Darwin.write(
-                    fd,
-                    baseAddress.advanced(by: written),
-                    rawBuffer.count - written
-                )
-                if result <= 0 {
-                    throw PetCoreClientError.writeFailed
-                }
-                written += result
-            }
-        }
-        shutdown(fd, SHUT_WR)
-
-        var response = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = Darwin.read(fd, &buffer, buffer.count)
-            if count <= 0 { break }
-            response.append(buffer, count: count)
-        }
-
-        return response
+    public func requestData(
+        method: String,
+        paramsJSONData: Data? = nil,
+        timeout: Duration = .seconds(5)
+    ) async throws -> Data {
+        try await transport.request(method: method, params: paramsJSONData, timeout: timeout)
     }
 }

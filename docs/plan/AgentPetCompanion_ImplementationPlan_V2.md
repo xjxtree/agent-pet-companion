@@ -1,6 +1,6 @@
 # Agent Pet Companion 落地任务规划 V2（阶段版）
 
-> 基于《Agent Pet Companion 技术方案 V1》。目标是先完成 macOS V1：宠物 Studio、宠物库、启用与行为、Agent 连接、桌宠悬浮层、多 Agent 响应、AI 生成 `.petpack`。
+> 基于《Agent Pet Companion 产品方案 V5》与《Agent Pet Companion 技术方案 V1.1》。目标是先完成 macOS V1：宠物 Studio、宠物库、启用与行为、Agent 连接、桌宠悬浮层、多 Agent 响应、AI 辅助生成 `.petpack`。
 
 ---
 
@@ -650,11 +650,14 @@ PetCore 基础
 ```text
 SwiftPM macOS App: apps/macos
 Rust workspace: crates/petcore, crates/petcore-cli, crates/petcore-types
-Schemas: schemas/petpack.schema.json, schemas/agent-event.schema.json
+Schemas: schemas/petpack.schema.json, schemas/agent-hook-input.schema.json, schemas/agent-event-ingest.schema.json, schemas/agent-event.schema.json
 Pet Studio Skill: skills/agent-pet-studio/SKILL.md
 Run entrypoint: script/build_and_run.sh
 Phase validations: script/validate_m0.sh ... script/validate_m6.sh
-Full validation: script/test_all.sh
+Acceptance/security/stress validations: script/validate_v1.sh, script/validate_security_boundaries.sh, script/validate_event_storm.sh
+Runtime validations: script/build_and_run.sh --verify, script/validate_app_bundle.sh, script/validate_overlay_runtime.sh, script/validate_overlay_interaction.sh, script/validate_overlay_scale_persistence.sh, script/validate_app_recovery.sh
+Real environment validations: script/validate_real_agent_connectors.sh, script/validate_real_app_server.sh
+Full validation entrypoint and profile guide: script/test_all.sh, script/validate_profiles.md
 ```
 
 当前验证通过：
@@ -669,6 +672,6 @@ Full validation: script/test_all.sh
 1. macOS App 使用 SwiftPM 构建并由脚本打包为 `.app`，不是 Xcode project。
 2. PetCore 通过 Unix Domain Socket JSON-RPC 与 App/CLI 通信，并提供 127.0.0.1 HTTP event endpoint。
 3. AI 生成流程已具备 generation job、会话消息、petpack build/import 和宠物库入库路径。
-4. 未配置 `CODEX_APP_SERVER_CMD` 时，Codex App Server probe 使用 mock fallback；真实 stdio server 接入点保留在 PetCore。
+4. 未配置 `CODEX_APP_SERVER_CMD` 且未发现 `codex app-server` 时，Codex App Server probe 会报告不可用并给出 action/skip reason；只有显式设置 `APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK=1` 的开发验证环境才允许本地 Pet Studio runner 继续打包。
 5. Renderer 当前验证 Metal-backed view、frame scheduler、预算计算、悬浮层缩放和状态响应；后续生产级纹理缓存可在该边界内替换。
 6. 四类 Agent 连接当前生成本地连接模板并验证事件归一化、去重、来源/事件过滤；真实第三方 CLI/hook 信任状态依赖用户环境。

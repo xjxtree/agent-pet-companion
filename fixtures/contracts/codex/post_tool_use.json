@@ -1,0 +1,10 @@
+{
+  "session_id": "codex-session-tool",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_use_id": "tool-secret-id",
+  "tool_input": {
+    "command": "TOKEN=codex-secret-do-not-persist"
+  },
+  "tool_response": "codex-secret-output-do-not-persist"
+}

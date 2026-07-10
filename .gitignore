@@ -19,6 +19,13 @@ node_modules/
 dist/
 coverage/
 
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Local config and secrets
 .env
 .env.*
@@ -28,5 +35,8 @@ coverage/
 
 # Generated pet assets
 *.petpack
+*.job.jsonl
+generation-jobs/
+.agent-pet-companion/
 tmp/
 temp/

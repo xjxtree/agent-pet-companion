@@ -9,6 +9,7 @@ hex.workspace = true
 image.workspace = true
 petcore-types = { path = "../petcore-types" }
 rusqlite.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -21,3 +22,6 @@ zip.workspace = true
 [[bin]]
 name = "petcore"
 path = "src/main.rs"
+
+[dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }

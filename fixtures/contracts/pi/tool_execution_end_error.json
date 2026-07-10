@@ -1,0 +1,11 @@
+{
+  "type": "tool_execution_end",
+  "session_id": "pi-session-tool-error",
+  "toolCallId": "pi-secret-call-id",
+  "toolName": "bash",
+  "args": {
+    "command": "TOKEN=pi-secret-command-do-not-persist"
+  },
+  "result": "pi-secret-output-do-not-persist",
+  "isError": true
+}

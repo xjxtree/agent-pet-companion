@@ -1,0 +1,5 @@
+{
+  "source": "opencode",
+  "event_type": "start",
+  "raw_prompt": "must fail closed"
+}

@@ -1,0 +1,6 @@
+{
+  "type": "session_shutdown",
+  "session_id": "pi-session-reload",
+  "reason": "reload",
+  "targetSessionFile": "/private/tmp/pi-secret-session.jsonl"
+}

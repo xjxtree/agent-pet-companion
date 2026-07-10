@@ -1,0 +1,10 @@
+{
+  "session_id": "claude-session-tool-failure",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_use_id": "tool-secret-id",
+  "tool_input": {
+    "command": "TOKEN=claude-secret-command-do-not-persist"
+  },
+  "error": "claude-secret-tool-output-do-not-persist"
+}

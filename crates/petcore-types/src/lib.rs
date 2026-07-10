@@ -54,6 +54,7 @@ impl QualityLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenderSize {
     pub width: u32,
     pub height: u32,
@@ -162,6 +163,7 @@ impl AgentEventType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PetManifest {
     pub schema_version: String,
     pub id: String,
@@ -176,7 +178,13 @@ pub struct PetManifest {
 }
 
 impl PetManifest {
-    pub fn new(id: String, name: String, style: String, quality: QualityLevel, created_at: String) -> Self {
+    pub fn new(
+        id: String,
+        name: String,
+        style: String,
+        quality: QualityLevel,
+        created_at: String,
+    ) -> Self {
         let mut fps_profiles = BTreeMap::new();
         fps_profiles.insert(FpsProfileName::Standard, FpsProfileName::Standard.fps());
         fps_profiles.insert(FpsProfileName::Smooth, FpsProfileName::Smooth.fps());
@@ -206,6 +214,7 @@ impl PetManifest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PetState {
     pub name: PetStateName,
     pub frames_dir: String,
@@ -213,7 +222,7 @@ pub struct PetState {
     pub looped: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BehaviorSettings {
     pub enabled: bool,
     pub status_bubble: bool,
@@ -223,6 +232,51 @@ pub struct BehaviorSettings {
     pub fps_profile: FpsProfileName,
     pub sources: BTreeMap<AgentSource, bool>,
     pub events: BTreeMap<AgentEventType, bool>,
+}
+
+impl<'de> Deserialize<'de> for BehaviorSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawBehaviorSettings {
+            enabled: Option<bool>,
+            status_bubble: Option<bool>,
+            click_menu: Option<bool>,
+            mouse_passthrough: Option<bool>,
+            auto_hide: Option<bool>,
+            fps_profile: Option<FpsProfileName>,
+            sources: Option<BTreeMap<AgentSource, bool>>,
+            events: Option<BTreeMap<AgentEventType, bool>>,
+        }
+
+        let raw = RawBehaviorSettings::deserialize(deserializer)?;
+        let defaults = BehaviorSettings::default();
+        let mut sources = defaults.sources.clone();
+        if let Some(raw_sources) = raw.sources {
+            for (source, enabled) in raw_sources {
+                sources.insert(source, enabled);
+            }
+        }
+        let mut events = defaults.events.clone();
+        if let Some(raw_events) = raw.events {
+            for (event, enabled) in raw_events {
+                events.insert(event, enabled);
+            }
+        }
+
+        Ok(Self {
+            enabled: raw.enabled.unwrap_or(defaults.enabled),
+            status_bubble: raw.status_bubble.unwrap_or(defaults.status_bubble),
+            click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
+            mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
+            auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
+            fps_profile: raw.fps_profile.unwrap_or(defaults.fps_profile),
+            sources,
+            events,
+        })
+    }
 }
 
 impl Default for BehaviorSettings {
@@ -253,7 +307,7 @@ impl Default for BehaviorSettings {
             enabled: true,
             status_bubble: true,
             click_menu: true,
-            mouse_passthrough: false,
+            mouse_passthrough: true,
             auto_hide: false,
             fps_profile: FpsProfileName::Standard,
             sources,
@@ -263,6 +317,7 @@ impl Default for BehaviorSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayPlacement {
     pub x: f64,
     pub y: f64,
@@ -273,9 +328,9 @@ pub struct OverlayPlacement {
 impl Default for OverlayPlacement {
     fn default() -> Self {
         Self {
-            x: 1180.0,
-            y: 720.0,
-            scale: 1.35,
+            x: 0.0,
+            y: 0.0,
+            scale: 0.12,
             display_id: "main".to_string(),
         }
     }
@@ -295,12 +350,12 @@ pub struct AgentEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerationForm {
     pub description: String,
     pub style: String,
     pub quality: QualityLevel,
     pub reference_images: Vec<String>,
-    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,9 +363,48 @@ pub struct GenerationForm {
 pub enum GenerationJobStatus {
     Pending,
     Running,
+    WaitingForUser,
     Failed,
     Completed,
     Canceled,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationMessageRecord {
+    pub id: String,
+    pub job_id: String,
+    pub sequence: u64,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub content: String,
+    pub progress: f64,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationSessionSnapshot {
+    pub job_id: String,
+    pub status: GenerationJobStatus,
+    pub form: GenerationForm,
+    pub session_id: Option<String>,
+    pub result_pet_id: Option<String>,
+    pub owner_instance_id: Option<String>,
+    pub heartbeat_at: String,
+    pub message_revision: String,
+    pub messages: Vec<GenerationMessageRecord>,
+    pub input_request: Option<GenerationMessageRecord>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PetOrigin {
+    #[default]
+    ExternalImport,
+    GeneratedByPetcoreJob,
+    VerifiedSkillSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,6 +416,12 @@ pub struct PetSummary {
     pub render_size: RenderSize,
     pub petpack_path: String,
     pub cover_path: String,
+    #[serde(default)]
+    pub origin: PetOrigin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
     pub active: bool,
     pub created_at: String,
 }
@@ -351,9 +451,18 @@ pub struct ConnectionCheckItem {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionCheckMode {
+    Light,
+    Runtime,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConnectionStatus {
     pub source: AgentSource,
     pub items: Vec<ConnectionCheckItem>,
     pub install_paths: Vec<String>,
+    pub check_mode: ConnectionCheckMode,
+    pub checked_at: String,
 }
