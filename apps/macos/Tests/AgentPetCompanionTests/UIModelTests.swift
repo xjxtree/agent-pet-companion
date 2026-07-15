@@ -277,9 +277,9 @@ struct UIModelTests {
     }
 
     @Test
-    func transparentBubbleGlassKeepsTheBackdropVisibleAndHonorsAccessibility() {
-        #expect(APCBubbleGlassStyle.opticalOpacity <= 0.30)
-        #expect(APCBubbleGlassStyle.backdropOpacity < 0.25)
+    func transparentBubbleGlassUsesTheClearNativeBaselineAndHonorsAccessibility() {
+        #expect(APCBubbleGlassStyle.backdropOpacity == 0)
+        #expect(APCBubbleGlassStyle.borderOpacity == 0)
         #expect(
             APCBubbleGlassStyle.resolvedBackdropOpacity(
                 reduceTransparency: false,
@@ -297,6 +297,20 @@ struct UIModelTests {
                 reduceTransparency: true,
                 increasedContrast: false
             ) >= 0.80
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBorderOpacity(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ) == 0
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBorderOpacity(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: false
+            ) > 0
         )
     }
 
