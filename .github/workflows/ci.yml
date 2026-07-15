@@ -36,6 +36,13 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
 
+      - name: Install CI tooling
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+          rg --version
+
       - name: Cache Rust and Swift build products
         uses: actions/cache@v4
         with:

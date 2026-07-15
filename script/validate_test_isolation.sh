@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v rg >/dev/null 2>&1; then
+  printf 'test isolation validation requires ripgrep (rg)\n' >&2
+  exit 2
+fi
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-test-isolation.XXXXXX")"
 SHIM_DIR="$TMP_DIR/shims"
 FORBIDDEN_LOG="$TMP_DIR/forbidden.log"
