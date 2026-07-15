@@ -331,6 +331,7 @@ private struct SessionBubbleRow: View {
                         Text(session.statusText)
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(statusColor)
+                            .apcBubbleTextContrast()
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 5)
@@ -349,7 +350,7 @@ private struct SessionBubbleRow: View {
 
                 Text(session.messageText)
                     .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
-                    .foregroundStyle(OverlayStyle.text.opacity(0.88))
+                    .foregroundStyle(OverlayStyle.text)
                     .apcBubbleTextContrast()
                     .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
                     .truncationMode(.tail)
@@ -371,6 +372,7 @@ private struct SessionBubbleRow: View {
                     }
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(OverlayStyle.secondaryText)
+                    .apcBubbleTextContrast()
                     .fixedSize()
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)

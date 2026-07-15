@@ -167,6 +167,14 @@ enum APCBubbleGlassStyle {
     }
 }
 
+enum APCBubbleForegroundStyle {
+    /// Foreground content is never attenuated to make the surface look clear.
+    /// Transparency belongs to the glass surface, not to labels or icons.
+    static let contentOpacity = 1.0
+    static let lightHaloOpacity = 0.92
+    static let darkHaloOpacity = 0.88
+}
+
 /// The bubble content itself owns the glass effect. Placing a separate glass
 /// view in `background` lets `GlassEffectContainer` elevate that view above its
 /// siblings, which can obscure the foreground text.
@@ -250,16 +258,22 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
 }
 
 private struct APCBubbleTextContrastModifier: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-
     func body(content: Content) -> some View {
-        content.shadow(
-            color: colorScheme == .dark
-                ? .black.opacity(0.72)
-                : .white.opacity(0.82),
-            radius: 1.1,
-            y: 0.4
-        )
+        // Clear glass can span both bright and dark desktop content. A compact
+        // light + dark halo preserves each glyph edge without adding an opaque
+        // card or attenuating the text itself.
+        content
+            .opacity(APCBubbleForegroundStyle.contentOpacity)
+            .shadow(
+                color: .white.opacity(APCBubbleForegroundStyle.lightHaloOpacity),
+                radius: 0.8,
+                y: 0.25
+            )
+            .shadow(
+                color: .black.opacity(APCBubbleForegroundStyle.darkHaloOpacity),
+                radius: 1.15,
+                y: 0.35
+            )
     }
 }
 
