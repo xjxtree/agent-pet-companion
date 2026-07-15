@@ -8,6 +8,14 @@ private enum OverlayStyle {
     static let secondaryText = Color.secondary
 }
 
+/// Clear Liquid Glass doesn't adapt foreground glyphs between light and dark
+/// backgrounds. Keep bubble content bright and use the contrast modifier's
+/// dark halo so it remains legible over both halves of a mixed desktop.
+private enum BubbleForegroundStyle {
+    static let text = Color.white
+    static let secondaryText = Color.white.opacity(APCBubbleForegroundStyle.secondaryContentOpacity)
+}
+
 enum OverlayPetMenuPolicy {
     static func shouldOpen(buttonNumber: Int, isEnabled: Bool) -> Bool {
         isEnabled && buttonNumber == 1
@@ -189,13 +197,10 @@ struct BubbleOverlayRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: OverlayGeometry.bubbleStackSpacing) {
-                    bubbleLayer(in: proxy)
-                }
-            } else {
-                bubbleLayer(in: proxy)
-            }
+            // Keep each bubble independent. A GlassEffectContainer elevates
+            // descendant glass layers and can obscure foreground content in
+            // the overlay's transparent NSPanel.
+            bubbleLayer(in: proxy)
         }
         .background(Color.clear)
     }
@@ -257,7 +262,7 @@ private struct ConversationBubble: View {
 
                 Text(content.agentName)
                     .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
-                    .foregroundStyle(OverlayStyle.secondaryText)
+                    .foregroundStyle(BubbleForegroundStyle.secondaryText)
                     .apcBubbleTextContrast()
                     .lineLimit(1)
                     .layoutPriority(2)
@@ -300,7 +305,7 @@ private struct ConversationBubble: View {
                 cornerRadius: OverlayGeometry.bubbleCornerRadius,
                 style: .continuous
             ),
-            interactive: true
+            interactive: false
         )
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
     }
@@ -320,7 +325,7 @@ private struct SessionBubbleRow: View {
                             size: OverlayGeometry.bubbleSessionTitleFontSize,
                             weight: .semibold
                         ))
-                        .foregroundStyle(OverlayStyle.text)
+                        .foregroundStyle(BubbleForegroundStyle.text)
                         .apcBubbleTextContrast()
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -350,7 +355,7 @@ private struct SessionBubbleRow: View {
 
                 Text(session.messageText)
                     .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
-                    .foregroundStyle(OverlayStyle.text)
+                    .foregroundStyle(BubbleForegroundStyle.text)
                     .apcBubbleTextContrast()
                     .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
                     .truncationMode(.tail)
@@ -371,7 +376,7 @@ private struct SessionBubbleRow: View {
                         Image(systemName: "chevron.right")
                     }
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(OverlayStyle.secondaryText)
+                    .foregroundStyle(BubbleForegroundStyle.secondaryText)
                     .apcBubbleTextContrast()
                     .fixedSize()
                     .padding(.horizontal, 6)
@@ -917,15 +922,16 @@ private struct BubbleIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 7.5, weight: .bold))
-                .foregroundStyle(OverlayStyle.secondaryText)
+                .foregroundStyle(BubbleForegroundStyle.secondaryText)
+                .apcBubbleTextContrast()
                 .frame(width: 15, height: 15)
                 .background(
                     Circle()
-                        .fill(Color.primary.opacity(0.08))
+                        .fill(Color.black.opacity(0.12))
                 )
                 .overlay {
                     Circle()
-                        .stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
+                        .stroke(Color.white.opacity(0.22), lineWidth: 0.6)
                 }
         }
         .buttonStyle(.plain)
