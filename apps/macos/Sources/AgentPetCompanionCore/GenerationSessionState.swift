@@ -48,6 +48,8 @@ public struct GenerationSessionRestore: Equatable, Sendable {
     public var messages: [GenerationMessage]
     public var progress: Double
     public var messageRevision: String
+    public var operation: GenerationOperation
+    public var resultPetID: String?
 
     public init(
         state: GenerationSessionState,
@@ -55,7 +57,9 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         submittedForm: GenerationForm?,
         messages: [GenerationMessage],
         progress: Double,
-        messageRevision: String
+        messageRevision: String,
+        operation: GenerationOperation = .create,
+        resultPetID: String? = nil
     ) {
         self.state = state
         self.jobID = jobID
@@ -63,6 +67,8 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         self.messages = messages
         self.progress = progress
         self.messageRevision = messageRevision
+        self.operation = operation
+        self.resultPetID = resultPetID
     }
 
     public init(snapshot: ActiveGenerationSnapshot) {
@@ -81,11 +87,19 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         self.messages = messages
         progress = messages.last?.progress ?? snapshot.inputRequest?.progress ?? 0
         messageRevision = snapshot.messageRevision
+        operation = snapshot.operation ?? .create
+        resultPetID = snapshot.resultPetID
     }
 }
 
 public enum GenerationSessionAction: Equatable, Sendable {
     case startRequested(form: GenerationForm, initialMessage: GenerationMessage)
+    case editRequested(
+        form: GenerationForm,
+        initialMessage: GenerationMessage,
+        petID: String
+    )
+    case retryRequested(form: GenerationForm, initialMessage: GenerationMessage)
     case startAccepted(jobID: String)
     case startFailed(message: GenerationMessage)
     case messagesReceived([GenerationMessage], revision: String?)
@@ -106,6 +120,8 @@ public struct GenerationSession: Equatable, Sendable {
     public private(set) var messages: [GenerationMessage]
     public private(set) var progress: Double
     public private(set) var messageRevision: String
+    public private(set) var operation: GenerationOperation
+    public private(set) var resultPetID: String?
 
     public init(
         state: GenerationSessionState = .idle,
@@ -113,7 +129,9 @@ public struct GenerationSession: Equatable, Sendable {
         submittedForm: GenerationForm? = nil,
         messages: [GenerationMessage] = [],
         progress: Double = 0,
-        messageRevision: String = ""
+        messageRevision: String = "",
+        operation: GenerationOperation = .create,
+        resultPetID: String? = nil
     ) {
         self.state = state
         self.jobID = jobID
@@ -121,6 +139,8 @@ public struct GenerationSession: Equatable, Sendable {
         self.messages = messages
         self.progress = progress
         self.messageRevision = messageRevision
+        self.operation = operation
+        self.resultPetID = resultPetID
     }
 
     public var isActive: Bool { state.isActive }
@@ -148,6 +168,32 @@ public struct GenerationSession: Equatable, Sendable {
             messages = [initialMessage]
             progress = initialMessage.progress
             messageRevision = ""
+            operation = .create
+            resultPetID = nil
+            return []
+
+        case let .editRequested(form, initialMessage, petID):
+            guard !state.isActive, !petID.isEmpty else { return [] }
+            state = .starting
+            jobID = nil
+            submittedForm = form
+            messages = [initialMessage]
+            progress = initialMessage.progress
+            messageRevision = ""
+            operation = .modify
+            resultPetID = petID
+            return []
+
+        case let .retryRequested(form, initialMessage):
+            guard canRetry, jobID != nil else { return [] }
+            state = .starting
+            submittedForm = form
+            messages = [initialMessage]
+            progress = initialMessage.progress
+            messageRevision = ""
+            // Keep jobID, operation, and resultPetID until the retry RPC is
+            // accepted. If transport/startup fails, the same safe retry can be
+            // attempted again instead of falling back to a new create job.
             return []
 
         case let .startAccepted(jobID):
@@ -191,6 +237,8 @@ public struct GenerationSession: Equatable, Sendable {
             messages = restore.messages
             progress = restore.progress
             messageRevision = restore.messageRevision
+            operation = restore.operation
+            resultPetID = restore.resultPetID
             var effects: GenerationSessionEffects = []
             if wasActive, previousJobID != restore.jobID || !restore.state.isActive {
                 effects.insert(.stopMessageStream)

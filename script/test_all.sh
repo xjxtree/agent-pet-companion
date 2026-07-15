@@ -124,6 +124,8 @@ log_legend
 run_step "fast/core" "default test isolation and owned-process safety" "$ROOT_DIR/script/validate_test_isolation.sh"
 run_step "fast/core" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/script/validate_app_lifecycle_contract.sh"
 run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
+run_step "fast/core" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
+run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
 run_step "fast/core" "M0 bootstrap smoke: Rust workspace, PetCore, CLI, Swift core validation" "$ROOT_DIR/script/validate_m0.sh"
 run_step "fast/core" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"

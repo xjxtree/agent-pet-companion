@@ -1,0 +1,28 @@
+{
+  "schema_version": "apc.pet-source-event.v1",
+  "event": "states.rendered",
+  "created_at": "2026-07-15T15:00:05Z",
+  "skill": "agent-pet-maker",
+  "runner": "external-agent-cli",
+  "manifest_id": "pet_starlightfox",
+  "quality": "high",
+  "render_size": {
+    "width": 384,
+    "height": 416
+  },
+  "states": [
+    "idle",
+    "start",
+    "tool",
+    "waiting",
+    "review",
+    "done",
+    "failed"
+  ],
+  "frames_per_state": 2,
+  "fps_profiles": {
+    "standard": 12,
+    "smooth": 20
+  },
+  "validation_ok": true
+}

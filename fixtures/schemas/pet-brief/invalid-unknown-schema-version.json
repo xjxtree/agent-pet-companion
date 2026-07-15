@@ -1,0 +1,15 @@
+{
+  "schema_version": "apc.pet-brief.v2",
+  "name": "Future Fox",
+  "style": "storybook",
+  "quality": "standard",
+  "states": [
+    "idle",
+    "start",
+    "tool",
+    "waiting",
+    "review",
+    "done",
+    "failed"
+  ]
+}

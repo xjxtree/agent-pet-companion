@@ -28,6 +28,31 @@ fn write_manifest(source: &std::path::Path, manifest: &PetManifest) {
     .unwrap();
 }
 
+/// Renames a strict producer fixture without bypassing the cross-metadata
+/// consistency gate exercised by imports.  A real producer must publish the
+/// same user-facing identity in the manifest, brief, and source provenance.
+fn rename_petpack_source(source: &std::path::Path, name: &str) {
+    let mut manifest = read_manifest(source);
+    manifest.name = name.to_string();
+    write_manifest(source, &manifest);
+
+    let brief_path = source.join("brief.json");
+    let mut brief: serde_json::Value =
+        serde_json::from_slice(&fs::read(&brief_path).unwrap()).unwrap();
+    brief["name"] = serde_json::Value::String(name.to_string());
+    fs::write(&brief_path, serde_json::to_vec_pretty(&brief).unwrap()).unwrap();
+
+    let source_path = source.join("source/source.json");
+    let mut source_metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(&source_path).unwrap()).unwrap();
+    source_metadata["pet_name"] = serde_json::Value::String(name.to_string());
+    fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&source_metadata).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn petpack_import_atomic_rejects_unsafe_manifest_id_without_writing_assets() {
     let temp = tempfile::tempdir().unwrap();
@@ -46,6 +71,36 @@ fn petpack_import_atomic_rejects_unsafe_manifest_id_without_writing_assets() {
     assert!(database.list_pets().unwrap().is_empty());
     assert!(!paths.home.join("escape.petpack").exists());
     assert!(!paths.pets_dir.join("../escape.petpack").exists());
+}
+
+#[test]
+fn petpack_import_rejects_cross_metadata_name_mismatch_without_publishing_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("mismatched-name-source");
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::High,
+        "Consistent Fixture",
+        "半写实",
+        2,
+    )
+    .unwrap();
+
+    let mut manifest = read_manifest(&source);
+    let pet_id = manifest.id.clone();
+    manifest.name = "Manifest Only Rename".to_string();
+    write_manifest(&source, &manifest);
+
+    let error = import_petpack(&paths, &database, &source)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("brief.json field name does not match manifest.json"),
+        "{error}"
+    );
+    assert!(database.list_pets().unwrap().is_empty());
+    assert!(revision_directories(&paths.pets_dir.join(pet_id)).is_empty());
 }
 
 #[test]
@@ -130,9 +185,7 @@ fn petpack_import_database_failure_preserves_previous_revision_bytes() {
 
     let replacement = temp.path().join("source-v2");
     copy_dir_all(&source, &replacement);
-    let mut replacement_manifest = read_manifest(&replacement);
-    replacement_manifest.name = "Replacement Pet".to_string();
-    write_manifest(&replacement, &replacement_manifest);
+    rename_petpack_source(&replacement, "Replacement Pet");
 
     let connection = rusqlite::Connection::open(database.path()).unwrap();
     connection
@@ -191,9 +244,7 @@ fn petpack_import_publishes_immutable_revision_and_atomic_pointer() {
 
     let replacement = temp.path().join("source-v2");
     copy_dir_all(&source, &replacement);
-    let mut manifest = read_manifest(&replacement);
-    manifest.name = "Revision Two".to_string();
-    write_manifest(&replacement, &manifest);
+    rename_petpack_source(&replacement, "Revision Two");
     let second = import_petpack(&paths, &database, &replacement).unwrap();
 
     assert_ne!(second.petpack_path, first.petpack_path);
@@ -257,9 +308,8 @@ fn concurrent_imports_leave_only_complete_revisions() {
     .unwrap();
     let second_source = temp.path().join("concurrent-v2");
     copy_dir_all(&first_source, &second_source);
-    let mut second_manifest = read_manifest(&second_source);
-    second_manifest.name = "Concurrent Two".to_string();
-    write_manifest(&second_source, &second_manifest);
+    rename_petpack_source(&second_source, "Concurrent Two");
+    let second_manifest = read_manifest(&second_source);
     let pet_id = second_manifest.id;
 
     let paths_one = paths.clone();
@@ -309,9 +359,7 @@ fn canceled_revision_restores_previous_pet_without_deleting_its_assets() {
 
     let replacement = temp.path().join("cancel-v2");
     copy_dir_all(&source, &replacement);
-    let mut manifest = read_manifest(&replacement);
-    manifest.name = "Canceled Pet".to_string();
-    write_manifest(&replacement, &manifest);
+    rename_petpack_source(&replacement, "Canceled Pet");
     let current = import_petpack(&paths, &database, &replacement).unwrap();
     let current_revision = std::path::Path::new(&current.petpack_path)
         .parent()
@@ -344,16 +392,12 @@ fn late_cancellation_does_not_undo_a_newer_manual_import() {
 
     let second_source = temp.path().join("late-v2");
     copy_dir_all(&source, &second_source);
-    let mut second_manifest = read_manifest(&second_source);
-    second_manifest.name = "Second".to_string();
-    write_manifest(&second_source, &second_manifest);
+    rename_petpack_source(&second_source, "Second");
     let second = import_petpack(&paths, &database, &second_source).unwrap();
 
     let third_source = temp.path().join("late-v3");
     copy_dir_all(&source, &third_source);
-    let mut third_manifest = read_manifest(&third_source);
-    third_manifest.name = "Third".to_string();
-    write_manifest(&third_source, &third_manifest);
+    rename_petpack_source(&third_source, "Third");
     let third = import_petpack(&paths, &database, &third_source).unwrap();
 
     assert!(!rollback_imported_revision(&paths, &database, &second, Some(&first)).unwrap());

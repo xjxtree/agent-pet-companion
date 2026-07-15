@@ -11,13 +11,12 @@ struct PetLibraryPresentation {
     let pet: PetSummary
     let assetWarning: PetAssetWarning?
 
-    private var hasVerifiedSkillContract: Bool {
-        assetWarning == nil && pet.origin == .verifiedSkillSource
-    }
-
     var validationStatus: ValidationStatus {
         if assetWarning != nil { return .invalid }
-        return hasVerifiedSkillContract ? .verified : .notFullyReported
+        // Every library entry has crossed PetCore's full package validator at
+        // import time. Provenance describes who produced it; it is not the
+        // package-validity signal.
+        return .verified
     }
 
     var validationTitle: String {
@@ -33,21 +32,17 @@ struct PetLibraryPresentation {
 
     var validationDetail: String {
         if let assetWarning { return assetWarning.message }
-        return APCLocalization.text(
-            hasVerifiedSkillContract ? .libraryValidationVerified : .libraryValidationUnverified
-        )
+        return APCLocalization.text(.libraryValidationVerified)
     }
 
-    // verified_skill_source is assigned only after PetCore validates the fixed
-    // V1 manifest contract and all frame assets. Other imports remain unknown.
     var stateSpecification: String? {
-        hasVerifiedSkillContract
+        validationStatus == .verified
             ? APCLocalization.text(.librarySpecificationVerifiedStates)
             : nil
     }
 
     var fpsSpecification: String? {
-        hasVerifiedSkillContract
+        validationStatus == .verified
             ? APCLocalization.text(.librarySpecificationVerifiedFps)
             : nil
     }

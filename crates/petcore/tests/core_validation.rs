@@ -60,6 +60,29 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn assert_matches_petpack_metadata_schema(schema_name: &str, instance: &serde_json::Value) {
+    let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas")
+        .join(schema_name);
+    let schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&schema_path).unwrap()).unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .should_validate_formats(true)
+        .build(&schema)
+        .unwrap();
+    let diagnostics = validator
+        .iter_errors(instance)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        diagnostics.is_empty(),
+        "{} rejected generated metadata: {}",
+        schema_path.display(),
+        diagnostics.join("; ")
+    );
+}
+
 fn write_fake_app_server_script(path: &Path, thread_id: &str) {
     let mut file = std::fs::File::create(path).unwrap();
     writeln!(
@@ -310,6 +333,136 @@ fn petpack_validation_rejects_missing_skill_session_metadata() {
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
     assert!(error.contains("source/skill_session.jsonl"));
+}
+
+#[test]
+fn strict_petpack_metadata_rejects_nested_private_session_fields_without_echoing_values() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    let source_path = temp.path().join("source/source.json");
+    let mut source: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&source_path).unwrap()).unwrap();
+    source["ai_brief"] = json!({
+        "creative": {
+            "thread_id": "thread_private_should_never_be_reported"
+        }
+    });
+    std::fs::write(&source_path, serde_json::to_vec_pretty(&source).unwrap()).unwrap();
+
+    let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("privacy check rejected"));
+    assert!(error.contains("thread_id"));
+    assert!(!error.contains("thread_private_should_never_be_reported"));
+}
+
+#[test]
+fn strict_petpack_metadata_rejects_nested_absolute_paths_without_echoing_values() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    let brief_path = temp.path().join("brief.json");
+    let mut brief: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&brief_path).unwrap()).unwrap();
+    brief["ai_brief"] = json!({
+        "visual": {
+            "reference": "/Users/private-user/secret-reference.png"
+        }
+    });
+    std::fs::write(&brief_path, serde_json::to_vec_pretty(&brief).unwrap()).unwrap();
+
+    let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("absolute local path"));
+    assert!(!error.contains("private-user"));
+    assert!(!error.contains("secret-reference"));
+}
+
+#[test]
+fn strict_petpack_metadata_rejects_embedded_paths_and_external_locators() {
+    for (payload, category, secret) in [
+        (
+            "reference(/Users/private-user/embedded-secret.png)",
+            "absolute local path",
+            "private-user",
+        ),
+        (
+            "路径/Users/private-user/embedded-secret.png",
+            "absolute local path",
+            "private-user",
+        ),
+        (
+            "reference(https://private.example.invalid/embedded-secret.png)",
+            "external locator",
+            "private.example.invalid",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2)
+            .unwrap();
+        let brief_path = temp.path().join("brief.json");
+        let mut brief: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&brief_path).unwrap()).unwrap();
+        brief["ai_brief"] = json!({ "note": payload });
+        std::fs::write(&brief_path, serde_json::to_vec_pretty(&brief).unwrap()).unwrap();
+
+        let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
+        assert!(error.contains(category), "{error}");
+        assert!(!error.contains(secret), "{error}");
+        assert!(!error.contains("embedded-secret"), "{error}");
+    }
+}
+
+#[test]
+fn strict_petpack_metadata_rejects_namespaced_and_affixed_private_fields() {
+    for key in [
+        "dev.example/thread_id",
+        "dev.example/api_key_backup",
+        "metadata_thread_id",
+        "thread_id_backup",
+        "metadataThreadId",
+        "threadIdBackup",
+        "metadataSessionIdBackup",
+        "threadidbackup",
+        "backupsessionid",
+        "dev.example/threadidbackup",
+        "backupapikey",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2)
+            .unwrap();
+        let source_path = temp.path().join("source/source.json");
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&source_path).unwrap()).unwrap();
+        let mut private = serde_json::Map::new();
+        private.insert(key.to_string(), json!("private-session-value"));
+        source["ai_brief"] = serde_json::Value::Object(private);
+        std::fs::write(&source_path, serde_json::to_vec_pretty(&source).unwrap()).unwrap();
+
+        let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("forbidden private field"), "{key}: {error}");
+        assert!(!error.contains("private-session-value"), "{key}: {error}");
+    }
+}
+
+#[test]
+fn strict_petpack_metadata_allows_path_like_prose_and_non_private_words() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    let brief_path = temp.path().join("brief.json");
+    let mut brief: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&brief_path).unwrap()).unwrap();
+    brief["ai_brief"] = json!({
+        "note": "Animate idle/start/tool at 12/20 fps; use / as a separator and (https-inspired) highlights.",
+        "reference_note": "reference(images/moon.png) and assets/frames/idle/frame_000.png",
+        "authentic_style": "storybook",
+        "commanding_motion": "confident pose",
+        "environmental_lighting": "soft rim light",
+        "secretary_note": "friendly expression",
+        "threadlike_pattern": "fine silver embroidery",
+        "tokenized_palette": "violet and pearl"
+    });
+    std::fs::write(&brief_path, serde_json::to_vec_pretty(&brief).unwrap()).unwrap();
+
+    let validation = validate_petpack_path(temp.path()).unwrap();
+    assert!(validation.ok);
 }
 
 #[test]
@@ -3136,14 +3289,20 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert!(skill_session.contains("agent-pet-studio"));
     assert!(skill_session.contains("codex_thread.started"));
     assert!(skill_session.contains("codex_turn.completed"));
-    assert!(skill_session.contains("thread_fake_pet_studio"));
-    assert!(skill_session.contains("turn_fake_pet_studio"));
+    assert!(!skill_session.contains("thread_fake_pet_studio"));
+    assert!(!skill_session.contains("turn_fake_pet_studio"));
+    assert!(!skill_session.contains("studio.messages"));
     assert!(skill_session.contains("states.rendered"));
     assert!(skill_session.contains("\"frames_per_state\":24"));
-    assert!(skill_session.contains("source/references/reference-00.png"));
+    assert!(skill_session.contains("\"reference_count\":1"));
     assert!(!skill_session.contains(&original_reference_path));
+    for line in skill_session.lines().filter(|line| !line.trim().is_empty()) {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_matches_petpack_metadata_schema("pet-source-event.schema.json", &event);
+    }
     let brief: serde_json::Value =
         serde_json::from_reader(archive.by_name("brief.json").unwrap()).unwrap();
+    assert_matches_petpack_metadata_schema("pet-brief.schema.json", &brief);
     assert_eq!(
         brief["description"],
         "安静陪伴的东方幻想角色，工作时衣摆发光。"
@@ -3161,6 +3320,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(brief["states"][1]["motion"], "抬头进入工作状态");
     let source: serde_json::Value =
         serde_json::from_reader(archive.by_name("source/source.json").unwrap()).unwrap();
+    assert_matches_petpack_metadata_schema("pet-source.schema.json", &source);
     assert_eq!(source["generator"], "codex-app-server-brief-petpack-v1");
     assert_eq!(source["provenance"], "codex_app_server_brief");
     assert_eq!(source["palette_source"], "codex-ai-brief");
@@ -3188,6 +3348,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(cover.get_pixel(192, 208).0, [240, 210, 220, 255]);
     let validation_metadata: serde_json::Value =
         serde_json::from_reader(archive.by_name("build/validation.json").unwrap()).unwrap();
+    assert_matches_petpack_metadata_schema("pet-validation.schema.json", &validation_metadata);
     assert_eq!(
         validation_metadata["generator"],
         "codex-app-server-brief-petpack-v1"
@@ -3273,12 +3434,12 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     )
     .unwrap();
     let revised_pets = revised_snapshot["pets"].as_array().unwrap();
-    assert_eq!(revised_pets.len(), 2);
+    assert_eq!(revised_pets.len(), 1);
     let active_pet = revised_pets
         .iter()
         .find(|pet| pet["active"] == true)
         .expect("revised pet should be active");
-    assert_ne!(active_pet["id"], pet["id"]);
+    assert_eq!(active_pet["id"], pet["id"]);
     assert_eq!(active_pet["name"], "AI 云袖");
 }
 
@@ -3328,7 +3489,10 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
             "generator": "codex-app-server-skill",
             "provenance": "skill-full-source",
             "manifest_id": manifest.id,
-            "pet_name": "Skill Rendered Pet"
+            "pet_name": "Skill Rendered Pet",
+            "visual_source": "image-generation",
+            "frames_per_state": 2,
+            "preview_only": false
         }))
         .unwrap(),
     )
@@ -3417,7 +3581,91 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
         &mut skill_session,
     )
     .unwrap();
-    assert!(skill_session.contains("skill.petpack_source.written"));
+    assert!(skill_session.contains("skill.loaded"));
+    assert!(!skill_session.contains("skill.petpack_source.written"));
+}
+
+#[test]
+fn generation_rejects_provider_symlink_before_portable_metadata_write() {
+    let _env_lock = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let fake_app_server = temp.path().join("fake_app_server.sh");
+    let wait_file = temp.path().join("allow-app-server-complete");
+    write_fake_app_server_script(&fake_app_server, "thread_fake_skill_symlink");
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
+    let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+
+    let start = handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("test")),
+            method: "generation.start".to_string(),
+            params: json!({
+                "description": "Provider symlink must not escape the job directory.",
+                "style": "现代",
+                "quality": "high",
+                "reference_images": []
+            }),
+        },
+    )
+    .unwrap();
+    let job_id = start["job_id"].as_str().unwrap();
+    let source_dir = state.paths.jobs_dir.join(job_id).join("petpack-source");
+    write_sample_petpack_dir(
+        &source_dir,
+        QualityLevel::High,
+        "Symlink Provider Pet",
+        "现代",
+        2,
+    )
+    .unwrap();
+
+    let outside = temp.path().join("outside-private-data.json");
+    let outside_marker = br#"{"private":"must remain unchanged"}"#;
+    std::fs::write(&outside, outside_marker).unwrap();
+    let provider_metadata = source_dir.join("source/source.json");
+    std::fs::remove_file(&provider_metadata).unwrap();
+    std::os::unix::fs::symlink(&outside, &provider_metadata).unwrap();
+    std::fs::write(&wait_file, "continue").unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let messages = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("test")),
+                method: "generation.messages".to_string(),
+                params: json!({ "job_id": job_id }),
+            },
+        )
+        .unwrap();
+        if messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["kind"].as_str() == Some("generation_failed"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider symlink generation did not fail: {}",
+            serde_json::to_string_pretty(&messages).unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert_eq!(std::fs::read(&outside).unwrap(), outside_marker);
+    assert!(std::fs::symlink_metadata(&provider_metadata)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(state.database.list_pets().unwrap().is_empty());
 }
 
 #[test]

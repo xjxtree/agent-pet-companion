@@ -1200,7 +1200,7 @@ impl Database {
         job_dir: &Path,
         retry_of_job_id: Option<&str>,
     ) -> Result<()> {
-        self.create_generation_job_internal(id, form, job_dir, retry_of_job_id, None)
+        self.create_generation_job_internal(id, form, job_dir, retry_of_job_id, None, None)
     }
 
     pub fn create_generation_job_for_instance(
@@ -1217,6 +1217,49 @@ impl Database {
             job_dir,
             retry_of_job_id,
             Some(owner_instance_id),
+            None,
+        )
+    }
+
+    pub fn create_generation_job_for_pet_instance(
+        &self,
+        id: &str,
+        form: &GenerationForm,
+        job_dir: &Path,
+        pet_id: &str,
+        owner_instance_id: &str,
+    ) -> Result<()> {
+        self.create_generation_job_for_pet_instance_with_retry(
+            id,
+            form,
+            job_dir,
+            pet_id,
+            None,
+            owner_instance_id,
+        )
+    }
+
+    pub fn create_generation_job_for_pet_instance_with_retry(
+        &self,
+        id: &str,
+        form: &GenerationForm,
+        job_dir: &Path,
+        pet_id: &str,
+        retry_of_job_id: Option<&str>,
+        owner_instance_id: &str,
+    ) -> Result<()> {
+        if pet_id.trim().is_empty() {
+            return Err(PetCoreError::InvalidRequest(
+                "generation base pet id must not be empty".to_string(),
+            ));
+        }
+        self.create_generation_job_internal(
+            id,
+            form,
+            job_dir,
+            retry_of_job_id,
+            Some(owner_instance_id),
+            Some(pet_id),
         )
     }
 
@@ -1227,6 +1270,7 @@ impl Database {
         job_dir: &Path,
         retry_of_job_id: Option<&str>,
         owner_instance_id: Option<&str>,
+        result_pet_id: Option<&str>,
     ) -> Result<()> {
         let now = now_rfc3339();
         if owner_instance_id.is_some_and(|owner| owner.trim().is_empty()) {
@@ -1263,13 +1307,14 @@ impl Database {
             INSERT INTO generation_jobs
               (id, status, form_json, session_id, job_dir, result_pet_id,
                retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at)
-            VALUES (?1, ?2, ?3, NULL, ?4, NULL, ?5, ?6, ?7, ?7, ?7)
+            VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?8, ?8)
             "#,
             params![
                 id,
                 enum_name(GenerationJobStatus::Pending),
                 serde_json::to_string_pretty(form)?,
                 job_dir.display().to_string(),
+                result_pet_id,
                 retry_of_job_id,
                 owner_instance_id,
                 now,

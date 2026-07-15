@@ -1,0 +1,15 @@
+{
+  "schema_version": "apc.pet-validation.v1",
+  "ok": true,
+  "validator": "petcore-cli",
+  "validator_version": "0.2.0-dev",
+  "validated_at": "2026-07-15T15:00:10Z",
+  "manifest_id": "pet_starlightfox",
+  "frame_count": 14,
+  "frames_per_state": 2,
+  "warnings": [],
+  "generator": "external-image-agent",
+  "provenance": "skill-full-source",
+  "preview_only": false,
+  "content_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

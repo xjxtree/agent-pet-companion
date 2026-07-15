@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/pet-validation.schema.json",
+  "title": "Agent Pet Companion Pet Validation Artifact — Safe Producer Profile",
+  "description": "Runtime-enforced contract for build/validation.json when source/source.json selects the tagged Safe Producer profile. The manifest field, when present, is also checked with petpack.schema.json and matched to manifest.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ok"],
+  "properties": {
+    "schema_version": { "const": "apc.pet-validation.v1" },
+    "ok": { "const": true },
+    "validator": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "validator_version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S" },
+    "validated_at": { "type": "string", "format": "date-time" },
+    "manifest_id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
+    "manifest": { "type": "object" },
+    "frame_count": { "type": "integer", "minimum": 7, "maximum": 280 },
+    "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
+    "warnings": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "generator": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "provenance": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "skill_helper": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "preview_only": { "type": "boolean" },
+    "skipped": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "repaired_by": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "materialized_by": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "\\S" },
+    "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": "apc.pet-brief.v1",
+  "name": "Starlight Fox",
+  "style": "soft luminous storybook creature",
+  "quality": "high",
+  "description": "A compact violet fox with a bright starry tail.",
+  "generation": {
+    "generator": "external-image-agent",
+    "provenance": "skill-full-source",
+    "preview_only": false
+  },
+  "references": ["source/references/reference-00.png"],
+  "palette": ["violet", "indigo", "cool white"],
+  "states": [
+    { "name": "idle", "motion": "Breathes softly and lets the tail sparkle." },
+    { "state": "start", "motion": "Raises its ears and looks toward the task." },
+    { "name": "tool", "motion": "Paws move while the tail emits short pulses." },
+    { "state": "waiting", "motion": "Pauses with one ear tilted toward the user." },
+    { "name": "review", "motion": "Turns slightly and presents the result." },
+    { "state": "done", "motion": "Nods once with a bright star burst." },
+    { "name": "failed", "motion": "Lowers its ears and dims the tail glow." }
+  ],
+  "runtime": {
+    "default_fps": 12,
+    "smooth_fps": 20,
+    "frames_per_state": 2,
+    "render_size": {
+      "width": 384,
+      "height": 416
+    }
+  }
+}

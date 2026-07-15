@@ -51,7 +51,8 @@ struct GenerationSessionStateTests {
           "status":"waiting_for_user",
           "form":{"description":"Snapshot prompt","style":"半写实","quality":"high","reference_images":[]},
           "session_id":"session_snapshot",
-          "result_pet_id":null,
+          "result_pet_id":"pet_existing",
+          "operation":"modify",
           "owner_instance_id":"instance_old",
           "heartbeat_at":"2026-07-10T00:00:00Z",
           "message_revision":"11",
@@ -70,6 +71,48 @@ struct GenerationSessionStateTests {
         #expect(restore.submittedForm?.description == "Snapshot prompt")
         #expect(restore.messages.map(\.id) == ["msg_snapshot"])
         #expect(restore.messageRevision == "11")
+        #expect(restore.operation == .modify)
+        #expect(restore.resultPetID == "pet_existing")
+    }
+
+    @Test("an edit session preserves its target across start, failure, and retry setup")
+    func editSessionPreservesTargetIdentity() {
+        var session = GenerationSession()
+        let submitted = form(description: "Modify the existing pet")
+
+        _ = session.reduce(.editRequested(
+            form: submitted,
+            initialMessage: message(id: "msg_edit", progress: 0.01),
+            petID: "pet_existing"
+        ))
+        _ = session.reduce(.startAccepted(jobID: "job_edit"))
+        _ = session.reduce(.messagesReceived(
+            [message(id: "msg_failed", kind: "generation_failed", progress: 1)],
+            revision: "2"
+        ))
+
+        #expect(session.state == .failed)
+        #expect(session.operation == .modify)
+        #expect(session.resultPetID == "pet_existing")
+        #expect(session.canRetry)
+
+        _ = session.reduce(.retryRequested(
+            form: submitted,
+            initialMessage: message(id: "msg_retry", progress: 0.01)
+        ))
+        #expect(session.state == .starting)
+        #expect(session.jobID == "job_edit")
+        #expect(session.operation == .modify)
+        #expect(session.resultPetID == "pet_existing")
+
+        _ = session.reduce(.startFailed(message: message(
+            id: "msg_retry_failed",
+            kind: "generation_failed",
+            progress: 1
+        )))
+        #expect(session.state == .failed)
+        #expect(session.jobID == "job_edit")
+        #expect(session.canRetry)
     }
 
     @Test("reconciling the same active snapshot does not restart its stream")

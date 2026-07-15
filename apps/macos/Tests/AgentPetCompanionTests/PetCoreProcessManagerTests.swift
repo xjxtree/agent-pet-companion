@@ -179,6 +179,46 @@ struct PetCoreProcessManagerTests {
     }
 
     @Test
+    func runtimeManifestRejectsInconsistentPetpackReadWriteCompatibility() throws {
+        let missingWrite = runtimeManifest(
+            buildID: "build-a",
+            petpackReadVersions: ["apc.petpack.v1"],
+            petpackWriteVersion: "apc.petpack.v2"
+        )
+        #expect(throws: RuntimeManifestError.self) {
+            try missingWrite.validateForApp()
+        }
+
+        let legacyMismatch = runtimeManifest(
+            buildID: "build-a",
+            petpackSchemaVersion: "apc.petpack.v2",
+            petpackReadVersions: ["apc.petpack.v1"],
+            petpackWriteVersion: "apc.petpack.v1"
+        )
+        #expect(throws: RuntimeManifestError.self) {
+            try legacyMismatch.validateForApp()
+        }
+    }
+
+    @Test
+    func legacyV1RuntimeManifestReconstructsPetpackReadWriteRange() throws {
+        let manifest = runtimeManifest(buildID: "build-a")
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest))
+                as? [String: Any]
+        )
+        object.removeValue(forKey: "petpack_read_versions")
+        object.removeValue(forKey: "petpack_write_version")
+
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(RuntimeReleaseManifest.self, from: data)
+        try decoded.validateForApp()
+        #expect(decoded.petpackReadVersions == ["apc.petpack.v1"])
+        #expect(decoded.petpackWriteVersion == "apc.petpack.v1")
+        #expect(decoded == manifest)
+    }
+
+    @Test
     func agentIconCandidatesPreferOfficialBrandAssets() throws {
         let codex = AgentIconCandidates.candidates(
             for: .codex,
@@ -402,7 +442,10 @@ struct PetCoreProcessManagerTests {
 
     private func runtimeManifest(
         buildID: String,
-        codexContract: String = "codex-hooks.v1"
+        codexContract: String = "codex-hooks.v1",
+        petpackSchemaVersion: String = "apc.petpack.v1",
+        petpackReadVersions: [String] = ["apc.petpack.v1"],
+        petpackWriteVersion: String = "apc.petpack.v1"
     ) -> RuntimeReleaseManifest {
         RuntimeReleaseManifest(
             schemaVersion: RuntimeReleaseManifest.schemaVersion,
@@ -416,7 +459,9 @@ struct PetCoreProcessManagerTests {
             minimumDatabaseSchemaVersion: 1,
             maximumDatabaseSchemaVersion: 1,
             agentEventSchemaVersion: "apc.agent-event.v1",
-            petpackSchemaVersion: "apc.petpack.v1",
+            petpackSchemaVersion: petpackSchemaVersion,
+            petpackReadVersions: petpackReadVersions,
+            petpackWriteVersion: petpackWriteVersion,
             connectorContracts: RuntimeConnectorContracts(
                 codex: codexContract,
                 claudeCode: "claude-hooks.v1",

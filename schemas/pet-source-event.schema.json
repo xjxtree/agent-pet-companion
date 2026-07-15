@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/pet-source-event.schema.json",
+  "title": "Agent Pet Companion Pet Source Event — Privacy-Safe Producer Profile",
+  "description": "Runtime-enforced schema for one JSON Lines record in source/skill_session.jsonl when source/source.json selects the tagged Safe Producer profile. It intentionally excludes conversation text, identifiers, commands, tool arguments, environment values, and tool output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event"],
+  "properties": {
+    "schema_version": { "const": "apc.pet-source-event.v1" },
+    "event": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "skill": { "$ref": "#/$defs/boundedText" },
+    "runner": { "$ref": "#/$defs/boundedText" },
+    "helper": { "$ref": "#/$defs/boundedText" },
+    "generator": { "$ref": "#/$defs/boundedText" },
+    "provenance": { "$ref": "#/$defs/boundedText" },
+    "materializer": { "$ref": "#/$defs/boundedText" },
+    "manifest_id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
+    "petpack_source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "style": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" },
+    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "render_size": { "$ref": "#/$defs/renderSize" },
+    "states": {
+      "type": "array",
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/stateName" }
+    },
+    "changed_states": {
+      "type": "array",
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/stateName" }
+    },
+    "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
+    "fps_profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["standard", "smooth"],
+      "properties": {
+        "standard": { "const": 12 },
+        "smooth": { "const": 20 }
+      }
+    },
+    "completed": { "type": "boolean" },
+    "validation_ok": { "type": "boolean" },
+    "reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+    }
+  },
+  "$defs": {
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "\\S"
+    },
+    "stateName": {
+      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+    },
+    "renderSize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    }
+  }
+}

@@ -1,9 +1,10 @@
-use crate::db::Database;
+use crate::db::{Database, GenerationJobRecord};
 use crate::paths::AppPaths;
-use crate::pet_revision::rollback_imported_revision;
+use crate::pet_revision::{rollback_imported_revision, PetStoreGuard};
 use crate::petpack::{
-    build_petpack, import_petpack_with_origin, validate_petpack_path, write_generated_petpack_dir,
-    write_skill_generated_petpack_dir, GENERATED_FRAMES_PER_STATE,
+    build_petpack, extract_validated_petpack_source, import_petpack_with_origin_guarded,
+    validate_petpack_path, validate_safe_producer_json_privacy, validate_source_tree_budgets,
+    write_generated_petpack_dir, write_skill_generated_petpack_dir, GENERATED_FRAMES_PER_STATE,
 };
 use crate::reference_images::validate_reference_inputs;
 use crate::{app_server, new_id, now_rfc3339, PetCoreError, Result};
@@ -14,7 +15,7 @@ use petcore_types::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
@@ -25,6 +26,8 @@ const KIND_GENERATION_COMPLETED: &str = "generation_completed";
 const KIND_GENERATION_FAILED: &str = "generation_failed";
 const KIND_GENERATION_CANCELED: &str = "generation_canceled";
 const KIND_INPUT_REQUEST: &str = "input_request";
+pub const GENERATION_OPERATION_CREATE: &str = "create";
+pub const GENERATION_OPERATION_MODIFY: &str = "modify";
 static GENERATION_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 static MESSAGE_LOG_LOCK: Mutex<()> = Mutex::new(());
 const GENERATION_OWNER_STALE_SECONDS: i64 = 30;
@@ -45,6 +48,108 @@ pub fn start_generation_for_instance(
 ) -> Result<String> {
     recover_interrupted_jobs_for_instance(paths, database, owner_instance_id)?;
     start_generation_with_retry(paths, database, form, None, owner_instance_id)
+}
+
+pub fn start_pet_edit_for_instance(
+    paths: &AppPaths,
+    database: &Database,
+    pet_id: &str,
+    instruction: &str,
+    owner_instance_id: &str,
+) -> Result<String> {
+    recover_interrupted_jobs_for_instance(paths, database, owner_instance_id)?;
+    start_pet_edit_with_retry(
+        paths,
+        database,
+        pet_id,
+        instruction,
+        None,
+        owner_instance_id,
+    )
+}
+
+fn start_pet_edit_with_retry(
+    paths: &AppPaths,
+    database: &Database,
+    pet_id: &str,
+    instruction: &str,
+    retry_of_job_id: Option<&str>,
+    owner_instance_id: &str,
+) -> Result<String> {
+    let instruction = instruction.trim();
+    if instruction.is_empty() {
+        return Err(PetCoreError::InvalidRequest(
+            "pet edit instruction must not be empty".to_string(),
+        ));
+    }
+    if instruction.chars().count() > 8_000 {
+        return Err(PetCoreError::InvalidRequest(
+            "pet edit instruction must not exceed 8000 characters".to_string(),
+        ));
+    }
+    let pet = database
+        .get_pet(pet_id)?
+        .ok_or_else(|| PetCoreError::InvalidRequest(format!("pet not found: {pet_id}")))?;
+    if let Some(active) = database.active_generation_job()? {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "active generation job already exists: {}",
+            active.id
+        )));
+    }
+
+    let job_id = new_id("job");
+    let job_dir = paths.jobs_dir.join(&job_id);
+    fs::create_dir_all(&job_dir)?;
+    let form = GenerationForm {
+        description: format!("修改现有宠物“{}”。用户要求：{}", pet.name, instruction),
+        style: pet.style.clone(),
+        quality: pet.quality,
+        reference_images: Vec::new(),
+    };
+    fs::write(job_dir.join("form.json"), serde_json::to_vec_pretty(&form)?)?;
+    if let Err(error) = prepare_edit_workspace(paths, database, &job_id, &pet, instruction) {
+        let _ = fs::remove_dir_all(&job_dir);
+        return Err(error);
+    }
+    if let Err(error) = database.create_generation_job_for_pet_instance_with_retry(
+        &job_id,
+        &form,
+        &job_dir,
+        &pet.id,
+        retry_of_job_id,
+        owner_instance_id,
+    ) {
+        let _ = fs::remove_dir_all(&job_dir);
+        return Err(error);
+    }
+
+    append_message(paths, database, &job_id, "user", instruction, 0.01)?;
+    append_message(
+        paths,
+        database,
+        &job_id,
+        "assistant",
+        "已建立当前宠物的只读修订基线，正在通过 Codex 生成同一宠物的新版本。",
+        0.02,
+    )?;
+
+    let paths = paths.clone();
+    let database = database.clone();
+    let job_id_for_thread = job_id.clone();
+    thread::spawn(move || {
+        if let Err(error) =
+            run_local_petpack_generation(&paths, &database, &job_id_for_thread, &form)
+        {
+            let _ = fail_generation(
+                &paths,
+                &database,
+                &job_id_for_thread,
+                &format!("修改失败：{error}。已保留当前版本。"),
+            );
+        }
+    });
+
+    Ok(job_id)
 }
 
 pub fn retry_generation(
@@ -80,6 +185,49 @@ pub fn retry_generation_for_instance(
             crate::enum_name(original.status)
         )));
     }
+    if generation_job_operation(&original) == GENERATION_OPERATION_MODIFY {
+        let original_form: GenerationForm = serde_json::from_str(&original.form_json)?;
+        if let Some(form) = &form {
+            let original_value = serde_json::to_value(&original_form)?;
+            let retry_value = serde_json::to_value(form)?;
+            if retry_value != original_value {
+                return Err(PetCoreError::InvalidRequest(
+                    "pet edit retry cannot replace the original edit form".to_string(),
+                ));
+            }
+        }
+        let context = read_edit_context(paths, &original.id)?;
+        let context_pet_id = context
+            .get("pet_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                PetCoreError::Validation("pet edit retry context is missing pet_id".to_string())
+            })?;
+        let result_pet_id = original.result_pet_id.as_deref().ok_or_else(|| {
+            PetCoreError::Validation("pet edit retry is missing its result_pet_id".to_string())
+        })?;
+        if context_pet_id != result_pet_id {
+            return Err(PetCoreError::Validation(
+                "pet edit retry context does not match result_pet_id".to_string(),
+            ));
+        }
+        let instruction = context
+            .get("instruction")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                PetCoreError::Validation(
+                    "pet edit retry context is missing instruction".to_string(),
+                )
+            })?;
+        return start_pet_edit_with_retry(
+            paths,
+            database,
+            result_pet_id,
+            instruction,
+            Some(retry_of_job_id),
+            owner_instance_id,
+        );
+    }
     let retry_form = match form {
         Some(form) => form,
         None => serde_json::from_str(&original.form_json)?,
@@ -91,6 +239,14 @@ pub fn retry_generation_for_instance(
         Some(retry_of_job_id),
         owner_instance_id,
     )
+}
+
+pub fn generation_job_operation(job: &GenerationJobRecord) -> &'static str {
+    if job.job_dir.join("edit-context.json").is_file() {
+        GENERATION_OPERATION_MODIFY
+    } else {
+        GENERATION_OPERATION_CREATE
+    }
 }
 
 fn start_generation_with_retry(
@@ -851,8 +1007,13 @@ fn run_local_petpack_generation(
         append_ai_brief_normalization_message(paths, database, job_id, &app_server_session, 0.146)?;
     } else {
         if skill_full_source_required() {
-            ensure_skill_full_source_metadata(paths, job_id, &staged_form, &app_server_session)?;
-            match try_import_skill_petpack_source(paths, database, job_id)? {
+            match prepare_and_import_skill_petpack_source(
+                paths,
+                database,
+                job_id,
+                &staged_form,
+                &app_server_session,
+            )? {
                 SkillPetpackImport::Imported { pet, previous_pet } => {
                     complete_imported_pet(
                         paths,
@@ -860,7 +1021,6 @@ fn run_local_petpack_generation(
                         job_id,
                         &pet,
                         previous_pet.as_ref(),
-                        false,
                         Some((
                             "Codex App Server final response 未完成，但 Pet Studio Skill 已写出可校验 petpack-source，已采用该产物加入宠物库。",
                             0.95,
@@ -906,8 +1066,13 @@ fn run_local_petpack_generation(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
-    ensure_skill_full_source_metadata(paths, job_id, &staged_form, &app_server_session)?;
-    match try_import_skill_petpack_source(paths, database, job_id)? {
+    match prepare_and_import_skill_petpack_source(
+        paths,
+        database,
+        job_id,
+        &staged_form,
+        &app_server_session,
+    )? {
         SkillPetpackImport::Imported { pet, previous_pet } => {
             complete_imported_pet(
                 paths,
@@ -915,7 +1080,6 @@ fn run_local_petpack_generation(
                 job_id,
                 &pet,
                 previous_pet.as_ref(),
-                false,
                 Some((
                     "已采用 Pet Studio Skill 输出的 petpack-source，校验通过并加入宠物库。",
                     0.95,
@@ -979,7 +1143,6 @@ fn run_local_petpack_generation(
                     job_id,
                     &pet,
                     previous_pet.as_ref(),
-                    false,
                     Some((
                         "内置 Pet Studio Skill 已写出 full-source，校验通过并加入宠物库。",
                         0.9,
@@ -1046,6 +1209,7 @@ fn run_local_petpack_generation(
         app_server_session.get("ai_brief"),
         GENERATED_FRAMES_PER_STATE,
     )?;
+    let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     write_skill_session(
         paths,
         job_id,
@@ -1079,7 +1243,6 @@ fn run_local_petpack_generation(
         job_id,
         &pet,
         previous_pet.as_ref(),
-        false,
         Some(("校验通过，已保存 .petpack 并加入宠物库。", 0.9)),
         "完成，可在宠物库启用。",
     )?;
@@ -1100,6 +1263,7 @@ fn run_reply_revision(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
+    refresh_edit_workspace_for_reply(paths, database, job_id, user_message)?;
     let source_dir = paths.jobs_dir.join(job_id).join("petpack-source");
     if source_dir.exists() {
         fs::remove_dir_all(&source_dir)?;
@@ -1196,8 +1360,13 @@ fn run_reply_revision(
         != Some(true)
     {
         if skill_full_source_required() {
-            ensure_skill_full_source_metadata(paths, job_id, &render_form, &app_server_session)?;
-            match try_import_skill_petpack_source(paths, database, job_id)? {
+            match prepare_and_import_skill_petpack_source(
+                paths,
+                database,
+                job_id,
+                &render_form,
+                &app_server_session,
+            )? {
                 SkillPetpackImport::Imported { pet, previous_pet } => {
                     complete_imported_pet(
                         paths,
@@ -1205,9 +1374,8 @@ fn run_reply_revision(
                         job_id,
                         &pet,
                         previous_pet.as_ref(),
-                        true,
                         None,
-                        "Codex App Server final response 未完成，但 Pet Studio Skill 已写出可校验调整版 petpack-source，并已启用。",
+                        "Codex App Server final response 未完成，但 Pet Studio Skill 已写出可校验调整版 petpack-source，并保留原启用状态。",
                     )?;
                     return Ok(());
                 }
@@ -1250,8 +1418,13 @@ fn run_reply_revision(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
-    ensure_skill_full_source_metadata(paths, job_id, &render_form, &app_server_session)?;
-    match try_import_skill_petpack_source(paths, database, job_id)? {
+    match prepare_and_import_skill_petpack_source(
+        paths,
+        database,
+        job_id,
+        &render_form,
+        &app_server_session,
+    )? {
         SkillPetpackImport::Imported { pet, previous_pet } => {
             complete_imported_pet(
                 paths,
@@ -1259,9 +1432,8 @@ fn run_reply_revision(
                 job_id,
                 &pet,
                 previous_pet.as_ref(),
-                true,
                 None,
-                "已采用 Pet Studio Skill 输出的调整版 petpack-source，并已启用。",
+                "已采用 Pet Studio Skill 输出的调整版 petpack-source，并保留原启用状态。",
             )?;
             return Ok(());
         }
@@ -1320,9 +1492,8 @@ fn run_reply_revision(
                     job_id,
                     &pet,
                     previous_pet.as_ref(),
-                    true,
                     None,
-                    "内置 Pet Studio Skill 已写出调整版 full-source，并已启用。",
+                    "内置 Pet Studio Skill 已写出调整版 full-source，并保留原启用状态。",
                 )?;
             }
             return Ok(());
@@ -1351,6 +1522,7 @@ fn run_reply_revision(
         app_server_session.get("ai_brief"),
         GENERATED_FRAMES_PER_STATE,
     )?;
+    let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     write_skill_session(
         paths,
         job_id,
@@ -1384,9 +1556,8 @@ fn run_reply_revision(
         job_id,
         &pet,
         previous_pet.as_ref(),
-        true,
         None,
-        "调整版本已保存入库并已启用。",
+        "调整版本已保存入库，并保留原启用状态。",
     )?;
     Ok(())
 }
@@ -1401,6 +1572,195 @@ fn read_generation_form(paths: &AppPaths, job_id: &str) -> Result<GenerationForm
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
+fn prepare_edit_workspace(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    pet: &PetSummary,
+    instruction: &str,
+) -> Result<()> {
+    let job_dir = paths.jobs_dir.join(job_id);
+    let base_dir = job_dir.join("base-petpack-source");
+    if base_dir.exists() {
+        fs::remove_dir_all(&base_dir)?;
+    }
+    let petpack_path = Path::new(&pet.petpack_path);
+    let validation = extract_validated_petpack_source(petpack_path, &base_dir)?;
+    if validation.manifest.id != pet.id {
+        let _ = fs::remove_dir_all(&base_dir);
+        return Err(PetCoreError::Validation(format!(
+            "pet database id {} does not match package id {}",
+            pet.id, validation.manifest.id
+        )));
+    }
+    let base_sha256 = sha256_file(petpack_path)?;
+    let context = json!({
+        "schema_version": "apc.pet-edit-context.v1",
+        "operation": "modify",
+        "pet_id": pet.id,
+        "base_petpack_sha256": base_sha256,
+        "base_manifest": validation.manifest,
+        "instruction": instruction,
+        "preserve_pet_id": true,
+        "security": {
+            "package_metadata_is_untrusted_data": true,
+            "execute_package_content": false
+        },
+        "created_at": now_rfc3339()
+    });
+    fs::write(
+        job_dir.join("edit-context.json"),
+        serde_json::to_vec_pretty(&context)?,
+    )?;
+
+    // The authoritative package may have changed between lookup and staging.
+    // Recheck it before the generation job becomes visible.
+    let current = database
+        .get_pet(&pet.id)?
+        .ok_or_else(|| PetCoreError::Conflict("base pet was deleted while staging edit".into()))?;
+    if current.petpack_path != pet.petpack_path
+        || sha256_file(Path::new(&current.petpack_path))? != base_sha256
+    {
+        let _ = fs::remove_dir_all(&base_dir);
+        return Err(PetCoreError::Conflict(
+            "base pet changed while staging edit; start the modification again".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn refresh_edit_workspace_for_reply(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    instruction: &str,
+) -> Result<()> {
+    let Some(pet_id) = expected_pet_id(database, job_id)? else {
+        return Ok(());
+    };
+    let pet = database
+        .get_pet(&pet_id)?
+        .ok_or_else(|| PetCoreError::InvalidRequest(format!("pet not found: {pet_id}")))?;
+    prepare_edit_workspace(paths, database, job_id, &pet, instruction)
+}
+
+fn expected_pet_id(database: &Database, job_id: &str) -> Result<Option<String>> {
+    Ok(database
+        .generation_job(job_id)?
+        .and_then(|job| job.result_pet_id))
+}
+
+fn apply_expected_pet_identity(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    source_dir: &Path,
+    mut manifest: PetManifest,
+) -> Result<PetManifest> {
+    let Some(expected_id) = expected_pet_id(database, job_id)? else {
+        return Ok(manifest);
+    };
+    manifest.id = expected_id;
+    if let Some(base_manifest) = read_edit_context(paths, job_id)?
+        .get("base_manifest")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<PetManifest>(value).ok())
+    {
+        manifest.created_at = base_manifest.created_at;
+    }
+    fs::write(
+        source_dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    Ok(manifest)
+}
+
+fn read_edit_context(paths: &AppPaths, job_id: &str) -> Result<Value> {
+    let path = paths.jobs_dir.join(job_id).join("edit-context.json");
+    if !path.is_file() {
+        return Ok(Value::Null);
+    }
+    let value: Value = serde_json::from_slice(&fs::read(path)?)?;
+    Ok(value)
+}
+
+fn ensure_edit_commit_preconditions(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    output_manifest: &PetManifest,
+) -> Result<()> {
+    let context = read_edit_context(paths, job_id)?;
+    if context.is_null() {
+        return Ok(());
+    }
+    let expected_id = context
+        .get("pet_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PetCoreError::Validation("edit context is missing pet_id".to_string()))?;
+    if output_manifest.id != expected_id {
+        return Err(PetCoreError::Validation(format!(
+            "pet modification must preserve manifest id {expected_id}; got {}",
+            output_manifest.id
+        )));
+    }
+    let base_manifest: PetManifest = context
+        .get("base_manifest")
+        .cloned()
+        .ok_or_else(|| {
+            PetCoreError::Validation("edit context is missing base_manifest".to_string())
+        })
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                PetCoreError::Validation(format!("edit context base_manifest is invalid: {error}"))
+            })
+        })?;
+    if output_manifest.schema_version != base_manifest.schema_version
+        || output_manifest.quality != base_manifest.quality
+        || output_manifest.render_size != base_manifest.render_size
+        || output_manifest.fps_profiles != base_manifest.fps_profiles
+        || output_manifest.default_fps_profile != base_manifest.default_fps_profile
+        || output_manifest.states != base_manifest.states
+        || output_manifest.created_at != base_manifest.created_at
+    {
+        return Err(PetCoreError::Validation(
+            "pet modification changed the base format, quality, state layout, FPS, or created_at contract"
+                .to_string(),
+        ));
+    }
+    let expected_sha256 = context
+        .get("base_petpack_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            PetCoreError::Validation("edit context is missing base_petpack_sha256".to_string())
+        })?;
+    let current = database.get_pet(expected_id)?.ok_or_else(|| {
+        PetCoreError::Conflict("base pet was deleted while modification was running".to_string())
+    })?;
+    let current_sha256 = sha256_file(Path::new(&current.petpack_path))?;
+    if current_sha256 != expected_sha256 {
+        return Err(PetCoreError::Conflict(
+            "base pet changed while modification was running; the generated revision was not committed"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
 #[allow(clippy::large_enum_variant)] // Success carries rollback state; other variants intentionally stay allocation-free.
 enum SkillPetpackImport {
     Imported {
@@ -1410,6 +1770,25 @@ enum SkillPetpackImport {
     Canceled,
     Missing,
     Invalid(String),
+}
+
+/// Treat everything written under `petpack-source` by the App Server Skill as
+/// one untrusted-input boundary. Metadata normalization checks the source tree
+/// before its first write and the complete package contract before import.
+/// Failures inside that boundary are therefore source failures, not PetCore
+/// execution failures, and must use the same dedicated failure path as
+/// validation during import.
+fn prepare_and_import_skill_petpack_source(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    form: &GenerationForm,
+    app_server_session: &Value,
+) -> Result<SkillPetpackImport> {
+    if let Err(error) = ensure_skill_full_source_metadata(paths, job_id, form, app_server_session) {
+        return Ok(SkillPetpackImport::Invalid(error.to_string()));
+    }
+    try_import_skill_petpack_source(paths, database, job_id)
 }
 
 fn try_import_skill_petpack_source(
@@ -1427,6 +1806,14 @@ fn try_import_skill_petpack_source(
 
     match validate_petpack_path(&source_dir) {
         Ok(validation) => {
+            if let Some(expected_id) = expected_pet_id(database, job_id)? {
+                if validation.manifest.id != expected_id {
+                    return Ok(SkillPetpackImport::Invalid(format!(
+                        "pet modification must preserve manifest id {expected_id}; got {}",
+                        validation.manifest.id
+                    )));
+                }
+            }
             if let Err(error) = validate_skill_source_identity(&source_dir) {
                 return Ok(SkillPetpackImport::Invalid(error.to_string()));
             }
@@ -1589,67 +1976,100 @@ fn ensure_skill_full_source_metadata(
     paths: &AppPaths,
     job_id: &str,
     form: &GenerationForm,
-    app_server_session: &Value,
+    _app_server_session: &Value,
 ) -> Result<()> {
     let source_dir = paths.jobs_dir.join(job_id).join("petpack-source");
     if !source_dir.join("manifest.json").is_file() {
         return Ok(());
     }
 
+    // The App Server/skill owns this tree until the turn finishes, so treat it
+    // as untrusted input. Check the entire tree before normalization performs
+    // its first write; in particular, never let provider-created symlinks turn
+    // metadata writes into writes outside the job directory.
+    validate_source_tree_budgets(&source_dir)?;
     if skill_full_source_required() {
         validate_petpack_path(&source_dir)?;
     } else {
-        let _ = normalize_skill_manifest(&source_dir, form);
+        normalize_skill_manifest(&source_dir, form)?;
     }
+    validate_source_tree_budgets(&source_dir)?;
 
     let metadata_dir = source_dir.join("source");
-    fs::create_dir_all(metadata_dir.join("references"))?;
+    if !metadata_dir.is_dir() || !metadata_dir.join("references").is_dir() {
+        return Err(PetCoreError::Validation(
+            "skill petpack source must contain real source and source/references directories"
+                .to_string(),
+        ));
+    }
 
     let metadata_path = metadata_dir.join("source.json");
-    let mut metadata = fs::read(&metadata_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
+    let metadata_value: Value = serde_json::from_slice(&fs::read(&metadata_path)?)?;
+    let mut metadata = metadata_value.as_object().cloned().ok_or_else(|| {
+        PetCoreError::Validation("skill source/source.json must be an object".to_string())
+    })?;
 
+    // A .petpack is portable user data, not a Studio execution trace. Keep
+    // App Server identifiers in the generation job only; they must never be
+    // copied into an exported package.
+    for private_key in [
+        "codex_app_server",
+        "thread_id",
+        "turn_id",
+        "session_id",
+        "request_id",
+        "command_source",
+    ] {
+        metadata.remove(private_key);
+    }
+
+    metadata.insert("schema_version".to_string(), json!("apc.pet-source.v1"));
     metadata
         .entry("created_at".to_string())
         .or_insert_with(|| json!(now_rfc3339()));
     metadata
-        .entry("form".to_string())
-        .or_insert_with(|| json!(form));
-    metadata
         .entry("reference_files".to_string())
         .or_insert_with(|| json!([]));
-    metadata
-        .entry("codex_app_server".to_string())
-        .or_insert_with(|| {
-            json!({
-                "thread_id": app_server_session.get("thread_id"),
-                "turn_id": app_server_session.get("turn_id"),
-                "session_id": app_server_session.get("session_id"),
-                "completed": app_server_session.get("completed"),
-                "command_source": app_server_session.get("command_source")
-            })
-        });
+    let portable_references = metadata
+        .get("reference_files")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    // The staged generation form contains job-local absolute paths. Rebuild
+    // its portable representation and retain only package-relative references.
+    metadata.insert(
+        "form".to_string(),
+        json!({
+            "description": form.description,
+            "style": form.style,
+            "quality": form.quality,
+            "reference_images": portable_references
+        }),
+    );
 
-    fs::write(
-        metadata_path,
-        serde_json::to_vec_pretty(&Value::Object(metadata))?,
-    )?;
+    let metadata_value = Value::Object(metadata);
+    validate_safe_producer_json_privacy("source/source.json", &metadata_value)?;
+    write_json_atomic(&metadata_path, &metadata_value)?;
 
     let skill_session_path = metadata_dir.join("skill_session.jsonl");
-    if !skill_session_path.is_file() {
-        fs::write(
-            skill_session_path,
-            serde_json::to_string(&json!({
-                "event": "skill.loaded",
-                "skill": "agent-pet-studio",
-                "runner": "codex-app-server",
-                "created_at": now_rfc3339()
-            }))? + "\n",
-        )?;
-    }
+    // Never trust or preserve a provider-written execution trace. The
+    // portable package carries only the normalized lifecycle fact needed for
+    // provenance; the full Studio session remains in the private job store.
+    let portable_event = json!({
+        "schema_version": "apc.pet-source-event.v1",
+        "event": "skill.loaded",
+        "skill": "agent-pet-studio",
+        "runner": "codex-app-server",
+        "created_at": now_rfc3339()
+    });
+    validate_safe_producer_json_privacy("source/skill_session.jsonl", &portable_event)?;
+    write_file_atomic(
+        &skill_session_path,
+        (serde_json::to_string(&portable_event)? + "\n").as_bytes(),
+    )?;
+
+    // Re-run the complete contract after normalization so malformed or
+    // privacy-unsafe nested metadata is rejected before it reaches import.
+    validate_petpack_path(&source_dir)?;
 
     Ok(())
 }
@@ -1660,9 +2080,19 @@ fn write_petcore_validation_artifact(
 ) -> Result<()> {
     let build_dir = source_dir.join("build");
     fs::create_dir_all(&build_dir)?;
+    let mut artifact = serde_json::to_value(validation)?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| {
+            PetCoreError::Validation("PetCore validation artifact must be an object".to_string())
+        })?;
+    artifact.insert("schema_version".to_string(), json!("apc.pet-validation.v1"));
+    artifact.insert("validator".to_string(), json!("petcore"));
+    artifact.insert("validated_at".to_string(), json!(now_rfc3339()));
+    artifact.insert("manifest_id".to_string(), json!(validation.manifest.id));
     fs::write(
         build_dir.join("validation.json"),
-        serde_json::to_vec_pretty(validation)?,
+        serde_json::to_vec_pretty(&Value::Object(artifact))?,
     )?;
     Ok(())
 }
@@ -1722,7 +2152,7 @@ fn normalize_skill_manifest(source_dir: &Path, form: &GenerationForm) -> Result<
     let raw_states = manifest.remove("states");
     manifest.insert("states".to_string(), normalize_manifest_states(raw_states));
 
-    fs::write(manifest_path, serde_json::to_vec_pretty(&manifest_json)?)?;
+    write_json_atomic(&manifest_path, &manifest_json)?;
     Ok(())
 }
 
@@ -1822,6 +2252,7 @@ fn materialize_internal_skill_petpack(
         app_server_session.get("ai_brief"),
         GENERATED_FRAMES_PER_STATE,
     )?;
+    let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     mark_internal_skill_materializer(&source_dir)?;
     write_skill_session(
         paths,
@@ -1895,11 +2326,18 @@ fn import_petpack_if_active(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(None);
     }
+    let store_guard = PetStoreGuard::acquire(paths)?;
+    let output_validation = validate_petpack_path(source_path)?;
+    ensure_edit_commit_preconditions(paths, database, job_id, &output_validation.manifest)?;
     let previous_pet = match pet_id_hint {
         Some(pet_id) => database.get_pet(pet_id)?,
         None => None,
     };
-    let pet = import_petpack_with_origin(paths, database, source_path, origin)?;
+    let pet =
+        import_petpack_with_origin_guarded(paths, database, source_path, origin, &store_guard)?;
+    // Cancellation rollback owns the same store lock, so release the guarded
+    // stale-check/commit section before entering that independent mutation.
+    drop(store_guard);
     if finish_if_canceled(paths, database, job_id)? {
         cleanup_canceled_import(paths, database, &pet, previous_pet.as_ref())?;
         return Ok(None);
@@ -1924,7 +2362,6 @@ fn complete_imported_pet(
     job_id: &str,
     pet: &PetSummary,
     previous_pet: Option<&PetSummary>,
-    activate: bool,
     pre_completion_message: Option<(&str, f64)>,
     completion_message: &str,
 ) -> Result<()> {
@@ -1940,9 +2377,6 @@ fn complete_imported_pet(
     {
         cleanup_canceled_import(paths, database, pet, previous_pet)?;
         return Ok(());
-    }
-    if activate {
-        database.activate_pet(&pet.id)?;
     }
     if let Some((content, progress)) = pre_completion_message {
         append_message(paths, database, job_id, "assistant", content, progress)?;
@@ -2015,14 +2449,24 @@ fn write_app_server_session(paths: &AppPaths, job_id: &str, session: &Value) -> 
 }
 
 fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
+    write_file_atomic(path, &serde_json::to_vec_pretty(value)?)
+}
+
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temporary_path = path.with_extension(format!(
         "{}.tmp.{}",
         path.extension()
             .and_then(|extension| extension.to_str())
-            .unwrap_or("json"),
-        std::process::id()
+            .unwrap_or("data"),
+        new_id("write")
     ));
-    fs::write(&temporary_path, serde_json::to_vec_pretty(value)?)?;
+    let mut temporary = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)?;
+    temporary.write_all(bytes)?;
+    temporary.sync_all()?;
+    drop(temporary);
     fs::rename(&temporary_path, path).inspect_err(|_error| {
         let _ = fs::remove_file(&temporary_path);
     })?;
@@ -2148,10 +2592,10 @@ fn form_with_revision_feedback(form: &GenerationForm, user_message: &str) -> Gen
 }
 
 fn write_skill_session(
-    paths: &AppPaths,
-    job_id: &str,
+    _paths: &AppPaths,
+    _job_id: &str,
     source_dir: &std::path::Path,
-    form: &GenerationForm,
+    _form: &GenerationForm,
     manifest: &PetManifest,
     app_server_session: &serde_json::Value,
 ) -> Result<()> {
@@ -2160,13 +2604,13 @@ fn write_skill_session(
     let skill_session_path = source_dir_path.join("skill_session.jsonl");
     let mut file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&skill_session_path)?;
     let states = REQUIRED_STATES
         .iter()
         .map(|state| state.as_str())
         .collect::<Vec<_>>();
-    let messages = read_messages(paths, job_id)?;
     let runner = if app_server_session
         .get("started")
         .and_then(serde_json::Value::as_bool)
@@ -2176,23 +2620,24 @@ fn write_skill_session(
     } else {
         "local-pet-studio-runner"
     };
-    let source_form = form_with_petpack_reference_paths(form, source_dir)?;
+    let reference_count = petpack_reference_files(source_dir)?.len();
     let mut events = vec![
         json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "skill.loaded",
             "skill": "agent-pet-studio",
-            "skill_path": "skills/agent-pet-studio/SKILL.md",
             "runner": runner,
-            "codex_app_server": app_server_session,
             "created_at": now_rfc3339()
         }),
         json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "form.read",
             "skill": "agent-pet-studio",
-            "form": source_form,
+            "reference_count": reference_count,
             "created_at": now_rfc3339()
         }),
         json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "brief.generated",
             "skill": "agent-pet-studio",
             "manifest_id": manifest.id,
@@ -2203,6 +2648,7 @@ fn write_skill_session(
             "created_at": now_rfc3339()
         }),
         json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "states.rendered",
             "skill": "agent-pet-studio",
             "states": states,
@@ -2211,15 +2657,9 @@ fn write_skill_session(
             "created_at": now_rfc3339()
         }),
         json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "petpack.validated",
             "skill": "agent-pet-studio",
-            "schema_version": manifest.schema_version,
-            "created_at": now_rfc3339()
-        }),
-        json!({
-            "event": "studio.messages",
-            "skill": "agent-pet-studio",
-            "messages": messages,
             "created_at": now_rfc3339()
         }),
     ];
@@ -2232,11 +2672,9 @@ fn write_skill_session(
         events.insert(
             1,
             json!({
+                "schema_version": "apc.pet-source-event.v1",
                 "event": "codex_thread.started",
                 "skill": "agent-pet-studio",
-                "thread_id": app_server_session.get("thread_id"),
-                "session_id": app_server_session.get("session_id"),
-                "command_source": app_server_session.get("command_source"),
                 "created_at": now_rfc3339()
             }),
         );
@@ -2259,12 +2697,10 @@ fn write_skill_session(
         events.insert(
             2,
             json!({
+                "schema_version": "apc.pet-source-event.v1",
                 "event": event_name,
                 "skill": "agent-pet-studio",
-                "thread_id": app_server_session.get("thread_id"),
-                "turn_id": app_server_session.get("turn_id"),
                 "completed": app_server_session.get("completed"),
-                "ai_brief": app_server_session.get("ai_brief"),
                 "created_at": now_rfc3339()
             }),
         );
@@ -2275,15 +2711,6 @@ fn write_skill_session(
     }
 
     Ok(())
-}
-
-fn form_with_petpack_reference_paths(
-    form: &GenerationForm,
-    source_dir: &std::path::Path,
-) -> Result<GenerationForm> {
-    let mut source_form = form.clone();
-    source_form.reference_images = petpack_reference_files(source_dir)?;
-    Ok(source_form)
 }
 
 fn petpack_reference_files(source_dir: &std::path::Path) -> Result<Vec<String>> {

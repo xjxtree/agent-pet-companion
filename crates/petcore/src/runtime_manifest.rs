@@ -52,8 +52,27 @@ pub struct RuntimeReleaseManifest {
     pub minimum_database_schema_version: u32,
     pub maximum_database_schema_version: u32,
     pub agent_event_schema_version: String,
+    /// Legacy single-version field retained for v1 runtime-manifest readers.
     pub petpack_schema_version: String,
+    #[serde(default = "legacy_petpack_read_versions")]
+    pub petpack_read_versions: Vec<String>,
+    #[serde(default = "legacy_petpack_write_version")]
+    pub petpack_write_version: String,
     pub connector_contracts: ConnectorContracts,
+}
+
+// `petpack_read_versions` and `petpack_write_version` were added while the
+// runtime manifest was still `apc.runtime-manifest.v1`. A current App must be
+// able to decode an already-installed v1 last-known-good manifest. V1 only
+// ever wrote `apc.petpack.v1`, so these defaults faithfully reconstruct that
+// legacy single-version contract. A future petpack/runtime-manifest version
+// must use an explicit migration instead of changing these v1 defaults.
+fn legacy_petpack_read_versions() -> Vec<String> {
+    vec!["apc.petpack.v1".to_string()]
+}
+
+fn legacy_petpack_write_version() -> String {
+    "apc.petpack.v1".to_string()
 }
 
 impl RuntimeReleaseManifest {
@@ -71,6 +90,8 @@ impl RuntimeReleaseManifest {
             maximum_database_schema_version: DATABASE_SCHEMA_VERSION,
             agent_event_schema_version: EVENT_ENVELOPE_SCHEMA_VERSION.to_string(),
             petpack_schema_version: PETPACK_SCHEMA_VERSION.to_string(),
+            petpack_read_versions: vec![PETPACK_SCHEMA_VERSION.to_string()],
+            petpack_write_version: PETPACK_SCHEMA_VERSION.to_string(),
             connector_contracts: ConnectorContracts {
                 codex: CODEX_HOOKS_CONTRACT_VERSION.to_string(),
                 claude_code: CLAUDE_HOOKS_CONTRACT_VERSION.to_string(),
@@ -105,6 +126,17 @@ impl RuntimeReleaseManifest {
         if self.minimum_database_schema_version > self.maximum_database_schema_version {
             return Err(PetCoreError::Validation(
                 "runtime manifest database compatibility range is invalid".to_string(),
+            ));
+        }
+        if self.petpack_read_versions.is_empty()
+            || !self
+                .petpack_read_versions
+                .iter()
+                .any(|version| version == &self.petpack_write_version)
+            || self.petpack_schema_version != self.petpack_write_version
+        {
+            return Err(PetCoreError::Validation(
+                "runtime manifest petpack compatibility range is invalid".to_string(),
             ));
         }
         Ok(())

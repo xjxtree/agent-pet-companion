@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/pet-brief.schema.json",
+  "title": "Agent Pet Companion Pet Brief — Safe Producer Profile",
+  "description": "Runtime-enforced contract for brief.json when source/source.json selects the tagged Safe Producer profile with apc.pet-source.v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "style", "quality", "states"],
+  "properties": {
+    "schema_version": { "const": "apc.pet-brief.v1" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "style": { "type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S" },
+    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "description": { "type": ["string", "null"], "maxLength": 8000 },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator", "provenance"],
+      "properties": {
+        "generator": { "$ref": "#/$defs/boundedText" },
+        "provenance": { "$ref": "#/$defs/boundedText" },
+        "skill_helper": { "$ref": "#/$defs/boundedText" },
+        "preview_only": { "type": "boolean" }
+      }
+    },
+    "ai_brief": {
+      "type": ["object", "null"],
+      "maxProperties": 64
+    },
+    "visual_brief": { "type": "string", "maxLength": 8000 },
+    "render_notes": { "type": "string", "maxLength": 8000 },
+    "palette": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "anyOf": [
+          { "type": "string", "minLength": 1, "maxLength": 160 },
+          { "type": "object", "maxProperties": 8 }
+        ]
+      }
+    },
+    "references": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/referencePath" }
+    },
+    "states": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": { "$ref": "#/$defs/stateBrief" },
+      "allOf": [
+        { "contains": { "$ref": "#/$defs/idleBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/startBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/toolBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/waitingBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/reviewBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/doneBrief" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/failedBrief" }, "minContains": 1, "maxContains": 1 }
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_fps", "smooth_fps", "frames_per_state", "render_size"],
+      "properties": {
+        "default_fps": { "const": 12 },
+        "smooth_fps": { "const": 20 },
+        "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
+        "render_size": { "$ref": "#/$defs/renderSize" }
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "quality": { "const": "standard" } }, "required": ["quality"] },
+      "then": { "properties": { "runtime": { "properties": { "render_size": { "$ref": "#/$defs/standardSize" } } } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "high" } }, "required": ["quality"] },
+      "then": { "properties": { "runtime": { "properties": { "render_size": { "$ref": "#/$defs/highSize" } } } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "ultra" } }, "required": ["quality"] },
+      "then": { "properties": { "runtime": { "properties": { "render_size": { "$ref": "#/$defs/ultraSize" } } } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "original" } }, "required": ["quality"] },
+      "then": { "properties": { "runtime": { "properties": { "render_size": { "$ref": "#/$defs/originalSize" } } } } }
+    }
+  ],
+  "$defs": {
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "\\S"
+    },
+    "stateName": {
+      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+    },
+    "stateBrief": {
+      "anyOf": [
+        { "$ref": "#/$defs/stateName" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["motion"],
+          "properties": {
+            "name": { "$ref": "#/$defs/stateName" },
+            "state": { "$ref": "#/$defs/stateName" },
+            "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "motion": { "type": "string", "minLength": 1, "maxLength": 2000, "pattern": "\\S" }
+          },
+          "oneOf": [
+            { "required": ["name"], "not": { "required": ["state"] } },
+            { "required": ["state"], "not": { "required": ["name"] } }
+          ]
+        }
+      ]
+    },
+    "idleBrief": { "$ref": "#/$defs/stateMatcherIdle" },
+    "startBrief": { "$ref": "#/$defs/stateMatcherStart" },
+    "toolBrief": { "$ref": "#/$defs/stateMatcherTool" },
+    "waitingBrief": { "$ref": "#/$defs/stateMatcherWaiting" },
+    "reviewBrief": { "$ref": "#/$defs/stateMatcherReview" },
+    "doneBrief": { "$ref": "#/$defs/stateMatcherDone" },
+    "failedBrief": { "$ref": "#/$defs/stateMatcherFailed" },
+    "stateMatcherIdle": { "anyOf": [{ "const": "idle" }, { "$ref": "#/$defs/objectIdle" }] },
+    "stateMatcherStart": { "anyOf": [{ "const": "start" }, { "$ref": "#/$defs/objectStart" }] },
+    "stateMatcherTool": { "anyOf": [{ "const": "tool" }, { "$ref": "#/$defs/objectTool" }] },
+    "stateMatcherWaiting": { "anyOf": [{ "const": "waiting" }, { "$ref": "#/$defs/objectWaiting" }] },
+    "stateMatcherReview": { "anyOf": [{ "const": "review" }, { "$ref": "#/$defs/objectReview" }] },
+    "stateMatcherDone": { "anyOf": [{ "const": "done" }, { "$ref": "#/$defs/objectDone" }] },
+    "stateMatcherFailed": { "anyOf": [{ "const": "failed" }, { "$ref": "#/$defs/objectFailed" }] },
+    "objectIdle": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "idle" } }, "required": ["name"] }, { "properties": { "state": { "const": "idle" } }, "required": ["state"] }] },
+    "objectStart": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "start" } }, "required": ["name"] }, { "properties": { "state": { "const": "start" } }, "required": ["state"] }] },
+    "objectTool": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "tool" } }, "required": ["name"] }, { "properties": { "state": { "const": "tool" } }, "required": ["state"] }] },
+    "objectWaiting": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "waiting" } }, "required": ["name"] }, { "properties": { "state": { "const": "waiting" } }, "required": ["state"] }] },
+    "objectReview": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "review" } }, "required": ["name"] }, { "properties": { "state": { "const": "review" } }, "required": ["state"] }] },
+    "objectDone": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "done" } }, "required": ["name"] }, { "properties": { "state": { "const": "done" } }, "required": ["state"] }] },
+    "objectFailed": { "type": "object", "anyOf": [{ "properties": { "name": { "const": "failed" } }, "required": ["name"] }, { "properties": { "state": { "const": "failed" } }, "required": ["state"] }] },
+    "referencePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "anyOf": [
+        { "pattern": "^source/references/[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+        { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      ],
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "renderSize": {
+      "oneOf": [
+        { "$ref": "#/$defs/standardSize" },
+        { "$ref": "#/$defs/highSize" },
+        { "$ref": "#/$defs/ultraSize" },
+        { "$ref": "#/$defs/originalSize" }
+      ]
+    },
+    "standardSize": { "$ref": "#/$defs/renderSizeShape", "properties": { "width": { "const": 192 }, "height": { "const": 208 } } },
+    "highSize": { "$ref": "#/$defs/renderSizeShape", "properties": { "width": { "const": 384 }, "height": { "const": 416 } } },
+    "ultraSize": { "$ref": "#/$defs/renderSizeShape", "properties": { "width": { "const": 768 }, "height": { "const": 832 } } },
+    "originalSize": { "$ref": "#/$defs/renderSizeShape", "properties": { "width": { "const": 1536 }, "height": { "const": 1664 } } },
+    "renderSizeShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer" },
+        "height": { "type": "integer" }
+      }
+    }
+  }
+}

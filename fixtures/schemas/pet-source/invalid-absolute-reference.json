@@ -1,0 +1,8 @@
+{
+  "schema_version": "apc.pet-source.v1",
+  "generator": "external-image-agent",
+  "provenance": "manual",
+  "reference_files": [
+    "/Users/example/private/reference.png"
+  ]
+}

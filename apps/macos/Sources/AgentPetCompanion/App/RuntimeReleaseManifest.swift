@@ -37,6 +37,8 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     let maximumDatabaseSchemaVersion: UInt32
     let agentEventSchemaVersion: String
     let petpackSchemaVersion: String
+    let petpackReadVersions: [String]
+    let petpackWriteVersion: String
     let connectorContracts: RuntimeConnectorContracts
 
     enum CodingKeys: String, CodingKey {
@@ -52,6 +54,8 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         case maximumDatabaseSchemaVersion = "maximum_database_schema_version"
         case agentEventSchemaVersion = "agent_event_schema_version"
         case petpackSchemaVersion = "petpack_schema_version"
+        case petpackReadVersions = "petpack_read_versions"
+        case petpackWriteVersion = "petpack_write_version"
         case connectorContracts = "connector_contracts"
     }
 
@@ -86,6 +90,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         }
         guard matchesNonempty(appVersion), matchesNonempty(appBuild),
               matchesNonempty(agentEventSchemaVersion), matchesNonempty(petpackSchemaVersion),
+              matchesNonempty(petpackWriteVersion), !petpackReadVersions.isEmpty,
               connectorContracts.allArePresent
         else {
             throw RuntimeManifestError.invalid("运行时清单缺少版本信息")
@@ -96,6 +101,12 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         guard minimumDatabaseSchemaVersion <= maximumDatabaseSchemaVersion else {
             throw RuntimeManifestError.invalid("数据库兼容范围无效")
         }
+        guard petpackSchemaVersion == petpackWriteVersion,
+              petpackReadVersions.contains(petpackWriteVersion),
+              petpackReadVersions.allSatisfy(matchesNonempty)
+        else {
+            throw RuntimeManifestError.invalid("Petpack 读写版本范围无效")
+        }
     }
 
     private func matchesSafeBuildID(_ value: String) -> Bool {
@@ -104,6 +115,48 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
 
     private func matchesNonempty(_ value: String) -> Bool {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+extension RuntimeReleaseManifest {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+        releaseChannel = try container.decode(String.self, forKey: .releaseChannel)
+        appVersion = try container.decode(String.self, forKey: .appVersion)
+        appBuild = try container.decode(String.self, forKey: .appBuild)
+        buildID = try container.decode(String.self, forKey: .buildID)
+        petCoreRPCProtocol = try container.decode(String.self, forKey: .petCoreRPCProtocol)
+        petCoreBuildID = try container.decode(String.self, forKey: .petCoreBuildID)
+        petCoreCLIBuildID = try container.decode(String.self, forKey: .petCoreCLIBuildID)
+        minimumDatabaseSchemaVersion = try container.decode(
+            UInt32.self,
+            forKey: .minimumDatabaseSchemaVersion
+        )
+        maximumDatabaseSchemaVersion = try container.decode(
+            UInt32.self,
+            forKey: .maximumDatabaseSchemaVersion
+        )
+        agentEventSchemaVersion = try container.decode(
+            String.self,
+            forKey: .agentEventSchemaVersion
+        )
+        petpackSchemaVersion = try container.decode(String.self, forKey: .petpackSchemaVersion)
+        // These fields were introduced without changing the v1 runtime-manifest
+        // identifier. Reconstruct the old single-version contract so a new App
+        // can still inspect and roll back to an installed v1 last-known-good.
+        petpackReadVersions = try container.decodeIfPresent(
+            [String].self,
+            forKey: .petpackReadVersions
+        ) ?? [petpackSchemaVersion]
+        petpackWriteVersion = try container.decodeIfPresent(
+            String.self,
+            forKey: .petpackWriteVersion
+        ) ?? petpackSchemaVersion
+        connectorContracts = try container.decode(
+            RuntimeConnectorContracts.self,
+            forKey: .connectorContracts
+        )
     }
 }
 

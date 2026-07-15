@@ -18,6 +18,7 @@ The V1 scope is intentionally narrow. Do not add public galleries, sharing/commu
 - Core service: Rust PetCore daemon with Unix Domain Socket JSON-RPC and SQLite.
 - Pet format: app-owned `.petpack`, not a Codex built-in pet compatibility package.
 - AI generation: Codex App Server plus an internal Pet Studio Skill.
+- Portable generation/editing: the provider-neutral `agent-pet-maker` Skill for image-capable external Agent hosts; import/activation requires explicit user authorization.
 - Agent integrations: Codex, Claude Code, Pi Coding Agent, and OpenCode via their supported hooks, plugins, extensions, or event streams.
 
 ## Repository Layout
@@ -34,6 +35,7 @@ plugins/claude-code/
 plugins/pi/
 plugins/opencode/
 skills/agent-pet-studio/
+skills/agent-pet-maker/
 schemas/
 docs/
 ```

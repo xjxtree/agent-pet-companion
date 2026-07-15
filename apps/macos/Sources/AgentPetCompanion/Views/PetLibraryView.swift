@@ -3,8 +3,12 @@ import AppKit
 import SwiftUI
 
 struct PetLibraryView: View {
+    private static let maximumEditInstructionCharacters = 8_000
+
     @EnvironmentObject private var store: AppStore
     @State private var pendingDeletePet: PetSummary?
+    @State private var pendingEditPet: PetSummary?
+    @State private var editInstruction = ""
     @State private var selectedPetID: String?
 
     private var selectedPet: PetSummary? {
@@ -56,6 +60,55 @@ struct PetLibraryView: View {
                 Text("将删除本 App 自有 .petpack 资源，此操作不会上传或保留副本。")
             }
         }
+        .sheet(item: $pendingEditPet) { pet in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("AI 修改 \(pet.name)")
+                    .font(.title2.bold())
+                Text("描述希望调整的外观或动作。PetCore 会以当前 .petpack 为基线，保留同一宠物 ID，并在校验通过后提交新修订。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $editInstruction)
+                    .font(.body)
+                    .frame(minHeight: 120)
+                    .padding(8)
+                    .apcLiquidGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .accessibilityLabel("宠物修改要求")
+                HStack {
+                    if store.generationSession.isActive {
+                        Text("请先完成或取消当前 AI 制作任务")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(editInstruction.count) / \(Self.maximumEditInstructionCharacters)")
+                        .foregroundStyle(
+                            editInstruction.count > Self.maximumEditInstructionCharacters
+                                ? .red
+                                : .secondary
+                        )
+                }
+                .font(.caption)
+                HStack {
+                    Spacer()
+                    Button("取消") {
+                        pendingEditPet = nil
+                    }
+                    Button("开始修改") {
+                        let instruction = editInstruction
+                        pendingEditPet = nil
+                        editInstruction = ""
+                        store.startPetEdit(pet, instruction: instruction)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        editInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || editInstruction.count > Self.maximumEditInstructionCharacters
+                            || store.generationSession.isActive
+                    )
+                }
+            }
+            .padding(24)
+            .frame(width: 480)
+        }
     }
 
     private var librarySurface: some View {
@@ -99,6 +152,10 @@ struct PetLibraryView: View {
                                 selected: selectedPet?.id == pet.id,
                                 onSelect: {
                                     selectedPetID = pet.id
+                                },
+                                onRequestEdit: {
+                                    editInstruction = ""
+                                    pendingEditPet = pet
                                 }
                             ) {
                                 pendingDeletePet = pet
@@ -113,9 +170,16 @@ struct PetLibraryView: View {
 
     private var detailSurface: some View {
         Surface {
-            CurrentPetDetail(pet: selectedPet) { pet in
-                pendingDeletePet = pet
-            }
+            CurrentPetDetail(
+                pet: selectedPet,
+                onRequestEdit: { pet in
+                    editInstruction = ""
+                    pendingEditPet = pet
+                },
+                onRequestDelete: { pet in
+                    pendingDeletePet = pet
+                }
+            )
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
@@ -126,6 +190,7 @@ struct PetCard: View {
     var pet: PetSummary
     var selected: Bool
     var onSelect: () -> Void
+    var onRequestEdit: () -> Void
     var onRequestDelete: () -> Void
 
     var body: some View {
@@ -188,6 +253,10 @@ struct PetCard: View {
                 Spacer()
 
                 Menu("管理") {
+                    Button("AI 修改") {
+                        onRequestEdit()
+                    }
+                    .disabled(store.generationSession.isActive)
                     Button("查看生成会话") {
                         store.openGenerationHistory(for: pet)
                     }
@@ -223,6 +292,7 @@ struct PetCard: View {
 struct CurrentPetDetail: View {
     @EnvironmentObject private var store: AppStore
     var pet: PetSummary?
+    var onRequestEdit: (PetSummary) -> Void
     var onRequestDelete: (PetSummary) -> Void
 
     var body: some View {
@@ -296,6 +366,10 @@ struct CurrentPetDetail: View {
 
                 HStack {
                     Spacer()
+                    SecondaryActionButton(title: "AI 修改", systemImage: "wand.and.stars") {
+                        onRequestEdit(pet)
+                    }
+                    .disabled(busy || store.generationSession.isActive)
                     SecondaryActionButton(title: "会话", systemImage: "text.bubble") {
                         store.openGenerationHistory(for: pet)
                     }

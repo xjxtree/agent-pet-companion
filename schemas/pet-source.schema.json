@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpetcompanion.local/schemas/pet-source.schema.json",
+  "title": "Agent Pet Companion Pet Source Metadata — Safe Producer Profile",
+  "description": "Runtime-enforced contract for source/source.json in the tagged Safe Producer profile. The apc.pet-source.v1 marker opts the package into strict validation of all four portable metadata artifacts; historical untagged packages remain on the legacy minimum gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generator", "provenance"],
+  "properties": {
+    "schema_version": { "const": "apc.pet-source.v1" },
+    "generator": { "$ref": "#/$defs/boundedText" },
+    "provenance": { "$ref": "#/$defs/boundedText" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "manifest_id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
+    "pet_name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "style": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" },
+    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "visual_source": {
+      "enum": [
+        "image-generation",
+        "user-reference-derived",
+        "reference-image",
+        "generated-vector",
+        "deterministic-preview",
+        "manual",
+        "unknown"
+      ]
+    },
+    "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
+    "preview_only": { "type": "boolean" },
+    "reference_visual_influence": { "type": "boolean" },
+    "form": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string", "maxLength": 8000 },
+        "style": { "type": "string", "maxLength": 1000 },
+        "quality": { "enum": ["standard", "high", "ultra", "original"] },
+        "reference_images": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/referencePath" }
+        }
+      }
+    },
+    "reference_files": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/referencePath" }
+    },
+    "input_reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "copied_reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "ai_brief": {
+      "type": ["object", "null"],
+      "maxProperties": 64
+    },
+    "palette_source": { "type": "string", "minLength": 1, "maxLength": 96 },
+    "palette": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hair", "skin", "body", "accent", "source"],
+      "properties": {
+        "hair": { "$ref": "#/$defs/rgba" },
+        "skin": { "$ref": "#/$defs/rgba" },
+        "body": { "$ref": "#/$defs/rgba" },
+        "accent": { "$ref": "#/$defs/rgba" },
+        "source": { "type": "string", "minLength": 1, "maxLength": 96 }
+      }
+    },
+    "skill_helper": { "$ref": "#/$defs/boundedText" },
+    "runner": { "$ref": "#/$defs/boundedText" },
+    "materialized_by": { "$ref": "#/$defs/boundedText" },
+    "base_manifest_id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
+    "base_revision": { "type": "integer", "minimum": 1 },
+    "changed_states": {
+      "type": "array",
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/stateName" }
+    },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "provenance": { "const": "skill-full-source" } },
+        "required": ["provenance"]
+      },
+      "then": {
+        "required": ["visual_source", "frames_per_state", "preview_only"],
+        "properties": {
+          "visual_source": { "enum": ["image-generation", "user-reference-derived"] },
+          "frames_per_state": { "minimum": 2 },
+          "preview_only": { "const": false }
+        },
+        "not": { "required": ["materialized_by"] }
+      }
+    }
+  ],
+  "$defs": {
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "\\S"
+    },
+    "stateName": {
+      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+    },
+    "referencePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "anyOf": [
+        { "pattern": "^source/references/[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+        { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      ],
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "rgba": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+    }
+  }
+}

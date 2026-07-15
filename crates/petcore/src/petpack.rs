@@ -27,6 +27,12 @@ const MAX_FRAMES_PER_STATE: usize = 40;
 const MAX_TOTAL_FRAMES: usize = MAX_FRAMES_PER_STATE * 7;
 const MAX_DECODED_STATE_BYTES: u64 = 420 * 1024 * 1024;
 const MAX_FRAME_PIXELS: u64 = 16_777_216;
+const PET_SOURCE_SCHEMA_VERSION: &str = "apc.pet-source.v1";
+const PET_SOURCE_SCHEMA: &str = include_str!("../../../schemas/pet-source.schema.json");
+const PET_BRIEF_SCHEMA: &str = include_str!("../../../schemas/pet-brief.schema.json");
+const PET_SOURCE_EVENT_SCHEMA: &str = include_str!("../../../schemas/pet-source-event.schema.json");
+const PET_VALIDATION_SCHEMA: &str = include_str!("../../../schemas/pet-validation.schema.json");
+const PETPACK_MANIFEST_SCHEMA: &str = include_str!("../../../schemas/petpack.schema.json");
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PetpackValidation {
@@ -34,6 +40,15 @@ pub struct PetpackValidation {
     pub manifest: PetManifest,
     pub frame_count: usize,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PetpackExport {
+    pub ok: bool,
+    pub pet_id: String,
+    pub output_path: String,
+    pub byte_count: u64,
+    pub validation: PetpackValidation,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -59,6 +74,61 @@ pub fn validate_petpack_path(path: &Path) -> Result<PetpackValidation> {
     validate_petpack_dir(temp.path())
 }
 
+/// Validates and safely expands a portable petpack into a new workspace.
+///
+/// The destination must not already exist. Archive limits and path-safety
+/// checks are identical to normal import, and a failed expansion is removed so
+/// callers never observe a partial edit baseline.
+pub fn extract_validated_petpack_source(
+    source_path: &Path,
+    destination: &Path,
+) -> Result<PetpackValidation> {
+    if destination.exists() {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "petpack workspace already exists: {}",
+            destination.display()
+        )));
+    }
+    let validation = validate_petpack_path(source_path)?;
+    let parent = destination.parent().ok_or_else(|| {
+        PetCoreError::InvalidRequest("petpack workspace must have a parent directory".to_string())
+    })?;
+    fs::create_dir_all(parent)?;
+    fs::create_dir(destination)?;
+
+    let expanded = if source_path.is_dir() {
+        // Rebuild directory input through the canonical archive writer so the
+        // same entry/path rules are applied before it becomes an edit baseline.
+        let temp = tempfile::Builder::new()
+            .prefix(".apc-petpack-workspace-")
+            .tempdir_in(parent)?;
+        let archive = temp.path().join("source.petpack");
+        write_petpack_zip(source_path, &archive).and_then(|_| unzip_petpack(&archive, destination))
+    } else {
+        unzip_petpack(source_path, destination)
+    };
+    if let Err(error) = expanded {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
+    }
+
+    match validate_petpack_dir(destination) {
+        Ok(expanded_validation) if expanded_validation.manifest.id == validation.manifest.id => {
+            Ok(expanded_validation)
+        }
+        Ok(_) => {
+            let _ = fs::remove_dir_all(destination);
+            Err(PetCoreError::Validation(
+                "expanded petpack manifest id changed".to_string(),
+            ))
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(destination);
+            Err(error)
+        }
+    }
+}
+
 pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
     validate_source_tree_budgets(dir)?;
     let manifest_path = dir.join("manifest.json");
@@ -74,7 +144,7 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
 
     let mut frame_count = 0usize;
     let mut warnings = Vec::new();
-    validate_petpack_metadata(dir)?;
+    validate_petpack_metadata(dir, &manifest)?;
     validate_preview_assets(dir, &mut warnings)?;
 
     for state in REQUIRED_STATES {
@@ -348,14 +418,453 @@ fn validate_preview_assets(dir: &Path, warnings: &mut Vec<String>) -> Result<()>
     Ok(())
 }
 
-fn validate_petpack_metadata(dir: &Path) -> Result<()> {
+fn validate_petpack_metadata(dir: &Path, manifest: &PetManifest) -> Result<()> {
     read_json_file(dir, "brief.json")?;
     validate_source_metadata(dir)?;
     validate_nonempty_text_file(dir, "source/prompt.md")?;
     validate_reference_directory(dir)?;
     validate_skill_session_jsonl(dir)?;
     validate_build_metadata(dir)?;
+    validate_safe_producer_metadata(dir, manifest)?;
     Ok(())
+}
+
+fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result<()> {
+    let source = read_json_file(dir, "source/source.json")?;
+    let Some(schema_version) = source.get("schema_version") else {
+        // Historical v1 packages predate the safe-producer profile. They keep
+        // the original minimum metadata gate so users can still reimport an
+        // archive exported by an older App build.
+        return Ok(());
+    };
+    if schema_version.as_str() != Some(PET_SOURCE_SCHEMA_VERSION) {
+        return Err(PetCoreError::Validation(format!(
+            "unsupported petpack source metadata schema; expected {PET_SOURCE_SCHEMA_VERSION}"
+        )));
+    }
+
+    let brief = read_json_file(dir, "brief.json")?;
+    let validation = read_json_file(dir, "build/validation.json")?;
+    validate_json_schema("brief.json", &brief, PET_BRIEF_SCHEMA)?;
+    validate_json_schema("source/source.json", &source, PET_SOURCE_SCHEMA)?;
+    validate_json_schema("build/validation.json", &validation, PET_VALIDATION_SCHEMA)?;
+    validate_safe_producer_json_privacy("brief.json", &brief)?;
+    validate_safe_producer_json_privacy("source/source.json", &source)?;
+    validate_safe_producer_json_privacy("build/validation.json", &validation)?;
+
+    let session_path = dir.join("source/skill_session.jsonl");
+    let session = fs::read_to_string(&session_path)?;
+    for (index, line) in session.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let event: serde_json::Value = serde_json::from_str(trimmed).map_err(|_| {
+            PetCoreError::Validation(format!(
+                "invalid JSONL metadata source/skill_session.jsonl at line {}",
+                index + 1
+            ))
+        })?;
+        validate_json_schema(
+            &format!("source/skill_session.jsonl line {}", index + 1),
+            &event,
+            PET_SOURCE_EVENT_SCHEMA,
+        )?;
+        validate_safe_producer_json_privacy("source/skill_session.jsonl", &event)?;
+    }
+
+    let manifest_name = serde_json::Value::String(manifest.name.clone());
+    let manifest_style = serde_json::Value::String(manifest.style.clone());
+    let manifest_quality = serde_json::to_value(manifest.quality)?;
+    let manifest_size = serde_json::to_value(manifest.render_size)?;
+    require_metadata_match("brief.json", "name", brief.get("name"), &manifest_name)?;
+    require_metadata_match("brief.json", "style", brief.get("style"), &manifest_style)?;
+    require_metadata_match(
+        "brief.json",
+        "quality",
+        brief.get("quality"),
+        &manifest_quality,
+    )?;
+    if let Some(runtime) = brief.get("runtime") {
+        require_metadata_match(
+            "brief.json",
+            "runtime.render_size",
+            runtime.get("render_size"),
+            &manifest_size,
+        )?;
+    }
+    for (field, expected) in [
+        (
+            "manifest_id",
+            serde_json::Value::String(manifest.id.clone()),
+        ),
+        ("pet_name", manifest_name.clone()),
+        ("style", manifest_style.clone()),
+        ("quality", manifest_quality.clone()),
+    ] {
+        if source.get(field).is_some() {
+            require_metadata_match("source/source.json", field, source.get(field), &expected)?;
+        }
+    }
+    if validation.get("manifest_id").is_some() {
+        require_metadata_match(
+            "build/validation.json",
+            "manifest_id",
+            validation.get("manifest_id"),
+            &serde_json::Value::String(manifest.id.clone()),
+        )?;
+    }
+    if let Some(artifact_manifest) = validation.get("manifest") {
+        validate_json_schema(
+            "build/validation.json manifest",
+            artifact_manifest,
+            PETPACK_MANIFEST_SCHEMA,
+        )?;
+        let artifact_manifest: PetManifest = serde_json::from_value(artifact_manifest.clone())?;
+        if &artifact_manifest != manifest {
+            return Err(PetCoreError::Validation(
+                "build/validation.json manifest does not match manifest.json".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Enforces the portable-metadata privacy boundary independently from the
+/// producer JSON schemas. In particular, `ai_brief` is intentionally open to
+/// creative fields, so schema validation alone cannot stop a provider from
+/// nesting execution traces, credentials, or local filesystem locations in
+/// that object.
+pub(crate) fn validate_safe_producer_json_privacy(
+    relative_path: &str,
+    value: &serde_json::Value,
+) -> Result<()> {
+    const MAX_PRIVACY_DEPTH: usize = 64;
+    const MAX_PRIVACY_NODES: usize = 65_536;
+
+    let mut stack = vec![(value, 0usize)];
+    let mut visited = 0usize;
+    while let Some((current, depth)) = stack.pop() {
+        visited = visited.saturating_add(1);
+        if visited > MAX_PRIVACY_NODES {
+            return Err(metadata_privacy_error(
+                relative_path,
+                "metadata is too complex",
+            ));
+        }
+        if depth > MAX_PRIVACY_DEPTH {
+            return Err(metadata_privacy_error(
+                relative_path,
+                "metadata is too deeply nested",
+            ));
+        }
+
+        match current {
+            serde_json::Value::Object(object) => {
+                for (key, nested) in object {
+                    if let Some(category) = forbidden_private_field(key) {
+                        return Err(metadata_privacy_error(
+                            relative_path,
+                            &format!("forbidden private field {category}"),
+                        ));
+                    }
+                    stack.push((nested, depth + 1));
+                }
+            }
+            serde_json::Value::Array(values) => {
+                stack.extend(values.iter().map(|nested| (nested, depth + 1)));
+            }
+            serde_json::Value::String(text) => {
+                if contains_external_locator(text) {
+                    return Err(metadata_privacy_error(
+                        relative_path,
+                        "external locator is not portable",
+                    ));
+                }
+                if contains_absolute_local_path(text) {
+                    return Err(metadata_privacy_error(
+                        relative_path,
+                        "absolute local path is not portable",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn metadata_privacy_error(relative_path: &str, category: &str) -> PetCoreError {
+    // Both inputs are internal labels/categories. Never include the rejected
+    // value (which may itself be a credential, transcript, or user path).
+    PetCoreError::Validation(bounded_asset_error(&format!(
+        "petpack metadata privacy check rejected {relative_path}: {category}"
+    )))
+}
+
+fn forbidden_private_field(key: &str) -> Option<&'static str> {
+    let normalized = normalize_private_field(key);
+    if let Some(category) = private_field_category(&normalized) {
+        return Some(category);
+    }
+    if let Some(category) = affixed_private_field_category(&normalized) {
+        return Some(category);
+    }
+
+    // Extension and creative-object keys may carry a reverse-domain namespace
+    // or a descriptive prefix/suffix. Match forbidden names only on explicit
+    // punctuation/camel-case word boundaries so harmless words such as
+    // `commanding` or `environmental` do not become false positives.
+    let words = private_field_words(key);
+    for start in 0..words.len() {
+        let mut candidate = String::new();
+        for word in &words[start..] {
+            candidate.push_str(word);
+            // Every currently forbidden field name is much shorter than this;
+            // bounding candidate windows keeps adversarial long keys linear.
+            if candidate.len() > 32 {
+                break;
+            }
+            if let Some(category) = private_field_category(&candidate) {
+                return Some(category);
+            }
+            if let Some(category) = affixed_private_field_category(&candidate) {
+                return Some(category);
+            }
+        }
+    }
+    None
+}
+
+fn normalize_private_field(key: &str) -> String {
+    key.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn private_field_words(key: &str) -> Vec<String> {
+    let characters = key.chars().collect::<Vec<_>>();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for (index, character) in characters.iter().copied().enumerate() {
+        if !character.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                words.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            continue;
+        }
+
+        let previous = index
+            .checked_sub(1)
+            .and_then(|offset| characters.get(offset));
+        let next = characters.get(index + 1);
+        let camel_boundary = !current.is_empty()
+            && character.is_ascii_uppercase()
+            && (previous.is_some_and(|value| value.is_ascii_lowercase() || value.is_ascii_digit())
+                || (previous.is_some_and(|value| value.is_ascii_uppercase())
+                    && next.is_some_and(|value| value.is_ascii_lowercase())));
+        if camel_boundary {
+            words.push(current.to_ascii_lowercase());
+            current.clear();
+        }
+        current.push(character);
+    }
+    if !current.is_empty() {
+        words.push(current.to_ascii_lowercase());
+    }
+    words
+}
+
+fn private_field_category(normalized: &str) -> Option<&'static str> {
+    match normalized {
+        "threadid" => Some("thread_id"),
+        "turnid" => Some("turn_id"),
+        "sessionid" => Some("session_id"),
+        "requestid" => Some("request_id"),
+        "conversationid" => Some("conversation_id"),
+        "conversation" | "conversations" => Some("conversation"),
+        "messagehistory" | "messages" => Some("messages"),
+        "transcript" | "transcripts" | "fulltranscript" | "rawtranscript" => Some("transcript"),
+        "assistanttext" | "assistantmessage" | "usermessage" | "usermessages" => {
+            Some("conversation_text")
+        }
+        "reasoning" | "reasoningtext" | "hiddenreasoning" | "chainofthought"
+        | "internalthoughts" => Some("hidden_reasoning"),
+        "command" | "commands" | "commandline" | "commandsource" | "shellcommand" => {
+            Some("command")
+        }
+        "toolargs" | "toolarguments" | "toolinput" => Some("tool_input"),
+        "tooloutput" | "toolresult" | "toolresults" | "toolresponse" | "toolresponses" => {
+            Some("tool_output")
+        }
+        "stdout" | "stderr" => Some("process_output"),
+        "environment" | "env" | "cwd" | "workingdirectory" | "workspacepath" => {
+            Some("execution_environment")
+        }
+        "token" | "accesstoken" | "refreshtoken" | "apikey" => Some("credential"),
+        "cookie" | "cookies" | "authorization" | "auth" | "authentication" => {
+            Some("authentication")
+        }
+        "secret" | "secrets" | "password" | "credential" | "credentials" => Some("credential"),
+        "codexappserver" => Some("codex_app_server"),
+        _ => None,
+    }
+}
+
+fn affixed_private_field_category(normalized: &str) -> Option<&'static str> {
+    // These compound identifiers are specific enough to recognize when an
+    // all-lowercase producer joins a descriptive affix without a separator.
+    // Do not extend this to short/generic names such as token, secret, command,
+    // or auth: that would reject ordinary creative keys like `tokenized` and
+    // `commanding`.
+    for (private_name, category) in [
+        ("threadid", "thread_id"),
+        ("turnid", "turn_id"),
+        ("sessionid", "session_id"),
+        ("requestid", "request_id"),
+        ("conversationid", "conversation_id"),
+        ("apikey", "credential"),
+        ("accesstoken", "credential"),
+        ("refreshtoken", "credential"),
+        ("codexappserver", "codex_app_server"),
+    ] {
+        if normalized.len() > private_name.len()
+            && (normalized.starts_with(private_name) || normalized.ends_with(private_name))
+        {
+            return Some(category);
+        }
+    }
+    None
+}
+
+fn contains_absolute_local_path(text: &str) -> bool {
+    let characters = text.chars().collect::<Vec<_>>();
+    for (index, character) in characters.iter().copied().enumerate() {
+        let previous = index
+            .checked_sub(1)
+            .and_then(|offset| characters.get(offset).copied());
+        if !is_locator_boundary(previous) {
+            continue;
+        }
+        let next = characters.get(index + 1).copied();
+        let after_next = characters.get(index + 2).copied();
+
+        if character == '~' && next == Some('/') {
+            return true;
+        }
+        if character == '/'
+            && next.is_some_and(|value| {
+                value.is_ascii_alphanumeric() || matches!(value, '/' | '.' | '_' | '-')
+            })
+        {
+            return true;
+        }
+        if character.is_ascii_alphabetic()
+            && next == Some(':')
+            && after_next.is_some_and(|value| matches!(value, '/' | '\\'))
+        {
+            return true;
+        }
+        if character == '\\'
+            && next == Some('\\')
+            && after_next.is_some_and(|value| {
+                value.is_ascii_alphanumeric() || matches!(value, '.' | '_' | '-')
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_locator_boundary(previous: Option<char>) -> bool {
+    previous.is_none_or(|character| {
+        character.is_whitespace()
+            || (!character.is_ascii_alphanumeric() && !matches!(character, '_' | '-'))
+    })
+}
+
+fn contains_external_locator(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for (separator, _) in text.match_indices("://") {
+        let mut start = separator;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || matches!(bytes[start - 1], b'+' | b'-' | b'.'))
+        {
+            start -= 1;
+        }
+        let scheme = &bytes[start..separator];
+        if scheme.first().is_some_and(u8::is_ascii_alphabetic)
+            && scheme.iter().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, b'+' | b'-' | b'.')
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn validate_json_schema(
+    relative_path: &str,
+    instance: &serde_json::Value,
+    schema_source: &str,
+) -> Result<()> {
+    let schema: serde_json::Value = serde_json::from_str(schema_source).map_err(|_| {
+        PetCoreError::Validation("bundled petpack metadata schema is invalid".to_string())
+    })?;
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .should_validate_formats(true)
+        .build(&schema)
+        .map_err(|_| {
+            PetCoreError::Validation("bundled petpack metadata schema is invalid".to_string())
+        })?;
+    let diagnostics = validator
+        .iter_errors(instance)
+        .take(8)
+        .map(|error| {
+            let instance_path = error.instance_path.to_string();
+            let schema_path = error.schema_path.to_string();
+            format!(
+                "{} -> {}",
+                if instance_path.is_empty() {
+                    "/"
+                } else {
+                    &instance_path
+                },
+                if schema_path.is_empty() {
+                    "/"
+                } else {
+                    &schema_path
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    if diagnostics.is_empty() {
+        return Ok(());
+    }
+    Err(PetCoreError::Validation(bounded_asset_error(&format!(
+        "petpack metadata {relative_path} does not conform: {}",
+        diagnostics.join(", ")
+    ))))
+}
+
+fn require_metadata_match(
+    relative_path: &str,
+    field: &str,
+    actual: Option<&serde_json::Value>,
+    expected: &serde_json::Value,
+) -> Result<()> {
+    if actual == Some(expected) {
+        return Ok(());
+    }
+    Err(PetCoreError::Validation(format!(
+        "petpack metadata {relative_path} field {field} does not match manifest.json"
+    )))
 }
 
 fn validate_source_metadata(dir: &Path) -> Result<()> {
@@ -507,6 +1016,7 @@ pub fn write_sample_petpack_dir(
     fs::write(
         dir.join("brief.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-brief.v1",
             "name": name,
             "style": style,
             "quality": quality,
@@ -553,6 +1063,7 @@ pub fn write_sample_petpack_dir(
     fs::write(
         source_dir.join("source.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-source.v1",
             "generator": "sample-petpack",
             "provenance": "test_fixture",
             "created_at": manifest.created_at,
@@ -564,6 +1075,7 @@ pub fn write_sample_petpack_dir(
     fs::write(
         source_dir.join("skill_session.jsonl"),
         serde_json::to_string(&serde_json::json!({
+            "schema_version": "apc.pet-source-event.v1",
             "event": "skill.loaded",
             "skill": "agent-pet-studio",
             "runner": "sample-petpack",
@@ -575,7 +1087,11 @@ pub fn write_sample_petpack_dir(
     fs::create_dir_all(&build_dir)?;
     fs::write(
         build_dir.join("validation.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({ "ok": true }))?,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-validation.v1",
+            "ok": true,
+            "validator": "sample-petpack"
+        }))?,
     )?;
 
     Ok(manifest)
@@ -649,6 +1165,7 @@ fn write_generated_petpack_dir_with_identity(
     fs::write(
         dir.join("brief.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-brief.v1",
             "name": pet_name,
             "style": form.style,
             "quality": form.quality,
@@ -716,6 +1233,7 @@ fn write_generated_petpack_dir_with_identity(
     fs::write(
         source_dir.join("source.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-source.v1",
             "generator": generator,
             "provenance": provenance,
             "created_at": manifest.created_at,
@@ -737,7 +1255,9 @@ fn write_generated_petpack_dir_with_identity(
     fs::write(
         build_dir.join("validation.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": "apc.pet-validation.v1",
             "ok": true,
+            "validator": "petcore",
             "generator": generator,
             "provenance": provenance,
             "frames_per_state": frame_count
@@ -773,6 +1293,111 @@ pub fn build_petpack(input_dir: &Path, output_path: &Path) -> Result<PetpackVali
         stage.path().join("previous-package.petpack"),
     )])?;
     Ok(validation)
+}
+
+/// Exports the currently installed immutable package for `pet_id` without
+/// rebuilding it. The owned archive is validated before it is copied, the
+/// staged copy is validated again, and only then is it atomically renamed to
+/// the caller-selected destination. Keeping the original archive bytes makes
+/// export/import a lossless round trip for provenance and optional metadata.
+pub fn export_petpack(
+    paths: &AppPaths,
+    database: &Database,
+    pet_id: &str,
+    output_path: &Path,
+) -> Result<PetpackExport> {
+    validate_pet_id(pet_id)?;
+    let _store_guard = PetStoreGuard::acquire(paths)?;
+    let pet = database
+        .get_pet(pet_id)?
+        .ok_or_else(|| PetCoreError::InvalidRequest(format!("pet not found: {pet_id}")))?;
+    let source_path = owned_pet_asset_path(paths, Path::new(&pet.petpack_path), AssetKind::File)?
+        .ok_or_else(|| {
+        PetCoreError::Validation(format!(
+            "installed petpack for {pet_id} is missing or outside the owned pet store"
+        ))
+    })?;
+    let validation = validate_petpack_path(&source_path)?;
+    if validation.manifest.id != pet.id {
+        return Err(PetCoreError::Validation(format!(
+            "installed petpack manifest id {} does not match library pet {}",
+            validation.manifest.id, pet.id
+        )));
+    }
+
+    let output_file_name = output_path.file_name().ok_or_else(|| {
+        PetCoreError::InvalidRequest(format!(
+            "petpack export path must name a file: {}",
+            output_path.display()
+        ))
+    })?;
+    if output_file_name.is_empty() {
+        return Err(PetCoreError::InvalidRequest(
+            "petpack export path must name a file".to_string(),
+        ));
+    }
+    let requested_parent = output_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if !requested_parent.is_dir() {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "petpack export parent directory does not exist: {}",
+            requested_parent.display()
+        )));
+    }
+    let output_parent = fs::canonicalize(requested_parent)?;
+    let owned_store = fs::canonicalize(&paths.pets_dir)?;
+    let output_path = output_parent.join(output_file_name);
+    if output_path.starts_with(&owned_store) {
+        return Err(PetCoreError::Validation(
+            "petpack export destination must be outside the owned pet store".to_string(),
+        ));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(&output_path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(PetCoreError::Validation(format!(
+                "petpack export destination must be a regular file: {}",
+                output_path.display()
+            )));
+        }
+    }
+
+    let stage = tempfile::Builder::new()
+        .prefix(".apc-petpack-export-")
+        .tempdir_in(&output_parent)?;
+    let staged_output = stage.path().join("package.petpack");
+    let source_size = fs::metadata(&source_path)?.len();
+    let copied = fs::copy(&source_path, &staged_output)?;
+    if copied != source_size {
+        return Err(PetCoreError::Validation(
+            "installed petpack changed while it was being exported".to_string(),
+        ));
+    }
+    File::open(&staged_output)?.sync_all()?;
+    let staged_validation = validate_petpack_path(&staged_output)?;
+    if staged_validation.manifest != validation.manifest
+        || staged_validation.frame_count != validation.frame_count
+        || staged_validation.warnings != validation.warnings
+    {
+        return Err(PetCoreError::Validation(
+            "staged petpack validation changed while exporting".to_string(),
+        ));
+    }
+
+    // On the supported Unix/macOS runtime, rename replaces an existing regular
+    // file in one filesystem operation. The staged file lives in the target
+    // directory, so the commit cannot cross filesystems.
+    fs::rename(&staged_output, &output_path)?;
+    File::open(&output_parent)?.sync_all()?;
+
+    Ok(PetpackExport {
+        ok: true,
+        pet_id: pet.id,
+        output_path: output_path.display().to_string(),
+        byte_count: copied,
+        validation: staged_validation,
+    })
 }
 
 fn reject_output_inside_input(input_dir: &Path, output_path: &Path) -> Result<()> {
@@ -822,7 +1447,21 @@ pub fn import_petpack_with_origin(
     source_path: &Path,
     origin: PetOrigin,
 ) -> Result<PetSummary> {
-    let _store_guard = PetStoreGuard::acquire(paths)?;
+    let store_guard = PetStoreGuard::acquire(paths)?;
+    import_petpack_with_origin_guarded(paths, database, source_path, origin, &store_guard)
+}
+
+/// Imports while the caller holds the pet-store mutation lock. This is kept
+/// crate-private so generation can make its stale-edit precondition and the
+/// revision commit one serialized operation without attempting to flock the
+/// same store twice.
+pub(crate) fn import_petpack_with_origin_guarded(
+    paths: &AppPaths,
+    database: &Database,
+    source_path: &Path,
+    origin: PetOrigin,
+    _store_guard: &PetStoreGuard,
+) -> Result<PetSummary> {
     let prepared = prepare_import_assets(paths, source_path)?;
     let PreparedImport {
         validation,
@@ -2539,7 +3178,7 @@ fn unzip_petpack(source_path: &Path, output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_source_tree_budgets(root: &Path) -> Result<()> {
+pub(crate) fn validate_source_tree_budgets(root: &Path) -> Result<()> {
     fn visit(path: &Path, entries: &mut usize, total: &mut u64) -> Result<()> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;

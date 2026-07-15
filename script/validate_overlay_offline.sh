@@ -85,7 +85,10 @@ for display in displays {
                 visibleFrame: frame,
                 clickMenuEnabled: true
             )
-            let bounds = OverlayGeometry.petInteractiveScreenBounds(
+            // Drag clamping intentionally follows the visible pet pixels and
+            // reachable controls, not the larger transparent render panel.
+            // The latter may extend beyond the movement frame for shadows.
+            let bounds = OverlayGeometry.petMovementScreenBounds(
                 scale: scale,
                 petScreenCenter: center,
                 clickMenuEnabled: true,
@@ -135,6 +138,10 @@ swiftc \
   -emit-module \
   -module-name PetFramePipelineValidation \
   -I "$BIN_DIR/Modules" \
+  "$MACOS_DIR/Sources/AgentPetCompanion/App/Localization.swift" \
+  "$MACOS_DIR/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift" \
+  "$LOCALIZATION_ACCESSOR" \
+  "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/PetFramePipeline.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/PetAssetLocator.swift" \
   "${CORE_OBJECTS[@]}" \

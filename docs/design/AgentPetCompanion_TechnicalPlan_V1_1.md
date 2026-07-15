@@ -214,6 +214,8 @@ Agent 连接
 
 `.petpack` 是 zip 包，内部结构固定：
 
+完整规范、producer profile、资源预算、路径安全、修订语义和未来兼容策略见 [Agent Pet Companion `.petpack` Whitepaper V1](../specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md)。本技术方案只摘要运行链路；实现与白皮书冲突时必须记录差距，不能把未实现门禁写成已完成。
+
 ```text
 manifest.json
 brief.json
@@ -291,6 +293,12 @@ V1 固定生成 7 个状态：
 失败
 ```
 
+### 5.3 导入、导出与不可变修订
+
+所有生产者共用 `petcore-cli`/PetCore 的同一套 V1 校验器。导入先校验，再写入 App 自有存储的隐藏 staging revision；archive、运行时帧和数据库指针全部成功后才原子切换 `active.json`。相同 `manifest.id` 表示同一宠物的新 revision，不创建第二条逻辑宠物；导入不会让原本非活跃的宠物抢占当前桌宠。
+
+`petpack.export { id, path }` 只导出当前不可变 archive：目标必须位于 App 自有宠物存储之外，先在目标同目录 staging、前后两次校验，再原子替换。导出不重新编码 archive，因此导出文件可重新导入并保持原字节内容。`apc.runtime-manifest.v1` 同时公开 `petpack_read_versions` 与 `petpack_write_version`；当前均为 `apc.petpack.v1`，未知版本 fail closed。
+
 ---
 
 ## 6. 宠物 Studio AI 生成流程
@@ -359,6 +367,16 @@ agent-pet-studio
 7. 把生成进度写入会话与 PetCore。
 
 严格外部 source 至少包含七个固定状态、每状态两张透明帧、预览、manifest、brief、`source/source.json`、Skill 会话记录与校验结果。`generator=codex-app-server-skill`、`provenance=skill-full-source` 且不存在 preview/materializer/repair 标记时才可记为已验证 Skill 来源；确定性 helper、CLI materializer 和 PetCore materializer 都不能满足该门禁。
+
+### 6.5 任意库内宠物修改
+
+`generation.edit { pet_id, instruction }` 为 App 内 Codex 修改入口。PetCore 校验并安全展开当前 revision 到隔离 job workspace，记录基线 archive SHA-256、manifest 与状态哈希；包内 prompt/metadata 一律按不可信数据处理。结果必须保持同一 ID、`created_at`、quality、render size、FPS 与七状态目录/loop 结构，校验后以新 revision 提交。提交前再次核对当前 archive SHA-256，避免 AI 工作期间用户导入的新版本被旧结果覆盖。修改原非活跃宠物时保持非活跃，不擅自切换桌宠。
+
+### 6.6 外部 Agent 的可移植技能
+
+`skills/agent-pet-maker` 是 provider-neutral 的 Agent Skills 包，可交给具备真实图像理解与生成/编辑能力的 Claude Code、Pi、Hermes、OpenCode 等宿主。helper 只负责安全 workspace、基线哈希、结构约束、隐私元数据、PetCore 校验和构建，不生成或伪造视觉资产。修改模式保持 ID，并要求未声明修改的状态逐文件 byte-identical；缺少真实图像能力时输出 `capability_missing` sidecar。
+
+默认流程只产出 `.petpack`。用户明确要求导入/启用时，技能才通过当前 App runtime 的在线 `petcore-cli` 调用 daemon 导入，核对返回 ID，再选择性 `pet activate`；禁止静默使用 `--offline`。激活只表示 PetCore 的唯一 active pet 已切换，是否正在屏幕渲染仍取决于 UI Host 与全局 `behavior.enabled`，技能不得为追求“显示成功”而擅自启动 App 或修改该开关。
 
 ---
 
@@ -587,7 +605,7 @@ App 在 `APC_HOME/run/app-instance.lock` 持有非阻塞文件锁；包括 `open
 
 每次 `.app` 打包都会生成一个同时写入 Info.plist 和内嵌 PetCore 二进制的 `APCBuildID`。`petcore.health` 同时返回 RPC 协议版本与 `build_id`；App 只有在两者都匹配时才沿用常驻服务。构建不一致时，App 使用健康响应中的 `instance_id` 请求受约束的 `petcore.shutdown`，等待旧 Unix socket 释放后再由 LaunchAgent（或受控直启回退）接管；LaunchAgent 配置也携带期望构建 ID，并以 `kickstart -k`/bootout + bootstrap 强制换用新二进制。PetCore 启动时会拒绝与 App 期望构建 ID 不一致的二进制。
 
-`APCBuildID` 与 RPC 精确握手是进程兼容的第一道门禁；当前实现另携带 `apc.runtime-manifest.v1`，绑定 App semantic version/build、`APCBuildID`、PetCore RPC/build、PetCore CLI、数据库 schema、Agent event schema、`.petpack` schema 和 Codex/Claude/Pi/OpenCode connector contract version。manifest 作为 App 签名范围内的资源随 bundle 分发。App 在停止旧 Core 前检查 manifest、迁移方向、数据库只读兼容性和最低/最高 schema 范围；旧 App 尝试打开未来数据库或不兼容 runtime 时拒绝静默降级。
+`APCBuildID` 与 RPC 精确握手是进程兼容的第一道门禁；当前实现另携带 `apc.runtime-manifest.v1`，绑定 App semantic version/build、`APCBuildID`、PetCore RPC/build、PetCore CLI、数据库 schema、Agent event schema、`.petpack` 可读版本列表/当前写入版本和 Codex/Claude/Pi/OpenCode connector contract version。manifest 作为 App 签名范围内的资源随 bundle 分发。App 在停止旧 Core 前检查 manifest、迁移方向、数据库只读兼容性和最低/最高 schema 范围；旧 App 尝试打开未来数据库或不兼容 runtime 时拒绝静默降级。
 
 当前更新交接分两阶段：先将 bundle 中的 PetCore、CLI 与 manifest 原子 stage 到 `APC_HOME/runtime/versions/<build-id>` 并执行候选二进制 `preflight`；随后对旧实例执行带 `instance_id` 的受约束 shutdown，使用候选重建 LaunchAgent（隔离验证使用 direct child），并只在 exact health/build/manifest 通过后写入 `current.json` 与 `last-known-good.json`。候选启动或健康检查失败时，启动前一个 last-known-good runtime 并恢复 current 指针，UI 显示可恢复的启动错误。该实现避免新旧 App/Core 静默混用；正式安装器层面的原子替换与 Developer ID 分发仍属于 P2。
 

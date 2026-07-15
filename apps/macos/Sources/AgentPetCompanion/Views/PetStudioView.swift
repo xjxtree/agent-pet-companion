@@ -11,7 +11,7 @@ struct PetStudioView: View {
             HeaderView(
                 title: "宠物 Studio",
                 subtitle: store.studioTab == .new
-                    ? (store.generationSession.isActive ? store.generationStateTitle : "新建桌面宠物预览")
+                    ? studioSubtitle
                     : "历史创建的宠物"
             ) {
                 Picker(APCLocalization.text(.studioPickerLabel), selection: $store.studioTab) {
@@ -38,6 +38,17 @@ struct PetStudioView: View {
 
     private func tabTitle(_ tab: StudioTab) -> String {
         APCLocalization.text(tab == .new ? .studioTabNew : .studioTabLibrary)
+    }
+
+    private var studioSubtitle: String {
+        if store.generationSession.operation == .modify,
+           store.generationSession.state != .idle
+        {
+            return store.generationStateTitle
+        }
+        return store.generationSession.isActive
+            ? store.generationStateTitle
+            : "新建桌面宠物预览"
     }
 }
 
@@ -78,16 +89,25 @@ struct NewPetFormView: View {
     var body: some View {
         Surface {
             VStack(alignment: .leading, spacing: 18) {
-                Text("新建宠物")
+                Text(isModificationSession ? "修改宠物" : "新建宠物")
                     .font(.title3.bold())
 
                 if store.generationSession.isActive {
-                    Label("活动任务使用已提交表单；完成或取消前草稿已冻结", systemImage: "lock.fill")
+                    Label(
+                        isModificationSession
+                            ? "活动修改使用已校验的宠物基线；完成或取消前表单已冻结"
+                            : "活动任务使用已提交表单；完成或取消前草稿已冻结",
+                        systemImage: "lock.fill"
+                    )
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("已提交表单已冻结")
                 }
 
+                if isModificationSession {
+                    Divider()
+                    SubmittedFormSummary(form: store.generationSession.submittedForm)
+                } else {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("描述")
                         .font(.callout.weight(.semibold))
@@ -212,6 +232,7 @@ struct NewPetFormView: View {
                         store.startGeneration()
                     }
                     .disabled(!store.canStartGeneration)
+                }
                 }
             }
         }
@@ -472,20 +493,21 @@ struct AISessionPanel: View {
     }
 
     private var replyPlaceholder: String {
+        let modifying = store.generationSession.operation == .modify
         if store.isWaitingForGenerationInput {
-            return "回复 AI 的追问后继续生成"
+            return modifying ? "回复 AI 的追问后继续修改" : "回复 AI 的追问后继续生成"
         }
         if store.generationSession.state == .cancelling {
             return "正在取消当前任务"
         }
         if store.generationSession.isActive {
-            return "生成完成后可继续调整"
+            return modifying ? "修改完成后可继续调整" : "生成完成后可继续调整"
         }
         if store.generationSession.jobID == nil {
             return "发起 AI 辅助会话后可继续调整"
         }
         if !store.canSendGenerationReply {
-            return "生成成功后可继续调整"
+            return modifying ? "修改成功后可继续调整" : "生成成功后可继续调整"
         }
         return "继续描述或输入调整意见"
     }
@@ -547,7 +569,11 @@ struct SummaryTile: View {
 struct GenerationSteps: View {
     @EnvironmentObject private var store: AppStore
 
-    private let steps = ["读取表单", "补充需求", "生成预览", "保存入库"]
+    private var steps: [String] {
+        store.generationSession.operation == .modify
+            ? ["读取基线", "补充需求", "生成修订", "校验并替换"]
+            : ["读取表单", "补充需求", "生成预览", "保存入库"]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -601,6 +627,16 @@ struct GenerationSteps: View {
         let needsInput = store.isWaitingForGenerationInput
         let failed = store.generationSession.state == .failed
         let succeeded = store.generationSession.state == .succeeded
+        let modifying = store.generationSession.operation == .modify
+
+        if modifying {
+            return switch index {
+            case 0: "读取当前 .petpack，并锁定同一宠物 ID。"
+            case 1: needsInput ? "等待你的回复后继续修改。" : "信息不足时在会话中追问。"
+            case 2: failed ? "修改未完成，当前版本保持不变。" : "仅生成要求调整的状态资源。"
+            default: succeeded ? "新修订已校验并写回宠物库。" : "校验通过后原子提交新修订。"
+            }
+        }
 
         return switch index {
         case 0: "描述、风格、画质、参考图。"
@@ -608,6 +644,13 @@ struct GenerationSteps: View {
         case 2: failed ? "生成未完成，查看会话消息。" : "主形象与状态动作。"
         default: succeeded ? "已进入宠物库。" : "完成后进入宠物库。"
         }
+    }
+}
+
+private extension NewPetFormView {
+    var isModificationSession: Bool {
+        store.generationSession.operation == .modify
+            && store.generationSession.isActive
     }
 }
 

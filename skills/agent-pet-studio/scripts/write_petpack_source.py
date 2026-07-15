@@ -164,6 +164,7 @@ def build_source(form):
     write_json(
         OUTPUT_DIR / "brief.json",
         {
+            "schema_version": "apc.pet-brief.v1",
             "name": name,
             "style": style,
             "quality": quality,
@@ -219,6 +220,7 @@ def build_source(form):
     write_json(
         source_dir / "source.json",
         {
+            "schema_version": "apc.pet-source.v1",
             "generator": "agent-pet-studio-preview-helper",
             "provenance": "deterministic_preview",
             "skill_helper": HELPER_ID,
@@ -236,6 +238,7 @@ def build_source(form):
         source_dir / "skill_session.jsonl",
         json.dumps(
             {
+                "schema_version": "apc.pet-source-event.v1",
                 "event": "skill.loaded",
                 "skill": "agent-pet-studio",
                 "runner": "codex-app-server",
@@ -247,6 +250,7 @@ def build_source(form):
         + "\n"
         + json.dumps(
             {
+                "schema_version": "apc.pet-source-event.v1",
                 "event": "skill.petpack_source.written",
                 "petpack_source": "petpack-source",
                 "runner": "codex-app-server",
@@ -260,6 +264,7 @@ def build_source(form):
     write_json(
         OUTPUT_DIR / "build" / "validation.json",
         {
+            "schema_version": "apc.pet-validation.v1",
             "ok": True,
             "skill_helper": HELPER_ID,
             "preview_only": True,
@@ -293,6 +298,7 @@ def validate_source():
         )
         raise SystemExit(result.stderr or result.stdout or "petpack validate failed")
     validation = json.loads(result.stdout)
+    validation["schema_version"] = "apc.pet-validation.v1"
     validation["skill_helper"] = HELPER_ID
     write_json(OUTPUT_DIR / "build" / "validation.json", validation)
     return validation

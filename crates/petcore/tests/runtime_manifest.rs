@@ -33,6 +33,30 @@ fn compiled_runtime_manifest_round_trips_and_rejects_mismatch() {
 }
 
 #[test]
+fn legacy_v1_manifest_without_petpack_range_reconstructs_single_version_contract() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("runtime-manifest.json");
+    let compiled = RuntimeReleaseManifest::compiled();
+    let mut legacy = serde_json::to_value(&compiled)
+        .expect("encode manifest")
+        .as_object()
+        .cloned()
+        .expect("manifest object");
+    legacy.remove("petpack_read_versions");
+    legacy.remove("petpack_write_version");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&legacy).expect("encode legacy manifest"),
+    )
+    .expect("write legacy manifest");
+
+    let decoded = validate_expected_manifest(&manifest_path).expect("legacy v1 manifest");
+    assert_eq!(decoded.petpack_read_versions, ["apc.petpack.v1"]);
+    assert_eq!(decoded.petpack_write_version, "apc.petpack.v1");
+    assert_eq!(decoded, compiled);
+}
+
+#[test]
 fn newer_database_schema_is_rejected_without_downgrade() {
     let temp = tempfile::tempdir().expect("tempdir");
     let database_path = temp.path().join("agent-pet.sqlite");

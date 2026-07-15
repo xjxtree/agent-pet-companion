@@ -102,16 +102,15 @@ struct UIModelTests {
             message: "idle frame is corrupt"
         )
         let invalid = PetLibraryPresentation(pet: pet, assetWarning: warning)
-        let unverified = PetLibraryPresentation(pet: pet, assetWarning: nil)
+        let imported = PetLibraryPresentation(pet: pet, assetWarning: nil)
 
         #expect(invalid.validationStatus == .invalid)
         #expect(invalid.validationDetail.contains("idle frame is corrupt"))
-        #expect(unverified.validationStatus == .notFullyReported)
-        #expect(unverified.validationTitle == "规格未完整报告")
-        #expect(unverified.validationTitle.count < unverified.validationDetail.count)
-        #expect(!unverified.validationDetail.contains("资源完整"))
-        #expect(unverified.stateSpecification == nil)
-        #expect(unverified.fpsSpecification == nil)
+        #expect(imported.validationStatus == .verified)
+        #expect(imported.validationTitle == "资源校验通过")
+        #expect(imported.validationDetail.contains("PetCore 已验证"))
+        #expect(imported.stateSpecification == "7 个固定状态 · 每状态至少 2 帧")
+        #expect(imported.fpsSpecification == "标准 12 FPS · 流畅 20 FPS")
 
         var verifiedPet = pet
         verifiedPet.origin = .verifiedSkillSource

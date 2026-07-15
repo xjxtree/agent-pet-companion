@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.pet-validation.v1",
+  "ok": false,
+  "warnings": [
+    "missing required frame"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "apc.pet-source-event.v1",
+  "event": "agent.completed",
+  "created_at": "2026-07-15T15:00:05Z",
+  "messages": [
+    {
+      "role": "user",
+      "content": "private conversation text"
+    }
+  ]
+}

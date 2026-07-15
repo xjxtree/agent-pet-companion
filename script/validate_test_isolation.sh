@@ -64,6 +64,7 @@ mkdir -p \
   "$BUILD_ROOT/script" \
   "$BUILD_ROOT/apps/macos" \
   "$BUILD_ROOT/target/debug" \
+  "$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__" \
   "$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__" \
   "$FAKE_SWIFT_BIN"
 cp "$ROOT_DIR/script/build_and_run.sh" "$BUILD_ROOT/script/build_and_run.sh"
@@ -81,6 +82,8 @@ for binary in \
   write_executable "$binary" '#!/usr/bin/env bash' 'exit 0'
 done
 printf '%s\n' 'name: agent-pet-studio' >"$BUILD_ROOT/skills/agent-pet-studio/SKILL.md"
+printf '%s\n' 'name: agent-pet-maker' >"$BUILD_ROOT/skills/agent-pet-maker/SKILL.md"
+printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__/sentinel.pyc"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__/sentinel.pyc"
 
 BUILD_TMP="$TMP_DIR/build-tmp"
@@ -130,6 +133,7 @@ for script_name in \
   validate_m0.sh validate_m1.sh validate_m2.sh validate_m3.sh \
   validate_m4.sh validate_m5.sh validate_m6.sh validate_v1.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
+  validate_portable_pet_maker.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
   validate_overlay_non_mouse.sh validate_overlay_interaction.sh \
   validate_overlay_scale_persistence.sh validate_renderer_runtime_budget.sh \
@@ -177,6 +181,7 @@ DEFAULT_VALIDATORS=(
   "$ROOT_DIR/script/validate_m3.sh"
   "$ROOT_DIR/script/validate_m4.sh"
   "$ROOT_DIR/script/validate_connectors_runtime.sh"
+  "$ROOT_DIR/script/validate_portable_pet_maker.sh"
   "$ROOT_DIR/script/validate_event_storm.sh"
   "$ROOT_DIR/script/validate_m5.sh"
   "$ROOT_DIR/script/validate_m6.sh"

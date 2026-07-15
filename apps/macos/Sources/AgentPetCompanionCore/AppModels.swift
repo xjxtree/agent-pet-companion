@@ -889,6 +889,11 @@ public enum GenerationConversation {
     }
 }
 
+public enum GenerationOperation: String, Codable, Hashable, Sendable {
+    case create
+    case modify
+}
+
 public struct GenerationHistory: Codable, Sendable {
     public var found: Bool
     public var petId: String
@@ -897,6 +902,7 @@ public struct GenerationHistory: Codable, Sendable {
     public var sessionId: String?
     public var resultPetId: String?
     public var retryOfJobId: String?
+    public var operation: GenerationOperation?
     public var createdAt: String?
     public var updatedAt: String?
     public var form: GenerationForm?
@@ -910,6 +916,7 @@ public struct GenerationHistory: Codable, Sendable {
         sessionId: String? = nil,
         resultPetId: String? = nil,
         retryOfJobId: String? = nil,
+        operation: GenerationOperation? = nil,
         createdAt: String? = nil,
         updatedAt: String? = nil,
         form: GenerationForm? = nil,
@@ -922,6 +929,7 @@ public struct GenerationHistory: Codable, Sendable {
         self.sessionId = sessionId
         self.resultPetId = resultPetId
         self.retryOfJobId = retryOfJobId
+        self.operation = operation
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.form = form
@@ -936,6 +944,7 @@ public struct GenerationHistory: Codable, Sendable {
         case sessionId = "session_id"
         case resultPetId = "result_pet_id"
         case retryOfJobId = "retry_of_job_id"
+        case operation
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case form
@@ -955,6 +964,7 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
     public var form: GenerationForm
     public var sessionID: String?
     public var resultPetID: String?
+    public var operation: GenerationOperation?
     public var ownerInstanceID: String?
     public var heartbeatAt: String
     public var messageRevision: String
@@ -967,6 +977,7 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         form: GenerationForm,
         sessionID: String? = nil,
         resultPetID: String? = nil,
+        operation: GenerationOperation? = nil,
         ownerInstanceID: String? = nil,
         heartbeatAt: String,
         messageRevision: String,
@@ -978,6 +989,7 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         self.form = form
         self.sessionID = sessionID
         self.resultPetID = resultPetID
+        self.operation = operation
         self.ownerInstanceID = ownerInstanceID
         self.heartbeatAt = heartbeatAt
         self.messageRevision = messageRevision
@@ -991,6 +1003,7 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         case form
         case sessionID = "session_id"
         case resultPetID = "result_pet_id"
+        case operation
         case ownerInstanceID = "owner_instance_id"
         case heartbeatAt = "heartbeat_at"
         case messageRevision = "message_revision"

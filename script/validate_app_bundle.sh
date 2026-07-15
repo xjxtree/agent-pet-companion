@@ -44,6 +44,8 @@ PETCORE_CLI="$APP_RESOURCES/bin/petcore-cli"
 RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
 BUNDLED_SKILL="$APP_RESOURCES/skills/agent-pet-studio/SKILL.md"
 SOURCE_SKILL="$ROOT_DIR/skills/agent-pet-studio/SKILL.md"
+BUNDLED_PORTABLE_SKILL="$APP_RESOURCES/skills/agent-pet-maker"
+SOURCE_PORTABLE_SKILL="$ROOT_DIR/skills/agent-pet-maker"
 LOCALIZATION_BUNDLE="$APP_RESOURCES/AgentPetCompanion_AgentPetCompanion.bundle"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-bundle-validation.XXXXXX")"
 . "$ROOT_DIR/script/validation_helpers.sh"
@@ -83,6 +85,10 @@ trap cleanup EXIT
   echo "app bundle validation failed: missing bundled agent-pet-studio skill" >&2
   exit 1
 }
+[[ -f "$BUNDLED_PORTABLE_SKILL/SKILL.md" ]] || {
+  echo "app bundle validation failed: missing bundled agent-pet-maker skill" >&2
+  exit 1
+}
 [[ -f "$LOCALIZATION_BUNDLE/Localizable.xcstrings" ]] || {
   echo "app bundle validation failed: missing bundled String Catalog" >&2
   exit 1
@@ -98,6 +104,17 @@ if ! find "$LOCALIZATION_BUNDLE" -maxdepth 2 -type f \
 fi
 cmp -s "$SOURCE_SKILL" "$BUNDLED_SKILL" || {
   echo "app bundle validation failed: bundled agent-pet-studio skill differs from source" >&2
+  exit 1
+}
+if find "$BUNDLED_PORTABLE_SKILL" \
+  \( -type d -name '__pycache__' -o -type f \( -name '*.pyc' -o -name '*.pyo' \) \) \
+  -print -quit | grep -q .; then
+  echo "app bundle validation failed: bundled agent-pet-maker contains Python bytecode" >&2
+  exit 1
+fi
+diff -qr -x '__pycache__' -x '*.pyc' -x '*.pyo' \
+  "$SOURCE_PORTABLE_SKILL" "$BUNDLED_PORTABLE_SKILL" >/dev/null || {
+  echo "app bundle validation failed: bundled agent-pet-maker skill differs from source" >&2
   exit 1
 }
 
@@ -163,11 +180,19 @@ if extensions != ["petpack"]:
     raise SystemExit(
         "app bundle validation failed: dev.agentpet.petpack filename extension must be petpack"
     )
+mime = petpack.get("UTTypeTagSpecification", {}).get("public.mime-type")
+if mime != "application/vnd.agentpet.petpack+zip":
+    raise SystemExit(
+        "app bundle validation failed: dev.agentpet.petpack MIME type is invalid"
+    )
 PY
 
 grep -q '^name: agent-pet-studio$' "$BUNDLED_SKILL"
 grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL"
 grep -q 'Do not read agent auth' "$BUNDLED_SKILL"
+grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
+grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
+[[ -x "$BUNDLED_PORTABLE_SKILL/scripts/petpack_workspace.py" ]]
 
 APC_HOME="$TMP_DIR/home" "$PETCORE" preflight \
   --home "$TMP_DIR/home" \

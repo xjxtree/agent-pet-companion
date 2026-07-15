@@ -405,6 +405,31 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
                 )?)
             }
         }
+        "export" => {
+            let offline = flag_present(&mut args, "--offline");
+            let id = flag(&mut args, "--id")?;
+            let output = PathBuf::from(flag(&mut args, "--output")?);
+            reject_extra_args(&args, "petpack export")?;
+            let paths = AppPaths::from_env()?;
+            if offline {
+                let _instance_guard = InstanceGuard::acquire(&paths)?;
+                paths.ensure()?;
+                let database = petcore::db::Database::new(paths.db_path.clone());
+                database.init()?;
+                print_json(json!(petpack::export_petpack(
+                    &paths, &database, &id, &output
+                )?))
+            } else {
+                print_json(daemon::request(
+                    &paths,
+                    "petpack.export",
+                    json!({
+                        "id": id,
+                        "path": output.display().to_string()
+                    }),
+                )?)
+            }
+        }
         other => Err(PetCoreError::InvalidRequest(format!(
             "unknown petpack subcommand {other}"
         ))),
@@ -1070,6 +1095,7 @@ fn write_materialized_session(output: &Path, generator: &str, provenance: &str) 
     fs::create_dir_all(&source_dir)?;
     let session_path = output.join("source").join("skill_session.jsonl");
     let event = json!({
+        "schema_version": "apc.pet-source-event.v1",
         "event": if generator == "codex-app-server-skill" && provenance == "skill-full-source" {
             "skill.full_source.materialized"
         } else {
@@ -1326,7 +1352,7 @@ fn normalized_terminal_app(term_program: &str) -> Option<String> {
 
 fn usage() {
     eprintln!(
-        "usage: petcore-cli health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path> | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] | connections repair|uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
+        "usage: petcore-cli health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] | connections repair|uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
     );
 }
 

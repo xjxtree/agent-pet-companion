@@ -1,0 +1,29 @@
+{
+  "schema_version": "apc.pet-source.v1",
+  "generator": "external-image-agent",
+  "provenance": "skill-full-source",
+  "created_at": "2026-07-15T15:00:00Z",
+  "manifest_id": "pet_starlightfox",
+  "pet_name": "Starlight Fox",
+  "style": "soft luminous storybook creature",
+  "quality": "high",
+  "visual_source": "image-generation",
+  "frames_per_state": 2,
+  "preview_only": false,
+  "reference_visual_influence": true,
+  "form": {
+    "description": "A small violet fox with a starry tail.",
+    "style": "soft luminous storybook creature",
+    "quality": "high",
+    "reference_images": ["source/references/reference-00.png"]
+  },
+  "reference_files": ["source/references/reference-00.png"],
+  "input_reference_count": 1,
+  "copied_reference_count": 1,
+  "runner": "external-agent-cli",
+  "extensions": {
+    "dev.example.producer/build": {
+      "model_family": "example-image-model"
+    }
+  }
+}

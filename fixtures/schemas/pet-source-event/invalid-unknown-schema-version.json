@@ -1,0 +1,4 @@
+{
+  "schema_version": "apc.pet-source-event.v2",
+  "event": "states.rendered"
+}

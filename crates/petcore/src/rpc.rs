@@ -639,10 +639,12 @@ fn known_rpc_method(method: &str) -> bool {
             | "pet.delete"
             | "petpack.validate"
             | "petpack.import"
+            | "petpack.export"
             | "generation.start"
             | "generation.retry"
             | "generation.messages"
             | "generation.for_pet"
+            | "generation.edit"
             | "generation.messages.wait"
             | "generation.reply"
             | "generation.cancel"
@@ -673,10 +675,12 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "events.recent" => &["limit"],
         "pet.activate" | "pet.delete" => &["id"],
         "petpack.validate" | "petpack.import" => &["path"],
+        "petpack.export" => &["id", "path"],
         "generation.start" => &["description", "style", "quality", "reference_images"],
         "generation.retry" => &["job_id", "form"],
         "generation.messages" | "generation.cancel" => &["job_id"],
         "generation.for_pet" => &["pet_id"],
+        "generation.edit" => &["pet_id", "instruction"],
         "generation.messages.wait" => &["job_id", "after_revision", "timeout_ms"],
         "generation.reply" => &["job_id", "content"],
         "connections.check" => &["source"],
@@ -898,6 +902,16 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 &PathBuf::from(path)
             )?))
         }
+        "petpack.export" => {
+            let id = required_string(&request.params, "id")?;
+            let path = required_string(&request.params, "path")?;
+            Ok(json!(petpack::export_petpack(
+                &state.paths,
+                &state.database,
+                &id,
+                &PathBuf::from(path)
+            )?))
+        }
         "generation.start" => {
             let form: GenerationForm = serde_json::from_value(request.params)?;
             let job_id = generation::start_generation_for_instance(
@@ -923,10 +937,17 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 form,
                 state.instance_id(),
             )?;
+            let operation = state
+                .database
+                .generation_job(&job_id)?
+                .as_ref()
+                .map(generation::generation_job_operation)
+                .unwrap_or(generation::GENERATION_OPERATION_CREATE);
             Ok(json!({
                 "ok": true,
                 "job_id": job_id,
-                "retry_of_job_id": retry_of_job_id
+                "retry_of_job_id": retry_of_job_id,
+                "operation": operation
             }))
         }
         "generation.messages" => {
@@ -947,6 +968,7 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 }));
             };
             let form: Value = serde_json::from_str(&job.form_json)?;
+            let operation = generation::generation_job_operation(&job);
             Ok(json!({
                 "ok": true,
                 "found": true,
@@ -956,6 +978,7 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 "session_id": job.session_id,
                 "result_pet_id": job.result_pet_id,
                 "retry_of_job_id": job.retry_of_job_id,
+                "operation": operation,
                 "created_at": job.created_at,
                 "updated_at": job.updated_at,
                 "form": form,
@@ -964,6 +987,23 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                     &state.database,
                     &job.id
                 )?
+            }))
+        }
+        "generation.edit" => {
+            let pet_id = required_string(&request.params, "pet_id")?;
+            let instruction = required_string(&request.params, "instruction")?;
+            let job_id = generation::start_pet_edit_for_instance(
+                &state.paths,
+                &state.database,
+                &pet_id,
+                &instruction,
+                state.instance_id(),
+            )?;
+            Ok(json!({
+                "ok": true,
+                "job_id": job_id,
+                "pet_id": pet_id,
+                "operation": generation::GENERATION_OPERATION_MODIFY
             }))
         }
         "generation.messages.wait" => {
@@ -1321,6 +1361,7 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
         return Ok(None);
     };
     let form: GenerationForm = serde_json::from_str(&job.form_json)?;
+    let operation = generation::generation_job_operation(&job);
     let messages = generation::read_messages_with_database(&state.paths, &state.database, &job.id)?;
     let input_request = messages
         .iter()
@@ -1333,6 +1374,7 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
         "form": form,
         "session_id": job.session_id,
         "result_pet_id": job.result_pet_id,
+        "operation": operation,
         "owner_instance_id": job.owner_instance_id,
         "heartbeat_at": job.heartbeat_at,
         "message_revision": state.database.generation_message_revision(&job.id)?.to_string(),

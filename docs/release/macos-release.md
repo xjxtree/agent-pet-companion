@@ -14,12 +14,12 @@ Before building a candidate, freeze one manifest that binds all components that 
 
 - App semantic version, bundle build and `APCBuildID`;
 - PetCore RPC protocol/build and PetCore CLI build;
-- SQLite schema and Agent event schema versions;
+- SQLite schema, Agent event schema, and `.petpack` readable/writable versions;
 - Codex, Claude Code, Pi and OpenCode connector contract versions;
 - minimum/maximum compatible runtime and downgrade policy;
 - last-known-good artifact identity and rollback procedure.
 
-构建候选版本前，必须冻结一份统一 manifest，绑定 App version/build/`APCBuildID`、PetCore RPC/build、CLI、数据库与事件 schema、四个 connector contract、兼容范围、降级策略和 last-known-good 回滚目标。当前 develop 实现已通过 `apc.runtime-manifest.v1`、候选预检、exact health 和 LKG 回滚满足这一工程门禁；正式分发还必须让该 manifest 处于 Developer ID 签名范围内并完成安装器级演练。
+构建候选版本前，必须冻结一份统一 manifest，绑定 App version/build/`APCBuildID`、PetCore RPC/build、CLI、数据库与事件 schema、`.petpack` 可读/写版本、四个 connector contract、兼容范围、降级策略和 last-known-good 回滚目标。当前 develop 实现已通过 `apc.runtime-manifest.v1`、候选预检、exact health 和 LKG 回滚满足这一工程门禁；正式分发还必须让该 manifest 处于 Developer ID 签名范围内并完成安装器级演练。
 
 Exercise the update path with both an older and a newer installed runtime. The candidate Core must pass build/schema/read-only data checks before the old Core is retired; a failed candidate must restore the last-known-good runtime without leaving the pet connected to an incompatible or empty service.
 

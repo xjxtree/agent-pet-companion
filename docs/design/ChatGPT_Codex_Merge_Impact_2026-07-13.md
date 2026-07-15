@@ -44,9 +44,9 @@ External ChatGPT Codex tasks use supported hooks for exact lifecycle events and 
 
 ## 当前剩余验收 / Remaining acceptance
 
-- 在用户显式 opt-in 下，用当前 ChatGPT 桌面 App 验证 hooks review/trust、UserPromptSubmit、PreToolUse、PermissionRequest、Stop 和真实会话跳转；配置存在不能代替实际触发证据。
-- 使用真实 `codex app-server` 验证近期任务轮询的标题、消息、公开活动摘要、`activeFlags`、完成/失败和跨进程 `notLoaded`/`interrupted` 租约行为。
-- 将 ChatGPT 内嵌 Codex CLI、Codex connector contract 与 App/PetCore/CLI/数据库 schema 一起纳入 runtime release manifest；当前 `APCBuildID` 精确握手尚未覆盖连接器滞后、降级保护和 last-known-good 自动回滚。
+- 当前仅剩用户控制的持久 Hook review/trust：配置存在和一次 bypass-trust canary 不能代替用户在 ChatGPT 中确认长期信任；精确 PreToolUse 等能力继续按“未验证”展示。
+- 真实 `codex app-server` 近期任务轮询、标题/消息/公开活动、完成/失败及跨进程有限租约 gate 已完成；后续仅需随 ChatGPT 更新重复 canary。
+- ChatGPT 内嵌 Codex CLI、connector contract、App/PetCore/CLI、数据库/事件 schema 和 `.petpack` 读写版本已统一进入 `apc.runtime-manifest.v1`，并实现候选预检、last-known-good 回滚与稳定 connector CLI 入口。
 - 每次 ChatGPT/Codex 更新后运行真实 canary，并把“已验证版本”和“未验证但已安装”分开显示。
 
 ## 维护观察点 / Maintenance watchpoints

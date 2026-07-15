@@ -1,0 +1,14 @@
+{
+  "name": "Untagged Fox",
+  "style": "storybook",
+  "quality": "standard",
+  "states": [
+    "idle",
+    "start",
+    "tool",
+    "waiting",
+    "review",
+    "done",
+    "failed"
+  ]
+}

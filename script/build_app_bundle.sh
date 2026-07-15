@@ -207,6 +207,7 @@ else
 fi
 
 cp -R "$ROOT_DIR/skills/agent-pet-studio" "$APP_RESOURCES/skills/agent-pet-studio"
+cp -R "$ROOT_DIR/skills/agent-pet-maker" "$APP_RESOURCES/skills/agent-pet-maker"
 "$APP_RESOURCES/bin/petcore" runtime-manifest >"$RUNTIME_MANIFEST"
 find "$APP_RESOURCES/skills" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$APP_RESOURCES/skills" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
@@ -258,6 +259,8 @@ cat >"$INFO_PLIST" <<PLIST
         <array>
           <string>petpack</string>
         </array>
+        <key>public.mime-type</key>
+        <string>application/vnd.agentpet.petpack+zip</string>
       </dict>
     </dict>
   </array>

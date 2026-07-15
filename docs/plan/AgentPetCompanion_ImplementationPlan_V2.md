@@ -174,6 +174,9 @@ PetCore 状态变化能推送到 App
 4. 实现素材校验。
 5. 实现 cover 与 preview 生成。
 6. 实现 7 个固定状态目录校验。
+7. 发布 `.petpack` V1 白皮书与 manifest/source/brief/event/validation schema 正反 fixtures。
+8. 实现安全原子导入、不可变同 ID revision、原子导出与重新导入。
+9. 在 runtime manifest 中分别声明可读 `.petpack` 版本与当前写入版本。
 
 状态固定为：
 
@@ -194,6 +197,8 @@ failed
 缺少任一必需状态时校验失败
 尺寸不匹配时校验失败
 有效 petpack 可导入 SQLite
+当前 revision 可导出且重新导入后保持同一 ID 与 archive 字节
+未知版本、路径逃逸、symlink、资源超预算和损坏 archive fail closed
 ```
 
 ### 5.2 Renderer
@@ -352,6 +357,26 @@ Skill 能调用 petpack build
 最终产物可被 App 播放
 ```
 
+### 6.5 库内修改与可移植 Agent Skill
+
+任务：
+
+1. 为任意库内宠物提供 `generation.edit` Codex 修改入口。
+2. 以当前包为不可信基线，固定 ID、created_at、画质、尺寸、FPS 与状态结构。
+3. 提交前核对基线 SHA，冲突时拒绝覆盖较新 revision。
+4. 提供 provider-neutral `agent-pet-maker`，支持真实图像能力门禁、create/modify、状态哈希和 CLI 校验构建。
+5. 仅在用户明确授权时，通过在线 daemon 导入并选择性激活；禁止隐式 `--offline` 写库。
+
+验收：
+
+```text
+App 创建与外部导入宠物都可发起同 ID Codex 修订
+App 内 Codex 修订在基线变化时不能提交旧结果
+可移植 Skill 的 modify 模式使未请求修改的状态保持 byte-identical
+外部 Agent 缺少真实图像能力时返回 capability_missing
+具备图像能力的宿主可生成七状态包并通过 PetCore validation
+```
+
 ---
 
 ## 7. M4：多 Agent 连接
@@ -480,6 +505,8 @@ error 触发 failed
 4. 实现删除宠物。
 5. 实现宠物详情基础信息。
 6. 实现生成历史跳转。
+7. 实现 `.petpack` 导入与当前 revision 原子导出。
+8. 实现任意宠物的 Codex AI 修改入口。
 
 验收：
 
@@ -487,7 +514,8 @@ error 触发 failed
 新建完成后自动出现在宠物库
 点击启用后悬浮层切换宠物
 删除当前宠物前要求切换或确认
-宠物库只展示用户历史制作的宠物
+宠物库统一展示 App 制作和外部导入的宠物
+导出文件可重新导入，修改非活跃宠物不抢占当前桌宠
 ```
 
 ### 8.2 启用与行为
@@ -665,7 +693,7 @@ PetCore 基础
 
 ---
 
-## 13. 当前实现状态（2026-07-15）
+## 13. 当前实现状态（2026-07-16）
 
 带证据的完整状态以 [当前项目状态](../PROJECT_STATUS.md) 为唯一滚动入口，本节只记录实施计划结论：
 
@@ -673,13 +701,13 @@ PetCore 基础
 |---|---|---|
 | M0 工程骨架 | 完成 | 默认门禁与 Swift tests 已恢复绿色。 |
 | M1 PetCore 与 macOS Shell | 完成 | 单实例、窗口/Host/PetCore 生命周期、LaunchAgent 隔离和 Computer Use 实机检查通过。 |
-| M2 `.petpack` 与 Renderer | 完成 | high/ultra/original 真实 FPS、CPU、RSS 与隐藏态预算通过。 |
-| M3 Pet Studio | 完成 | packaged App 已用真实 Codex 图像能力完成 `skill-full-source`、七状态校验、入库、启用和实机渲染；内部 Studio task 不进入 Agent 气泡。 |
+| M2 `.petpack` 与 Renderer | 完成 | V1 白皮书/producer schemas、原子 import/export、不可变 revision、读写版本握手与 high/ultra/original 性能预算通过。 |
+| M3 Pet Studio | 完成 | packaged App 已用真实 Codex 图像能力完成 `skill-full-source`、七状态校验、入库、启用和实机渲染；任意库内宠物可同 ID 修改，外部导入宠物的隔离真实 App Server 修改闭环已通过；内部 Studio task 不进入 Agent 气泡。 |
 | M4 多 Agent 连接 | 完成 | 四连接器真实 gate 通过；Codex 持久 Hook Trust 保留为用户确认，不由 App 伪造。 |
-| M5 宠物库与行为 | 完成 | schema/行为/安全 allowlist 与阶段 gate 通过。 |
-| M6 稳定性与 develop 交付 | 完成 | runtime manifest、预检、精确 health、LKG 回滚、稳定 connector CLI 入口、77 个 Swift tests、ad-hoc develop ZIP 完成。正式签名/公证属于 P2。 |
+| M5 宠物库与行为 | 完成 | App/外部宠物统一入库、原子导出/重导入、Codex 修改、schema/行为/安全 allowlist 与阶段 gate 通过。 |
+| M6 稳定性与 develop 交付 | 完成 | runtime manifest、同版旧 manifest 兼容重建、预检、精确 health、LKG 回滚、稳定 connector CLI 入口、95 个 Swift tests、ad-hoc develop ZIP 完成。正式签名/公证属于 P2。 |
 
-2026-07-15 默认 `script/test_all.sh`、Rust fmt/clippy/tests、77 个 Swift tests、真实连接器、真实 App Server、真实 AI 宠物七状态、Renderer 预算和 Computer Use UI 检查均通过。详细证据与唯一滚动结论见[当前项目状态](../PROJECT_STATUS.md)。
+2026-07-16 默认 `script/test_all.sh`、Rust fmt/clippy/tests、95 个 Swift tests / 10 suites、真实连接器、真实 App Server、真实 AI 宠物七状态、portable skill 真实图像创建与定向修改、Renderer 预算和 Computer Use UI 检查均通过。详细证据与唯一滚动结论见[当前项目状态](../PROJECT_STATUS.md)。
 
 ## 14. 下一执行批次（P2）
 

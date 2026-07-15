@@ -250,7 +250,19 @@ final class AppStore: ObservableObject {
     }
 
     var generationStateTitle: String {
-        switch generationSession.state {
+        if generationSession.operation == .modify {
+            return switch generationSession.state {
+            case .idle: "尚未开始"
+            case .starting: "正在启动修改"
+            case .running: "正在修改"
+            case .waitingForInput: "修改等待补充信息"
+            case .cancelling: "正在取消修改"
+            case .succeeded: "修改完成"
+            case .failed: "修改失败"
+            case .cancelled: "修改已取消"
+            }
+        }
+        return switch generationSession.state {
         case .idle: "尚未开始"
         case .starting: "正在启动"
         case .running: "正在生成"
@@ -619,6 +631,71 @@ final class AppStore: ObservableObject {
         beginGeneration(with: form, initialMessage: "按表单创建一个\(selectedStyle.rawValue)桌宠。")
     }
 
+    func startPetEdit(_ pet: PetSummary, instruction: String) {
+        let instruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else {
+            statusText = "请先填写希望如何修改宠物"
+            return
+        }
+        guard instruction.count <= 8_000 else {
+            statusText = "宠物修改要求不能超过 8000 个字符"
+            return
+        }
+        guard !generationSession.isActive else {
+            statusText = "请先完成或取消当前 AI 制作任务"
+            return
+        }
+
+        let form = GenerationForm(
+            description: "修改现有宠物“\(pet.name)”。用户要求：\(instruction)",
+            style: pet.style,
+            quality: pet.quality,
+            referenceImages: []
+        )
+        let initialUserMessage = GenerationMessage(
+            role: "user",
+            content: instruction,
+            progress: 0.01,
+            createdAt: ""
+        )
+        _ = reduceGeneration(.editRequested(
+            form: form,
+            initialMessage: initialUserMessage,
+            petID: pet.id
+        ))
+        generationReplyText = ""
+        selection = .studio
+        studioTab = .new
+        statusText = "正在建立 \(pet.name) 的修改会话"
+
+        Task {
+            do {
+                let result = try await requestPetCore(
+                    method: "generation.edit",
+                    params: ["pet_id": pet.id, "instruction": instruction]
+                )
+                guard let dict = result as? [String: Any],
+                      let jobID = dict["job_id"] as? String,
+                      !jobID.isEmpty
+                else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                _ = reduceGeneration(.startAccepted(jobID: jobID))
+                statusText = "正在修改 \(pet.name)"
+            } catch {
+                let failure = GenerationMessage(
+                    role: "assistant",
+                    content: "修改启动失败：\(error.localizedDescription)",
+                    progress: 1,
+                    createdAt: "",
+                    kind: "generation_failed"
+                )
+                _ = reduceGeneration(.startFailed(message: failure))
+                statusText = "修改启动失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     func clearStudioForm() {
         guard !generationSession.isActive else {
             statusText = "活动任务使用已提交表单，完成或取消后才能清空草稿"
@@ -639,18 +716,41 @@ final class AppStore: ObservableObject {
             statusText = generationSession.isActive ? generationStateTitle : "当前会话不可重试"
             return
         }
+        let modifying = generationSession.operation == .modify
+        if modifying, generationSession.resultPetID == nil {
+            statusText = "修改会话缺少宠物 ID，无法安全重试"
+            return
+        }
+        if modifying, generationSession.jobID == nil {
+            guard let petID = generationSession.resultPetID,
+                  let pet = pets.first(where: { $0.id == petID }),
+                  let instruction = generationSession.messages.first(where: { $0.role == "user" })?
+                    .content
+            else {
+                statusText = "修改会话缺少可重试的宠物基线"
+                return
+            }
+            startPetEdit(pet, instruction: instruction)
+            return
+        }
         beginGeneration(
             with: form,
-            initialMessage: "重试上一份表单创建一个\(form.style)桌宠。",
-            retryOfJobID: generationSession.jobID
+            initialMessage: modifying
+                ? "重试上一轮宠物修改，并继续保留同一宠物 ID。"
+                : "重试上一份表单创建一个\(form.style)桌宠。",
+            retryOfJobID: generationSession.jobID,
+            operation: generationSession.operation,
+            resultPetID: generationSession.resultPetID
         )
-        statusText = "正在重试 AI 辅助会话"
+        statusText = modifying ? "正在重试宠物修改" : "正在重试 AI 辅助会话"
     }
 
     private func beginGeneration(
         with form: GenerationForm,
         initialMessage: String,
-        retryOfJobID: String? = nil
+        retryOfJobID: String? = nil,
+        operation: GenerationOperation = .create,
+        resultPetID: String? = nil
     ) {
         let initialUserMessage = GenerationMessage(
             role: "user",
@@ -658,7 +758,20 @@ final class AppStore: ObservableObject {
             progress: 0.05,
             createdAt: ""
         )
-        _ = reduceGeneration(.startRequested(form: form, initialMessage: initialUserMessage))
+        if retryOfJobID != nil {
+            _ = reduceGeneration(.retryRequested(
+                form: form,
+                initialMessage: initialUserMessage
+            ))
+        } else if operation == .modify, let resultPetID {
+            _ = reduceGeneration(.editRequested(
+                form: form,
+                initialMessage: initialUserMessage,
+                petID: resultPetID
+            ))
+        } else {
+            _ = reduceGeneration(.startRequested(form: form, initialMessage: initialUserMessage))
+        }
         generationReplyText = ""
         studioTab = .new
 
@@ -686,9 +799,10 @@ final class AppStore: ObservableObject {
                 }
                 _ = reduceGeneration(.startAccepted(jobID: jobID))
             } catch {
+                let action = operation == .modify ? "修改" : "生成"
                 let failure = GenerationMessage(
                     role: "assistant",
-                    content: "生成启动失败：\(error.localizedDescription)",
+                    content: "\(action)启动失败：\(error.localizedDescription)",
                     progress: 1,
                     createdAt: "",
                     kind: "generation_failed"
@@ -815,10 +929,11 @@ final class AppStore: ObservableObject {
                         await refresh()
                     }
                 }
-                statusText = "已取消生成"
+                statusText = generationSession.operation == .modify ? "已取消修改" : "已取消生成"
             } catch {
                 _ = reduceGeneration(.cancelFailed)
-                statusText = "取消失败：\(error.localizedDescription)"
+                let action = generationSession.operation == .modify ? "修改" : "生成"
+                statusText = "取消\(action)失败：\(error.localizedDescription)"
             }
         }
     }
@@ -848,7 +963,9 @@ final class AppStore: ObservableObject {
                     submittedForm: history.form,
                     messages: history.messages,
                     progress: history.messages.last?.progress ?? (restoredState.isTerminal ? 1 : 0),
-                    messageRevision: ""
+                    messageRevision: "",
+                    operation: history.operation ?? .create,
+                    resultPetID: history.resultPetId
                 )
                 _ = reduceGeneration(.restore(restore))
                 generationReplyText = ""
@@ -1079,12 +1196,6 @@ final class AppStore: ObservableObject {
     }
 
     func exportPet(_ pet: PetSummary) {
-        let sourceURL = URL(fileURLWithPath: pet.petpackPath)
-        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
-            statusText = "导出失败：找不到本 App .petpack"
-            return
-        }
-
         let panel = NSSavePanel()
         panel.title = "导出本 App .petpack"
         panel.prompt = "导出"
@@ -1094,14 +1205,22 @@ final class AppStore: ObservableObject {
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
 
-        do {
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                try FileManager.default.removeItem(at: destinationURL)
+        petOperationIDs.insert(pet.id)
+        statusText = "正在校验并导出 \(pet.name)"
+        Task {
+            defer { petOperationIDs.remove(pet.id) }
+            do {
+                _ = try await requestPetCore(
+                    method: "petpack.export",
+                    params: [
+                        "id": pet.id,
+                        "path": destinationURL.standardizedFileURL.path
+                    ]
+                )
+                statusText = "已导出 \(destinationURL.lastPathComponent)"
+            } catch {
+                statusText = "导出失败：\(error.localizedDescription)"
             }
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-            statusText = "已导出 \(destinationURL.lastPathComponent)"
-        } catch {
-            statusText = "导出失败：\(error.localizedDescription)"
         }
     }
 
