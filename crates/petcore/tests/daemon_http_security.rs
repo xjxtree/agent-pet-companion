@@ -220,7 +220,13 @@ fn slow_http_headers_obey_absolute_deadline() {
 
     let started = Instant::now();
     let mut response = String::new();
-    reader.read_to_string(&mut response).unwrap();
+    if let Err(error) = reader.read_to_string(&mut response) {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset,
+            "unexpected slow-header read error: {error}"
+        );
+    }
     let elapsed = started.elapsed();
     drip.join().unwrap();
 
