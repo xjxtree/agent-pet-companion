@@ -2,6 +2,9 @@ import AgentPetCompanionCore
 import Foundation
 
 enum APCLocalizationKey: String, CaseIterable, Sendable {
+    case appActionOpenControlCenter = "app.action.open_control_center"
+    case appActionQuit = "app.action.quit"
+    case appActionTogglePet = "app.action.toggle_pet"
     case navigationStudio = "nav.studio"
     case navigationBehavior = "nav.behavior"
     case navigationConnections = "nav.connections"
@@ -17,8 +20,12 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryImportMessage = "library.import.message"
     case libraryFormatAppOwned = "library.format.app_owned"
     case libraryValidationInvalid = "library.validation.invalid"
+    case libraryValidationVerifiedTitle = "library.validation.verified_title"
+    case libraryValidationVerified = "library.validation.verified"
     case libraryValidationUnverifiedTitle = "library.validation.unverified_title"
     case libraryValidationUnverified = "library.validation.unverified"
+    case librarySpecificationVerifiedStates = "library.specification.verified_states"
+    case librarySpecificationVerifiedFps = "library.specification.verified_fps"
     case librarySpecificationUnavailable = "library.specification.unavailable"
     case libraryStateNotActive = "library.state.not_active"
     case libraryStateIdle = "library.state.idle"
@@ -31,6 +38,30 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case controlStyleLabel = "control.style.label"
     case controlQualityLabel = "control.quality.label"
     case errorPetpackImportFailed = "error.petpack.import_failed"
+    case overlayIdleDetail = "overlay.idle.detail"
+    case overlayStatusRunning = "overlay.status.running"
+    case overlayStatusTool = "overlay.status.tool"
+    case overlayStatusNeedsInput = "overlay.status.needs_input"
+    case overlayStatusReady = "overlay.status.ready"
+    case overlayStatusBlocked = "overlay.status.blocked"
+    case overlayActivityThinking = "overlay.activity.thinking"
+    case overlayActivityPlan = "overlay.activity.plan"
+    case overlayActivityCommand = "overlay.activity.command"
+    case overlayActivityFile = "overlay.activity.file"
+    case overlayActivityFileChange = "overlay.activity.file_change"
+    case overlayActivityTool = "overlay.activity.tool"
+    case overlayActivitySubagent = "overlay.activity.subagent"
+    case overlayActivitySearch = "overlay.activity.search"
+    case overlayActivityNetwork = "overlay.activity.network"
+    case overlayActivityImage = "overlay.activity.image"
+    case overlayActivityCompaction = "overlay.activity.compaction"
+    case overlayDetailRunning = "overlay.detail.running"
+    case overlayDetailNeedsInput = "overlay.detail.needs_input"
+    case overlayDetailReady = "overlay.detail.ready"
+    case overlayDetailBlocked = "overlay.detail.blocked"
+    case overlayActionOpen = "overlay.action.open"
+    case overlayActionHandle = "overlay.action.handle"
+    case overlayActionReview = "overlay.action.review"
 }
 
 enum APCLocalization {
@@ -56,12 +87,23 @@ enum APCLocalization {
         for key: APCLocalizationKey,
         locale identifier: String
     ) -> String? {
-        let language = localeCandidates(for: identifier).lazy.compactMap { locale in
-            Bundle.module.path(forResource: locale, ofType: "lproj")
-        }.first
-        guard let language, let bundle = Bundle(path: language) else { return nil }
-        let value = bundle.localizedString(forKey: key.rawValue, value: key.rawValue, table: nil)
-        return value == key.rawValue ? nil : value
+        for locale in localeCandidates(for: identifier) {
+            let url = APCResourceBundle.resourceURL(
+                "\(locale).lproj/Localizable.strings"
+            )
+            guard let data = try? Data(contentsOf: url),
+                  let values = try? PropertyListSerialization.propertyList(
+                      from: data,
+                      options: [],
+                      format: nil
+                  ) as? [String: String],
+                  let value = values[key.rawValue],
+                  value != key.rawValue else {
+                continue
+            }
+            return value
+        }
+        return nil
     }
 
     static func catalogValue(
@@ -84,8 +126,8 @@ enum APCLocalization {
     }
 
     private static let catalog: StringCatalog? = {
-        guard let url = Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings"),
-              let data = try? Data(contentsOf: url)
+        let url = APCResourceBundle.resourceURL("Localizable.xcstrings")
+        guard let data = try? Data(contentsOf: url)
         else {
             return nil
         }

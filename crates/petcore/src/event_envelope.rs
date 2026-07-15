@@ -8,10 +8,16 @@ pub const EVENT_ENVELOPE_SCHEMA_VERSION: &str = "apc.agent-event.v1";
 pub const MAX_EVENT_TITLE_BYTES: usize = 160;
 pub const MAX_EVENT_DETAIL_BYTES: usize = 512;
 pub const MAX_RECENT_EVENTS: usize = 200;
+pub const MAX_MESSAGE_CONTENT_BYTES: usize = 4_096;
+pub const MAX_ACTIVITY_CONTENT_BYTES: usize = 1_024;
 
 const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_PROJECT_PATH_BYTES: usize = 1_024;
+const MAX_TURN_ID_BYTES: usize = 256;
+const MAX_PROJECT_LABEL_BYTES: usize = 128;
+const MAX_SESSION_TITLE_BYTES: usize = 160;
+const MAX_SESSION_OPEN_URL_BYTES: usize = 256;
 const FUTURE_EVENT_GRACE_SECONDS: i64 = 60;
 
 const AGENT_EVENT_ALLOWED_FIELDS: &[&str] = &[
@@ -34,6 +40,19 @@ const EVENT_ENVELOPE_ALLOWED_FIELDS: &[&str] = &[
     "tool_name",
     "outcome",
     "diagnostic",
+    "turn_id",
+    "session_active",
+    "message_role",
+    "message_content",
+    "activity_kind",
+    "activity_content",
+    "interaction_kind",
+    "project_label",
+    "session_title",
+    "session_open",
+    "session_surface",
+    "terminal_app",
+    "session_open_url",
 ];
 
 pub struct NormalizedAgentEvent;
@@ -111,6 +130,19 @@ pub(crate) fn minimal_legacy_payload(external_event_id: &str) -> Value {
         "tool_name": null,
         "outcome": null,
         "diagnostic": false,
+        "turn_id": null,
+        "session_active": false,
+        "message_role": null,
+        "message_content": null,
+        "activity_kind": null,
+        "activity_content": null,
+        "interaction_kind": null,
+        "project_label": null,
+        "session_title": null,
+        "session_open": null,
+        "session_surface": null,
+        "terminal_app": null,
+        "session_open_url": null,
     })
 }
 
@@ -195,6 +227,85 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
             ));
         }
     }
+    if let Some(value) = payload.get("session_active") {
+        if !value.is_boolean() {
+            return Err(invalid_event(
+                "agent event payload session_active must be a boolean",
+            ));
+        }
+    }
+    if let Some(value) = payload.get("session_open") {
+        if !(value.is_null() || value.is_boolean()) {
+            return Err(invalid_event(
+                "agent event payload session_open must be a boolean or null",
+            ));
+        }
+    }
+    for (key, maximum_bytes) in [
+        ("turn_id", MAX_TURN_ID_BYTES),
+        ("message_content", MAX_MESSAGE_CONTENT_BYTES),
+        ("activity_content", MAX_ACTIVITY_CONTENT_BYTES),
+        ("project_label", MAX_PROJECT_LABEL_BYTES),
+        ("session_title", MAX_SESSION_TITLE_BYTES),
+        ("session_open_url", MAX_SESSION_OPEN_URL_BYTES),
+    ] {
+        if let Some(value) = payload.get(key) {
+            match value {
+                Value::Null => {}
+                Value::String(value) if value.len() <= maximum_bytes => {}
+                Value::String(_) => {
+                    return Err(invalid_event(format!(
+                        "agent event payload {key} exceeds {maximum_bytes} UTF-8 bytes"
+                    )));
+                }
+                _ => {
+                    return Err(invalid_event(format!(
+                        "agent event payload {key} must be a string or null"
+                    )));
+                }
+            }
+        }
+    }
+    validate_optional_enum(payload, "message_role", &["user", "assistant"])?;
+    validate_optional_enum(
+        payload,
+        "activity_kind",
+        &[
+            "thinking",
+            "plan",
+            "command",
+            "file",
+            "file_change",
+            "tool",
+            "subagent",
+            "search",
+            "network",
+            "image",
+            "compaction",
+        ],
+    )?;
+    validate_optional_enum(
+        payload,
+        "interaction_kind",
+        &["approval_required", "input_required", "review_required"],
+    )?;
+    validate_optional_enum(
+        payload,
+        "session_surface",
+        &["chatgpt_app", "cli_terminal", "unknown"],
+    )?;
+    validate_optional_enum(
+        payload,
+        "terminal_app",
+        &["warp", "terminal", "iterm2", "ghostty", "unknown"],
+    )?;
+    if let Some(Value::String(value)) = payload.get("session_open_url") {
+        if validated_warp_focus_url(value).is_none() {
+            return Err(invalid_event(
+                "agent event payload session_open_url is not a supported session URL",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -260,6 +371,74 @@ fn strict_payload(
         .and_then(|payload| payload.get("diagnostic"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let turn_id = normalized_optional_payload_string(payload, "turn_id", MAX_TURN_ID_BYTES);
+    let session_active = payload
+        .and_then(|payload| payload.get("session_active"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let message_role = payload
+        .and_then(|payload| payload.get("message_role"))
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "user" | "assistant"))
+        .map(|value| Value::String(value.to_string()))
+        .unwrap_or(Value::Null);
+    let message_content =
+        normalized_optional_payload_string(payload, "message_content", MAX_MESSAGE_CONTENT_BYTES);
+    let activity_kind = normalized_optional_payload_enum(
+        payload,
+        "activity_kind",
+        &[
+            "thinking",
+            "plan",
+            "command",
+            "file",
+            "file_change",
+            "tool",
+            "subagent",
+            "search",
+            "network",
+            "image",
+            "compaction",
+        ],
+    );
+    let activity_content =
+        normalized_optional_payload_string(payload, "activity_content", MAX_ACTIVITY_CONTENT_BYTES);
+    let interaction_kind = payload
+        .and_then(|payload| payload.get("interaction_kind"))
+        .and_then(Value::as_str)
+        .filter(|value| {
+            matches!(
+                *value,
+                "approval_required" | "input_required" | "review_required"
+            )
+        })
+        .map(|value| Value::String(value.to_string()))
+        .unwrap_or(Value::Null);
+    let project_label =
+        normalized_optional_payload_string(payload, "project_label", MAX_PROJECT_LABEL_BYTES);
+    let session_title =
+        normalized_optional_payload_string(payload, "session_title", MAX_SESSION_TITLE_BYTES);
+    let session_open = payload
+        .and_then(|payload| payload.get("session_open"))
+        .and_then(Value::as_bool)
+        .map(Value::Bool)
+        .unwrap_or(Value::Null);
+    let session_surface = normalized_optional_payload_enum(
+        payload,
+        "session_surface",
+        &["chatgpt_app", "cli_terminal", "unknown"],
+    );
+    let terminal_app = normalized_optional_payload_enum(
+        payload,
+        "terminal_app",
+        &["warp", "terminal", "iterm2", "ghostty", "unknown"],
+    );
+    let session_open_url = payload
+        .and_then(|payload| payload.get("session_open_url"))
+        .and_then(Value::as_str)
+        .and_then(validated_warp_focus_url)
+        .map(Value::String)
+        .unwrap_or(Value::Null);
 
     json!({
         "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
@@ -268,7 +447,72 @@ fn strict_payload(
         "tool_name": tool_name,
         "outcome": outcome,
         "diagnostic": diagnostic,
+        "turn_id": turn_id,
+        "session_active": session_active,
+        "message_role": message_role,
+        "message_content": message_content,
+        "activity_kind": activity_kind,
+        "activity_content": activity_content,
+        "interaction_kind": interaction_kind,
+        "project_label": project_label,
+        "session_title": session_title,
+        "session_open": session_open,
+        "session_surface": session_surface,
+        "terminal_app": terminal_app,
+        "session_open_url": session_open_url,
     })
+}
+
+fn validate_optional_enum(payload: &Map<String, Value>, key: &str, allowed: &[&str]) -> Result<()> {
+    let Some(value) = payload.get(key) else {
+        return Ok(());
+    };
+    match value {
+        Value::Null => Ok(()),
+        Value::String(value) if allowed.contains(&value.as_str()) => Ok(()),
+        Value::String(_) => Err(invalid_event(format!(
+            "agent event payload {key} is not supported"
+        ))),
+        _ => Err(invalid_event(format!(
+            "agent event payload {key} must be a string or null"
+        ))),
+    }
+}
+
+fn normalized_optional_payload_string(
+    payload: Option<&Map<String, Value>>,
+    key: &str,
+    maximum_bytes: usize,
+) -> Value {
+    payload
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| Value::String(truncate_utf8(value, maximum_bytes)))
+        .unwrap_or(Value::Null)
+}
+
+fn normalized_optional_payload_enum(
+    payload: Option<&Map<String, Value>>,
+    key: &str,
+    allowed: &[&str],
+) -> Value {
+    payload
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_str)
+        .filter(|value| allowed.contains(value))
+        .map(|value| Value::String(value.to_string()))
+        .unwrap_or(Value::Null)
+}
+
+fn validated_warp_focus_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    let uuid = value
+        .strip_prefix("warp://session/")
+        .or_else(|| value.strip_prefix("warppreview://session/"))?;
+    (uuid.len() == 32 && uuid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| value.to_string())
 }
 
 fn normalized_source_event(value: &str) -> &'static str {
@@ -287,23 +531,48 @@ fn normalized_source_event(value: &str) -> &'static str {
         "PostToolUseFailure" => "PostToolUseFailure",
         "Stop" => "Stop",
         "StopFailure" => "StopFailure",
+        "SessionEnd" => "SessionEnd",
+        "Notification" => "Notification",
+        "Elicitation" => "Elicitation",
+        "ElicitationResult" => "ElicitationResult",
+        "PostToolBatch" => "PostToolBatch",
+        "PermissionDenied" => "PermissionDenied",
+        "PreCompact" => "PreCompact",
+        "PostCompact" => "PostCompact",
+        "SubagentStart" => "SubagentStart",
+        "SubagentStop" => "SubagentStop",
+        "TaskCreated" => "TaskCreated",
+        "TaskCompleted" => "TaskCompleted",
         "session_start" => "session_start",
+        "input" => "input",
         "before_agent_start" => "before_agent_start",
         "agent_start" => "agent_start",
         "tool_call" => "tool_call",
         "tool_execution_start" => "tool_execution_start",
         "tool_execution_end" => "tool_execution_end",
+        "message_end" => "message_end",
+        "session_before_compact" => "session_before_compact",
+        "session_compact" => "session_compact",
         "agent_settled" => "agent_settled",
+        "agent_end" => "agent_end",
+        "session_shutdown" => "session_shutdown",
         "session.created" => "session.created",
+        "session.deleted" => "session.deleted",
         "session.status" => "session.status",
         "session.idle" => "session.idle",
         "session.error" => "session.error",
         "permission.asked" => "permission.asked",
         "permission.updated" => "permission.updated",
         "permission.replied" => "permission.replied",
+        "question.asked" => "question.asked",
+        "question.replied" => "question.replied",
+        "question.rejected" => "question.rejected",
+        "message.user" => "message.user",
+        "message.assistant" => "message.assistant",
         "tool.execute.before" => "tool.execute.before",
         "tool.execute.after" => "tool.execute.after",
         "connection.test" => "connection.test",
+        "app_server_activity" => "app_server_activity",
         "legacy" => "legacy",
         _ => "unclassified",
     }
@@ -344,6 +613,7 @@ fn normalized_outcome(value: &str) -> String {
         | "permission_replied_reject"
         | "started_without_args"
         | "session_failure" => value.to_string(),
+        "session_closed" | "input_requested" | "message" => value.to_string(),
         _ => "unknown".to_string(),
     }
 }

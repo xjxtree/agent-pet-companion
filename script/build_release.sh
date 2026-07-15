@@ -45,6 +45,7 @@ done
 "$ROOT_DIR/script/build_app_bundle.sh" \
   --configuration release \
   --universal \
+  --unsigned \
   --output "$ROOT_DIR/dist/AgentPetCompanion.app"
 "$ROOT_DIR/script/validate_app_bundle.sh" --development "$ROOT_DIR/dist/AgentPetCompanion.app"
 

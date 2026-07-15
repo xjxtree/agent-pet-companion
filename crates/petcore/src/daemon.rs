@@ -31,8 +31,19 @@ const UDS_MAX_FRAME_BYTES: usize = 256 * 1024;
 const UDS_MAX_CONCURRENT_CLIENTS: usize = 32;
 
 pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
+    crate::runtime_manifest::validate_expected_manifest_from_env()?;
+    if let Ok(expected_build_id) = std::env::var("APC_EXPECTED_BUILD_ID") {
+        if !expected_build_id.is_empty() && expected_build_id != crate::rpc::PETCORE_BUILD_ID {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "petcore build {} does not match the App-required build {expected_build_id}",
+                crate::rpc::PETCORE_BUILD_ID
+            )));
+        }
+    }
     let instance_guard = InstanceGuard::acquire(&paths)?;
-    let state = CoreState::new(paths).with_instance_id(instance_guard.instance_id());
+    let state = CoreState::new(paths)
+        .with_instance_id(instance_guard.instance_id())
+        .with_codex_activity_sync(true);
     state.ensure_ready()?;
     write_capability_token(&state.paths)?;
     if state.paths.socket_path.exists() {
@@ -62,10 +73,11 @@ pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
         fs::write(path, "ready\n")?;
     }
 
+    listener.set_nonblocking(true)?;
     let active_clients = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    while !state.shutdown_requested() {
+        match listener.accept() {
+            Ok((stream, _)) => {
                 let Some(permit) = ClientPermit::try_acquire(
                     Arc::clone(&active_clients),
                     UDS_MAX_CONCURRENT_CLIENTS,
@@ -80,6 +92,9 @@ pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
                         eprintln!("petcore unix client error: {error}");
                     }
                 });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
             }
             Err(error) => return Err(error.into()),
         }

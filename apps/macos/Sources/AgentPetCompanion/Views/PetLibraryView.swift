@@ -138,18 +138,6 @@ struct PetCard: View {
             Button(action: onSelect) {
                 VStack(alignment: .leading, spacing: 11) {
                     ZStack(alignment: .topTrailing) {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        APCDesign.cyanSoft,
-                                        APCDesign.accentSoft,
-                                        Color(nsColor: .windowBackgroundColor).opacity(0.65)
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
                         PetCoverImage(pet: pet, fallbackScale: 0.32)
                         if selected {
                             Image(systemName: "checkmark.circle.fill")
@@ -160,6 +148,9 @@ struct PetCard: View {
                         }
                     }
                     .frame(height: 68)
+                    .apcLiquidGlass(
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
 
                     HStack {
                         Text(pet.name)
@@ -214,14 +205,17 @@ struct PetCard: View {
             }
         }
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(selected ? APCDesign.accent.opacity(0.72) : APCDesign.stroke, lineWidth: selected ? 1.5 : 1)
-                )
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous),
+            interactive: true
         )
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(APCDesign.accent.opacity(0.72), lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
@@ -244,11 +238,12 @@ struct CurrentPetDetail: View {
                 )
                 HStack(spacing: 16) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(LinearGradient(colors: [APCDesign.accentSoft, APCDesign.cyanSoft], startPoint: .topLeading, endPoint: .bottomTrailing))
                         PetCoverImage(pet: pet, fallbackScale: 0.42)
                     }
                     .frame(width: 112, height: 130)
+                    .apcLiquidGlass(
+                        in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    )
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text(pet.name)
@@ -261,10 +256,8 @@ struct CurrentPetDetail: View {
                     }
                 }
                 .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(APCDesign.accentSoft.opacity(0.55))
-                        .overlay(RoundedRectangle(cornerRadius: 22).stroke(APCDesign.accent.opacity(0.25)))
+                .apcLiquidGlass(
+                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
                 )
 
                 VStack(spacing: 0) {
@@ -374,7 +367,9 @@ private struct MissingPetCoverPlaceholder: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
     }
 }
 

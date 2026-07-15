@@ -119,7 +119,8 @@ let snapshotObject = (try? JSONSerialization.jsonObject(
 )) as? [String: Any] ?? [:]
 let placement = snapshotObject["overlay_placement"] as? [String: Any] ?? [:]
 let behavior = snapshotObject["behavior"] as? [String: Any] ?? [:]
-let activeEvents = ((snapshotObject["events"] as? [Any])?.isEmpty == false)
+let activeSessions = ((snapshotObject["active_agent_sessions"] as? [Any])?.isEmpty == false)
+let hasCanonicalState = snapshotObject["active_agent_state"] is [String: Any]
 let persistedX = (placement["x"] as? NSNumber)?.doubleValue ?? 0
 let persistedY = (placement["y"] as? NSNumber)?.doubleValue ?? 0
 let persistedScale = (placement["scale"] as? NSNumber)?.doubleValue ?? 0
@@ -128,7 +129,7 @@ let scale = hasPersistedPosition && persistedScale.isFinite && persistedScale > 
     ? max(0.10, min(1.8, persistedScale))
     : 0.72
 let expectsBubble = (behavior["status_bubble"] as? Bool ?? true)
-    && activeEvents
+    && (activeSessions || (!hasCanonicalState && !(behavior["auto_hide"] as? Bool ?? false)))
 
 struct WindowInfo {
     let id: Int
@@ -198,7 +199,8 @@ func isBubblePanel(_ window: WindowInfo) -> Bool {
     window.width >= 140
         && window.width <= 430
         && window.height >= 48
-        && window.height <= 360
+        // One bounded Agent group may contain up to eight session rows.
+        && window.height <= 720
 }
 
 let petPanels = floating.filter(isPetPanel)

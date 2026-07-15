@@ -16,6 +16,105 @@ struct AppStoreBootstrapHooks {
     let onReady: OnReady
 }
 
+enum AgentSessionDeepLink {
+    static func url(source: AgentSource?, sessionID: String?) -> URL? {
+        guard source == .codex else { return nil }
+        guard let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty,
+              sessionID.unicodeScalars.allSatisfy({
+                  CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
+              })
+        else {
+            return nil
+        }
+        return URL(string: "codex://threads/\(sessionID)")
+    }
+}
+
+enum AgentSessionOpenRoute: Equatable {
+    case url(URL)
+    case application(bundleIdentifiers: [String], paths: [String])
+}
+
+enum AgentSessionRouter {
+    private static let chatGPTBundleIdentifiers = ["com.openai.codex"]
+    private static let chatGPTPaths = ["/Applications/ChatGPT.app", "/Applications/Codex.app"]
+    private static let terminalTargets: [String: ([String], [String])] = [
+        "warp": (["dev.warp.Warp-Stable", "dev.warp.Warp-Preview"], ["/Applications/Warp.app", "/Applications/WarpPreview.app"]),
+        "terminal": (["com.apple.Terminal"], ["/System/Applications/Utilities/Terminal.app"]),
+        "iterm2": (["com.googlecode.iterm2"], ["/Applications/iTerm.app"]),
+        "ghostty": (["com.mitchellh.ghostty"], ["/Applications/Ghostty.app"])
+    ]
+
+    static func route(
+        source: AgentSource?,
+        sessionID: String?,
+        navigation: AgentSessionNavigation
+    ) -> AgentSessionOpenRoute? {
+        guard !navigation.explicitlyClosed else { return nil }
+
+        if let openURL = validatedSessionOpenURL(navigation.openURL) {
+            return .url(openURL)
+        }
+
+        if navigation.surface == "cli_terminal"
+            || navigation.terminalApp != nil
+            || (source != nil && source != .codex)
+        {
+            if let terminalApp = navigation.terminalApp,
+               let target = terminalTargets[terminalApp]
+            {
+                return .application(bundleIdentifiers: target.0, paths: target.1)
+            }
+            let allTargets = ["warp", "terminal", "iterm2", "ghostty"]
+                .compactMap { terminalTargets[$0] }
+            return .application(
+                bundleIdentifiers: allTargets.flatMap { $0.0 },
+                paths: allTargets.flatMap { $0.1 }
+            )
+        }
+
+        if source == .codex,
+           navigation.surface == "chatgpt_app",
+           let deepLink = AgentSessionDeepLink.url(source: source, sessionID: sessionID)
+        {
+            return .url(deepLink)
+        }
+
+        if source == .codex {
+            return .application(
+                bundleIdentifiers: chatGPTBundleIdentifiers,
+                paths: chatGPTPaths
+            )
+        }
+        return nil
+    }
+
+    static func validatedSessionOpenURL(_ value: String?) -> URL? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: value),
+              ["warp", "warppreview"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.lowercased() == "session",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil,
+              url.query == nil,
+              url.fragment == nil
+        else {
+            return nil
+        }
+        let identifier = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard identifier.range(
+            of: "^[0-9A-Fa-f]{32}$",
+            options: .regularExpression
+        ) != nil
+        else {
+            return nil
+        }
+        return url
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selection: NavigationSection = .studio
@@ -26,6 +125,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var referenceImages: [String] = []
     @Published var behavior = BehaviorSettings()
     @Published private(set) var activeAgentState: ActiveAgentState?
+    @Published private(set) var activeAgentSessions: [ActiveAgentState] = []
     @Published private(set) var overlayVisibility = OverlayVisibility()
     @Published var pets: [PetSummary] = []
     @Published private(set) var petAssetWarningIndex = PetAssetWarningIndex()
@@ -41,6 +141,7 @@ final class AppStore: ObservableObject {
     @Published var overlayScreenFrame = CGRect(x: 780, y: 140, width: 704, height: 640)
     @Published var overlayScreenVisibleFrame = NSScreen.main?.visibleFrame ?? .zero
     @Published var overlayPetScreenCenter = CGPoint.zero
+    private(set) var overlayPetVisualEnvelope: OverlayPetVisualEnvelope?
     @Published var overlayBubbleDismissed = false
     @Published var overlayDismissedBubbleEventIDs: Set<String> = []
     @Published var overlayPointerNearPet = false
@@ -60,10 +161,15 @@ final class AppStore: ObservableObject {
     private var overlayPlacementSaveTask: Task<Void, Never>?
     private var stateRevision = ""
     private var behaviorRevision = "0"
+    private var overlayKnownEventIDs: Set<String> = []
+    private var overlayAwaitingVisibilityRestore = false
     private var behaviorMutationTask: Task<Void, Never>?
     private var mainWindowPresenter: (() -> Void)?
+    private var pendingMainWindowPresentation = false
     private var generationMessagesTask: Task<Void, Never>?
     private var runtimeBootstrapCompleted = false
+    private var runtimeBootstrapRetryTask: Task<Void, Never>?
+    private var runtimeBootstrapRetryDelaySeconds: UInt64 = 2
     private var recoverySequence: UInt64 = 0
     private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
 
@@ -104,22 +210,26 @@ final class AppStore: ObservableObject {
     }
 
     var overlayBubbleEvents: [AgentEvent] {
-        guard let event = activeAgentState?.event,
-              !overlayDismissedBubbleEventIDs.contains(event.id)
-        else {
-            return []
-        }
-        return [event]
+        activeAgentSessions
+            .map(\.event)
+            .filter { !overlayDismissedBubbleEventIDs.contains($0.id) }
     }
 
     var overlayBubbleContents: [OverlayBubbleContent] {
         guard overlayVisibility.statusBubbleVisible, !overlayBubbleDismissed else {
             return []
         }
-        if let event = overlayBubbleEvents.first {
-            return [OverlayBubbleContent(event: event)]
+        let visibleStates = activeAgentSessions.filter {
+            !overlayDismissedBubbleEventIDs.contains($0.event.id)
         }
-        return activeAgentState == nil ? [.idle] : []
+        let grouped = AgentSource.allCases.compactMap { source -> OverlayBubbleContent? in
+            let states = visibleStates.filter { $0.source == source }
+            return states.isEmpty ? nil : OverlayBubbleContent(source: source, states: states)
+        }
+        if !grouped.isEmpty {
+            return grouped
+        }
+        return activeAgentState == nil && activeAgentSessions.isEmpty ? [.idle] : []
     }
 
     var canStartGeneration: Bool {
@@ -154,37 +264,152 @@ final class AppStore: ObservableObject {
 
     func setMainWindowPresenter(_ presenter: @escaping () -> Void) {
         mainWindowPresenter = presenter
+        guard pendingMainWindowPresentation else { return }
+        pendingMainWindowPresentation = false
+        presenter()
+        NSApp?.activate(ignoringOtherApps: true)
     }
 
     func presentMainWindow() {
         if frontExistingMainWindow() {
-            NSApp.activate(ignoringOtherApps: true)
+            pendingMainWindowPresentation = false
+            NSApp?.activate(ignoringOtherApps: true)
             return
         }
 
         if let mainWindowPresenter {
+            pendingMainWindowPresentation = false
             mainWindowPresenter()
+        } else {
+            // A secondary launch or Dock reopen can arrive before either scene
+            // has installed its openWindow presenter. Replay exactly once when
+            // the first presenter becomes available.
+            pendingMainWindowPresentation = true
         }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp?.activate(ignoringOtherApps: true)
+    }
+
+    func presentAgentSession(
+        source: AgentSource?,
+        sessionID: String? = nil,
+        navigation: AgentSessionNavigation = AgentSessionNavigation()
+    ) {
+        guard source != nil else {
+            presentMainWindow()
+            return
+        }
+        guard let route = AgentSessionRouter.route(
+            source: source,
+            sessionID: sessionID,
+            navigation: navigation
+        ) else { return }
+        let workspace = NSWorkspace.shared
+        switch route {
+        case let .url(url):
+            if workspace.open(url) { return }
+            let fallback = AgentSessionRouter.route(
+                source: source,
+                sessionID: nil,
+                navigation: AgentSessionNavigation(
+                    sessionOpen: navigation.sessionOpen,
+                    surface: navigation.surface,
+                    terminalApp: navigation.terminalApp
+                )
+            )
+            guard case let .application(bundleIdentifiers, paths) = fallback else {
+                presentMainWindow()
+                return
+            }
+            openAgentApplication(bundleIdentifiers: bundleIdentifiers, paths: paths)
+        case let .application(bundleIdentifiers, paths):
+            openAgentApplication(bundleIdentifiers: bundleIdentifiers, paths: paths)
+        }
+    }
+
+    private func openAgentApplication(bundleIdentifiers: [String], paths: [String]) {
+        let workspace = NSWorkspace.shared
+        if let running = workspace.runningApplications
+            .filter({ application in
+                application.bundleIdentifier.map(bundleIdentifiers.contains) == true
+                    && !application.isTerminated
+            })
+            .sorted(by: { ($0.isActive ? 1 : 0) > ($1.isActive ? 1 : 0) })
+            .first,
+           running.activate(options: [])
+        {
+            return
+        }
+        let applicationURL = bundleIdentifiers.lazy
+            .compactMap { workspace.urlForApplication(withBundleIdentifier: $0) }
+            .first
+            ?? paths
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) })
+        guard let applicationURL else {
+            presentMainWindow()
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        workspace.openApplication(at: applicationURL, configuration: configuration) { _, _ in }
     }
 
     private func frontExistingMainWindow() -> Bool {
-        guard let window = NSApp.windows.first(where: { $0.title == "Agent Pet Companion" }) else {
+        guard let application = NSApp,
+              let window = application.windows.first(where: Self.isMainWindowCandidate)
+        else {
             return false
+        }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
         }
         window.makeKeyAndOrderFront(nil)
         return true
     }
 
+    static func isMainWindowCandidate(_ window: NSWindow) -> Bool {
+        isMainWindowCandidate(
+            isPanel: window is NSPanel,
+            level: window.level,
+            styleMask: window.styleMask
+        )
+    }
+
+    static func isMainWindowCandidate(
+        isPanel: Bool,
+        level: NSWindow.Level,
+        styleMask: NSWindow.StyleMask
+    ) -> Bool {
+        !isPanel && level == .normal && styleMask.contains(.titled)
+    }
+
     func bootstrapIfNeeded() async {
+        guard !runtimeBootstrapCompleted else { return }
+        setServiceStatus("正在检查本地服务版本与兼容性")
         switch await bootstrapHooks.ensureRunning() {
         case .alreadyHealthy, .started:
             setServiceStatus("本地服务运行中")
             guard !runtimeBootstrapCompleted else { return }
             runtimeBootstrapCompleted = true
+            runtimeBootstrapRetryTask?.cancel()
+            runtimeBootstrapRetryTask = nil
+            runtimeBootstrapRetryDelaySeconds = 2
             await bootstrapHooks.onReady(self)
         case let .failed(reason):
             setServiceStatus(reason)
+            scheduleRuntimeBootstrapRetry()
+        }
+    }
+
+    private func scheduleRuntimeBootstrapRetry() {
+        guard !runtimeBootstrapCompleted, runtimeBootstrapRetryTask == nil else { return }
+        let delay = runtimeBootstrapRetryDelaySeconds
+        runtimeBootstrapRetryDelaySeconds = min(delay * 2, 30)
+        runtimeBootstrapRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.runtimeBootstrapRetryTask = nil
+            await self.bootstrapIfNeeded()
         }
     }
 
@@ -297,27 +522,50 @@ final class AppStore: ObservableObject {
         if let activeGeneration = snapshot.activeGeneration {
             reconcileActiveGeneration(activeGeneration)
         }
+        let previousBehaviorEnabled = behavior.enabled
         let previousActiveEventID = activeAgentState?.event.id
-        let previousEventIDs = Set(events.map(\.id))
-        let nextEventIDs = Set(snapshot.events.map(\.id))
+        var nextEventIDs = Set(snapshot.events.map(\.id))
+        if let activeEventID = snapshot.activeAgentState?.event.id {
+            nextEventIDs.insert(activeEventID)
+        }
         behavior = snapshot.behavior
         behaviorRevision = snapshot.behaviorRevision ?? behaviorRevision
         activeAgentState = snapshot.activeAgentState
+        activeAgentSessions = snapshot.activeAgentSessions
+            ?? snapshot.activeAgentState.map { [$0] }
+            ?? []
+        nextEventIDs.formUnion(activeAgentSessions.map(\.event.id))
         overlayVisibility = snapshot.overlayVisibility ?? OverlayVisibility(
             petVisible: snapshot.behavior.enabled,
-            statusBubbleVisible: snapshot.behavior.showsStatusBubble(
-                hasActiveEvent: snapshot.activeAgentState != nil,
-                dismissed: false
-            )
+            statusBubbleVisible: snapshot.behavior.enabled
+                && snapshot.behavior.statusBubble
+                && (!activeAgentSessions.isEmpty
+                    || (!snapshot.behavior.autoHide && snapshot.activeAgentState == nil))
         )
         pets = snapshot.pets
         petAssetWarningIndex = PetAssetWarningIndex(snapshot.petAssetWarnings ?? [])
         events = snapshot.events
-        overlayDismissedBubbleEventIDs.formIntersection(nextEventIDs)
-        if !nextEventIDs.isSubset(of: previousEventIDs) {
+        let restoringOverlayVisibility = overlayAwaitingVisibilityRestore
+        let hasNewOverlayEvent = !nextEventIDs.isSubset(of: overlayKnownEventIDs)
+        if !snapshot.behavior.enabled {
+            overlayAwaitingVisibilityRestore = true
+            overlayKnownEventIDs.formUnion(nextEventIDs)
+        } else if restoringOverlayVisibility, nextEventIDs.isEmpty {
+            // PetCore can publish enabled=true before active session arbitration catches up.
+            // Preserve manual dismissal state until the restored session set arrives.
+        } else {
+            overlayDismissedBubbleEventIDs.formIntersection(nextEventIDs)
+            overlayKnownEventIDs = nextEventIDs
+            overlayAwaitingVisibilityRestore = false
+        }
+        if hasNewOverlayEvent {
             overlayBubbleDismissed = false
         }
-        if previousActiveEventID != activeAgentState?.event.id {
+        if previousBehaviorEnabled,
+           snapshot.behavior.enabled,
+           !restoringOverlayVisibility,
+           previousActiveEventID != activeAgentState?.event.id
+        {
             overlayBubbleDismissed = false
         }
         recentEvents = snapshot.recentEvents ?? snapshot.events
@@ -715,10 +963,9 @@ final class AppStore: ObservableObject {
     private func syncOverlayVisibilityForBehavior() {
         overlayVisibility = OverlayVisibility(
             petVisible: behavior.enabled,
-            statusBubbleVisible: behavior.showsStatusBubble(
-                hasActiveEvent: activeAgentState != nil,
-                dismissed: false
-            )
+            statusBubbleVisible: behavior.enabled
+                && behavior.statusBubble
+                && (!activeAgentSessions.isEmpty || (!behavior.autoHide && activeAgentState == nil))
         )
         overlayVisible = overlayVisibility.petVisible
         overlayController.setVisible(overlayVisibility.petVisible)
@@ -1020,7 +1267,7 @@ final class AppStore: ObservableObject {
 
     func sendConnectionTestEvent(_ source: AgentSource) {
         connectionOperationSources.insert(source)
-        statusText = "正在发送 \(source.title) 测试事件"
+        statusText = "正在测试 \(source.title) 的 PetCore 通道"
         Task {
             defer { connectionOperationSources.remove(source) }
             do {
@@ -1028,13 +1275,13 @@ final class AppStore: ObservableObject {
                     method: "connections.test",
                     params: ["source": source.rawValue]
                 )
-                let triggered = (result as? [String: Any])?["triggered"] as? Bool ?? false
+                let ok = (result as? [String: Any])?["ok"] as? Bool ?? false
                 await refresh()
-                statusText = triggered
-                    ? "\(source.title) 测试事件已触发桌宠"
-                    : "\(source.title) 测试事件已写入，当前响应过滤未触发"
+                statusText = ok
+                    ? "\(source.title) PetCore 通道自检通过（诊断事件不触发桌宠）"
+                    : "\(source.title) PetCore 通道自检未通过"
             } catch {
-                statusText = "\(source.title) 测试事件失败：\(error.localizedDescription)"
+                statusText = "\(source.title) PetCore 通道自检失败：\(error.localizedDescription)"
             }
         }
     }
@@ -1076,12 +1323,17 @@ final class AppStore: ObservableObject {
             overlayPetPositionInitialized = true
             return
         }
+        let movementFrame = OverlayGeometry.petMovementFrame(
+            screenFrame: targetScreen?.frame ?? targetVisibleFrame,
+            visibleFrame: targetVisibleFrame
+        )
         overlayScreenVisibleFrame = targetVisibleFrame
         overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
             proposedCenter,
             scale: overlayScale,
-            visibleFrame: targetVisibleFrame,
-            clickMenuEnabled: behavior.clickMenu
+            visibleFrame: movementFrame,
+            clickMenuEnabled: behavior.clickMenu,
+            petVisualEnvelope: overlayPetVisualEnvelope
         )
         overlayPetPositionInitialized = true
         if commit {
@@ -1095,11 +1347,18 @@ final class AppStore: ObservableObject {
     func ensureOverlayPetPosition(in visibleFrame: CGRect) {
         guard !visibleFrame.isEmpty else { return }
         if overlayPetPositionInitialized {
+            let targetScreen = screen(matchingVisibleFrame: visibleFrame)
+                ?? screen(containing: overlayPetScreenCenter)
+            let movementFrame = OverlayGeometry.petMovementFrame(
+                screenFrame: targetScreen?.frame ?? visibleFrame,
+                visibleFrame: targetScreen?.visibleFrame ?? visibleFrame
+            )
             overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
                 overlayPetScreenCenter,
                 scale: overlayScale,
-                visibleFrame: visibleFrame,
-                clickMenuEnabled: behavior.clickMenu
+                visibleFrame: movementFrame,
+                clickMenuEnabled: behavior.clickMenu,
+                petVisualEnvelope: overlayPetVisualEnvelope
             )
         } else {
             overlayPetScreenCenter = OverlayGeometry.defaultPetScreenCenter(
@@ -1140,11 +1399,45 @@ final class AppStore: ObservableObject {
         overlayController.updateLayout()
     }
 
+    func updateOverlayPetVisualEnvelope(
+        _ envelope: OverlayPetVisualEnvelope?,
+        petID: String,
+        stateEntryID: String
+    ) {
+        guard activePet?.id == petID else { return }
+        guard (activeOverlayEvent?.id ?? "idle") == stateEntryID else { return }
+        guard overlayPetVisualEnvelope != envelope else { return }
+        overlayPetVisualEnvelope = envelope
+        let visibleFrame = screen(containing: overlayPetScreenCenter)?.visibleFrame
+            ?? overlayScreenVisibleFrame
+        ensureOverlayPetPosition(in: visibleFrame)
+        overlayController.updateLayoutDuringInteraction()
+    }
+
+    func toggleOverlayBubble() {
+        if overlayBubbleContents.isEmpty {
+            overlayBubbleDismissed = false
+            overlayDismissedBubbleEventIDs.removeAll()
+        } else {
+            overlayBubbleDismissed = true
+        }
+        overlayController.updateLayout()
+    }
+
     func dismissOverlayBubble(eventID: String) {
         if eventID == OverlayBubbleContent.idle.id {
             overlayBubbleDismissed = true
         } else {
             overlayDismissedBubbleEventIDs.insert(eventID)
+        }
+        overlayController.updateLayout()
+    }
+
+    func dismissOverlayBubble(eventIDs: [String]) {
+        if eventIDs == OverlayBubbleContent.idle.eventIDs {
+            overlayBubbleDismissed = true
+        } else {
+            overlayDismissedBubbleEventIDs.formUnion(eventIDs)
         }
         overlayController.updateLayout()
     }
@@ -1291,11 +1584,16 @@ final class AppStore: ObservableObject {
                 scale: targetScale
             )
         } else {
+            let movementFrame = OverlayGeometry.petMovementFrame(
+                screenFrame: screen?.frame ?? visibleFrame,
+                visibleFrame: visibleFrame
+            )
             overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
                 persistedCenter,
                 scale: targetScale,
-                visibleFrame: visibleFrame,
-                clickMenuEnabled: behavior.clickMenu
+                visibleFrame: movementFrame,
+                clickMenuEnabled: behavior.clickMenu,
+                petVisualEnvelope: overlayPetVisualEnvelope
             )
         }
         overlayPetPositionInitialized = true
@@ -1353,7 +1651,7 @@ final class AppStore: ObservableObject {
     }
 
     private func unresolvedConnectionItemCount(_ status: AgentConnectionStatus) -> Int {
-        status.items.filter { $0.status != .ok }.count
+        status.blockingItems.count
     }
 
     private func sortConnections() {
@@ -1373,7 +1671,7 @@ final class AppStore: ObservableObject {
 
         return snapshotConnections.map { incoming in
             let lightCheckFoundNoIssues = incoming.checkMode == .light
-                && incoming.items.allSatisfy { $0.status == .ok }
+                && incoming.blockingItems.isEmpty
             if lightCheckFoundNoIssues, let runtime = existingRuntime[incoming.source] {
                 return runtime
             }
@@ -1450,6 +1748,7 @@ private struct StateSnapshot: Codable {
     var petAssetWarnings: [PetAssetWarning]?
     var activeGeneration: ActiveGenerationSnapshot?
     var activeAgentState: ActiveAgentState?
+    var activeAgentSessions: [ActiveAgentState]?
     var overlayVisibility: OverlayVisibility?
     var events: [AgentEvent]
     var recentEvents: [AgentEvent]?
@@ -1465,6 +1764,7 @@ private struct StateSnapshot: Codable {
         case petAssetWarnings = "pet_asset_warnings"
         case activeGeneration = "active_generation"
         case activeAgentState = "active_agent_state"
+        case activeAgentSessions = "active_agent_sessions"
         case overlayVisibility = "overlay_visibility"
         case events
         case recentEvents = "recent_events"

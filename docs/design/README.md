@@ -9,21 +9,25 @@ This directory preserves the product and technical sources that define the V1 ba
 - [Product plan V5](product-plan-v5/AgentPetCompanion_ProductPlan_V5.md): navigation, Pet Studio four-field form, library, behavior, connections, overlay and V1 scope.
 - [Technical plan V1.1](AgentPetCompanion_TechnicalPlan_V1_1.md): SwiftUI/AppKit/Metal app, Rust PetCore, UDS JSON-RPC, SQLite, `.petpack`, performance and connector boundaries.
 - [Implementation plan V2](../plan/AgentPetCompanion_ImplementationPlan_V2.md): delivery sequence and executable validation milestones; subordinate to the two design plans above.
+- [Current project status](../PROJECT_STATUS.md): dated implementation inventory, validation evidence, release blockers, and next priorities.
+- [ChatGPT/Codex merge impact](ChatGPT_Codex_Merge_Impact_2026-07-13.md): supported integration boundary and migration impact for the merged desktop experience.
 
 - [产品方案 V5](product-plan-v5/AgentPetCompanion_ProductPlan_V5.md)：导航、Pet Studio 四字段表单、宠物库、行为、连接、悬浮层与 V1 范围。
 - [技术方案 V1.1](AgentPetCompanion_TechnicalPlan_V1_1.md)：SwiftUI/AppKit/Metal App、Rust PetCore、UDS JSON-RPC、SQLite、`.petpack`、性能与 connector 边界。
 - [实施计划 V2](../plan/AgentPetCompanion_ImplementationPlan_V2.md)：交付顺序和可执行验证里程碑；若有冲突，以上两份设计方案优先。
+- [当前项目状态](../PROJECT_STATUS.md)：带日期的实现清单、验证证据、发布阻塞项与后续优先级。
+- [ChatGPT/Codex 合并影响](ChatGPT_Codex_Merge_Impact_2026-07-13.md)：合并桌面体验下的受支持集成边界与迁移影响。
 
 ## Product-plan assets / 产品方案素材
 
 `product-plan-v5/` contains:
 
-- the Markdown source and an exported HTML copy;
+- the normative Markdown source and a historical visual HTML export;
 - current screen references for Pet Studio New/Session, Pet Library, Enable & Behavior, Agent Connections, and overlay resizing;
 - corresponding HTML source captures under `source/`;
 - two earlier Pet Studio exports (`01_pet_studio_create.png`, `02_pet_studio_ai_session.png` and matching HTML) retained as historical references.
 
-`product-plan-v5/` 包含 Markdown、HTML 导出、当前页面参考图、对应 HTML source，以及两份较早的 Pet Studio 导出。历史素材仅作为参考，不覆盖当前产品方案。
+`product-plan-v5/` 中只有 Markdown 是持续维护的规范文本；HTML、截图和 source capture 都是历史视觉导出，可能不包含最新生命周期、会话同步或 Liquid Glass 规则。历史素材仅作为参考，不覆盖当前产品方案。
 
 When reviewing a visual change, compare the reference and implementation at the same viewport, appearance, and state. Screenshots alone are evidence, not a substitute for interaction, accessibility, and runtime checks.
 

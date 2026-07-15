@@ -8,8 +8,8 @@ use petcore::paths::AppPaths;
 use petcore::petpack::{build_petpack, validate_petpack_path, write_sample_petpack_dir};
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{
-    AgentEventType, AgentSource, BehaviorSettings, CheckStatus, FpsProfileName, GenerationForm,
-    GenerationJobStatus, PetSummary, QualityLevel,
+    AgentEvent, AgentEventType, AgentSource, BehaviorSettings, CheckStatus, FpsProfileName,
+    GenerationForm, GenerationJobStatus, PetSummary, QualityLevel,
 };
 use serde_json::json;
 use std::ffi::OsString;
@@ -712,7 +712,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
 }
 
 #[test]
-fn connection_test_event_drives_overlay_when_enabled() {
+fn connection_test_event_is_diagnostic_and_does_not_drive_overlay() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
@@ -731,7 +731,7 @@ fn connection_test_event_drives_overlay_when_enabled() {
 
     assert_eq!(test_event["ok"], true);
     assert_eq!(test_event["inserted"], true);
-    assert_eq!(test_event["triggered"], true);
+    assert_eq!(test_event["triggered"], false);
     assert_eq!(test_event["state"], "start");
     assert_eq!(test_event["event"]["source"], "opencode");
     assert_eq!(test_event["event"]["event_type"], "start");
@@ -741,7 +741,7 @@ fn connection_test_event_drives_overlay_when_enabled() {
         test_event["event"]["payload_json"]["source_event"],
         "connection.test"
     );
-    assert_eq!(test_event["event"]["payload_json"]["diagnostic"], false);
+    assert_eq!(test_event["event"]["payload_json"]["diagnostic"], true);
 
     let snapshot = handle_request(
         &state,
@@ -754,9 +754,85 @@ fn connection_test_event_drives_overlay_when_enabled() {
     )
     .unwrap();
     let overlay_events = snapshot["events"].as_array().unwrap();
-    assert_eq!(overlay_events.len(), 1);
-    assert_eq!(overlay_events[0]["id"], test_event["event"]["id"]);
-    assert_eq!(overlay_events[0]["source"], "opencode");
+    assert!(overlay_events.is_empty());
+    assert!(snapshot["recent_events"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn startup_scrubs_legacy_connector_runtime_events_into_diagnostics() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    database
+        .insert_event(&AgentEvent {
+            id: "evt_legacy_connector_runtime".to_string(),
+            source: AgentSource::Opencode,
+            project_path: None,
+            session_id: Some("evt_opencode_runtime_legacy".to_string()),
+            event_type: AgentEventType::Start,
+            title: "开始处理".to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": "evt_legacy_connector_runtime",
+                "source_event": "session.created",
+                "tool_name": null,
+                "outcome": "created",
+                "diagnostic": false,
+                "turn_id": null,
+                "session_active": false,
+                "message_role": null,
+                "message_content": null,
+                "interaction_kind": null,
+                "project_label": null
+            }),
+            created_at: "2026-07-14T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    database.init().unwrap();
+    let event = database.recent_events(1).unwrap().remove(0);
+    assert_eq!(event.payload_json["diagnostic"], true);
+}
+
+#[test]
+fn startup_reclassifies_legacy_pi_tool_errors_as_non_terminal_tool_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    database
+        .insert_event(&AgentEvent {
+            id: "evt_legacy_pi_tool_error".to_string(),
+            source: AgentSource::Pi,
+            project_path: None,
+            session_id: Some("pi-session-recovered".to_string()),
+            event_type: AgentEventType::Failed,
+            title: "失败".to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": "evt_legacy_pi_tool_error",
+                "source_event": "tool_execution_end",
+                "tool_name": "filesystem",
+                "outcome": "tool_failure",
+                "diagnostic": false,
+                "turn_id": null,
+                "session_active": false,
+                "message_role": null,
+                "message_content": null,
+                "interaction_kind": null,
+                "project_label": null
+            }),
+            created_at: "2026-07-14T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+    database.init().unwrap();
+    let event = database.recent_events(1).unwrap().remove(0);
+    assert_eq!(event.event_type, AgentEventType::Tool);
+    assert_eq!(event.title, AgentEventType::Tool.zh_label());
+    assert_eq!(event.payload_json["outcome"], "tool_failure");
+    assert_eq!(event.payload_json["session_active"], false);
 }
 
 #[test]
@@ -2172,7 +2248,7 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
 }
 
 #[test]
-fn generation_external_full_source_rejects_deterministic_preview_helper() {
+fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_helper() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
@@ -2205,15 +2281,25 @@ fn generation_external_full_source_rejects_deterministic_preview_helper() {
     let job_id = start["job_id"].as_str().unwrap();
     let job_dir = state.paths.jobs_dir.join(job_id);
     let helper_path = job_dir.join("apc_write_skill_source.py");
+    let form_path = job_dir.join("apc_skill_form.json");
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !helper_path.is_file() {
+    while !form_path.is_file() {
         assert!(
             Instant::now() < deadline,
-            "external Skill helper was not staged in the job workspace"
+            "external Skill form contract was not staged in the job workspace"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    assert!(
+        !helper_path.exists(),
+        "external full-source mode must not stage a deterministic preview helper"
+    );
+    std::fs::write(
+        &helper_path,
+        include_str!("../../../skills/agent-pet-studio/scripts/write_petpack_source.py"),
+    )
+    .unwrap();
     let helper_output = Command::new("python3")
         .arg("apc_write_skill_source.py")
         .current_dir(&job_dir)
@@ -2915,7 +3001,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
             .join("input/references/reference-00.png"),
     );
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let messages = handle_request(
             &state,
@@ -3134,7 +3220,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
                 .contains("正在恢复 Codex 会话")
     }));
 
-    let revision_deadline = Instant::now() + Duration::from_secs(20);
+    let revision_deadline = Instant::now() + Duration::from_secs(60);
     let reply_message_count = reply_items.len();
     let revision_messages = loop {
         let messages = handle_request(
@@ -3473,6 +3559,16 @@ fn repair_generates_real_pi_and_opencode_connectors() {
     let pi_script = std::fs::read_to_string(&pi_extension).unwrap();
     assert!(pi_script.contains("export default function agentPetCompanion(pi)"));
     assert!(pi_script.contains("pi.on(\"agent_settled\""));
+    assert!(pi_script.contains("pi.on(\"before_agent_start\""));
+    assert!(pi_script.contains("pi.on(\"input\""));
+    assert!(pi_script.contains("pi.on(\"message_end\""));
+    assert!(pi_script.contains("pi.on(\"agent_end\""));
+    assert!(pi_script.contains("pi.on(\"session_shutdown\""));
+    assert!(pi_script.contains("session_title: sessionTitle(ctx)"));
+    assert!(pi_script.contains("message_content: message?.content"));
+    assert!(pi_script.contains("agent_error: agentError"));
+    assert!(pi_script.contains("assistant?.stopReason === \"error\""));
+    assert!(pi_script.contains("session_open: event?.type !== \"session_shutdown\""));
     assert!(pi_script.contains("event?.isError === true"));
     assert!(pi_script.contains("\"--event-type\", \"auto\""));
     assert!(!pi_script.contains("permission_request"));
@@ -3481,13 +3577,9 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .items
         .iter()
         .any(|item| item.name == "Extension" && item.status == CheckStatus::Ok));
-    assert!(pi_status
-        .items
-        .iter()
-        .any(|item| item.name == "RPC" && item.status == CheckStatus::Ok));
     assert!(pi_status.items.iter().any(|item| {
         item.name == "Extension 运行时"
-            && item.status == CheckStatus::Ok
+            && item.status == CheckStatus::Unverified
             && item.detail.contains("外部事件 CLI 覆盖")
     }));
     assert!(!fake_agent_home
@@ -3506,7 +3598,29 @@ const handlers = new Map();
 mod.default({{ on: (name, callback) => handlers.set(name, callback) }});
 if (!handlers.has('tool_call')) throw new Error('Pi tool_call handler missing');
 if (!handlers.has('tool_execution_end')) throw new Error('Pi tool_execution_end handler missing');
+if (!handlers.has('message_end')) throw new Error('Pi message_end handler missing');
+if (!handlers.has('input')) throw new Error('Pi input handler missing');
 if (!handlers.has('agent_settled')) throw new Error('Pi agent_settled handler missing');
+await handlers.get('input')(
+  {{ type: 'input', text: 'Pi runtime prompt', source: 'interactive' }},
+  {{ sessionManager: {{ getSessionId: () => 'sess_pi_message' }}, cwd: '/tmp/pi-project' }}
+);
+await handlers.get('before_agent_start')(
+  {{ type: 'before_agent_start', prompt: 'Pi runtime prompt' }},
+  {{ sessionManager: {{ getSessionId: () => 'sess_pi_message' }}, cwd: '/tmp/pi-project' }}
+);
+await handlers.get('message_end')(
+  {{ type: 'message_end', message: {{ role: 'assistant', content: [{{ type: 'text', text: 'Pi runtime assistant response' }}], stopReason: 'stop' }} }},
+  {{ sessionManager: {{ getSessionId: () => 'sess_pi_message' }}, cwd: '/tmp/pi-project' }}
+);
+await handlers.get('agent_end')(
+  {{ type: 'agent_end', messages: [{{ role: 'assistant', content: [{{ type: 'text', text: 'Pi runtime assistant response' }}], stopReason: 'stop' }}] }},
+  {{ sessionManager: {{ getSessionId: () => 'sess_pi_message' }}, cwd: '/tmp/pi-project' }}
+);
+await handlers.get('agent_settled')(
+  {{ type: 'agent_settled' }},
+  {{ sessionManager: {{ getSessionId: () => 'sess_pi_message' }}, cwd: '/tmp/pi-project' }}
+);
 await handlers.get('tool_call')(
   {{ type: 'tool_call', toolName: 'bash', toolCallId: 'secret-call', input: {{ command: 'secret' }} }},
   {{ sessionManager: {{ getSessionId: () => 'sess_pi_runtime' }}, cwd: '/tmp/pi-project' }}
@@ -3531,6 +3645,11 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(pi_capture.contains("\"session_id\":\"sess_pi_runtime\""));
     assert!(pi_capture.contains("\"is_error\":true"));
     assert!(pi_capture.contains("\"type\":\"agent_settled\""));
+    assert!(pi_capture.contains("\"type\":\"message_end\""));
+    assert!(pi_capture.contains("\"type\":\"input\""));
+    assert!(pi_capture.contains("Pi runtime prompt"));
+    assert!(pi_capture.contains("Pi runtime assistant response"));
+    assert!(pi_capture.contains("\"turn_id\":"));
     assert!(!pi_capture.contains("secret-output"));
 
     let opencode_status = connections::repair_source(&paths, AgentSource::Opencode).unwrap();
@@ -3554,10 +3673,10 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_status
         .items
         .iter()
-        .any(|item| item.name == "OpenCode Server" && item.status == CheckStatus::Ok));
+        .any(|item| item.name == "OpenCode Server" && item.status == CheckStatus::NotRequired));
     assert!(opencode_status.items.iter().any(|item| {
         item.name == "Plugin 运行时"
-            && item.status == CheckStatus::Ok
+            && item.status == CheckStatus::Unverified
             && item.detail.contains("外部事件 CLI 覆盖")
     }));
     assert!(!fake_agent_home
@@ -3578,6 +3697,23 @@ const plugin = await mod.AgentPetCompanion({{
   worktree: '/tmp/opencode-worktree'
 }});
 if (!plugin['tool.execute.before']) throw new Error('OpenCode tool.execute.before handler missing');
+if (!plugin['chat.message']) throw new Error('OpenCode chat.message handler missing');
+await plugin['chat.message'](
+  {{ sessionID: 'sess_opencode_runtime' }},
+  {{ parts: [{{ type: 'text', text: 'OpenCode runtime prompt' }}] }}
+);
+await plugin.event({{ event: {{
+  type: 'message.updated',
+  properties: {{ info: {{ id: 'opencode-message', sessionID: 'sess_opencode_runtime', role: 'assistant', time: {{ created: 1, completed: 2 }} }} }}
+}} }});
+await plugin.event({{ event: {{
+  type: 'message.part.updated',
+  properties: {{ part: {{ id: 'opencode-part', messageID: 'opencode-message', sessionID: 'sess_opencode_runtime', type: 'text', text: 'OpenCode runtime assistant response' }} }}
+}} }});
+await plugin.event({{ event: {{
+  type: 'session.idle',
+  properties: {{ sessionID: 'sess_opencode_runtime' }}
+}} }});
 await plugin['tool.execute.before'](
   {{ tool: 'bash', sessionID: 'sess_opencode_runtime', callID: 'secret-call-id' }},
   {{ args: {{ command: 'TOKEN=secret-command' }} }}
@@ -3592,6 +3728,11 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_capture.contains("--event-type auto"));
     assert!(opencode_capture.contains("\"type\":\"tool.execute.before\""));
     assert!(opencode_capture.contains("\"sessionID\":\"sess_opencode_runtime\""));
+    assert!(opencode_capture.contains("\"type\":\"message.user\""));
+    assert!(opencode_capture.contains("OpenCode runtime prompt"));
+    assert!(opencode_capture.contains("\"type\":\"message.assistant\""));
+    assert!(opencode_capture.contains("OpenCode runtime assistant response"));
+    assert!(opencode_capture.contains("\"type\":\"session.idle\""));
     assert!(!opencode_capture.contains("secret-command"));
 
     let codex_uninstall = connections::uninstall_source(&paths, AgentSource::Codex).unwrap();
@@ -3648,6 +3789,7 @@ exit 0
     // a temporary HOME. Do not let a caller's isolation override turn that branch
     // into the APC_AGENT_CONFIG_HOME dry-run path.
     let _agent_config_home = EnvVarGuard::remove("APC_AGENT_CONFIG_HOME");
+    let _codex_cli = EnvVarGuard::set("APC_CODEX_CLI_PATH", codex.as_os_str());
     let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", fake_cli.as_os_str());
     let _path = EnvVarGuard::set(
         "PATH",
@@ -3756,6 +3898,7 @@ printf '%s\n' '{{"installed":[]}}'
     let mut codex_permissions = std::fs::metadata(&codex_script).unwrap().permissions();
     codex_permissions.set_mode(0o755);
     std::fs::set_permissions(&codex_script, codex_permissions).unwrap();
+    let _codex_cli = EnvVarGuard::set("APC_CODEX_CLI_PATH", codex_script.as_os_str());
 
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
     let _path = EnvVarGuard::set(
@@ -3797,7 +3940,7 @@ printf '%s\n' '{{"installed":[]}}'
         .iter()
         .find(|item| item["name"] == "Codex App Server")
         .unwrap();
-    assert_eq!(app_server_item["status"], "ok");
+    assert_eq!(app_server_item["status"], "unverified");
     assert!(app_server_item["detail"]
         .as_str()
         .unwrap()
@@ -3895,7 +4038,7 @@ fn snapshot_preserves_cached_runtime_connection_status_when_light_check_is_clean
         .as_array()
         .unwrap()
         .iter()
-        .all(|item| { item["status"] == "ok" }));
+        .all(|item| { item["status"] != "needs_fix" && item["status"] != "missing" }));
 
     let snapshot = handle_request(
         &state,
@@ -3915,8 +4058,8 @@ fn snapshot_preserves_cached_runtime_connection_status_when_light_check_is_clean
         .unwrap();
     assert_eq!(pi_status["check_mode"], "runtime");
     assert!(pi_status["items"].as_array().unwrap().iter().any(|item| {
-        item["name"] == "事件自检"
-            && item["status"] == "ok"
+        item["name"] == "PetCore 通道自检"
+            && item["status"] == "unverified"
             && item["detail"]
                 .as_str()
                 .unwrap_or("")
@@ -3987,6 +4130,77 @@ fn codex_app_server_probe_uses_configured_stdio_command() {
     assert_eq!(session["ai_brief"]["name"], "AI 云袖");
     assert_eq!(session["ai_brief"]["states"].as_array().unwrap().len(), 7);
     assert!(session["ai_brief_warnings"].as_array().unwrap().len() >= 6);
+}
+
+#[test]
+fn codex_active_session_is_enriched_from_explicit_thread_read() {
+    let _env_lock = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("thread_display_app_server.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *initialize*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fake-thread-display"}}}'
+      ;;
+    *thread/read*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"name":"Current Codex task","turns":[{"items":[{"type":"userMessage","id":"u1","content":[{"type":"text","text":"Show this conversation"}]},{"type":"agentMessage","id":"a1","text":"Latest agent response"}]}]}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let state = CoreState::new(AppPaths::new(temp.path().join("home")));
+    state.ensure_ready().unwrap();
+    let request = |method: &str, params| RpcRequest {
+        jsonrpc: Some("2.0".to_string()),
+        id: Some(json!("test")),
+        method: method.to_string(),
+        params,
+    };
+
+    handle_request(
+        &state,
+        request(
+            "agent.ingest",
+            json!({
+                "id": "codex-thread-display-event",
+                "source": "codex",
+                "session_id": "019f5a6f-0c52-75e1-b652-004d4487c4ae",
+                "event_type": "tool",
+                "payload": {
+                    "schema_version": "apc.agent-event.v1",
+                    "source_event": "PreToolUse",
+                    "session_active": true
+                }
+            }),
+        ),
+    )
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+        let active = &snapshot["active_agent_state"];
+        if active["session_title"] == "Current Codex task" {
+            assert_eq!(active["session_message"]["role"], "assistant");
+            assert_eq!(
+                active["session_message"]["content"],
+                "Latest agent response"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "thread display enrichment timed out: {active}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

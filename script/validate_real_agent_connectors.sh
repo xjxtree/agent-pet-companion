@@ -83,7 +83,7 @@ required = {
         "Codex marketplace",
         "Codex 插件安装",
         "事件回传",
-        "事件自检",
+        "PetCore 通道自检",
     },
     "claude_code": {
         "Claude CLI",
@@ -92,25 +92,23 @@ required = {
         "事件通道",
         "Claude settings.json",
         "事件回传",
-        "事件自检",
+        "PetCore 通道自检",
     },
     "pi": {
         "Pi CLI",
         "本地事件 CLI",
         "Extension",
         "Extension 运行时",
-        "RPC",
         "事件回传",
-        "事件自检",
+        "PetCore 通道自检",
     },
     "opencode": {
         "OpenCode CLI",
         "本地事件 CLI",
         "Plugin",
         "Plugin 运行时",
-        "OpenCode Server",
         "事件回传",
-        "事件自检",
+        "PetCore 通道自检",
     },
 }
 
@@ -139,11 +137,17 @@ for source, names in required.items():
                 f"{source}: {name} is {item.get('status')} - {item.get('detail', '')}"
             )
 
-pi_rpc = {
-    item.get("name"): item for item in by_source["pi"].get("items", [])
-}.get("RPC", {})
-if "unsupported" not in pi_rpc.get("detail", ""):
-    failures.append("pi: RPC check must explicitly report unsupported until a strict JSONL client exists")
+opencode_server = {
+    item.get("name"): item for item in by_source["opencode"].get("items", [])
+}.get("OpenCode Server", {})
+if opencode_server.get("status") != "not_required":
+    failures.append("opencode: optional Server must report not_required in the standard check")
+
+codex_trust = {
+    item.get("name"): item for item in by_source["codex"].get("items", [])
+}.get("Codex Hook Trust", {})
+if codex_trust.get("status") not in {"ok", "unverified"}:
+    failures.append("codex: Hook Trust must be verified or explicitly unverified")
 
 if failures:
     raise SystemExit("\n".join(failures))
@@ -242,13 +246,13 @@ PY
 
 printf 'Sending diagnostic Codex hook event through installed user hook...\n'
 CODEX_START_CMD="$(json_path "$CODEX_HOOKS" 'data["hooks"]["SessionStart"][0]["hooks"][0]["command"]')"
-printf '%s\n' "{\"session\":{\"id\":\"$RUN_ID-codex\"},\"session_id\":\"$RUN_ID-codex\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
+printf '%s\n' "{\"hook_event_name\":\"SessionStart\",\"session\":{\"id\":\"$RUN_ID-codex\"},\"session_id\":\"$RUN_ID-codex\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
   | sh -c "$CODEX_START_CMD" >/dev/null
 assert_recent_event codex start "$RUN_ID-codex"
 
 printf 'Sending diagnostic Claude hook event through installed settings command...\n'
 CLAUDE_TOOL_CMD="$(json_path "$CLAUDE_SETTINGS" 'data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]')"
-printf '%s\n' "{\"tool_name\":\"Bash\",\"session_id\":\"$RUN_ID-claude\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
+printf '%s\n' "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"session_id\":\"$RUN_ID-claude\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
   | sh -c "$CLAUDE_TOOL_CMD" >/dev/null
 assert_recent_event claude_code tool "$RUN_ID-claude"
 
@@ -262,34 +266,72 @@ const mod = await import(pathToFileURL(process.env.PI_CONNECTOR_MODULE).href);
 const handlers = new Map();
 mod.default({ on: (name, callback) => handlers.set(name, callback) });
 
-for (const name of ['session_start', 'tool_call', 'tool_execution_end', 'agent_settled']) {
+for (const name of ['session_start', 'before_agent_start', 'message_end', 'tool_call', 'tool_execution_end', 'agent_end', 'agent_settled', 'session_shutdown']) {
   if (!handlers.has(name)) {
     throw new Error(`Pi ${name} handler missing`);
   }
 }
 
 await handlers.get('session_start')(
-  { type: 'session_start', reason: 'startup' },
+  { type: 'session_start', reason: 'startup', diagnostic: true },
   { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-start` }, cwd: process.env.ROOT_DIR }
 );
+await handlers.get('before_agent_start')(
+  { type: 'before_agent_start', prompt: '真实 Pi 用户消息', diagnostic: true },
+  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-prompt`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR }
+);
 await handlers.get('tool_call')(
-  { type: 'tool_call', toolName: 'bash', toolCallId: 'secret-call', input: { command: 'TOKEN=secret-command' } },
+  { type: 'tool_call', toolName: 'bash', toolCallId: 'secret-call', input: { command: 'TOKEN=secret-command' }, diagnostic: true },
   { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-tool` }, cwd: process.env.ROOT_DIR }
 );
 await handlers.get('tool_execution_end')(
-  { type: 'tool_execution_end', toolName: 'bash', toolCallId: 'secret-call', result: 'secret-output', isError: true },
+  { type: 'tool_execution_end', toolName: 'bash', toolCallId: 'secret-call', result: 'secret-output', isError: true, diagnostic: true },
   { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-failed` }, cwd: process.env.ROOT_DIR }
 );
 await handlers.get('agent_settled')(
-  { type: 'agent_settled' },
+  { type: 'agent_settled', diagnostic: true },
   { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-done` }, cwd: process.env.ROOT_DIR }
+);
+const replyContext = { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-reply`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR };
+await handlers.get('before_agent_start')(
+  { type: 'before_agent_start', prompt: '请回复真实 Pi 消息', diagnostic: true },
+  replyContext
+);
+await handlers.get('message_end')(
+  { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '真实 Pi Agent 回复' }], stopReason: 'stop' }, diagnostic: true },
+  replyContext
+);
+await handlers.get('agent_end')(
+  { type: 'agent_end', messages: [{ role: 'assistant', content: [{ type: 'text', text: '真实 Pi Agent 回复' }], stopReason: 'stop' }], diagnostic: true },
+  replyContext
+);
+await handlers.get('agent_settled')(
+  { type: 'agent_settled', diagnostic: true },
+  replyContext
+);
+await handlers.get('agent_end')(
+  { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', content: [] }], diagnostic: true },
+  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-agent-error`, getSessionName: () => '真实 Pi 错误会话' }, cwd: process.env.ROOT_DIR }
+);
+await handlers.get('agent_settled')(
+  { type: 'agent_settled', diagnostic: true },
+  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-agent-error`, getSessionName: () => '真实 Pi 错误会话' }, cwd: process.env.ROOT_DIR }
+);
+await handlers.get('session_shutdown')(
+  { type: 'session_shutdown', reason: 'quit', diagnostic: true },
+  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-closed`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR }
 );
 await new Promise((resolve) => setTimeout(resolve, 800));
 NODE
-assert_recent_event pi start "$RUN_ID-pi-start"
+# Merely opening/resuming a Pi page is intentionally ignored: it does not
+# prove that an Agent turn is active and must not create a misleading bubble.
+assert_recent_event pi start "$RUN_ID-pi-prompt"
 assert_recent_event pi tool "$RUN_ID-pi-tool"
-assert_recent_event pi failed "$RUN_ID-pi-failed"
+assert_recent_event pi tool "$RUN_ID-pi-failed"
 assert_recent_event pi done "$RUN_ID-pi-done"
+assert_recent_event pi done "$RUN_ID-pi-reply"
+assert_recent_event pi failed "$RUN_ID-pi-agent-error"
+assert_recent_event pi done "$RUN_ID-pi-closed"
 
 printf 'Loading real OpenCode plugin from the user plugin directory...\n'
 OPENCODE_MODULE="$TMP_DIR/opencode-connector.mjs"
@@ -311,23 +353,23 @@ if (!plugin.event) {
 await plugin.event({
   event: {
     type: 'session.created',
-    properties: { info: { id: `${process.env.RUN_ID}-opencode-start` } },
+    properties: { info: { id: `${process.env.RUN_ID}-opencode-start`, diagnostic: true } },
   },
 });
 await plugin.event({
   event: {
     type: 'permission.updated',
-    properties: { sessionID: `${process.env.RUN_ID}-opencode-waiting` },
+    properties: { sessionID: `${process.env.RUN_ID}-opencode-waiting`, diagnostic: true },
   },
 });
 await plugin['tool.execute.before'](
-  { tool: 'bash', sessionID: `${process.env.RUN_ID}-opencode-tool`, callID: 'secret-call' },
+  { tool: 'bash', sessionID: `${process.env.RUN_ID}-opencode-tool`, callID: 'secret-call', diagnostic: true },
   { args: { command: 'TOKEN=secret-command' } },
 );
 await plugin.event({
   event: {
     type: 'session.idle',
-    properties: { sessionID: `${process.env.RUN_ID}-opencode-done` },
+    properties: { sessionID: `${process.env.RUN_ID}-opencode-done`, diagnostic: true },
   },
 });
 await new Promise((resolve) => setTimeout(resolve, 800));

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Sendable {
+public enum NavigationSection: String, CaseIterable, Identifiable, Codable, Hashable, Sendable {
     case studio
     case behavior
     case connections
@@ -186,6 +186,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public var clickMenu: Bool
     public var mousePassthrough: Bool
     public var autoHide: Bool
+    public var sessionMessageTimeoutMinutes: Int
     public var fpsProfile: FpsProfile
     public var sources: [AgentSource: Bool]
     public var events: [AgentEventKind: Bool]
@@ -196,6 +197,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         clickMenu: Bool = true,
         mousePassthrough: Bool = true,
         autoHide: Bool = false,
+        sessionMessageTimeoutMinutes: Int = 15,
         fpsProfile: FpsProfile = .standard,
         sources: [AgentSource: Bool] = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { ($0, true) }),
         events: [AgentEventKind: Bool] = Dictionary(uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, true) })
@@ -205,6 +207,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         self.clickMenu = clickMenu
         self.mousePassthrough = mousePassthrough
         self.autoHide = autoHide
+        self.sessionMessageTimeoutMinutes = sessionMessageTimeoutMinutes
         self.fpsProfile = fpsProfile
         self.sources = sources
         self.events = events
@@ -216,6 +219,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
+        case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
         case fpsProfile = "fps_profile"
         case sources
         case events
@@ -229,6 +233,10 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu) ?? defaults.clickMenu
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough) ?? defaults.mousePassthrough
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide) ?? defaults.autoHide
+        sessionMessageTimeoutMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .sessionMessageTimeoutMinutes
+        ) ?? defaults.sessionMessageTimeoutMinutes
         fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile) ?? defaults.fpsProfile
 
         let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources) ?? [:]
@@ -249,6 +257,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         try container.encode(clickMenu, forKey: .clickMenu)
         try container.encode(mousePassthrough, forKey: .mousePassthrough)
         try container.encode(autoHide, forKey: .autoHide)
+        try container.encode(sessionMessageTimeoutMinutes, forKey: .sessionMessageTimeoutMinutes)
         try container.encode(fpsProfile, forKey: .fpsProfile)
         try container.encode(
             Dictionary(uniqueKeysWithValues: sources.map { ($0.key.rawValue, $0.value) }),
@@ -271,6 +280,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var clickMenu: Bool?
     public var mousePassthrough: Bool?
     public var autoHide: Bool?
+    public var sessionMessageTimeoutMinutes: Int?
     public var fpsProfile: FpsProfile?
     public var sources: [AgentSource: Bool]?
     public var events: [AgentEventKind: Bool]?
@@ -283,6 +293,9 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             ? nil
             : next.mousePassthrough
         autoHide = previous.autoHide == next.autoHide ? nil : next.autoHide
+        sessionMessageTimeoutMinutes = previous.sessionMessageTimeoutMinutes == next.sessionMessageTimeoutMinutes
+            ? nil
+            : next.sessionMessageTimeoutMinutes
         fpsProfile = previous.fpsProfile == next.fpsProfile ? nil : next.fpsProfile
         let changedSources = next.sources.filter { previous.sources[$0.key] != $0.value }
         sources = changedSources.isEmpty ? nil : changedSources
@@ -296,6 +309,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             && clickMenu == nil
             && mousePassthrough == nil
             && autoHide == nil
+            && sessionMessageTimeoutMinutes == nil
             && fpsProfile == nil
             && sources?.isEmpty != false
             && events?.isEmpty != false
@@ -307,6 +321,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
+        case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
         case fpsProfile = "fps_profile"
         case sources
         case events
@@ -319,6 +334,10 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough)
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide)
+        sessionMessageTimeoutMinutes = try container.decodeIfPresent(
+            Int.self,
+            forKey: .sessionMessageTimeoutMinutes
+        )
         fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile)
         let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources)
         sources = rawSources.map { values in
@@ -341,6 +360,10 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         try container.encodeIfPresent(clickMenu, forKey: .clickMenu)
         try container.encodeIfPresent(mousePassthrough, forKey: .mousePassthrough)
         try container.encodeIfPresent(autoHide, forKey: .autoHide)
+        try container.encodeIfPresent(
+            sessionMessageTimeoutMinutes,
+            forKey: .sessionMessageTimeoutMinutes
+        )
         try container.encodeIfPresent(fpsProfile, forKey: .fpsProfile)
         if let sources {
             try container.encode(
@@ -525,44 +548,174 @@ public struct OverlayPlacement: Codable, Hashable, Sendable {
     }
 }
 
+public struct AgentEventPayload: Codable, Hashable, Sendable {
+    public var schemaVersion: String?
+    public var externalEventID: String?
+    public var sourceEvent: String?
+    public var toolName: String?
+    public var outcome: String?
+    public var diagnostic: Bool?
+    public var turnID: String?
+    public var sessionActive: Bool?
+    public var messageRole: String?
+    public var messageContent: String?
+    public var activityKind: String?
+    public var activityContent: String?
+    public var interactionKind: String?
+    public var projectLabel: String?
+    public var sessionTitle: String?
+    public var sessionOpen: Bool?
+    public var sessionSurface: String?
+    public var terminalApp: String?
+    public var sessionOpenURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case externalEventID = "external_event_id"
+        case sourceEvent = "source_event"
+        case toolName = "tool_name"
+        case outcome
+        case diagnostic
+        case turnID = "turn_id"
+        case sessionActive = "session_active"
+        case messageRole = "message_role"
+        case messageContent = "message_content"
+        case activityKind = "activity_kind"
+        case activityContent = "activity_content"
+        case interactionKind = "interaction_kind"
+        case projectLabel = "project_label"
+        case sessionTitle = "session_title"
+        case sessionOpen = "session_open"
+        case sessionSurface = "session_surface"
+        case terminalApp = "terminal_app"
+        case sessionOpenURL = "session_open_url"
+    }
+}
+
+public struct AgentSessionNavigation: Codable, Hashable, Sendable {
+    public var sessionOpen: Bool?
+    public var surface: String?
+    public var terminalApp: String?
+    public var openURL: String?
+
+    public init(
+        sessionOpen: Bool? = nil,
+        surface: String? = nil,
+        terminalApp: String? = nil,
+        openURL: String? = nil
+    ) {
+        self.sessionOpen = sessionOpen
+        self.surface = surface
+        self.terminalApp = terminalApp
+        self.openURL = openURL
+    }
+
+    public var explicitlyClosed: Bool { sessionOpen == false }
+}
+
 public struct AgentEvent: Codable, Identifiable, Hashable, Sendable {
     public var id: String
     public var source: AgentSource
+    public var sessionID: String?
     public var eventType: AgentEventKind
     public var title: String
     public var detail: String?
+    public var payloadJSON: AgentEventPayload?
     public var createdAt: String
+
+    public var messageContent: String? {
+        payloadJSON?.messageContent?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public var sessionNavigation: AgentSessionNavigation {
+        AgentSessionNavigation(
+            sessionOpen: payloadJSON?.sessionOpen,
+            surface: payloadJSON?.sessionSurface,
+            terminalApp: payloadJSON?.terminalApp,
+            openURL: payloadJSON?.sessionOpenURL
+        )
+    }
+
+    public init(
+        id: String,
+        source: AgentSource,
+        sessionID: String? = nil,
+        eventType: AgentEventKind,
+        title: String,
+        detail: String? = nil,
+        payloadJSON: AgentEventPayload? = nil,
+        createdAt: String
+    ) {
+        self.id = id
+        self.source = source
+        self.sessionID = sessionID
+        self.eventType = eventType
+        self.title = title
+        self.detail = detail
+        self.payloadJSON = payloadJSON
+        self.createdAt = createdAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
         case source
+        case sessionID = "session_id"
         case eventType = "event_type"
         case title
         case detail
+        case payloadJSON = "payload_json"
         case createdAt = "created_at"
     }
 }
 
 public struct ActiveAgentState: Codable, Equatable, Sendable {
     public var state: String
+    public var officialStatus: String?
     public var source: AgentSource
     public var sessionID: String?
+    public var sessionActive: Bool?
     public var sourceSessionSequence: UInt64
     public var priority: UInt16
-    public var leaseSeconds: Int
-    public var expiresAt: String
+    public var leaseSeconds: Int?
+    public var expiresAt: String?
+    public var sessionActivatedAt: String?
     public var event: AgentEvent
+    public var latestMessage: AgentEvent?
+    public var latestUserMessage: AgentEvent?
+    public var sessionTitle: String?
+    public var sessionMessage: AgentSessionDisplayMessage?
+    public var sessionUserMessage: AgentSessionDisplayMessage?
+    public var sessionActivity: AgentSessionActivity?
 
     enum CodingKeys: String, CodingKey {
         case state
+        case officialStatus = "official_status"
         case source
         case sessionID = "session_id"
+        case sessionActive = "session_active"
         case sourceSessionSequence = "source_session_sequence"
         case priority
         case leaseSeconds = "lease_seconds"
         case expiresAt = "expires_at"
+        case sessionActivatedAt = "session_activated_at"
         case event
+        case latestMessage = "latest_message"
+        case latestUserMessage = "latest_user_message"
+        case sessionTitle = "session_title"
+        case sessionMessage = "session_message"
+        case sessionUserMessage = "session_user_message"
+        case sessionActivity = "session_activity"
     }
+}
+
+public struct AgentSessionDisplayMessage: Codable, Equatable, Sendable {
+    public var role: String
+    public var content: String
+}
+
+public struct AgentSessionActivity: Codable, Equatable, Sendable {
+    public var kind: String
+    public var content: String?
 }
 
 public struct OverlayVisibility: Codable, Equatable, Sendable {
@@ -863,13 +1016,23 @@ public enum CheckStatus: String, Codable, Hashable, Sendable {
     case ok
     case needsFix = "needs_fix"
     case missing
+    case unverified
+    case unsupported
+    case notRequired = "not_required"
 
     public var title: String {
         switch self {
         case .ok: "正常"
         case .needsFix: "需修复"
         case .missing: "未检测到"
+        case .unverified: "未验证"
+        case .unsupported: "暂不支持"
+        case .notRequired: "非必需"
         }
+    }
+
+    public var isBlocking: Bool {
+        self == .needsFix || self == .missing
     }
 }
 
@@ -890,6 +1053,7 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
     public var source: AgentSource
     public var items: [ConnectionCheckItem]
     public var installPaths: [String]
+    public var connectorInstalled: Bool?
     public var checkMode: ConnectionCheckMode
     public var checkedAt: String?
 
@@ -897,12 +1061,14 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
         source: AgentSource,
         items: [ConnectionCheckItem],
         installPaths: [String],
+        connectorInstalled: Bool? = nil,
         checkMode: ConnectionCheckMode = .runtime,
         checkedAt: String? = nil
     ) {
         self.source = source
         self.items = items
         self.installPaths = installPaths
+        self.connectorInstalled = connectorInstalled
         self.checkMode = checkMode
         self.checkedAt = checkedAt
     }
@@ -911,6 +1077,7 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
         case source
         case items
         case installPaths = "install_paths"
+        case connectorInstalled = "connector_installed"
         case checkMode = "check_mode"
         case checkedAt = "checked_at"
     }
@@ -920,20 +1087,38 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
         source = try container.decode(AgentSource.self, forKey: .source)
         items = try container.decode([ConnectionCheckItem].self, forKey: .items)
         installPaths = try container.decode([String].self, forKey: .installPaths)
+        connectorInstalled = try container.decodeIfPresent(Bool.self, forKey: .connectorInstalled)
         checkMode = try container.decodeIfPresent(ConnectionCheckMode.self, forKey: .checkMode) ?? .runtime
         checkedAt = try container.decodeIfPresent(String.self, forKey: .checkedAt)
     }
 
     public var hasInstalledConnectorArtifacts: Bool {
-        items.contains { item in
-            connectorArtifactItemNames.contains(item.name) && item.status == .ok
+        if let connectorInstalled {
+            return connectorInstalled
+        }
+        return items.contains { item in
+            connectorArtifactItemNames.contains(item.name)
+                && (item.status == .ok || item.detail.contains("已安装"))
         }
     }
 
     public var hasRepairableConnectorIssue: Bool {
         !installPaths.isEmpty && items.contains { item in
-            repairableConnectorItemNames.contains(item.name) && item.status == .needsFix
+            repairableConnectorItemNames.contains(item.name) && item.status.isBlocking
         }
+    }
+
+
+    public var blockingItems: [ConnectionCheckItem] {
+        items.filter { $0.status.isBlocking }
+    }
+
+    public var unverifiedItems: [ConnectionCheckItem] {
+        items.filter { $0.status == .unverified }
+    }
+
+    public var unsupportedItems: [ConnectionCheckItem] {
+        items.filter { $0.status == .unsupported }
     }
 
     private var connectorArtifactItemNames: Set<String> {
@@ -943,14 +1128,14 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
         case .claudeCode:
             return ["Hooks", "事件通道", "Claude settings.json"]
         case .pi:
-            return ["Extension", "RPC"]
+            return ["Extension"]
         case .opencode:
-            return ["Plugin", "OpenCode Server"]
+            return ["Plugin"]
         }
     }
 
     private var repairableConnectorItemNames: Set<String> {
-        connectorArtifactItemNames.union(["本地事件 CLI"])
+        connectorArtifactItemNames
     }
 }
 

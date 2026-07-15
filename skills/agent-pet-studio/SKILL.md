@@ -106,7 +106,7 @@ The seven state names are fixed: `idle`, `start`, `tool`, `waiting`, `review`, `
 
 1. Read the form and reference images.
 2. Ask follow-up questions in the Studio conversation only when required details are missing, using Input request mode.
-3. In external full source mode, use an image-capable tool to create the main image and visibly distinct frame sequences. Do not run `apc_write_skill_source.py`; that helper is preview-only. Write `brief.json` with character identity, style constraints, palette, motion notes, and quality, and write `source/source.json` with `generator: "codex-app-server-skill"`, `provenance: "skill-full-source"`, `visual_source: "image-generation"` (or `user-reference-derived`), `frames_per_state >= 2`, and `preview_only: false`.
+3. In external full source mode, call an image-capable tool to create the main image and visibly distinct frame sequences. One or more ordered sprite sheets may be used and cropped into the required frames to keep the turn bounded. Do not run `apc_write_skill_source.py`; that helper is preview-only. Write `brief.json` with character identity, style constraints, palette, motion notes, and quality, and write `source/source.json` with `generator: "codex-app-server-skill"`, `provenance: "skill-full-source"`, `visual_source: "image-generation"` (or `user-reference-derived`), `frames_per_state >= 2`, and `preview_only: false`. Keep preview encoding fast and prioritize completing required source files and CLI validation over optional compression optimization.
 4. In brief mode, return structured JSON only; do not write files or read unrelated files.
 5. Generate a consistent main image and all seven state motion concepts.
 6. Render PNG frame sequences at the exact quality size.

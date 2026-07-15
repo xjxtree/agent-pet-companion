@@ -1,5 +1,7 @@
 # Agent Pet Companion 全面项目审查报告
 
+> **历史快照：** 本报告只描述 2026-07-10 当时的工作区与验证结果。2026-07-14 之后的实现、当前门禁红项和发布阻塞项请查看[当前项目状态](../../PROJECT_STATUS.md)；本文中的通过数量不得作为当前候选构建证据。
+
 > 审查日期：2026-07-10
 > 审查基线：当前工作区（包含用户已有、尚未提交的实现）
 > 产品基线：`AgentPetCompanion_ProductPlan_V5.md`
@@ -184,7 +186,7 @@
 
 - 证据：`connections.rs:347-400,641-712`、`core_validation.rs:3420-3438`、`script/validate_connectors_runtime.sh:130-153`。
 - 问题：官方 ExtensionAPI 不存在 `tool_execution_failed`、`permission_request`、`approval_request`、`session_error`；`agent_end` 后仍可能 retry/compact/follow-up，`session_shutdown` 可能是 reload/new/resume/fork。当前实现会漏掉等待/失败并提前显示 Done，且自建 Map 自检把无效模板判为正常。
-- 修复方向：使用显式、可类型检查的官方事件；完成用 `agent_settled`，工具失败用 `tool_execution_end.isError`；等待确认通过 `tool_call` + `ctx.ui.confirm()`/UI 子协议表达；真实 Pi opt-in 测试加载 extension。
+- 修复方向：使用显式、可类型检查的官方事件；完成用 `agent_settled`；`tool_execution_end.isError` 只表示可恢复的单次工具错误，最终失败由 settled run 的 assistant `stopReason=error` 判断；等待确认通过可证明的 Extension/UI 事件表达；真实 Pi opt-in 测试加载 extension。
 
 #### APC-P1-017 OpenCode connector 未按官方 payload 读取 session/args — `MITIGATED`
 
@@ -433,7 +435,7 @@
 ### 6.3 Pi Coding Agent
 
 - [Extensions](https://pi.dev/docs/latest/extensions) 和固定官方提交的 [ExtensionAPI 事件](https://github.com/earendil-works/pi/blob/34582ef34beec868b0df4fb969385b8af5960c45/packages/coding-agent/src/core/extensions/types.ts#L1017-L1043) / [`pi.on` 重载](https://github.com/earendil-works/pi/blob/34582ef34beec868b0df4fb969385b8af5960c45/packages/coding-agent/src/core/extensions/types.ts#L1165-L1211) 是当前 V1 契约基线。
-- 模板已删除不存在的事件；完成使用 `agent_settled`，工具失败读取 `tool_execution_end.isError`，等待只从可证明的 tool/UI 交互产生。
+- 模板已删除不存在的事件；完成使用 `agent_settled`，单次 `tool_execution_end.isError` 保持运行态，最终失败读取 settled run 的 assistant `stopReason=error`；等待只从可证明的 tool/UI 交互产生。
 - [RPC](https://pi.dev/docs/latest/rpc) 是严格 LF JSONL；V1 现在明确只支持 Extension 观察，不再把未实现的 `pi --mode rpc` 宣称为已支持。
 - 版本化模板和官方形状 fixture 通过；真实 extension 加载仍需用户授权。
 

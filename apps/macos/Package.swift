@@ -21,6 +21,9 @@ let package = Package(
             targets: ["AgentPetCompanionUIValidation"]
         )
     ],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.3.2")
+    ],
     targets: [
         .target(name: "AgentPetCompanionCore"),
         .executableTarget(
@@ -44,11 +47,18 @@ let package = Package(
         ),
         .testTarget(
             name: "AgentPetCompanionCoreTests",
-            dependencies: ["AgentPetCompanionCore"]
+            dependencies: [
+                "AgentPetCompanionCore",
+                .product(name: "Testing", package: "swift-testing")
+            ]
         ),
         .testTarget(
             name: "AgentPetCompanionTests",
-            dependencies: ["AgentPetCompanion", "AgentPetCompanionCore"]
+            dependencies: [
+                "AgentPetCompanion",
+                "AgentPetCompanionCore",
+                .product(name: "Testing", package: "swift-testing")
+            ]
         )
     ]
 )

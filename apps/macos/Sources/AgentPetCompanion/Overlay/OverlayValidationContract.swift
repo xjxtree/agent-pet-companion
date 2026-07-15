@@ -24,6 +24,15 @@ public enum AgentPetCompanionUIValidationContract {
         try validateScalePolicy()
         passed.append("geometry.scale-policy")
 
+        try validateActiveSessionBubbleContent()
+        passed.append("bubble.active-session-content-retention")
+
+        try validateBubbleActionRouting()
+        passed.append("bubble.open-close-hit-regions-and-deeplink")
+
+        try await validateBubbleDisclosureState()
+        passed.append("bubble.expand-clears-all-dismissal-layers")
+
         try validateScheduler()
         passed.append("scheduler.loop-and-one-shot")
 
@@ -39,6 +48,28 @@ public enum AgentPetCompanionUIValidationContract {
         return passed
     }
 
+    @MainActor
+    private static func validateBubbleDisclosureState() throws {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
+        )
+        store.overlayBubbleDismissed = true
+        store.overlayDismissedBubbleEventIDs = ["codex-session-event", "pi-session-event"]
+
+        store.toggleOverlayBubble()
+
+        try require(!store.overlayBubbleDismissed, "expand left the global bubble dismissal active")
+        try require(
+            store.overlayDismissedBubbleEventIDs.isEmpty,
+            "expand left session-level bubble dismissals active"
+        )
+    }
+
     private static func validateGeometry() throws {
         let visibleFrames = [
             CGRect(x: 0, y: 25, width: 1512, height: 934),
@@ -46,6 +77,68 @@ public enum AgentPetCompanionUIValidationContract {
         ]
         for visibleFrame in visibleFrames {
             for scale: CGFloat in [0.10, 0.72, 1.8] {
+                let localPetCenter = CGPoint(x: 420, y: 360)
+                let resizeCenter = OverlayGeometry.resizeCenter(
+                    petCenter: localPetCenter,
+                    scale: scale
+                )
+                let menuCenter = OverlayGeometry.menuCenter(
+                    petCenter: localPetCenter,
+                    scale: scale
+                )
+                try require(
+                    abs(resizeCenter.x - menuCenter.x) < 0.001,
+                    "resize handle left the pet-side control column at scale \(scale)"
+                )
+                try require(
+                    !OverlayGeometry.rect(center: resizeCenter, size: OverlayGeometry.resizeHitSize)
+                        .intersects(OverlayGeometry.rect(center: menuCenter, size: OverlayGeometry.menuHitSize)),
+                    "resize and bubble-toggle hit regions overlap at scale \(scale)"
+                )
+
+                let menuScreenRect = OverlayGeometry.rect(
+                    center: OverlayGeometry.menuScreenCenter(
+                        petScreenCenter: localPetCenter,
+                        scale: scale
+                    ),
+                    size: OverlayGeometry.menuHitSize
+                )
+                let resizeScreenRect = OverlayGeometry.rect(
+                    center: OverlayGeometry.resizeScreenCenter(
+                        petScreenCenter: localPetCenter,
+                        scale: scale
+                    ),
+                    size: OverlayGeometry.resizeHitSize
+                )
+                let activationRect = OverlayGeometry.pointerNearPetScreenRect(
+                    scale: scale,
+                    petScreenCenter: localPetCenter,
+                    clickMenuEnabled: true
+                )
+                try require(
+                    activationRect.contains(menuScreenRect.insetBy(dx: -8, dy: -8)),
+                    "bubble toggle lacks a preactivation margin at scale \(scale)"
+                )
+                try require(
+                    activationRect.contains(resizeScreenRect.insetBy(dx: -8, dy: -8)),
+                    "resize handle lacks a preactivation margin at scale \(scale)"
+                )
+
+                let bubbleSize = CGSize(width: OverlayGeometry.bubbleWidth, height: 76)
+                let bubbleRect = OverlayGeometry.rect(
+                    center: OverlayGeometry.bubbleScreenCenter(
+                        bubbleSize: bubbleSize,
+                        scale: scale,
+                        petScreenCenter: localPetCenter,
+                        screenFrame: visibleFrame
+                    ),
+                    size: bubbleSize
+                )
+                try require(
+                    !bubbleRect.intersects(menuScreenRect),
+                    "bubble panel overlaps the toggle hit region at scale \(scale)"
+                )
+
                 let proposals = [
                     CGPoint(x: visibleFrame.minX, y: visibleFrame.minY),
                     CGPoint(x: visibleFrame.maxX, y: visibleFrame.minY),
@@ -59,7 +152,7 @@ public enum AgentPetCompanionUIValidationContract {
                         visibleFrame: visibleFrame,
                         clickMenuEnabled: true
                     )
-                    let bounds = OverlayGeometry.petInteractiveScreenBounds(
+                    let bounds = OverlayGeometry.petMovementScreenBounds(
                         scale: scale,
                         petScreenCenter: center,
                         clickMenuEnabled: true,
@@ -67,11 +160,26 @@ public enum AgentPetCompanionUIValidationContract {
                     )
                     try require(
                         visibleFrame.insetBy(dx: -0.5, dy: -0.5).contains(bounds),
-                        "interactive bounds escaped the visible frame at scale \(scale): \(bounds)"
+                        "movement bounds escaped its frame at scale \(scale): \(bounds)"
                     )
                 }
             }
         }
+
+        let fullScreen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        let systemVisibleFrame = CGRect(x: 0, y: 60, width: 1728, height: 1024)
+        let movementFrame = OverlayGeometry.petMovementFrame(
+            screenFrame: fullScreen,
+            visibleFrame: systemVisibleFrame
+        )
+        try require(
+            movementFrame.minY == fullScreen.minY,
+            "movement frame still excludes the Dock reservation"
+        )
+        try require(
+            movementFrame.maxY == systemVisibleFrame.maxY,
+            "movement frame no longer protects the menu-bar strip"
+        )
     }
 
     private static func validateMultiDisplaySelection() throws {
@@ -116,6 +224,159 @@ public enum AgentPetCompanionUIValidationContract {
                 hasPersistedPosition: true
             ) == 0.12,
             "legacy nonzero placement scale was overwritten"
+        )
+    }
+
+    private static func validateActiveSessionBubbleContent() throws {
+        let stateJSON = #"""
+        {
+          "state": "tool",
+          "official_status": "running",
+          "source": "codex",
+          "session_id": "session_validation",
+          "session_active": true,
+          "source_session_sequence": 3,
+          "priority": 300,
+          "lease_seconds": null,
+          "expires_at": null,
+          "event": {
+            "id": "evt_tool",
+            "source": "codex",
+            "session_id": "session_validation",
+            "event_type": "tool",
+            "title": "Executing tool",
+            "detail": null,
+            "payload_json": {
+              "schema_version": "apc.agent-event.v1",
+              "source_event": "PreToolUse",
+              "session_active": true,
+              "project_label": "agent-pet-companion"
+            },
+            "created_at": "2026-07-13T00:00:03Z"
+          },
+          "latest_message": {
+            "id": "evt_prompt",
+            "source": "codex",
+            "session_id": "session_validation",
+            "event_type": "start",
+            "title": "Started",
+            "detail": null,
+            "payload_json": {
+              "schema_version": "apc.agent-event.v1",
+              "source_event": "UserPromptSubmit",
+              "session_active": true,
+              "message_role": "user",
+              "message_content": "Keep the current conversation message visible.",
+              "project_label": "agent-pet-companion"
+            },
+            "created_at": "2026-07-13T00:00:01Z"
+          },
+          "session_title": "Persistent Codex task title",
+          "session_message": {
+            "role": "assistant",
+            "content": "Latest App Server message"
+          },
+          "session_activity": {
+            "kind": "thinking",
+            "content": "Verifying live activity synchronization"
+          }
+        }
+        """#
+        let state = try JSONDecoder().decode(ActiveAgentState.self, from: Data(stateJSON.utf8))
+        let content = OverlayBubbleContent(state: state)
+        guard let session = content.sessions.first else {
+            throw AgentPetCompanionUIValidationFailure("active bubble omitted its session row")
+        }
+
+        try require(
+            session.messageText == "Verifying live activity synchronization",
+            "active bubble did not prefer the current activity over an earlier Agent message"
+        )
+        try require(
+            content.agentName == "Codex",
+            "active bubble omitted its Agent group title"
+        )
+        try require(session.sessionID == "session_validation", "active bubble omitted its session id")
+        try require(
+            session.sessionTitle == "Persistent Codex task title",
+            "active bubble omitted its session title"
+        )
+        try require(!session.statusText.isEmpty, "active bubble omitted its run status")
+        try require(!session.actionLabel.isEmpty, "active bubble omitted its interaction action")
+        try require(
+            !(OverlayBubbleContent.idle.sessions.first?.messageText ?? "").contains("等待 Agent 事件"),
+            "idle copy regressed to the misleading wait-for-event message"
+        )
+
+        let secondStateJSON = stateJSON
+            .replacingOccurrences(of: "session_validation", with: "session_validation_2")
+            .replacingOccurrences(of: "evt_tool", with: "evt_tool_2")
+            .replacingOccurrences(
+                of: "Persistent Codex task title",
+                with: "Second Codex task title"
+            )
+        let secondState = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(secondStateJSON.utf8)
+        )
+        let grouped = OverlayBubbleContent(source: .codex, states: [state, secondState])
+        try require(grouped.sessions.count == 2, "same-Agent sessions were not grouped")
+        try require(
+            grouped.sessions.map(\.sessionTitle) == [
+                "Persistent Codex task title",
+                "Second Codex task title",
+            ],
+            "grouped session titles lost their visual identity"
+        )
+        let groupedSize = OverlayGeometry.resolvedBubbleSize(
+            in: CGSize(width: 1512, height: 934),
+            content: grouped
+        )
+        let groupedRects = OverlayGeometry.bubbleSessionRects(
+            in: CGRect(origin: .zero, size: groupedSize),
+            content: grouped
+        )
+        try require(
+            groupedRects.count == 2 && !groupedRects[0].intersects(groupedRects[1]),
+            "grouped session rows overlap or lack distinct hit regions"
+        )
+    }
+
+    private static func validateBubbleActionRouting() throws {
+        let content = OverlayBubbleContent.idle
+        let size = OverlayGeometry.resolvedBubbleSize(
+            in: CGSize(width: 1512, height: 934),
+            content: content
+        )
+        let bubbleRect = CGRect(origin: .zero, size: size)
+        let closeRect = OverlayGeometry.bubbleCloseHitRect(in: bubbleRect)
+        let sessionRects = OverlayGeometry.bubbleSessionRects(in: bubbleRect, content: content)
+        try require(sessionRects.count == 1, "bubble session hit regions did not match session rows")
+        try require(
+            !sessionRects.contains(where: { $0.intersects(closeRect) }),
+            "bubble session and close hit regions overlap"
+        )
+        try require(
+            closeRect.contains(CGPoint(x: bubbleRect.maxX - 12, y: 12)),
+            "bubble close hit region missed its visible control"
+        )
+        try require(
+            sessionRects[0].contains(CGPoint(x: sessionRects[0].midX, y: sessionRects[0].midY)),
+            "bubble session hit region missed its visible row"
+        )
+
+        try require(
+            AgentSessionDeepLink.url(source: .codex, sessionID: "019f5b0f-88ff-7413-8953-29de4ed0951c")?.absoluteString
+                == "codex://threads/019f5b0f-88ff-7413-8953-29de4ed0951c",
+            "Codex session did not resolve to the ChatGPT task deep link"
+        )
+        try require(
+            AgentSessionDeepLink.url(source: .codex, sessionID: "unsafe/session") == nil,
+            "unsafe session id was accepted for deep-link routing"
+        )
+        try require(
+            AgentSessionDeepLink.url(source: .claudeCode, sessionID: "session") == nil,
+            "unsupported agent source produced a Codex deep link"
         )
     }
 

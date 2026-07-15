@@ -14,6 +14,7 @@ pub mod petpack;
 pub mod process_runner;
 pub mod reference_images;
 pub mod rpc;
+pub mod runtime_manifest;
 
 use thiserror::Error;
 

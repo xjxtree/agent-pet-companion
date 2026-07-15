@@ -77,14 +77,61 @@ struct Surface<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(.regularMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(APCDesign.stroke, lineWidth: colorSchemeContrast == .increased ? 2 : 1)
-                    )
+            .apcLiquidGlass(
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous),
+                interactive: false
             )
+            .overlay {
+                if colorSchemeContrast == .increased {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(APCDesign.stroke, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+/// Groups nearby glass surfaces so macOS can render them as one native optical layer.
+/// On macOS 14–15 the same hierarchy falls back to native ultra-thin material.
+struct APCGlassGroup<Content: View>: View {
+    var spacing: CGFloat = 18
+    @ViewBuilder var content: Content
+
+    @ViewBuilder
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
+    let shape: S
+    let interactive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                interactive ? .clear.interactive() : .clear,
+                in: shape
+            )
+        } else {
+            content.background(.ultraThinMaterial, in: shape)
+        }
+    }
+}
+
+extension View {
+    func apcLiquidGlass<S: Shape>(
+        in shape: S,
+        interactive: Bool = false
+    ) -> some View {
+        modifier(APCLiquidGlassModifier(shape: shape, interactive: interactive))
     }
 }
 
@@ -95,12 +142,14 @@ struct PageScroll<Content: View>: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 18) {
-                content
+            APCGlassGroup(spacing: 18) {
+                VStack(alignment: .leading, spacing: 18) {
+                    content
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, verticalPadding)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
         }
         .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -193,7 +242,6 @@ struct AdaptiveTwoColumnLayout: Layout {
 }
 
 struct PillButton: View {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     var title: String
     var selected: Bool
     var semanticLabel: String? = nil
@@ -218,82 +266,71 @@ struct PillButton: View {
             Text(title)
         }
         .font(.callout.weight(.semibold))
-        .foregroundStyle(.primary)
+        .foregroundStyle(selected ? APCDesign.accent : .primary)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(pillBackground)
-    }
-
-    private var pillBackground: some View {
-        Capsule()
-            .fill(selected ? APCDesign.accentSoft : Color(nsColor: .controlBackgroundColor))
-            .overlay(
-                Capsule().stroke(
-                    selected ? APCDesign.accent : APCDesign.stroke,
-                    lineWidth: colorSchemeContrast == .increased ? 2 : 1
-                )
-            )
+        .apcLiquidGlass(in: Capsule(), interactive: true)
+        .overlay {
+            if selected {
+                Capsule()
+                    .stroke(APCDesign.accent.opacity(0.72), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 
 struct PrimaryActionButton: View {
-    @Environment(\.isEnabled) private var isEnabled
     var title: String
     var systemImage: String?
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                }
-                Text(title)
-            }
-            .font(.callout.weight(.bold))
-            .foregroundStyle(isEnabled ? APCDesign.onAccent : Color(nsColor: .secondaryLabelColor))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isEnabled ? APCDesign.accent : Color(nsColor: .quaternaryLabelColor).opacity(0.55))
-                    .shadow(color: isEnabled ? APCDesign.accent.opacity(0.25) : .clear, radius: 12, y: 6)
-            )
+            buttonLabel
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+    }
+
+    @ViewBuilder
+    private var buttonLabel: some View {
+        if let systemImage {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(.semibold))
+        } else {
+            Text(title)
+                .font(.callout.weight(.semibold))
+        }
     }
 }
 
 struct SecondaryActionButton: View {
-    @Environment(\.isEnabled) private var isEnabled
     var title: String
     var systemImage: String?
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                }
-                Text(title)
-            }
-            .font(.callout.weight(.semibold))
-            .foregroundStyle(isEnabled ? .primary : .secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(isEnabled ? 1 : 0.55))
-                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(APCDesign.stroke))
-            )
+            buttonLabel
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+    }
+
+    @ViewBuilder
+    private var buttonLabel: some View {
+        if let systemImage {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(.semibold))
+        } else {
+            Text(title)
+                .font(.callout.weight(.semibold))
+        }
     }
 }
 
 struct StatusBadge: View {
-    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     var title: String
     var tone: Tone
 
@@ -307,29 +344,16 @@ struct StatusBadge: View {
     var body: some View {
         Label(title, systemImage: systemImage)
             .font(.caption.weight(.bold))
-            .foregroundStyle(.primary)
+            .foregroundStyle(toneColor)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .background(
+            .apcLiquidGlass(in: Capsule())
+            .overlay {
                 Capsule()
-                    .fill(background)
-                    .overlay(
-                        Capsule().stroke(
-                            toneColor.opacity(colorSchemeContrast == .increased ? 0.85 : 0.42),
-                            lineWidth: colorSchemeContrast == .increased ? 2 : 1
-                        )
-                    )
-            )
+                    .stroke(toneColor.opacity(0.36), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
             .accessibilityElement(children: .combine)
-    }
-
-    private var background: Color {
-        switch tone {
-        case .good: APCDesign.success.opacity(0.18)
-        case .warning: APCDesign.warning.opacity(0.20)
-        case .neutral: Color(nsColor: .quaternaryLabelColor).opacity(0.16)
-        case .accent: APCDesign.accentSoft
-        }
     }
 
     private var toneColor: Color {

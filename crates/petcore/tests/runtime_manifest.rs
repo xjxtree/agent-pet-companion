@@ -1,0 +1,56 @@
+use petcore::db::{Database, DATABASE_SCHEMA_VERSION};
+use petcore::runtime_manifest::{validate_expected_manifest, RuntimeReleaseManifest};
+use rusqlite::Connection;
+use std::fs;
+
+#[test]
+fn compiled_runtime_manifest_round_trips_and_rejects_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("runtime-manifest.json");
+    let compiled = RuntimeReleaseManifest::compiled();
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&compiled).expect("encode manifest"),
+    )
+    .expect("write manifest");
+
+    assert_eq!(
+        validate_expected_manifest(&manifest_path).expect("valid manifest"),
+        compiled
+    );
+
+    let mut mismatched = compiled;
+    mismatched.petcore_cli_build_id = "different-cli-build".to_string();
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&mismatched).expect("encode mismatch"),
+    )
+    .expect("write mismatch");
+    let error = validate_expected_manifest(&manifest_path).expect_err("mismatch must fail");
+    assert!(error
+        .to_string()
+        .contains("does not match this PetCore build"));
+}
+
+#[test]
+fn newer_database_schema_is_rejected_without_downgrade() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let database_path = temp.path().join("agent-pet.sqlite");
+    let future_version = DATABASE_SCHEMA_VERSION + 1;
+    let connection = Connection::open(&database_path).expect("open database");
+    connection
+        .pragma_update(None, "user_version", future_version)
+        .expect("set future schema");
+    drop(connection);
+
+    let error = Database::new(&database_path)
+        .preflight_compatibility()
+        .expect_err("future schema must fail");
+    assert!(error.to_string().contains("downgrade is blocked"));
+
+    let connection = Connection::open(&database_path).expect("reopen database");
+    let persisted: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read schema");
+    assert_eq!(persisted, future_version);
+}

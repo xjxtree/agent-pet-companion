@@ -100,6 +100,31 @@ fn external_display_and_metadata_aliases_never_reach_visible_records() {
 }
 
 #[test]
+fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
+    let event = NormalizedAgentEvent::from_external(
+        AgentSource::Pi,
+        json!({
+            "id": "pi-input-allowlisted",
+            "session_id": "pi-input-session",
+            "event_type": "start",
+            "payload": {
+                "source_event": "input",
+                "session_active": true,
+                "message_role": "user",
+                "message_content": "下一条用户消息",
+                "diagnostic": false
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap();
+
+    assert_eq!(event.payload_json["source_event"], "input");
+    assert_eq!(event.payload_json["message_role"], "user");
+    assert_eq!(event.payload_json["message_content"], "下一条用户消息");
+}
+
+#[test]
 fn payload_json_alias_is_normalized_through_the_same_closed_vocabularies() {
     let event = NormalizedAgentEvent::from_external(
         AgentSource::ClaudeCode,
@@ -131,6 +156,48 @@ fn payload_json_alias_is_normalized_through_the_same_closed_vocabularies() {
     let record = serde_json::to_string(&event).unwrap();
     assert!(!record.contains("RAW_TITLE_ALIAS_SENTINEL"));
     assert!(!record.contains("RAW_DETAIL_ALIAS_SENTINEL"));
+}
+
+#[test]
+fn session_navigation_accepts_only_allowlisted_warp_focus_urls() {
+    let event = NormalizedAgentEvent::from_external(
+        AgentSource::Codex,
+        json!({
+            "id": "warp-session-target",
+            "event_type": "start",
+            "payload": {
+                "source_event": "UserPromptSubmit",
+                "session_active": true,
+                "session_open": true,
+                "session_surface": "cli_terminal",
+                "terminal_app": "warp",
+                "session_open_url": "warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap();
+    assert_eq!(event.payload_json["session_open"], true);
+    assert_eq!(event.payload_json["terminal_app"], "warp");
+    assert_eq!(
+        event.payload_json["session_open_url"],
+        "warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+    );
+
+    let rejected = NormalizedAgentEvent::from_external(
+        AgentSource::Codex,
+        json!({
+            "id": "unsafe-session-target",
+            "event_type": "start",
+            "payload": {
+                "source_event": "UserPromptSubmit",
+                "session_open_url": "https://example.com/session/not-allowed"
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap_err();
+    assert!(rejected.to_string().contains("not a supported session URL"));
 }
 
 #[test]

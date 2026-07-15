@@ -1,6 +1,24 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "app.action.open_control_center" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Control Center" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开控制中心" } }
+      }
+    },
+    "app.action.quit" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Quit Agent Pet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "退出 Agent Pet" } }
+      }
+    },
+    "app.action.toggle_pet" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show/Hide Pet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "显示/隐藏桌宠" } }
+      }
+    },
     "control.disabled" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Off" } },
@@ -109,6 +127,18 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地服务未报告" } }
       }
     },
+    "library.specification.verified_fps" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Standard 12 FPS · Smooth 20 FPS" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准 12 FPS · 流畅 20 FPS" } }
+      }
+    },
+    "library.specification.verified_states" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "7 fixed states · at least 2 frames each" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 个固定状态 · 每状态至少 2 帧" } }
+      }
+    },
     "library.state.idle" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Idle" } },
@@ -127,6 +157,18 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "资源告警" } }
       }
     },
+    "library.validation.verified" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "PetCore verified the manifest, seven-state frames, transparent PNGs, preview, and source metadata." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "PetCore 已验证 manifest、七状态帧、透明 PNG、预览与来源元数据。" } }
+      }
+    },
+    "library.validation.verified_title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Assets verified" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "资源校验通过" } }
+      }
+    },
     "library.validation.unverified_title" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Incomplete specification" } },
@@ -137,6 +179,150 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "No damage was reported in this snapshot, but the local service did not provide a complete asset specification, so validation remains unavailable." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本次快照未报告损坏，但本地服务未提供完整资源规格，当前只能视为未经校验。" } }
+      }
+    },
+    "overlay.action.handle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Handle" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "去处理" } }
+      }
+    },
+    "overlay.action.open" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "打开" } }
+      }
+    },
+    "overlay.action.review" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Review" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "去查看" } }
+      }
+    },
+    "overlay.activity.command" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running a command" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在运行命令" } }
+      }
+    },
+    "overlay.activity.compaction" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Compacting context" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在压缩上下文" } }
+      }
+    },
+    "overlay.activity.file" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Working with files" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在处理文件" } }
+      }
+    },
+    "overlay.activity.file_change" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Editing files" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在修改文件" } }
+      }
+    },
+    "overlay.activity.image" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Working with an image" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在处理图像" } }
+      }
+    },
+    "overlay.activity.network" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Accessing the network" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在访问网络" } }
+      }
+    },
+    "overlay.activity.plan" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Updating the plan" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在更新计划" } }
+      }
+    },
+    "overlay.activity.search" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Searching" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在搜索" } }
+      }
+    },
+    "overlay.activity.subagent" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Coordinating a sub-agent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在协调子 Agent" } }
+      }
+    },
+    "overlay.activity.thinking" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Thinking" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在思考" } }
+      }
+    },
+    "overlay.activity.tool" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Using a tool" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在调用工具" } }
+      }
+    },
+    "overlay.detail.blocked" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The task is blocked. Open the agent for details." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "任务遇到错误，请打开 Agent 查看详情。" } }
+      }
+    },
+    "overlay.detail.needs_input" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Return to the agent to approve, answer, or decide." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请回到 Agent 完成确认、回答或决策。" } }
+      }
+    },
+    "overlay.detail.ready" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The latest result is ready to review." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "最新结果已就绪，等待查看。" } }
+      }
+    },
+    "overlay.detail.running" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Thinking" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "思考中" } }
+      }
+    },
+    "overlay.idle.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No active agent session." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无活跃 Agent 会话。" } }
+      }
+    },
+    "overlay.status.blocked" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Blocked" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已阻塞" } }
+      }
+    },
+    "overlay.status.needs_input" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Needs input" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要输入" } }
+      }
+    },
+    "overlay.status.ready" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ready" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "待查看" } }
+      }
+    },
+    "overlay.status.running" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Running" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在运行" } }
+      }
+    },
+    "overlay.status.tool" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Using tools" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在使用工具" } }
       }
     },
     "nav.behavior" : {

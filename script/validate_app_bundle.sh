@@ -41,6 +41,7 @@ APP_BINARY="$APP_CONTENTS/MacOS/$APP_NAME"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 PETCORE="$APP_RESOURCES/bin/petcore"
 PETCORE_CLI="$APP_RESOURCES/bin/petcore-cli"
+RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
 BUNDLED_SKILL="$APP_RESOURCES/skills/agent-pet-studio/SKILL.md"
 SOURCE_SKILL="$ROOT_DIR/skills/agent-pet-studio/SKILL.md"
 LOCALIZATION_BUNDLE="$APP_RESOURCES/AgentPetCompanion_AgentPetCompanion.bundle"
@@ -72,6 +73,10 @@ trap cleanup EXIT
 }
 [[ -x "$PETCORE_CLI" ]] || {
   echo "app bundle validation failed: missing bundled petcore-cli $PETCORE_CLI" >&2
+  exit 1
+}
+[[ -f "$RUNTIME_MANIFEST" ]] || {
+  echo "app bundle validation failed: missing runtime manifest $RUNTIME_MANIFEST" >&2
   exit 1
 }
 [[ -f "$BUNDLED_SKILL" ]] || {
@@ -124,10 +129,19 @@ if minimum != "14.0":
 
 version = info.get("CFBundleShortVersionString")
 build = info.get("CFBundleVersion")
+build_id = info.get("APCBuildID")
+release_channel = info.get("APCReleaseChannel")
+runtime_manifest_schema = info.get("APCRuntimeManifestSchemaVersion")
 if not isinstance(version, str) or not version.strip():
     raise SystemExit("app bundle validation failed: missing CFBundleShortVersionString")
 if not isinstance(build, str) or not build.strip():
     raise SystemExit("app bundle validation failed: missing CFBundleVersion")
+if not isinstance(build_id, str) or not build_id.strip():
+    raise SystemExit("app bundle validation failed: missing APCBuildID")
+if release_channel not in {"develop", "release"}:
+    raise SystemExit("app bundle validation failed: invalid APCReleaseChannel")
+if runtime_manifest_schema != "apc.runtime-manifest.v1":
+    raise SystemExit("app bundle validation failed: invalid APCRuntimeManifestSchemaVersion")
 
 exported_types = info.get("UTExportedTypeDeclarations")
 if not isinstance(exported_types, list):
@@ -155,7 +169,20 @@ grep -q '^name: agent-pet-studio$' "$BUNDLED_SKILL"
 grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL"
 grep -q 'Do not read agent auth' "$BUNDLED_SKILL"
 
+APC_HOME="$TMP_DIR/home" "$PETCORE" preflight \
+  --home "$TMP_DIR/home" \
+  --manifest "$RUNTIME_MANIFEST" >/dev/null
+
 APC_HOME="$TMP_DIR/home" "$PETCORE" init
+
+BUNDLE_BUILD_ID="$(python3 - "$APP_CONTENTS/Info.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    print(plistlib.load(file)["APCBuildID"])
+PY
+)"
 
 BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
 JSON="$BUDGET" python3 - <<'PY'
@@ -172,6 +199,8 @@ PY
   APC_HOME="$TMP_DIR/home" \
   APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
   APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
+  APC_EXPECTED_BUILD_ID="$BUNDLE_BUILD_ID" \
+  APC_EXPECTED_RUNTIME_MANIFEST="$RUNTIME_MANIFEST" \
   "$PETCORE" serve --ready-file "$TMP_DIR/ready"
 ) &
 PETCORE_PID="$!"
@@ -180,6 +209,23 @@ for _ in {1..100}; do
   sleep 0.05
 done
 [[ -f "$TMP_DIR/ready" ]]
+
+HEALTH="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" health)"
+HEALTH="$HEALTH" BUNDLE_BUILD_ID="$BUNDLE_BUILD_ID" RUNTIME_MANIFEST="$RUNTIME_MANIFEST" python3 - <<'PY'
+import json
+import os
+
+health = json.loads(os.environ["HEALTH"])
+expected = os.environ["BUNDLE_BUILD_ID"]
+with open(os.environ["RUNTIME_MANIFEST"], "r", encoding="utf-8") as file:
+    manifest = json.load(file)
+if health.get("build_id") != expected:
+    raise SystemExit(
+        f"app bundle validation failed: PetCore build_id={health.get('build_id')!r}, expected {expected!r}"
+    )
+if health.get("runtime_manifest") != manifest:
+    raise SystemExit("app bundle validation failed: PetCore runtime manifest mismatch")
+PY
 
 for source in codex claude_code pi opencode; do
   APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null

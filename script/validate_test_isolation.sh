@@ -125,8 +125,8 @@ mkdir -p "$TEST_ROOT/script"
 cp "$ROOT_DIR/script/test_all.sh" "$TEST_ROOT/script/test_all.sh"
 cp "$ROOT_DIR/script/validation_helpers.sh" "$TEST_ROOT/script/validation_helpers.sh"
 for script_name in \
-  validate_test_isolation.sh validate_schema_fixtures.sh \
-  validate_build_scripts_safety.sh validate_source_syntax.sh build_app_bundle.sh \
+  validate_test_isolation.sh validate_app_lifecycle_contract.sh validate_schema_fixtures.sh \
+  validate_build_scripts_safety.sh validate_source_syntax.sh validate_swift_tests.sh build_app_bundle.sh \
   validate_m0.sh validate_m1.sh validate_m2.sh validate_m3.sh \
   validate_m4.sh validate_m5.sh validate_m6.sh validate_v1.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
@@ -391,6 +391,25 @@ PY
     ! kill -0 "$second_app_pid" >/dev/null 2>&1
     kill -0 "$second_petcore_pid" >/dev/null 2>&1
     kill "$second_petcore_pid" >/dev/null 2>&1 || true
+
+    # A Process child is reparented after the App exits. Cleanup must still
+    # reclaim a daemon whose executable is inside this isolated runtime tree,
+    # even when no owner protocol could be published.
+    MANAGED_PETCORE="$APC_HOME/runtime/versions/fixture/petcore"
+    mkdir -p "$(dirname "$MANAGED_PETCORE")"
+    write_executable "$MANAGED_PETCORE" \
+      '#!/usr/bin/env bash' \
+      'trap '\''exit 0'\'' TERM INT' \
+      'while :; do sleep 1; done'
+    "$MANAGED_PETCORE" serve --home "$APC_HOME" &
+    managed_petcore_pid="$!"
+    APC_OWNED_APP_PID=""
+    APC_OWNED_PETCORE_PID=""
+    APC_OWNED_PROCESS_START=""
+    APC_OWNED_INSTANCE_ID=""
+    APC_OWNED_APP_BINARY=""
+    apc_stop_owned_runtime "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_PROTOCOL"
+    ! kill -0 "$managed_petcore_pid" >/dev/null 2>&1
   ) || record_failure 'owned runtime fixture failed PID/marker/snapshot initialization or conservative cleanup'
 fi
 for validator in "${DEFAULT_VALIDATORS[@]}"; do

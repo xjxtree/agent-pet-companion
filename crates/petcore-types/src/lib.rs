@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v1";
+pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
+pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
+pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
 pub const REQUIRED_STATES: [PetStateName; 7] = [
     PetStateName::Idle,
     PetStateName::Start,
@@ -229,6 +232,7 @@ pub struct BehaviorSettings {
     pub click_menu: bool,
     pub mouse_passthrough: bool,
     pub auto_hide: bool,
+    pub session_message_timeout_minutes: u16,
     pub fps_profile: FpsProfileName,
     pub sources: BTreeMap<AgentSource, bool>,
     pub events: BTreeMap<AgentEventType, bool>,
@@ -246,6 +250,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             click_menu: Option<bool>,
             mouse_passthrough: Option<bool>,
             auto_hide: Option<bool>,
+            session_message_timeout_minutes: Option<u16>,
             fps_profile: Option<FpsProfileName>,
             sources: Option<BTreeMap<AgentSource, bool>>,
             events: Option<BTreeMap<AgentEventType, bool>>,
@@ -272,6 +277,9 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
             mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
             auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
+            session_message_timeout_minutes: raw
+                .session_message_timeout_minutes
+                .unwrap_or(defaults.session_message_timeout_minutes),
             fps_profile: raw.fps_profile.unwrap_or(defaults.fps_profile),
             sources,
             events,
@@ -309,6 +317,7 @@ impl Default for BehaviorSettings {
             click_menu: true,
             mouse_passthrough: true,
             auto_hide: false,
+            session_message_timeout_minutes: DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES,
             fps_profile: FpsProfileName::Standard,
             sources,
             events,
@@ -432,6 +441,9 @@ pub enum CheckStatus {
     Ok,
     NeedsFix,
     Missing,
+    Unverified,
+    Unsupported,
+    NotRequired,
 }
 
 impl CheckStatus {
@@ -440,7 +452,14 @@ impl CheckStatus {
             Self::Ok => "正常",
             Self::NeedsFix => "需修复",
             Self::Missing => "未检测到",
+            Self::Unverified => "未验证",
+            Self::Unsupported => "暂不支持",
+            Self::NotRequired => "非必需",
         }
+    }
+
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::NeedsFix | Self::Missing)
     }
 }
 
@@ -463,6 +482,8 @@ pub struct AgentConnectionStatus {
     pub source: AgentSource,
     pub items: Vec<ConnectionCheckItem>,
     pub install_paths: Vec<String>,
+    #[serde(default)]
+    pub connector_installed: bool,
     pub check_mode: ConnectionCheckMode,
     pub checked_at: String,
 }

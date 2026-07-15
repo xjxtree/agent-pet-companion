@@ -1,5 +1,7 @@
 # Agent Pet Companion 最终验证记录
 
+> **历史快照：** 这份“最终”记录仅针对 2026-07-10 的审计分支。后续生命周期、Liquid Glass、会话气泡与连接器变更没有由本文覆盖；2026-07-15 已完成当时列为外部条件的真实四连接器、真实 Codex App Server、packaged App AI 宠物生成及七状态渲染，当前结论以[项目状态](../../PROJECT_STATUS.md)为准。
+
 > 日期：2026-07-10
 > 分支：`codex/project-audit-remediation`
 > 应用：[AgentPetCompanion.app](../../../dist/AgentPetCompanion.app)

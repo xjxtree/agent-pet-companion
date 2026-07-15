@@ -46,7 +46,7 @@ import sys
 
 data = json.loads(os.environ["JSON"])
 expr = sys.argv[1]
-allowed = {"__builtins__": {}, "data": data, "any": any, "all": all, "len": len, "str": str}
+allowed = {"__builtins__": {}, "data": data, "any": any, "all": all, "len": len, "str": str, "set": set}
 if not eval(expr, allowed, {}):
     raise SystemExit(f"assertion failed: {expr}\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 PY
@@ -151,17 +151,17 @@ INGEST="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" agent in
   --detail 'RAW_DETAIL_ALIAS_SENTINEL' \
   --payload-json "$SAFE_ALIAS_PAYLOAD" 2>&1)"
 assert_no_raw_alias "normalized event ingest" "$INGEST"
-assert_json "$INGEST" 'data["event"]["title"] == "执行工具" and data["event"]["detail"] is None and len(data["event"]["payload_json"]) == 6 and all(key in ["schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic"] for key in data["event"]["payload_json"]) and data["event"]["payload_json"]["external_event_id"] == "evt_safe_alias_normalization" and data["event"]["payload_json"]["source_event"] == "unclassified" and data["event"]["payload_json"]["tool_name"] == "other" and data["event"]["payload_json"]["outcome"] == "unknown"'
+assert_json "$INGEST" 'data["event"]["title"] == "执行工具" and data["event"]["detail"] is None and set(data["event"]["payload_json"]) == {"schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic", "turn_id", "session_active", "message_role", "message_content", "activity_kind", "activity_content", "interaction_kind", "project_label", "session_title", "session_open", "session_surface", "terminal_app", "session_open_url"} and data["event"]["payload_json"]["external_event_id"] == "evt_safe_alias_normalization" and data["event"]["payload_json"]["source_event"] == "unclassified" and data["event"]["payload_json"]["tool_name"] == "other" and data["event"]["payload_json"]["outcome"] == "unknown"'
 
 RECENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit 1 2>&1)"
 assert_no_secret "events recent redaction" "$RECENT"
 assert_no_raw_alias "events recent normalization" "$RECENT"
-assert_json "$RECENT" 'data[0]["id"] == "evt_safe_alias_normalization" and data[0]["title"] == "执行工具" and data[0]["detail"] is None and len(data[0]["payload_json"]) == 6 and all(key in ["schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic"] for key in data[0]["payload_json"])'
+assert_json "$RECENT" 'data[0]["id"] == "evt_safe_alias_normalization" and data[0]["title"] == "执行工具" and data[0]["detail"] is None and set(data[0]["payload_json"]) == {"schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic", "turn_id", "session_active", "message_role", "message_content", "activity_kind", "activity_content", "interaction_kind", "project_label", "session_title", "session_open", "session_surface", "terminal_app", "session_open_url"}'
 
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot 2>&1)"
 assert_no_secret "state snapshot redaction" "$SNAPSHOT"
 assert_no_raw_alias "state snapshot normalization" "$SNAPSHOT"
-assert_json "$SNAPSHOT" 'all("APC_SECRET_SENTINEL_" not in str(item) for item in data.get("events", [])) and all(len(item["payload_json"]) == 6 and all(key in ["schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic"] for key in item["payload_json"]) for item in data.get("events", []) + data.get("recent_events", []))'
+assert_json "$SNAPSHOT" 'all("APC_SECRET_SENTINEL_" not in str(item) for item in data.get("events", [])) and all(set(item["payload_json"]) == {"schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic", "turn_id", "session_active", "message_role", "message_content", "activity_kind", "activity_content", "interaction_kind", "project_label", "session_title", "session_open", "session_surface", "terminal_app", "session_open_url"} for item in data.get("events", []) + data.get("recent_events", []))'
 
 TOKEN="$(cat "$TMP_DIR/home/run/update-token")"
 [[ -n "$TOKEN" ]]

@@ -76,6 +76,12 @@ func size(_ element: AXUIElement, _ attr: String) -> CGSize? {
     return size
 }
 
+func actions(_ element: AXUIElement) -> [String] {
+    var value: CFArray?
+    guard AXUIElementCopyActionNames(element, &value) == .success else { return [] }
+    return value as? [String] ?? []
+}
+
 struct Node {
     let element: AXUIElement
     let role: String
@@ -114,14 +120,24 @@ func snapshotNodes(_ root: AXUIElement) -> [Node] {
     return nodes
 }
 
-guard let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] else {
-    fputs("main window UI validation failed: AX windows are unavailable\n", stderr)
-    exit(1)
+let supportedMainWindowTitles: Set<String> = [
+    "Agent Pet Companion",
+    "宠物 Studio", "Pet Studio",
+    "启用与行为", "Enable & Behavior",
+    "Agent 连接", "Agent Connections",
+]
+var resolvedMainWindow: AXUIElement?
+for _ in 0..<40 {
+    let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    resolvedMainWindow = windows.first(where: {
+        supportedMainWindowTitles.contains(string($0, kAXTitleAttribute))
+    })
+    if resolvedMainWindow != nil {
+        break
+    }
+    usleep(100_000)
 }
-
-guard let mainWindow = windows.first(where: {
-    string($0, kAXTitleAttribute) == "Agent Pet Companion"
-}) else {
+guard let mainWindow = resolvedMainWindow else {
     fputs("main window UI validation failed: main window was not found\n", stderr)
     exit(1)
 }
@@ -135,7 +151,30 @@ if mainSize.width < 740 || mainSize.height < 500 {
     exit(1)
 }
 
-let nodes = snapshotNodes(mainWindow)
+if mainSize.width < 1000 {
+    var validationSize = CGSize(width: 1120, height: max(720, mainSize.height))
+    if let sizeValue = AXValueCreate(.cgSize, &validationSize) {
+        _ = AXUIElementSetAttributeValue(
+            mainWindow,
+            kAXSizeAttribute as CFString,
+            sizeValue
+        )
+        usleep(300_000)
+    }
+}
+
+var nodes: [Node] = []
+for _ in 0..<40 {
+    nodes = snapshotNodes(mainWindow)
+    let strings = nodes.flatMap(\.strings)
+    if strings.contains(where: { value in
+        value == "宠物 Studio" || value == "Pet Studio"
+            || value.contains("宠物 Studio") || value.contains("Pet Studio")
+    }) {
+        break
+    }
+    usleep(100_000)
+}
 
 func contains(_ text: String, in nodes: [Node]) -> Bool {
     nodes.flatMap(\.strings).contains { $0 == text || $0.contains(text) }
@@ -155,11 +194,32 @@ func resolveVisibleControlLabel(
 ) -> String {
     guard let label = candidates.first(where: { candidate in
         nodes.contains { node in
-            roles.contains(node.role)
+            (roles.contains(node.role) || actions(node.element).contains(kAXPressAction as String))
                 && (node.description == candidate || node.title == candidate || node.value == candidate)
         }
     }) else {
+        let visibleControls = nodes
+            .filter {
+                roles.contains($0.role) || actions($0.element).contains(kAXPressAction as String)
+            }
+            .flatMap(\.strings)
+            .filter { !$0.isEmpty }
+            .prefix(24)
+            .joined(separator: " | ")
+        let candidateNodes = nodes
+            .filter { node in candidates.contains(where: { candidate in node.strings.contains(candidate) }) }
+            .map {
+                "\($0.role):\($0.strings.joined(separator: "/")) actions=\(actions($0.element).joined(separator: ","))"
+            }
+            .prefix(12)
+            .joined(separator: " | ")
         fputs("main window UI validation failed: missing localized \(context): \(candidates.joined(separator: " / "))\n", stderr)
+        if !visibleControls.isEmpty {
+            fputs("available controls: \(visibleControls)\n", stderr)
+        }
+        if !candidateNodes.isEmpty {
+            fputs("candidate nodes: \(candidateNodes)\n", stderr)
+        }
         exit(1)
     }
     return label
@@ -241,10 +301,22 @@ for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigat
     }
 }
 
+let actionableControls = nodes.filter {
+    $0.role == kAXButtonRole as String || actions($0.element).contains(kAXPressAction as String)
+}
 for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigationLabel] {
-    let matches = actionButtons.filter { $0.description == label || $0.title == label || $0.value == label }
-    if matches.count != 1 {
-        fputs("main window UI validation failed: expected exactly one primary navigation button \(label), found \(matches.count)\n", stderr)
+    let matches = actionableControls.filter {
+        $0.description == label || $0.title == label || $0.value == label
+    }
+    let semanticMatches = {
+        let buttons = matches.filter { $0.role == kAXButtonRole as String }
+        return buttons.isEmpty ? matches : buttons
+    }()
+    if semanticMatches.count != 1 {
+        fputs("main window UI validation failed: expected exactly one primary navigation button \(label), found \(semanticMatches.count)\n", stderr)
+        for match in semanticMatches {
+            fputs("matching navigation node: \(match.role) actions=\(actions(match.element).joined(separator: ","))\n", stderr)
+        }
         exit(1)
     }
 }
@@ -263,7 +335,13 @@ func controlLabelMatches(_ node: Node, _ label: String) -> Bool {
 
 func pressControl(_ label: String, roles: Set<String>) {
     let currentNodes = snapshotNodes(mainWindow)
-    guard let node = currentNodes.first(where: { roles.contains($0.role) && controlLabelMatches($0, label) }) else {
+    let roleMatch = currentNodes.first(where: {
+        roles.contains($0.role) && controlLabelMatches($0, label)
+    })
+    let actionableMatch = currentNodes.first(where: {
+        actions($0.element).contains(kAXPressAction as String) && controlLabelMatches($0, label)
+    })
+    guard let node = roleMatch ?? actionableMatch else {
         fputs("main window UI validation failed: control not found for AXPress: \(label)\n", stderr)
         exit(1)
     }
@@ -300,6 +378,7 @@ pressControl(connectionsNavigationLabel, roles: [buttonRole])
 waitFor("Agent Connections page") { nodes in
     contains("连接状态", in: nodes)
         && contains("全部检查", in: nodes)
+        && contains("连接检查", in: nodes)
         && contains("最近事件", in: nodes)
 }
 
@@ -324,5 +403,57 @@ waitFor("Pet Studio new tab restored") { nodes in
         && contains("发起 AI 辅助会话", in: nodes)
 }
 
-print("Main window UI validation ok")
+func currentMainWindows() -> [AXUIElement] {
+    let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    return windows.filter {
+        supportedMainWindowTitles.contains(string($0, kAXTitleAttribute))
+    }
+}
+
+guard let closeButtonValue = copy(mainWindow, kAXCloseButtonAttribute as String) else {
+    fputs("main window UI validation failed: control center close action is unavailable\n", stderr)
+    exit(1)
+}
+let closeButton = closeButtonValue as! AXUIElement
+guard AXUIElementPerformAction(closeButton, kAXPressAction as CFString) == .success else {
+    fputs("main window UI validation failed: control center close action failed\n", stderr)
+    exit(1)
+}
+
+for _ in 0..<40 where !currentMainWindows().isEmpty {
+    usleep(100_000)
+}
+guard currentMainWindows().isEmpty, !app.isTerminated else {
+    fputs("main window UI validation failed: closing the control center terminated the UI host or left the window open\n", stderr)
+    exit(1)
+}
+
+let activationHome = ProcessInfo.processInfo.environment["APC_HOME"] ?? ""
+guard !activationHome.isEmpty else {
+    fputs("main window UI validation failed: APC_HOME activation scope is unavailable\n", stderr)
+    exit(1)
+}
+let activationScope = URL(
+    fileURLWithPath: activationHome,
+    isDirectory: true
+).standardizedFileURL.path
+DistributedNotificationCenter.default().postNotificationName(
+    Notification.Name("dev.agentpet.companion.activate-running-instance"),
+    object: activationScope,
+    userInfo: nil,
+    deliverImmediately: true
+)
+
+var reopenedWindows: [AXUIElement] = []
+for _ in 0..<40 {
+    reopenedWindows = currentMainWindows()
+    if reopenedWindows.count == 1 { break }
+    usleep(100_000)
+}
+guard reopenedWindows.count == 1, !app.isTerminated else {
+    fputs("main window UI validation failed: activation did not reopen exactly one control center\n", stderr)
+    exit(1)
+}
+
+print("Main window UI and close/reopen lifecycle validation ok")
 SWIFT

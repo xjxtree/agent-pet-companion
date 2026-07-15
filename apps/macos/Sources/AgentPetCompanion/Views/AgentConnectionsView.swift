@@ -1,4 +1,5 @@
 import AgentPetCompanionCore
+import Foundation
 import SwiftUI
 
 enum ConnectionGridLayout {
@@ -35,7 +36,7 @@ struct AgentConnectionsView: View {
                     LazyVGrid(columns: ConnectionGridLayout.overviewColumns, spacing: 12) {
                         StatusOverviewTile(title: "本地服务", value: store.serviceStatusText, tone: store.serviceStatusText.contains("运行") ? .good : .warning)
                         StatusOverviewTile(title: "事件通道", value: eventChannelOverview.value, tone: eventChannelOverview.tone)
-                        StatusOverviewTile(title: "插件检查", value: pluginOverview.value, tone: pluginOverview.tone)
+                        StatusOverviewTile(title: "连接检查", value: connectionOverview.value, tone: connectionOverview.tone)
                         StatusOverviewTile(title: "最近事件", value: store.recentEvents.first.map { "\($0.source.shortTitle) · \($0.title)" } ?? "暂无事件", tone: .neutral)
                     }
                 }
@@ -105,20 +106,28 @@ struct AgentConnectionsView: View {
         .disabled(installedSources.isEmpty || !store.connectionOperationSources.isEmpty)
     }
 
-    private var needsFixCount: Int {
-        connectionStatuses.flatMap(\.items).filter { $0.status != .ok }.count
+    private var blockingCount: Int {
+        connectionStatuses.flatMap(\.blockingItems).count
     }
 
-    private var pluginOverview: (value: String, tone: StatusBadge.Tone) {
+    private var unverifiedCount: Int {
+        connectionStatuses.flatMap(\.unverifiedItems).count
+    }
+
+    private var connectionOverview: (value: String, tone: StatusBadge.Tone) {
         guard !connectionStatuses.isEmpty else {
             return ("待检查", .neutral)
         }
-        if needsFixCount == 0, connectionStatuses.contains(where: { $0.checkMode == .light }) {
+        if blockingCount > 0 {
+            return ("\(blockingCount) 项待处理", .warning)
+        }
+        if connectionStatuses.contains(where: { $0.checkMode == .light }) {
             return ("待完整检查", .neutral)
         }
-        return needsFixCount == 0
-            ? ("正常", .good)
-            : ("\(needsFixCount) 项待修复", .warning)
+        if unverifiedCount > 0 {
+            return ("\(unverifiedCount) 项待验证", .neutral)
+        }
+        return ("已验证", .good)
     }
 
     private var eventChannelOverview: (value: String, tone: StatusBadge.Tone) {
@@ -128,8 +137,11 @@ struct AgentConnectionsView: View {
         guard !eventItems.isEmpty else {
             return ("待检查", .neutral)
         }
-        let brokenCount = eventItems.filter { $0.status != .ok }.count
+        let brokenCount = eventItems.filter { $0.status.isBlocking }.count
         guard brokenCount > 0 else {
+            if eventItems.contains(where: { $0.status == .unverified }) {
+                return ("待验证", .neutral)
+            }
             return ("正常", .good)
         }
         return ("\(brokenCount) 项待修复", .warning)
@@ -186,10 +198,8 @@ struct StatusOverviewTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 46, alignment: .topLeading)
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title)：\(value)")
@@ -217,10 +227,8 @@ struct ConnectionEmptyState: View {
         }
         .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
         .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
     }
 }
@@ -265,15 +273,14 @@ struct AgentConnectionCard: View {
                     .accessibilityLabel("\(item.name)：\(statusTitle(for: item))，\(item.detail)")
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.55))
+                    .apcLiquidGlass(
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                     )
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("将写入路径")
+                Text("连接文件位置")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 if status.installPaths.isEmpty {
@@ -293,43 +300,36 @@ struct AgentConnectionCard: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.45))
+            .apcLiquidGlass(
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
 
             Button {
                 store.sendConnectionTestEvent(status.source)
             } label: {
-                Label("发送测试事件", systemImage: "play.circle")
-                    .font(.callout.bold())
+                Label("测试 PetCore 通道", systemImage: "play.circle")
+                    .font(.callout.weight(.semibold))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(APCDesign.accentSoft.opacity(0.65))
-                            .overlay(RoundedRectangle(cornerRadius: 11).stroke(APCDesign.accent.opacity(0.26)))
-                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .disabled(busy)
-            .accessibilityLabel("向 \(status.source.title) 发送测试事件")
+            .accessibilityLabel("测试 \(status.source.title) 的 PetCore 本地事件通道")
+
+            Text("仅验证本地 CLI、socket 与数据库；不代表 Agent 已实际触发 Hook。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 10) {
                 Button {
                     confirmingRepair = true
                 } label: {
                     Label("一键修复", systemImage: "wrench.and.screwdriver")
-                        .font(.callout.bold())
+                        .font(.callout.weight(.semibold))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                                .overlay(RoundedRectangle(cornerRadius: 11).stroke(APCDesign.stroke))
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
                 .disabled(!status.hasRepairableConnectorIssue || busy)
                 .accessibilityLabel("修复 \(status.source.title) 连接")
                 .confirmationDialog(
@@ -349,17 +349,12 @@ struct AgentConnectionCard: View {
                     confirmingUninstall = true
                 } label: {
                     Label("卸载连接", systemImage: "trash")
-                        .font(.callout.bold())
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(hasInstalledItems ? APCDesign.destructive : .secondary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                                .overlay(RoundedRectangle(cornerRadius: 11).stroke(hasInstalledItems ? APCDesign.destructive.opacity(0.48) : APCDesign.stroke))
-                        )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
                 .disabled(!hasInstalledItems || busy)
                 .accessibilityLabel("卸载 \(status.source.title) 连接")
                 .confirmationDialog(
@@ -377,10 +372,8 @@ struct AgentConnectionCard: View {
             }
         }
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
@@ -403,42 +396,25 @@ struct AgentConnectionCard: View {
         return "将移除以下本地连接文件或配置：\n" + status.installPaths.joined(separator: "\n")
     }
 
-    private var iconText: String {
-        switch status.source {
-        case .codex: "C"
-        case .claudeCode: "Cl"
-        case .pi: "Pi"
-        case .opencode: "O"
-        }
-    }
-
-    private var iconColor: Color {
-        switch status.source {
-        case .codex: Color(nsColor: .labelColor)
-        case .claudeCode: APCDesign.warning
-        case .pi: APCDesign.success
-        case .opencode: Color(nsColor: .systemBlue)
-        }
-    }
-
     private var hasInstalledItems: Bool {
         status.hasInstalledConnectorArtifacts
     }
 
     private var connectionTitle: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(iconColor)
-                .frame(width: 36, height: 36)
-                .overlay(Text(iconText).font(.headline.bold()).foregroundStyle(APCDesign.onAccent))
-            Text(status.source.title)
-                .font(.title3.bold())
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-            StatusBadge(
-                title: status.checkMode.title,
-                tone: status.checkMode == .runtime ? .good : .neutral
-            )
+            AgentIconView(source: status.source, size: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(status.source.title)
+                        .font(.title3.bold())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                    StatusBadge(title: overallStatusTitle, tone: overallStatusTone)
+                }
+                Text(checkMetadata)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -464,7 +440,43 @@ struct AgentConnectionCard: View {
         return switch item.status {
         case .ok: .good
         case .needsFix: .warning
-        case .missing: .neutral
+        case .missing, .unverified, .unsupported, .notRequired: .neutral
         }
+    }
+
+    private var overallStatusTitle: String {
+        if !status.blockingItems.isEmpty {
+            return "需处理"
+        }
+        if status.checkMode == .light {
+            return "待完整检查"
+        }
+        if !status.unverifiedItems.isEmpty {
+            return "部分待验证"
+        }
+        if !status.unsupportedItems.isEmpty {
+            return "能力受限"
+        }
+        return "已验证"
+    }
+
+    private var overallStatusTone: StatusBadge.Tone {
+        if !status.blockingItems.isEmpty {
+            return .warning
+        }
+        if status.checkMode == .runtime,
+           status.unverifiedItems.isEmpty,
+           status.unsupportedItems.isEmpty {
+            return .good
+        }
+        return .neutral
+    }
+
+    private var checkMetadata: String {
+        guard let checkedAt = status.checkedAt,
+              let date = ISO8601DateFormatter().date(from: checkedAt) else {
+            return status.checkMode.title
+        }
+        return "\(status.checkMode.title) · \(DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short))"
     }
 }

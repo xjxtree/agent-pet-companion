@@ -1,29 +1,773 @@
+use crate::event_envelope::{MAX_EVENT_TITLE_BYTES, MAX_MESSAGE_CONTENT_BYTES};
 use crate::paths::AppPaths;
 use crate::{now_rfc3339, PetCoreError, Result};
-use petcore_types::{GenerationForm, PetStateName, REQUIRED_STATES};
+use petcore_types::{AgentEventType, GenerationForm, PetStateName, REQUIRED_STATES};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
+const THREAD_LIST_TIMEOUT: Duration = Duration::from_millis(5000);
+const THREAD_READ_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_START_TIMEOUT: Duration = Duration::from_millis(8000);
 const TURN_START_TIMEOUT: Duration = Duration::from_millis(12_000);
-const TURN_RUN_TIMEOUT: Duration = Duration::from_millis(180_000);
-const EXTERNAL_HELPER_TURN_TIMEOUT: Duration = Duration::from_millis(60_000);
+// Two real image-generation calls plus transparent sprite extraction can take
+// longer than ten minutes on a healthy App Server. Cancellation remains
+// polled every 100 ms, so the wider bounds do not make the UI unresponsive.
+const TURN_RUN_TIMEOUT: Duration = Duration::from_millis(1_200_000);
+const EXTERNAL_HELPER_TURN_TIMEOUT: Duration = Duration::from_millis(600_000);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const PET_STUDIO_EXTERNAL_HELPER_NAME: &str = "apc_write_skill_source.py";
 const PET_STUDIO_EXTERNAL_FORM_NAME: &str = "apc_skill_form.json";
-const PET_STUDIO_EXTERNAL_HELPER: &str =
-    include_str!("../../../skills/agent-pet-studio/scripts/write_petpack_source.py");
+const CODEX_ACTIVITY_THREAD_LIST_LIMIT: usize = 24;
+pub const MAX_RECENT_CODEX_ACTIVITY_THREADS: usize = 8;
+const FUTURE_THREAD_TIMESTAMP_GRACE_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone)]
 pub struct PetStudioSessionUpdate {
     pub content: String,
     pub progress: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadDisplayMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadDisplay {
+    pub title: Option<String>,
+    pub latest_message: Option<CodexThreadDisplayMessage>,
+    pub latest_user_message: Option<CodexThreadDisplayMessage>,
+    pub latest_activity: Option<CodexThreadDisplayActivity>,
+    /// Safe, display-only marker used to distinguish a newly persisted item
+    /// from an updated thread whose current live item was intentionally omitted
+    /// by App Server persistence.
+    pub display_revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadDisplayActivity {
+    pub kind: String,
+    pub content: Option<String>,
+    /// `thread/read` is a lossy persisted view. Status-bearing items are only
+    /// current while App Server explicitly reports `inProgress`; completed
+    /// items must not be rendered as if they were still running.
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThreadActivity {
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub event_type: AgentEventType,
+    pub updated_at_unix: i64,
+    pub turn_id: Option<String>,
+    pub turn_started_at_unix: Option<i64>,
+    pub session_active: bool,
+    pub session_surface: String,
+    pub interaction_kind: Option<String>,
+    pub latest_message: Option<CodexThreadDisplayMessage>,
+    pub latest_user_message: Option<CodexThreadDisplayMessage>,
+    pub latest_activity: Option<CodexThreadDisplayActivity>,
+    pub display_revision: String,
+}
+
+#[derive(Debug, Clone)]
+struct CodexThreadListCandidate {
+    thread_id: String,
+    title: Option<String>,
+    preview: Option<String>,
+    source: Value,
+    status: Value,
+    updated_at_unix: i64,
+}
+
+/// Reads a bounded set of recent interactive Codex tasks through the official
+/// App Server protocol. `thread/list` is constrained to the state database and
+/// only recent candidates are followed by `thread/read`; paths, tool inputs,
+/// tool outputs, and full transcripts never leave this module.
+pub fn read_codex_recent_thread_activities(
+    max_age: Duration,
+    limit: usize,
+) -> Result<Vec<CodexThreadActivity>> {
+    let limit = limit.clamp(1, MAX_RECENT_CODEX_ACTIVITY_THREADS);
+    let (command, _) = codex_app_server_command()
+        .ok_or_else(|| PetCoreError::Validation("Codex App Server is not available".to_string()))?;
+    let mut session = StdioSession::spawn(&command)?;
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "AgentPetCompanion",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "capabilities": {}
+        }
+    }))?;
+    let initialize = session.read_response(1, "initialize", PROBE_TIMEOUT)?;
+    if initialize.get("error").is_some() {
+        return Err(response_error(
+            "initialize",
+            "initialize",
+            1,
+            &initialize,
+            &session,
+        ));
+    }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/list",
+        "params": {
+            "archived": false,
+            "limit": CODEX_ACTIVITY_THREAD_LIST_LIMIT,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+            "useStateDbOnly": true
+        }
+    }))?;
+    let response = session.read_response(2, "thread/list", THREAD_LIST_TIMEOUT)?;
+    if response.get("error").is_some() {
+        return Err(response_error(
+            "thread_list",
+            "thread/list",
+            2,
+            &response,
+            &session,
+        ));
+    }
+
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let maximum_age_seconds = max_age.as_secs();
+    let candidates = response
+        .pointer("/result/data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(parse_codex_thread_list_candidate)
+        .filter(|candidate| {
+            let Ok(updated_at) = u64::try_from(candidate.updated_at_unix) else {
+                return false;
+            };
+            updated_at <= now_unix.saturating_add(FUTURE_THREAD_TIMESTAMP_GRACE_SECONDS)
+                && now_unix.saturating_sub(updated_at) <= maximum_age_seconds
+        })
+        .take(limit)
+        .collect::<Vec<_>>();
+
+    let mut activities = Vec::with_capacity(candidates.len());
+    for (index, candidate) in candidates.iter().enumerate() {
+        let request_id = 3 + i64::try_from(index).unwrap_or(0);
+        session.send(&json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "thread/read",
+            "params": {
+                "threadId": candidate.thread_id,
+                "includeTurns": true
+            }
+        }))?;
+        let Ok(response) = session.read_response(request_id, "thread/read", THREAD_READ_TIMEOUT)
+        else {
+            break;
+        };
+        if response.get("error").is_some() {
+            continue;
+        }
+        if let Ok(activity) = parse_codex_thread_activity(candidate, &response) {
+            activities.push(activity);
+        }
+    }
+    session.terminate();
+    Ok(activities)
+}
+
+fn parse_codex_thread_list_candidate(thread: &Value) -> Option<CodexThreadListCandidate> {
+    if thread
+        .get("cwd")
+        .and_then(Value::as_str)
+        .is_some_and(is_internal_pet_studio_thread_cwd)
+    {
+        return None;
+    }
+    let thread_id = thread.get("id").and_then(Value::as_str)?;
+    if !is_codex_thread_id(thread_id) {
+        return None;
+    }
+    Some(CodexThreadListCandidate {
+        thread_id: thread_id.to_string(),
+        title: thread
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|value| sanitized_display_text(value, MAX_EVENT_TITLE_BYTES)),
+        preview: thread
+            .get("preview")
+            .and_then(Value::as_str)
+            .and_then(|value| sanitized_display_text(value, MAX_EVENT_TITLE_BYTES)),
+        source: thread.get("source").cloned().unwrap_or(Value::Null),
+        status: thread.get("status").cloned().unwrap_or(Value::Null),
+        updated_at_unix: thread.get("updatedAt").and_then(Value::as_i64)?,
+    })
+}
+
+fn parse_codex_thread_activity(
+    candidate: &CodexThreadListCandidate,
+    response: &Value,
+) -> Result<CodexThreadActivity> {
+    let thread = response
+        .pointer("/result/thread")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "Codex App Server thread/read response omitted result.thread".to_string(),
+            )
+        })?;
+    if thread
+        .get("cwd")
+        .and_then(Value::as_str)
+        .is_some_and(is_internal_pet_studio_thread_cwd)
+    {
+        return Err(PetCoreError::Validation(
+            "Pet Studio internal Codex task is not an Agent conversation".to_string(),
+        ));
+    }
+    let display = parse_codex_thread_display(response)?;
+    let latest_turn = thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .and_then(|turns| turns.last());
+    let latest_turn_status = latest_turn
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str);
+    let mut event_type = codex_activity_event_type(&candidate.status, latest_turn_status);
+    if event_type == AgentEventType::Start
+        && display.latest_activity.as_ref().is_some_and(|activity| {
+            activity.is_current
+                && matches!(
+                    activity.kind.as_str(),
+                    "command"
+                        | "file"
+                        | "file_change"
+                        | "tool"
+                        | "subagent"
+                        | "search"
+                        | "network"
+                        | "image"
+                )
+        })
+    {
+        event_type = AgentEventType::Tool;
+    }
+    let turn_id = latest_turn
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| value.len() <= 256)
+        .map(ToOwned::to_owned);
+    let turn_started_at_unix = latest_turn
+        .and_then(|turn| turn.get("startedAt"))
+        .and_then(Value::as_i64);
+    let updated_at_unix = thread
+        .get("updatedAt")
+        .and_then(Value::as_i64)
+        .unwrap_or(candidate.updated_at_unix);
+    let display_revision = format!(
+        "{}:{}",
+        turn_id.as_deref().unwrap_or("thread"),
+        display.display_revision
+    );
+    Ok(CodexThreadActivity {
+        thread_id: candidate.thread_id.clone(),
+        title: display
+            .title
+            .or_else(|| candidate.title.clone())
+            .or_else(|| candidate.preview.clone()),
+        event_type,
+        updated_at_unix,
+        turn_id,
+        turn_started_at_unix,
+        session_active: candidate.status.get("type").and_then(Value::as_str) == Some("active"),
+        session_surface: codex_activity_session_surface(&candidate.source).to_string(),
+        interaction_kind: codex_activity_interaction_kind(&candidate.status).map(ToOwned::to_owned),
+        latest_message: display.latest_message,
+        latest_user_message: display.latest_user_message,
+        latest_activity: display.latest_activity,
+        display_revision,
+    })
+}
+
+fn is_internal_pet_studio_thread_cwd(cwd: &str) -> bool {
+    let path = std::path::Path::new(cwd.trim()).components().as_path();
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.starts_with("job_"))
+        && path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .and_then(|value| value.to_str())
+            == Some("generation-jobs")
+}
+
+fn codex_activity_interaction_kind(status: &Value) -> Option<&'static str> {
+    let flags = status
+        .get("activeFlags")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str);
+    for flag in flags {
+        match flag {
+            "waitingOnApproval" => return Some("approval_required"),
+            "waitingOnUserInput" => return Some("input_required"),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn codex_activity_event_type(status: &Value, latest_turn_status: Option<&str>) -> AgentEventType {
+    match status.get("type").and_then(Value::as_str) {
+        Some("systemError") => return AgentEventType::Failed,
+        Some("active") => {
+            let flags = status
+                .get("activeFlags")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            if flags
+                .into_iter()
+                .any(|flag| matches!(flag, "waitingOnApproval" | "waitingOnUserInput"))
+            {
+                return AgentEventType::Waiting;
+            }
+            return AgentEventType::Start;
+        }
+        _ => {}
+    }
+    match latest_turn_status {
+        Some("failed") => AgentEventType::Failed,
+        Some("completed") => AgentEventType::Done,
+        // A separate App Server process reloads an externally running turn as
+        // `interrupted`. Recency supplies the bounded activity lease.
+        Some("inProgress" | "interrupted") | None => AgentEventType::Start,
+        Some(_) => AgentEventType::Start,
+    }
+}
+
+fn codex_activity_session_surface(source: &Value) -> &'static str {
+    match source.as_str() {
+        Some("cli") => "cli_terminal",
+        Some("vscode" | "appServer") => "chatgpt_app",
+        _ => "unknown",
+    }
+}
+
+/// Reads display-only metadata for one explicit Codex thread. This does not
+/// enumerate threads, persist transcript history, or expose tool inputs and
+/// outputs. Only the user-facing title plus the latest user and assistant text
+/// items are retained, all through the same bounded display-text policy as hook
+/// events.
+pub fn read_codex_thread_display(thread_id: &str) -> Result<CodexThreadDisplay> {
+    if !is_codex_thread_id(thread_id) {
+        return Err(PetCoreError::InvalidRequest(
+            "invalid params: Codex thread id must be a UUID".to_string(),
+        ));
+    }
+    let (command, _) = codex_app_server_command()
+        .ok_or_else(|| PetCoreError::Validation("Codex App Server is not available".to_string()))?;
+    let mut session = StdioSession::spawn(&command)?;
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "AgentPetCompanion",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "capabilities": {}
+        }
+    }))?;
+    let initialize = session.read_response(1, "initialize", PROBE_TIMEOUT)?;
+    if initialize.get("error").is_some() {
+        session.terminate();
+        return Err(response_error(
+            "initialize",
+            "initialize",
+            1,
+            &initialize,
+            &session,
+        ));
+    }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
+
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/read",
+        "params": {
+            "threadId": thread_id,
+            "includeTurns": true
+        }
+    }))?;
+    let response = session.read_response(2, "thread/read", THREAD_READ_TIMEOUT)?;
+    session.terminate();
+    if response.get("error").is_some() {
+        return Err(response_error(
+            "thread_read",
+            "thread/read",
+            2,
+            &response,
+            &session,
+        ));
+    }
+    parse_codex_thread_display(&response)
+}
+
+fn parse_codex_thread_display(response: &Value) -> Result<CodexThreadDisplay> {
+    let thread = response
+        .pointer("/result/thread")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "Codex App Server thread/read response omitted result.thread".to_string(),
+            )
+        })?;
+    let title = thread
+        .get("name")
+        .and_then(Value::as_str)
+        .and_then(|value| sanitized_display_text(value, MAX_EVENT_TITLE_BYTES));
+    let items = thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn.get("items").and_then(Value::as_array))
+        .flatten()
+        .collect::<Vec<_>>();
+    let display_messages = items
+        .iter()
+        .copied()
+        .filter_map(codex_display_message)
+        .collect::<Vec<_>>();
+    let latest_message = display_messages
+        .last()
+        .filter(|message| message.role == "assistant")
+        .cloned();
+    let latest_user_message = display_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .cloned();
+    let latest_message_index = items.iter().rposition(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("agentMessage" | "userMessage")
+        )
+    });
+    // Only the newest activity item after the latest conversation message may
+    // describe the current UI. In particular, do not skip a completed tool and
+    // fall back to an older reasoning summary: that is how stale "thinking"
+    // and "editing files" labels used to survive after the task had moved on.
+    let latest_activity = items.iter().enumerate().rev().find_map(|(index, item)| {
+        (latest_message_index.is_none_or(|message_index| index > message_index))
+            .then(|| codex_display_activity(item))
+            .flatten()
+    });
+    let display_revision = codex_display_revision(&items);
+    Ok(CodexThreadDisplay {
+        title,
+        latest_message,
+        latest_user_message,
+        latest_activity,
+        display_revision,
+    })
+}
+
+fn codex_display_activity(item: &Value) -> Option<CodexThreadDisplayActivity> {
+    let item_type = item.get("type").and_then(Value::as_str)?;
+    let (kind, content, is_current) = match item_type {
+        "reasoning" => {
+            let content = item
+                .get("summary")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .rev()
+                .filter_map(Value::as_str)
+                .find_map(sanitized_activity_summary);
+            ("thinking", content, true)
+        }
+        "plan" => (
+            "plan",
+            item.get("text")
+                .and_then(Value::as_str)
+                .and_then(sanitized_activity_summary),
+            true,
+        ),
+        "commandExecution" => (
+            codex_command_activity_kind(item),
+            None,
+            codex_status_is_in_progress(item),
+        ),
+        "fileChange" => ("file_change", None, codex_status_is_in_progress(item)),
+        "mcpToolCall" | "dynamicToolCall" => ("tool", None, codex_status_is_in_progress(item)),
+        "collabAgentToolCall" => ("subagent", None, codex_status_is_in_progress(item)),
+        // These status-less items are durable history, not proof that the
+        // operation is still running in a separately spawned App Server.
+        "subAgentActivity" => ("subagent", None, false),
+        "webSearch" => ("search", None, false),
+        "imageView" | "sleep" => ("tool", None, false),
+        "imageGeneration" => ("image", None, codex_status_is_in_progress(item)),
+        "contextCompaction" => ("compaction", None, false),
+        "enteredReviewMode" | "exitedReviewMode" => ("plan", None, true),
+        _ => return None,
+    };
+    Some(CodexThreadDisplayActivity {
+        kind: kind.to_string(),
+        content,
+        is_current,
+    })
+}
+
+fn codex_command_activity_kind(item: &Value) -> &'static str {
+    let action_types = item
+        .get("commandActions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|action| action.get("type").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if action_types.is_empty() || action_types.contains(&"unknown") {
+        return "command";
+    }
+    if action_types.iter().all(|kind| *kind == "search") {
+        return "search";
+    }
+    if action_types
+        .iter()
+        .all(|kind| matches!(*kind, "read" | "listFiles"))
+    {
+        return "file";
+    }
+    "command"
+}
+
+fn codex_status_is_in_progress(item: &Value) -> bool {
+    item.get("status").and_then(Value::as_str) == Some("inProgress")
+}
+
+fn codex_display_revision(items: &[&Value]) -> String {
+    let Some(item) = items.last() else {
+        return "empty".to_string();
+    };
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let item_id = item.get("id").and_then(Value::as_str).unwrap_or("unknown");
+    let status = item.get("status").and_then(Value::as_str).unwrap_or("none");
+    let phase = item.get("phase").and_then(Value::as_str).unwrap_or("none");
+    let visible_content = codex_display_activity(item)
+        .and_then(|activity| activity.content)
+        .or_else(|| codex_display_message(item).map(|message| message.content))
+        .unwrap_or_default();
+    format!("{item_type}:{item_id}:{status}:{phase}:{visible_content}")
+}
+
+#[cfg(test)]
+mod codex_display_tests {
+    use super::*;
+
+    fn thread_response(items: Vec<Value>) -> Value {
+        json!({
+            "result": {
+                "thread": {
+                    "name": "同步测试",
+                    "turns": [{
+                        "id": "turn-1",
+                        "status": "interrupted",
+                        "items": items
+                    }]
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn command_actions_distinguish_reads_searches_and_shell_commands() {
+        let read = codex_display_activity(&json!({
+            "type": "commandExecution",
+            "status": "inProgress",
+            "commandActions": [{"type": "read"}, {"type": "listFiles"}]
+        }))
+        .expect("read activity");
+        assert_eq!(read.kind, "file");
+        assert!(read.is_current);
+
+        let search = codex_display_activity(&json!({
+            "type": "commandExecution",
+            "status": "inProgress",
+            "commandActions": [{"type": "search"}]
+        }))
+        .expect("search activity");
+        assert_eq!(search.kind, "search");
+        assert!(search.is_current);
+
+        let shell = codex_display_activity(&json!({
+            "type": "commandExecution",
+            "status": "inProgress",
+            "commandActions": [{"type": "read"}, {"type": "unknown"}]
+        }))
+        .expect("shell activity");
+        assert_eq!(shell.kind, "command");
+        assert!(shell.is_current);
+    }
+
+    #[test]
+    fn completed_file_change_supersedes_older_reasoning_without_staying_current() {
+        let response = thread_response(vec![
+            json!({"id":"message-1","type":"agentMessage","text":"上一条 Agent 消息"}),
+            json!({"id":"reasoning-1","type":"reasoning","summary":["旧思考信息"]}),
+            json!({"id":"patch-1","type":"fileChange","status":"completed","changes":[]}),
+        ]);
+        let display = parse_codex_thread_display(&response).expect("display");
+        let activity = display.latest_activity.expect("latest activity marker");
+        assert_eq!(activity.kind, "file_change");
+        assert!(!activity.is_current);
+        assert_eq!(activity.content, None);
+    }
+
+    #[test]
+    fn reasoning_summary_changes_the_safe_display_revision() {
+        let first = parse_codex_thread_display(&thread_response(vec![json!({
+            "id":"reasoning-1",
+            "type":"reasoning",
+            "summary":["第一段思考"]
+        })]))
+        .expect("first display");
+        let second = parse_codex_thread_display(&thread_response(vec![json!({
+            "id":"reasoning-1",
+            "type":"reasoning",
+            "summary":["第二段思考"]
+        })]))
+        .expect("second display");
+        assert_ne!(first.display_revision, second.display_revision);
+        assert_eq!(
+            second.latest_activity.and_then(|activity| activity.content),
+            Some("第二段思考".to_string())
+        );
+    }
+}
+
+fn sanitized_activity_summary(value: &str) -> Option<String> {
+    let mut value = sanitized_display_text(value, MAX_MESSAGE_CONTENT_BYTES)?;
+    if value.starts_with("**") && value.ends_with("**") && value.len() > 4 {
+        value = value[2..value.len() - 2].trim().to_string();
+    }
+    while value.starts_with('#') {
+        value.remove(0);
+    }
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn codex_display_message(item: &Value) -> Option<CodexThreadDisplayMessage> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("agentMessage") => sanitized_display_text(
+            item.get("text").and_then(Value::as_str)?,
+            MAX_MESSAGE_CONTENT_BYTES,
+        )
+        .map(|content| CodexThreadDisplayMessage {
+            role: "assistant".to_string(),
+            content,
+        }),
+        Some("userMessage") => {
+            let mut text = String::new();
+            for part in item.get("content").and_then(Value::as_array)? {
+                if part.get("type").and_then(Value::as_str) != Some("text") {
+                    continue;
+                }
+                let Some(value) = part.get("text").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                append_utf8_bounded(
+                    &mut text,
+                    value,
+                    MAX_MESSAGE_CONTENT_BYTES.saturating_mul(2),
+                );
+                if text.len() >= MAX_MESSAGE_CONTENT_BYTES.saturating_mul(2) {
+                    break;
+                }
+            }
+            sanitized_display_text(&text, MAX_MESSAGE_CONTENT_BYTES).map(|content| {
+                CodexThreadDisplayMessage {
+                    role: "user".to_string(),
+                    content,
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn sanitized_display_text(value: &str, maximum_bytes: usize) -> Option<String> {
+    let value = value.trim();
+    let mut cleaned = String::with_capacity(value.len().min(maximum_bytes));
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if cleaned.len() + character.len_utf8() > maximum_bytes {
+            break;
+        }
+        cleaned.push(character);
+    }
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.to_string())
+}
+
+fn append_utf8_bounded(target: &mut String, value: &str, maximum_bytes: usize) {
+    for character in value.chars() {
+        if target.len() + character.len_utf8() > maximum_bytes {
+            break;
+        }
+        target.push(character);
+    }
+}
+
+fn is_codex_thread_id(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 pub fn probe_codex_app_server() -> Value {
@@ -244,10 +988,6 @@ fn prepare_external_skill_source_workspace(
         job_dir.join(PET_STUDIO_EXTERNAL_FORM_NAME),
         serde_json::to_vec_pretty(form)?,
     )?;
-    std::fs::write(
-        job_dir.join(PET_STUDIO_EXTERNAL_HELPER_NAME),
-        PET_STUDIO_EXTERNAL_HELPER,
-    )?;
     Ok(())
 }
 
@@ -315,6 +1055,11 @@ fn run_pet_studio_session_stdio_command(
             &session,
         ));
     }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
 
     session.send(&json!({
         "jsonrpc": "2.0",
@@ -621,6 +1366,11 @@ fn run_pet_studio_follow_up_stdio_command(
             &session,
         ));
     }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
 
     session.send(&json!({
         "jsonrpc": "2.0",
@@ -821,8 +1571,7 @@ fn maybe_run_external_helper_turn(
     }
 
     on_update(PetStudioSessionUpdate {
-        content: "Codex 已返回 brief，但尚未写出外部 petpack-source；正在启动 helper 写源包 turn。"
-            .to_string(),
+        content: "Codex 尚未写出外部 petpack-source；正在启动图像素材生成重试 turn。".to_string(),
         progress: 0.15,
     });
     session.send(&json!({
@@ -863,7 +1612,7 @@ fn maybe_run_external_helper_turn(
         .map(ToOwned::to_owned);
     on_update(PetStudioSessionUpdate {
         content: format!(
-            "helper turn 已启动（{}），等待 App Server 执行 petpack-source 生成脚本。",
+            "图像素材生成重试 turn 已启动（{}），等待 App Server 写出 petpack-source。",
             turn_id.as_deref().unwrap_or("unknown")
         ),
         progress: 0.16,
@@ -905,6 +1654,8 @@ fn collect_turn_events(
     let mut collected = CollectedTurn::default();
     let mut delta_text = String::new();
     let mut announced_delta = false;
+    let mut announced_image_generation = false;
+    let mut announced_post_processing = false;
 
     loop {
         if should_cancel() {
@@ -937,6 +1688,31 @@ fn collect_turn_events(
             .cloned()
             .unwrap_or_else(|| json!({}));
         match method {
+            "item/started" => {
+                let item_type = params
+                    .get("item")
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str);
+                if item_type == Some("imageGeneration") && !announced_image_generation {
+                    announced_image_generation = true;
+                    on_update(PetStudioSessionUpdate {
+                        content: "Codex 正在生成角色与七状态图像素材。".to_string(),
+                        progress: 0.11,
+                    });
+                } else if announced_image_generation
+                    && matches!(
+                        item_type,
+                        Some("commandExecution" | "mcpToolCall" | "dynamicToolCall")
+                    )
+                    && !announced_post_processing
+                {
+                    announced_post_processing = true;
+                    on_update(PetStudioSessionUpdate {
+                        content: "图像素材已生成，正在透明化、分帧并构建宠物包。".to_string(),
+                        progress: 0.12,
+                    });
+                }
+            }
             "item/agentMessage/delta" => {
                 if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                     delta_text.push_str(delta);
@@ -953,6 +1729,13 @@ fn collect_turn_events(
             "item/completed" => {
                 if let Some(item) = params.get("item") {
                     let item_type = item.get("type").and_then(Value::as_str);
+                    if item_type == Some("imageGeneration") && !announced_post_processing {
+                        announced_post_processing = true;
+                        on_update(PetStudioSessionUpdate {
+                            content: "图像素材已生成，正在透明化、分帧并构建宠物包。".to_string(),
+                            progress: 0.12,
+                        });
+                    }
                     if item_type == Some("agentMessage") {
                         if let Some(text) = item.get("text").and_then(Value::as_str) {
                             collected.assistant_text = Some(text.to_string());
@@ -968,6 +1751,23 @@ fn collect_turn_events(
                         return Ok(collected);
                     }
                 }
+            }
+            "turn/completed" => {
+                if collected.assistant_text.is_none() && !delta_text.trim().is_empty() {
+                    collected.assistant_text = Some(delta_text.clone());
+                }
+                collected.completed = true;
+                collected.events.push(slim_event(method, &params));
+                on_update(PetStudioSessionUpdate {
+                    content: "Codex turn 已完成，正在校验 Studio 输出。".to_string(),
+                    progress: 0.14,
+                });
+                return Ok(collected);
+            }
+            "turn/failed" | "turn/cancelled" => {
+                collected.error = Some(params.to_string());
+                collected.events.push(slim_event(method, &params));
+                return Ok(collected);
             }
             "error" | "turn/error" => {
                 collected.error = Some(params.to_string());
@@ -994,6 +1794,9 @@ fn should_keep_event(method: &str) -> bool {
             | "warning"
             | "thread/tokenUsage/updated"
             | "account/rateLimits/updated"
+            | "turn/completed"
+            | "turn/failed"
+            | "turn/cancelled"
     )
 }
 
@@ -1044,6 +1847,11 @@ fn start_thread_stdio_command(command: &str, thread_params: Value) -> Result<Val
             &session,
         ));
     }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
 
     session.send(&json!({
         "jsonrpc": "2.0",
@@ -1229,6 +2037,7 @@ fn method_stage(method: &str) -> &'static str {
         "initialize" => "initialize",
         "thread/start" => "thread_start",
         "thread/resume" => "thread_resume",
+        "thread/read" => "thread_read",
         "turn/start" => "turn_start",
         "notification" => "turn_events",
         _ => "stdio",
@@ -1539,7 +2348,7 @@ fn codex_app_server_command() -> Option<(String, &'static str)> {
     match std::env::var("CODEX_APP_SERVER_CMD") {
         Ok(command) if !command.trim().is_empty() => Some((command, "env")),
         _ if app_server_auto_disabled() => None,
-        _ => default_codex_app_server_command().map(|command| (command, "auto")),
+        _ => default_codex_app_server_command(),
     }
 }
 
@@ -1574,11 +2383,11 @@ fn pet_studio_developer_instructions(job_id: &str, form: &GenerationForm) -> Str
     let strict_full_source = app_server_requires_skill_full_source();
     let strict_external_source = app_server_requires_external_skill_source();
     let output_mode = if strict_external_source {
-        r#"External full source mode is mandatory for this run because APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1. The current job workspace already contains `apc_skill_form.json` and `apc_write_skill_source.py`. Run `python3 apc_write_skill_source.py`, validate the created `petpack-source`, and return only a compact status JSON. Returning only a brief JSON is not accepted in this mode."#
+        r#"External full source mode is mandatory because APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1. The workspace contains only the validated input contract in `apc_skill_form.json`; no preview materializer is provided. Use the image-generation capability to create the real visual source, write and validate the complete `petpack-source`, then return compact status JSON. Brief-only output is rejected."#
     } else if strict_full_source {
         r#"Full source mode is mandatory for this run because APC_REQUIRE_SKILL_FULL_SOURCE=1. Return a complete structured Pet Studio brief JSON; PetCore will run its built-in Pet Studio Skill materializer to write and validate `petpack-source` with trusted Skill provenance. Do not run `petcore-cli petpack materialize`; CLI materialization is fallback output and will be rejected as trusted Skill provenance."#
     } else {
-        r#"Prefer full source mode when file-writing tools are available. If full source mode is not available, return compact brief JSON and PetCore will materialize the brief."#
+        r#"Return compact structured brief JSON only. PetCore will materialize, validate, build, and import the non-strict acceptance artifact. Do not write files or run PetCore CLI commands in this mode."#
     };
     format!(
         r#"Use the agent-pet-studio skill for generation job {job_id}.
@@ -1594,7 +2403,7 @@ Required workflow:
 1. {output_mode}
 2. Read the Studio form and staged reference image path names only as user-provided visual context.
 3. If details are missing and generation would require guessing the pet identity, return compact JSON only in this shape: {{"needs_input":true,"question":"one concise Studio follow-up question"}}.
-4. In external full-source mode, use an image-capable tool to write manifest.json, brief.json, visibly distinct frame sequences for all seven fixed states, preview assets, source metadata, and build/validation.json under `petpack-source`. The staged `apc_write_skill_source.py` helper is deterministic preview output and is rejected as real image generation.
+4. In external full-source mode, call the image-generation capability to create a coherent character and visibly distinct motion frames. One or more ordered sprite sheets may be used to generate the fourteen minimum frames efficiently. Crop them into exact-size transparent PNGs, then write manifest.json, brief.json, all seven frame directories, preview assets, source metadata, skill_session.jsonl, and build/validation.json under `petpack-source`. Keep preview encoding fast; complete the required source and run validation before spending time on optional compression optimization.
 5. Built-in/simple generated transparent PNG frames must be labeled deterministic preview and cannot satisfy external full-source validation.
 6. Use fixed states: idle, start, tool, waiting, review, done, failed.
 7. PetCore will prefer a validated Skill-created `petpack-source`; non-strict runs may fall back to materializing returned brief JSON.
@@ -1610,9 +2419,9 @@ fn pet_studio_turn_prompt(form: &GenerationForm) -> String {
 
 This run requires external full source mode. Create a complete `petpack-source` directory using an image-capable tool available to this App Server turn. PetCore will not materialize a returned brief.
 
-Do not run `{helper_name}`. It creates deterministic preview geometry and is rejected as evidence of AI image generation.
+Do not create deterministic geometry or run a preview materializer. Call image generation for the actual visual source. You may request one or more ordered sprite sheets and crop them into the fourteen minimum frames to stay within the turn budget.
 
-Create at least two visibly distinct PNG frames for every fixed state, then run:
+Create at least two visibly distinct PNG frames for every fixed state. Keep animated preview encoding fast, finish all required files first, then run:
 $APC_PETCORE_CLI petpack validate petpack-source
 
 After validation passes, return only compact JSON:
@@ -1627,7 +2436,6 @@ Do not read secrets or unrelated project files.
 
 Studio form JSON:
 {form_json}"#,
-            helper_name = PET_STUDIO_EXTERNAL_HELPER_NAME,
             form_json = serde_json::to_string_pretty(form).unwrap_or_else(|_| "{}".to_string())
         );
     }
@@ -1671,10 +2479,9 @@ Studio form JSON:
     format!(
         r#"Use the agent-pet-studio skill constraints to generate one Agent Pet Companion desktop pet.
 
-Preferred output: if file-writing tools are available, use full source mode and create a complete `petpack-source` directory in the current turn cwd. Keep all generated files inside `petpack-source`, include `source/source.json` with `generator` set to `codex-app-server-skill` and `provenance` set to `skill-full-source`, then run:
-$APC_PETCORE_CLI petpack validate petpack-source
-
-Fallback output: if full source mode is unavailable in this App Server turn, return compact brief JSON. PetCore will materialize that brief into `petpack-source`, validate, build, and import the `.petpack`.
+This is the bounded non-strict App Server path. Return compact brief JSON only.
+Do not write files, invoke tools, or run PetCore CLI commands. PetCore will materialize
+the brief into `petpack-source`, validate, build, and import the `.petpack`.
 
 If the form is missing required identity, appearance, or behavior details and you cannot create a coherent pet without guessing, return only:
 {{"needs_input":true,"question":"one concise Studio follow-up question"}}
@@ -1709,14 +2516,13 @@ fn pet_studio_external_helper_prompt(adjusted: bool) -> String {
     format!(
         r#"Create the Agent Pet Studio external full source now.
 
-Do not run `{helper_name}` because it produces deterministic preview geometry. Use an image-capable tool to create at least two visibly distinct PNG frames for each fixed state, then execute:
+Do not create deterministic preview geometry. Call image generation to create at least two visibly distinct PNG frames for each fixed state. Keep preview encoding fast, finish required files first, then execute:
 $APC_PETCORE_CLI petpack validate petpack-source
 
 Return only this compact JSON after validation succeeds:
 {{"petpack_source":"petpack-source","mode":"external_full_source","adjusted":{adjusted}}}
 
 Do not read secrets or unrelated project files."#,
-        helper_name = PET_STUDIO_EXTERNAL_HELPER_NAME,
         adjusted = if adjusted { "true" } else { "false" }
     )
 }
@@ -1737,7 +2543,7 @@ fn pet_studio_follow_up_prompt(
 
 This run requires external full source mode. Create a complete adjusted `petpack-source` with an image-capable tool, validate it, and do not return fallback brief JSON.
 
-Do not run `{helper_name}` because it creates deterministic preview geometry. Create at least two visibly distinct PNG frames per fixed state, then run:
+Do not create deterministic preview geometry. Call image generation and create at least two visibly distinct PNG frames per fixed state. Keep preview encoding fast, finish required files first, then run:
 $APC_PETCORE_CLI petpack validate petpack-source
 
 After validation passes, return only compact JSON:
@@ -1755,7 +2561,6 @@ Previous AI brief JSON:
 
 Studio form JSON:
 {form_json}"#,
-            helper_name = PET_STUDIO_EXTERNAL_HELPER_NAME,
             form_json = serde_json::to_string_pretty(form).unwrap_or_else(|_| "{}".to_string())
         );
     }
@@ -2091,11 +2896,34 @@ fn default_motion_for_state(state: PetStateName) -> &'static str {
     }
 }
 
-fn default_codex_app_server_command() -> Option<String> {
+fn default_codex_app_server_command() -> Option<(String, &'static str)> {
+    for (path, source) in [
+        (
+            PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
+            "chatgpt_bundle",
+        ),
+        (
+            PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
+            "codex_bundle",
+        ),
+    ] {
+        if path.is_file() {
+            return Some((
+                format!(
+                    "{} app-server --stdio",
+                    shell_quote(&path.display().to_string())
+                ),
+                source,
+            ));
+        }
+    }
     let codex = command_path("codex")?;
-    Some(format!(
-        "{} app-server --stdio",
-        shell_quote(&codex.display().to_string())
+    Some((
+        format!(
+            "{} app-server --stdio",
+            shell_quote(&codex.display().to_string())
+        ),
+        "path",
     ))
 }
 

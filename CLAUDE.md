@@ -14,7 +14,8 @@ When starting a task, use this reading order:
 
 1. The user request
 2. The relevant design document under `docs/design/`
-3. Existing code in the touched area
+3. `docs/PROJECT_STATUS.md` for current implementation and validation claims
+4. Existing code in the touched area
 
 If a rule should apply to every agent, update `AGENTS.md` instead of adding it to this file.
 

@@ -9,6 +9,7 @@ struct BehaviorSettingsTests {
         let previous = BehaviorSettings()
         var next = previous
         next.autoHide = true
+        next.sessionMessageTimeoutMinutes = 30
         next.sources[.codex] = false
         next.events[.tool] = false
 
@@ -20,6 +21,7 @@ struct BehaviorSettingsTests {
 
         #expect(!patch.isEmpty)
         #expect(object["auto_hide"] as? Bool == true)
+        #expect(object["session_message_timeout_minutes"] as? Int == 30)
         let sources = try #require(object["sources"] as? [String: Any])
         let events = try #require(object["events"] as? [String: Any])
         #expect(sources.count == 1)

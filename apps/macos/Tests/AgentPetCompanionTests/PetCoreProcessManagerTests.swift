@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import AgentPetCompanion
@@ -45,7 +46,7 @@ struct PetCoreProcessManagerTests {
     }
 
     @Test
-    func launchPlanNeverUsesForceKickstart() {
+    func loadedServiceUsesForceKickstartSoStaleBinaryIsReplaced() {
         let plans = [true, false].flatMap { configurationChanged in
             [true, false].map { isLoaded in
                 PetCoreLaunchAgentPlan.make(
@@ -59,11 +60,260 @@ struct PetCoreProcessManagerTests {
         }
         let invocations = plans.flatMap(\.invocations)
 
-        #expect(!invocations.flatMap(\.arguments).contains("-k"))
+        #expect(invocations.flatMap(\.arguments).contains("-k"))
         #expect(plans[0].invocations.map(\.arguments) == [
             ["bootout", "gui/501/dev.agentpet.petcore"],
             ["bootstrap", "gui/501", "/tmp/dev.agentpet.petcore.plist"]
         ])
+        #expect(plans[2].invocations.map(\.arguments) == [
+            ["kickstart", "-k", "gui/501/dev.agentpet.petcore"]
+        ])
+    }
+
+    @Test
+    func isolatedDirectModeNeverBootsOutTheGlobalLaunchAgent() {
+        #expect(!PetCoreLaunchControlPolicy.shouldBootoutGlobalLaunchAgent(
+            launchAgentDisabled: true
+        ))
+        #expect(PetCoreLaunchControlPolicy.shouldBootoutGlobalLaunchAgent(
+            launchAgentDisabled: false
+        ))
+    }
+
+    @Test
+    func healthRequiresCurrentRPCProtocolAndBuildIdentity() {
+        #expect(PetCoreRuntimeContract.acceptsHealth([
+            "ok": true,
+            "rpc_protocol": "apc.petcore-rpc.v2",
+            "build_id": "build-a"
+        ], expectedBuildID: "build-a"))
+        #expect(!PetCoreRuntimeContract.acceptsHealth([
+            "ok": true,
+            "rpc_protocol": "apc.petcore-rpc.v2",
+            "build_id": "build-old"
+        ], expectedBuildID: "build-a"))
+        #expect(!PetCoreRuntimeContract.acceptsHealth([
+            "ok": true,
+            "version": "0.1.0"
+        ], expectedBuildID: "build-a"))
+        #expect(!PetCoreRuntimeContract.acceptsHealth([
+            "ok": false,
+            "rpc_protocol": "apc.petcore-rpc.v2",
+            "build_id": "build-a"
+        ], expectedBuildID: "build-a"))
+
+        #expect(PetCoreRuntimeContract.incompatibleInstanceID([
+            "ok": true,
+            "rpc_protocol": "apc.petcore-rpc.v2",
+            "build_id": "build-old",
+            "instance_id": "instance-old"
+        ], expectedBuildID: "build-a") == "instance-old")
+    }
+
+    @Test
+    func productionPetStudioRequiresExternalImageSource() {
+        #expect(PetCoreRuntimeContract.requiredGenerationEnvironment == [
+            "APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK": "0",
+            "APC_REQUIRE_SKILL_FULL_SOURCE": "1",
+            "APC_REQUIRE_EXTERNAL_SKILL_SOURCE": "1"
+        ])
+    }
+
+    @Test
+    func healthyRuntimePublishesStableConnectorCLIPath() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let version = home
+            .appendingPathComponent("runtime/versions/build-a", isDirectory: true)
+        try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
+        let executable = version.appendingPathComponent("petcore")
+        let cli = version.appendingPathComponent("petcore-cli")
+        let manifestURL = version.appendingPathComponent("runtime-manifest.json")
+        try Data().write(to: executable)
+        try Data().write(to: cli)
+        try Data().write(to: manifestURL)
+        let store = PetCoreRuntimeStore(homeURL: home)
+        let manifest = runtimeManifest(buildID: "build-a")
+
+        try await store.commitHealthy(PreparedPetCoreRuntime(
+            executableURL: executable,
+            cliURL: cli,
+            manifestURL: manifestURL,
+            manifest: manifest,
+            previous: nil
+        ))
+
+        let current = home.appendingPathComponent("runtime/current")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: current.path) == "versions/build-a")
+        #expect(
+            current.appendingPathComponent("petcore-cli").resolvingSymlinksInPath()
+                == cli.resolvingSymlinksInPath()
+        )
+    }
+
+    @Test
+    func healthRequiresTheCompleteRuntimeReleaseManifest() throws {
+        let manifest = runtimeManifest(buildID: "build-a")
+        let manifestObject = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest)) as? [String: Any]
+        )
+        let health: [String: Any] = [
+            "ok": true,
+            "rpc_protocol": "apc.petcore-rpc.v2",
+            "build_id": "build-a",
+            "runtime_manifest": manifestObject
+        ]
+        #expect(PetCoreRuntimeContract.acceptsHealth(
+            health,
+            expectedBuildID: "build-a",
+            expectedManifest: manifest
+        ))
+
+        let stale = runtimeManifest(buildID: "build-a", codexContract: "codex-hooks.v0")
+        #expect(!PetCoreRuntimeContract.acceptsHealth(
+            health,
+            expectedBuildID: "build-a",
+            expectedManifest: stale
+        ))
+    }
+
+    @Test
+    func agentIconCandidatesPreferOfficialBrandAssets() throws {
+        let codex = AgentIconCandidates.candidates(
+            for: .codex,
+            discoveredAppPaths: ["/Applications/ChatGPT Beta.app"]
+        )
+        #expect(codex.first == .resource(
+            "/Applications/ChatGPT Beta.app/Contents/Resources/icon-codex-dark-color.png"
+        ))
+        #expect(codex.contains(.appBundle("/Applications/ChatGPT.app")))
+
+        let pi = AgentIconCandidates.candidates(for: .pi)
+        #expect(pi.first == .bundledResource("PiBadge.svg"))
+
+        for source in AgentSource.allCases {
+            let candidates = AgentIconCandidates.candidates(for: source)
+            #expect(!candidates.isEmpty)
+            #expect(Set(candidates.map { "\($0.kind):\($0.path)" }).count == candidates.count)
+        }
+    }
+
+    @Test
+    func appInstanceLockRejectsSecondOwnerAndAllowsHandoff() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let first = AppInstanceLock(homeURL: home)
+        let second = AppInstanceLock(homeURL: home)
+
+        #expect(try first.acquire())
+        #expect(!(try second.acquire()))
+        first.release()
+        #expect(try second.acquire())
+    }
+
+    @MainActor
+    @Test
+    func installedBuildIdentityDetectsBundleReplacement() throws {
+        let bundle = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).app", isDirectory: true)
+        let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: ["APCBuildID": "build-new"],
+            format: .xml,
+            options: 0
+        )
+        try plist.write(to: contents.appendingPathComponent("Info.plist"))
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        let installed = AppUpdateHandoffCoordinator.installedBuildID(at: bundle)
+        #expect(installed == "build-new")
+        #expect(AppUpdateHandoffCoordinator.buildChanged(
+            launchedBuildID: "build-old",
+            installedBuildID: installed
+        ))
+        #expect(!AppUpdateHandoffCoordinator.buildChanged(
+            launchedBuildID: "build-new",
+            installedBuildID: installed
+        ))
+    }
+
+    @Test
+    func appActivationRequestRoundTripsThroughNotificationPayload() throws {
+        let request = try #require(AppActivationRequest(
+            bundlePath: "/Applications/Agent Pet Companion.app",
+            buildID: "build-new"
+        ))
+
+        #expect(AppActivationRequest(userInfo: request.userInfo) == request)
+        #expect(AppActivationRequest(bundlePath: "   ", buildID: "build-new") == nil)
+        #expect(AppActivationRequest(bundlePath: request.bundlePath, buildID: "\n") == nil)
+    }
+
+    @MainActor
+    @Test
+    func requestedBuildHandoffRequiresValidatedDifferentAppBuild() throws {
+        let bundle = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).app", isDirectory: true)
+        let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "APCBuildID": "build-new",
+                "CFBundleIdentifier": "dev.agentpet.companion"
+            ],
+            format: .xml,
+            options: 0
+        )
+        try plist.write(to: contents.appendingPathComponent("Info.plist"))
+        defer { try? FileManager.default.removeItem(at: bundle) }
+
+        #expect(AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-old",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion"
+        ))
+        #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-new",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion"
+        ))
+        #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-old",
+            requestedBuildID: "forged-build",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion"
+        ))
+        #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-old",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.another-app"
+        ))
+    }
+
+    @MainActor
+    @Test
+    func mainWindowDetectionIsStableAcrossDynamicTitlesAndExcludesPanels() {
+        #expect(AppStore.isMainWindowCandidate(
+            isPanel: false,
+            level: .normal,
+            styleMask: [.titled, .closable, .resizable]
+        ))
+        #expect(!AppStore.isMainWindowCandidate(
+            isPanel: true,
+            level: .normal,
+            styleMask: [.titled, .nonactivatingPanel]
+        ))
+        #expect(!AppStore.isMainWindowCandidate(
+            isPanel: false,
+            level: .floating,
+            styleMask: [.titled]
+        ))
     }
 
     @MainActor
@@ -148,6 +398,32 @@ struct PetCoreProcessManagerTests {
         let snapshot = await probe.snapshot()
         #expect(snapshot.recoveryAttempts == 1)
         #expect(snapshot.snapshotAttempts == 1)
+    }
+
+    private func runtimeManifest(
+        buildID: String,
+        codexContract: String = "codex-hooks.v1"
+    ) -> RuntimeReleaseManifest {
+        RuntimeReleaseManifest(
+            schemaVersion: RuntimeReleaseManifest.schemaVersion,
+            releaseChannel: "develop",
+            appVersion: "0.1.0",
+            appBuild: "1",
+            buildID: buildID,
+            petCoreRPCProtocol: PetCoreRuntimeContract.requiredRPCProtocol,
+            petCoreBuildID: buildID,
+            petCoreCLIBuildID: buildID,
+            minimumDatabaseSchemaVersion: 1,
+            maximumDatabaseSchemaVersion: 1,
+            agentEventSchemaVersion: "apc.agent-event.v1",
+            petpackSchemaVersion: "apc.petpack.v1",
+            connectorContracts: RuntimeConnectorContracts(
+                codex: codexContract,
+                claudeCode: "claude-hooks.v1",
+                pi: "pi-extension.v1",
+                opencode: "opencode-plugin.v1"
+            )
+        )
     }
 
     private func makeManager(probe: ProcessManagerProbe) -> PetCoreProcessManager {

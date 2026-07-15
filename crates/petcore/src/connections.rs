@@ -1,7 +1,8 @@
 use crate::app_server;
+use crate::db::Database;
 use crate::paths::AppPaths;
 use crate::process_runner::{run_bounded, ProcessResult, ProcessSpec};
-use crate::{now_rfc3339, PetCoreError, Result};
+use crate::{enum_name, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentSource, CheckStatus, ConnectionCheckItem, ConnectionCheckMode,
 };
@@ -43,15 +44,21 @@ fn check_all_with_runtime_smoke(
     paths: &AppPaths,
     run_runtime_smoke: bool,
 ) -> Vec<AgentConnectionStatus> {
-    [
+    let sources = [
         AgentSource::Codex,
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
-    ]
-    .into_iter()
-    .map(|source| check_source_with_runtime_smoke(paths, source, run_runtime_smoke))
-    .collect()
+    ];
+    thread::scope(|scope| {
+        let checks = sources.map(|source| {
+            scope.spawn(move || check_source_with_runtime_smoke(paths, source, run_runtime_smoke))
+        });
+        checks
+            .into_iter()
+            .map(|check| check.join().expect("connection check worker panicked"))
+            .collect()
+    })
 }
 
 pub fn check_source(paths: &AppPaths, source: AgentSource) -> AgentConnectionStatus {
@@ -65,8 +72,13 @@ fn check_source_with_runtime_smoke(
 ) -> AgentConnectionStatus {
     let cli_name = cli_name(source);
     let install_root = install_root(paths, source);
-    let connector_cli = connector_cli_path();
-    let cli_status = if command_exists(cli_name) {
+    let connector_cli = connector_cli_path(paths);
+    let agent_cli = if source == AgentSource::Codex {
+        codex_command_path()
+    } else {
+        command_path(cli_name)
+    };
+    let cli_status = if agent_cli.is_some() {
         CheckStatus::Ok
     } else {
         CheckStatus::Missing
@@ -80,10 +92,10 @@ fn check_source_with_runtime_smoke(
         ConnectionCheckItem {
             name: cli_label(source).to_string(),
             status: cli_status,
-            detail: if cli_status == CheckStatus::Ok {
-                "命令可用".to_string()
+            detail: if let Some(path) = agent_cli {
+                format!("命令可用：{}", path.display())
             } else {
-                format!("未在 PATH 中检测到 {cli_name}")
+                format!("未在 PATH 与常用本地安装目录中检测到 {cli_name}")
             },
         },
         ConnectionCheckItem {
@@ -148,22 +160,26 @@ fn check_source_with_runtime_smoke(
                 &install_root.join("agent-pet-companion.ts"),
                 "Extension",
                 &[
-                    "pi-extension-34582ef3",
+                    "pi-extension-20260714-message-v5",
+                    "pi.on(\"input\"",
                     "pi.on(\"agent_settled\"",
+                    "pi.on(\"message_end\"",
+                    "pi.on(\"agent_end\"",
+                    "pi.on(\"session_before_compact\"",
+                    "pi.on(\"session_compact\"",
                     "event?.isError === true",
+                    "diagnostic: event?.diagnostic === true",
+                    "session_title: sessionTitle(ctx)",
+                    "message_content: message?.content",
+                    "agent_error: agentError",
+                    "session_open: event?.type !== \"session_shutdown\"",
                     "--event-type",
                     "auto",
                 ],
             ));
-            items.push(check_pi_rpc(run_runtime_smoke));
-            items.push(check_pi_waiting_capability());
             items.push(check_event_channel(paths, &connector_cli));
             if run_runtime_smoke {
-                items.push(check_pi_extension_runtime(
-                    paths,
-                    &install_root,
-                    &connector_cli,
-                ));
+                items.push(check_pi_extension_runtime(paths, &install_root));
             }
         }
         AgentSource::Opencode => {
@@ -173,10 +189,15 @@ fn check_source_with_runtime_smoke(
                 &[
                     "export const AgentPetCompanion",
                     "event: async",
-                    "opencode-v1.17.18",
+                    "opencode-v1.17.18-activity-v4",
                     "\"tool.execute.before\"",
                     "event?.properties",
+                    "\"chat.message\"",
+                    "message.assistant",
+                    "session_title: sessions.get",
                     "output?.args",
+                    "diagnostic: properties?.diagnostic",
+                    "diagnostic: input?.diagnostic",
                     "--event-type",
                     "auto",
                 ],
@@ -184,11 +205,7 @@ fn check_source_with_runtime_smoke(
             items.push(check_opencode_server(run_runtime_smoke));
             items.push(check_event_channel(paths, &connector_cli));
             if run_runtime_smoke {
-                items.push(check_opencode_plugin_runtime(
-                    paths,
-                    &install_root,
-                    &connector_cli,
-                ));
+                items.push(check_opencode_plugin_runtime(paths, &install_root));
             }
         }
     };
@@ -211,6 +228,7 @@ fn check_source_with_runtime_smoke(
         source,
         items,
         install_paths,
+        connector_installed: connector_artifacts_present(paths, source),
         check_mode: if run_runtime_smoke {
             ConnectionCheckMode::Runtime
         } else {
@@ -223,13 +241,30 @@ fn check_source_with_runtime_smoke(
 pub fn repair_source(paths: &AppPaths, source: AgentSource) -> Result<AgentConnectionStatus> {
     let root = install_root(paths, source);
     fs::create_dir_all(&root)?;
+    let cli_path = connector_cli_path(paths);
     match source {
-        AgentSource::Codex => repair_codex(&root)?,
-        AgentSource::ClaudeCode => repair_claude(&root)?,
-        AgentSource::Pi => repair_pi(&root)?,
-        AgentSource::Opencode => repair_opencode(&root)?,
+        AgentSource::Codex => repair_codex(&root, &cli_path)?,
+        AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
+        AgentSource::Pi => repair_pi(&root, &cli_path)?,
+        AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
     }
     Ok(check_source(paths, source))
+}
+
+pub fn refresh_installed_source(paths: &AppPaths, source: AgentSource) -> Result<bool> {
+    if !connector_artifacts_present(paths, source) {
+        return Ok(false);
+    }
+    let root = install_root(paths, source);
+    fs::create_dir_all(&root)?;
+    let cli_path = connector_cli_path(paths);
+    match source {
+        AgentSource::Codex => write_codex_connector(&root, &cli_path)?,
+        AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
+        AgentSource::Pi => repair_pi(&root, &cli_path)?,
+        AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
+    }
+    Ok(true)
 }
 
 pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentConnectionStatus> {
@@ -251,18 +286,25 @@ pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentCo
                 remove_codex_marketplace_entry()?;
                 uninstall_codex_plugin_if_possible();
             } else {
-                remove_claude_settings_hooks(&root, &connector_cli_path())?;
+                remove_claude_settings_hooks(&root, &connector_cli_path(paths))?;
             }
         }
     }
     Ok(check_source(paths, source))
 }
 
-fn repair_codex(root: &Path) -> Result<()> {
+fn repair_codex(root: &Path, cli_path: &Path) -> Result<()> {
+    write_codex_connector(root, cli_path)?;
+    ensure_codex_marketplace_entry()?;
+    install_codex_plugin_if_possible(root)?;
+    Ok(())
+}
+
+fn write_codex_connector(root: &Path, cli_path: &Path) -> Result<()> {
     fs::create_dir_all(root.join(".codex-plugin"))?;
     fs::create_dir_all(root.join("hooks"))?;
     fs::create_dir_all(root.join("skills/agent-pet-studio"))?;
-    let cli = shell_quote(&connector_cli_path().display().to_string());
+    let cli = shell_quote(&cli_path.display().to_string());
     let plugin: Value = serde_json::from_str(CODEX_PLUGIN_JSON)?;
     let hooks = render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &cli)?;
     fs::write(
@@ -277,14 +319,11 @@ fn repair_codex(root: &Path) -> Result<()> {
         root.join("skills/agent-pet-studio/SKILL.md"),
         PET_STUDIO_SKILL_MD,
     )?;
-    ensure_codex_marketplace_entry()?;
-    install_codex_plugin_if_possible(root)?;
     Ok(())
 }
 
-fn repair_claude(root: &Path) -> Result<()> {
+fn repair_claude(root: &Path, cli_path: &Path) -> Result<()> {
     fs::create_dir_all(root)?;
-    let cli_path = connector_cli_path();
     let cli = shell_quote(&cli_path.display().to_string());
     let fragment = render_json_template(CLAUDE_SETTINGS_TEMPLATE, "__APC_CLI__", &cli)?;
     fs::write(
@@ -299,22 +338,22 @@ fn repair_claude(root: &Path) -> Result<()> {
         ),
     )?;
     fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
-    install_claude_settings_fragment(&fragment, root, &cli_path)?;
+    install_claude_settings_fragment(&fragment, root, cli_path)?;
     Ok(())
 }
 
-fn repair_pi(root: &Path) -> Result<()> {
+fn repair_pi(root: &Path, cli_path: &Path) -> Result<()> {
     fs::create_dir_all(root)?;
-    let cli = connector_cli_path().display().to_string();
+    let cli = cli_path.display().to_string();
     let cli_json = serde_json::to_string(&cli)?;
     let script = PI_EXTENSION_TEMPLATE.replace("__APC_CLI_JSON__", &cli_json);
     fs::write(root.join("agent-pet-companion.ts"), script)?;
     Ok(())
 }
 
-fn repair_opencode(root: &Path) -> Result<()> {
+fn repair_opencode(root: &Path, cli_path: &Path) -> Result<()> {
     fs::create_dir_all(root)?;
-    let cli = connector_cli_path().display().to_string();
+    let cli = cli_path.display().to_string();
     let cli_json = serde_json::to_string(&cli)?;
     let script = OPENCODE_PLUGIN_TEMPLATE.replace("__APC_CLI_JSON__", &cli_json);
     fs::write(root.join("agent-pet-companion.js"), script)?;
@@ -327,7 +366,7 @@ fn check_file(path: &Path, label: &str) -> ConnectionCheckItem {
         status: if path.exists() {
             CheckStatus::Ok
         } else {
-            CheckStatus::NeedsFix
+            CheckStatus::Missing
         },
         detail: if path.exists() {
             "已安装".to_string()
@@ -344,6 +383,10 @@ fn check_codex_hooks(path: &Path) -> ConnectionCheckItem {
         "PreToolUse",
         "PermissionRequest",
         "PostToolUse",
+        "PreCompact",
+        "PostCompact",
+        "SubagentStart",
+        "SubagentStop",
         "Stop",
     ];
     const OFFICIAL: &[&str] = &[
@@ -376,8 +419,10 @@ fn check_codex_hooks(path: &Path) -> ConnectionCheckItem {
         name: "Hook".to_string(),
         status: if configured {
             CheckStatus::Ok
-        } else {
+        } else if path.exists() {
             CheckStatus::NeedsFix
+        } else {
+            CheckStatus::Missing
         },
         detail: if configured {
             "configured: 仅安装当前官方 Codex hook 事件；review/failed 不由 hooks 宣称".to_string()
@@ -434,8 +479,10 @@ fn check_file_contains(path: &Path, label: &str, required: &[&str]) -> Connectio
         name: label.to_string(),
         status: if installed {
             CheckStatus::Ok
-        } else {
+        } else if path.exists() {
             CheckStatus::NeedsFix
+        } else {
+            CheckStatus::Missing
         },
         detail: if installed {
             "已安装".to_string()
@@ -447,30 +494,6 @@ fn check_file_contains(path: &Path, label: &str, required: &[&str]) -> Connectio
     }
 }
 
-fn check_pi_rpc(run_runtime_smoke: bool) -> ConnectionCheckItem {
-    let mode = if run_runtime_smoke {
-        "runtime"
-    } else {
-        "configured"
-    };
-    ConnectionCheckItem {
-        name: "RPC".to_string(),
-        status: CheckStatus::Ok,
-        detail: format!(
-            "unsupported ({mode}): V1 仅观察现有 Pi Extension 会话；尚未实现 strict LF JSONL RPC client，未宣称 RPC 健康"
-        ),
-    }
-}
-
-fn check_pi_waiting_capability() -> ConnectionCheckItem {
-    ConnectionCheckItem {
-        name: "Waiting 状态".to_string(),
-        status: CheckStatus::Ok,
-        detail: "unsupported: Pi waiting 需要 tool_call + ctx.ui.confirm()/RPC UI 子协议桥；V1 Extension 不伪造确认事件"
-            .to_string(),
-    }
-}
-
 fn check_opencode_server(run_runtime_smoke: bool) -> ConnectionCheckItem {
     let opted_in = std::env::var("APC_VALIDATE_REAL_OPENCODE_SERVER")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -478,7 +501,7 @@ fn check_opencode_server(run_runtime_smoke: bool) -> ConnectionCheckItem {
     if !run_runtime_smoke || !opted_in {
         return ConnectionCheckItem {
             name: "OpenCode Server".to_string(),
-            status: CheckStatus::Ok,
+            status: CheckStatus::NotRequired,
             detail: "configured: Server 非 V1 事件观察必需；未宣称健康。设置 APC_VALIDATE_REAL_OPENCODE_SERVER=1 后执行 /global/health 真实探测"
                 .to_string(),
         };
@@ -558,16 +581,12 @@ exit 1
     }
 }
 
-fn check_pi_extension_runtime(
-    paths: &AppPaths,
-    install_root: &Path,
-    connector_cli: &Path,
-) -> ConnectionCheckItem {
+fn check_pi_extension_runtime(paths: &AppPaths, install_root: &Path) -> ConnectionCheckItem {
     let label = "Extension 运行时";
     if !connector_runtime_smoke_should_run() {
         return ConnectionCheckItem {
             name: label.to_string(),
-            status: CheckStatus::Ok,
+            status: CheckStatus::Unverified,
             detail: "检测到外部事件 CLI 覆盖，跳过内置运行时加载自检".to_string(),
         };
     }
@@ -604,20 +623,38 @@ fn check_pi_extension_runtime(
     let session_id = format!("evt_pi_runtime_{}", uuid::Uuid::now_v7().simple());
     let module_path = json_string(&smoke_module.display().to_string());
     let session_json = json_string(&session_id);
+    let response = format!("Agent Pet Companion runtime response {session_id}");
+    let response_json = json_string(&response);
     let script = format!(
         r#"
 import {{ pathToFileURL }} from 'node:url';
 const mod = await import(pathToFileURL({module_path}).href);
 const handlers = new Map();
 mod.default({{ on: (name, callback) => handlers.set(name, callback) }});
-for (const name of ['session_start', 'tool_call', 'tool_execution_end', 'agent_settled']) {{
+for (const name of ['input', 'before_agent_start', 'message_end', 'agent_end', 'tool_call', 'tool_execution_end', 'agent_settled', 'session_before_compact', 'session_compact']) {{
   if (!handlers.has(name)) throw new Error(`Pi handler missing: ${{name}}`);
 }}
-await handlers.get('session_start')(
-  {{ type: 'session_start', reason: 'startup' }},
-  {{ sessionManager: {{ getSessionId: () => {session_json} }}, cwd: process.cwd() }}
+const context = {{ sessionManager: {{ getSessionId: () => {session_json} }}, cwd: process.cwd() }};
+await handlers.get('input')(
+  {{ type: 'input', text: 'Agent Pet Companion runtime check', source: 'interactive', diagnostic: true }},
+  context
 );
-await new Promise((resolve) => setTimeout(resolve, 700));
+await handlers.get('before_agent_start')(
+  {{ type: 'before_agent_start', prompt: 'Agent Pet Companion runtime check', diagnostic: true }},
+  context
+);
+await handlers.get('message_end')(
+  {{ type: 'message_end', message: {{ role: 'assistant', content: [{{ type: 'text', text: {response_json} }}], stopReason: 'stop' }}, diagnostic: true }},
+  context
+);
+await handlers.get('agent_end')(
+  {{ type: 'agent_end', messages: [{{ role: 'assistant', content: [{{ type: 'text', text: {response_json} }}], stopReason: 'stop' }}], diagnostic: true }},
+  context
+);
+await handlers.get('agent_settled')(
+  {{ type: 'agent_settled', diagnostic: true }},
+  context
+);
 "#
     );
     let output = run_bounded(
@@ -633,20 +670,16 @@ await new Promise((resolve) => setTimeout(resolve, 700));
     );
     let _ = fs::remove_file(&smoke_module);
     node_runtime_result(label, output, || {
-        recent_events_contain(paths, connector_cli, "pi", "start", &session_id)
+        recent_events_contain(paths, "pi", "done", &response)
     })
 }
 
-fn check_opencode_plugin_runtime(
-    paths: &AppPaths,
-    install_root: &Path,
-    connector_cli: &Path,
-) -> ConnectionCheckItem {
+fn check_opencode_plugin_runtime(paths: &AppPaths, install_root: &Path) -> ConnectionCheckItem {
     let label = "Plugin 运行时";
     if !connector_runtime_smoke_should_run() {
         return ConnectionCheckItem {
             name: label.to_string(),
-            status: CheckStatus::Ok,
+            status: CheckStatus::Unverified,
             detail: "检测到外部事件 CLI 覆盖，跳过内置运行时加载自检".to_string(),
         };
     }
@@ -672,6 +705,10 @@ fn check_opencode_plugin_runtime(
     let module_path = json_string(&plugin.display().to_string());
     let session_json = json_string(&session_id);
     let root_json = json_string(&install_root.display().to_string());
+    let prompt = format!("Agent Pet Companion runtime prompt {session_id}");
+    let prompt_json = json_string(&prompt);
+    let response = format!("Agent Pet Companion runtime response {session_id}");
+    let response_json = json_string(&response);
     let script = format!(
         r#"
 import {{ pathToFileURL }} from 'node:url';
@@ -681,14 +718,35 @@ const plugin = await mod.AgentPetCompanion({{
   directory: {root_json},
   worktree: {root_json}
 }});
-for (const name of ['event', 'tool.execute.before', 'tool.execute.after']) {{
+for (const name of ['event', 'chat.message', 'tool.execute.before', 'tool.execute.after']) {{
   if (!plugin[name]) throw new Error(`OpenCode handler missing: ${{name}}`);
 }}
 await plugin.event({{
-  event: {{
+    event: {{
     type: 'session.created',
-    properties: {{ info: {{ id: {session_json} }} }}
+    properties: {{ info: {{ id: {session_json}, diagnostic: true }} }}
   }}
+}});
+await plugin['chat.message'](
+  {{ sessionID: {session_json}, diagnostic: true }},
+  {{ parts: [{{ type: 'text', text: {prompt_json} }}] }}
+);
+// Deliberately deliver completion metadata before the final text part. This is
+// the ordering that previously lost OpenCode assistant replies.
+await plugin.event({{
+  event: {{
+    type: 'message.updated',
+    properties: {{ info: {{ id: 'runtime-message', sessionID: {session_json}, role: 'assistant', time: {{ created: 1, completed: 2 }}, diagnostic: true }} }}
+  }}
+}});
+await plugin.event({{
+  event: {{
+    type: 'message.part.updated',
+    properties: {{ diagnostic: true, part: {{ id: 'runtime-part', messageID: 'runtime-message', sessionID: {session_json}, type: 'text', text: {response_json} }} }}
+  }}
+}});
+await plugin.event({{
+  event: {{ type: 'session.idle', properties: {{ sessionID: {session_json}, diagnostic: true }} }}
 }});
 await new Promise((resolve) => setTimeout(resolve, 700));
 "#
@@ -705,7 +763,9 @@ await new Promise((resolve) => setTimeout(resolve, 700));
         .with_env("APC_HOME", &paths.home),
     );
     node_runtime_result(label, output, || {
-        recent_events_contain(paths, connector_cli, "opencode", "start", &session_id)
+        recent_events_contain(paths, "opencode", "start", &prompt)
+            && recent_events_contain(paths, "opencode", "start", &response)
+            && recent_events_contain(paths, "opencode", "done", &session_id)
     })
 }
 
@@ -749,32 +809,19 @@ fn node_runtime_result(
     }
 }
 
-fn recent_events_contain(
-    paths: &AppPaths,
-    connector_cli: &Path,
-    source: &str,
-    event_type: &str,
-    needle: &str,
-) -> bool {
-    for _ in 0..8 {
-        let output = run_bounded(
-            ProcessSpec::connector(connector_cli, ["events", "recent", "--limit", "120"])
-                .with_env("APC_HOME", &paths.home),
-        );
-        if let Ok(output) = output {
-            if output.status.success() {
-                if let Ok(events) = serde_json::from_slice::<Vec<Value>>(&output.stdout) {
-                    if events.iter().any(|event| {
-                        event.get("source").and_then(Value::as_str) == Some(source)
-                            && event.get("event_type").and_then(Value::as_str) == Some(event_type)
-                            && serde_json::to_string(event)
-                                .map(|text| text.contains(needle))
-                                .unwrap_or(false)
-                    }) {
-                        return true;
-                    }
-                }
-            }
+fn recent_events_contain(paths: &AppPaths, source: &str, event_type: &str, needle: &str) -> bool {
+    let database = Database::new(&paths.db_path);
+    for _ in 0..16 {
+        if database.recent_events(120).is_ok_and(|events| {
+            events.iter().any(|event| {
+                source_cli_arg(event.source) == source
+                    && enum_name(event.event_type) == event_type
+                    && serde_json::to_string(event)
+                        .map(|text| text.contains(needle))
+                        .unwrap_or(false)
+            })
+        }) {
+            return true;
         }
         thread::sleep(Duration::from_millis(150));
     }
@@ -843,7 +890,7 @@ fn codex_marketplace_entry_path(path: &Path) -> Option<String> {
 }
 
 fn check_codex_hook_trust() -> ConnectionCheckItem {
-    let Some(codex) = command_path("codex") else {
+    let Some(codex) = codex_command_path() else {
         return ConnectionCheckItem {
             name: "Codex Hook Trust".to_string(),
             status: CheckStatus::Missing,
@@ -854,7 +901,7 @@ fn check_codex_hook_trust() -> ConnectionCheckItem {
     if std::env::var_os("APC_AGENT_CONFIG_HOME").is_some() {
         return ConnectionCheckItem {
             name: "Codex Hook Trust".to_string(),
-            status: CheckStatus::NeedsFix,
+            status: CheckStatus::Unverified,
             detail: "测试环境无法确认用户是否已信任 Codex plugin hooks".to_string(),
         };
     }
@@ -872,19 +919,22 @@ fn check_codex_hook_trust() -> ConnectionCheckItem {
         },
         Some(CodexHookTrustState::InstalledEnabledAuthOnInstall) => ConnectionCheckItem {
             name: "Codex Hook Trust".to_string(),
-            status: CheckStatus::Ok,
-            detail: "Codex CLI 未暴露独立 Hook trust 字段；插件已安装启用，授权策略为 ON_INSTALL"
-                .to_string(),
+            status: CheckStatus::Unverified,
+            detail:
+                "插件已安装启用，但 ON_INSTALL 不证明 hooks 已获用户信任；实时工具切换依赖 hooks，请在 ChatGPT Codex 中确认"
+                    .to_string(),
         },
         Some(CodexHookTrustState::Untrusted) => ConnectionCheckItem {
             name: "Codex Hook Trust".to_string(),
             status: CheckStatus::NeedsFix,
-            detail: "请在 Codex 中 review 并信任 agent-pet-companion hooks".to_string(),
+            detail: "请在 Codex 中 review 并信任 agent-pet-companion hooks；否则只能使用有损近期任务快照"
+                .to_string(),
         },
         Some(CodexHookTrustState::Unknown) | None => ConnectionCheckItem {
             name: "Codex Hook Trust".to_string(),
-            status: CheckStatus::NeedsFix,
-            detail: "Codex 未暴露 Hook trust 状态，请在 Codex 中确认并信任插件 hooks".to_string(),
+            status: CheckStatus::Unverified,
+            detail: "Codex 未暴露 Hook trust 状态；实时 Shell/读取/搜索切换需在 Codex 中确认并信任插件 hooks"
+                .to_string(),
         },
     }
 }
@@ -893,9 +943,9 @@ fn check_codex_hook_trust_light(install_root: &Path) -> ConnectionCheckItem {
     let hooks_ready = install_root.join("hooks/hooks.json").is_file();
     ConnectionCheckItem {
         name: "Codex Hook Trust".to_string(),
-        status: CheckStatus::NeedsFix,
+        status: CheckStatus::Unverified,
         detail: if hooks_ready {
-            "本地 hooks 已写入；点击检查并在 Codex 中信任后才会运行".to_string()
+            "本地 hooks 已写入；点击检查并在 Codex 中信任后才可精确同步实时工具活动".to_string()
         } else {
             "待写入 hooks 并在 Codex 中信任".to_string()
         },
@@ -903,7 +953,7 @@ fn check_codex_hook_trust_light(install_root: &Path) -> ConnectionCheckItem {
 }
 
 fn check_codex_plugin_installed() -> ConnectionCheckItem {
-    let Some(codex) = command_path("codex") else {
+    let Some(codex) = codex_command_path() else {
         return ConnectionCheckItem {
             name: "Codex 插件安装".to_string(),
             status: CheckStatus::Missing,
@@ -957,7 +1007,7 @@ fn check_codex_plugin_installed_light(install_root: &Path) -> ConnectionCheckIte
     ConnectionCheckItem {
         name: "Codex 插件安装".to_string(),
         status: if ready {
-            CheckStatus::Ok
+            CheckStatus::Unverified
         } else {
             CheckStatus::NeedsFix
         },
@@ -1021,7 +1071,7 @@ fn check_codex_app_server_light() -> ConnectionCheckItem {
         .unwrap_or("missing");
 
     let status = if available {
-        CheckStatus::Ok
+        CheckStatus::Unverified
     } else if mode == "missing" {
         CheckStatus::Missing
     } else {
@@ -1154,13 +1204,26 @@ fn codex_plugin_text_reports_installed(stdout: &str) -> bool {
 fn check_claude_settings(connector_cli: &Path) -> ConnectionCheckItem {
     let settings_path = claude_settings_path();
     let required = [
+        "SessionStart",
         "UserPromptSubmit",
         "PreToolUse",
         "PermissionRequest",
         "PostToolUse",
         "PostToolUseFailure",
+        "PostToolBatch",
+        "PermissionDenied",
+        "PreCompact",
+        "PostCompact",
+        "SubagentStart",
+        "SubagentStop",
+        "TaskCreated",
+        "TaskCompleted",
+        "Notification",
+        "Elicitation",
+        "ElicitationResult",
         "Stop",
         "StopFailure",
+        "SessionEnd",
     ];
     let installed = fs::read_to_string(&settings_path)
         .ok()
@@ -1248,15 +1311,15 @@ fn check_event_roundtrip(
 ) -> ConnectionCheckItem {
     if std::env::var_os("APC_CONNECTOR_CLI_PATH").is_some() {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
-            status: CheckStatus::Ok,
+            name: "PetCore 通道自检".to_string(),
+            status: CheckStatus::Unverified,
             detail: "检测到外部覆盖的事件 CLI，跳过自动写入自检".to_string(),
         };
     }
 
     if !connector_cli.is_file() {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: format!("事件 CLI 缺失 {}", connector_cli.display()),
         };
@@ -1264,7 +1327,7 @@ fn check_event_roundtrip(
 
     if !paths.socket_path.exists() || UnixStream::connect(&paths.socket_path).is_err() {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: format!("PetCore socket 未连接 {}", paths.socket_path.display()),
         };
@@ -1273,10 +1336,18 @@ fn check_event_roundtrip(
     let source_arg = source_cli_arg(source);
     let event_id = format!("evt_connection_smoke_{source_arg}");
     let payload = json!({
+        "schema_version": "apc.agent-event.v1",
+        "external_event_id": event_id,
+        "source_event": "connection.test",
+        "tool_name": null,
+        "outcome": "completed",
         "diagnostic": true,
-        "type": "connection_smoke",
-        "source": source_arg,
-        "created_by": "Agent Pet Companion connection check"
+        "turn_id": null,
+        "session_active": false,
+        "message_role": null,
+        "message_content": null,
+        "interaction_kind": null,
+        "project_label": null
     })
     .to_string();
     let output = run_bounded(
@@ -1306,7 +1377,7 @@ fn check_event_roundtrip(
         Ok(output) => output,
         Err(error) => {
             return ConnectionCheckItem {
-                name: "事件自检".to_string(),
+                name: "PetCore 通道自检".to_string(),
                 status: CheckStatus::NeedsFix,
                 detail: format!("事件 CLI 无法执行：{error}"),
             };
@@ -1315,14 +1386,14 @@ fn check_event_roundtrip(
 
     if output.timed_out {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: "事件 CLI 自检在 5 秒后超时，进程组已终止".to_string(),
         };
     }
     if !output.status.success() {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: format!("事件 CLI 返回失败（exit={:?}）", output.status.code()),
         };
@@ -1332,7 +1403,7 @@ fn check_event_roundtrip(
     let parsed = serde_json::from_str::<Value>(&stdout);
     let Ok(value) = parsed else {
         return ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: "事件 CLI 返回了不可解析的 JSON".to_string(),
         };
@@ -1352,17 +1423,17 @@ fn check_event_roundtrip(
 
     if ok && event_matches && suppressed {
         ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::Ok,
             detail: if inserted {
-                "诊断事件已通过 CLI、socket 与数据库，且未触发桌宠动作".to_string()
+                "本地诊断事件已通过 CLI、socket 与数据库，且未触发桌宠动作；此项不代表 Agent Hook 已触发".to_string()
             } else {
-                "诊断事件已通过 CLI 与 socket；重复自检未重复入库，且未触发桌宠动作".to_string()
+                "本地诊断事件已通过 CLI 与 socket；重复自检未重复入库，且未触发桌宠动作；此项不代表 Agent Hook 已触发".to_string()
             },
         }
     } else {
         ConnectionCheckItem {
-            name: "事件自检".to_string(),
+            name: "PetCore 通道自检".to_string(),
             status: CheckStatus::NeedsFix,
             detail: "诊断事件未完成端到端回传".to_string(),
         }
@@ -1378,15 +1449,32 @@ fn source_cli_arg(source: AgentSource) -> &'static str {
     }
 }
 
-fn command_exists(name: &str) -> bool {
-    command_path(name).is_some()
-}
-
 fn command_path(name: &str) -> Option<PathBuf> {
     command_search_dirs()
         .into_iter()
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+fn codex_command_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("APC_CODEX_CLI_PATH").map(PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // Tests and alternate config homes must remain hermetic instead of
+    // discovering the developer machine's installed desktop application.
+    if std::env::var_os("APC_AGENT_CONFIG_HOME").is_some() {
+        return command_path("codex");
+    }
+    [
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+        "/Applications/Codex.app/Contents/Resources/codex",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|candidate| candidate.is_file())
+    .or_else(|| command_path("codex"))
 }
 
 fn command_search_dirs() -> Vec<PathBuf> {
@@ -1426,6 +1514,27 @@ fn install_root(paths: &AppPaths, source: AgentSource) -> PathBuf {
     }
 }
 
+fn connector_artifacts_present(paths: &AppPaths, source: AgentSource) -> bool {
+    let root = install_root(paths, source);
+    match source {
+        AgentSource::Codex => {
+            root.join(".codex-plugin/plugin.json").is_file()
+                || root.join("hooks/hooks.json").is_file()
+                || root.join("skills/agent-pet-studio/SKILL.md").is_file()
+                || codex_marketplace_entry_path(&codex_marketplace_path()).is_some()
+        }
+        AgentSource::ClaudeCode => {
+            root.join("settings.fragment.json").is_file()
+                || root.join("agent-pet-companion-hook.sh").is_file()
+                || fs::read_to_string(claude_settings_path())
+                    .map(|content| content.contains("agent hook --source claude_code"))
+                    .unwrap_or(false)
+        }
+        AgentSource::Pi => root.join("agent-pet-companion.ts").is_file(),
+        AgentSource::Opencode => root.join("agent-pet-companion.js").is_file(),
+    }
+}
+
 fn cli_name(source: AgentSource) -> &'static str {
     match source {
         AgentSource::Codex => "codex",
@@ -1444,9 +1553,13 @@ fn cli_label(source: AgentSource) -> &'static str {
     }
 }
 
-fn connector_cli_path() -> PathBuf {
+fn connector_cli_path(paths: &AppPaths) -> PathBuf {
     if let Some(path) = std::env::var_os("APC_CONNECTOR_CLI_PATH").map(PathBuf::from) {
         return path;
+    }
+    let stable_path = paths.home.join("runtime/current/petcore-cli");
+    if stable_path.is_file() {
+        return stable_path;
     }
     std::env::current_exe()
         .ok()
@@ -1689,7 +1802,7 @@ fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let Some(codex) = command_path("codex") else {
+    let Some(codex) = codex_command_path() else {
         fs::write(
             root.join("codex-install-result.json"),
             serde_json::to_vec_pretty(&json!({
@@ -1735,7 +1848,7 @@ fn uninstall_codex_plugin_if_possible() {
     if std::env::var_os("APC_AGENT_CONFIG_HOME").is_some() {
         return;
     }
-    let Some(codex) = command_path("codex") else {
+    let Some(codex) = codex_command_path() else {
         return;
     };
     let _ = run_bounded(ProcessSpec::connector(
@@ -1943,20 +2056,17 @@ fn is_agent_pet_claude_command(
     let cli = connector_cli.display().to_string();
     for executable in [shell_quote(&cli), cli] {
         if let Some(arguments) = command.strip_prefix(&executable) {
-            const PREFIX: &str = " agent hook --source claude_code --event-type ";
-            if let Some(arguments) = arguments.strip_prefix(PREFIX) {
-                let (event_type, suffix) = arguments
-                    .split_once(' ')
-                    .map_or((arguments, ""), |(event_type, suffix)| (event_type, suffix));
-                let known_event = matches!(
-                    event_type,
-                    "auto" | "start" | "tool" | "waiting" | "review" | "done" | "failed"
-                );
-                let exact_suffix = suffix.is_empty() || suffix == ">/dev/null 2>&1";
-                if known_event && exact_suffix {
-                    return true;
-                }
+            if is_agent_pet_claude_arguments(arguments) {
+                return true;
             }
+        }
+    }
+
+    if let Some((executable, arguments)) = split_shell_executable(command) {
+        if is_managed_runtime_cli(executable, connector_cli)
+            && is_agent_pet_claude_arguments(arguments)
+        {
+            return true;
         }
     }
 
@@ -1968,6 +2078,77 @@ fn is_agent_pet_claude_command(
     [shell_quote(&helper), helper].iter().any(|executable| {
         command == executable || command == format!("{executable} >/dev/null 2>&1")
     })
+}
+
+fn is_agent_pet_claude_arguments(arguments: &str) -> bool {
+    const PREFIX: &str = "agent hook --source claude_code --event-type ";
+    let arguments = arguments.strip_prefix(' ').unwrap_or(arguments);
+    let Some(arguments) = arguments.strip_prefix(PREFIX) else {
+        return false;
+    };
+    let (event_type, suffix) = arguments
+        .split_once(' ')
+        .map_or((arguments, ""), |(event_type, suffix)| (event_type, suffix));
+    let known_event = matches!(
+        event_type,
+        "auto" | "start" | "tool" | "waiting" | "review" | "done" | "failed"
+    );
+    known_event && (suffix.is_empty() || suffix == ">/dev/null 2>&1")
+}
+
+fn split_shell_executable(command: &str) -> Option<(&str, &str)> {
+    if let Some(quoted) = command.strip_prefix('\'') {
+        let (executable, arguments) = quoted.split_once("' ")?;
+        return Some((executable, arguments));
+    }
+    command.split_once(' ')
+}
+
+fn is_managed_runtime_cli(executable: &str, connector_cli: &Path) -> bool {
+    let Some(parent) = connector_cli.parent() else {
+        return false;
+    };
+    let runtime_root = if parent.file_name().and_then(|value| value.to_str()) == Some("current") {
+        let Some(runtime_root) = parent.parent() else {
+            return false;
+        };
+        runtime_root
+    } else if parent
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+        == Some("versions")
+    {
+        let Some(runtime_root) = parent.parent().and_then(Path::parent) else {
+            return false;
+        };
+        runtime_root
+    } else {
+        return false;
+    };
+    let executable = Path::new(executable);
+    if executable == runtime_root.join("current/petcore-cli") {
+        return true;
+    }
+    let Ok(relative) = executable.strip_prefix(runtime_root.join("versions")) else {
+        return false;
+    };
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(build_id)) = components.next() else {
+        return false;
+    };
+    let Some(std::path::Component::Normal(binary)) = components.next() else {
+        return false;
+    };
+    components.next().is_none()
+        && binary == "petcore-cli"
+        && build_id.to_str().is_some_and(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._+-".contains(&byte))
+        })
 }
 
 #[cfg(test)]
@@ -2050,8 +2231,9 @@ mod tests {
     use super::{
         claude_settings_path, codex_marketplace_entry_path, codex_marketplace_path,
         codex_plugin_json_reports_installed, codex_plugin_text_reports_installed,
-        ensure_codex_marketplace_entry, install_claude_settings, json_config_backup_path,
-        remove_claude_settings_hooks, remove_codex_marketplace_entry,
+        connector_cli_path, ensure_codex_marketplace_entry, install_claude_settings,
+        is_agent_pet_claude_command, json_config_backup_path, remove_claude_settings_hooks,
+        remove_codex_marketplace_entry,
     };
     use crate::connections;
     use crate::paths::AppPaths;
@@ -2075,6 +2257,61 @@ mod tests {
             std::env::set_var(key, value);
             Self { key, original }
         }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    #[test]
+    fn installed_connectors_follow_the_stable_current_runtime_cli() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        let version = paths.home.join("runtime/versions/build-a");
+        std::fs::create_dir_all(&version).unwrap();
+        let versioned_cli = version.join("petcore-cli");
+        std::fs::write(&versioned_cli, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&versioned_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("versions/build-a", paths.home.join("runtime/current")).unwrap();
+        let _connector_cli = EnvVarGuard::unset("APC_CONNECTOR_CLI_PATH");
+
+        assert_eq!(
+            connector_cli_path(&paths),
+            paths.home.join("runtime/current/petcore-cli")
+        );
+    }
+
+    #[test]
+    fn stable_claude_connector_recognizes_only_its_prior_versioned_cli_paths() {
+        let stable = Path::new(
+            "/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli",
+        );
+        let install_root = Path::new(
+            "/Users/test/Library/Application Support/AgentPetCompanion/connectors/claude-code",
+        );
+        let prior = "'/Users/test/Library/Application Support/AgentPetCompanion/runtime/versions/0.1.0.1.20260715/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
+        let forged_build = "'/Users/test/Library/Application Support/AgentPetCompanion/runtime/versions/../../foreign/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
+        let foreign = "'/Users/test/other/runtime/versions/0.1.0/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
+
+        assert!(is_agent_pet_claude_command(
+            prior,
+            stable,
+            Some(install_root)
+        ));
+        assert!(!is_agent_pet_claude_command(
+            forged_build,
+            stable,
+            Some(install_root)
+        ));
+        assert!(!is_agent_pet_claude_command(
+            foreign,
+            stable,
+            Some(install_root)
+        ));
     }
 
     impl Drop for EnvVarGuard {

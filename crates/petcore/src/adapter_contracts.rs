@@ -2,15 +2,20 @@ use crate::{PetCoreError, Result};
 use petcore_types::{AgentEventType, AgentSource};
 use serde::Serialize;
 use serde_json::Value;
+use std::path::Path;
 
-pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-10";
-pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-10";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-34582ef3";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.17.18";
+pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-15-schema-v3";
+pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-14-activity-v3";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-20260714-message-v5";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.17.18-activity-v4";
+const MAX_MESSAGE_BYTES: usize = 4_096;
+const MAX_IDENTITY_BYTES: usize = 256;
+const MAX_PROJECT_LABEL_BYTES: usize = 128;
 
 /// The complete set of adapter fields allowed to cross into PetCore. Raw hook
-/// payloads, tool arguments, commands, model output, prompts, and errors are
-/// intentionally absent.
+/// payloads, tool arguments, commands, tool output, transcripts, and errors are
+/// intentionally absent. User prompts and final assistant messages are copied
+/// only through the bounded, display-only fields below.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContractEvent {
     pub source: AgentSource,
@@ -21,6 +26,33 @@ pub struct ContractEvent {
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    pub source_event: String,
+    pub diagnostic: bool,
+    pub session_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_surface: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_open_url: Option<String>,
 }
 
 pub fn parse_contract_event(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
@@ -40,68 +72,229 @@ pub fn parse_contract_event(source: AgentSource, input: &Value) -> Result<Option
 
 fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = hook_name(input)?;
-    let (kind, outcome) = match event {
-        "SessionStart" | "UserPromptSubmit" => (AgentEventType::Start, "started"),
-        "PreToolUse" => (AgentEventType::Tool, "started"),
-        "PermissionRequest" => (AgentEventType::Waiting, "permission_requested"),
+    let (kind, outcome, session_active) = match event {
+        "SessionStart" => (AgentEventType::Start, "started", false),
+        "UserPromptSubmit" => (AgentEventType::Start, "started", true),
+        "PreToolUse" => (AgentEventType::Tool, "started", true),
+        "PermissionRequest" => (AgentEventType::Waiting, "permission_requested", true),
         // A completed tool call proves tool activity, not a user-review state.
-        "PostToolUse" => (AgentEventType::Tool, "completed"),
-        "Stop" => (AgentEventType::Done, "completed"),
+        "PostToolUse" => (AgentEventType::Tool, "completed", true),
+        "PreCompact" => (AgentEventType::Start, "started", true),
+        "PostCompact" => (AgentEventType::Start, "completed", true),
+        "SubagentStart" => (AgentEventType::Tool, "started", true),
+        "SubagentStop" => (AgentEventType::Start, "completed", true),
+        "Stop" => (AgentEventType::Done, "completed", false),
         _ => return Ok(None),
     };
-    Ok(Some(contract_event(
+    let mut contract = contract_event(
         source,
         string_at(input, &[&["session_id"]]),
+        event,
         kind,
         string_at(input, &[&["tool_name"]]),
         outcome,
-    )))
+        session_active,
+    );
+    contract.turn_id = bounded_string_at(input, &[&["turn_id"]], MAX_IDENTITY_BYTES);
+    contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
+    contract.project_label = project_label(input);
+    contract.activity_kind = match event {
+        "UserPromptSubmit" | "PostToolUse" | "PostCompact" | "SubagentStop" => {
+            Some("thinking".to_string())
+        }
+        "PreToolUse" => Some(activity_kind_for_tool(contract.tool_name.as_deref())),
+        "PreCompact" => Some("compaction".to_string()),
+        "SubagentStart" => Some("subagent".to_string()),
+        _ => None,
+    };
+    match event {
+        "UserPromptSubmit" => {
+            contract.message_role = Some("user".to_string());
+            contract.message_content = display_message_at(input, &[&["prompt"]]);
+        }
+        "PermissionRequest" => {
+            contract.interaction_kind = Some("approval_required".to_string());
+        }
+        "Stop" => {
+            contract.message_role = Some("assistant".to_string());
+            contract.message_content = display_message_at(input, &[&["last_assistant_message"]]);
+        }
+        _ => {}
+    }
+    Ok(Some(contract))
 }
 
 fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = hook_name(input)?;
-    let (kind, outcome) = match event {
-        "SessionStart" | "UserPromptSubmit" => (AgentEventType::Start, "started"),
-        "PreToolUse" => (AgentEventType::Tool, "started"),
-        "PermissionRequest" => (AgentEventType::Waiting, "permission_requested"),
-        "PostToolUse" => (AgentEventType::Tool, "completed"),
-        "PostToolUseFailure" => (AgentEventType::Failed, "tool_failure"),
-        "Stop" => (AgentEventType::Done, "completed"),
-        "StopFailure" => (AgentEventType::Failed, "api_failure"),
+    let notification_type = string_at(input, &[&["notification_type"]]);
+    let (kind, outcome, session_active) = match event {
+        "SessionStart" => (AgentEventType::Start, "started", false),
+        "UserPromptSubmit" => (AgentEventType::Start, "started", true),
+        "PreToolUse" => (AgentEventType::Tool, "started", true),
+        "PermissionRequest" => (AgentEventType::Waiting, "permission_requested", true),
+        "PostToolUse" => (AgentEventType::Tool, "completed", true),
+        // A failed tool call is fed back to Claude and the agent can recover.
+        // Only StopFailure proves that the turn itself is blocked.
+        "PostToolUseFailure" => (AgentEventType::Tool, "tool_failure", true),
+        "PostToolBatch" => (AgentEventType::Start, "completed", true),
+        "PermissionDenied" => (AgentEventType::Tool, "permission_replied_deny", true),
+        "PreCompact" => (AgentEventType::Start, "started", true),
+        "PostCompact" => (AgentEventType::Start, "completed", true),
+        "SubagentStart" | "TaskCreated" => (AgentEventType::Tool, "started", true),
+        "SubagentStop" | "TaskCompleted" => (AgentEventType::Start, "completed", true),
+        "Stop" => (AgentEventType::Done, "completed", false),
+        "StopFailure" => (AgentEventType::Failed, "api_failure", false),
+        // Claude emits idle_prompt after a completed turn when the terminal is
+        // simply sitting at the prompt. It is a ready/idle signal, not a request
+        // for approval or an answer from the user.
+        "Notification" if notification_type.as_deref() == Some("idle_prompt") => {
+            (AgentEventType::Done, "idle", false)
+        }
+        "Notification"
+            if notification_type
+                .as_deref()
+                .is_some_and(|kind| matches!(kind, "permission_prompt" | "elicitation_dialog")) =>
+        {
+            (AgentEventType::Waiting, "input_requested", true)
+        }
+        "Notification"
+            if notification_type.as_deref().is_some_and(|kind| {
+                matches!(kind, "elicitation_complete" | "elicitation_response")
+            }) =>
+        {
+            (AgentEventType::Tool, "permission_replied", true)
+        }
+        "Elicitation" => (AgentEventType::Waiting, "input_requested", true),
+        "ElicitationResult" => (AgentEventType::Tool, "permission_replied", true),
+        "SessionEnd" => (AgentEventType::Done, "session_closed", false),
         _ => return Ok(None),
     };
-    Ok(Some(contract_event(
+    let mut contract = contract_event(
         source,
         string_at(input, &[&["session_id"]]),
+        event,
         kind,
         string_at(input, &[&["tool_name"]]),
         outcome,
-    )))
+        session_active,
+    );
+    contract.turn_id = bounded_string_at(input, &[&["turn_id"]], MAX_IDENTITY_BYTES);
+    contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
+    contract.project_label = project_label(input);
+    contract.session_title = session_title(input);
+    contract.session_open = Some(event != "SessionEnd");
+    contract.activity_kind = match event {
+        "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "PostToolBatch"
+        | "PermissionDenied" | "PostCompact" | "SubagentStop" | "TaskCompleted"
+        | "ElicitationResult" => Some("thinking".to_string()),
+        "Notification"
+            if notification_type.as_deref().is_some_and(|kind| {
+                matches!(kind, "elicitation_complete" | "elicitation_response")
+            }) =>
+        {
+            Some("thinking".to_string())
+        }
+        "PreToolUse" => Some(activity_kind_for_tool(contract.tool_name.as_deref())),
+        "PreCompact" => Some("compaction".to_string()),
+        "SubagentStart" | "TaskCreated" => Some("subagent".to_string()),
+        _ => None,
+    };
+    match event {
+        "UserPromptSubmit" => {
+            contract.message_role = Some("user".to_string());
+            contract.message_content = display_message_at(input, &[&["prompt"]]);
+        }
+        "PermissionRequest" => {
+            contract.interaction_kind = Some("approval_required".to_string());
+        }
+        "Notification"
+            if notification_type
+                .as_deref()
+                .is_some_and(|kind| matches!(kind, "permission_prompt" | "elicitation_dialog")) =>
+        {
+            contract.interaction_kind = Some("input_required".to_string());
+        }
+        "Elicitation" => {
+            contract.interaction_kind = Some("input_required".to_string());
+        }
+        "Stop" => {
+            contract.message_role = Some("assistant".to_string());
+            contract.message_content = display_message_at(input, &[&["last_assistant_message"]]);
+        }
+        _ => {}
+    }
+    Ok(Some(contract))
 }
 
 fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = event_type(input)?;
-    let (kind, outcome) = match event {
-        "session_start" | "before_agent_start" | "agent_start" => {
-            (AgentEventType::Start, "started")
-        }
-        "tool_call" | "tool_execution_start" => (AgentEventType::Tool, "started"),
+    let agent_error = bool_at(input, &[&["agent_error"]]);
+    let (kind, outcome, session_active) = match event {
+        // Opening or resuming a Pi page does not mean the agent is working.
+        "session_start" => return Ok(None),
+        "input" | "before_agent_start" | "agent_start" => (AgentEventType::Start, "started", true),
+        "tool_call" | "tool_execution_start" => (AgentEventType::Tool, "started", true),
         "tool_execution_end" if bool_at(input, &[&["isError"], &["is_error"]]) => {
-            (AgentEventType::Failed, "tool_failure")
+            // Pi's isError belongs to one tool result. The agent loop may recover,
+            // call another tool, and still produce a normal assistant response.
+            (AgentEventType::Tool, "tool_failure", true)
         }
-        "tool_execution_end" => (AgentEventType::Tool, "completed"),
-        "agent_settled" => (AgentEventType::Done, "settled"),
-        // shutdown may mean reload/new/resume/fork and is never a completion signal.
-        "session_shutdown" | "agent_end" => return Ok(None),
+        "tool_execution_end" => (AgentEventType::Tool, "completed", true),
+        // Pi exposes each finalized AgentMessage through message_end. Capturing
+        // assistant text here avoids depending on a later lifecycle event.
+        "message_end" => (AgentEventType::Start, "message", true),
+        // A normal agent_end contains the finalized assistant response and is
+        // already a useful completion boundary. Pi may subsequently retry or
+        // compact, in which case the following lifecycle event makes the
+        // session active again. Treating this as Done prevents a lost/delayed
+        // agent_settled event from leaving the bubble stuck on a tool state.
+        "agent_end" if agent_error => (AgentEventType::Start, "retry", true),
+        "agent_end" => (AgentEventType::Done, "completed", false),
+        "agent_settled" if agent_error => (AgentEventType::Failed, "api_failure", false),
+        "agent_settled" => (AgentEventType::Done, "settled", false),
+        "session_before_compact" => (AgentEventType::Start, "started", true),
+        "session_compact" => (AgentEventType::Start, "completed", true),
+        "session_shutdown" => (AgentEventType::Done, "session_closed", false),
         _ => return Ok(None),
     };
-    Ok(Some(contract_event(
+    let mut contract = contract_event(
         source,
         string_at(input, &[&["session_id"], &["sessionId"]]),
+        event,
         kind,
         string_at(input, &[&["toolName"], &["tool_name"]]),
         outcome,
-    )))
+        session_active,
+    );
+    contract.turn_id = bounded_string_at(input, &[&["turn_id"], &["turnId"]], MAX_IDENTITY_BYTES);
+    contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
+    contract.session_title = session_title(input);
+    contract.session_open = Some(event != "session_shutdown");
+    contract.activity_kind = match event {
+        "input" | "before_agent_start" | "agent_start" | "tool_execution_end"
+        | "session_compact" => Some("thinking".to_string()),
+        "tool_call" | "tool_execution_start" => {
+            Some(activity_kind_for_tool(contract.tool_name.as_deref()))
+        }
+        "session_before_compact" => Some("compaction".to_string()),
+        _ => None,
+    };
+    match event {
+        "input" | "before_agent_start" => {
+            contract.message_role = Some("user".to_string());
+            contract.message_content =
+                display_message_at(input, &[&["text"], &["prompt"], &["message_content"]]);
+        }
+        "message_end" | "agent_end" | "agent_settled" => {
+            contract.message_content =
+                display_message_at(input, &[&["message_content"], &["last_assistant_message"]]);
+            if contract.message_content.is_some() {
+                contract.message_role = Some("assistant".to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(Some(contract))
 }
 
 fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
@@ -119,8 +312,9 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
     );
     let tool_name = string_at(input, &[&["input", "tool"], &["tool_name"]]);
 
-    let (kind, outcome) = match event {
-        "session.created" => (AgentEventType::Start, "created".to_string()),
+    let (kind, outcome, session_active) = match event {
+        "session.created" => (AgentEventType::Start, "created".to_string(), false),
+        "session.deleted" => (AgentEventType::Done, "session_closed".to_string(), false),
         "session.status" => {
             let status = string_at(
                 input,
@@ -131,17 +325,19 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
                 ],
             );
             match status.as_deref() {
-                Some("idle") => (AgentEventType::Done, "idle".to_string()),
-                Some("busy") => (AgentEventType::Start, "busy".to_string()),
-                Some("retry") => (AgentEventType::Start, "retry".to_string()),
+                Some("idle") => (AgentEventType::Done, "idle".to_string(), false),
+                Some("busy") => (AgentEventType::Start, "busy".to_string(), true),
+                Some("retry") => (AgentEventType::Start, "retry".to_string(), true),
                 _ => return Ok(None),
             }
         }
-        "session.idle" => (AgentEventType::Done, "idle".to_string()),
-        "session.error" => (AgentEventType::Failed, "session_failure".to_string()),
-        "permission.asked" | "permission.updated" => {
-            (AgentEventType::Waiting, "permission_requested".to_string())
-        }
+        "session.idle" => (AgentEventType::Done, "idle".to_string(), false),
+        "session.error" => (AgentEventType::Failed, "session_failure".to_string(), false),
+        "permission.asked" | "permission.updated" => (
+            AgentEventType::Waiting,
+            "permission_requested".to_string(),
+            true,
+        ),
         "permission.replied" => {
             let response = string_at(
                 input,
@@ -159,8 +355,16 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
                 }
                 _ => "permission_replied".to_string(),
             };
-            (AgentEventType::Tool, outcome)
+            (AgentEventType::Tool, outcome, true)
         }
+        "question.asked" => (AgentEventType::Waiting, "input_requested".to_string(), true),
+        "question.replied" | "question.rejected" => {
+            (AgentEventType::Tool, "permission_replied".to_string(), true)
+        }
+        "message.user" => (AgentEventType::Start, "message".to_string(), true),
+        // The assistant text can complete before OpenCode declares the session
+        // idle. Keep Running until session.idle/session.status(idle).
+        "message.assistant" => (AgentEventType::Start, "message".to_string(), true),
         "tool.execute.before" => {
             let supplied = input
                 .get("output")
@@ -174,12 +378,36 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
                 } else {
                     "started_without_args".to_string()
                 },
+                true,
             )
         }
-        "tool.execute.after" => (AgentEventType::Tool, "completed".to_string()),
+        "tool.execute.after" => (AgentEventType::Tool, "completed".to_string(), true),
         // Metadata-only updates do not prove that work started or completed.
         "session.updated" => return Ok(None),
         _ => return Ok(None),
+    };
+
+    let message_role = match event {
+        "message.user" => Some("user".to_string()),
+        "message.assistant" => Some("assistant".to_string()),
+        _ => None,
+    };
+    let message_content = message_role.as_ref().and_then(|_| {
+        display_message_at(
+            input,
+            &[
+                &["message_content"],
+                &["properties", "message_content"],
+                &["properties", "content"],
+            ],
+        )
+    });
+
+    let activity_kind = match event {
+        "session.status" | "message.user" | "tool.execute.after" | "permission.replied"
+        | "question.replied" | "question.rejected" => Some("thinking".to_string()),
+        "tool.execute.before" => Some(activity_kind_for_tool(tool_name.as_deref())),
+        _ => None,
     };
 
     Ok(Some(ContractEvent {
@@ -188,6 +416,32 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         kind,
         tool_name,
         outcome: Some(outcome),
+        source_event: event.to_string(),
+        diagnostic: bool_at(
+            input,
+            &[
+                &["diagnostic"],
+                &["properties", "diagnostic"],
+                &["event", "properties", "diagnostic"],
+            ],
+        ),
+        session_active,
+        turn_id: bounded_string_at(input, &[&["turn_id"], &["turnID"]], MAX_IDENTITY_BYTES),
+        message_role,
+        message_content,
+        activity_kind,
+        activity_content: None,
+        interaction_kind: match event {
+            "question.asked" => Some("input_required".to_string()),
+            _ if kind == AgentEventType::Waiting => Some("approval_required".to_string()),
+            _ => None,
+        },
+        project_label: project_label(input),
+        session_title: session_title(input),
+        session_open: Some(event != "session.deleted"),
+        session_surface: None,
+        terminal_app: None,
+        session_open_url: None,
     }))
 }
 
@@ -210,9 +464,11 @@ fn event_type(input: &Value) -> Result<&str> {
 fn contract_event(
     source: AgentSource,
     session_id: Option<String>,
+    source_event: &str,
     kind: AgentEventType,
     tool_name: Option<String>,
     outcome: &str,
+    session_active: bool,
 ) -> ContractEvent {
     ContractEvent {
         source,
@@ -220,7 +476,51 @@ fn contract_event(
         kind,
         tool_name,
         outcome: Some(outcome.to_string()),
+        source_event: source_event.to_string(),
+        diagnostic: false,
+        session_active,
+        turn_id: None,
+        message_role: None,
+        message_content: None,
+        activity_kind: None,
+        activity_content: None,
+        interaction_kind: (kind == AgentEventType::Waiting)
+            .then(|| "approval_required".to_string()),
+        project_label: None,
+        session_title: None,
+        session_open: Some(true),
+        session_surface: None,
+        terminal_app: None,
+        session_open_url: None,
     }
+}
+
+fn activity_kind_for_tool(tool_name: Option<&str>) -> String {
+    let name = tool_name.unwrap_or_default().trim().to_ascii_lowercase();
+    match name.as_str() {
+        "bash" | "shell" | "terminal" | "command" | "cmd" | "powershell" => "command",
+        "read" | "write" | "file" | "files" | "filesystem" | "ls" | "glob" => "file",
+        "edit" | "patch" | "apply_patch" | "replace" => "file_change",
+        "grep" | "rg" | "find" | "search" | "code_search" => "search",
+        "web" | "http" | "fetch" | "browser" | "curl" | "wget" => "network",
+        "task" | "agent" | "subagent" => "subagent",
+        _ => "tool",
+    }
+    .to_string()
+}
+
+fn session_title(value: &Value) -> Option<String> {
+    bounded_string_at(
+        value,
+        &[
+            &["session_title"],
+            &["sessionTitle"],
+            &["title"],
+            &["properties", "session_title"],
+            &["properties", "info", "title"],
+        ],
+        MAX_PROJECT_LABEL_BYTES,
+    )
 }
 
 fn string_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
@@ -234,6 +534,41 @@ fn string_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
     })
+}
+
+fn bounded_string_at(value: &Value, paths: &[&[&str]], maximum_bytes: usize) -> Option<String> {
+    string_at(value, paths).map(|value| truncate_utf8(value.trim(), maximum_bytes))
+}
+
+fn display_message_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
+    let raw = string_at(value, paths)?;
+    let sanitized = raw
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim();
+    (!trimmed.is_empty()).then(|| truncate_utf8(trimmed, MAX_MESSAGE_BYTES))
+}
+
+fn project_label(value: &Value) -> Option<String> {
+    let cwd = string_at(value, &[&["cwd"]])?;
+    let label = Path::new(&cwd).file_name()?.to_str()?.trim();
+    (!label.is_empty()).then(|| truncate_utf8(label, MAX_PROJECT_LABEL_BYTES))
+}
+
+fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value.to_string();
+    }
+    let mut end = maximum_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn bool_at(value: &Value, paths: &[&[&str]]) -> bool {

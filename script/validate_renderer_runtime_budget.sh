@@ -38,8 +38,20 @@ if (sample_count - 1) * interval < 30:
 PY
 
 cleanup() {
+  local status="$?"
+  if ((status != 0)); then
+    if [[ -s "$TELEMETRY_PATH" ]]; then
+      printf 'renderer telemetry at failure: '
+      cat "$TELEMETRY_PATH"
+    fi
+    if [[ -s "$APP_LOG" ]]; then
+      printf 'renderer app log tail at failure:\n'
+      tail -n 80 "$APP_LOG"
+    fi
+  fi
   apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
   rm -rf "$TMP_DIR"
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -315,8 +327,21 @@ sleep 3
 BASELINE_METRICS="$(sample_process_metrics hidden)"
 assert_hidden_baseline "$BASELINE_METRICS"
 
+activate_looping_renderer_state() {
+  local pet_id="$1"
+  APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet activate --id "$pet_id" >/dev/null
+  APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" agent ingest \
+    --source codex \
+    --event-type waiting \
+    --id "renderer-budget-${pet_id}" \
+    --session-id renderer-budget \
+    --title "Renderer budget loop" \
+    --payload-json '{"schema_version":"apc.agent-event.v1","diagnostic":false,"session_active":true,"session_open":true,"interaction_kind":"input_required"}' \
+    >/dev/null
+}
+
 APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$STANDARD_BEHAVIOR" >/dev/null
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet activate --id "$HIGH_ID" >/dev/null
+activate_looping_renderer_state "$HIGH_ID"
 
 HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 12 'data["frame_count"] >= 1 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 180 and data["pipeline_cache_bytes"] <= 180 * 1024 * 1024 and abs(data["canvas_width"] - 384) < 1 and abs(data["canvas_height"] - 416) < 1')"
 HIGH_METRICS="$(sample_process_metrics high)"
@@ -324,14 +349,14 @@ HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 12 'data["measurement_s
 HIGH_TELEMETRY="$(attach_process_metrics "$HIGH_TELEMETRY" "$BASELINE_METRICS" "$HIGH_METRICS" 4 180 10.8)"
 
 APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$SMOOTH_BEHAVIOR" >/dev/null
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet activate --id "$ULTRA_ID" >/dev/null
+activate_looping_renderer_state "$ULTRA_ID"
 
 ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 'data["frame_count"] >= 1 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
 ULTRA_METRICS="$(sample_process_metrics ultra)"
 ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 'data["measurement_seconds"] >= 30')"
 ULTRA_TELEMETRY="$(attach_process_metrics "$ULTRA_TELEMETRY" "$BASELINE_METRICS" "$ULTRA_METRICS" 7 260 18)"
 
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet activate --id "$ORIGINAL_ID" >/dev/null
+activate_looping_renderer_state "$ORIGINAL_ID"
 ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 'data["frame_count"] >= 9 and data["runtime_cache_frame_limit"] == 9 and data["estimated_runtime_cache_mb"] <= 420 and data["pipeline_cache_bytes"] <= 420 * 1024 * 1024 and abs(data["canvas_width"] - 1536) < 1 and abs(data["canvas_height"] - 1664) < 1')"
 ORIGINAL_METRICS="$(sample_process_metrics original)"
 ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 'data["measurement_seconds"] >= 30')"

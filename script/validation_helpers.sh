@@ -79,10 +79,19 @@ print(pid, process_start, instance_id, sep="\t")
 PY
 )" || return 1
 
-  local pid process_start instance_id command
+  local pid process_start instance_id command managed_runtime_prefix
   IFS=$'\t' read -r pid process_start instance_id <<<"$identity"
   command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ -n "$command" && "$command" == *"$petcore_binary"* ]] || return 1
+  managed_runtime_prefix="$(python3 - "$APC_HOME" <<'PY'
+import os
+import sys
+print(os.path.normpath(os.path.join(sys.argv[1], "runtime", "versions")))
+PY
+)"
+  [[ -n "$command" ]] || return 1
+  [[ "$command" == *"$petcore_binary"* \
+    || ("$command" == *"$managed_runtime_prefix"* && "$command" == *"/petcore"*) ]] \
+    || return 1
   printf '%s\t%s\t%s\n' "$pid" "$process_start" "$instance_id"
 }
 
@@ -144,7 +153,10 @@ apc_start_owned_runtime() {
   for _ in {1..120}; do
     if ! kill -0 "$APC_OWNED_APP_PID" >/dev/null 2>&1; then
       printf 'owned app exited before its PetCore became healthy: %s\n' "$app_log" >&2
-      APC_OWNED_APP_PID=""
+      # The Process-launched PetCore may already have been reparented to
+      # launchd. Keep the recorded App identity long enough for the bounded
+      # managed-runtime scan in cleanup to claim and stop it.
+      apc_stop_owned_runtime "$petcore_cli" "$petcore_binary" "$protocol_path"
       return 1
     fi
     if identity="$(apc_read_runtime_identity "$petcore_cli" "$petcore_binary")"; then
@@ -165,9 +177,7 @@ apc_start_owned_runtime() {
   done
 
   printf 'owned app PetCore identity did not become verifiable: %s\n' "$app_log" >&2
-  kill "$APC_OWNED_APP_PID" >/dev/null 2>&1 || true
-  wait "$APC_OWNED_APP_PID" >/dev/null 2>&1 || true
-  APC_OWNED_APP_PID=""
+  apc_stop_owned_runtime "$petcore_cli" "$petcore_binary" "$protocol_path"
   return 1
 }
 
@@ -237,6 +247,7 @@ apc_stop_owned_runtime() {
   local petcore_binary="$2"
   local protocol_path="$3"
   local may_stop_petcore=0
+  local owned_child_pid=""
 
   if [[ -z "$APC_OWNED_APP_PID" && -f "$protocol_path" ]]; then
     apc_claim_owned_runtime "$petcore_cli" "$petcore_binary" "$protocol_path" || true
@@ -258,6 +269,47 @@ apc_stop_owned_runtime() {
   if [[ -n "$APC_OWNED_APP_PID" ]]; then
     app_command="$(ps -p "$APC_OWNED_APP_PID" -o command= 2>/dev/null || true)"
   fi
+
+  # AppKit/Process children are reparented when the UI host exits. Search all
+  # processes only for a PetCore executable inside this validation's isolated
+  # APC_HOME/runtime/versions tree; this cannot match the user's global
+  # Application Support runtime or an unrelated PetCore.
+  local candidate_pid candidate_command managed_runtime_prefix
+  managed_runtime_prefix="$(python3 - "$APC_HOME" <<'PY'
+import os
+import sys
+print(os.path.normpath(os.path.join(sys.argv[1], "runtime", "versions")))
+PY
+)"
+  while read -r candidate_pid candidate_command; do
+    [[ "$candidate_pid" =~ ^[0-9]+$ ]] || continue
+    while [[ "$candidate_command" == *"//"* ]]; do
+      candidate_command="${candidate_command//\/\//\/}"
+    done
+    if [[ "$candidate_command" == *"$managed_runtime_prefix"/*"/petcore serve "* ]]; then
+      owned_child_pid="$candidate_pid"
+      break
+    fi
+  done < <(ps -axo pid=,command= 2>/dev/null || true)
+
+  if [[ -z "$owned_child_pid" && -n "$APC_OWNED_APP_PID" ]]; then
+    # Retain the parent-scoped fallback for test fixtures that use a synthetic
+    # PetCore command outside the staged runtime tree.
+    managed_runtime_prefix="$(python3 - "$APC_HOME" <<'PY'
+import os
+import sys
+print(os.path.normpath(os.path.join(sys.argv[1], "runtime", "versions")))
+PY
+)"
+    while IFS= read -r candidate_pid; do
+      [[ "$candidate_pid" =~ ^[0-9]+$ ]] || continue
+      candidate_command="$(ps -p "$candidate_pid" -o command= 2>/dev/null || true)"
+      if [[ "$candidate_command" == "$managed_runtime_prefix"/*"/petcore serve "* ]]; then
+        owned_child_pid="$candidate_pid"
+        break
+      fi
+    done < <(pgrep -P "$APC_OWNED_APP_PID" 2>/dev/null || true)
+  fi
   if [[ -n "$APC_OWNED_APP_PID" \
     && -n "$APC_OWNED_APP_BINARY" \
     && "$app_command" == *"$APC_OWNED_APP_BINARY"* ]]; then
@@ -266,7 +318,22 @@ apc_stop_owned_runtime() {
   fi
   if [[ "$may_stop_petcore" == "1" ]]; then
     kill "$APC_OWNED_PETCORE_PID" >/dev/null 2>&1 || true
-    wait "$APC_OWNED_PETCORE_PID" >/dev/null 2>&1 || true
+    for _ in {1..50}; do
+      kill -0 "$APC_OWNED_PETCORE_PID" >/dev/null 2>&1 || break
+      sleep 0.02
+    done
+    if kill -0 "$APC_OWNED_PETCORE_PID" >/dev/null 2>&1; then
+      kill -KILL "$APC_OWNED_PETCORE_PID" >/dev/null 2>&1 || true
+    fi
+  elif [[ -n "$owned_child_pid" ]]; then
+    kill "$owned_child_pid" >/dev/null 2>&1 || true
+    for _ in {1..50}; do
+      kill -0 "$owned_child_pid" >/dev/null 2>&1 || break
+      sleep 0.02
+    done
+    if kill -0 "$owned_child_pid" >/dev/null 2>&1; then
+      kill -KILL "$owned_child_pid" >/dev/null 2>&1 || true
+    fi
   fi
   rm -f "$protocol_path"
 

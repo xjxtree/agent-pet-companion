@@ -8,6 +8,7 @@ Before changing product or architecture behavior, read the relevant design docs:
 
 - Product design: `docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md`
 - Technical design: `docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md`
+- Current implementation and validation status: `docs/PROJECT_STATUS.md`
 
 The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope.
 
@@ -45,6 +46,14 @@ docs/
 - Avoid committing generated build output, local credentials, `.env` files, DerivedData, or temporary pet assets.
 - Do not read agent auth, token, cookie, API key, or secret files. The app should only consume explicit local event channels and capability tokens designed for this project.
 - When adding code, include the smallest useful tests or validation steps for the changed behavior.
+
+## macOS UI Verification And Input Safety
+
+- Use non-interactive command-line checks for builds, unit tests, protocol tests, and other validations that do not require the live macOS UI.
+- For any live App, menu bar, desktop pet, bubble, window lifecycle, or other macOS UI inspection and interaction, use Computer Use first. Prefer Accessibility state reads and element-based actions so verification does not take over the user's mouse, keyboard, or active input focus.
+- Do not default to `open -n`, AppleScript/System Events, CGEvent synthesis, `cliclick`, `pyautogui`, or similar direct GUI and input-control automation for UI verification.
+- If Computer Use cannot cover a required UI test and the remaining method may activate an app, steal focus, move the pointer, inject keyboard input, or otherwise interrupt the user, explain the limitation and obtain explicit user approval immediately before using that method.
+- Apply these rules to real-device lifecycle testing as well, including launch, close and reopen, quit, update handoff, menu commands, and multi-instance scenarios.
 
 ## Product Constraints
 

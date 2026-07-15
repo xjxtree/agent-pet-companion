@@ -67,6 +67,65 @@ struct PetFramePipelineTests {
     }
 
     @Test
+    func testPreparedFramesExposeStableUnionOfVisibleActionBounds() async throws {
+        let urls = (0..<2).map { URL(fileURLWithPath: "/virtual/visible-\($0).png") }
+        let pipeline = PetFramePipeline(
+            memoryBudgetBytes: 1_024 * 1_024,
+            catalog: { _, _ in PetFrameAssetCatalog(frameURLs: urls, coverURL: nil) },
+            decoder: { url in
+                let index = url.deletingPathExtension().lastPathComponent.hasSuffix("1") ? 1 : 0
+                let image = CIImage(color: .white).cropped(to: CGRect(x: 0, y: 0, width: 100, height: 120))
+                return PetDecodedFrame(
+                    image: image,
+                    pixelWidth: 100,
+                    pixelHeight: 120,
+                    visibleBounds: index == 0
+                        ? CGRect(x: 10, y: 15, width: 70, height: 80)
+                        : CGRect(x: 20, y: 5, width: 65, height: 110)
+                )
+            }
+        )
+
+        let prepared = try await pipeline.prepare(request(quality: .standard, stateName: "tool"))
+
+        #expect(prepared.visualEnvelope == OverlayPetVisualEnvelope(
+            canvasSize: CGSize(width: 100, height: 120),
+            visibleBounds: CGRect(x: 10, y: 5, width: 75, height: 110)
+        ))
+    }
+
+    @Test
+    func testAlphaVisibleBoundsFindsOnlyOpaquePixels() throws {
+        let width = 8
+        let height = 10
+        let bytesPerRow = width * 4
+        var rgba = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let image = rgba.withUnsafeMutableBytes { buffer -> CGImage? in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                    | CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(CGRect(x: 2, y: 3, width: 4, height: 5))
+            return context.makeImage()
+        }
+        let decoded = try #require(image)
+
+        #expect(PetFramePipeline.alphaVisibleBounds(of: decoded) == CGRect(
+            x: 2,
+            y: 3,
+            width: 4,
+            height: 5
+        ))
+    }
+
+    @Test
     func testPreparingAnotherStateDropsStaleDecodedNamespaces() async throws {
         let probe = FrameDecoderProbe(pixelWidth: 2, pixelHeight: 2)
         let pipeline = makePipeline(

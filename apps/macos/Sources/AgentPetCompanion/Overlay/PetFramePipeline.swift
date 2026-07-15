@@ -41,12 +41,20 @@ struct PetDecodedFrame: @unchecked Sendable {
     let image: CIImage
     let pixelWidth: Int
     let pixelHeight: Int
+    let visibleBounds: CGRect
     let byteCost: Int
 
-    init(image: CIImage, pixelWidth: Int, pixelHeight: Int) {
+    init(
+        image: CIImage,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        visibleBounds: CGRect? = nil
+    ) {
         self.image = image
         self.pixelWidth = max(0, pixelWidth)
         self.pixelHeight = max(0, pixelHeight)
+        let extent = CGRect(x: 0, y: 0, width: self.pixelWidth, height: self.pixelHeight)
+        self.visibleBounds = visibleBounds.map { $0.intersection(extent) } ?? extent
         let (pixels, pixelOverflow) = self.pixelWidth.multipliedReportingOverflow(by: self.pixelHeight)
         let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
         byteCost = pixelOverflow || byteOverflow ? Int.max : bytes
@@ -63,12 +71,20 @@ struct PetPreparedFrames: @unchecked Sendable {
     let frameCount: Int
     let cacheFrameLimit: Int
     let canvasExtent: CGRect
+    let visibleBounds: CGRect
     let fallback: PetDecodedFrame?
     fileprivate let frameURLs: [URL]
     fileprivate let readyFrames: [Int: PetDecodedFrame]
 
     var readyFrameCount: Int { readyFrames.count }
     var loops: Bool { request.loops }
+    var visualEnvelope: OverlayPetVisualEnvelope? {
+        guard !canvasExtent.isEmpty, !visibleBounds.isEmpty else { return nil }
+        return OverlayPetVisualEnvelope(
+            canvasSize: canvasExtent.size,
+            visibleBounds: visibleBounds
+        )
+    }
 
     func readyFrame(at index: Int) -> PetDecodedFrame? {
         readyFrames[index]
@@ -165,12 +181,18 @@ actor PetFramePipeline {
             await Task.yield()
         }
 
+        let canvasExtent = Self.canvasExtent(frames: frames, fallback: fallback)
         return PetPreparedFrames(
             request: request,
             sourceKind: sourceKind,
             frameCount: assets.frameURLs.count,
             cacheFrameLimit: cacheLimit,
-            canvasExtent: Self.canvasExtent(frames: frames, fallback: fallback),
+            canvasExtent: canvasExtent,
+            visibleBounds: Self.canvasVisibleBounds(
+                frames: frames,
+                fallback: fallback,
+                canvasExtent: canvasExtent
+            ),
             fallback: fallback,
             frameURLs: assets.frameURLs,
             readyFrames: frames
@@ -200,12 +222,19 @@ actor PetFramePipeline {
             await Task.yield()
         }
 
+        let canvasExtent = Self.canvasExtent(frames: frames, fallback: prepared.fallback)
+        let visibleBounds = prepared.visibleBounds.union(Self.canvasVisibleBounds(
+            frames: frames,
+            fallback: prepared.fallback,
+            canvasExtent: canvasExtent
+        ))
         return PetPreparedFrames(
             request: prepared.request,
             sourceKind: prepared.sourceKind,
             frameCount: prepared.frameCount,
             cacheFrameLimit: prepared.cacheFrameLimit,
-            canvasExtent: Self.canvasExtent(frames: frames, fallback: prepared.fallback),
+            canvasExtent: canvasExtent,
+            visibleBounds: visibleBounds,
             fallback: prepared.fallback,
             frameURLs: prepared.frameURLs,
             readyFrames: frames
@@ -298,6 +327,25 @@ actor PetFramePipeline {
         return CGRect(x: 0, y: 0, width: maxWidth, height: maxHeight)
     }
 
+    private static func canvasVisibleBounds(
+        frames: [Int: PetDecodedFrame],
+        fallback: PetDecodedFrame?,
+        canvasExtent: CGRect
+    ) -> CGRect {
+        guard !canvasExtent.isEmpty else { return .zero }
+        let decodedFrames = frames.values.isEmpty
+            ? fallback.map { [$0] } ?? []
+            : Array(frames.values)
+        return decodedFrames.reduce(CGRect.null) { result, frame in
+            guard !frame.visibleBounds.isEmpty else { return result }
+            let centeredBounds = frame.visibleBounds.offsetBy(
+                dx: max(0, (canvasExtent.width - CGFloat(frame.pixelWidth)) / 2),
+                dy: 0
+            )
+            return result.union(centeredBounds)
+        }
+    }
+
     private nonisolated static func decodeImage(at url: URL) -> PetDecodedFrame? {
         let options: [CFString: Any] = [
             kCGImageSourceShouldCache: true,
@@ -312,8 +360,59 @@ actor PetFramePipeline {
         return PetDecodedFrame(
             image: CIImage(cgImage: image),
             pixelWidth: image.width,
-            pixelHeight: image.height
+            pixelHeight: image.height,
+            visibleBounds: alphaVisibleBounds(of: image)
         )
+    }
+
+    nonisolated static func alphaVisibleBounds(of image: CGImage) -> CGRect {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return .zero }
+
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var rgba = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let bounds = rgba.withUnsafeMutableBytes { buffer -> CGRect in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                    | CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return CGRect(x: 0, y: 0, width: width, height: height)
+            }
+            context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+            let pixels = buffer.bindMemory(to: UInt8.self)
+            var minX = width
+            var minY = height
+            var maxX = -1
+            var maxY = -1
+            for y in 0..<height {
+                let rowStart = y * bytesPerRow
+                for x in 0..<width where pixels[rowStart + x * bytesPerPixel + 3] > 2 {
+                    minX = min(minX, x)
+                    minY = min(minY, y)
+                    maxX = max(maxX, x)
+                    maxY = max(maxY, y)
+                }
+            }
+            guard maxX >= minX, maxY >= minY else { return .zero }
+            let bottomOriginMinY = height - 1 - maxY
+            return CGRect(
+                x: minX,
+                y: bottomOriginMinY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1
+            )
+        }
+        return bounds
     }
 }
 
@@ -650,6 +749,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     private var suspended = false
     private var playbackEnteredAt = CACurrentMediaTime()
     private var hasPublishedCurrentEntry = false
+    private var visualEnvelopeHandler: ((OverlayPetVisualEnvelope?) -> Void)?
+    private var publishedVisualEnvelope: OverlayPetVisualEnvelope?
 
     @MainActor
     func makeView() -> MTKView {
@@ -682,7 +783,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         stateName: String,
         stateEntryID: String,
         fpsProfile: FpsProfile,
-        active: Bool
+        active: Bool,
+        onVisualEnvelopeChanged: @escaping (OverlayPetVisualEnvelope?) -> Void
     ) {
         let configuration = Configuration(
             pet: pet,
@@ -691,6 +793,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             fpsProfile: fpsProfile,
             active: active
         )
+        visualEnvelopeHandler = onVisualEnvelopeChanged
         lastConfiguration = configuration
         view.preferredFramesPerSecond = fpsProfile.fps
 
@@ -707,6 +810,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         suspended = false
         if isNewEntry {
             hasPublishedCurrentEntry = false
+            publishedVisualEnvelope = nil
+            visualEnvelopeHandler?(nil)
         }
         beginLoading(
             configuration,
@@ -812,6 +917,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                     self.playbackEnteredAt = playbackResetTime
                 }
                 self.hasPublishedCurrentEntry = true
+                self.publishVisualEnvelope(prepared.visualEnvelope)
                 self.renderMetrics.reset()
 
                 let cacheMetrics = await pipeline.cacheMetrics()
@@ -848,6 +954,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                     try Task.checkCancellation()
                     guard let self, self.generation == generation, !self.suspended else { return }
                     guard handoff.publish(advanced, generation: generation) else { return }
+                    self.publishVisualEnvelope(advanced.visualEnvelope)
                     view.draw()
                 } catch {
                     // Cancellation or a corrupt frame simply leaves the prior frame visible.
@@ -946,5 +1053,12 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         descriptor.colorAttachments[0].storeAction = .store
         commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)?.endEncoding()
+    }
+
+    @MainActor
+    private func publishVisualEnvelope(_ envelope: OverlayPetVisualEnvelope?) {
+        guard envelope != publishedVisualEnvelope else { return }
+        publishedVisualEnvelope = envelope
+        visualEnvelopeHandler?(envelope)
     }
 }

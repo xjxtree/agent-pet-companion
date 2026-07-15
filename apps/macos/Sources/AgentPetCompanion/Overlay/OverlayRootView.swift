@@ -4,23 +4,25 @@ import MetalKit
 import SwiftUI
 
 private enum OverlayStyle {
-    static let surface = Color(red: 0.985, green: 0.985, blue: 0.975)
-    static let text = Color(red: 0.10, green: 0.10, blue: 0.12)
-    static let secondaryText = Color(red: 0.42, green: 0.42, blue: 0.44)
+    static let text = Color.primary
+    static let secondaryText = Color.secondary
+}
+
+enum OverlayPetMenuPolicy {
+    static func shouldOpen(buttonNumber: Int, isEnabled: Bool) -> Bool {
+        isEnabled && buttonNumber == 1
+    }
 }
 
 struct OverlayRootView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var resizeFocused = false
-    @State private var scaleStepFeedbackVisible = false
-    @State private var scaleStepFeedbackTask: Task<Void, Never>?
-
-    private var bubbleVisible: Bool {
-        !store.overlayBubbleContents.isEmpty
-    }
 
     private var currentEvent: AgentEvent? {
         store.activeOverlayEvent
+    }
+
+    private var bubbleVisible: Bool {
+        !store.overlayBubbleContents.isEmpty
     }
 
     var body: some View {
@@ -31,12 +33,9 @@ struct OverlayRootView: View {
                 fallbackIn: proxy.size
             )
             let displayPetCenter = petCenter
-            let menuCenter = OverlayGeometry.menuCenter(petCenter: displayPetCenter, scale: store.overlayScale)
             let controlsVisible = store.overlayPointerNearPet
                 || store.overlayPetDragInProgress
                 || store.overlayResizeInProgress
-                || resizeFocused
-            let resizeCenter = OverlayGeometry.resizeCenter(petCenter: displayPetCenter, scale: store.overlayScale)
 
             ZStack {
                 Color.clear
@@ -50,9 +49,10 @@ struct OverlayRootView: View {
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,
                     petScreenCenter: store.overlayPetScreenCenter,
+                    petVisualEnvelope: store.overlayPetVisualEnvelope,
                     controlsVisible: controlsVisible,
                     active: store.behavior.enabled,
-                    onToggleBubble: { store.overlayBubbleDismissed.toggle() },
+                    onToggleBubble: { store.toggleOverlayBubble() },
                     onOpenMainWindow: { store.presentMainWindow() },
                     onHidePet: { store.toggleOverlay() },
                     onHoverChanged: { store.setOverlayPointerNearPet($0) },
@@ -69,64 +69,8 @@ struct OverlayRootView: View {
                     }
                 )
                 .position(displayPetCenter)
-
-                ResizeHandle(
-                    scale: store.overlayScale,
-                    showScaleValue: OverlayScaleFeedbackVisibility.isVisible(
-                        isFocused: resizeFocused,
-                        isResizing: store.overlayResizeInProgress,
-                        isStepFeedbackVisible: scaleStepFeedbackVisible
-                    )
-                )
-                    .opacity(controlsVisible ? 1 : 0)
-                    .position(resizeCenter)
-                    .allowsHitTesting(false)
-                    .zIndex(4)
-
-                ResizeInteractionRegion(
-                    scale: store.overlayScale,
-                    onHoverChanged: { hovering in
-                        store.setOverlayPointerNearPet(hovering)
-                    },
-                    onFocusChanged: { focused in
-                        resizeFocused = focused
-                        if focused {
-                            store.setOverlayPointerNearPet(true)
-                        }
-                    },
-                    onResizeActiveChanged: { active in
-                        if active {
-                            store.setOverlayPointerNearPet(true)
-                        }
-                        store.setOverlayResizeInProgress(active)
-                    },
-                    onResizeChanged: { initialScale, screenTranslation in
-                        store.resizeOverlay(from: initialScale, screenTranslation: screenTranslation, commit: false)
-                    },
-                    onResizeEnded: { initialScale, screenTranslation in
-                        store.resizeOverlay(from: initialScale, screenTranslation: screenTranslation, commit: true)
-                        store.setOverlayPointerNearPet(true)
-                        store.updateOverlayLayout()
-                    },
-                    onScaleStep: { step in
-                        store.setOverlayScale(store.overlayScale + step)
-                        showScaleStepFeedback()
-                    }
-                )
-                .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
-                .position(resizeCenter)
-                .zIndex(5)
-
-                if store.behavior.clickMenu {
-                    PetMenuButton(
-                        collapsed: !bubbleVisible,
-                        onToggleBubble: { store.overlayBubbleDismissed.toggle() }
-                    )
-                        .position(menuCenter)
-                }
             }
             .onChange(of: currentEvent?.id) { _, _ in
-                store.overlayBubbleDismissed = false
                 store.updateOverlayLayout()
             }
             .onChange(of: store.overlayBubbleDismissed) { _, _ in
@@ -134,18 +78,87 @@ struct OverlayRootView: View {
             }
         }
         .background(Color.clear)
-        .contextMenu {
-            if store.behavior.clickMenu {
-                Button(bubbleVisible ? "收起气泡" : "展开气泡") {
-                    store.overlayBubbleDismissed.toggle()
+    }
+}
+
+struct OverlayMenuControlRootView: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        PetMenuButton(
+            collapsed: store.overlayBubbleContents.isEmpty,
+            onToggleBubble: { store.toggleOverlayBubble() }
+        )
+        .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
+    }
+}
+
+struct OverlayResizeControlRootView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var resizeFocused = false
+    @State private var scaleStepFeedbackVisible = false
+    @State private var scaleStepFeedbackTask: Task<Void, Never>?
+
+    private var controlsVisible: Bool {
+        store.overlayPointerNearPet
+            || store.overlayPetDragInProgress
+            || store.overlayResizeInProgress
+            || resizeFocused
+    }
+
+    var body: some View {
+        ZStack {
+            ResizeHandle(
+                scale: store.overlayScale,
+                showScaleValue: OverlayScaleFeedbackVisibility.isVisible(
+                    isFocused: resizeFocused,
+                    isResizing: store.overlayResizeInProgress,
+                    isStepFeedbackVisible: scaleStepFeedbackVisible
+                )
+            )
+            .opacity(controlsVisible ? 1 : 0)
+            .allowsHitTesting(false)
+
+            ResizeInteractionRegion(
+                scale: store.overlayScale,
+                onHoverChanged: { hovering in
+                    store.setOverlayPointerNearPet(hovering)
+                },
+                onFocusChanged: { focused in
+                    resizeFocused = focused
+                    if focused {
+                        store.setOverlayPointerNearPet(true)
+                    }
+                },
+                onResizeActiveChanged: { active in
+                    if active {
+                        store.setOverlayPointerNearPet(true)
+                    }
+                    store.setOverlayResizeInProgress(active)
+                },
+                onResizeChanged: { initialScale, screenTranslation in
+                    store.resizeOverlay(
+                        from: initialScale,
+                        screenTranslation: screenTranslation,
+                        commit: false
+                    )
+                },
+                onResizeEnded: { initialScale, screenTranslation in
+                    store.resizeOverlay(
+                        from: initialScale,
+                        screenTranslation: screenTranslation,
+                        commit: true
+                    )
+                    store.setOverlayPointerNearPet(true)
+                    store.updateOverlayLayout()
+                },
+                onScaleStep: { step in
+                    store.setOverlayScale(store.overlayScale + step)
+                    showScaleStepFeedback()
                 }
-                Button("打开主窗口") {
-                    store.presentMainWindow()
-                }
-                Divider()
-                Button("隐藏桌宠") { store.toggleOverlay() }
-            }
+            )
         }
+        .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
         .onDisappear {
             scaleStepFeedbackTask?.cancel()
         }
@@ -166,10 +179,6 @@ struct BubbleOverlayRootView: View {
     @EnvironmentObject private var store: AppStore
     @State private var hovered = false
 
-    private var currentEvent: AgentEvent? {
-        store.activeOverlayEvent
-    }
-
     private var contents: [OverlayBubbleContent] {
         store.overlayBubbleContents
     }
@@ -180,202 +189,210 @@ struct BubbleOverlayRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let alignLeft = OverlayGeometry.bubbleAlignsLeft(
-                petScreenCenter: store.overlayPetScreenCenter,
-                screenFrame: store.overlayScreenVisibleFrame
-            )
-            let bubbleRects = OverlayGeometry.bubbleRects(
-                inPanelSize: proxy.size,
-                visibleFrameSize: store.overlayScreenVisibleFrame.size,
-                contents: contents,
-                alignLeft: alignLeft
-            )
-
-            ZStack(alignment: .topLeading) {
-                ForEach(contents.indices, id: \.self) { index in
-                    let content = contents[index]
-                    let rect = bubbleRects.indices.contains(index) ? bubbleRects[index] : .zero
-                    ConversationBubble(
-                        content: content,
-                        hovered: controlsVisible,
-                        onClose: {
-                            store.dismissOverlayBubble(eventID: content.id)
-                        },
-                        onReply: { store.presentMainWindow() }
-                    )
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: OverlayGeometry.bubbleStackSpacing) {
+                    bubbleLayer(in: proxy)
                 }
+            } else {
+                bubbleLayer(in: proxy)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .onHover { hovered = $0 }
-            .animation(.easeOut(duration: 0.08), value: controlsVisible)
         }
         .background(Color.clear)
     }
 
+    @ViewBuilder
+    private func bubbleLayer(in proxy: GeometryProxy) -> some View {
+        let alignLeft = OverlayGeometry.bubbleAlignsLeft(
+            petScreenCenter: store.overlayPetScreenCenter,
+            screenFrame: store.overlayScreenVisibleFrame
+        )
+        let bubbleRects = OverlayGeometry.bubbleRects(
+            inPanelSize: proxy.size,
+            visibleFrameSize: store.overlayScreenVisibleFrame.size,
+            contents: contents,
+            alignLeft: alignLeft
+        )
+
+        ZStack(alignment: .topLeading) {
+            ForEach(contents.indices, id: \.self) { index in
+                let content = contents[index]
+                let rect = bubbleRects.indices.contains(index) ? bubbleRects[index] : .zero
+                ConversationBubble(
+                    content: content,
+                    hovered: controlsVisible,
+                    onClose: {
+                        store.dismissOverlayBubble(eventIDs: content.eventIDs)
+                    },
+                    onOpenSession: { session in
+                        store.presentAgentSession(
+                            source: session.source,
+                            sessionID: session.sessionID,
+                            navigation: session.navigation
+                        )
+                    }
+                )
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .frame(width: proxy.size.width, height: proxy.size.height)
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.08), value: controlsVisible)
+    }
 }
 
 private struct ConversationBubble: View {
     var content: OverlayBubbleContent
     var hovered: Bool
     var onClose: () -> Void
-    var onReply: () -> Void
+    var onOpenSession: (OverlaySessionContent) -> Void
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous)
-                .fill(OverlayStyle.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
+                AgentIconView(
+                    source: content.source,
+                    size: OverlayGeometry.bubbleHeaderAvatarWidth
                 )
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
-                    AgentBadge(source: content.source)
+                Text(content.agentName)
+                    .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
+                    .foregroundStyle(OverlayStyle.secondaryText)
+                    .lineLimit(1)
+                    .layoutPriority(2)
 
-                    Text(content.agentName)
-                        .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
-                        .foregroundStyle(OverlayStyle.secondaryText)
-                        .lineLimit(1)
-                        .layoutPriority(2)
+                Spacer(minLength: 8)
+
+                if hovered {
+                    BubbleIconButton(systemImage: "xmark", action: onClose)
                 }
-
-                Text(content.messageText)
-                    .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .semibold))
-                    .foregroundStyle(OverlayStyle.text.opacity(0.88))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, OverlayGeometry.bubbleLeadingPadding)
-            .padding(.trailing, hovered ? OverlayGeometry.bubbleTrailingPadding : 26)
-            .padding(.vertical, OverlayGeometry.bubbleVerticalPadding / 2)
+            .frame(height: OverlayGeometry.bubbleGroupHeaderHeight)
 
-            if hovered {
-                BubbleIconButton(systemImage: "xmark", action: onClose)
-                    .padding(4)
-                    .zIndex(2)
+            Color.clear
+                .frame(height: OverlayGeometry.bubbleGroupHeaderSpacing)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 15, height: 15)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.top, 6)
-                    .padding(.trailing, 8)
+            let rowHeights = OverlayGeometry.bubbleSessionRowHeights(
+                bubbleWidth: OverlayGeometry.bubbleWidth,
+                content: content
+            )
+            ForEach(content.sessions.indices, id: \.self) { index in
+                let session = content.sessions[index]
+                SessionBubbleRow(
+                    session: session,
+                    hovered: hovered,
+                    action: { onOpenSession(session) }
+                )
+                .frame(height: rowHeights.indices.contains(index) ? rowHeights[index] : nil)
 
-                Button(action: onReply) {
-                    Text("回复")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(OverlayStyle.text)
-                        .frame(width: 36, height: 17)
-                        .background(
-                            Capsule()
-                                .fill(OverlayStyle.surface)
-                                .overlay(Capsule().stroke(Color.black.opacity(0.10)))
-                                .shadow(color: .black.opacity(0.09), radius: 4, y: 2)
-                        )
+                if index < content.sessions.count - 1 {
+                    Divider()
+                        .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+                        .frame(height: OverlayGeometry.bubbleSessionDividerHeight)
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.trailing, 8)
-                .padding(.bottom, 6)
-                .zIndex(2)
-            } else {
-                Button(action: onClose) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(iconColor)
-                        .frame(width: 15, height: 15)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .padding(.top, 6)
-                .padding(.trailing, 8)
-                .help("收起气泡")
             }
         }
+        .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
+        .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
+        .apcLiquidGlass(
+            in: RoundedRectangle(
+                cornerRadius: OverlayGeometry.bubbleCornerRadius,
+                style: .continuous
+            ),
+            interactive: true
+        )
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
-    }
-
-    private var iconName: String {
-        switch content.eventType {
-        case .failed:
-            "xmark.circle.fill"
-        case .waiting:
-            "clock.fill"
-        case .tool, .start, .review:
-            "sparkles"
-        case .done, .none:
-            "checkmark.circle.fill"
-        }
-    }
-
-    private var iconColor: Color {
-        switch content.eventType {
-        case .failed:
-            Color(red: 0.91, green: 0.18, blue: 0.24)
-        case .waiting:
-            Color(red: 0.92, green: 0.58, blue: 0.13)
-        case .tool, .start, .review:
-            Color(red: 0.30, green: 0.42, blue: 0.95)
-        case .done, .none:
-            Color(red: 0.02, green: 0.70, blue: 0.25)
-        }
     }
 }
 
-private struct AgentBadge: View {
-    var source: AgentSource?
+private struct SessionBubbleRow: View {
+    var session: OverlaySessionContent
+    var hovered: Bool
+    var action: () -> Void
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 8.5, weight: .black))
-            .foregroundStyle(.white)
-            .frame(width: OverlayGeometry.bubbleHeaderAvatarWidth, height: OverlayGeometry.bubbleHeaderAvatarWidth)
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(session.sessionTitle)
+                        .font(.system(
+                            size: OverlayGeometry.bubbleSessionTitleFontSize,
+                            weight: .semibold
+                        ))
+                        .foregroundStyle(OverlayStyle.text)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 8)
+
+                    if !session.statusText.isEmpty {
+                        Text(session.statusText)
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(statusColor)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .apcLiquidGlass(in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(statusColor.opacity(0.28), lineWidth: 0.75)
+                                    .allowsHitTesting(false)
+                            }
+                    }
+                }
+
+                Text(session.messageText)
+                    .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
+                    .foregroundStyle(OverlayStyle.text.opacity(0.88))
+                    .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+            .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(color)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(hovered ? Color.primary.opacity(0.05) : .clear)
             )
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var label: String {
-        switch source {
-        case .codex:
-            "C"
-        case .claudeCode:
-            "Cl"
-        case .pi:
-            "π"
-        case .opencode:
-            "O"
-        case .none:
-            "A"
+            .overlay(alignment: .bottomTrailing) {
+                if hovered && session.canOpen {
+                    HStack(spacing: 2) {
+                        Text(session.actionLabel)
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(OverlayStyle.secondaryText)
+                    .fixedSize()
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .apcLiquidGlass(
+                        in: Capsule(),
+                        interactive: false
+                    )
+                    .padding(.trailing, OverlayGeometry.bubbleSessionHorizontalPadding)
+                    .padding(.bottom, OverlayGeometry.bubbleSessionVerticalPadding)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
+            }
         }
+        .buttonStyle(.plain)
+        .disabled(!session.canOpen)
+        .accessibilityLabel("\(session.sessionTitle)，\(session.statusText)，\(session.messageText)")
+        .help(session.actionLabel)
     }
 
-    private var color: Color {
-        switch source {
-        case .codex:
-            Color(red: 0.18, green: 0.45, blue: 0.95)
-        case .claudeCode:
-            Color(red: 0.50, green: 0.28, blue: 0.92)
-        case .pi:
-            Color(red: 0.03, green: 0.62, blue: 0.50)
-        case .opencode:
-            Color(red: 0.12, green: 0.12, blue: 0.14)
-        case .none:
-            Color(red: 0.42, green: 0.42, blue: 0.46)
+    private var statusColor: Color {
+        switch session.eventType {
+        case .waiting: .orange
+        case .failed: .red
+        case .done, .review: .green
+        case .start, .tool: .blue
+        case nil: .secondary
         }
-    }
-
-    private var accessibilityLabel: String {
-        source?.title ?? "Agent"
     }
 }
 
@@ -388,6 +405,7 @@ private struct PetInteractionLayer: View {
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
     var petScreenCenter: CGPoint
+    var petVisualEnvelope: OverlayPetVisualEnvelope?
     var controlsVisible: Bool
     var active: Bool
     var onToggleBubble: () -> Void
@@ -405,6 +423,7 @@ private struct PetInteractionLayer: View {
                 petScreenCenter: petScreenCenter,
                 clickMenuEnabled: clickMenuEnabled,
                 bubbleVisible: bubbleVisible,
+                petVisualEnvelope: petVisualEnvelope,
                 onToggleBubble: onToggleBubble,
                 onOpenMainWindow: onOpenMainWindow,
                 onHidePet: onHidePet,
@@ -442,6 +461,7 @@ private struct WindowDragRegion: NSViewRepresentable {
     var petScreenCenter: CGPoint
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
+    var petVisualEnvelope: OverlayPetVisualEnvelope?
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
@@ -456,6 +476,7 @@ private struct WindowDragRegion: NSViewRepresentable {
         view.petScreenCenter = petScreenCenter
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.petVisualEnvelope = petVisualEnvelope
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -471,6 +492,7 @@ private struct WindowDragRegion: NSViewRepresentable {
         view.petScreenCenter = petScreenCenter
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.petVisualEnvelope = petVisualEnvelope
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -483,8 +505,11 @@ private struct WindowDragRegion: NSViewRepresentable {
     final class DragView: NSView {
         var scale: CGFloat = 1
         var petScreenCenter = CGPoint.zero
-        var clickMenuEnabled = true
+        var clickMenuEnabled = true {
+            didSet { configureAccessibilityActions() }
+        }
         var bubbleVisible = true
+        var petVisualEnvelope: OverlayPetVisualEnvelope?
         var onToggleBubble: () -> Void = {}
         var onOpenMainWindow: () -> Void = {}
         var onHidePet: () -> Void = {}
@@ -501,12 +526,14 @@ private struct WindowDragRegion: NSViewRepresentable {
             super.init(frame: frameRect)
             wantsLayer = true
             layer?.backgroundColor = NSColor.clear.cgColor
+            configureAccessibility()
         }
 
         required init?(coder: NSCoder) {
             super.init(coder: coder)
             wantsLayer = true
             layer?.backgroundColor = NSColor.clear.cgColor
+            configureAccessibility()
         }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -515,6 +542,19 @@ private struct WindowDragRegion: NSViewRepresentable {
 
         override var mouseDownCanMoveWindow: Bool {
             false
+        }
+
+        override func accessibilityPerformShowMenu() -> Bool {
+            guard clickMenuEnabled else { return false }
+            showClickMenu(at: NSPoint(x: bounds.midX, y: bounds.midY))
+            return true
+        }
+
+        override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
+            if selector == #selector(accessibilityPerformShowMenu) {
+                return clickMenuEnabled
+            }
+            return super.isAccessibilitySelectorAllowed(selector)
         }
 
         override func updateTrackingAreas() {
@@ -571,12 +611,18 @@ private struct WindowDragRegion: NSViewRepresentable {
                 proposedPetCenter: proposedCenter,
                 fallbackWindow: window
             )
+            let screenFrame = targetScreen?.frame ?? window.screen?.frame ?? window.frame
             let visibleFrame = targetScreen?.visibleFrame ?? window.screen?.visibleFrame ?? window.frame
+            let movementFrame = OverlayGeometry.petMovementFrame(
+                screenFrame: screenFrame,
+                visibleFrame: visibleFrame
+            )
             let clampedCenter = OverlayGeometry.clampedPetScreenCenter(
                 proposedCenter,
                 scale: scale,
-                visibleFrame: visibleFrame,
-                clickMenuEnabled: clickMenuEnabled
+                visibleFrame: movementFrame,
+                clickMenuEnabled: clickMenuEnabled,
+                petVisualEnvelope: petVisualEnvelope
             )
             petScreenCenter = clampedCenter
             window.ignoresMouseEvents = false
@@ -592,20 +638,45 @@ private struct WindowDragRegion: NSViewRepresentable {
                     fallbackWindow: window
                 )?.visibleFrame ?? window.screen?.visibleFrame
             }
-            let shouldShowMenu = clickMenuEnabled && !didDrag
             dragStartMouseLocation = nil
             dragStartPetCenter = nil
             if didDrag {
                 onDragEnded(finalCenter, visibleFrame)
             }
             onDragActiveChanged(false)
-            if shouldShowMenu {
-                showClickMenu(at: event.locationInWindow)
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            guard OverlayPetMenuPolicy.shouldOpen(
+                buttonNumber: event.buttonNumber,
+                isEnabled: clickMenuEnabled
+            ) else {
+                return
             }
+            showClickMenu(at: event.locationInWindow)
         }
 
         private func screen(containing point: NSPoint) -> NSScreen? {
             NSScreen.screens.first { $0.frame.contains(point) }
+        }
+
+        private func configureAccessibility() {
+            setAccessibilityElement(true)
+            setAccessibilityRole(.group)
+            setAccessibilityLabel("桌宠")
+            setAccessibilityHelp("按住左键拖动，右击打开快捷菜单")
+            configureAccessibilityActions()
+        }
+
+        private func configureAccessibilityActions() {
+            guard clickMenuEnabled else {
+                setAccessibilityCustomActions([])
+                return
+            }
+            let showMenuAction = NSAccessibilityCustomAction(name: "打开快捷菜单") { [weak self] in
+                self?.accessibilityPerformShowMenu() ?? false
+            }
+            setAccessibilityCustomActions([showMenuAction])
         }
 
         private func resolvedScreen(
@@ -634,14 +705,19 @@ private struct WindowDragRegion: NSViewRepresentable {
                 keyEquivalent: ""
             )
             bubbleItem.target = target
+            bubbleItem.image = NSImage(
+                systemSymbolName: bubbleVisible ? "chevron.down" : "chevron.up",
+                accessibilityDescription: nil
+            )
             menu.addItem(bubbleItem)
 
             let openItem = NSMenuItem(
-                title: "打开主窗口",
+                title: APCLocalization.text(.appActionOpenControlCenter),
                 action: #selector(PetClickMenuTarget.openMainWindow),
                 keyEquivalent: ""
             )
             openItem.target = target
+            openItem.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
             menu.addItem(openItem)
 
             menu.addItem(.separator())
@@ -651,6 +727,7 @@ private struct WindowDragRegion: NSViewRepresentable {
                 keyEquivalent: ""
             )
             hideItem.target = target
+            hideItem.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil)
             menu.addItem(hideItem)
             menu.popUp(positioning: nil, at: point, in: self)
         }
@@ -704,9 +781,9 @@ private struct PetStage: View {
                 fpsProfile: fpsProfile,
                 active: active
             )
-                .shadow(color: .black.opacity(hovered ? 0.11 : 0.07), radius: hovered ? 14 : 8, y: 8)
+                .shadow(color: .black.opacity(hovered ? 0.09 : 0.05), radius: hovered ? 10 : 6, y: 6)
         }
-        .frame(width: 250 * scale, height: 330 * scale)
+        .frame(width: 238 * scale, height: 318 * scale)
         .contentShape(Rectangle())
     }
 }
@@ -739,6 +816,7 @@ private struct FloatingPetSprite: View {
 }
 
 private struct PetFrameLayerView: NSViewRepresentable {
+    @EnvironmentObject private var store: AppStore
     var pet: PetSummary
     var stateName: String
     var stateEntryID: String
@@ -754,13 +832,23 @@ private struct PetFrameLayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: MTKView, context: Context) {
+        let store = store
+        let petID = pet.id
+        let currentStateEntryID = stateEntryID
         context.coordinator.configure(
             view: view,
             pet: pet,
             stateName: stateName,
             stateEntryID: stateEntryID,
             fpsProfile: fpsProfile,
-            active: active
+            active: active,
+            onVisualEnvelopeChanged: { [weak store] envelope in
+                store?.updateOverlayPetVisualEnvelope(
+                    envelope,
+                    petID: petID,
+                    stateEntryID: currentStateEntryID
+                )
+            }
         )
     }
 }
@@ -773,30 +861,37 @@ private struct PetMenuButton: View {
     var body: some View {
         Button(action: onToggleBubble) {
             Image(systemName: collapsed ? "chevron.up" : "chevron.down")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(OverlayStyle.secondaryText)
                 .frame(width: OverlayGeometry.menuVisualSize.width, height: OverlayGeometry.menuVisualSize.height)
-                .background(
-                    Circle()
-                        .fill(OverlayStyle.surface.opacity(0.96))
-                        .overlay(Circle().stroke(Color.black.opacity(0.06)))
-                        .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
-                )
+                .apcLiquidGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(.plain)
         .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
         .contentShape(Circle())
         .help(collapsed ? "展开气泡" : "收起气泡")
         .contextMenu {
-            Button(collapsed ? "展开气泡" : "收起气泡") {
+            Button {
                 onToggleBubble()
+            } label: {
+                Label(
+                    collapsed ? "展开气泡" : "收起气泡",
+                    systemImage: collapsed ? "chevron.up" : "chevron.down"
+                )
             }
-            Button("打开主窗口") {
+            Button {
                 store.presentMainWindow()
+            } label: {
+                Label(
+                    APCLocalization.text(.appActionOpenControlCenter),
+                    systemImage: "macwindow"
+                )
             }
             Divider()
-            Button("隐藏桌宠") {
+            Button {
                 store.toggleOverlay()
+            } label: {
+                Label("隐藏桌宠", systemImage: "eye.slash")
             }
         }
     }
@@ -812,11 +907,7 @@ private struct BubbleIconButton: View {
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(OverlayStyle.secondaryText)
                 .frame(width: 15, height: 15)
-                .background(
-                    Circle()
-                        .fill(OverlayStyle.surface)
-                        .shadow(color: .black.opacity(0.13), radius: 4, y: 2)
-                )
+                .apcLiquidGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(.plain)
     }
@@ -861,14 +952,12 @@ struct ResizeHandle: View {
     var body: some View {
         ZStack {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 9.5, weight: .bold))
+                .font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(OverlayStyle.secondaryText)
                 .frame(width: OverlayGeometry.resizeVisualSize.width, height: OverlayGeometry.resizeVisualSize.height)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(OverlayStyle.surface.opacity(0.97))
-                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.black.opacity(0.06)))
-                        .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
+                .apcLiquidGlass(
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous),
+                    interactive: true
                 )
 
             if showScaleValue {
@@ -877,7 +966,7 @@ struct ResizeHandle: View {
                     .foregroundStyle(OverlayStyle.text)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(.regularMaterial, in: Capsule())
+                    .apcLiquidGlass(in: Capsule())
                     .offset(x: -24, y: -27)
                     .accessibilityHidden(true)
             }

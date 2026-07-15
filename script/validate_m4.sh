@@ -38,7 +38,8 @@ for source in codex claude_code pi opencode; do
   OUT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections repair --source "$source")"
   grep -q '"items"' <<<"$OUT"
   OUT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections test --source "$source")"
-  grep -q '"triggered": true' <<<"$OUT"
+  grep -q '"triggered": false' <<<"$OUT"
+  grep -q '"diagnostic": true' <<<"$OUT"
 done
 
 OUT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" agent ingest --id evt_duplicate --source codex --event-type tool --title 执行工具)"

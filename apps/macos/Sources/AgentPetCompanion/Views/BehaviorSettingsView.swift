@@ -56,7 +56,36 @@ struct BehaviorSettingsView: View {
                     next.autoHide = value
                     store.updateBehavior(next)
                 }
-                SettingToggle(title: "点击菜单", detail: "点击宠物打开快捷菜单", value: store.behavior.clickMenu) { value in
+                Stepper(
+                    value: Binding(
+                        get: { store.behavior.sessionMessageTimeoutMinutes },
+                        set: { minutes in
+                            var next = store.behavior
+                            next.sessionMessageTimeoutMinutes = minutes
+                            store.updateBehavior(next)
+                        }
+                    ),
+                    in: 1 ... 1_440
+                ) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("会话消息收起时间")
+                                .font(.headline)
+                            Spacer()
+                            Text("\(store.behavior.sessionMessageTimeoutMinutes) 分钟")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("普通会话超过此时间后收起；等待确认与失败会话保持显示")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityLabel("会话消息收起时间")
+                .accessibilityValue("\(store.behavior.sessionMessageTimeoutMinutes) 分钟")
+                .padding(.vertical, 6)
+                .overlay(alignment: .bottom) { Divider() }
+                SettingToggle(title: "右击菜单", detail: "右击宠物打开快捷菜单", value: store.behavior.clickMenu) { value in
                     var next = store.behavior
                     next.clickMenu = value
                     store.updateBehavior(next)
@@ -72,7 +101,7 @@ struct BehaviorSettingsView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 10)], spacing: 10) {
                     InteractionTile(title: "拖动", detail: "移动位置", systemImage: "hand.draw")
                     InteractionTile(title: "悬停", detail: "显示缩放手柄", systemImage: "cursorarrow.motionlines")
-                    InteractionTile(title: "缩放", detail: "右下角拖拽", systemImage: "arrow.up.left.and.arrow.down.right")
+                    InteractionTile(title: "缩放", detail: "宠物右侧拖拽", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 Divider()
                 Picker("帧率", selection: Binding(
@@ -161,10 +190,8 @@ struct InteractionTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
     }
 }
@@ -178,12 +205,15 @@ struct SourceToggle: View {
             get: { store.behavior.sources[source, default: true] },
             set: { store.setSource(source, enabled: $0) }
         )) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(source.title)
-                    .font(.headline)
-                Text("\(UIControlSemantics.toggleValue(isOn: isEnabled)) · \(sourceDetail)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                AgentIconView(source: source, size: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(source.title)
+                        .font(.headline)
+                    Text("\(UIControlSemantics.toggleValue(isOn: isEnabled)) · \(sourceDetail)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .toggleStyle(.switch)
@@ -191,10 +221,9 @@ struct SourceToggle: View {
         .accessibilityLabel(UIControlSemantics.sourceLabel(source))
         .accessibilityValue("\(UIControlSemantics.toggleValue(isOn: isEnabled))，\(sourceDetail)")
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous),
+            interactive: true
         )
     }
 
@@ -206,10 +235,16 @@ struct SourceToggle: View {
         guard let status = store.connections.first(where: { $0.source == source }) else {
             return "连接待检查"
         }
-        let badItems = status.items.filter { $0.status != .ok }
+        let badItems = status.blockingItems
         guard !badItems.isEmpty else {
             if status.checkMode == .light {
                 return "待完整检查"
+            }
+            if !status.unverifiedItems.isEmpty {
+                return "部分能力待验证"
+            }
+            if !status.unsupportedItems.isEmpty {
+                return "连接可用，部分能力暂不支持"
             }
             return "连接正常"
         }
@@ -244,10 +279,9 @@ struct EventToggle: View {
         .accessibilityValue(UIControlSemantics.toggleValue(isOn: isEnabled))
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous),
+            interactive: true
         )
     }
 

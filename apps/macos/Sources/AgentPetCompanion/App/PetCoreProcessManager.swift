@@ -2,6 +2,83 @@ import AgentPetCompanionCore
 import Darwin
 import Foundation
 
+enum PetCoreRuntimeContract {
+    static let requiredRPCProtocol = "apc.petcore-rpc.v2"
+    static let requiredGenerationEnvironment = [
+        "APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK": "0",
+        "APC_REQUIRE_SKILL_FULL_SOURCE": "1",
+        "APC_REQUIRE_EXTERNAL_SKILL_SOURCE": "1"
+    ]
+    static let requiredManifestURL: URL? = {
+        if let override = ProcessInfo.processInfo.environment["APC_RUNTIME_MANIFEST_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty
+        {
+            return URL(fileURLWithPath: override)
+        }
+        let url = Bundle.main.resourceURL?.appendingPathComponent("runtime-manifest.json")
+        return url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    }()
+    static let requiredManifest: RuntimeReleaseManifest? = {
+        guard let requiredManifestURL else { return nil }
+        return try? RuntimeReleaseManifest.read(from: requiredManifestURL)
+    }()
+    static let requiredBuildID: String? = {
+        if let override = ProcessInfo.processInfo.environment["APC_BUILD_ID"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty
+        {
+            return override
+        }
+        if let manifest = requiredManifest {
+            return manifest.buildID
+        }
+        if let bundled = Bundle.main.object(forInfoDictionaryKey: "APCBuildID") as? String {
+            let value = bundled.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }()
+
+    static func acceptsHealth(
+        _ result: Any,
+        expectedBuildID: String? = requiredBuildID,
+        expectedManifest: RuntimeReleaseManifest? = requiredManifest
+    ) -> Bool {
+        guard let health = result as? [String: Any] else { return false }
+        guard health["ok"] as? Bool == true,
+              health["rpc_protocol"] as? String == requiredRPCProtocol
+        else { return false }
+        if let expectedBuildID, health["build_id"] as? String != expectedBuildID {
+            return false
+        }
+        if let expectedManifest {
+            guard RuntimeReleaseManifest.decodeHealthValue(health["runtime_manifest"])
+                    == expectedManifest
+            else { return false }
+        }
+        return true
+    }
+
+    static func incompatibleInstanceID(
+        _ result: Any,
+        expectedBuildID: String? = requiredBuildID,
+        expectedManifest: RuntimeReleaseManifest? = requiredManifest
+    ) -> String? {
+        guard !acceptsHealth(
+                  result,
+                  expectedBuildID: expectedBuildID,
+                  expectedManifest: expectedManifest
+              ),
+              let health = result as? [String: Any],
+              health["ok"] as? Bool == true,
+              let instanceID = health["instance_id"] as? String,
+              !instanceID.isEmpty
+        else { return nil }
+        return instanceID
+    }
+}
+
 struct PetCoreLaunchctlInvocation: Equatable, Sendable {
     let arguments: [String]
     let allowsFailure: Bool
@@ -54,11 +131,17 @@ struct PetCoreLaunchAgentPlan: Equatable, Sendable {
             beforePropertyListWrite: [],
             afterPropertyListWrite: [
                 PetCoreLaunchctlInvocation(
-                    arguments: ["kickstart", domainAndLabel],
+                    arguments: ["kickstart", "-k", domainAndLabel],
                     allowsFailure: false
                 )
             ]
         )
+    }
+}
+
+enum PetCoreLaunchControlPolicy {
+    static func shouldBootoutGlobalLaunchAgent(launchAgentDisabled: Bool) -> Bool {
+        !launchAgentDisabled
     }
 }
 
@@ -80,11 +163,15 @@ actor PetCoreProcessManager {
         coordinator = PetCoreServiceStartupCoordinator(
             healthCheck: {
                 do {
-                    _ = try await client.request(
+                    let result = try await client.request(
                         method: "petcore.health",
                         timeout: .milliseconds(200)
                     )
-                    return true
+                    if PetCoreRuntimeContract.acceptsHealth(result) {
+                        try? await launcher.recordHealthyCurrentRuntime()
+                        return true
+                    }
+                    return false
                 } catch {
                     return false
                 }
@@ -131,75 +218,151 @@ actor PetCoreProcessManager {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("AgentPetCompanion", isDirectory: true)
     }
+
 }
 
 private actor PetCoreServiceLauncher {
     private let launchAgentLabel = "dev.agentpet.petcore"
     private let homeURL: URL
+    private let runtimeStore: PetCoreRuntimeStore
     private var process: Process?
     private var logHandle: FileHandle?
 
     init(homeURL: URL) {
         self.homeURL = homeURL
+        runtimeStore = PetCoreRuntimeStore(homeURL: homeURL)
+    }
+
+    func recordHealthyCurrentRuntime() async throws {
+        let candidate = try await prepareCandidate()
+        try await runtimeStore.commitHealthy(candidate)
+        await refreshInstalledConnectorReferences(using: candidate)
     }
 
     func startUsingLaunchAgent() async throws {
         guard !launchAgentDisabled else {
             throw PetCoreServiceLauncherError.message("LaunchAgent 已由 APC_DISABLE_LAUNCH_AGENT 禁用")
         }
-        let paths = try prepareRuntimePaths()
+        let candidate = try await prepareCandidate()
+        try await start(candidate, mode: .launchAgent, allowsRollback: true)
+    }
+
+    func startDirectly() async throws {
+        let candidate = try await prepareCandidate()
+        try await start(candidate, mode: .direct, allowsRollback: true)
+    }
+
+    private enum LaunchMode {
+        case launchAgent
+        case direct
+    }
+
+    private func prepareCandidate() async throws -> PreparedPetCoreRuntime {
         guard let executable = locatePetCore() else {
             throw PetCoreServiceLauncherError.message("未找到 petcore 可执行文件")
         }
+        guard let cli = locatePetCoreCLI() else {
+            throw PetCoreServiceLauncherError.message("未找到 petcore-cli 可执行文件")
+        }
+        return try await runtimeStore.prepareCandidate(
+            sourceExecutableURL: URL(fileURLWithPath: executable),
+            sourceCLIURL: URL(fileURLWithPath: cli),
+            sourceManifestURL: PetCoreRuntimeContract.requiredManifestURL
+        )
+    }
+
+    private func start(
+        _ candidate: PreparedPetCoreRuntime,
+        mode: LaunchMode,
+        allowsRollback: Bool
+    ) async throws {
+        do {
+            // A loaded KeepAlive job would immediately respawn the old binary after shutdown.
+            // Explicit direct/isolated validation mode must never touch the user's global
+            // launchd job; normal launch-agent and direct fallback flows still own it.
+            if PetCoreLaunchControlPolicy.shouldBootoutGlobalLaunchAgent(
+                launchAgentDisabled: launchAgentDisabled
+            ) {
+                _ = await runLaunchctl(["bootout", launchDomainAndLabel()])
+            }
+            await shutdownActiveRuntime()
+            await waitForPriorRuntimeExit()
+            switch mode {
+            case .launchAgent:
+                try await performLaunchAgentStart(candidate)
+            case .direct:
+                try await performDirectStart(candidate)
+            }
+            guard await waitForHealth(candidate) else {
+                throw PetCoreServiceLauncherError.message("候选 PetCore 启动后未通过版本与健康检查")
+            }
+            try await runtimeStore.commitHealthy(candidate)
+            await refreshInstalledConnectorReferences(using: candidate)
+        } catch {
+            guard allowsRollback, let previous = candidate.previous else { throw error }
+            let original = error.localizedDescription
+            do {
+                let rollback = try await runtimeStore.resolve(previous)
+                try await start(rollback, mode: mode, allowsRollback: false)
+                throw PetCoreServiceLauncherError.message(
+                    "PetCore 更新失败，已恢复上一个可用版本：\(original)"
+                )
+            } catch let rollbackError as PetCoreServiceLauncherError {
+                if rollbackError.localizedDescription.hasPrefix("PetCore 更新失败，已恢复") {
+                    throw rollbackError
+                }
+                throw PetCoreServiceLauncherError.message(
+                    "PetCore 更新失败且回滚未完成：\(original)；回滚：\(rollbackError.localizedDescription)"
+                )
+            } catch {
+                throw PetCoreServiceLauncherError.message(
+                    "PetCore 更新失败且回滚未完成：\(original)；回滚：\(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func refreshInstalledConnectorReferences(using runtime: PreparedPetCoreRuntime) async {
+        guard runtime.isManaged else { return }
+        _ = try? await BoundedProcessRunner.run(
+            executableURL: runtime.cliURL,
+            arguments: ["connections", "refresh-installed"],
+            timeout: .seconds(10),
+            outputLimit: 16 * 1_024
+        )
+    }
+
+    private func performLaunchAgentStart(_ candidate: PreparedPetCoreRuntime) async throws {
+        let paths = try prepareRuntimePaths()
         guard let launchAgentsURL = launchAgentsDirectoryURL() else {
             throw PetCoreServiceLauncherError.message("无法定位用户 LaunchAgents 目录")
         }
-
         try FileManager.default.createDirectory(at: launchAgentsURL, withIntermediateDirectories: true)
         let plistURL = launchAgentsURL.appendingPathComponent("\(launchAgentLabel).plist")
-        let data = try launchAgentPropertyList(
-            executable: executable,
-            logsURL: paths.logsURL
-        )
-        let previous = try? Data(contentsOf: plistURL)
-        let configurationChanged = previous != data
-        let isLoaded = configurationChanged ? false : await isLaunchAgentLoaded()
-        let plan = PetCoreLaunchAgentPlan.make(
-            configurationChanged: configurationChanged,
-            isLoaded: isLoaded,
-            domain: launchDomain(),
-            label: launchAgentLabel,
-            propertyListPath: plistURL.path
-        )
-        try await execute(plan.beforePropertyListWrite)
-        if configurationChanged {
-            try data.write(to: plistURL, options: .atomic)
-        }
-        try await execute(plan.afterPropertyListWrite)
+        let data = try launchAgentPropertyList(candidate: candidate, logsURL: paths.logsURL)
+        try data.write(to: plistURL, options: .atomic)
+        try await execute([
+            PetCoreLaunchctlInvocation(
+                arguments: ["bootstrap", launchDomain(), plistURL.path],
+                allowsFailure: false
+            )
+        ])
     }
 
-    func startDirectly() throws {
+    private func performDirectStart(_ candidate: PreparedPetCoreRuntime) async throws {
         let paths = try prepareRuntimePaths()
         if let process, process.isRunning {
-            return
+            process.terminate()
+            self.process = nil
         }
-        guard let executable = locatePetCore() else {
-            throw PetCoreServiceLauncherError.message("未找到 petcore 可执行文件")
-        }
-
         try? FileManager.default.removeItem(at: paths.readyURL)
         logHandle = try FileHandle(forWritingTo: paths.logURL)
         try logHandle?.seekToEnd()
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["serve", "--ready-file", paths.readyURL.path]
-        var environment = ProcessInfo.processInfo.environment
-        environment["APC_HOME"] = homeURL.path
-        environment["RUST_LOG"] = "info"
-        environment["APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK"] = "0"
-        environment["APC_REQUIRE_SKILL_FULL_SOURCE"] = "1"
-        process.environment = environment
+        process.executableURL = candidate.executableURL
+        process.arguments = ["serve", "--home", homeURL.path, "--ready-file", paths.readyURL.path]
+        process.environment = serviceEnvironment(for: candidate)
         process.standardOutput = logHandle
         process.standardError = logHandle
         let logURL = paths.logURL
@@ -219,6 +382,58 @@ private actor PetCoreServiceLauncher {
             self.process = nil
             throw PetCoreServiceLauncherError.message("启动 petcore 失败：\(error.localizedDescription)")
         }
+    }
+
+    private func shutdownActiveRuntime() async {
+        let client = PetCoreClient(socketPath: socketPath)
+        guard let health = try? await client.request(
+            method: "petcore.health",
+            timeout: .milliseconds(200)
+        ), let value = health as? [String: Any],
+        let instanceID = value["instance_id"] as? String,
+        let params = try? JSONSerialization.data(withJSONObject: ["expected_instance_id": instanceID])
+        else { return }
+        _ = try? await client.request(
+            method: "petcore.shutdown",
+            paramsJSONData: params,
+            timeout: .milliseconds(500)
+        )
+    }
+
+    private func waitForHealth(_ candidate: PreparedPetCoreRuntime) async -> Bool {
+        let client = PetCoreClient(socketPath: socketPath)
+        for _ in 0 ..< 60 {
+            if let result = try? await client.request(
+                method: "petcore.health",
+                timeout: .milliseconds(150)
+            ), PetCoreRuntimeContract.acceptsHealth(
+                result,
+                expectedBuildID: candidate.buildID,
+                expectedManifest: candidate.manifest
+            ) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
+    private func waitForPriorRuntimeExit() async {
+        let client = PetCoreClient(socketPath: socketPath)
+        for _ in 0 ..< 25 {
+            guard (try? await client.request(
+                method: "petcore.health",
+                timeout: .milliseconds(100)
+            )) != nil else { return }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private var socketPath: String {
+        homeURL
+            .appendingPathComponent("run", isDirectory: true)
+            .appendingPathComponent("petcore.sock")
+            .path
     }
 
     private struct RuntimePaths {
@@ -262,6 +477,21 @@ private actor PetCoreServiceLauncher {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    private func locatePetCoreCLI() -> String? {
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/petcore-cli")
+            .path,
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let candidates = [
+            cwd.appendingPathComponent("../../target/debug/petcore-cli").standardized.path,
+            cwd.appendingPathComponent("target/debug/petcore-cli").standardized.path
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     private var launchAgentDisabled: Bool {
         switch ProcessInfo.processInfo.environment["APC_DISABLE_LAUNCH_AGENT"]?.lowercased() {
         case "1", "true", "yes": true
@@ -269,13 +499,18 @@ private actor PetCoreServiceLauncher {
         }
     }
 
-    private func launchAgentPropertyList(executable: String, logsURL: URL) throws -> Data {
+    private func launchAgentPropertyList(
+        candidate: PreparedPetCoreRuntime,
+        logsURL: URL
+    ) throws -> Data {
         let stdoutURL = logsURL.appendingPathComponent("petcore.launchd.out.log")
         let stderrURL = logsURL.appendingPathComponent("petcore.launchd.err.log")
+        var environmentVariables = serviceEnvironment(for: candidate)
+        environmentVariables["PATH"] = launchAgentPathEnvironment()
         let plist: [String: Any] = [
             "Label": launchAgentLabel,
             "ProgramArguments": [
-                executable,
+                candidate.executableURL.path,
                 "serve",
                 "--home",
                 homeURL.path
@@ -284,15 +519,24 @@ private actor PetCoreServiceLauncher {
             "KeepAlive": true,
             "StandardOutPath": stdoutURL.path,
             "StandardErrorPath": stderrURL.path,
-            "EnvironmentVariables": [
-                "APC_HOME": homeURL.path,
-                "RUST_LOG": "info",
-                "APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK": "0",
-                "APC_REQUIRE_SKILL_FULL_SOURCE": "1",
-                "PATH": launchAgentPathEnvironment()
-            ]
+            "EnvironmentVariables": environmentVariables
         ]
         return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    }
+
+    private func serviceEnvironment(for candidate: PreparedPetCoreRuntime) -> [String: String] {
+        var environment = PetCoreRuntimeContract.requiredGenerationEnvironment.merging([
+            "APC_HOME": homeURL.path,
+            "RUST_LOG": "info",
+            "PATH": launchAgentPathEnvironment()
+        ]) { _, serviceValue in serviceValue }
+        if let buildID = candidate.buildID {
+            environment["APC_EXPECTED_BUILD_ID"] = buildID
+        }
+        if let manifestURL = candidate.manifestURL {
+            environment["APC_EXPECTED_RUNTIME_MANIFEST"] = manifestURL.path
+        }
+        return environment
     }
 
     private func launchAgentsDirectoryURL() -> URL? {

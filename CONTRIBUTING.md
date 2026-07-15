@@ -21,6 +21,7 @@ Read these sources of truth:
 
 - [Product plan V5](docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md)
 - [Technical plan V1.1](docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md)
+- [Current project status](docs/PROJECT_STATUS.md)
 - [Design index](docs/design/README.md)
 
 Do not add cloud accounts, public galleries, sharing/community features, Petdex import, Codex built-in pet export, Windows UI, or a mission-control platform unless the project scope is explicitly changed.
@@ -51,6 +52,10 @@ cargo test --workspace --locked
 Real UI, real connector, and real App Server checks are separate opt-in gates. Use only the documented environment flags and never inspect auth, token, cookie, API key, or secret files.
 
 真实 UI、真实 connector 与真实 App Server 检查均为独立 opt-in 门禁。只能使用文档规定的环境变量，并且不得检查 auth、token、cookie、API Key 或其他密钥文件。
+
+For live macOS UI verification, use Computer Use first and prefer Accessibility reads and element-based actions that do not take over the user's pointer, keyboard, or active focus. Do not default to `open -n`, AppleScript/System Events, CGEvent synthesis, `cliclick`, `pyautogui`, or equivalent direct input automation. If Computer Use cannot cover a required interaction and the fallback can interrupt the user, obtain explicit approval immediately before using it.
+
+真实 macOS UI 验证必须优先使用 Computer Use，并优先采用 Accessibility 状态读取和元素级操作，避免接管用户的鼠标、键盘或当前输入焦点。不得默认使用 `open -n`、AppleScript/System Events、CGEvent、`cliclick`、`pyautogui` 等直接输入自动化；若 Computer Use 无法覆盖且替代方法可能打断用户，必须在执行前取得明确授权。
 
 ## Pull requests / 合并请求
 

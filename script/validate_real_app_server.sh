@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-real-app-server.XXXXXX")"
+REAL_USER_HOME="${HOME:-}"
 . "$ROOT_DIR/script/validation_helpers.sh"
 apc_use_isolated_home "$TMP_DIR"
 JOB_ID=""
@@ -114,6 +115,10 @@ cd "$ROOT_DIR"
 cargo build --workspace >/dev/null
 
 (
+  # PetCore storage and connector paths remain isolated. HOME is restored only
+  # for the explicitly opted-in Codex subprocess so it can use its own normal
+  # login context; this validator never reads authentication files itself.
+  HOME="$REAL_USER_HOME" \
   APC_HOME="$TMP_DIR/home" \
   APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
   APC_CONNECTOR_CLI_PATH="$ROOT_DIR/target/debug/petcore-cli" \
@@ -135,7 +140,7 @@ fi
 assert_json "$PROBE" 'data["initialized"] is True and data["transport"] == "stdio"' \
   || fail "Codex App Server probe did not initialize"
 
-FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。在当前 generation job workspace 创建完整 petpack-source，保留 codex-app-server-skill / skill-full-source provenance；不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
+FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。请返回完整七状态设计 brief；不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
 JOB_JSON="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation start --form-json "$FORM")"
 JOB_ID="$(JSON="$JOB_JSON" python3 - <<'PY'
 import json
@@ -145,7 +150,7 @@ PY
 )"
 
 REPLIED_TO_INPUT_REQUEST=0
-for _ in {1..420}; do
+for _ in {1..1500}; do
   STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$JOB_ID" --include-messages)"
   if grep -q '"status"[[:space:]]*:[[:space:]]*"failed"' <<<"$STATUS"; then
     fail "generation job entered failed status"
@@ -177,7 +182,7 @@ assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["manifest_exist
   || fail "generation artifacts are incomplete"
 assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v1"] and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] in ["skill-full-source", "codex_app_server_brief"] and data["artifacts"]["petpack_source"]["skill_session"]["exists"] is True' \
   || fail "real App Server generation did not preserve App Server provenance"
-if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-0}"; then
+if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"]["fallback_used"] is False and data["artifacts"]["petpack_source"]["sample_output"] is False and data["artifacts"]["petpack_source"]["repaired_validation"] is False and data["artifacts"]["petpack_source"]["materialized_by_petcore"] is False' \
     || fail "strict full-source mode used fallback/sample/repaired artifacts"
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"].get("materialized_by_cli") is False' \
@@ -185,13 +190,13 @@ if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-0}"; then
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] == "codex-app-server-skill" and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] == "skill-full-source"' \
     || fail "strict full-source mode did not produce trusted Skill provenance"
 fi
-if truthy "${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-0}"; then
+if truthy "${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-1}"; then
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"].get("materializer") is None and data["artifacts"]["petpack_source"].get("skill_helper") != "agent-pet-studio-preview-helper-v2"' \
     || fail "external full-source mode accepted preview or internally materialized output"
 fi
 
 SOURCE_DIR="$TMP_DIR/home/generation-jobs/$JOB_ID/petpack-source"
-if truthy "${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-0}"; then
+if truthy "${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-1}"; then
   SOURCE_DIR="$SOURCE_DIR" python3 - <<'PY' || fail "external full-source visual semantics were not proven"
 import hashlib
 import json
@@ -225,9 +230,18 @@ assert_json "$SNAPSHOT" 'len(data["pets"]) == 1 and data["pets"][0]["active"] is
   || fail "completed pet was not imported and activated"
 assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v1"] and data["pets"][0]["provenance"] in ["skill-full-source", "codex_app_server_brief"]' \
   || fail "imported pet does not preserve real App Server provenance"
-if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-0}"; then
+if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] == "codex-app-server-skill" and data["pets"][0]["provenance"] == "skill-full-source"' \
     || fail "strict full-source imported pet does not preserve Skill provenance"
+fi
+
+if [[ -n "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]]; then
+  ARTIFACT_DIR="$APC_REAL_APP_SERVER_ARTIFACT_DIR"
+  mkdir -p "$ARTIFACT_DIR"
+  ditto "$TMP_DIR/home/generation-jobs/$JOB_ID" "$ARTIFACT_DIR/job"
+  printf '%s\n' "$FINAL_STATUS" >"$ARTIFACT_DIR/final-status.json"
+  printf '%s\n' "$SNAPSHOT" >"$ARTIFACT_DIR/snapshot.json"
+  printf 'Preserved real App Server validation artifacts: %s\n' "$ARTIFACT_DIR"
 fi
 
 echo "Real Codex App Server validation ok"

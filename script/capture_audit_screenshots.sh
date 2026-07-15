@@ -84,8 +84,16 @@ func collect(_ element: AXUIElement, into values: inout [AXUIElement]) {
     }
 }
 
+let supportedMainWindowTitles: Set<String> = [
+    "Agent Pet Companion",
+    "宠物 Studio", "Pet Studio",
+    "启用与行为", "Enable & Behavior",
+    "Agent 连接", "Agent Connections",
+]
 guard let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement],
-      let mainWindow = windows.first(where: { string($0, kAXTitleAttribute) == "Agent Pet Companion" })
+      let mainWindow = windows.first(where: {
+          supportedMainWindowTitles.contains(string($0, kAXTitleAttribute))
+      }) ?? windows.first
 else {
     fputs("audit capture failed: main AX window not found\n", stderr)
     exit(1)
@@ -171,7 +179,6 @@ let infos = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: A
 guard let info = infos.first(where: { item in
     (item[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
         && (item[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
-        && (item[kCGWindowName as String] as? String) == "Agent Pet Companion"
 }), let number = info[kCGWindowNumber as String] as? NSNumber else {
     fputs("audit capture failed: main CGWindow not found\n", stderr)
     exit(1)

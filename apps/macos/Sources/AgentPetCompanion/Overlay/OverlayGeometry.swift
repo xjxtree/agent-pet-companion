@@ -8,6 +8,11 @@ struct OverlayDisplayGeometry: Equatable, Sendable {
     var backingScaleFactor: CGFloat
 }
 
+struct OverlayPetVisualEnvelope: Equatable, Sendable {
+    var canvasSize: CGSize
+    var visibleBounds: CGRect
+}
+
 enum OverlayScaleFeedbackVisibility {
     static func isVisible(
         isFocused _: Bool,
@@ -23,29 +28,42 @@ enum OverlayGeometry {
     static let maximumScale: CGFloat = 1.8
     static let defaultScale: CGFloat = 0.72
     static let resizeStep: CGFloat = 0.05
-    static let bubbleWidth: CGFloat = 300
-    static let bubbleMinimumHeight: CGFloat = 44
-    static let bubbleMaximumHeight: CGFloat = 66
-    static let bubbleGap: CGFloat = 6
+    static let bubbleWidth: CGFloat = 344
+    static let bubbleMinimumHeight: CGFloat = 70
+    static let bubbleMaximumHeight: CGFloat = 680
+    static let bubbleGap: CGFloat = 3
     static let bubbleMinimumWidth: CGFloat = 108
-    static let bubbleStackSpacing: CGFloat = 6
-    static let bubbleCornerRadius: CGFloat = 15
-    static let bubbleLeadingPadding: CGFloat = 12
-    static let bubbleTrailingPadding: CGFloat = 50
-    static let bubbleVerticalPadding: CGFloat = 12
+    static let bubbleStackSpacing: CGFloat = 4
+    static let bubbleCornerRadius: CGFloat = 14
+    static let bubbleLeadingPadding: CGFloat = 8
+    static let bubbleTrailingPadding: CGFloat = 8
+    static let bubbleVerticalPadding: CGFloat = 7
+    static let bubbleGroupHeaderHeight: CGFloat = 17
+    static let bubbleGroupHeaderSpacing: CGFloat = 4
+    static let bubbleSessionHorizontalPadding: CGFloat = 8
+    static let bubbleSessionVerticalPadding: CGFloat = 5
+    static let bubbleSessionTitleFontSize: CGFloat = 11.4
+    static let bubbleSessionTitleSpacing: CGFloat = 2
+    static let bubbleDetailLineLimit = 2
+    static let bubbleSessionDividerHeight: CGFloat = 1
     static let bubbleHeaderAvatarWidth: CGFloat = 14
     static let bubbleHeaderGap: CGFloat = 5
     static let bubbleHeaderFontSize: CGFloat = 11.2
     static let bubbleDetailFontSize: CGFloat = 11.8
-    static let menuVisualSize = CGSize(width: 24, height: 24)
+    static let menuVisualSize = CGSize(width: 22, height: 22)
     static let menuHitSize = CGSize(width: 36, height: 36)
-    static let resizeVisualSize = CGSize(width: 18, height: 18)
+    static let resizeVisualSize = CGSize(width: 16, height: 16)
     static let resizeHitSize = CGSize(width: 38, height: 38)
-    static let pointerNearMargin: CGFloat = 3
-    private static let petStageBaseSize = CGSize(width: 250, height: 330)
-    private static let petShadowRadius: CGFloat = 14
-    private static let petShadowYOffset: CGFloat = 8
-    private static let panelContentPadding: CGFloat = 3
+    static let pointerNearMargin: CGFloat = 12
+    private static let petStageBaseSize = CGSize(width: 238, height: 318)
+    private static let petSpriteBaseSize = CGSize(width: 230, height: 310)
+    private static let petShadowRadius: CGFloat = 10
+    private static let petShadowYOffset: CGFloat = 6
+    private static let panelContentPadding: CGFloat = 2
+    private static let petControlTrailingGap: CGFloat = 8
+    private static let petMenuToPetGap: CGFloat = 3
+    private static let resizeSideVerticalRatio: CGFloat = 0.28
+    private static let petControlMinimumVerticalGap: CGFloat = 2
 
     static func clampedPoint(_ base: CGPoint, in size: CGSize) -> CGPoint {
         CGPoint(
@@ -61,7 +79,7 @@ enum OverlayGeometry {
         let availableWidth = max(96, size.width - 32)
         let maximumWidth = min(bubbleWidth, availableWidth)
         let minimumWidth = min(bubbleMinimumWidth, maximumWidth)
-        let width = min(maximumWidth, max(minimumWidth, measuredBubbleWidth(maximumWidth: maximumWidth, content: content)))
+        let width = max(minimumWidth, maximumWidth)
         let measuredHeight = measuredBubbleHeight(width: width, content: content)
         return CGSize(
             width: width,
@@ -106,6 +124,46 @@ enum OverlayGeometry {
                 width: size.width,
                 height: size.height
             )
+        }
+    }
+
+    static func bubbleCloseHitRect(in bubbleRect: CGRect) -> CGRect {
+        let headerHitHeight = bubbleVerticalPadding
+            + bubbleGroupHeaderHeight
+            + bubbleGroupHeaderSpacing
+        return CGRect(
+            x: bubbleRect.maxX - 34,
+            y: bubbleRect.minY,
+            width: 34,
+            height: min(headerHitHeight, bubbleRect.height)
+        )
+    }
+
+    static func bubbleSessionRects(
+        in bubbleRect: CGRect,
+        content: OverlayBubbleContent
+    ) -> [CGRect] {
+        let innerWidth = max(0, bubbleRect.width - bubbleLeadingPadding - bubbleTrailingPadding)
+        let rowHeights = bubbleSessionRowHeights(bubbleWidth: bubbleRect.width, content: content)
+        var y = bubbleRect.minY + bubbleVerticalPadding
+            + bubbleGroupHeaderHeight + bubbleGroupHeaderSpacing
+        return rowHeights.map { height in
+            defer { y += height + bubbleSessionDividerHeight }
+            return CGRect(
+                x: bubbleRect.minX + bubbleLeadingPadding,
+                y: y,
+                width: innerWidth,
+                height: height
+            )
+        }
+    }
+
+    static func bubbleSessionRowHeights(
+        bubbleWidth: CGFloat,
+        content: OverlayBubbleContent
+    ) -> [CGFloat] {
+        content.sessions.map { session in
+            measuredSessionRowHeight(width: bubbleWidth, session: session)
         }
     }
 
@@ -154,15 +212,17 @@ enum OverlayGeometry {
         scale: CGFloat,
         visibleFrame: CGRect,
         clickMenuEnabled: Bool = true,
-        includeResize: Bool = true
+        includeResize: Bool = true,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
         guard !visibleFrame.isEmpty else { return proposedCenter }
 
-        let relativeBounds = petInteractiveScreenBounds(
+        let relativeBounds = petMovementScreenBounds(
             scale: scale,
             petScreenCenter: .zero,
             clickMenuEnabled: clickMenuEnabled,
-            includeResize: includeResize
+            includeResize: includeResize,
+            petVisualEnvelope: petVisualEnvelope
         )
         let edgeInset: CGFloat = 1
         let minX = visibleFrame.minX - relativeBounds.minX + edgeInset
@@ -173,6 +233,23 @@ enum OverlayGeometry {
         return CGPoint(
             x: clamp(proposedCenter.x, lower: minX, upper: maxX),
             y: clamp(proposedCenter.y, lower: minY, upper: maxY)
+        )
+    }
+
+    /// Movement intentionally permits the pet to enter the Dock reservation at
+    /// the bottom or side of a display. The menu-bar strip remains protected so
+    /// the pet and its controls cannot become unreachable behind system chrome.
+    static func petMovementFrame(screenFrame: CGRect, visibleFrame: CGRect) -> CGRect {
+        guard !screenFrame.isEmpty else { return visibleFrame }
+        guard !visibleFrame.isEmpty else { return screenFrame }
+
+        let protectedTop = min(screenFrame.maxY, visibleFrame.maxY)
+        guard protectedTop > screenFrame.minY else { return screenFrame }
+        return CGRect(
+            x: screenFrame.minX,
+            y: screenFrame.minY,
+            width: screenFrame.width,
+            height: protectedTop - screenFrame.minY
         )
     }
 
@@ -198,27 +275,27 @@ enum OverlayGeometry {
         bubbleSize: CGSize,
         scale: CGFloat,
         petScreenCenter: CGPoint,
-        screenFrame: CGRect
+        screenFrame: CGRect,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
         let petSize = petVisibleSize(scale: scale)
+        let verticalOffsets = petVisualVerticalOffsets(
+            scale: scale,
+            envelope: petVisualEnvelope
+        )
         let petLeft = petScreenCenter.x - petSize.width / 2
         let petRight = petScreenCenter.x + petSize.width / 2
-        let petTop = petScreenCenter.y + petSize.height / 2
-        let petBottom = petScreenCenter.y - petSize.height / 2
+        let petTop = petScreenCenter.y + verticalOffsets.top
+        let petBottom = petScreenCenter.y + verticalOffsets.bottom
 
         let alignLeft = screenFrame.isEmpty ? false : petScreenCenter.x < screenFrame.midX
         let aboveCenter = petTop + bubbleGap + bubbleSize.height / 2
         let belowCenter = petBottom - bubbleGap - bubbleSize.height / 2
         let hasSpaceAbove = screenFrame.isEmpty || aboveCenter <= screenFrame.maxY - 8
         let hasSpaceBelow = screenFrame.isEmpty || belowCenter >= screenFrame.minY + 8
-        let placeBelow: Bool
-        if !hasSpaceAbove, hasSpaceBelow {
-            placeBelow = true
-        } else if !hasSpaceBelow, hasSpaceAbove {
-            placeBelow = false
-        } else {
-            placeBelow = screenFrame.isEmpty ? false : petScreenCenter.y > screenFrame.midY
-        }
+        // The bubble is visually attached to the pet's top edge. Only fall
+        // below when the top side genuinely cannot fit and the bottom can.
+        let placeBelow = !hasSpaceAbove && hasSpaceBelow
 
         let unclampedX = alignLeft
             ? petLeft + bubbleSize.width / 2
@@ -280,6 +357,63 @@ enum OverlayGeometry {
         CGSize(width: max(30, 230 * scale), height: max(42, 310 * scale))
     }
 
+    static func petVisualVerticalOffsets(
+        scale: CGFloat,
+        envelope: OverlayPetVisualEnvelope?
+    ) -> (bottom: CGFloat, top: CGFloat) {
+        let bounds = fittedPetVisualBounds(scale: scale, envelope: envelope)
+        return (bounds.minY, bounds.maxY)
+    }
+
+    static func petVisualHorizontalOffsets(
+        scale: CGFloat,
+        envelope: OverlayPetVisualEnvelope?
+    ) -> (left: CGFloat, right: CGFloat) {
+        let bounds = fittedPetVisualBounds(scale: scale, envelope: envelope)
+        return (bounds.minX, bounds.maxX)
+    }
+
+    private static func fittedPetVisualBounds(
+        scale: CGFloat,
+        envelope: OverlayPetVisualEnvelope?
+    ) -> CGRect {
+        let spriteSize = CGSize(
+            width: petSpriteBaseSize.width * scale,
+            height: petSpriteBaseSize.height * scale
+        )
+        guard
+            let envelope,
+            envelope.canvasSize.width > 0,
+            envelope.canvasSize.height > 0,
+            !envelope.visibleBounds.isEmpty
+        else {
+            return rect(center: .zero, size: spriteSize)
+        }
+
+        let canvasBounds = CGRect(origin: .zero, size: envelope.canvasSize)
+        let visibleBounds = envelope.visibleBounds.intersection(canvasBounds)
+        guard !visibleBounds.isNull, !visibleBounds.isEmpty else {
+            return rect(center: .zero, size: spriteSize)
+        }
+
+        let fittedScale = min(
+            spriteSize.width / envelope.canvasSize.width,
+            spriteSize.height / envelope.canvasSize.height
+        )
+        let fittedCanvasWidth = envelope.canvasSize.width * fittedScale
+        let fittedCanvasHeight = envelope.canvasSize.height * fittedScale
+        let fittedCanvasLeft = -spriteSize.width / 2
+            + (spriteSize.width - fittedCanvasWidth) / 2
+        let fittedCanvasBottom = -spriteSize.height / 2
+            + (spriteSize.height - fittedCanvasHeight) / 2
+        return CGRect(
+            x: fittedCanvasLeft + visibleBounds.minX * fittedScale,
+            y: fittedCanvasBottom + visibleBounds.minY * fittedScale,
+            width: visibleBounds.width * fittedScale,
+            height: visibleBounds.height * fittedScale
+        )
+    }
+
     static func clampedScale(_ scale: CGFloat) -> CGFloat {
         min(maximumScale, max(minimumScale, scale))
     }
@@ -294,36 +428,104 @@ enum OverlayGeometry {
         return clampedScale(persistedScale)
     }
 
-    static func resizeCenter(petCenter: CGPoint, scale: CGFloat) -> CGPoint {
+    static func resizeCenter(
+        petCenter: CGPoint,
+        scale: CGFloat,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
         let petSize = petVisibleSize(scale: scale)
+        let petRight = petVisualHorizontalOffsets(
+            scale: scale,
+            envelope: petVisualEnvelope
+        ).right
+        let verticalOffset = resizeVerticalOffset(
+            petHeight: petSize.height,
+            menuCenterOffset: menuLocalVerticalOffset(
+                scale: scale,
+                envelope: petVisualEnvelope
+            )
+        )
         return CGPoint(
-            x: petCenter.x + petSize.width / 2 + 8,
-            y: petCenter.y + petSize.height / 2 + 8
+            x: petCenter.x + petRight + petControlTrailingGap,
+            y: petCenter.y + verticalOffset
         )
     }
 
-    static func resizeScreenCenter(petScreenCenter: CGPoint, scale: CGFloat) -> CGPoint {
+    static func resizeScreenCenter(
+        petScreenCenter: CGPoint,
+        scale: CGFloat,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
         let petSize = petVisibleSize(scale: scale)
+        let petRight = petVisualHorizontalOffsets(
+            scale: scale,
+            envelope: petVisualEnvelope
+        ).right
+        let verticalOffset = resizeVerticalOffset(
+            petHeight: petSize.height,
+            menuCenterOffset: menuLocalVerticalOffset(
+                scale: scale,
+                envelope: petVisualEnvelope
+            )
+        )
         return CGPoint(
-            x: petScreenCenter.x + petSize.width / 2 + 8,
-            y: petScreenCenter.y - petSize.height / 2 - 8
+            x: petScreenCenter.x + petRight + petControlTrailingGap,
+            y: petScreenCenter.y - verticalOffset
         )
     }
 
-    static func menuCenter(petCenter: CGPoint, scale: CGFloat) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
+    static func menuCenter(
+        petCenter: CGPoint,
+        scale: CGFloat,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
+        let petRight = petVisualHorizontalOffsets(
+            scale: scale,
+            envelope: petVisualEnvelope
+        ).right
         return CGPoint(
-            x: petCenter.x + petSize.width / 2 + 14,
-            y: petCenter.y - petSize.height / 2 + 10
+            x: petCenter.x + petRight + petControlTrailingGap,
+            y: petCenter.y + menuLocalVerticalOffset(
+                scale: scale,
+                envelope: petVisualEnvelope
+            )
         )
     }
 
-    static func menuScreenCenter(petScreenCenter: CGPoint, scale: CGFloat) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
+    static func menuScreenCenter(
+        petScreenCenter: CGPoint,
+        scale: CGFloat,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
+        let petRight = petVisualHorizontalOffsets(
+            scale: scale,
+            envelope: petVisualEnvelope
+        ).right
         return CGPoint(
-            x: petScreenCenter.x + petSize.width / 2 + 14,
-            y: petScreenCenter.y + petSize.height / 2 - 10
+            x: petScreenCenter.x + petRight + petControlTrailingGap,
+            y: petScreenCenter.y - menuLocalVerticalOffset(
+                scale: scale,
+                envelope: petVisualEnvelope
+            )
         )
+    }
+
+    private static func menuLocalVerticalOffset(
+        scale: CGFloat,
+        envelope: OverlayPetVisualEnvelope?
+    ) -> CGFloat {
+        let petTop = petVisualVerticalOffsets(scale: scale, envelope: envelope).top
+        return -petTop + menuHitSize.height / 2 + petMenuToPetGap
+    }
+
+    private static func resizeVerticalOffset(
+        petHeight: CGFloat,
+        menuCenterOffset: CGFloat
+    ) -> CGFloat {
+        let preferredOffset = petHeight * resizeSideVerticalRatio
+        let minimumCenterSeparation = (menuHitSize.height + resizeHitSize.height) / 2
+            + petControlMinimumVerticalGap
+        return max(preferredOffset, menuCenterOffset + minimumCenterSeparation)
     }
 
     static func petPanelScreenFrame(
@@ -376,6 +578,49 @@ enum OverlayGeometry {
         return bounds.insetBy(dx: -panelContentPadding, dy: -panelContentPadding)
     }
 
+    /// Bounds used only for movement clamping. The render panel remains large
+    /// enough for shadows and animation, while dragging is constrained by the
+    /// pixels that are actually visible plus the two reachable controls. This
+    /// prevents transparent sprite padding from creating an invisible wall.
+    static func petMovementScreenBounds(
+        scale: CGFloat,
+        petScreenCenter: CGPoint,
+        clickMenuEnabled: Bool,
+        includeResize: Bool,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGRect {
+        var bounds = fittedPetVisualBounds(
+            scale: scale,
+            envelope: petVisualEnvelope
+        )
+        .offsetBy(dx: petScreenCenter.x, dy: petScreenCenter.y)
+        .insetBy(dx: -panelContentPadding, dy: -panelContentPadding)
+
+        if includeResize {
+            bounds = bounds.union(rect(
+                center: resizeScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: resizeHitSize
+            ))
+        }
+
+        if clickMenuEnabled {
+            bounds = bounds.union(rect(
+                center: menuScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: menuHitSize
+            ))
+        }
+
+        return bounds.insetBy(dx: -panelContentPadding, dy: -panelContentPadding)
+    }
+
     static func pointerNearPetScreenRect(
         scale: CGFloat,
         petScreenCenter: CGPoint,
@@ -412,13 +657,15 @@ enum OverlayGeometry {
         scale: CGFloat,
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
-        content: OverlayBubbleContent = .idle
+        content: OverlayBubbleContent = .idle,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         bubblePanelScreenFrame(
             scale: scale,
             petScreenCenter: petScreenCenter,
             visibleFrame: visibleFrame,
-            contents: [content]
+            contents: [content],
+            petVisualEnvelope: petVisualEnvelope
         )
     }
 
@@ -426,7 +673,8 @@ enum OverlayGeometry {
         scale: CGFloat,
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
-        contents: [OverlayBubbleContent]
+        contents: [OverlayBubbleContent],
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         let bubbleSize = resolvedBubbleStackSize(in: visibleFrame.size, contents: contents)
         guard bubbleSize.width > 0, bubbleSize.height > 0 else { return .zero }
@@ -435,7 +683,8 @@ enum OverlayGeometry {
                 bubbleSize: bubbleSize,
                 scale: scale,
                 petScreenCenter: petScreenCenter,
-                screenFrame: visibleFrame
+                screenFrame: visibleFrame,
+                petVisualEnvelope: petVisualEnvelope
             ),
             size: bubbleSize
         ).integral
@@ -547,52 +796,45 @@ enum OverlayGeometry {
         .contains { $0.contains(point) }
     }
 
-    private static func measuredBubbleWidth(maximumWidth: CGFloat, content: OverlayBubbleContent) -> CGFloat {
-        let textWidthLimit = max(72, maximumWidth - bubbleLeadingPadding - bubbleTrailingPadding)
-        let headerFont = NSFont.systemFont(ofSize: bubbleHeaderFontSize, weight: .semibold)
-        let detailFont = NSFont.systemFont(ofSize: bubbleDetailFontSize, weight: .semibold)
-        let headerWidth = bubbleHeaderAvatarWidth + bubbleHeaderGap
-            + measuredSingleLineWidth(content.agentName, font: headerFont)
-        let detailWidth = naturalDetailWidth(
-            content.messageText,
-            font: detailFont,
-            maximumWidth: textWidthLimit,
-            minimumReadableWidth: 76
+    private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
+        let rowHeights = bubbleSessionRowHeights(bubbleWidth: width, content: content)
+        let dividers = CGFloat(max(0, rowHeights.count - 1)) * bubbleSessionDividerHeight
+        return ceil(
+            bubbleVerticalPadding * 2
+                + bubbleGroupHeaderHeight
+                + bubbleGroupHeaderSpacing
+                + rowHeights.reduce(0, +)
+                + dividers
         )
-        return ceil(bubbleLeadingPadding + bubbleTrailingPadding + max(headerWidth, detailWidth))
     }
 
-    private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
-        let spacing: CGFloat = 2
-        let textWidth = max(76, width - bubbleLeadingPadding - bubbleTrailingPadding)
-        let headerHeight = lineHeight(for: .systemFont(ofSize: bubbleHeaderFontSize, weight: .semibold))
-        let detailFont = NSFont.systemFont(ofSize: bubbleDetailFontSize, weight: .semibold)
+    private static func measuredSessionRowHeight(
+        width: CGFloat,
+        session: OverlaySessionContent
+    ) -> CGFloat {
+        let textWidth = max(
+            76,
+            width - bubbleLeadingPadding - bubbleTrailingPadding
+                - bubbleSessionHorizontalPadding * 2
+        )
+        let titleHeight = lineHeight(
+            for: .systemFont(ofSize: bubbleSessionTitleFontSize, weight: .semibold)
+        )
+        let detailFont = NSFont.systemFont(ofSize: bubbleDetailFontSize, weight: .medium)
         let detailLineHeight = lineHeight(for: detailFont)
         let detailHeight = measuredTextHeight(
-            content.messageText,
+            session.messageText,
             font: detailFont,
             width: textWidth,
             lineHeight: detailLineHeight,
-            maximumLines: 2
+            maximumLines: bubbleDetailLineLimit
         )
-        return ceil(bubbleVerticalPadding + headerHeight + spacing + detailHeight)
-    }
-
-    private static func naturalDetailWidth(
-        _ text: String,
-        font: NSFont,
-        maximumWidth: CGFloat,
-        minimumReadableWidth: CGFloat
-    ) -> CGFloat {
-        let singleLineWidth = measuredSingleLineWidth(text, font: font)
-        guard singleLineWidth > maximumWidth else {
-            return singleLineWidth
-        }
-
-        // A two-line bubble should not jump straight to the maximum width if the
-        // message can wrap cleanly at a narrower, readable width.
-        let twoLineTarget = ceil(singleLineWidth / 2) + 12
-        return min(maximumWidth, max(minimumReadableWidth, twoLineTarget))
+        return ceil(
+            bubbleSessionVerticalPadding * 2
+                + titleHeight
+                + bubbleSessionTitleSpacing
+                + detailHeight
+        )
     }
 
     private static func measuredSingleLineWidth(_ text: String, font: NSFont) -> CGFloat {
@@ -635,42 +877,228 @@ enum OverlayGeometry {
     }
 }
 
-struct OverlayBubbleContent: Equatable, Identifiable {
+struct OverlaySessionContent: Equatable, Identifiable {
     var id: String
     var source: AgentSource?
+    var sessionID: String?
     var eventType: AgentEventKind?
-    var agentName: String
-    var title: String
-    var detail: String
+    var sessionTitle: String
+    var messageText: String
+    var statusText: String
+    var actionLabel: String
+    var navigation: AgentSessionNavigation
 
-    var messageText: String {
-        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? title : trimmed
-    }
+    var canOpen: Bool { !navigation.explicitlyClosed }
 
-    static let idle = OverlayBubbleContent(
+    static let idle = OverlaySessionContent(
         id: "idle",
         source: nil,
+        sessionID: nil,
         eventType: nil,
-        agentName: "Agent",
-        title: "Agent Pet Companion",
-        detail: "宠物正在等待 Agent 事件。"
+        sessionTitle: "Agent Pet Companion",
+        messageText: APCLocalization.text(.overlayIdleDetail),
+        statusText: "",
+        actionLabel: APCLocalization.text(.overlayActionOpen),
+        navigation: AgentSessionNavigation()
     )
 
     init(
         id: String,
         source: AgentSource?,
+        sessionID: String?,
         eventType: AgentEventKind?,
-        agentName: String,
-        title: String,
-        detail: String
+        sessionTitle: String,
+        messageText: String,
+        statusText: String,
+        actionLabel: String,
+        navigation: AgentSessionNavigation = AgentSessionNavigation()
     ) {
         self.id = id
         self.source = source
+        self.sessionID = sessionID
         self.eventType = eventType
+        self.sessionTitle = sessionTitle
+        self.messageText = messageText
+        self.statusText = statusText
+        self.actionLabel = actionLabel
+        self.navigation = navigation
+    }
+
+    init(state: ActiveAgentState) {
+        let event = state.event
+        id = event.id
+        source = event.source
+        sessionID = state.sessionID ?? event.sessionID
+        eventType = event.eventType
+        sessionTitle = Self.sessionTitle(for: state)
+        statusText = Self.statusText(for: event.eventType)
+        actionLabel = Self.actionLabel(for: event.eventType)
+        navigation = event.sessionNavigation
+        messageText = Self.displayMessage(for: state)
+    }
+
+    init(event: AgentEvent) {
+        id = event.id
+        source = event.source
+        sessionID = event.sessionID
+        eventType = event.eventType
+        sessionTitle = Self.compactTitle(event.payloadJSON?.projectLabel)
+            ?? "\(event.source.shortTitle) 会话"
+        statusText = Self.statusText(for: event.eventType)
+        actionLabel = Self.actionLabel(for: event.eventType)
+        navigation = event.sessionNavigation
+        messageText = event.payloadJSON?.messageRole == "assistant"
+            ? event.messageContent ?? Self.fallbackDetail(for: event.eventType)
+            : Self.fallbackDetail(for: event.eventType)
+    }
+
+    private static func sessionTitle(for state: ActiveAgentState) -> String {
+        if let title = compactTitle(state.sessionTitle) {
+            return title
+        }
+        if state.sessionUserMessage?.role == "user",
+           let title = compactTitle(state.sessionUserMessage?.content)
+        {
+            return title
+        }
+        if state.latestUserMessage?.payloadJSON?.messageRole == "user",
+           let title = compactTitle(state.latestUserMessage?.messageContent)
+        {
+            return title
+        }
+        if state.event.payloadJSON?.messageRole == "user",
+           let title = compactTitle(state.event.messageContent)
+        {
+            return title
+        }
+        return compactTitle(state.event.payloadJSON?.projectLabel)
+            ?? "\(state.source.shortTitle) 会话"
+    }
+
+    private static func assistantMessage(for state: ActiveAgentState) -> String? {
+        if state.sessionMessage?.role == "assistant",
+           let message = compactMessage(state.sessionMessage?.content)
+        {
+            return message
+        }
+        if state.latestMessage?.payloadJSON?.messageRole == "assistant",
+           let message = compactMessage(state.latestMessage?.messageContent)
+        {
+            return message
+        }
+        if state.event.payloadJSON?.messageRole == "assistant" {
+            return compactMessage(state.event.messageContent)
+        }
+        return nil
+    }
+
+    private static func displayMessage(for state: ActiveAgentState) -> String {
+        switch state.event.eventType {
+        case .waiting, .failed:
+            return fallbackDetail(for: state.event.eventType)
+        case .start, .tool:
+            return activityMessage(for: state)
+                ?? assistantMessage(for: state)
+                ?? fallbackDetail(for: state.event.eventType)
+        case .review, .done:
+            return assistantMessage(for: state)
+                ?? fallbackDetail(for: state.event.eventType)
+        }
+    }
+
+    private static func activityMessage(for state: ActiveAgentState) -> String? {
+        if let content = compactMessage(state.sessionActivity?.content) {
+            return content
+        }
+        guard let kind = state.sessionActivity?.kind else { return nil }
+        let key: APCLocalizationKey = switch kind {
+        case "thinking": .overlayActivityThinking
+        case "plan": .overlayActivityPlan
+        case "command": .overlayActivityCommand
+        case "file": .overlayActivityFile
+        case "file_change": .overlayActivityFileChange
+        case "tool": .overlayActivityTool
+        case "subagent": .overlayActivitySubagent
+        case "search": .overlayActivitySearch
+        case "network": .overlayActivityNetwork
+        case "image": .overlayActivityImage
+        case "compaction": .overlayActivityCompaction
+        default: .overlayDetailRunning
+        }
+        return APCLocalization.text(key)
+    }
+
+    private static func compactTitle(_ value: String?) -> String? {
+        guard let value = compactMessage(value) else { return nil }
+        let firstLine = value.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? value
+        return firstLine.count > 80 ? "\(firstLine.prefix(79))…" : firstLine
+    }
+
+    private static func compactMessage(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    private static func statusText(for eventType: AgentEventKind) -> String {
+        switch eventType {
+        case .start: APCLocalization.text(.overlayStatusRunning)
+        case .tool: APCLocalization.text(.overlayStatusTool)
+        case .waiting: APCLocalization.text(.overlayStatusNeedsInput)
+        case .review, .done: APCLocalization.text(.overlayStatusReady)
+        case .failed: APCLocalization.text(.overlayStatusBlocked)
+        }
+    }
+
+    private static func fallbackDetail(for eventType: AgentEventKind) -> String {
+        switch eventType {
+        case .start, .tool: APCLocalization.text(.overlayDetailRunning)
+        case .waiting: APCLocalization.text(.overlayDetailNeedsInput)
+        case .review, .done: APCLocalization.text(.overlayDetailReady)
+        case .failed: APCLocalization.text(.overlayDetailBlocked)
+        }
+    }
+
+    private static func actionLabel(for eventType: AgentEventKind) -> String {
+        APCLocalization.text(.overlayActionOpen)
+    }
+}
+
+struct OverlayBubbleContent: Equatable, Identifiable {
+    var id: String
+    var source: AgentSource?
+    var agentName: String
+    var sessions: [OverlaySessionContent]
+
+    var eventIDs: [String] { sessions.map(\.id) }
+
+    static let idle = OverlayBubbleContent(
+        id: "idle",
+        source: nil,
+        agentName: "Agent",
+        sessions: [.idle]
+    )
+
+    init(
+        id: String,
+        source: AgentSource?,
+        agentName: String,
+        sessions: [OverlaySessionContent]
+    ) {
+        self.id = id
+        self.source = source
         self.agentName = agentName
-        self.title = title
-        self.detail = detail
+        self.sessions = sessions
+    }
+
+    init(source: AgentSource, states: [ActiveAgentState]) {
+        id = "agent-\(source.rawValue)"
+        self.source = source
+        agentName = source.title
+        sessions = states.map(OverlaySessionContent.init(state:))
+    }
+
+    init(state: ActiveAgentState) {
+        self.init(source: state.source, states: [state])
     }
 
     init(event: AgentEvent?) {
@@ -678,37 +1106,9 @@ struct OverlayBubbleContent: Equatable, Identifiable {
             self = .idle
             return
         }
-        id = event.id
+        id = "agent-\(event.source.rawValue)"
         source = event.source
-        eventType = event.eventType
-        agentName = event.source.shortTitle
-        title = event.title
-        if
-            let detail = event.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !detail.isEmpty,
-            detail != event.source.title
-        {
-            self.detail = detail
-            return
-        }
-        let title = event.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty {
-            detail = title
-            return
-        }
-        switch event.eventType {
-        case .start:
-            detail = "开始处理任务"
-        case .tool:
-            detail = "正在执行工具"
-        case .waiting:
-            detail = "正在等待确认"
-        case .review:
-            detail = "有内容待查看"
-        case .done:
-            detail = "已完成任务"
-        case .failed:
-            detail = "处理失败"
-        }
+        agentName = event.source.title
+        sessions = [OverlaySessionContent(event: event)]
     }
 }

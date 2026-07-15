@@ -122,9 +122,11 @@ overlay_interaction_skip_reason() {
 log_legend
 
 run_step "fast/core" "default test isolation and owned-process safety" "$ROOT_DIR/script/validate_test_isolation.sh"
+run_step "fast/core" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/script/validate_app_lifecycle_contract.sh"
 run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
 run_step "fast/core" "M0 bootstrap smoke: Rust workspace, PetCore, CLI, Swift core validation" "$ROOT_DIR/script/validate_m0.sh"
+run_step "fast/core" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
 run_step "fast/core" "M1 daemon, launch-agent plist, local HTTP token, and event API smoke" "$ROOT_DIR/script/validate_m1.sh"
 run_step "fast/core" "M2 petpack schema/build validation and renderer budget calculations" "$ROOT_DIR/script/validate_m2.sh"
 run_step "simulated integration" "M3 Pet Studio generation with local fallback; not a real App Server run" "$ROOT_DIR/script/validate_m3.sh"

@@ -324,16 +324,30 @@ func floatingWindows() -> [WindowInfo] {
     }
 }
 
+func visibleBubbleWindow() -> WindowInfo? {
+    floatingWindows().first(where: {
+        $0.width >= 320 && $0.width <= 430 && $0.height >= 70 && $0.height <= 180
+    })
+}
+
 func bubbleWindow() -> WindowInfo? {
     for _ in 0..<40 {
-        if let bubble = floatingWindows().first(where: {
-            $0.width >= 108 && $0.width <= 310 && $0.height >= 44 && $0.height <= 70
-        }) {
+        if let bubble = visibleBubbleWindow() {
             return bubble
         }
         Thread.sleep(forTimeInterval: 0.1)
     }
     return nil
+}
+
+func waitForBubbleToHide() -> Bool {
+    for _ in 0..<40 {
+        if visibleBubbleWindow() == nil {
+            return true
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    return false
 }
 
 func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .left) {
@@ -370,12 +384,40 @@ func drag(from start: CGPoint, to end: CGPoint, steps: Int = 18) {
 }
 
 func click(at point: CGPoint) {
-    postMouse(.mouseMoved, at: point)
+    let start = CGEvent(source: nil)?.location ?? point
+    for index in 1...12 {
+        let progress = Double(index) / 12
+        postMouse(.mouseMoved, at: CGPoint(
+            x: start.x + (point.x - start.x) * progress,
+            y: start.y + (point.y - start.y) * progress
+        ))
+        Thread.sleep(forTimeInterval: 0.018)
+    }
     Thread.sleep(forTimeInterval: 0.08)
     postMouse(.leftMouseDown, at: point)
     Thread.sleep(forTimeInterval: 0.05)
     postMouse(.leftMouseUp, at: point)
     Thread.sleep(forTimeInterval: 0.35)
+}
+
+func menuPoint(for placement: (x: Double, y: Double, scale: Double)) -> CGPoint {
+    let petWidth = max(34, 230 * placement.scale)
+    let petHeight = max(48, 310 * placement.scale)
+    return quartzPoint(
+        cocoaX: placement.x + petWidth / 2 + 14,
+        cocoaY: placement.y + petHeight / 2 - 10
+    )
+}
+
+func setBehaviorEnabled(_ enabled: Bool) -> Bool {
+    guard var behavior = snapshot()["behavior"] as? [String: Any] else { return false }
+    behavior["enabled"] = enabled
+    guard let data = try? JSONSerialization.data(withJSONObject: behavior),
+          let json = String(data: data, encoding: .utf8)
+    else {
+        return false
+    }
+    return runCLI(["behavior", "set-json", "--value-json", json]) != nil
 }
 
 guard let initial = placement() else {
@@ -447,16 +489,75 @@ guard let bubble = bubbleWindow() else {
     exit(1)
 }
 
-click(at: CGPoint(x: bubble.x + 18, y: bubble.y + 18))
+click(at: CGPoint(x: bubble.x + bubble.width - 17, y: bubble.y + 15))
 
-for _ in 0..<30 {
-    if bubbleWindow() == nil {
-        print("Overlay interaction validation ok")
-        exit(0)
-    }
-    Thread.sleep(forTimeInterval: 0.15)
+guard waitForBubbleToHide() else {
+    fputs("overlay interaction validation failed: bubble close click did not dismiss the bubble panel\n", stderr)
+    exit(1)
 }
 
-fputs("overlay interaction validation failed: bubble close click did not dismiss the bubble panel\n", stderr)
-exit(1)
+let disclosurePoint = menuPoint(for: resized)
+click(at: disclosurePoint)
+guard bubbleWindow() != nil else {
+    fputs("overlay interaction validation failed: expand did not restore a closed bubble\n", stderr)
+    exit(1)
+}
+
+click(at: disclosurePoint)
+guard waitForBubbleToHide() else {
+    fputs("overlay interaction validation failed: expanded bubble could not be collapsed\n", stderr)
+    exit(1)
+}
+
+guard setBehaviorEnabled(false) else {
+    fputs("overlay interaction validation failed: could not disable the desktop pet\n", stderr)
+    exit(1)
+}
+var overlayHidden = false
+for _ in 0..<40 {
+    if floatingWindows().isEmpty {
+        overlayHidden = true
+        break
+    }
+    Thread.sleep(forTimeInterval: 0.1)
+}
+guard overlayHidden else {
+    fputs("overlay interaction validation failed: desktop pet did not hide after disable\n", stderr)
+    exit(1)
+}
+guard setBehaviorEnabled(true) else {
+    fputs("overlay interaction validation failed: could not re-enable the desktop pet\n", stderr)
+    exit(1)
+}
+var overlayReturned = false
+for _ in 0..<40 {
+    if !floatingWindows().isEmpty {
+        overlayReturned = true
+        break
+    }
+    Thread.sleep(forTimeInterval: 0.1)
+}
+guard overlayReturned else {
+    fputs("overlay interaction validation failed: desktop pet did not return after re-enable\n", stderr)
+    exit(1)
+}
+Thread.sleep(forTimeInterval: 0.35)
+guard visibleBubbleWindow() == nil else {
+    fputs("overlay interaction validation failed: collapsed bubble expanded without user action after re-enable\n", stderr)
+    exit(1)
+}
+
+let restoredPlacement = placement() ?? resized
+let restoredDisclosurePoint = menuPoint(for: restoredPlacement)
+click(at: restoredDisclosurePoint)
+guard bubbleWindow() != nil else {
+    fputs("overlay interaction validation failed: expand did not restore the bubble after re-enable\n", stderr)
+    fputs("  placement=(\(restoredPlacement.x), \(restoredPlacement.y), \(restoredPlacement.scale)) click=(\(restoredDisclosurePoint.x), \(restoredDisclosurePoint.y))\n", stderr)
+    for window in floatingWindows() {
+        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
+    }
+    exit(1)
+}
+
+print("Overlay interaction validation ok")
 SWIFT

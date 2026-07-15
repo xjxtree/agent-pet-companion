@@ -222,10 +222,23 @@ fn normalized_contract_request(contract: &ContractEvent) -> Result<Value> {
             "project_path": null,
             "session_id": contract.session_id,
             "payload": {
-                "source_event": event_type,
+                "source_event": contract.source_event,
                 "tool_name": contract.tool_name,
                 "outcome": contract.outcome,
-                "diagnostic": false
+                "diagnostic": contract.diagnostic,
+                "turn_id": contract.turn_id,
+                "session_active": contract.session_active,
+                "message_role": contract.message_role,
+                "message_content": contract.message_content,
+                "activity_kind": contract.activity_kind,
+                "activity_content": contract.activity_content,
+                "interaction_kind": contract.interaction_kind,
+                "project_label": contract.project_label,
+                "session_title": contract.session_title,
+                "session_open": contract.session_open,
+                "session_surface": contract.session_surface,
+                "terminal_app": contract.terminal_app,
+                "session_open_url": contract.session_open_url
             }
         }),
     )
@@ -834,6 +847,33 @@ fn run_connections(mut args: Vec<String>) -> Result<()> {
                 json!({ "source": source }),
             )?)
         }
+        "refresh-installed" => {
+            if !args.is_empty() {
+                return Err(PetCoreError::InvalidRequest(format!(
+                    "unexpected connections refresh-installed argument: {}",
+                    args.join(" ")
+                )));
+            }
+            let paths = AppPaths::from_env()?;
+            let refreshed = [
+                AgentSource::Codex,
+                AgentSource::ClaudeCode,
+                AgentSource::Pi,
+                AgentSource::Opencode,
+            ]
+            .into_iter()
+            .map(|source| {
+                let result = connections::refresh_installed_source(&paths, source);
+                json!({
+                    "source": source,
+                    "refreshed": result.as_ref().copied().unwrap_or(false),
+                    "ok": result.is_ok(),
+                    "error": result.err().map(|error| error.to_string()),
+                })
+            })
+            .collect::<Vec<_>>();
+            print_json(json!({ "results": refreshed }))
+        }
         "uninstall" => {
             let source = connection_source_arg(&mut args, "uninstall", true)?.ok_or_else(|| {
                 PetCoreError::InvalidRequest("missing connection source".to_string())
@@ -1173,23 +1213,120 @@ fn contract_event_for_hook(
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("auto"));
 
-    if explicit.is_none() {
-        return parse_contract_event(source, payload);
-    }
+    let mut contract = if explicit.is_none() {
+        let Some(contract) = parse_contract_event(source, payload)? else {
+            return Ok(None);
+        };
+        contract
+    } else {
+        let kind = infer_event_type(explicit, payload, None, None)?;
+        ContractEvent {
+            source,
+            session_id: string_at_any_path(payload, SESSION_PATHS),
+            kind,
+            tool_name: string_at_any_path(payload, TOOL_NAME_PATHS),
+            outcome: None,
+            source_event: enum_name(kind).to_string(),
+            diagnostic: payload
+                .get("diagnostic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            session_active: !matches!(kind, AgentEventType::Done | AgentEventType::Failed),
+            turn_id: None,
+            message_role: None,
+            message_content: None,
+            activity_kind: (!matches!(
+                kind,
+                AgentEventType::Done | AgentEventType::Failed | AgentEventType::Waiting
+            ))
+            .then(|| "thinking".to_string()),
+            activity_content: None,
+            interaction_kind: (kind == AgentEventType::Waiting)
+                .then(|| "approval_required".to_string()),
+            project_label: None,
+            session_title: None,
+            session_open: Some(true),
+            session_surface: None,
+            terminal_app: None,
+            session_open_url: None,
+        }
+    };
+    apply_runtime_navigation(&mut contract);
+    Ok(Some(contract))
+}
 
-    let kind = infer_event_type(explicit, payload, None, None)?;
-    Ok(Some(ContractEvent {
-        source,
-        session_id: string_at_any_path(payload, SESSION_PATHS),
-        kind,
-        tool_name: string_at_any_path(payload, TOOL_NAME_PATHS),
-        outcome: None,
-    }))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeNavigation {
+    session_surface: Option<String>,
+    terminal_app: Option<String>,
+    session_open_url: Option<String>,
+}
+
+fn apply_runtime_navigation(contract: &mut ContractEvent) {
+    let navigation = runtime_navigation_from_values(
+        contract.source,
+        std::env::var("WARP_FOCUS_URL").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("__CFBundleIdentifier").ok().as_deref(),
+    );
+    contract.session_surface = navigation.session_surface;
+    contract.terminal_app = navigation.terminal_app;
+    contract.session_open_url = navigation.session_open_url;
+}
+
+fn runtime_navigation_from_values(
+    source: AgentSource,
+    warp_focus_url: Option<&str>,
+    term_program: Option<&str>,
+    bundle_identifier: Option<&str>,
+) -> RuntimeNavigation {
+    let session_open_url = warp_focus_url.and_then(validated_warp_focus_url);
+    let terminal_app = if session_open_url.is_some() {
+        Some("warp".to_string())
+    } else {
+        term_program.and_then(normalized_terminal_app)
+    };
+    let session_surface = if terminal_app.is_some() || source != AgentSource::Codex {
+        Some("cli_terminal".to_string())
+    } else if bundle_identifier == Some("com.openai.codex") {
+        Some("chatgpt_app".to_string())
+    } else {
+        None
+    };
+    RuntimeNavigation {
+        session_surface,
+        terminal_app,
+        session_open_url,
+    }
+}
+
+fn validated_warp_focus_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    let uuid = value
+        .strip_prefix("warp://session/")
+        .or_else(|| value.strip_prefix("warppreview://session/"))?;
+    (uuid.len() == 32 && uuid.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| value.to_string())
+}
+
+fn normalized_terminal_app(term_program: &str) -> Option<String> {
+    let normalized = term_program.trim().to_ascii_lowercase();
+    if normalized.contains("warp") {
+        Some("warp".to_string())
+    } else if normalized.contains("iterm") {
+        Some("iterm2".to_string())
+    } else if normalized.contains("ghostty") {
+        Some("ghostty".to_string())
+    } else if normalized == "apple_terminal" || normalized == "terminal" {
+        Some("terminal".to_string())
+    } else {
+        None
+    }
 }
 
 fn usage() {
     eprintln!(
-        "usage: petcore-cli health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path> | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] | connections repair|uninstall|test --source SOURCE | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
+        "usage: petcore-cli health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path> | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] | connections repair|uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
     );
 }
 
@@ -1516,6 +1653,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn warp_runtime_navigation_preserves_only_exact_session_focus_urls() {
+        let navigation = runtime_navigation_from_values(
+            AgentSource::ClaudeCode,
+            Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
+            Some("WarpTerminal"),
+            None,
+        );
+        assert_eq!(navigation.session_surface.as_deref(), Some("cli_terminal"));
+        assert_eq!(navigation.terminal_app.as_deref(), Some("warp"));
+        assert_eq!(
+            navigation.session_open_url.as_deref(),
+            Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4")
+        );
+
+        let rejected = runtime_navigation_from_values(
+            AgentSource::Codex,
+            Some("https://example.com/session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
+            None,
+            None,
+        );
+        assert_eq!(rejected.session_open_url, None);
+        assert_eq!(rejected.session_surface, None);
+    }
+
+    #[test]
+    fn cli_only_agents_keep_app_fallback_without_terminal_metadata() {
+        let navigation = runtime_navigation_from_values(AgentSource::Pi, None, None, None);
+        assert_eq!(navigation.session_surface.as_deref(), Some("cli_terminal"));
+        assert_eq!(navigation.terminal_app, None);
+
+        let iterm =
+            runtime_navigation_from_values(AgentSource::Codex, None, Some("iTerm.app"), None);
+        assert_eq!(iterm.session_surface.as_deref(), Some("cli_terminal"));
+        assert_eq!(iterm.terminal_app.as_deref(), Some("iterm2"));
+
+        let chatgpt = runtime_navigation_from_values(
+            AgentSource::Codex,
+            None,
+            None,
+            Some("com.openai.codex"),
+        );
+        assert_eq!(chatgpt.session_surface.as_deref(), Some("chatgpt_app"));
+    }
+
+    #[test]
     fn infers_common_agent_hook_event_types() {
         assert_eq!(
             infer_event_type(Some("SessionStart"), &json!({}), None, None).unwrap(),
@@ -1675,9 +1857,10 @@ mod tests {
         assert_eq!(contract.session_id.as_deref(), Some("session-123"));
         assert_eq!(contract.tool_name.as_deref(), Some("bash"));
         assert_eq!(contract.kind, AgentEventType::Tool);
+        assert_eq!(contract.activity_kind.as_deref(), Some("command"));
+        assert_eq!(contract.activity_content, None);
         let forwarded = serde_json::to_string(&contract).unwrap();
         assert!(!forwarded.contains("secret"));
-        assert!(!forwarded.contains("command"));
         assert!(!forwarded.contains("args"));
         assert!(!forwarded.contains("callID"));
     }
@@ -1728,9 +1911,13 @@ mod tests {
         let request = normalized_contract_request(&contract).unwrap();
         assert_eq!(request["title"], AgentEventType::Tool.zh_label());
         assert_eq!(request["detail"], Value::Null);
-        assert_eq!(request["payload_json"]["source_event"], "tool");
+        assert_eq!(
+            request["payload_json"]["source_event"],
+            "tool.execute.before"
+        );
         assert_eq!(request["payload_json"]["tool_name"], "shell");
         assert_eq!(request["payload_json"]["outcome"], "started");
+        assert_eq!(request["payload_json"]["session_active"], true);
         let encoded = serde_json::to_string(&request).unwrap();
         assert!(!encoded.contains("RAW_CALL_ID_MUST_NOT_CROSS"));
         assert!(!encoded.contains("RAW_COMMAND_MUST_NOT_CROSS"));

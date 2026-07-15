@@ -1,0 +1,7 @@
+{
+  "session_id": "codex-session-prompt",
+  "turn_id": "codex-turn-prompt",
+  "hook_event_name": "UserPromptSubmit",
+  "cwd": "/private/tmp/agent-pet-companion",
+  "prompt": "修复宠物气泡，让活跃会话持续显示。"
+}

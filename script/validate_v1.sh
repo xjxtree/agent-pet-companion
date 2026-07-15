@@ -312,7 +312,7 @@ assert_json "$CONNECTIONS" 'len(data) == 4 and {item["source"] for item in data}
 assert_json "$CONNECTIONS" 'all(item["install_paths"] for item in data)'
 assert_json "$CONNECTIONS" 'all(any(check["name"] == "事件回传" for check in item["items"]) for item in data)'
 CONNECTION_TEST="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections test --source opencode)"
-assert_json "$CONNECTION_TEST" 'data["ok"] is True and data["triggered"] is True and data["event"]["source"] == "opencode" and data["event"]["title"] == "开始处理"'
+assert_json "$CONNECTION_TEST" 'data["ok"] is True and data["triggered"] is False and data["event"]["source"] == "opencode" and data["event"]["payload_json"]["diagnostic"] is True'
 
 for source in codex claude_code pi opencode; do
   APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections uninstall --source "$source" >/dev/null

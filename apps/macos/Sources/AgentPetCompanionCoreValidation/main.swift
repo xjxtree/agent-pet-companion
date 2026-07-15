@@ -409,6 +409,9 @@ let opencodeConnectionInstalled = AgentConnectionStatus(
 precondition(opencodeConnectionInstalled.hasInstalledConnectorArtifacts)
 precondition(!opencodeConnectionInstalled.hasRepairableConnectorIssue)
 
+precondition(CheckStatus.missing.isBlocking)
+precondition(!CheckStatus.notRequired.isBlocking)
+
 let lightConnectionJSON = """
 {
   "source": "codex",
@@ -416,6 +419,7 @@ let lightConnectionJSON = """
     { "name": "Codex App Server", "status": "ok", "detail": "命令已定位，点击检查验证 stdio 初始化" }
   ],
   "install_paths": ["/tmp/agent-pet-companion"],
+  "connector_installed": true,
   "check_mode": "light",
   "checked_at": "2026-07-09T00:00:00Z"
 }
@@ -423,6 +427,7 @@ let lightConnectionJSON = """
 let lightConnection = try JSONDecoder().decode(AgentConnectionStatus.self, from: lightConnectionJSON)
 precondition(lightConnection.checkMode == .light)
 precondition(lightConnection.checkedAt == "2026-07-09T00:00:00Z")
+precondition(lightConnection.connectorInstalled == true)
 let encodedLightConnection = try JSONSerialization.jsonObject(with: JSONEncoder().encode(lightConnection)) as! [String: Any]
 precondition(encodedLightConnection["check_mode"] as! String == "light")
 

@@ -2,5 +2,7 @@
   "session_id": "codex-session-stop",
   "hook_event_name": "Stop",
   "cwd": "/private/tmp/project",
+  "turn_id": "codex-turn-stop",
+  "last_assistant_message": "修复已完成，测试全部通过。",
   "stop_hook_active": false
 }

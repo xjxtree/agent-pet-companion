@@ -6,15 +6,18 @@ use crate::generation;
 use crate::metrics;
 use crate::paths::AppPaths;
 use crate::petpack;
+use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{app_server, enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings, CheckStatus,
+    AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
     FpsProfileName, GenerationForm, OverlayPlacement, QualityLevel,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -26,8 +29,14 @@ const FUTURE_EVENT_GRACE_SECONDS: i64 = 60;
 const MAX_RPC_BATCH_ITEMS: usize = 64;
 const MAX_RPC_ENCODED_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_RPC_ERROR_MESSAGE_BYTES: usize = 512;
+pub use crate::runtime_manifest::{PETCORE_BUILD_ID, PETCORE_RPC_PROTOCOL_VERSION};
 const MIN_OVERLAY_SCALE: f64 = 0.10;
 const MAX_OVERLAY_SCALE: f64 = 1.8;
+const CODEX_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 30;
+const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 3;
+const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
+const CODEX_ACTIVITY_REFRESH_SECONDS: u64 = 1;
+const MAX_FALLBACK_SESSION_TITLE_CHARS: usize = 80;
 const AGENT_EVENT_ALLOWED_FIELDS: &[&str] = &[
     "id",
     "source",
@@ -46,6 +55,38 @@ pub struct CoreState {
     pub paths: AppPaths,
     pub database: Database,
     instance_id: String,
+    codex_thread_display_cache: Arc<Mutex<CodexThreadDisplayCache>>,
+    codex_activity_sync_enabled: bool,
+    codex_activity_sync: Arc<Mutex<CodexActivitySyncState>>,
+    shutdown_requested: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct CodexThreadDisplayCache {
+    entries: BTreeMap<String, CachedCodexThreadDisplay>,
+    in_flight: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedCodexThreadDisplay {
+    event_marker: String,
+    fetched_at: Instant,
+    display: Option<app_server::CodexThreadDisplay>,
+}
+
+#[derive(Debug, Default)]
+struct CodexActivitySyncState {
+    in_flight: bool,
+    last_started_at: Option<Instant>,
+    observations: BTreeMap<String, CodexActivityObservation>,
+}
+
+#[derive(Debug, Clone)]
+struct CodexActivityObservation {
+    turn_id: Option<String>,
+    updated_at_unix: i64,
+    display_revision: String,
+    inferred_activity: Option<app_server::CodexThreadDisplayActivity>,
 }
 
 impl CoreState {
@@ -55,6 +96,10 @@ impl CoreState {
             paths,
             database,
             instance_id: new_id("embedded_instance"),
+            codex_thread_display_cache: Arc::new(Mutex::new(CodexThreadDisplayCache::default())),
+            codex_activity_sync_enabled: false,
+            codex_activity_sync: Arc::new(Mutex::new(CodexActivitySyncState::default())),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -63,8 +108,21 @@ impl CoreState {
         self
     }
 
+    pub fn with_codex_activity_sync(mut self, enabled: bool) -> Self {
+        self.codex_activity_sync_enabled = enabled;
+        self
+    }
+
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
+    fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
     }
 
     pub fn ensure_ready(&self) -> Result<()> {
@@ -77,6 +135,348 @@ impl CoreState {
         )?;
         Ok(())
     }
+
+    fn codex_thread_display(
+        &self,
+        session_id: &str,
+        event_marker: &str,
+        refresh_seconds: u64,
+    ) -> Option<app_server::CodexThreadDisplay> {
+        let now = Instant::now();
+        let mut cache = self.codex_thread_display_cache.lock().ok()?;
+        let cached = cache.entries.get(session_id).cloned();
+        let needs_refresh = cached.as_ref().is_none_or(|entry| {
+            entry.event_marker != event_marker
+                || now.duration_since(entry.fetched_at) >= Duration::from_secs(refresh_seconds)
+        });
+        if needs_refresh && cache.in_flight.insert(session_id.to_string()) {
+            let shared_cache = Arc::clone(&self.codex_thread_display_cache);
+            let session_id = session_id.to_string();
+            let event_marker = event_marker.to_string();
+            thread::spawn(move || {
+                let fetched = app_server::read_codex_thread_display(&session_id).ok();
+                let Ok(mut cache) = shared_cache.lock() else {
+                    return;
+                };
+                cache.in_flight.remove(&session_id);
+                let previous = cache
+                    .entries
+                    .get(&session_id)
+                    .filter(|entry| entry.event_marker == event_marker)
+                    .and_then(|entry| entry.display.clone());
+                if cache.entries.len() >= MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES
+                    && !cache.entries.contains_key(&session_id)
+                {
+                    if let Some(oldest_key) = cache
+                        .entries
+                        .iter()
+                        .min_by_key(|(_, entry)| entry.fetched_at)
+                        .map(|(key, _)| key.clone())
+                    {
+                        cache.entries.remove(&oldest_key);
+                    }
+                }
+                cache.entries.insert(
+                    session_id,
+                    CachedCodexThreadDisplay {
+                        event_marker,
+                        fetched_at: Instant::now(),
+                        display: fetched.or(previous),
+                    },
+                );
+            });
+        }
+        cached
+            .filter(|entry| entry.event_marker == event_marker)
+            .and_then(|entry| entry.display)
+    }
+
+    fn refresh_codex_activity(&self, behavior: &BehaviorSettings) {
+        if !self.codex_activity_sync_enabled
+            || !behavior.enabled
+            || !behavior
+                .sources
+                .get(&AgentSource::Codex)
+                .copied()
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let now = Instant::now();
+        let Ok(mut sync) = self.codex_activity_sync.lock() else {
+            return;
+        };
+        if sync.in_flight
+            || sync.last_started_at.is_some_and(|started_at| {
+                now.duration_since(started_at) < Duration::from_secs(CODEX_ACTIVITY_REFRESH_SECONDS)
+            })
+        {
+            return;
+        }
+        sync.in_flight = true;
+        sync.last_started_at = Some(now);
+        drop(sync);
+
+        let database = self.database.clone();
+        let shared_sync = Arc::clone(&self.codex_activity_sync);
+        let maximum_age = Duration::from_secs(
+            u64::from(behavior.session_message_timeout_minutes).saturating_mul(60),
+        );
+        thread::spawn(move || {
+            let mut activities = app_server::read_codex_recent_thread_activities(
+                maximum_age,
+                app_server::MAX_RECENT_CODEX_ACTIVITY_THREADS,
+            )
+            .unwrap_or_default();
+            let Ok(mut sync) = shared_sync.lock() else {
+                return;
+            };
+            let observed_threads = activities
+                .iter()
+                .map(|activity| activity.thread_id.clone())
+                .collect::<BTreeSet<_>>();
+            for activity in &mut activities {
+                reconcile_codex_activity_observation(&mut sync.observations, activity);
+            }
+            sync.observations
+                .retain(|thread_id, _| observed_threads.contains(thread_id));
+            sync.in_flight = false;
+            drop(sync);
+
+            let existing = database
+                .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)
+                .unwrap_or_default();
+            for activity in activities {
+                let preserve_exact_state = should_preserve_exact_codex_state(&existing, &activity);
+                for event in codex_activity_events(activity) {
+                    if preserve_exact_state && event.id.starts_with("evt_codex_app_server_status_")
+                    {
+                        continue;
+                    }
+                    let _ = database.upsert_codex_activity_event(&event);
+                }
+            }
+        });
+    }
+}
+
+fn reconcile_codex_activity_observation(
+    observations: &mut BTreeMap<String, CodexActivityObservation>,
+    activity: &mut app_server::CodexThreadActivity,
+) {
+    let previous = observations.get(&activity.thread_id);
+    let same_visible_revision = previous.is_some_and(|previous| {
+        previous.turn_id == activity.turn_id
+            && previous.display_revision == activity.display_revision
+    });
+    let visible_clock_advanced = previous.is_some_and(|previous| {
+        same_visible_revision && activity.updated_at_unix > previous.updated_at_unix
+    });
+    let running = matches!(
+        activity.event_type,
+        AgentEventType::Start | AgentEventType::Tool
+    );
+    let raw_activity = activity.latest_activity.clone();
+    let inferred_activity = if running && visible_clock_advanced {
+        // A separately spawned App Server sees the thread timestamp advance,
+        // but persisted turns intentionally omit some live interactions (most
+        // notably command executions). Do not keep showing the preceding
+        // reasoning/file-change item as if it were still current.
+        Some(hidden_codex_activity(raw_activity.as_ref()))
+    } else if running && same_visible_revision {
+        previous.and_then(|previous| previous.inferred_activity.clone())
+    } else if running
+        && previous.is_some()
+        && raw_activity
+            .as_ref()
+            .is_some_and(|candidate| !candidate.is_current)
+    {
+        // A newly persisted completed operation proves the previous public
+        // activity ended. Use a neutral processing state until App Server
+        // persists the following reasoning/message, rather than reviving an
+        // older assistant reply.
+        Some(generic_codex_activity("thinking"))
+    } else {
+        None
+    };
+
+    activity.latest_activity = if !running {
+        None
+    } else if let Some(inferred) = inferred_activity.clone() {
+        Some(inferred)
+    } else {
+        raw_activity.filter(|candidate| candidate.is_current)
+    };
+    if running {
+        activity.event_type = if activity
+            .latest_activity
+            .as_ref()
+            .is_some_and(|candidate| codex_activity_kind_is_tool(&candidate.kind))
+        {
+            AgentEventType::Tool
+        } else {
+            AgentEventType::Start
+        };
+    }
+
+    observations.insert(
+        activity.thread_id.clone(),
+        CodexActivityObservation {
+            turn_id: activity.turn_id.clone(),
+            updated_at_unix: activity.updated_at_unix,
+            display_revision: activity.display_revision.clone(),
+            inferred_activity,
+        },
+    );
+}
+
+fn hidden_codex_activity(
+    previous_visible: Option<&app_server::CodexThreadDisplayActivity>,
+) -> app_server::CodexThreadDisplayActivity {
+    let kind = if previous_visible.is_none() {
+        "thinking"
+    } else {
+        "tool"
+    };
+    generic_codex_activity(kind)
+}
+
+fn generic_codex_activity(kind: &str) -> app_server::CodexThreadDisplayActivity {
+    app_server::CodexThreadDisplayActivity {
+        kind: kind.to_string(),
+        content: None,
+        is_current: true,
+    }
+}
+
+fn codex_activity_kind_is_tool(kind: &str) -> bool {
+    matches!(
+        kind,
+        "command" | "file" | "file_change" | "tool" | "subagent" | "search" | "network" | "image"
+    )
+}
+
+fn should_preserve_exact_codex_state(
+    existing: &[agent_state::SequencedAgentEvent],
+    activity: &app_server::CodexThreadActivity,
+) -> bool {
+    // App Server activity categories such as command/file/search are rendered
+    // as Tool, but they are still only an inferred Running state. A newer
+    // hook-backed interaction or terminal state remains authoritative.
+    if !matches!(
+        activity.event_type,
+        AgentEventType::Start | AgentEventType::Tool
+    ) {
+        return false;
+    }
+    let Some(exact) = existing.iter().find(|candidate| {
+        candidate.event.source == AgentSource::Codex
+            && candidate.event.session_id.as_deref() == Some(activity.thread_id.as_str())
+            && event_payload_text(&candidate.event, "source_event").as_deref()
+                != Some("app_server_activity")
+            && matches!(
+                candidate.event.event_type,
+                AgentEventType::Waiting
+                    | AgentEventType::Review
+                    | AgentEventType::Done
+                    | AgentEventType::Failed
+            )
+    }) else {
+        return false;
+    };
+    let Ok(exact_at) = OffsetDateTime::parse(&exact.event.created_at, &Rfc3339) else {
+        return true;
+    };
+    activity
+        .turn_started_at_unix
+        .and_then(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp).ok())
+        .is_none_or(|turn_started_at| exact_at >= turn_started_at)
+}
+
+fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<AgentEvent> {
+    let Some(updated_at) = unix_timestamp_rfc3339(activity.updated_at_unix) else {
+        return Vec::new();
+    };
+    let turn_marker = activity
+        .turn_id
+        .clone()
+        .unwrap_or_else(|| "thread".to_string());
+    let mut events = Vec::with_capacity(2);
+    if let Some(message) = activity.latest_user_message.as_ref() {
+        let created_at = activity
+            .turn_started_at_unix
+            .and_then(unix_timestamp_rfc3339)
+            .unwrap_or_else(|| updated_at.clone());
+        events.push(AgentEvent {
+            id: format!(
+                "evt_codex_app_server_user_{}_{}",
+                activity.thread_id, turn_marker
+            ),
+            source: AgentSource::Codex,
+            project_path: None,
+            session_id: Some(activity.thread_id.clone()),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "source_event": "app_server_activity",
+                "turn_id": activity.turn_id.as_deref(),
+                "session_active": false,
+                "message_role": "user",
+                "message_content": message.content,
+                "activity_kind": null,
+                "activity_content": null,
+                "session_title": activity.title.as_deref(),
+                "session_open": true,
+                "session_surface": activity.session_surface.as_str(),
+                "diagnostic": false
+            }),
+            created_at,
+        });
+    }
+
+    let mut payload = json!({
+        "source_event": "app_server_activity",
+        "turn_id": activity.turn_id.as_deref(),
+        "session_active": activity.session_active,
+        "session_title": activity.title.as_deref(),
+        "session_open": true,
+        "session_surface": activity.session_surface.as_str(),
+        "interaction_kind": activity.interaction_kind.as_deref(),
+        "diagnostic": false
+    });
+    if let Some(message) = activity.latest_message {
+        payload["message_role"] = Value::String(message.role);
+        payload["message_content"] = Value::String(message.content);
+    }
+    if let Some(current_activity) = activity.latest_activity {
+        payload["activity_kind"] = Value::String(current_activity.kind);
+        if let Some(content) = current_activity.content {
+            payload["activity_content"] = Value::String(content);
+        }
+    }
+    events.push(AgentEvent {
+        id: format!(
+            "evt_codex_app_server_status_{}_{}",
+            activity.thread_id, turn_marker
+        ),
+        source: AgentSource::Codex,
+        project_path: None,
+        session_id: Some(activity.thread_id),
+        event_type: activity.event_type,
+        title: activity.event_type.zh_label().to_string(),
+        detail: None,
+        payload_json: payload,
+        created_at: updated_at,
+    });
+    events
+}
+
+fn unix_timestamp_rfc3339(timestamp: i64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp(timestamp)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +623,7 @@ fn known_rpc_method(method: &str) -> bool {
     matches!(
         method,
         "petcore.health"
+            | "petcore.shutdown"
             | "state.snapshot"
             | "state.wait"
             | "behavior.get"
@@ -262,6 +663,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         | "overlay.placement.get"
         | "pet.list"
         | "codex.app_server.probe" => &[],
+        "petcore.shutdown" => &["expected_instance_id"],
         "state.wait" => &["after_revision", "timeout_ms"],
         "behavior.patch" => &["expected_revision", "changes"],
         "overlay.placement.update" => &["x", "y", "scale", "display_id"],
@@ -379,11 +781,29 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
         "petcore.health" => Ok(json!({
             "ok": true,
             "version": env!("CARGO_PKG_VERSION"),
+            "build_id": PETCORE_BUILD_ID,
+            "rpc_protocol": PETCORE_RPC_PROTOCOL_VERSION,
+            "runtime_manifest": RuntimeReleaseManifest::compiled(),
+            "codex_hooks_contract": crate::adapter_contracts::CODEX_HOOKS_CONTRACT_VERSION,
             "instance_id": state.instance_id,
             "socket": state.paths.socket_path,
             "home": state.paths.home,
             "http_port": read_http_port(&state.paths),
         })),
+        "petcore.shutdown" => {
+            let expected_instance_id = required_string(&request.params, "expected_instance_id")?;
+            if expected_instance_id != state.instance_id {
+                return Err(PetCoreError::Conflict(
+                    "petcore shutdown target no longer matches the active instance".to_string(),
+                ));
+            }
+            state.request_shutdown();
+            Ok(json!({
+                "ok": true,
+                "instance_id": state.instance_id,
+                "build_id": PETCORE_BUILD_ID,
+            }))
+        }
         "state.snapshot" => state_snapshot(state, false),
         "state.wait" => wait_for_state_change(state, &request.params),
         "behavior.get" => Ok(json!(state.database.behavior_with_revision()?)),
@@ -616,7 +1036,7 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                     "source_event": "connection.test",
                     "tool_name": null,
                     "outcome": "started",
-                    "diagnostic": false
+                    "diagnostic": true
                 }),
                 created_at: now_rfc3339(),
             };
@@ -655,12 +1075,13 @@ fn canonical_agent_state(
 ) -> Result<Option<agent_state::ActiveAgentState>> {
     let events = state
         .database
-        .recent_sequenced_events(SNAPSHOT_EVENT_SCAN_LIMIT)?;
-    Ok(agent_state::select_active_agent_state(
-        behavior,
-        &events,
-        OffsetDateTime::now_utc(),
-    ))
+        .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)?;
+    let mut active =
+        agent_state::select_active_agent_state(behavior, &events, OffsetDateTime::now_utc());
+    if let Some(active) = &mut active {
+        hydrate_agent_session_display(state, active)?;
+    }
+    Ok(active)
 }
 
 fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
@@ -675,22 +1096,40 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
     }
     let versioned_behavior = state.database.behavior_with_revision()?;
     let behavior = versioned_behavior.behavior;
+    state.refresh_codex_activity(&behavior);
     let sequenced_events = state
         .database
-        .recent_sequenced_events(SNAPSHOT_EVENT_SCAN_LIMIT)?;
+        .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)?;
     let scanned_events = sequenced_events
         .iter()
         .map(|candidate| candidate.event.clone())
         .collect::<Vec<_>>();
-    let recent_events = recent_non_diagnostic_events(&scanned_events, SNAPSHOT_RECENT_EVENT_LIMIT);
+    let recent_events = recent_non_diagnostic_events(
+        &state.database.recent_events(SNAPSHOT_RECENT_EVENT_LIMIT)?,
+        SNAPSHOT_RECENT_EVENT_LIMIT,
+    );
     let events = current_overlay_events(&behavior, &scanned_events);
-    let active_agent_state = agent_state::select_active_agent_state(
+    let mut active_agent_state = agent_state::select_active_agent_state(
         &behavior,
         &sequenced_events,
         OffsetDateTime::now_utc(),
     );
-    let overlay_visibility =
-        agent_state::overlay_visibility(&behavior, active_agent_state.as_ref());
+    if let Some(active) = &mut active_agent_state {
+        hydrate_agent_session_display(state, active)?;
+    }
+    let mut active_agent_sessions = agent_state::select_display_agent_states(
+        &behavior,
+        &sequenced_events,
+        OffsetDateTime::now_utc(),
+    );
+    for session in &mut active_agent_sessions {
+        hydrate_agent_session_display(state, session)?;
+    }
+    let overlay_visibility = agent_state::overlay_visibility_for_sessions(
+        &behavior,
+        !active_agent_sessions.is_empty(),
+        active_agent_state.is_some(),
+    );
     let connections = merge_cached_connection_statuses(
         connections::check_all_light(&state.paths),
         state.database.connection_statuses()?,
@@ -706,11 +1145,175 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
         "pet_asset_warnings": pet_asset_warnings,
         "events": events,
         "active_agent_state": active_agent_state,
+        "active_agent_sessions": active_agent_sessions,
         "overlay_visibility": overlay_visibility,
         "recent_events": recent_events,
         "connections": connections,
         "active_generation": active_generation,
     }))
+}
+
+fn hydrate_agent_session_display(
+    state: &CoreState,
+    active: &mut agent_state::ActiveAgentState,
+) -> Result<()> {
+    active.latest_message = state.database.latest_session_message_for_role(
+        active.source,
+        active.session_id.as_deref(),
+        Some("assistant"),
+    )?;
+    active.latest_user_message = state.database.latest_session_message_for_role(
+        active.source,
+        active.session_id.as_deref(),
+        Some("user"),
+    )?;
+    let first_user_message = state.database.first_session_message_for_role(
+        active.source,
+        active.session_id.as_deref(),
+        Some("user"),
+    )?;
+    let response_cutoff = active
+        .latest_user_message
+        .as_ref()
+        .map(|event| event.created_at.as_str())
+        .or(active.session_activated_at.as_deref());
+    if active.latest_message.as_ref().is_some_and(|message| {
+        response_cutoff.is_some_and(|cutoff| !event_happened_after(&message.created_at, cutoff))
+    }) {
+        active.latest_message = None;
+    }
+    active.session_title = event_payload_text(&active.event, "session_title")
+        .or_else(|| {
+            active
+                .latest_user_message
+                .as_ref()
+                .and_then(|event| event_payload_text(event, "session_title"))
+        })
+        .or_else(|| {
+            active
+                .latest_message
+                .as_ref()
+                .and_then(|event| event_payload_text(event, "session_title"))
+        })
+        .or_else(|| {
+            first_user_message
+                .as_ref()
+                .and_then(|event| event_payload_text(event, "session_title"))
+        })
+        .or_else(|| first_user_message.as_ref().and_then(fallback_session_title));
+    active.session_message = active
+        .latest_message
+        .as_ref()
+        .and_then(event_display_message);
+    active.session_user_message = active
+        .latest_user_message
+        .as_ref()
+        .and_then(event_display_message);
+    if event_payload_text(&active.event, "source_event").as_deref() == Some("app_server_activity") {
+        return Ok(());
+    }
+    if active.source != AgentSource::Codex {
+        return Ok(());
+    }
+    let Some(session_id) = active.session_id.as_deref() else {
+        return Ok(());
+    };
+    let event_marker = active
+        .session_activated_at
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", active.event.id, active.source_session_sequence));
+    let refresh_seconds = if matches!(
+        active.event.event_type,
+        AgentEventType::Start | AgentEventType::Tool
+    ) {
+        CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS
+    } else {
+        CODEX_THREAD_DISPLAY_REFRESH_SECONDS
+    };
+    let Some(display) = state.codex_thread_display(session_id, &event_marker, refresh_seconds)
+    else {
+        return Ok(());
+    };
+    if display.title.is_some() {
+        active.session_title = display.title;
+    }
+    if let Some(message) = display.latest_message {
+        active.session_message = Some(agent_state::SessionDisplayMessage {
+            role: message.role,
+            content: message.content,
+        });
+    }
+    if let Some(message) = display.latest_user_message {
+        active.session_user_message = Some(agent_state::SessionDisplayMessage {
+            role: message.role,
+            content: message.content,
+        });
+    }
+    if let Some(activity) = display
+        .latest_activity
+        .filter(|activity| activity.is_current)
+    {
+        let fills_missing_public_summary =
+            active.session_activity.as_ref().is_some_and(|current| {
+                current.content.is_none()
+                    && activity.content.is_some()
+                    && current.kind == activity.kind
+                    && matches!(current.kind.as_str(), "thinking" | "plan")
+            });
+        if active.session_activity.is_none() || fills_missing_public_summary {
+            active.session_activity = Some(agent_state::SessionActivity {
+                kind: activity.kind,
+                content: activity.content,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn event_payload_text(event: &AgentEvent, key: &str) -> Option<String> {
+    event
+        .payload_json
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn event_display_message(event: &AgentEvent) -> Option<agent_state::SessionDisplayMessage> {
+    Some(agent_state::SessionDisplayMessage {
+        role: event_payload_text(event, "message_role")?,
+        content: event_payload_text(event, "message_content")?,
+    })
+}
+
+fn fallback_session_title(event: &AgentEvent) -> Option<String> {
+    let message = event_payload_text(event, "message_content")?;
+    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut characters = normalized.chars();
+    let prefix = characters
+        .by_ref()
+        .take(MAX_FALLBACK_SESSION_TITLE_CHARS)
+        .collect::<String>();
+    if characters.next().is_some() {
+        let mut shortened = prefix
+            .chars()
+            .take(MAX_FALLBACK_SESSION_TITLE_CHARS.saturating_sub(1))
+            .collect::<String>();
+        shortened.push('…');
+        Some(shortened)
+    } else {
+        Some(prefix)
+    }
+}
+
+fn event_happened_after(candidate: &str, cutoff: &str) -> bool {
+    let candidate = OffsetDateTime::parse(candidate, &Rfc3339);
+    let cutoff = OffsetDateTime::parse(cutoff, &Rfc3339);
+    matches!((candidate, cutoff), (Ok(candidate), Ok(cutoff)) if candidate > cutoff)
 }
 
 fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
@@ -745,10 +1348,7 @@ fn merge_cached_connection_statuses(
     light_statuses
         .into_iter()
         .map(|light| {
-            let light_found_no_issues = light
-                .items
-                .iter()
-                .all(|item| item.status == CheckStatus::Ok);
+            let light_found_no_issues = light.items.iter().all(|item| !item.status.is_blocking());
             if light_found_no_issues {
                 if let Some(cached) = cached_statuses
                     .iter()
@@ -767,8 +1367,10 @@ fn wait_for_state_change(state: &CoreState, params: &Value) -> Result<Value> {
     let timeout_ms = bounded_u64_param(params, "timeout_ms", 3_000, 250, 30_000)?;
     let poll_interval = Duration::from_millis(120);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let behavior = state.database.behavior()?;
 
     loop {
+        state.refresh_codex_activity(&behavior);
         let current_revision = state.database.state_revision()?.to_string();
         if current_revision != after_revision {
             return state_snapshot(state, true);
@@ -965,6 +1567,9 @@ fn event_is_diagnostic(event: &AgentEvent) -> bool {
 }
 
 fn event_expired(event: &AgentEvent) -> bool {
+    if agent_state::event_session_active(event) == Some(true) {
+        return false;
+    }
     let Ok(created_at) = OffsetDateTime::parse(&event.created_at, &Rfc3339) else {
         return false;
     };
@@ -1020,4 +1625,172 @@ fn read_http_port(paths: &AppPaths) -> Option<u16> {
     std::fs::read_to_string(&paths.http_port_path)
         .ok()
         .and_then(|value| value.trim().parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exact_codex_state(
+        event_type: AgentEventType,
+        created_at: &str,
+    ) -> agent_state::SequencedAgentEvent {
+        agent_state::SequencedAgentEvent {
+            event: AgentEvent {
+                id: "exact-hook-state".to_string(),
+                source: AgentSource::Codex,
+                project_path: None,
+                session_id: Some("00000000-0000-0000-0000-000000000001".to_string()),
+                event_type,
+                title: event_type.zh_label().to_string(),
+                detail: None,
+                payload_json: json!({
+                    "source_event": "PermissionRequest",
+                    "session_active": true
+                }),
+                created_at: created_at.to_string(),
+            },
+            source_session_sequence: 1,
+            session_activated_at: None,
+        }
+    }
+
+    fn inferred_codex_tool(turn_started_at_unix: i64) -> app_server::CodexThreadActivity {
+        app_server::CodexThreadActivity {
+            thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            title: None,
+            event_type: AgentEventType::Tool,
+            updated_at_unix: turn_started_at_unix,
+            turn_id: Some("turn-1".to_string()),
+            turn_started_at_unix: Some(turn_started_at_unix),
+            session_active: true,
+            session_surface: "chatgpt_app".to_string(),
+            interaction_kind: None,
+            latest_message: None,
+            latest_user_message: None,
+            latest_activity: Some(app_server::CodexThreadDisplayActivity {
+                kind: "command".to_string(),
+                content: None,
+                is_current: true,
+            }),
+            display_revision: "turn-1:command-1:inProgress".to_string(),
+        }
+    }
+
+    #[test]
+    fn inferred_tool_activity_does_not_replace_newer_exact_interaction_state() {
+        let activity = inferred_codex_tool(1_752_409_560);
+        let newer_waiting = exact_codex_state(AgentEventType::Waiting, "2025-07-13T12:27:00Z");
+        assert!(should_preserve_exact_codex_state(
+            &[newer_waiting],
+            &activity
+        ));
+
+        let older_waiting = exact_codex_state(AgentEventType::Waiting, "2025-07-13T12:25:00Z");
+        assert!(!should_preserve_exact_codex_state(
+            &[older_waiting],
+            &activity
+        ));
+    }
+
+    #[test]
+    fn lossy_codex_updates_replace_stale_reasoning_with_generic_tool_activity() {
+        let mut observations = BTreeMap::new();
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.event_type = AgentEventType::Start;
+        activity.latest_activity = Some(app_server::CodexThreadDisplayActivity {
+            kind: "thinking".to_string(),
+            content: Some("Assessing manual length and detail".to_string()),
+            is_current: true,
+        });
+        activity.display_revision = "turn-1:reasoning-1:first".to_string();
+
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        assert_eq!(
+            activity
+                .latest_activity
+                .as_ref()
+                .map(|value| value.kind.as_str()),
+            Some("thinking")
+        );
+        assert_eq!(activity.event_type, AgentEventType::Start);
+
+        activity.updated_at_unix += 1;
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        assert_eq!(
+            activity
+                .latest_activity
+                .as_ref()
+                .map(|value| value.kind.as_str()),
+            Some("tool")
+        );
+        assert_eq!(
+            activity
+                .latest_activity
+                .as_ref()
+                .and_then(|value| value.content.as_ref()),
+            None
+        );
+        assert_eq!(activity.event_type, AgentEventType::Tool);
+
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        assert_eq!(
+            activity
+                .latest_activity
+                .as_ref()
+                .map(|value| value.kind.as_str()),
+            Some("tool")
+        );
+    }
+
+    #[test]
+    fn newly_completed_file_change_does_not_remain_an_editing_activity() {
+        let mut observations = BTreeMap::new();
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.event_type = AgentEventType::Start;
+        activity.latest_activity = Some(app_server::CodexThreadDisplayActivity {
+            kind: "file_change".to_string(),
+            content: None,
+            is_current: false,
+        });
+        activity.display_revision = "turn-1:patch-1:completed".to_string();
+
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        assert_eq!(activity.latest_activity, None);
+        assert_eq!(activity.event_type, AgentEventType::Start);
+
+        activity.updated_at_unix += 1;
+        activity.latest_activity = Some(app_server::CodexThreadDisplayActivity {
+            kind: "file_change".to_string(),
+            content: None,
+            is_current: false,
+        });
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        assert_eq!(
+            activity
+                .latest_activity
+                .as_ref()
+                .map(|value| value.kind.as_str()),
+            Some("tool")
+        );
+        assert_eq!(activity.event_type, AgentEventType::Tool);
+    }
+
+    #[test]
+    fn codex_status_event_id_is_stable_when_activity_kind_changes() {
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        let tool_id = codex_activity_events(activity.clone())
+            .last()
+            .expect("tool status")
+            .id
+            .clone();
+        activity.event_type = AgentEventType::Start;
+        activity.latest_activity = Some(generic_codex_activity("thinking"));
+        let thinking_id = codex_activity_events(activity)
+            .last()
+            .expect("thinking status")
+            .id
+            .clone();
+        assert_eq!(tool_id, thinking_id);
+    }
 }

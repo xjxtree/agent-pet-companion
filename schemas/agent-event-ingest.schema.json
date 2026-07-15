@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/agent-event-ingest.schema.json",
   "title": "Agent Pet Companion Strict Event Ingest",
-  "description": "The fail-closed boundary accepted by agent.ingest after a raw hook adapter has discarded prompts, arguments, commands, outputs, transcripts, environment data, and other arbitrary fields. Deprecated title/detail and payload_json aliases are type-checked but normalized again and never trusted as display or persisted vocabulary.",
+  "description": "The fail-closed boundary accepted by agent.ingest after a raw hook adapter has discarded arguments, commands, tool outputs, transcripts, environment data, and arbitrary fields. A bounded user prompt or final assistant message may cross only through the explicit display-message fields. Deprecated title/detail and payload_json aliases are type-checked but normalized again and never trusted as display or persisted vocabulary.",
   "type": "object",
   "required": ["source", "event_type"],
   "properties": {
@@ -28,7 +28,36 @@
         "source_event": { "type": ["string", "null"] },
         "tool_name": { "type": ["string", "null"] },
         "outcome": { "type": ["string", "null"] },
-        "diagnostic": { "type": "boolean" }
+        "diagnostic": { "type": "boolean" },
+        "turn_id": { "type": ["string", "null"], "maxLength": 256 },
+        "session_active": { "type": "boolean" },
+        "message_role": { "type": ["string", "null"], "enum": ["user", "assistant", null] },
+        "message_content": { "type": ["string", "null"], "maxLength": 4096 },
+        "activity_kind": {
+          "type": ["string", "null"],
+          "enum": ["thinking", "plan", "command", "file", "file_change", "tool", "subagent", "search", "network", "image", "compaction", null]
+        },
+        "activity_content": { "type": ["string", "null"], "maxLength": 1024 },
+        "interaction_kind": {
+          "type": ["string", "null"],
+          "enum": ["approval_required", "input_required", "review_required", null]
+        },
+        "project_label": { "type": ["string", "null"], "maxLength": 128 },
+        "session_title": { "type": ["string", "null"], "maxLength": 160 },
+        "session_open": { "type": ["boolean", "null"] },
+        "session_surface": {
+          "type": ["string", "null"],
+          "enum": ["chatgpt_app", "cli_terminal", "unknown", null]
+        },
+        "terminal_app": {
+          "type": ["string", "null"],
+          "enum": ["warp", "terminal", "iterm2", "ghostty", "unknown", null]
+        },
+        "session_open_url": {
+          "type": ["string", "null"],
+          "maxLength": 256,
+          "pattern": "^(warp|warppreview)://session/[0-9A-Fa-f]{32}$"
+        }
       },
       "additionalProperties": false
     }

@@ -591,7 +591,59 @@ fn daemon_health_identity_matches_runtime_marker() {
     );
 
     assert_eq!(health["result"]["instance_id"], marker.instance_id);
+    assert!(health["result"]["build_id"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
     assert_eq!(marker.schema_version, "apc.runtime.v1");
+}
+
+#[test]
+fn daemon_shutdown_requires_matching_instance_and_releases_runtime() {
+    let mut daemon = start_daemon();
+    let health = rpc_exchange(
+        &daemon.paths,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "petcore.health" }),
+    );
+    let instance_id = health["result"]["instance_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rejected = rpc_exchange(
+        &daemon.paths,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "petcore.shutdown",
+            "params": { "expected_instance_id": "instance-stale" }
+        }),
+    );
+    assert_eq!(rejected["error"]["code"], -32009);
+
+    let accepted = rpc_exchange(
+        &daemon.paths,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "petcore.shutdown",
+            "params": { "expected_instance_id": instance_id }
+        }),
+    );
+    assert_eq!(accepted["result"]["ok"], true);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if daemon.child.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "PetCore did not stop after shutdown handoff"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!daemon.paths.socket_path.exists());
+    assert!(!daemon.paths.runtime_marker_path.exists());
 }
 
 #[test]

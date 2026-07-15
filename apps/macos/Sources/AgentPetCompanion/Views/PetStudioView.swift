@@ -64,7 +64,7 @@ struct HeaderView<Trailing: View>: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 30, weight: .bold))
+                .font(.system(size: 24, weight: .bold))
             Text(subtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -113,10 +113,9 @@ struct NewPetFormView: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .textBackgroundColor).opacity(0.75))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+                    .apcLiquidGlass(
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous),
+                        interactive: true
                     )
                 }
 
@@ -165,14 +164,17 @@ struct NewPetFormView: View {
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
                                 .padding(12)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .fill(quality == store.selectedQuality ? APCDesign.accentSoft : Color(nsColor: .controlBackgroundColor))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 14)
-                                                .stroke(quality == store.selectedQuality ? APCDesign.accent.opacity(0.55) : APCDesign.stroke)
-                                        )
+                                .apcLiquidGlass(
+                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous),
+                                    interactive: true
                                 )
+                                .overlay {
+                                    if quality == store.selectedQuality {
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(APCDesign.accent.opacity(0.62), lineWidth: 1.25)
+                                            .allowsHitTesting(false)
+                                    }
+                                }
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(UIControlSemantics.qualityLabel(quality))
@@ -231,17 +233,18 @@ struct ReferenceImageDropZone: View {
             .font(.callout.weight(.semibold))
             .foregroundStyle(isDropTargeted ? APCDesign.accent : .secondary)
             .frame(maxWidth: .infinity, minHeight: 76)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isDropTargeted ? APCDesign.accentSoft.opacity(0.5) : .clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(
-                                isDropTargeted ? APCDesign.accent.opacity(0.55) : APCDesign.stroke,
-                                style: StrokeStyle(lineWidth: 1, dash: [4, 4])
-                            )
-                    )
+            .apcLiquidGlass(
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous),
+                interactive: true
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(
+                        isDropTargeted ? APCDesign.accent.opacity(0.65) : APCDesign.stroke,
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 4])
+                    )
+                    .allowsHitTesting(false)
+            }
         }
         .buttonStyle(.plain)
         .disabled(store.generationSession.isActive)
@@ -331,17 +334,16 @@ struct ReferenceImageChip: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color(nsColor: .controlBackgroundColor)))
+                    .apcLiquidGlass(in: Circle(), interactive: true)
             }
             .buttonStyle(.plain)
         }
         .padding(.leading, 6)
         .padding(.trailing, 7)
         .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.70))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+            interactive: true
         )
     }
 
@@ -399,10 +401,8 @@ struct AISessionPanel: View {
                 }
                 .scrollIndicators(.visible)
                 .frame(maxWidth: .infinity, minHeight: 360, maxHeight: 520, alignment: .topLeading)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor).opacity(0.48))
-                        .overlay(RoundedRectangle(cornerRadius: 20).stroke(APCDesign.stroke))
+                .apcLiquidGlass(
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
                 )
 
                 ViewThatFits(in: .horizontal) {
@@ -430,10 +430,9 @@ struct AISessionPanel: View {
             .disabled(!replyInputEnabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+            .apcLiquidGlass(
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous),
+                interactive: true
             )
     }
 
@@ -456,14 +455,11 @@ struct AISessionPanel: View {
         Button {
             store.sendGenerationReply()
         } label: {
-            Text("发送")
-                .font(.callout.bold())
-                .foregroundStyle(APCDesign.onAccent)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 12).fill(sendButtonColor))
+            Label("发送", systemImage: "arrow.up")
+                .font(.callout.weight(.semibold))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
         .disabled(!canSend)
     }
 
@@ -494,9 +490,6 @@ struct AISessionPanel: View {
         return "继续描述或输入调整意见"
     }
 
-    private var sendButtonColor: Color {
-        canSend ? APCDesign.accent : Color(nsColor: .tertiaryLabelColor)
-    }
 }
 
 struct FormSummary: View {
@@ -545,10 +538,8 @@ struct SummaryTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(APCDesign.stroke))
+        .apcLiquidGlass(
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
     }
 }
@@ -567,7 +558,7 @@ struct GenerationSteps: View {
                         .font(.headline.bold())
                         .foregroundStyle(active ? APCDesign.onAccent : .secondary)
                         .frame(width: 28, height: 28)
-                        .background(Circle().fill(active ? APCDesign.accent : Color(nsColor: .quaternaryLabelColor).opacity(0.25)))
+                        .background(Circle().fill(active ? APCDesign.accent : Color(nsColor: .quaternaryLabelColor).opacity(0.18)))
                     VStack(alignment: .leading, spacing: 3) {
                         Text(title)
                             .font(.headline)
@@ -578,11 +569,16 @@ struct GenerationSteps: View {
                     Spacer()
                 }
                 .padding(12)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(active ? APCDesign.accentSoft.opacity(0.75) : Color(nsColor: .controlBackgroundColor).opacity(0.55))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(active ? APCDesign.accent.opacity(0.35) : APCDesign.stroke))
+                .apcLiquidGlass(
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
                 )
+                .overlay {
+                    if active {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(APCDesign.accent.opacity(0.32), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
 
             if !store.generationSession.messages.isEmpty {
@@ -623,11 +619,17 @@ struct MessageBubble: View {
             .font(.callout)
             .padding(.horizontal, 13)
             .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(message.role == "user" ? APCDesign.accent : Color(nsColor: .controlBackgroundColor))
+            .apcLiquidGlass(
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
-            .foregroundStyle(message.role == "user" ? APCDesign.onAccent : .primary)
+            .overlay {
+                if message.role == "user" {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(APCDesign.accent.opacity(0.45), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
     }
 }

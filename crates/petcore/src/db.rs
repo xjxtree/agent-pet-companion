@@ -7,11 +7,13 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
     FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord, OverlayPlacement,
-    PetOrigin, PetSummary, QualityLevel, RenderSize,
+    PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
 };
-use rusqlite::{params, Connection, ErrorCode, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
@@ -41,6 +43,7 @@ pub struct BehaviorSettingsPatch {
     pub click_menu: Option<bool>,
     pub mouse_passthrough: Option<bool>,
     pub auto_hide: Option<bool>,
+    pub session_message_timeout_minutes: Option<u16>,
     pub fps_profile: Option<FpsProfileName>,
     pub sources: Option<BTreeMap<AgentSource, bool>>,
     pub events: Option<BTreeMap<AgentEventType, bool>>,
@@ -53,6 +56,7 @@ impl BehaviorSettingsPatch {
             && self.click_menu.is_none()
             && self.mouse_passthrough.is_none()
             && self.auto_hide.is_none()
+            && self.session_message_timeout_minutes.is_none()
             && self.fps_profile.is_none()
             && self.sources.as_ref().is_none_or(BTreeMap::is_empty)
             && self.events.as_ref().is_none_or(BTreeMap::is_empty)
@@ -73,6 +77,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.auto_hide {
             behavior.auto_hide = value;
+        }
+        if let Some(value) = self.session_message_timeout_minutes {
+            behavior.session_message_timeout_minutes = value;
         }
         if let Some(value) = self.fps_profile {
             behavior.fps_profile = value;
@@ -134,7 +141,7 @@ impl Default for EventRetentionPolicy {
     }
 }
 
-const DATABASE_SCHEMA_VERSION: u32 = 4;
+pub const DATABASE_SCHEMA_VERSION: u32 = 4;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
 
 #[derive(Debug, Clone)]
@@ -171,10 +178,45 @@ impl Database {
         }
     }
 
+    pub fn preflight_compatibility(&self) -> Result<u32> {
+        if !self.path.exists() {
+            return Ok(0);
+        }
+        if self.has_invalid_sqlite_header()? {
+            return Err(PetCoreError::Validation(
+                "database preflight rejected an invalid SQLite header".to_string(),
+            ));
+        }
+        let connection = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let schema_version: u32 =
+            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version > DATABASE_SCHEMA_VERSION {
+            return Err(PetCoreError::Validation(format!(
+                "database schema {schema_version} is newer than this PetCore supports ({DATABASE_SCHEMA_VERSION}); downgrade is blocked"
+            )));
+        }
+        let quick_check: String =
+            connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if !quick_check.eq_ignore_ascii_case("ok") {
+            return Err(PetCoreError::Validation(format!(
+                "database preflight quick_check failed: {quick_check}"
+            )));
+        }
+        Ok(schema_version)
+    }
+
     fn init_schema(&self) -> Result<()> {
         let mut connection = self.open()?;
         let previous_schema_version: u32 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if previous_schema_version > DATABASE_SCHEMA_VERSION {
+            return Err(PetCoreError::Validation(format!(
+                "database schema {previous_schema_version} is newer than this PetCore supports ({DATABASE_SCHEMA_VERSION}); downgrade is blocked"
+            )));
+        }
         connection.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -293,6 +335,8 @@ impl Database {
         self.ensure_generation_job_columns(&connection)?;
         self.ensure_settings_columns(&connection)?;
         self.ensure_state_revision_triggers(&connection)?;
+        self.scrub_legacy_connector_diagnostics(&mut connection)?;
+        self.normalize_legacy_pi_tool_failures(&mut connection)?;
         if previous_schema_version < DATABASE_SCHEMA_VERSION {
             connection.execute(
                 r#"
@@ -497,6 +541,103 @@ impl Database {
         Ok(())
     }
 
+    fn scrub_legacy_connector_diagnostics(&self, connection: &mut Connection) -> Result<()> {
+        let rows = {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT row_id, payload_json
+                FROM agent_events
+                WHERE instr(session_id, 'evt_pi_runtime_') = 1
+                   OR instr(session_id, 'evt_opencode_runtime_') = 1
+                   OR instr(session_id, 'real_agent_') = 1
+                "#,
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = connection.transaction()?;
+        for (row_id, payload_json) in rows {
+            let Ok(mut payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            let Some(payload) = payload.as_object_mut() else {
+                continue;
+            };
+            if payload.get("diagnostic").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            payload.insert("diagnostic".to_string(), Value::Bool(true));
+            transaction.execute(
+                "UPDATE agent_events SET payload_json = ?1 WHERE row_id = ?2",
+                params![serde_json::to_string(payload)?, row_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn normalize_legacy_pi_tool_failures(&self, connection: &mut Connection) -> Result<()> {
+        let rows = {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT row_id, payload_json
+                FROM agent_events
+                WHERE source = 'pi' AND event_type = 'failed'
+                "#,
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let transaction = connection.transaction()?;
+        for (row_id, payload_json) in rows {
+            let Ok(mut payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            if payload.get("source_event").and_then(Value::as_str) != Some("tool_execution_end")
+                || payload.get("outcome").and_then(Value::as_str) != Some("tool_failure")
+            {
+                continue;
+            }
+            let Some(payload) = payload.as_object_mut() else {
+                continue;
+            };
+            // Historical connector versions incorrectly made one failed Pi tool
+            // result terminal. It no longer proves that the agent loop is active,
+            // so keep the event non-terminal and let the normal display TTL apply.
+            payload.insert("session_active".to_string(), Value::Bool(false));
+            transaction.execute(
+                r#"
+                UPDATE agent_events
+                SET event_type = 'tool', title = ?1, payload_json = ?2
+                WHERE row_id = ?3
+                "#,
+                params![
+                    AgentEventType::Tool.zh_label(),
+                    serde_json::to_string(payload)?,
+                    row_id
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn ensure_state_revision_triggers(&self, connection: &Connection) -> Result<()> {
         for table in [
             "pets",
@@ -631,6 +772,17 @@ impl Database {
                 "invalid params: behavior changes must not be empty".to_string(),
             ));
         }
+        if changes
+            .session_message_timeout_minutes
+            .is_some_and(|minutes| {
+                !(MIN_SESSION_MESSAGE_TIMEOUT_MINUTES..=MAX_SESSION_MESSAGE_TIMEOUT_MINUTES)
+                    .contains(&minutes)
+            })
+        {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "invalid params: session_message_timeout_minutes must be between {MIN_SESSION_MESSAGE_TIMEOUT_MINUTES} and {MAX_SESSION_MESSAGE_TIMEOUT_MINUTES}"
+            )));
+        }
         let mut connection = self.open()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (mut behavior, actual_revision) = read_behavior_row(&transaction)?;
@@ -724,6 +876,67 @@ impl Database {
         })
     }
 
+    /// Updates the single bounded display record for a Codex App Server turn.
+    /// This is intentionally narrower than normal event ingestion: external
+    /// hook events remain immutable and deduplicated, while the polling
+    /// fallback can renew its finite lease without appending a row every few
+    /// seconds.
+    pub fn upsert_codex_activity_event(&self, event: &AgentEvent) -> Result<bool> {
+        if event.source != AgentSource::Codex
+            || event
+                .payload_json
+                .get("source_event")
+                .and_then(Value::as_str)
+                != Some("app_server_activity")
+        {
+            return Err(PetCoreError::InvalidRequest(
+                "Codex activity upsert only accepts App Server activity events".to_string(),
+            ));
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let session_id = normalized_session_id(event.session_id.as_deref());
+        let session_key = normalized_session_key(session_id.as_deref());
+        let payload_json = serde_json::to_string(&persisted_payload(event))?;
+        let changed = transaction.execute(
+            r#"
+            INSERT INTO agent_events
+              (external_event_id, source, project_path, session_id, session_key,
+               event_type, title, detail, payload_json, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)
+            ON CONFLICT(source, session_key, external_event_id) DO UPDATE SET
+              project_path = excluded.project_path,
+              session_id = excluded.session_id,
+              event_type = excluded.event_type,
+              title = excluded.title,
+              detail = NULL,
+              payload_json = excluded.payload_json,
+              created_at = excluded.created_at
+            WHERE agent_events.project_path IS NOT excluded.project_path
+               OR agent_events.session_id IS NOT excluded.session_id
+               OR agent_events.event_type <> excluded.event_type
+               OR agent_events.title <> excluded.title
+               OR agent_events.detail IS NOT NULL
+               OR agent_events.payload_json <> excluded.payload_json
+               OR agent_events.created_at <> excluded.created_at
+            "#,
+            params![
+                event.id,
+                enum_name(event.source),
+                event.project_path,
+                session_id,
+                session_key,
+                enum_name(event.event_type),
+                event.event_type.zh_label(),
+                payload_json,
+                event.created_at,
+            ],
+        )?;
+        prune_events_in_transaction(&transaction, EventRetentionPolicy::default())?;
+        transaction.commit()?;
+        Ok(changed > 0)
+    }
+
     pub fn recent_events(&self, limit: usize) -> Result<Vec<AgentEvent>> {
         let limit = limit.min(MAX_RECENT_EVENTS);
         if limit == 0 {
@@ -789,6 +1002,7 @@ impl Database {
                         Box::new(error),
                     )
                 })?,
+                session_activated_at: None,
                 event: AgentEvent {
                     id: row.get(1)?,
                     source: enum_from_name(&source).map_err(to_sql_error)?,
@@ -804,6 +1018,162 @@ impl Database {
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    pub fn latest_sequenced_events_by_session(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SequencedAgentEvent>> {
+        let limit = limit.min(MAX_RECENT_EVENTS);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            WITH ranked AS (
+              SELECT row_id, external_event_id, source, project_path, session_id,
+                     session_key, event_type, title, detail, payload_json, created_at,
+                     MAX(CASE WHEN event_type = 'start' THEN created_at END) OVER (
+                       PARTITION BY source, session_key
+                     ) AS session_activated_at,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY source, session_key
+                       ORDER BY created_at DESC, row_id DESC
+                     ) AS session_rank
+              FROM agent_events
+            )
+            SELECT row_id, external_event_id, source, project_path, session_id, event_type,
+                   title, detail, payload_json, created_at, session_activated_at
+            FROM ranked
+            WHERE session_rank = 1
+            ORDER BY created_at DESC, row_id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = statement.query_map(params![limit as i64], |row| {
+            let row_id = row.get::<_, i64>(0)?;
+            let source: String = row.get(2)?;
+            let event_type: String = row.get(5)?;
+            let payload_json: String = row.get(8)?;
+            Ok(SequencedAgentEvent {
+                source_session_sequence: u64::try_from(row_id).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?,
+                session_activated_at: row.get(10)?,
+                event: AgentEvent {
+                    id: row.get(1)?,
+                    source: enum_from_name(&source).map_err(to_sql_error)?,
+                    project_path: row.get(3)?,
+                    session_id: row.get(4)?,
+                    event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
+                    title: row.get(6)?,
+                    detail: row.get(7)?,
+                    payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
+                    created_at: row.get(9)?,
+                },
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn latest_session_message(
+        &self,
+        source: AgentSource,
+        session_id: Option<&str>,
+    ) -> Result<Option<AgentEvent>> {
+        self.latest_session_message_for_role(source, session_id, None)
+    }
+
+    pub fn latest_session_message_for_role(
+        &self,
+        source: AgentSource,
+        session_id: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<Option<AgentEvent>> {
+        self.session_message_for_role(source, session_id, role, true)
+    }
+
+    pub fn first_session_message_for_role(
+        &self,
+        source: AgentSource,
+        session_id: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<Option<AgentEvent>> {
+        self.session_message_for_role(source, session_id, role, false)
+    }
+
+    fn session_message_for_role(
+        &self,
+        source: AgentSource,
+        session_id: Option<&str>,
+        role: Option<&str>,
+        newest_first: bool,
+    ) -> Result<Option<AgentEvent>> {
+        let connection = self.open()?;
+        let session_id = normalized_session_id(session_id);
+        let query = if newest_first {
+            r#"
+            SELECT external_event_id, source, project_path, session_id, event_type,
+                   title, detail, payload_json, created_at
+            FROM agent_events
+            WHERE source = ?1 AND session_key = ?2
+            ORDER BY created_at DESC, row_id DESC
+            "#
+        } else {
+            r#"
+            SELECT external_event_id, source, project_path, session_id, event_type,
+                   title, detail, payload_json, created_at
+            FROM agent_events
+            WHERE source = ?1 AND session_key = ?2
+            ORDER BY created_at ASC, row_id ASC
+            "#
+        };
+        let mut statement = connection.prepare(query)?;
+        let rows = statement.query_map(
+            params![
+                enum_name(source),
+                normalized_session_key(session_id.as_deref())
+            ],
+            |row| {
+                let source: String = row.get(1)?;
+                let event_type: String = row.get(4)?;
+                let payload_json: String = row.get(7)?;
+                Ok(AgentEvent {
+                    id: row.get(0)?,
+                    source: enum_from_name(&source).map_err(to_sql_error)?,
+                    project_path: row.get(2)?,
+                    session_id: row.get(3)?,
+                    event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
+                    title: row.get(5)?,
+                    detail: row.get(6)?,
+                    payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
+                    created_at: row.get(8)?,
+                })
+            },
+        )?;
+        for row in rows {
+            let event = row?;
+            let payload_role = event
+                .payload_json
+                .get("message_role")
+                .and_then(serde_json::Value::as_str);
+            if role.is_none_or(|role| payload_role == Some(role))
+                && event
+                    .payload_json
+                    .get("message_content")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|message| !message.trim().is_empty())
+            {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
     }
 
     pub fn prune_events(&self, policy: EventRetentionPolicy) -> Result<usize> {

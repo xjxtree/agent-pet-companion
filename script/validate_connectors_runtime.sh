@@ -164,13 +164,31 @@ const handlers = new Map();
 mod.default({ on: (name, callback) => handlers.set(name, callback) });
 if (!handlers.has('tool_call')) throw new Error('Pi tool_call handler missing');
 if (!handlers.has('session_start')) throw new Error('Pi session_start handler missing');
+if (!handlers.has('before_agent_start')) throw new Error('Pi before_agent_start handler missing');
 if (!handlers.has('tool_execution_end')) throw new Error('Pi tool_execution_end handler missing');
+if (!handlers.has('message_end')) throw new Error('Pi message_end handler missing');
+if (!handlers.has('agent_end')) throw new Error('Pi agent_end handler missing');
 if (!handlers.has('agent_settled')) throw new Error('Pi agent_settled handler missing');
+if (!handlers.has('session_before_compact')) throw new Error('Pi session_before_compact handler missing');
+if (!handlers.has('session_compact')) throw new Error('Pi session_compact handler missing');
 if (handlers.has('permission_request')) throw new Error('Pi invalid permission_request handler registered');
 if (handlers.has('tool_execution_failed')) throw new Error('Pi invalid tool_execution_failed handler registered');
-await handlers.get('session_start')(
-  { type: 'session_start', reason: 'startup' },
+await handlers.get('before_agent_start')(
+  { type: 'before_agent_start', prompt: 'Runtime prompt' },
   { sessionManager: { getSessionId: () => 'sess_runtime_pi_start' }, cwd: '/tmp/apc-pi-project' }
+);
+const messageContext = { sessionManager: { getSessionId: () => 'sess_runtime_pi_message' }, cwd: '/tmp/apc-pi-project' };
+await handlers.get('message_end')(
+  { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi runtime assistant response' }], stopReason: 'stop' } },
+  messageContext
+);
+await handlers.get('agent_end')(
+  { type: 'agent_end', messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Pi runtime assistant response' }], stopReason: 'stop' }] },
+  messageContext
+);
+await handlers.get('agent_settled')(
+  { type: 'agent_settled' },
+  messageContext
 );
 await handlers.get('tool_call')(
   { type: 'tool_call', toolName: 'bash', toolCallId: 'secret-call', input: { command: 'TOKEN=secret-command' } },
@@ -184,12 +202,22 @@ await handlers.get('agent_settled')(
   { type: 'agent_settled' },
   { sessionManager: { getSessionId: () => 'sess_runtime_pi_done' }, cwd: '/tmp/apc-pi-project' }
 );
+await handlers.get('agent_end')(
+  { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', content: [] }] },
+  { sessionManager: { getSessionId: () => 'sess_runtime_pi_agent_error' }, cwd: '/tmp/apc-pi-project' }
+);
+await handlers.get('agent_settled')(
+  { type: 'agent_settled' },
+  { sessionManager: { getSessionId: () => 'sess_runtime_pi_agent_error' }, cwd: '/tmp/apc-pi-project' }
+);
 await new Promise((resolve) => setTimeout(resolve, 700));
 "
   assert_recent_event pi start sess_runtime_pi_start
+  assert_recent_event pi done 'Pi runtime assistant response'
   assert_recent_event pi tool sess_runtime_pi
-  assert_recent_event pi failed sess_runtime_pi_failed
+  assert_recent_event pi tool sess_runtime_pi_failed
   assert_recent_event pi done sess_runtime_pi_done
+  assert_recent_event pi failed sess_runtime_pi_agent_error
 
   OPENCODE_MODULE="$TMP_DIR/opencode-connector.mjs"
   cp "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js" "$OPENCODE_MODULE"

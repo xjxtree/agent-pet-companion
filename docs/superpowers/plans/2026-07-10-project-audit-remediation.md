@@ -1,5 +1,7 @@
 # Project Audit Remediation Implementation Plan
 
+> **Historical plan / 历史计划：** This plan belongs to the 2026-07-10 audit and is preserved as execution history. The current roadmap, open gates and release blockers are maintained in [current project status](../../PROJECT_STATUS.md) and the active implementation plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close every item in `docs/audits/2026-07-10-project-review/REPORT.md` and leave a reproducible, secure, recoverable V1 implementation with fresh automated and real-UI verification.
@@ -310,7 +312,7 @@
 - Every fixture maps to `ContractEvent { source, session_id, kind, tool_name, outcome }` without raw payload persistence.
 - Codex uses only current official hook names; unsupported failure is reported as unavailable instead of fabricated.
 - Claude honors `CLAUDE_CONFIG_DIR`, uses quiet bounded hooks, and distinguishes `StopFailure` from `PostToolUseFailure`.
-- Pi registers only official literal events, uses `agent_settled` for done and `tool_execution_end.isError` for failed; Extension observation is V1, RPC is reported unsupported until a real strict JSONL client exists.
+- Pi registers only official literal events and uses `agent_settled` for the final outcome. A later runtime correction established that `tool_execution_end.isError` is recoverable tool-level state; only a settled run whose final assistant message has `stopReason=error` is Failed. These structured extension events remain the authoritative capability path for title, message, state, and close signals.
 - OpenCode reads `event.properties.sessionID`, `input.sessionID`, `output.args`, never assumes `output.error`, and handles permission asked/updated/replied compatibility without leaving replied sessions waiting.
 
 - [x] **Step 1: Add official-shape fixtures and failing contract tests**

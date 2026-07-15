@@ -7,6 +7,8 @@ import SwiftUI
 final class PetOverlayController {
     private var panel: NSPanel?
     private var bubblePanel: NSPanel?
+    private var menuPanel: NSPanel?
+    private var resizePanel: NSPanel?
     private weak var store: AppStore?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var desktopVisibilityTimer: Timer?
@@ -30,6 +32,18 @@ final class PetOverlayController {
         let bubbleHostingView = PassthroughBubbleHostingView(rootView: bubbleRoot, store: store)
         bubbleHostingView.wantsLayer = true
         bubbleHostingView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let menuRoot = OverlayMenuControlRootView()
+            .environmentObject(store)
+        let menuHostingView = FirstMouseHostingView(rootView: menuRoot)
+        menuHostingView.wantsLayer = true
+        menuHostingView.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let resizeRoot = OverlayResizeControlRootView()
+            .environmentObject(store)
+        let resizeHostingView = FirstMouseHostingView(rootView: resizeRoot)
+        resizeHostingView.wantsLayer = true
+        resizeHostingView.layer?.backgroundColor = NSColor.clear.cgColor
 
         let screen = currentScreen(for: store)
         let visibleFrame = screen?.visibleFrame ?? fallbackVisibleFrame
@@ -81,8 +95,26 @@ final class PetOverlayController {
         bubblePanel.animationBehavior = .none
         bubblePanel.isExcludedFromWindowsMenu = true
 
+        let menuPanel = ControlOverlayPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        configureControlPanel(menuPanel, contentView: menuHostingView)
+
+        let resizePanel = ControlOverlayPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        configureControlPanel(resizePanel, contentView: resizeHostingView)
+
         self.panel = panel
         self.bubblePanel = bubblePanel
+        self.menuPanel = menuPanel
+        self.resizePanel = resizePanel
         syncPlacement()
         startDesktopVisibilityTracking()
         hiddenForDesktop = shouldHideForFinderDesktop()
@@ -95,6 +127,7 @@ final class PetOverlayController {
             resumeMetalRenderers(in: panel?.contentView)
             panel?.orderFront(nil)
             syncBubbleVisibility()
+            syncControlVisibility()
             (panel as? OverlayPanel)?.startPointerTracking()
         } else {
             pauseMetalRenderers(in: panel?.contentView)
@@ -102,6 +135,8 @@ final class PetOverlayController {
             (bubblePanel as? BubbleOverlayPanel)?.stopPointerTracking()
             panel?.orderOut(nil)
             bubblePanel?.orderOut(nil)
+            menuPanel?.orderOut(nil)
+            resizePanel?.orderOut(nil)
         }
     }
 
@@ -143,6 +178,7 @@ final class PetOverlayController {
             panel.setFrame(targetFrame, display: true, animate: false)
         }
         fitBubblePanel(for: store, visibleFrame: visibleFrame)
+        fitControlPanels(for: store)
         if refreshPointer {
             (panel as? OverlayPanel)?.refreshPointerPassthrough()
         }
@@ -178,9 +214,65 @@ final class PetOverlayController {
         OverlayGeometry.petPanelScreenFrame(
             scale: store.overlayScale,
             petScreenCenter: store.overlayPetScreenCenter,
-            clickMenuEnabled: store.behavior.clickMenu,
-            includeResize: true
+            clickMenuEnabled: false,
+            includeResize: false
         )
+    }
+
+    private func configureControlPanel(_ panel: NSPanel, contentView: NSView) {
+        panel.contentView = contentView
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.isMovable = false
+        panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
+        panel.isMovableByWindowBackground = false
+        panel.collectionBehavior = Self.companionCollectionBehavior
+        panel.canHide = true
+        panel.hidesOnDeactivate = false
+        panel.animationBehavior = .none
+        panel.isExcludedFromWindowsMenu = true
+    }
+
+    private func fitControlPanels(for store: AppStore) {
+        let menuFrame = OverlayGeometry.rect(
+            center: OverlayGeometry.menuScreenCenter(
+                petScreenCenter: store.overlayPetScreenCenter,
+                scale: store.overlayScale,
+                petVisualEnvelope: store.overlayPetVisualEnvelope
+            ),
+            size: OverlayGeometry.menuHitSize
+        ).integral
+        let resizeFrame = OverlayGeometry.rect(
+            center: OverlayGeometry.resizeScreenCenter(
+                petScreenCenter: store.overlayPetScreenCenter,
+                scale: store.overlayScale,
+                petVisualEnvelope: store.overlayPetVisualEnvelope
+            ),
+            size: OverlayGeometry.resizeHitSize
+        ).integral
+
+        if menuPanel?.frame != menuFrame {
+            menuPanel?.setFrame(menuFrame, display: true, animate: false)
+        }
+        if resizePanel?.frame != resizeFrame {
+            resizePanel?.setFrame(resizeFrame, display: true, animate: false)
+        }
+
+        guard panel?.isVisible == true else { return }
+        if store.behavior.clickMenu {
+            menuPanel?.orderFront(nil)
+        } else {
+            menuPanel?.orderOut(nil)
+        }
+        resizePanel?.orderFront(nil)
+    }
+
+    private func syncControlVisibility() {
+        guard let store else { return }
+        fitControlPanels(for: store)
     }
 
     private func fitBubblePanel(for store: AppStore, visibleFrame: CGRect) {
@@ -196,7 +288,8 @@ final class PetOverlayController {
             scale: store.overlayScale,
             petScreenCenter: store.overlayPetScreenCenter,
             visibleFrame: visibleFrame,
-            contents: bubbleContents
+            contents: bubbleContents,
+            petVisualEnvelope: store.overlayPetVisualEnvelope
         )
         if bubblePanel.frame != targetFrame {
             bubblePanel.setFrame(targetFrame, display: true, animate: false)
@@ -286,6 +379,13 @@ final class PetOverlayController {
     }
 
     private func shouldHideForFinderDesktop() -> Bool {
+        // The explicit renderer acceptance profile must keep a real on-screen
+        // MTKView alive even when the current desktop/full-screen arrangement
+        // contains no layer-0 regular window. Normal app runs do not set the
+        // telemetry path and continue to honor Show Desktop hiding.
+        if PetRendererTelemetry.isRequested {
+            return false
+        }
         guard
             let app = NSWorkspace.shared.frontmostApplication,
             app.bundleIdentifier == "com.apple.finder"
@@ -359,6 +459,7 @@ final class PetOverlayController {
 private final class BubbleOverlayPanel: NSPanel {
     weak var overlayStore: AppStore?
     private let pointerMonitor = OverlayPointerEventMonitor()
+    private var clickMenuTarget: BubbleClickMenuTarget?
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
@@ -404,6 +505,9 @@ private final class BubbleOverlayPanel: NSPanel {
             if event.type == .leftMouseDown, handleActionClick(at: event.locationInWindow) {
                 return
             }
+            if event.type == .rightMouseDown, handleContextMenu(with: event) {
+                return
+            }
         default:
             break
         }
@@ -436,28 +540,106 @@ private final class BubbleOverlayPanel: NSPanel {
 
     private func handleActionClick(at location: NSPoint) -> Bool {
         guard let overlayStore else { return false }
-        let topLeftPoint = CGPoint(x: location.x, y: frame.height - location.y)
-        let contents = overlayStore.overlayBubbleContents
-        let rects = bubbleRects()
+        guard let (content, rect, topLeftPoint) = bubbleHit(at: location) else { return false }
 
-        for (content, rect) in zip(contents, rects) where rect.contains(topLeftPoint) {
-            let localPoint = CGPoint(x: topLeftPoint.x - rect.minX, y: topLeftPoint.y - rect.minY)
-            let topLeftCloseRect = CGRect(x: 0, y: 0, width: 34, height: 34)
-            let topRightCloseRect = CGRect(x: rect.width - 36, y: 0, width: 36, height: 34)
-            let replyRect = CGRect(x: rect.width - 64, y: rect.height - 34, width: 64, height: 34)
+        if let session = sessionHit(in: content, bubbleRect: rect, point: topLeftPoint),
+           session.canOpen
+        {
+            overlayStore.presentAgentSession(
+                source: session.source,
+                sessionID: session.sessionID,
+                navigation: session.navigation
+            )
+            return true
+        }
 
-            if topLeftCloseRect.contains(localPoint) || topRightCloseRect.contains(localPoint) {
-                overlayStore.dismissOverlayBubble(eventID: content.id)
-                return true
-            }
-
-            if replyRect.contains(localPoint) {
-                overlayStore.presentMainWindow()
-                return true
-            }
+        if OverlayGeometry.bubbleCloseHitRect(in: rect).contains(topLeftPoint) {
+            overlayStore.dismissOverlayBubble(eventIDs: content.eventIDs)
+            return true
         }
 
         return false
+    }
+
+    private func handleContextMenu(with event: NSEvent) -> Bool {
+        guard let overlayStore, let contentView else { return false }
+        guard let (content, rect, topLeftPoint) = bubbleHit(at: event.locationInWindow) else {
+            return false
+        }
+        let session = sessionHit(in: content, bubbleRect: rect, point: topLeftPoint)
+
+        let target = BubbleClickMenuTarget(
+            onOpenSession: { [weak overlayStore] in
+                guard let session, session.canOpen else { return }
+                overlayStore?.presentAgentSession(
+                    source: session.source,
+                    sessionID: session.sessionID,
+                    navigation: session.navigation
+                )
+            },
+            onDismiss: { [weak overlayStore] in
+                if let session {
+                    overlayStore?.dismissOverlayBubble(eventID: session.id)
+                } else {
+                    overlayStore?.dismissOverlayBubble(eventIDs: content.eventIDs)
+                }
+            }
+        )
+        clickMenuTarget = target
+
+        let menu = NSMenu()
+        if let session, session.canOpen {
+            let openItem = NSMenuItem(
+                title: session.actionLabel,
+                action: #selector(BubbleClickMenuTarget.openSession),
+                keyEquivalent: ""
+            )
+            openItem.target = target
+            openItem.image = NSImage(systemSymbolName: "arrow.up.forward.app", accessibilityDescription: nil)
+            menu.addItem(openItem)
+        }
+
+        let dismissItem = NSMenuItem(
+            title: session == nil ? "收起气泡" : "收起此会话",
+            action: #selector(BubbleClickMenuTarget.dismissBubble),
+            keyEquivalent: ""
+        )
+        dismissItem.target = target
+        dismissItem.image = NSImage(
+            systemSymbolName: session == nil ? "chevron.down" : "minus.circle",
+            accessibilityDescription: nil
+        )
+        menu.addItem(dismissItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: contentView)
+        return true
+    }
+
+    private func sessionHit(
+        in content: OverlayBubbleContent,
+        bubbleRect: CGRect,
+        point: CGPoint
+    ) -> OverlaySessionContent? {
+        zip(
+            content.sessions,
+            OverlayGeometry.bubbleSessionRects(in: bubbleRect, content: content)
+        )
+        .first(where: { pair in pair.1.contains(point) })?
+        .0
+    }
+
+    private func bubbleHit(at location: NSPoint) -> (
+        content: OverlayBubbleContent,
+        rect: CGRect,
+        topLeftPoint: CGPoint
+    )? {
+        guard let overlayStore else { return nil }
+        let topLeftPoint = CGPoint(x: location.x, y: frame.height - location.y)
+        for (content, rect) in zip(overlayStore.overlayBubbleContents, bubbleRects())
+        where roundedRectContains(topLeftPoint, in: rect, radius: OverlayGeometry.bubbleCornerRadius) {
+            return (content, rect, topLeftPoint)
+        }
+        return nil
     }
 
     private func bubbleRects() -> [CGRect] {
@@ -500,6 +682,17 @@ private final class BubbleOverlayPanel: NSPanel {
             ignoresMouseEvents = value
         }
     }
+}
+
+private final class ControlOverlayPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func performDrag(with event: NSEvent) {}
 }
 
 private final class OverlayPanel: NSPanel {
@@ -548,15 +741,20 @@ private final class OverlayPanel: NSPanel {
             interactionInProgress = false
         }
         let mouseLocation = NSEvent.mouseLocation
+        var shouldReceiveMouse = false
         if let overlayStore {
-            let near = OverlayGeometry.pointerNearPetScreenRect(
+            let activationRect = OverlayGeometry.pointerNearPetScreenRect(
                 scale: overlayStore.overlayScale,
                 petScreenCenter: overlayStore.overlayPetScreenCenter,
                 clickMenuEnabled: overlayStore.behavior.clickMenu
-            ).contains(mouseLocation)
-            overlayStore.setOverlayPointerNearPet(near)
+            )
+            shouldReceiveMouse = activationRect.contains(mouseLocation)
+            overlayStore.setOverlayPointerNearPet(shouldReceiveMouse)
         }
-        setIgnoresMouseEventsIfNeeded(!shouldHandleMouse(screenPoint: mouseLocation))
+        // Activate before the pointer reaches a compact control. Waiting until
+        // it is inside the exact 36/38pt target races the asynchronous global
+        // mouse monitor and lets the first click fall through to another app.
+        setIgnoresMouseEventsIfNeeded(!shouldReceiveMouse)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -595,7 +793,7 @@ private final class OverlayPanel: NSPanel {
         switch event.type {
         case .mouseMoved:
             if !interactionInProgress {
-                setIgnoresMouseEventsIfNeeded(!shouldHandleMouse(localPoint: event.locationInWindow))
+                refreshPointerPassthrough()
             }
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             interactionInProgress = false
@@ -750,6 +948,24 @@ private final class PassthroughOverlayHostingView<Content: View>: NSHostingView<
             includeBubble: includeBubble,
             includeResize: true
         )
+    }
+}
+
+private final class BubbleClickMenuTarget: NSObject {
+    private let onOpenSession: () -> Void
+    private let onDismiss: () -> Void
+
+    init(onOpenSession: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+        self.onOpenSession = onOpenSession
+        self.onDismiss = onDismiss
+    }
+
+    @objc func openSession() {
+        onOpenSession()
+    }
+
+    @objc func dismissBubble() {
+        onDismiss()
     }
 }
 

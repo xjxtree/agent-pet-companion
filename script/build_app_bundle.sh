@@ -9,13 +9,18 @@ UNIVERSAL=0
 OUTPUT_PATH=""
 RELEASE_VERSION="${APC_RELEASE_VERSION:-0.1.0}"
 RELEASE_BUILD="${APC_RELEASE_BUILD:-1}"
+BUILD_ID="${APC_BUILD_ID:-${RELEASE_VERSION}.${RELEASE_BUILD}.$(date -u +%Y%m%d%H%M%S).$$}"
+RELEASE_CHANNEL="${APC_RELEASE_CHANNEL:-develop}"
+SIGN_DEVELOPMENT=1
 
 usage() {
   cat <<'EOF'
-usage: build_app_bundle.sh [--configuration debug|release] [--universal] [--output PATH]
+usage: build_app_bundle.sh [--configuration debug|release] [--universal] [--unsigned] [--output PATH]
 
-Builds a development app bundle by default. --universal requires release mode
-and builds arm64 plus x86_64 slices. This script never signs or launches the app.
+Builds an ad-hoc signed development app bundle and verified `-develop.zip` by
+default. --unsigned disables development signing and ZIP packaging. --universal
+requires release mode and builds arm64 plus x86_64 slices. This script never
+launches the app.
 EOF
 }
 
@@ -28,6 +33,10 @@ while (($# > 0)); do
       ;;
     --universal)
       UNIVERSAL=1
+      shift
+      ;;
+    --unsigned)
+      SIGN_DEVELOPMENT=0
       shift
       ;;
     --output)
@@ -63,6 +72,14 @@ if [[ ! "$RELEASE_BUILD" =~ ^[1-9][0-9]*$ ]]; then
   echo 'APC_RELEASE_BUILD must be a positive integer' >&2
   exit 2
 fi
+if [[ ! "$BUILD_ID" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]; then
+  echo 'APC_BUILD_ID must be 1-128 ASCII letters, digits, dots, underscores, pluses, or hyphens' >&2
+  exit 2
+fi
+case "$RELEASE_CHANNEL" in
+  develop|release) ;;
+  *) echo 'APC_RELEASE_CHANNEL must be develop or release' >&2; exit 2 ;;
+esac
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/apps/macos"
@@ -73,6 +90,12 @@ case "$APP_BUNDLE" in
   *) echo 'bundle output must end in .app' >&2; exit 2 ;;
 esac
 
+APP_PARENT="$(dirname "$APP_BUNDLE")"
+mkdir -p "$APP_PARENT"
+# Always assemble and sign outside the repository. A File Provider-managed
+# workspace can inject FinderInfo/resource-fork metadata while codesign is
+# traversing a package, which makes otherwise identical develop builds fail
+# intermittently. The verified ZIP is produced from this clean staging area.
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-app-bundle.XXXXXX")"
 STAGED_APP="$TMP_DIR/$APP_NAME.app"
 APP_CONTENTS="$STAGED_APP/Contents"
@@ -80,9 +103,16 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
+DEVELOP_ARCHIVE="${APP_BUNDLE%.app}-develop.zip"
+STAGED_DEVELOP_ARCHIVE="$TMP_DIR/$APP_NAME-develop.zip"
+ARCHIVE_VERIFY_DIR=""
 
 cleanup() {
   rm -rf "$TMP_DIR"
+  if [[ -n "$ARCHIVE_VERIFY_DIR" ]]; then
+    rm -rf "$ARCHIVE_VERIFY_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -100,7 +130,12 @@ build_native() {
     cargo_args+=(--release)
     swift_args=(-c release "${swift_args[@]}")
   fi
-  (cd "$ROOT_DIR" && cargo "${cargo_args[@]}")
+  (cd "$ROOT_DIR" && \
+    APC_BUILD_ID="$BUILD_ID" \
+    APC_APP_VERSION="$RELEASE_VERSION" \
+    APC_APP_BUILD="$RELEASE_BUILD" \
+    APC_RELEASE_CHANNEL="$RELEASE_CHANNEL" \
+    cargo "${cargo_args[@]}")
   (cd "$SWIFT_DIR" && swift "${swift_args[@]}")
 
   local swift_bin_path
@@ -129,7 +164,12 @@ build_universal() {
   local targets=(aarch64-apple-darwin x86_64-apple-darwin)
   local target
   for target in "${targets[@]}"; do
-    if ! (cd "$ROOT_DIR" && cargo build --workspace --locked --release --target "$target"); then
+    if ! (cd "$ROOT_DIR" && \
+      APC_BUILD_ID="$BUILD_ID" \
+      APC_APP_VERSION="$RELEASE_VERSION" \
+      APC_APP_BUILD="$RELEASE_BUILD" \
+      APC_RELEASE_CHANNEL="$RELEASE_CHANNEL" \
+      cargo build --workspace --locked --release --target "$target"); then
       printf 'Rust target %s is unavailable; install both Apple targets before release\n' "$target" >&2
       exit 1
     fi
@@ -167,6 +207,7 @@ else
 fi
 
 cp -R "$ROOT_DIR/skills/agent-pet-studio" "$APP_RESOURCES/skills/agent-pet-studio"
+"$APP_RESOURCES/bin/petcore" runtime-manifest >"$RUNTIME_MANIFEST"
 find "$APP_RESOURCES/skills" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$APP_RESOURCES/skills" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 chmod +x "$APP_BINARY" "$APP_RESOURCES/bin/petcore" "$APP_RESOURCES/bin/petcore-cli"
@@ -190,6 +231,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$RELEASE_VERSION</string>
   <key>CFBundleVersion</key>
   <string>$RELEASE_BUILD</string>
+  <key>APCBuildID</key>
+  <string>$BUILD_ID</string>
+  <key>APCReleaseChannel</key>
+  <string>$RELEASE_CHANNEL</string>
+  <key>APCRuntimeManifestSchemaVersion</key>
+  <string>apc.runtime-manifest.v1</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
@@ -222,13 +269,55 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+  command -v codesign >/dev/null 2>&1 || {
+    echo 'development signing requires codesign' >&2
+    exit 1
+  }
+  # Finder and copy operations can attach metadata that invalidates even an
+  # ad-hoc signature. Strip it from the staged bundle before signing so the
+  # exact artifact moved into dist is verifiable with --deep --strict.
+  xattr -cr "$STAGED_APP"
+  codesign --force --sign - --timestamp=none "$APP_BINARY"
+  codesign --force --sign - --timestamp=none "$APP_RESOURCES/bin/petcore"
+  codesign --force --sign - --timestamp=none "$APP_RESOURCES/bin/petcore-cli"
+  codesign --force --sign - --timestamp=none "$STAGED_APP"
+fi
+
 "$ROOT_DIR/script/validate_app_bundle.sh" --development "$STAGED_APP" >/dev/null
+
+if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+  # Archive the clean, signed staging bundle before anything crosses into the
+  # File Provider workspace. Verify the exact archive payload independently.
+  command -v ditto >/dev/null 2>&1 || {
+    echo 'development packaging requires ditto' >&2
+    exit 1
+  }
+  ditto -c -k --norsrc --keepParent "$STAGED_APP" "$STAGED_DEVELOP_ARCHIVE"
+  ARCHIVE_VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-develop-archive.XXXXXX")"
+  ditto -x -k "$STAGED_DEVELOP_ARCHIVE" "$ARCHIVE_VERIFY_DIR"
+  codesign --verify --deep --strict "$ARCHIVE_VERIFY_DIR/$APP_NAME.app"
+fi
 
 mkdir -p "$(dirname "$APP_BUNDLE")"
 rm -rf "$APP_BUNDLE"
 mv "$STAGED_APP" "$APP_BUNDLE"
+if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+  rm -f "$DEVELOP_ARCHIVE"
+  mv "$STAGED_DEVELOP_ARCHIVE" "$DEVELOP_ARCHIVE"
 
-printf 'Built %s (%s%s)\n' \
+  # The naked .app remains a convenient local build product. Clear any
+  # destination metadata immediately and verify it, while treating the ZIP
+  # verified above as the stable informal deliverable.
+  xattr -cr "$APP_BUNDLE"
+  codesign --verify --deep --strict "$APP_BUNDLE"
+fi
+
+printf 'Built %s (%s%s, build %s)\n' \
   "$APP_BUNDLE" \
   "$CONFIGURATION" \
-  "$([[ "$UNIVERSAL" == "1" ]] && printf ', universal' || true)"
+  "$([[ "$UNIVERSAL" == "1" ]] && printf ', universal' || true)" \
+  "$BUILD_ID"
+if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+  printf 'Packaged %s (ad-hoc development signature)\n' "$DEVELOP_ARCHIVE"
+fi

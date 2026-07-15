@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/agent-event.schema.json",
   "title": "Agent Pet Companion Normalized Persisted Event",
-  "description": "The complete normalized event record exposed by PetCore and persisted in SQLite. Display copy and payload metadata use closed vocabularies; raw hook input is never represented by this schema.",
+  "description": "The complete normalized event record exposed by PetCore and persisted in SQLite. Display copy and payload metadata use closed vocabularies. Bounded user/assistant display messages are explicit; raw hook input, commands, tool output, and transcripts are never represented by this schema.",
   "type": "object",
   "required": [
     "id",
@@ -54,11 +54,16 @@
             "start", "tool", "waiting", "review", "done", "failed",
             "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
             "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure",
-            "session_start", "before_agent_start", "agent_start", "tool_call",
-            "tool_execution_start", "tool_execution_end", "agent_settled",
-            "session.created", "session.status", "session.idle", "session.error",
+            "SessionEnd", "Notification", "Elicitation", "ElicitationResult",
+            "PostToolBatch", "PermissionDenied", "PreCompact", "PostCompact",
+            "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted",
+            "session_start", "input", "before_agent_start", "agent_start", "message_end", "agent_end", "session_shutdown", "tool_call",
+            "tool_execution_start", "tool_execution_end", "agent_settled", "session_before_compact", "session_compact",
+            "session.created", "session.deleted", "session.status", "session.idle", "session.error",
             "permission.asked", "permission.updated", "permission.replied",
-            "tool.execute.before", "tool.execute.after", "connection.test", "legacy",
+            "question.asked", "question.replied", "question.rejected",
+            "message.user", "message.assistant",
+            "tool.execute.before", "tool.execute.after", "connection.test", "app_server_activity", "legacy",
             "unclassified"
           ]
         },
@@ -73,10 +78,39 @@
             "api_failure", "settled", "created", "idle", "busy", "retry",
             "permission_replied", "permission_replied_once", "permission_replied_always",
             "permission_replied_allow", "permission_replied_deny", "permission_replied_reject",
-            "started_without_args", "session_failure", "unknown", null
+            "started_without_args", "session_failure", "session_closed", "input_requested", "message", "unknown", null
           ]
         },
-        "diagnostic": { "type": "boolean" }
+        "diagnostic": { "type": "boolean" },
+        "turn_id": { "type": ["string", "null"], "maxLength": 256 },
+        "session_active": { "type": "boolean" },
+        "message_role": { "type": ["string", "null"], "enum": ["user", "assistant", null] },
+        "message_content": { "type": ["string", "null"], "maxLength": 4096 },
+        "activity_kind": {
+          "type": ["string", "null"],
+          "enum": ["thinking", "plan", "command", "file", "file_change", "tool", "subagent", "search", "network", "image", "compaction", null]
+        },
+        "activity_content": { "type": ["string", "null"], "maxLength": 1024 },
+        "interaction_kind": {
+          "type": ["string", "null"],
+          "enum": ["approval_required", "input_required", "review_required", null]
+        },
+        "project_label": { "type": ["string", "null"], "maxLength": 128 },
+        "session_title": { "type": ["string", "null"], "maxLength": 160 },
+        "session_open": { "type": ["boolean", "null"] },
+        "session_surface": {
+          "type": ["string", "null"],
+          "enum": ["chatgpt_app", "cli_terminal", "unknown", null]
+        },
+        "terminal_app": {
+          "type": ["string", "null"],
+          "enum": ["warp", "terminal", "iterm2", "ghostty", "unknown", null]
+        },
+        "session_open_url": {
+          "type": ["string", "null"],
+          "maxLength": 256,
+          "pattern": "^(warp|warppreview)://session/[0-9A-Fa-f]{32}$"
+        }
       },
       "additionalProperties": false
     }

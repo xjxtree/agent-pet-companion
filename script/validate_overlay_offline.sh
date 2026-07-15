@@ -26,6 +26,7 @@ CORE_OBJECTS=(
   "$CORE_OBJECT_DIR/AppModels.swift.o"
   "$CORE_OBJECT_DIR/FrameScheduler.swift.o"
 )
+LOCALIZATION_ACCESSOR="$BIN_DIR/AgentPetCompanion.build/DerivedSources/resource_bundle_accessor.swift"
 
 swiftc \
   -parse-as-library \
@@ -36,6 +37,9 @@ swiftc \
   -emit-library \
   -module-name OverlayGeometryValidation \
   -I "$BIN_DIR/Modules" \
+  "$MACOS_DIR/Sources/AgentPetCompanion/App/Localization.swift" \
+  "$MACOS_DIR/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift" \
+  "$LOCALIZATION_ACCESSOR" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayResizeAccessibility.swift" \
   "${CORE_OBJECTS[@]}" \

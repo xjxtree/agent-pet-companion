@@ -63,6 +63,19 @@ assert data["event"]["payload_json"] == {
     "tool_name": "shell",
     "outcome": "started",
     "diagnostic": True,
+    "turn_id": None,
+    "session_active": False,
+    "message_role": None,
+    "message_content": None,
+    "activity_kind": None,
+    "activity_content": None,
+    "interaction_kind": None,
+    "project_label": None,
+    "session_title": None,
+    "session_open": None,
+    "session_surface": None,
+    "terminal_app": None,
+    "session_open_url": None,
 }, data
 PY
 HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Agent-Pet-Token: $TOKEN" -X POST "http://127.0.0.1:$PORT/agent-events" -d '{"source":"codex","event_type":"tool","payload":["bad"]}')"

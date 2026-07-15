@@ -1,5 +1,7 @@
 # Remediation Progress Ledger
 
+> **Historical snapshot / 历史快照：** This ledger records the 2026-07-10 remediation only. Use [current project status](../../PROJECT_STATUS.md) for current implementation and validation state; completed entries below are not current release evidence.
+
 Branch: `codex/project-audit-remediation`
 Plan: `docs/superpowers/plans/2026-07-10-project-audit-remediation.md`
 

@@ -2,5 +2,6 @@
   "session_id": "claude-session-prompt",
   "hook_event_name": "UserPromptSubmit",
   "cwd": "/private/tmp/project",
-  "prompt": "claude-secret-prompt-do-not-persist"
+  "turn_id": "claude-turn-prompt",
+  "prompt": "请修复当前测试失败"
 }
