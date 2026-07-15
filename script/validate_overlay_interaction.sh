@@ -176,7 +176,7 @@ let visible = screen.visibleFrame
 let target = [
     "x": visible.midX,
     "y": visible.midY,
-    // Match the product's first-run overlay scale. Values below the supported
+    // Match the product first-run overlay scale. Values below the supported
     // range intentionally resolve to this default instead of creating a tiny,
     // inaccessible target.
     "scale": 0.72,
