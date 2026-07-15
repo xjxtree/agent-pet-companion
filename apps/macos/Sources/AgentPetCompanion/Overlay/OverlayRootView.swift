@@ -258,6 +258,7 @@ private struct ConversationBubble: View {
                 Text(content.agentName)
                     .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
                     .foregroundStyle(OverlayStyle.secondaryText)
+                    .apcBubbleTextContrast()
                     .lineLimit(1)
                     .layoutPriority(2)
 
@@ -294,7 +295,7 @@ private struct ConversationBubble: View {
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
         .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
-        .apcLiquidGlass(
+        .apcTransparentBubbleGlass(
             in: RoundedRectangle(
                 cornerRadius: OverlayGeometry.bubbleCornerRadius,
                 style: .continuous
@@ -320,6 +321,7 @@ private struct SessionBubbleRow: View {
                             weight: .semibold
                         ))
                         .foregroundStyle(OverlayStyle.text)
+                        .apcBubbleTextContrast()
                         .lineLimit(1)
                         .truncationMode(.tail)
 
@@ -333,7 +335,10 @@ private struct SessionBubbleRow: View {
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
-                            .apcLiquidGlass(in: Capsule())
+                            .background(
+                                Capsule()
+                                    .fill(statusColor.opacity(0.10))
+                            )
                             .overlay {
                                 Capsule()
                                     .stroke(statusColor.opacity(0.28), lineWidth: 0.75)
@@ -345,6 +350,7 @@ private struct SessionBubbleRow: View {
                 Text(session.messageText)
                     .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
                     .foregroundStyle(OverlayStyle.text.opacity(0.88))
+                    .apcBubbleTextContrast()
                     .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
@@ -368,10 +374,14 @@ private struct SessionBubbleRow: View {
                     .fixedSize()
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .apcLiquidGlass(
-                        in: Capsule(),
-                        interactive: false
+                    .background(
+                        Capsule()
+                            .fill(Color.primary.opacity(0.07))
                     )
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
+                    }
                     .padding(.trailing, OverlayGeometry.bubbleSessionHorizontalPadding)
                     .padding(.bottom, OverlayGeometry.bubbleSessionVerticalPadding)
                     .allowsHitTesting(false)
@@ -907,7 +917,14 @@ private struct BubbleIconButton: View {
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(OverlayStyle.secondaryText)
                 .frame(width: 15, height: 15)
-                .apcLiquidGlass(in: Circle(), interactive: true)
+                .background(
+                    Circle()
+                        .fill(Color.primary.opacity(0.08))
+                )
+                .overlay {
+                    Circle()
+                        .stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
+                }
         }
         .buttonStyle(.plain)
     }

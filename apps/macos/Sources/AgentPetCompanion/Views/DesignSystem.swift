@@ -126,12 +126,107 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
     }
 }
 
+enum APCBubbleGlassStyle {
+    static let opticalOpacity = 0.28
+    static let backdropOpacity = 0.18
+    static let increasedContrastBackdropOpacity = 0.36
+    static let reducedTransparencyBackdropOpacity = 0.86
+    static let borderOpacity = 0.22
+
+    static func resolvedBackdropOpacity(
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Double {
+        if reduceTransparency {
+            return reducedTransparencyBackdropOpacity
+        }
+        if increasedContrast {
+            return increasedContrastBackdropOpacity
+        }
+        return backdropOpacity
+    }
+}
+
+/// A bubble-specific surface that keeps the native Clear Liquid Glass edge and
+/// refraction while allowing the desktop content behind the panel to remain
+/// recognizable. Text is intentionally outside the attenuated optical layer.
+private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    let shape: S
+    let interactive: Bool
+
+    private var backdropColor: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var backdropOpacity: Double {
+        APCBubbleGlassStyle.resolvedBackdropOpacity(
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased
+        )
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    shape.fill(backdropColor.opacity(backdropOpacity))
+
+                    if !reduceTransparency {
+                        if #available(macOS 26.0, *) {
+                            Color.clear
+                                .glassEffect(
+                                    interactive ? .clear.interactive() : .clear,
+                                    in: shape
+                                )
+                                .opacity(APCBubbleGlassStyle.opticalOpacity)
+                        }
+                    }
+                }
+            }
+            .overlay {
+                shape
+                    .stroke(.primary.opacity(APCBubbleGlassStyle.borderOpacity), lineWidth: 0.6)
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+private struct APCBubbleTextContrastModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content.shadow(
+            color: colorScheme == .dark
+                ? .black.opacity(0.72)
+                : .white.opacity(0.82),
+            radius: 1.1,
+            y: 0.4
+        )
+    }
+}
+
 extension View {
     func apcLiquidGlass<S: Shape>(
         in shape: S,
         interactive: Bool = false
     ) -> some View {
         modifier(APCLiquidGlassModifier(shape: shape, interactive: interactive))
+    }
+
+    func apcTransparentBubbleGlass<S: Shape>(
+        in shape: S,
+        interactive: Bool = false
+    ) -> some View {
+        modifier(APCTransparentBubbleGlassModifier(shape: shape, interactive: interactive))
+    }
+
+    func apcBubbleTextContrast() -> some View {
+        modifier(APCBubbleTextContrastModifier())
     }
 }
 

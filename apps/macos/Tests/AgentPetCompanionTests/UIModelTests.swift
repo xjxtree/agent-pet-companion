@@ -276,6 +276,30 @@ struct UIModelTests {
         }
     }
 
+    @Test
+    func transparentBubbleGlassKeepsTheBackdropVisibleAndHonorsAccessibility() {
+        #expect(APCBubbleGlassStyle.opticalOpacity <= 0.30)
+        #expect(APCBubbleGlassStyle.backdropOpacity < 0.25)
+        #expect(
+            APCBubbleGlassStyle.resolvedBackdropOpacity(
+                reduceTransparency: false,
+                increasedContrast: false
+            ) == APCBubbleGlassStyle.backdropOpacity
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBackdropOpacity(
+                reduceTransparency: false,
+                increasedContrast: true
+            ) > APCBubbleGlassStyle.backdropOpacity
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBackdropOpacity(
+                reduceTransparency: true,
+                increasedContrast: false
+            ) >= 0.80
+        )
+    }
+
     private func makePet(id: String, active: Bool) -> PetSummary {
         PetSummary(
             id: id,
