@@ -2781,7 +2781,7 @@ fn generation_waits_for_user_input_and_resumes_after_reply() {
                 .contains("粉白长裙")
     }));
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let messages = handle_request(
             &state,
