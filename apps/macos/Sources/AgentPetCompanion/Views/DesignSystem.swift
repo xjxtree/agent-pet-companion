@@ -136,8 +136,9 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 
 enum APCBubbleGlassStyle {
     /// Clear Liquid Glass is the most transparent public system treatment on
-    /// macOS 26. Keep the normal path free of supplemental fills, borders, and
-    /// post-compositing opacity so the system can sample the desktop directly.
+    /// macOS 26. Keep the normal path free of supplemental fills, borders,
+    /// tint, and post-compositing opacity so the system can sample the desktop
+    /// directly.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
     static let legacyBackdropOpacity = 0.18
@@ -179,23 +180,135 @@ enum APCBubbleForegroundStyle {
     /// Foreground content is never attenuated to make the surface look clear.
     /// Transparency belongs to the glass surface, not to labels or icons.
     static let contentOpacity = 1.0
-    static let secondaryContentOpacity = 0.86
-    static let lightHaloOpacity = 0.16
-    static let darkHaloOpacity = 0.82
+    static let secondaryContentOpacity = 1.0
+    static let lightHaloOpacity = 0.72
+    static let darkHaloOpacity = 0.76
 }
 
-/// The native Clear glass is applied directly to the content hierarchy. This
-/// is the public maximum-clear treatment and keeps SwiftUI foreground content
-/// in the glass view's guaranteed content layer. `BubbleOverlayRootView` does
-/// not add a `GlassEffectContainer`: that container elevates descendant glass
-/// views and can place the optical layer above foreground content in a
-/// transparent `NSPanel`.
-private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
+/// Owns the one AppKit capability gap in the bubble implementation. On macOS
+/// 26, `NSGlassEffectView` only guarantees that its `contentView` is composed
+/// inside the glass foreground layer. Hosting the complete SwiftUI bubble as
+/// that content view prevents the optical layer from covering labels and
+/// controls in a transparent `NSPanel`.
+#if compiler(>=6.2)
+@available(macOS 26.0, *)
+@MainActor
+enum APCNativeBubbleGlassConfiguration {
+    static func makeHostingView<Content: View>(
+        rootView: Content
+    ) -> NSHostingView<Content> {
+        let hostingView = NSHostingView(rootView: rootView)
+        // Preserve an intrinsic fallback for unspecified SwiftUI proposals,
+        // but do not install NSHostingView's near-required max-width/height
+        // constraints. Those constraints can shrink the private glass content
+        // holder and make the far edge of a full-width bubble non-interactive.
+        hostingView.sizingOptions = [.intrinsicContentSize]
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        return hostingView
+    }
+
+    static func makeView(
+        contentView: NSView,
+        cornerRadius: CGFloat
+    ) -> NSGlassEffectView {
+        let glassView = NSGlassEffectView()
+        configureAppearance(
+            glassView,
+            cornerRadius: cornerRadius
+        )
+        install(contentView: contentView, in: glassView)
+        return glassView
+    }
+
+    static func configureAppearance(
+        _ glassView: NSGlassEffectView,
+        cornerRadius: CGFloat
+    ) {
+        glassView.style = .clear
+        glassView.tintColor = nil
+        glassView.cornerRadius = cornerRadius
+        glassView.alphaValue = 1
+    }
+
+    static func install(contentView: NSView, in glassView: NSGlassEffectView) {
+        glassView.contentView = contentView
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            contentView.leadingAnchor.constraint(equalTo: glassView.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: glassView.trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: glassView.topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: glassView.bottomAnchor),
+        ])
+    }
+
+    static func resolvedSize(
+        proposal: ProposedViewSize,
+        fittingSize: CGSize
+    ) -> CGSize {
+        CGSize(
+            width: proposal.width ?? fittingSize.width,
+            height: proposal.height ?? fittingSize.height
+        )
+    }
+}
+
+@available(macOS 26.0, *)
+private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
+    let cornerRadius: CGFloat
+    let content: Content
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let hostingView = APCNativeBubbleGlassConfiguration.makeHostingView(
+            rootView: content
+        )
+        return APCNativeBubbleGlassConfiguration.makeView(
+            contentView: hostingView,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    func updateNSView(_ glassView: NSGlassEffectView, context: Context) {
+        guard let hostingView = glassView.contentView as? NSHostingView<Content> else { return }
+
+        hostingView.rootView = content
+        APCNativeBubbleGlassConfiguration.configureAppearance(
+            glassView,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: NSGlassEffectView,
+        context: Context
+    ) -> CGSize? {
+        APCNativeBubbleGlassConfiguration.resolvedSize(
+            proposal: proposal,
+            fittingSize: nsView.contentView?.fittingSize ?? .zero
+        )
+    }
+}
+#endif
+
+/// `BubbleOverlayRootView` deliberately does not use a
+/// `GlassEffectContainer`: that container elevates descendant glass layers and
+/// can place the optical layer above foreground content in a transparent
+/// `NSPanel`.
+private struct APCTransparentBubbleGlassModifier: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
-    let shape: S
-    let interactive: Bool
+    let cornerRadius: CGFloat
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    }
+
+    private var backdropColor: Color {
+        colorScheme == .dark ? .black : .white
+    }
 
     private var backdropOpacity: Double {
         APCBubbleGlassStyle.resolvedBackdropOpacity(
@@ -211,21 +324,20 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
             if reduceTransparency {
                 accessibilityFallback(content, supportsLiquidGlass: true)
             } else {
-                content
+                APCNativeBubbleGlassHost(
+                    cornerRadius: cornerRadius,
+                    content: content
                     .background {
                         if colorSchemeContrast == .increased {
-                            shape.fill(Color.black.opacity(backdropOpacity))
+                            shape.fill(backdropColor.opacity(backdropOpacity))
                         }
                     }
-                    .glassEffect(
-                        interactive ? .clear.interactive() : .clear,
-                        in: shape
-                    )
                     .overlay {
                         if colorSchemeContrast == .increased {
                             bubbleBorder(supportsLiquidGlass: true)
                         }
                     }
+                )
             }
         } else {
             legacyFallback(content)
@@ -240,7 +352,7 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
         supportsLiquidGlass: Bool
     ) -> some View {
         return content
-            .background(Color.black.opacity(backdropOpacity), in: shape)
+            .background(backdropColor.opacity(backdropOpacity), in: shape)
             .overlay {
                 bubbleBorder(supportsLiquidGlass: supportsLiquidGlass)
             }
@@ -257,7 +369,7 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
             .background {
                 ZStack {
                     shape.fill(.ultraThinMaterial)
-                    shape.fill(Color.black.opacity(supplementalOpacity))
+                    shape.fill(backdropColor.opacity(supplementalOpacity))
                 }
             }
             .overlay {
@@ -290,13 +402,13 @@ private struct APCBubbleTextContrastModifier: ViewModifier {
             .opacity(APCBubbleForegroundStyle.contentOpacity)
             .shadow(
                 color: .white.opacity(APCBubbleForegroundStyle.lightHaloOpacity),
-                radius: 0.3,
-                y: 0.05
+                radius: 0.7,
+                y: 0.1
             )
             .shadow(
                 color: .black.opacity(APCBubbleForegroundStyle.darkHaloOpacity),
                 radius: 0.85,
-                y: 0.25
+                y: 0.2
             )
     }
 }
@@ -309,11 +421,8 @@ extension View {
         modifier(APCLiquidGlassModifier(shape: shape, interactive: interactive))
     }
 
-    func apcTransparentBubbleGlass<S: Shape>(
-        in shape: S,
-        interactive: Bool = false
-    ) -> some View {
-        modifier(APCTransparentBubbleGlassModifier(shape: shape, interactive: interactive))
+    func apcTransparentBubbleGlass(cornerRadius: CGFloat) -> some View {
+        modifier(APCTransparentBubbleGlassModifier(cornerRadius: cornerRadius))
     }
 
     func apcBubbleTextContrast() -> some View {

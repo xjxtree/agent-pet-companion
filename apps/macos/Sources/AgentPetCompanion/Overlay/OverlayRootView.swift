@@ -8,12 +8,12 @@ private enum OverlayStyle {
     static let secondaryText = Color.secondary
 }
 
-/// Clear Liquid Glass doesn't adapt foreground glyphs between light and dark
-/// backgrounds. Keep bubble content bright and use the contrast modifier's
-/// dark halo so it remains legible over both halves of a mixed desktop.
+/// Keep the bubble foreground semantic and fully opaque. Clear glass does not
+/// dim the sampled desktop, so paired light/dark halos preserve contrast over
+/// mixed backgrounds without reducing the surface's transparency.
 private enum BubbleForegroundStyle {
-    static let text = Color.white
-    static let secondaryText = Color.white.opacity(APCBubbleForegroundStyle.secondaryContentOpacity)
+    static let text = Color.primary
+    static let secondaryText = Color.primary
 }
 
 enum OverlayPetMenuPolicy {
@@ -300,13 +300,7 @@ private struct ConversationBubble: View {
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
         .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
-        .apcTransparentBubbleGlass(
-            in: RoundedRectangle(
-                cornerRadius: OverlayGeometry.bubbleCornerRadius,
-                style: .continuous
-            ),
-            interactive: true
-        )
+        .apcTransparentBubbleGlass(cornerRadius: OverlayGeometry.bubbleCornerRadius)
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
     }
 }
