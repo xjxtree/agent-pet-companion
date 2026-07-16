@@ -1107,14 +1107,40 @@ final class AppStore: ObservableObject {
         statusText = "正在启用 \(pet.name)"
         Task {
             defer { petOperationIDs.remove(pet.id) }
-            do {
-                _ = try await requestPetCore(method: "pet.activate", params: ["id": pet.id])
-                try await refreshSnapshot()
-                statusText = "已启用 \(pet.name)"
-            } catch {
-                statusText = "启用失败：\(error.localizedDescription)"
-                await refresh()
-            }
+            await finishPetActivation(
+                pet,
+                activate: {
+                    _ = try await self.requestPetCore(
+                        method: "pet.activate",
+                        params: ["id": pet.id]
+                    )
+                },
+                refreshSnapshot: { try await self.refreshSnapshot() },
+                recoverSnapshot: { await self.refresh() }
+            )
+        }
+    }
+
+    func finishPetActivation(
+        _ pet: PetSummary,
+        activate: @MainActor () async throws -> Void,
+        refreshSnapshot: @MainActor () async throws -> Void,
+        recoverSnapshot: @MainActor () async -> Void
+    ) async {
+        do {
+            try await activate()
+        } catch {
+            statusText = "启用失败：\(error.localizedDescription)"
+            await recoverSnapshot()
+            return
+        }
+
+        do {
+            try await refreshSnapshot()
+            statusText = "已启用 \(pet.name)"
+        } catch {
+            statusText = "已启用 \(pet.name)，但状态刷新失败：\(error.localizedDescription)"
+            await recoverSnapshot()
         }
     }
 

@@ -387,6 +387,7 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
         }
         "import" => {
             let offline = flag_present(&mut args, "--offline");
+            let expect_absent = flag_present(&mut args, "--expect-absent");
             let path = PathBuf::from(pop(&mut args, "petpack path")?);
             reject_extra_args(&args, "petpack import")?;
             let paths = AppPaths::from_env()?;
@@ -395,13 +396,20 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
                 paths.ensure()?;
                 let database = petcore::db::Database::new(paths.db_path.clone());
                 database.init()?;
-                let pet = petpack::import_petpack(&paths, &database, &path)?;
+                let pet = if expect_absent {
+                    petpack::import_petpack_expecting_absent(&paths, &database, &path)?
+                } else {
+                    petpack::import_petpack(&paths, &database, &path)?
+                };
                 print_json(json!(pet))
             } else {
                 print_json(daemon::request(
                     &paths,
                     "petpack.import",
-                    json!({ "path": path.display().to_string() }),
+                    json!({
+                        "path": path.display().to_string(),
+                        "expect_absent": expect_absent,
+                    }),
                 )?)
             }
         }

@@ -8,7 +8,7 @@ use petcore_types::{
 };
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,36 @@ use std::thread;
 use std::time::Duration;
 
 const PET_STUDIO_SKILL_MD: &str = include_str!("../../../skills/agent-pet-studio/SKILL.md");
+const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
+    (
+        "SKILL.md",
+        include_str!("../../../skills/agent-pet-maker/SKILL.md"),
+    ),
+    (
+        "references/petpack-v1.md",
+        include_str!("../../../skills/agent-pet-maker/references/petpack-v1.md"),
+    ),
+    (
+        "references/create-modify.md",
+        include_str!("../../../skills/agent-pet-maker/references/create-modify.md"),
+    ),
+    (
+        "references/security.md",
+        include_str!("../../../skills/agent-pet-maker/references/security.md"),
+    ),
+    (
+        "scripts/petpack_workspace.py",
+        include_str!("../../../skills/agent-pet-maker/scripts/petpack_workspace.py"),
+    ),
+    (
+        "agents/openai.yaml",
+        include_str!("../../../skills/agent-pet-maker/agents/openai.yaml"),
+    ),
+    (
+        "tests/test_petpack_workspace.py",
+        include_str!("../../../skills/agent-pet-maker/tests/test_petpack_workspace.py"),
+    ),
+];
 const CODEX_PLUGIN_JSON: &str = include_str!("../../../plugins/codex/.codex-plugin/plugin.json");
 const CODEX_HOOKS_TEMPLATE: &str = include_str!("../../../plugins/codex/hooks/hooks.json.tpl");
 const CLAUDE_SETTINGS_TEMPLATE: &str =
@@ -125,6 +155,7 @@ fn check_source_with_runtime_smoke(
                     "Do not read agent auth",
                 ],
             ));
+            items.push(check_codex_agent_pet_maker(&install_root));
             items.push(check_codex_marketplace_entry());
             items.push(if run_runtime_smoke {
                 check_codex_plugin_installed()
@@ -240,7 +271,9 @@ fn check_source_with_runtime_smoke(
 
 pub fn repair_source(paths: &AppPaths, source: AgentSource) -> Result<AgentConnectionStatus> {
     let root = install_root(paths, source);
-    fs::create_dir_all(&root)?;
+    if source != AgentSource::Codex {
+        fs::create_dir_all(&root)?;
+    }
     let cli_path = connector_cli_path(paths);
     match source {
         AgentSource::Codex => repair_codex(&root, &cli_path)?,
@@ -256,7 +289,9 @@ pub fn refresh_installed_source(paths: &AppPaths, source: AgentSource) -> Result
         return Ok(false);
     }
     let root = install_root(paths, source);
-    fs::create_dir_all(&root)?;
+    if source != AgentSource::Codex {
+        fs::create_dir_all(&root)?;
+    }
     let cli_path = connector_cli_path(paths);
     match source {
         AgentSource::Codex => write_codex_connector(&root, &cli_path)?,
@@ -301,25 +336,156 @@ fn repair_codex(root: &Path, cli_path: &Path) -> Result<()> {
 }
 
 fn write_codex_connector(root: &Path, cli_path: &Path) -> Result<()> {
-    fs::create_dir_all(root.join(".codex-plugin"))?;
-    fs::create_dir_all(root.join("hooks"))?;
-    fs::create_dir_all(root.join("skills/agent-pet-studio"))?;
+    ensure_codex_plugin_root(root)?;
+    let plugin_dir = root.join(".codex-plugin");
+    let hooks_dir = root.join("hooks");
+    let skills_dir = root.join("skills");
+    let studio_skill_dir = skills_dir.join("agent-pet-studio");
+    for path in [&plugin_dir, &hooks_dir, &skills_dir, &studio_skill_dir] {
+        ensure_managed_directory(path)?;
+    }
     let cli = shell_quote(&cli_path.display().to_string());
     let plugin: Value = serde_json::from_str(CODEX_PLUGIN_JSON)?;
     let hooks = render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &cli)?;
-    fs::write(
-        root.join(".codex-plugin/plugin.json"),
-        serde_json::to_vec_pretty(&plugin)?,
+    write_managed_file_atomic(
+        &plugin_dir.join("plugin.json"),
+        &serde_json::to_vec_pretty(&plugin)?,
+        0o644,
     )?;
-    fs::write(
-        root.join("hooks/hooks.json"),
-        serde_json::to_vec_pretty(&hooks)?,
+    write_managed_file_atomic(
+        &hooks_dir.join("hooks.json"),
+        &serde_json::to_vec_pretty(&hooks)?,
+        0o644,
     )?;
-    fs::write(
-        root.join("skills/agent-pet-studio/SKILL.md"),
-        PET_STUDIO_SKILL_MD,
+    write_managed_file_atomic(
+        &studio_skill_dir.join("SKILL.md"),
+        PET_STUDIO_SKILL_MD.as_bytes(),
+        0o644,
     )?;
+    write_codex_agent_pet_maker(root)?;
     Ok(())
+}
+
+fn write_codex_agent_pet_maker(root: &Path) -> Result<()> {
+    let skill_root = root.join("skills/agent-pet-maker");
+    ensure_managed_directory(&skill_root)?;
+    for directory in ["references", "scripts", "agents", "tests"] {
+        ensure_managed_directory(&skill_root.join(directory))?;
+    }
+    for (relative_path, _) in AGENT_PET_MAKER_FILES {
+        ensure_managed_file_target(&skill_root.join(relative_path))?;
+    }
+    for (relative_path, content) in AGENT_PET_MAKER_FILES {
+        let path = skill_root.join(relative_path);
+        let mode = if *relative_path == "scripts/petpack_workspace.py" {
+            0o755
+        } else {
+            0o644
+        };
+        write_managed_file_atomic(&path, content.as_bytes(), mode)?;
+    }
+    Ok(())
+}
+
+fn ensure_codex_plugin_root(root: &Path) -> Result<()> {
+    let base = agent_home();
+    let expected = base
+        .join(".agents")
+        .join("plugins")
+        .join("plugins")
+        .join("agent-pet-companion");
+    if root != expected {
+        return Err(PetCoreError::Validation(format!(
+            "Codex plugin 管理根不符合预期：{}",
+            root.display()
+        )));
+    }
+
+    ensure_managed_directory(&base)?;
+    let mut current = base;
+    for component in [".agents", "plugins", "plugins", "agent-pet-companion"] {
+        current.push(component);
+        ensure_managed_directory(&current)?;
+    }
+    Ok(())
+}
+
+fn ensure_managed_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(PetCoreError::Validation(format!(
+                "拒绝通过符号链接写入 Codex plugin 管理目录：{}",
+                path.display()
+            )))
+        }
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(PetCoreError::Validation(format!(
+            "Codex plugin 管理目录路径不是目录：{}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "Codex plugin 管理目录缺少父目录：{}",
+                    path.display()
+                ))
+            })?;
+            let parent_metadata = fs::symlink_metadata(parent)?;
+            if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+                return Err(PetCoreError::Validation(format!(
+                    "拒绝通过非目录或符号链接父路径创建 Codex plugin 管理目录：{}",
+                    parent.display()
+                )));
+            }
+            fs::create_dir(path)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn ensure_managed_file_target(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(PetCoreError::Validation(
+            format!("拒绝覆盖 Codex plugin 中的符号链接文件：{}", path.display()),
+        )),
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(PetCoreError::Validation(format!(
+            "Codex plugin 管理文件路径不是普通文件：{}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_managed_file_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        PetCoreError::Validation(format!(
+            "Codex plugin 管理文件缺少父目录：{}",
+            path.display()
+        ))
+    })?;
+    ensure_managed_directory(parent)?;
+    ensure_managed_file_target(path)?;
+
+    let temp_path = atomic_temp_path(path);
+    let result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(mode))?;
+        fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn repair_claude(root: &Path, cli_path: &Path) -> Result<()> {
@@ -490,6 +656,82 @@ fn check_file_contains(path: &Path, label: &str, required: &[&str]) -> Connectio
             format!("已安装旧版本，待更新 {}", path.display())
         } else {
             format!("待写入 {}", path.display())
+        },
+    }
+}
+
+fn check_codex_agent_pet_maker(root: &Path) -> ConnectionCheckItem {
+    let skill_root = root.join("skills/agent-pet-maker");
+    let managed_directories = [
+        (root.to_path_buf(), "plugin root"),
+        (root.join("skills"), "skills"),
+        (skill_root.clone(), "agent-pet-maker"),
+        (skill_root.join("references"), "references"),
+        (skill_root.join("scripts"), "scripts"),
+        (skill_root.join("agents"), "agents"),
+        (skill_root.join("tests"), "tests"),
+    ];
+    let mut missing_or_outdated = managed_directories
+        .iter()
+        .filter_map(|(path, label)| {
+            let safe = fs::symlink_metadata(path)
+                .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+                .unwrap_or(false);
+            (!safe).then(|| format!("{label}/"))
+        })
+        .collect::<Vec<_>>();
+    let directories_are_safe = missing_or_outdated.is_empty();
+    if directories_are_safe {
+        missing_or_outdated.extend(AGENT_PET_MAKER_FILES.iter().filter_map(
+            |(relative_path, expected)| {
+                let path = skill_root.join(relative_path);
+                let is_regular_file = fs::symlink_metadata(&path)
+                    .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+                    .unwrap_or(false);
+                if is_regular_file
+                    && fs::read_to_string(&path)
+                        .map(|actual| actual == *expected)
+                        .unwrap_or(false)
+                {
+                    None
+                } else {
+                    Some(relative_path.to_string())
+                }
+            },
+        ));
+    }
+    let helper_is_executable = directories_are_safe
+        && fs::symlink_metadata(skill_root.join("scripts/petpack_workspace.py"))
+            .map(|metadata| {
+                metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.permissions().mode() & 0o111 != 0
+            })
+            .unwrap_or(false);
+
+    let installed = missing_or_outdated.is_empty() && helper_is_executable;
+    ConnectionCheckItem {
+        name: "Agent Pet Maker Skill".to_string(),
+        status: if installed {
+            CheckStatus::Ok
+        } else if skill_root.exists() {
+            CheckStatus::NeedsFix
+        } else {
+            CheckStatus::Missing
+        },
+        detail: if installed {
+            format!(
+                "configured: Codex plugin 可原生发现完整 agent-pet-maker（{} 个文件）",
+                AGENT_PET_MAKER_FILES.len()
+            )
+        } else if skill_root.exists() {
+            let mut reasons = missing_or_outdated;
+            if !helper_is_executable {
+                reasons.push("scripts/petpack_workspace.py（不可执行）".to_string());
+            }
+            format!("已安装不完整或旧版本，待更新：{}", reasons.join("、"))
+        } else {
+            format!("待写入 {}", skill_root.display())
         },
     }
 }
@@ -1791,24 +2033,27 @@ fn atomic_temp_path(path: &Path) -> PathBuf {
 }
 
 fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
+    let result_path = root.join("codex-install-result.json");
     if std::env::var_os("APC_AGENT_CONFIG_HOME").is_some() {
-        fs::write(
-            root.join("codex-install-result.json"),
-            serde_json::to_vec_pretty(&json!({
+        write_managed_file_atomic(
+            &result_path,
+            &serde_json::to_vec_pretty(&json!({
                 "status": "skipped",
                 "reason": "APC_AGENT_CONFIG_HOME is set"
             }))?,
+            0o644,
         )?;
         return Ok(());
     }
 
     let Some(codex) = codex_command_path() else {
-        fs::write(
-            root.join("codex-install-result.json"),
-            serde_json::to_vec_pretty(&json!({
+        write_managed_file_atomic(
+            &result_path,
+            &serde_json::to_vec_pretty(&json!({
                 "status": "skipped",
                 "reason": "codex command not found"
             }))?,
+            0o644,
         )?;
         return Ok(());
     };
@@ -1820,24 +2065,26 @@ fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
 
     match output {
         Ok(output) => {
-            fs::write(
-                root.join("codex-install-result.json"),
-                serde_json::to_vec_pretty(&json!({
+            write_managed_file_atomic(
+                &result_path,
+                &serde_json::to_vec_pretty(&json!({
                     "status": if output.status.success() && !output.timed_out { "ok" } else { "failed" },
                     "code": output.status.code(),
                     "timed_out": output.timed_out,
                     "stdout_truncated": output.stdout_truncated,
                     "stderr_truncated": output.stderr_truncated
                 }))?,
+                0o644,
             )?;
         }
         Err(error) => {
-            fs::write(
-                root.join("codex-install-result.json"),
-                serde_json::to_vec_pretty(&json!({
+            write_managed_file_atomic(
+                &result_path,
+                &serde_json::to_vec_pretty(&json!({
                     "status": "failed",
                     "error": error.to_string()
                 }))?,
+                0o644,
             )?;
         }
     }

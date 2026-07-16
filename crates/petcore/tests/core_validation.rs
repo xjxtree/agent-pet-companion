@@ -3508,7 +3508,10 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
     .unwrap();
     std::fs::write(&wait_file, "ok").unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A strict skill-full-source import decodes every PNG and the animated
+    // preview before publishing. Keep enough debug-build headroom to test the
+    // result instead of racing the validation work.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let messages = handle_request(
             &state,
@@ -3706,6 +3709,13 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .join("skills")
         .join("agent-pet-studio")
         .join("SKILL.md");
+    let codex_maker = fake_agent_home
+        .join(".agents")
+        .join("plugins")
+        .join("plugins")
+        .join("agent-pet-companion")
+        .join("skills")
+        .join("agent-pet-maker");
     let codex_marketplace = fake_agent_home
         .join(".agents")
         .join("plugins")
@@ -3717,6 +3727,37 @@ fn repair_generates_real_pi_and_opencode_connectors() {
     assert!(codex_plugin.is_file());
     assert!(codex_skill_content.contains("Generate Agent Pet Companion .petpack assets"));
     assert!(codex_skill_content.contains("APC_PETCORE_CLI"));
+    let maker_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/agent-pet-maker");
+    for relative_path in [
+        "SKILL.md",
+        "references/petpack-v1.md",
+        "references/create-modify.md",
+        "references/security.md",
+        "scripts/petpack_workspace.py",
+        "agents/openai.yaml",
+        "tests/test_petpack_workspace.py",
+    ] {
+        assert_eq!(
+            std::fs::read(codex_maker.join(relative_path)).unwrap(),
+            std::fs::read(maker_source.join(relative_path)).unwrap(),
+            "Codex repair must install the complete agent-pet-maker file {relative_path}"
+        );
+    }
+    let maker_openai_agent =
+        std::fs::read_to_string(codex_maker.join("agents/openai.yaml")).unwrap();
+    assert!(
+        maker_openai_agent.contains("$agent-pet-companion:agent-pet-maker"),
+        "Codex plugin skills must use the plugin-qualified invocation so the CLI injects the skill body"
+    );
+    assert_ne!(
+        std::fs::metadata(codex_maker.join("scripts/petpack_workspace.py"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0,
+        "the installed agent-pet-maker helper must remain executable"
+    );
     assert!(codex_marketplace_content.contains("agent-pet-companion"));
     let codex_marketplace_plugin = codex_marketplace_json["plugins"]
         .as_array()
@@ -3743,6 +3784,13 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .items
         .iter()
         .any(|item| item.name == "Codex marketplace" && item.status == CheckStatus::Ok));
+    assert!(codex_status.items.iter().any(|item| {
+        item.name == "Agent Pet Maker Skill"
+            && item.status == CheckStatus::Ok
+            && item
+                .detail
+                .contains("Codex plugin 可原生发现完整 agent-pet-maker")
+    }));
     let codex_hooks_json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&codex_hooks).unwrap()).unwrap();
     let codex_session_start_command = codex_hooks_json["hooks"]["SessionStart"][0]["hooks"][0]
@@ -4001,6 +4049,92 @@ await new Promise((resolve) => setTimeout(resolve, 500));
 
     connections::uninstall_source(&paths, AgentSource::Opencode).unwrap();
     assert!(!opencode_plugin.exists());
+}
+
+#[test]
+fn codex_repair_rejects_symlinked_maker_parents_and_targets() {
+    let _env_lock = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let fake_cli = temp.path().join("petcore-cli");
+    write_fake_cli(&fake_cli);
+    let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", fake_cli.as_os_str());
+    let _app_server_cmd = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "");
+    let _disable_app_server_auto = EnvVarGuard::set("APC_DISABLE_CODEX_APP_SERVER_AUTO", "1");
+
+    for target_kind in ["parent", "file", "install-result"] {
+        let fake_agent_home = temp.path().join(format!("agent-home-{target_kind}"));
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &fake_agent_home);
+        let paths = AppPaths::new(temp.path().join(format!("app-home-{target_kind}")));
+        paths.ensure().unwrap();
+        connections::repair_source(&paths, AgentSource::Codex).unwrap();
+
+        let plugin_root = fake_agent_home
+            .join(".agents")
+            .join("plugins")
+            .join("plugins")
+            .join("agent-pet-companion");
+        let maker_root = plugin_root.join("skills").join("agent-pet-maker");
+
+        let outside = temp.path().join(format!("outside-{target_kind}"));
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.txt");
+        let sentinel_content = if target_kind == "file" {
+            std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/agent-pet-maker/SKILL.md"),
+            )
+            .unwrap()
+        } else {
+            format!("do not overwrite {target_kind}")
+        };
+        std::fs::write(&sentinel, &sentinel_content).unwrap();
+
+        match target_kind {
+            "parent" => {
+                std::fs::remove_dir_all(maker_root.join("scripts")).unwrap();
+                std::os::unix::fs::symlink(&outside, maker_root.join("scripts")).unwrap();
+            }
+            "file" => {
+                std::fs::remove_file(maker_root.join("SKILL.md")).unwrap();
+                std::os::unix::fs::symlink(&sentinel, maker_root.join("SKILL.md")).unwrap();
+            }
+            "install-result" => {
+                std::fs::remove_file(plugin_root.join("codex-install-result.json")).unwrap();
+                std::os::unix::fs::symlink(
+                    &sentinel,
+                    plugin_root.join("codex-install-result.json"),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+
+        if target_kind != "install-result" {
+            let codex_status = connections::check_all_light(&paths)
+                .into_iter()
+                .find(|status| status.source == AgentSource::Codex)
+                .unwrap();
+            let maker_status = codex_status
+                .items
+                .iter()
+                .find(|item| item.name == "Agent Pet Maker Skill")
+                .unwrap();
+            assert_eq!(maker_status.status, CheckStatus::NeedsFix);
+        }
+
+        let error = connections::repair_source(&paths, AgentSource::Codex).unwrap_err();
+        assert!(
+            error.to_string().contains("符号链接"),
+            "unexpected repair error for {target_kind}: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            sentinel_content
+        );
+        assert!(
+            !outside.join("petpack_workspace.py").exists(),
+            "repair escaped through the symlinked {target_kind}"
+        );
+    }
 }
 
 #[test]

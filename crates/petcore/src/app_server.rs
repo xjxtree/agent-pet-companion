@@ -10,7 +10,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
+// A probe still needs to stay bounded, but 1.2 seconds is too brittle while
+// PetCore is decoding high-quality pet assets on a busy development machine.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const THREAD_LIST_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_READ_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_START_TIMEOUT: Duration = Duration::from_millis(8000);

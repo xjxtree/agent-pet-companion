@@ -25,6 +25,7 @@ SPEC.loader.exec_module(workspace_helper)
 FAKE_CLI = r'''#!/usr/bin/env python3
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -55,9 +56,19 @@ elif args[:2] == ["petpack", "import"]:
     existing = next((item for item in state["pets"] if item["id"] == returned_id), None)
     active = bool(existing and existing.get("active"))
     state["pets"] = [item for item in state["pets"] if item["id"] != returned_id]
-    imported = {**manifest, "id": returned_id, "active": active}
+    installed_archive = state_path.parent / "installed.petpack"
+    shutil.copyfile(Path(args[-1]), installed_archive)
+    imported = {
+        **manifest,
+        "id": returned_id,
+        "active": active,
+        "petpack_path": str(installed_archive),
+    }
     state["pets"].append(imported)
     state_path.write_text(json.dumps(state))
+    if os.environ.get("FAKE_IMPORT_COMMIT_THEN_FAIL") == "1":
+        print("simulated transport failure after commit", file=sys.stderr)
+        raise SystemExit(1)
     print(json.dumps(imported))
 elif args[:2] == ["pet", "activate"]:
     if os.environ.get("FAKE_FAIL_ACTIVATE") == "1":
@@ -178,6 +189,21 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(result["install"]["verification"]["active"])
         self.assertEqual(result["error"]["code"], "install_activation_failed")
 
+    def test_import_error_reconciles_exact_committed_archive_without_retry(self) -> None:
+        self.environment["FAKE_IMPORT_COMMIT_THEN_FAIL"] = "1"
+
+        completed, result = self.run_install("--activate")
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["install"]["import"]["succeeded"])
+        self.assertTrue(result["install"]["import"]["reconciled_after_error"])
+        self.assertTrue(result["install"]["verification"]["archive_sha256_matches"])
+        self.assertEqual(
+            [call[:2] for call in self.calls_made()].count(["petpack", "import"]),
+            1,
+        )
+
     def test_install_prefers_app_runtime_current_over_path(self) -> None:
         app_home = self.root / "app-home"
         runtime_cli = app_home / "runtime" / "current" / "petcore-cli"
@@ -197,6 +223,198 @@ class InstallTests(unittest.TestCase):
 
 
 class MetadataContractTests(unittest.TestCase):
+    @staticmethod
+    def visible_frame(
+        color: tuple[int, int, int, int], offset: int = 0, hidden_rgb: tuple[int, int, int] = (0, 0, 0)
+    ):
+        from PIL import Image
+
+        frame = Image.new("RGBA", (8, 8), (*hidden_rgb, 0))
+        for y in range(2, 6):
+            for x in range(2 + offset, 5 + offset):
+                frame.putpixel((x, y), color)
+        return frame
+
+    def make_visual_source(self, root: Path) -> tuple[Path, dict]:
+        source = root / "petpack-source"
+        manifest = {
+            "render_size": {"width": 8, "height": 8},
+            "states": [
+                {"name": state, "frames_dir": f"assets/frames/{state}"}
+                for state in workspace_helper.STATES
+            ],
+        }
+        for state in workspace_helper.STATES:
+            state_dir = source / "assets" / "frames" / state
+            state_dir.mkdir(parents=True, exist_ok=True)
+            self.visible_frame((40, 80, 120, 255)).save(state_dir / "frame-000.png")
+            self.visible_frame((80, 120, 160, 255), offset=1).save(
+                state_dir / "frame-001.png"
+            )
+        preview_dir = source / "assets" / "preview"
+        preview_dir.mkdir(parents=True)
+        first = self.visible_frame((40, 80, 120, 255))
+        second = self.visible_frame((80, 120, 160, 255), offset=1)
+        first.save(preview_dir / "cover.png")
+        first.save(
+            preview_dir / "animated_preview.webp",
+            format="WEBP",
+            save_all=True,
+            append_images=[second],
+            duration=[80, 80],
+            loop=0,
+            lossless=True,
+        )
+        return source, manifest
+
+    def test_visual_contract_accepts_transparency_and_real_animation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            workspace_helper.validate_portable_visual_assets(source, manifest)
+
+    def test_visual_contract_rejects_an_opaque_frame(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            Image.new("RGBA", (8, 8), (20, 40, 60, 255)).save(
+                source / "assets" / "frames" / "idle" / "frame-000.png"
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("transparent surroundings", raised.exception.message)
+
+    def test_visual_contract_rejects_a_frame_without_visible_pet_pixels(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            Image.new("RGBA", (8, 8), (255, 0, 0, 0)).save(
+                source / "assets" / "frames" / "idle" / "frame-000.png"
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("visible pet content", raised.exception.message)
+
+    def test_visual_contract_uses_one_percent_alpha_thresholds(self) -> None:
+        from PIL import Image
+
+        total = 100 * 100
+        required = workspace_helper.minimum_visual_pixel_count(total)
+        self.assertEqual(required, 100)
+
+        almost_invisible = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        for index in range(required - 1):
+            almost_invisible.putpixel((index % 100, index // 100), (30, 60, 90, 255))
+        _, visible, transparent = workspace_helper.visual_pixel_counts(almost_invisible)
+        self.assertEqual(visible, required - 1)
+        self.assertGreaterEqual(transparent, required)
+
+        almost_opaque = Image.new("RGBA", (100, 100), (30, 60, 90, 255))
+        for index in range(required - 1):
+            almost_opaque.putpixel((index % 100, index // 100), (0, 0, 0, 0))
+        _, visible, transparent = workspace_helper.visual_pixel_counts(almost_opaque)
+        self.assertGreaterEqual(visible, required)
+        self.assertEqual(transparent, required - 1)
+
+    def test_state_motion_ignores_hidden_rgb_and_png_encoding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            state_dir = source / "assets" / "frames" / "idle"
+            first = self.visible_frame((40, 80, 120, 255), hidden_rgb=(255, 0, 0))
+            second = self.visible_frame((40, 80, 120, 255), hidden_rgb=(0, 255, 0))
+            first.save(state_dir / "frame-000.png", compress_level=0)
+            second.save(state_dir / "frame-001.png", compress_level=9)
+
+            state_files, _ = workspace_helper.collect_state_files(source, manifest)
+            self.assertEqual(
+                state_files["idle"]["frame-000.png"],
+                state_files["idle"]["frame-001.png"],
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_generated_motion(state_files, ["idle"])
+            self.assertIn("duplicate still frames", raised.exception.message)
+
+    def test_visual_contract_rejects_an_invisible_cover(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            Image.new("RGBA", (8, 8), (255, 0, 0, 0)).save(
+                source / "assets" / "preview" / "cover.png"
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("cover.png lacks visible pet content", raised.exception.message)
+
+    def test_visual_contract_rejects_an_invisible_animated_frame(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            invisible = Image.new("RGBA", (8, 8), (255, 0, 0, 0))
+            visible = self.visible_frame((40, 80, 120, 255))
+            invisible.save(
+                source / "assets" / "preview" / "animated_preview.webp",
+                format="WEBP",
+                save_all=True,
+                append_images=[visible],
+                duration=[80, 80],
+                loop=0,
+                lossless=True,
+                exact=True,
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("lacks visible pet content", raised.exception.message)
+
+    def test_animated_motion_ignores_transparent_hidden_rgb(self) -> None:
+        first = self.visible_frame((40, 80, 120, 255), hidden_rgb=(255, 0, 0))
+        second = self.visible_frame((40, 80, 120, 255), hidden_rgb=(0, 255, 0))
+        self.assertNotEqual(first.tobytes(), second.tobytes())
+        self.assertEqual(
+            workspace_helper.canonical_premultiplied_rgba(first),
+            workspace_helper.canonical_premultiplied_rgba(second),
+        )
+
+    def test_animated_preview_cannot_fake_motion_with_hidden_rgb(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            first = self.visible_frame((40, 80, 120, 255), hidden_rgb=(255, 0, 0))
+            second = self.visible_frame((40, 80, 120, 255), hidden_rgb=(0, 255, 0))
+            first.save(
+                source / "assets" / "preview" / "animated_preview.webp",
+                format="WEBP",
+                save_all=True,
+                append_images=[second],
+                duration=[80, 80],
+                loop=0,
+                lossless=True,
+                exact=True,
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("no pixel-distinct frames", raised.exception.message)
+
+    def test_visual_contract_rejects_a_static_preview(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-visual-") as temporary:
+            source, manifest = self.make_visual_source(Path(temporary))
+            Image.new("RGBA", (8, 8), (20, 40, 60, 0)).save(
+                source / "assets" / "preview" / "animated_preview.webp",
+                format="WEBP",
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_portable_visual_assets(source, manifest)
+            self.assertEqual(raised.exception.code, "invalid_assets")
+            self.assertIn("at least two frames", raised.exception.message)
+
     def test_installed_cli_candidates_include_runtime_bundle_and_real_app_name(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-discovery-") as temporary:
             root = Path(temporary)
@@ -290,6 +508,66 @@ class MetadataContractTests(unittest.TestCase):
                 workspace_helper.verify_image_codecs()
         self.assertEqual(raised.exception.code, "capability_missing")
 
+    def test_cli_contract_probe_reaches_petpack_validate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-cli-contract-") as temporary:
+            cli = Path(temporary) / "petcore-cli"
+            cli.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1 $2\" = \"petpack validate\" ] && [ -f \"$3/manifest.json\" ]; then\n"
+                "  echo 'json error: missing field schema_version' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "if [ \"$1 $2 $3\" = \"petpack build --input\" ] && [ -f \"$4/manifest.json\" ]; then\n"
+                "  echo 'json error: missing field schema_version' >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "echo 'invalid request: unknown command' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            cli.chmod(0o755)
+
+            self.assertEqual(
+                workspace_helper.verify_cli_contract(cli),
+                {
+                    "petpack_validate": True,
+                    "petpack_build": True,
+                    "invalid_manifest_rejected": True,
+                },
+            )
+
+    def test_cli_contract_probe_rejects_an_unrelated_executable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-cli-contract-") as temporary:
+            cli = Path(temporary) / "petcore-cli"
+            cli.write_text(
+                "#!/bin/sh\necho 'invalid request: unknown petpack subcommand' >&2\nexit 1\n",
+                encoding="utf-8",
+            )
+            cli.chmod(0o755)
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.verify_cli_contract(cli)
+            self.assertEqual(raised.exception.code, "capability_missing")
+
+    def test_cli_contract_probe_rejects_validate_only_cli(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-cli-contract-") as temporary:
+            cli = Path(temporary) / "petcore-cli"
+            cli.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1 $2\" = \"petpack validate\" ]; then\n"
+                "  echo 'json error: missing field schema_version' >&2\n"
+                "else\n"
+                "  echo 'invalid request: unknown petpack subcommand' >&2\n"
+                "fi\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            cli.chmod(0o755)
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.verify_cli_contract(cli)
+            self.assertEqual(raised.exception.code, "capability_missing")
+
     def test_canonical_source_normalization_uses_only_schema_fields(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-source-") as temporary:
             source = Path(temporary)
@@ -375,6 +653,176 @@ class MetadataContractTests(unittest.TestCase):
                 workspace_helper.validate_session(source)
 
 
+class FinalizeSafetyTests(unittest.TestCase):
+    def make_finalize_case(self, root: Path) -> tuple[Path, object]:
+        workspace = root / "workspace"
+        source = workspace / "petpack-source"
+        (workspace / ".agent-pet-maker").mkdir(parents=True)
+        (source / "build").mkdir(parents=True)
+        (workspace / ".agent-pet-maker" / "context.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": workspace_helper.WORKSPACE_SCHEMA,
+                    "operation": "create",
+                    "source_dir": str(source),
+                    "cli_path": str(root / "petcore-cli"),
+                    "base": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest = {
+            "schema_version": workspace_helper.PETPACK_SCHEMA,
+            "id": "pet_test",
+            "name": "Test Pet",
+            "style": "storybook",
+            "quality": "standard",
+            "render_size": {"width": 8, "height": 8},
+            "states": [
+                {"name": state, "frames_dir": f"assets/frames/{state}"}
+                for state in workspace_helper.STATES
+            ],
+        }
+        (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        args = workspace_helper.argparse.Namespace(
+            workspace=str(workspace),
+            operation="create",
+            output=str(root / "pet.petpack"),
+            result=str(root / "result.json"),
+            replace=True,
+            changed_state=[],
+            cli=str(root / "petcore-cli"),
+        )
+        return source, args
+
+    def finalize_patches(self):
+        counts = {state: 2 for state in workspace_helper.STATES}
+        hashes = {
+            state: {"frame-000.png": "first", "frame-001.png": "second"}
+            for state in workspace_helper.STATES
+        }
+        return (
+            mock.patch.object(workspace_helper, "locate_cli", return_value=Path("/fake/petcore-cli")),
+            mock.patch.object(workspace_helper, "collect_state_files", return_value=(hashes, counts)),
+            mock.patch.object(workspace_helper, "validate_generated_motion"),
+            mock.patch.object(workspace_helper, "validate_portable_visual_assets"),
+            mock.patch.object(
+                workspace_helper,
+                "normalize_source_metadata",
+                return_value={"generator": "image-tool", "provenance": "skill-full-source"},
+            ),
+            mock.patch.object(workspace_helper, "validate_text_metadata"),
+            mock.patch.object(workspace_helper, "validate_session"),
+            mock.patch.object(workspace_helper, "append_session_event"),
+        )
+
+    def test_finalize_rejects_a_result_sidecar_symlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-finalize-") as temporary:
+            root = Path(temporary)
+            _, args = self.make_finalize_case(root)
+            target = root / "sidecar-target.json"
+            target.write_text("preserve me", encoding="utf-8")
+            Path(args.result).symlink_to(target)
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.finalize(args)
+
+            self.assertEqual(raised.exception.code, "unsafe_output")
+            self.assertIn("sidecar", raised.exception.message)
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve me")
+
+    def test_failed_replace_preserves_the_previous_package(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-finalize-") as temporary:
+            root = Path(temporary)
+            _, args = self.make_finalize_case(root)
+            output = Path(args.output)
+            output.write_bytes(b"known-good-old-package")
+            build_destinations: list[Path] = []
+
+            def fail_build(_cli: Path, arguments: list[str], _code: str) -> dict:
+                if arguments[:2] == ["petpack", "build"]:
+                    staged = Path(arguments[-1])
+                    build_destinations.append(staged)
+                    staged.write_bytes(b"partial-new-package")
+                    raise workspace_helper.MakerError("build_failed", "simulated failure")
+                return {"ok": True, "frame_count": 14, "warnings": []}
+
+            patches = self.finalize_patches()
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+                workspace_helper, "run_cli", side_effect=fail_build
+            ):
+                with self.assertRaises(workspace_helper.MakerError):
+                    workspace_helper.finalize(args)
+
+            self.assertEqual(output.read_bytes(), b"known-good-old-package")
+            self.assertEqual(len(build_destinations), 1)
+            self.assertNotEqual(build_destinations[0], output)
+            self.assertFalse(build_destinations[0].exists())
+
+    def test_failed_staged_validation_preserves_the_previous_package(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-finalize-") as temporary:
+            root = Path(temporary)
+            _, args = self.make_finalize_case(root)
+            output = Path(args.output)
+            output.write_bytes(b"known-good-old-package")
+            staged_outputs: list[Path] = []
+
+            def reject_staged(_cli: Path, arguments: list[str], _code: str) -> dict:
+                candidate = Path(arguments[-1])
+                if arguments[:2] == ["petpack", "build"]:
+                    candidate.write_bytes(b"built-but-invalid-package")
+                    staged_outputs.append(candidate)
+                elif arguments[:2] == ["petpack", "validate"] and candidate.is_file():
+                    raise workspace_helper.MakerError(
+                        "validation_failed", "simulated staged validation failure"
+                    )
+                return {"ok": True, "frame_count": 14, "warnings": []}
+
+            patches = self.finalize_patches()
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+                workspace_helper, "run_cli", side_effect=reject_staged
+            ):
+                with self.assertRaises(workspace_helper.MakerError):
+                    workspace_helper.finalize(args)
+
+            self.assertEqual(output.read_bytes(), b"known-good-old-package")
+            self.assertEqual(len(staged_outputs), 1)
+            self.assertFalse(staged_outputs[0].exists())
+
+    def test_successful_replace_publishes_only_after_staged_validation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-finalize-") as temporary:
+            root = Path(temporary)
+            _, args = self.make_finalize_case(root)
+            output = Path(args.output)
+            output.write_bytes(b"known-good-old-package")
+            calls: list[tuple[str, Path]] = []
+
+            def successful_cli(_cli: Path, arguments: list[str], _code: str) -> dict:
+                if arguments[:2] == ["petpack", "build"]:
+                    staged = Path(arguments[-1])
+                    self.assertNotEqual(staged, output)
+                    self.assertEqual(output.read_bytes(), b"known-good-old-package")
+                    staged.write_bytes(b"validated-new-package")
+                    calls.append(("build", staged))
+                elif arguments[:2] == ["petpack", "validate"]:
+                    candidate = Path(arguments[-1])
+                    if candidate.is_file():
+                        self.assertEqual(candidate.read_bytes(), b"validated-new-package")
+                        self.assertEqual(output.read_bytes(), b"known-good-old-package")
+                        calls.append(("validate-staged", candidate))
+                return {"ok": True, "frame_count": 14, "warnings": []}
+
+            patches = self.finalize_patches()
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+                workspace_helper, "run_cli", side_effect=successful_cli
+            ):
+                result = workspace_helper.finalize(args)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(output.read_bytes(), b"validated-new-package")
+            self.assertEqual([name for name, _ in calls], ["build", "validate-staged"])
+
+
 class PrivacyHelpersTests(unittest.TestCase):
     def test_embedded_private_locations_are_classified_without_echoing_values(self) -> None:
         self.assertEqual(
@@ -395,6 +843,69 @@ class PrivacyHelpersTests(unittest.TestCase):
             ),
             "external_locator",
         )
+
+    def test_unix_macos_and_windows_absolute_paths_are_all_classified(self) -> None:
+        absolute_paths = (
+            "/tmp/pet.png",
+            "/var/folders/cache/pet.png",
+            "/Applications/AgentPetCompanion.app",
+            "/Volumes/外置磁盘/宠物.png",
+            "/用户/宠物.png",
+            "~/Pictures/pet.png",
+            r"C:\Users\private\pet.png",
+            "D:/art/pet.png",
+            r"\\server\share\pet.png",
+            r"\\?\C:\very-long\pet.png",
+        )
+        for path in absolute_paths:
+            with self.subTest(path=path):
+                self.assertTrue(workspace_helper.contains_absolute_local_path(f"reference({path})"))
+
+    def test_prompt_reuses_cross_platform_path_and_url_classification(self) -> None:
+        manifest = {
+            "name": "Test Pet",
+            "style": "storybook",
+            "quality": "standard",
+            "render_size": {"width": 8, "height": 8},
+        }
+        source_metadata = {"generator": "image-tool", "provenance": "skill-full-source"}
+        rejected = (
+            "/private/tmp/pet.png",
+            "/Volumes/外置磁盘/宠物.png",
+            r"C:\Users\private\pet.png",
+            r"\\server\share\pet.png",
+            "https://private.example.invalid/pet.png",
+        )
+        for locator in rejected:
+            with self.subTest(locator=locator), tempfile.TemporaryDirectory(
+                prefix="agent-pet-maker-prompt-"
+            ) as temporary:
+                source = Path(temporary)
+                (source / "source").mkdir()
+                (source / "brief.json").write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "apc.pet-brief.v1",
+                            "name": "Test Pet",
+                            "style": "storybook",
+                            "quality": "standard",
+                            "states": list(workspace_helper.STATES),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (source / "source" / "prompt.md").write_text(
+                    f"Create a pet using reference({locator}).", encoding="utf-8"
+                )
+                with self.assertRaises(workspace_helper.MakerError) as raised:
+                    workspace_helper.validate_text_metadata(
+                        source,
+                        manifest,
+                        {state: 2 for state in workspace_helper.STATES},
+                        source_metadata,
+                    )
+                self.assertEqual(raised.exception.code, "privacy_violation")
+                self.assertNotIn(locator, raised.exception.message)
 
     def test_namespaced_and_affixed_private_keys_return_only_the_category(self) -> None:
         for key, category in (

@@ -135,8 +135,8 @@
     },
     "library.specification.verified_states" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "7 fixed states · at least 2 frames each" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 个固定状态 · 每状态至少 2 帧" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "7 fixed states · at least 1 decodable PNG each" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 个固定状态 · 每状态至少 1 张可解码 PNG" } }
       }
     },
     "library.state.idle" : {

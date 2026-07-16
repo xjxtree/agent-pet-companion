@@ -3,7 +3,10 @@ use crate::paths::AppPaths;
 use crate::pet_revision::{revision_pet_root, PetRevisionTransaction, PetStoreGuard};
 use crate::reference_images::validate_reference_inputs;
 use crate::{new_id, now_rfc3339, PetCoreError, Result};
-use image::{imageops, ImageBuffer, ImageFormat, Rgba, RgbaImage};
+use image::{
+    codecs::webp::{WebPDecoder, WebPEncoder},
+    imageops, AnimationDecoder, ImageBuffer, ImageEncoder, Rgba, RgbaImage,
+};
 use petcore_types::{
     GenerationForm, PetManifest, PetOrigin, PetStateName, PetSummary, QualityLevel, RenderSize,
     PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
@@ -11,7 +14,7 @@ use petcore_types::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{Read, Seek, Write};
+use std::io::{BufReader, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use zip::write::SimpleFileOptions;
@@ -27,6 +30,11 @@ const MAX_FRAMES_PER_STATE: usize = 40;
 const MAX_TOTAL_FRAMES: usize = MAX_FRAMES_PER_STATE * 7;
 const MAX_DECODED_STATE_BYTES: u64 = 420 * 1024 * 1024;
 const MAX_FRAME_PIXELS: u64 = 16_777_216;
+const MAX_ANIMATED_PREVIEW_FRAMES: usize = 120;
+const MAX_DECODED_ANIMATED_PREVIEW_BYTES: u64 = 128 * 1024 * 1024;
+const MIN_VISUAL_COVERAGE_PERCENT: usize = 1;
+const MIN_VISIBLE_ALPHA: u8 = 16;
+const MAX_TRANSPARENT_ALPHA: u8 = 239;
 const PET_SOURCE_SCHEMA_VERSION: &str = "apc.pet-source.v1";
 const PET_SOURCE_SCHEMA: &str = include_str!("../../../schemas/pet-source.schema.json");
 const PET_BRIEF_SCHEMA: &str = include_str!("../../../schemas/pet-brief.schema.json");
@@ -145,7 +153,8 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
     let mut frame_count = 0usize;
     let mut warnings = Vec::new();
     validate_petpack_metadata(dir, &manifest)?;
-    validate_preview_assets(dir, &mut warnings)?;
+    let skill_full_source = has_skill_full_source_provenance(dir)?;
+    validate_preview_assets(dir, skill_full_source, &mut warnings)?;
 
     for state in REQUIRED_STATES {
         let state_entry = manifest
@@ -166,6 +175,10 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
 
         let mut state_frames = 0usize;
         let mut decoded_state_bytes = 0u64;
+        let mut opaque_state_frames = 0usize;
+        let mut invisible_state_frames = 0usize;
+        let mut first_frame_digest: Option<[u8; 32]> = None;
+        let mut has_distinct_state_frame = false;
         for entry in fs::read_dir(&state_dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -189,7 +202,60 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                         manifest.render_size.height
                     )));
                 }
-                image::open(&path)?;
+                let mut decoded = image::open(&path)?.to_rgba8();
+                let transparent_pixels = decoded
+                    .pixels()
+                    .filter(|pixel| pixel.0[3] <= MAX_TRANSPARENT_ALPHA)
+                    .count();
+                let visible_pixels = decoded
+                    .pixels()
+                    .filter(|pixel| pixel.0[3] >= MIN_VISIBLE_ALPHA)
+                    .count();
+                let pixel_count = decoded.pixels().len();
+                let has_transparent_coverage =
+                    has_minimum_visual_coverage(transparent_pixels, pixel_count);
+                let has_visible_coverage = has_minimum_visual_coverage(visible_pixels, pixel_count);
+                if !has_transparent_coverage {
+                    if skill_full_source {
+                        let detail = if transparent_pixels == 0 {
+                            "is fully opaque"
+                        } else {
+                            "has less than 1% transparent coverage"
+                        };
+                        return Err(PetCoreError::Validation(format!(
+                            "skill-full-source frame {}/{} {detail}; every PNG frame must contain at least 1% transparent pixels",
+                            state_entry.frames_dir,
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("<frame>")
+                        )));
+                    }
+                    opaque_state_frames += 1;
+                }
+                if !has_visible_coverage {
+                    if skill_full_source {
+                        let detail = if visible_pixels == 0 {
+                            "is fully transparent"
+                        } else {
+                            "has less than 1% visible coverage"
+                        };
+                        return Err(PetCoreError::Validation(format!(
+                            "skill-full-source frame {}/{} {detail}; every PNG frame must contain at least 1% visible pet pixels",
+                            state_entry.frames_dir,
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("<frame>")
+                        )));
+                    }
+                    invisible_state_frames += 1;
+                }
+                normalize_visible_pixels(&mut decoded);
+                let digest: [u8; 32] = Sha256::digest(decoded.as_raw()).into();
+                if let Some(first) = first_frame_digest {
+                    has_distinct_state_frame |= digest != first;
+                } else {
+                    first_frame_digest = Some(digest);
+                }
                 frame_count += 1;
                 if frame_count > MAX_TOTAL_FRAMES {
                     return Err(PetCoreError::Validation(format!(
@@ -238,8 +304,38 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
             )));
         }
         if state_frames < 2 {
+            if skill_full_source {
+                return Err(PetCoreError::Validation(format!(
+                    "skill-full-source state {} has only one PNG frame; at least two frames are required",
+                    state.as_str()
+                )));
+            }
             warnings.push(format!(
                 "state {} has only one frame; animation will be static",
+                state.as_str()
+            ));
+        }
+        if state_frames >= 2 && !has_distinct_state_frame {
+            if skill_full_source {
+                return Err(PetCoreError::Validation(format!(
+                    "skill-full-source state {} has no pixel-distinct PNG frames",
+                    state.as_str()
+                )));
+            }
+            warnings.push(format!(
+                "state {} has no pixel-distinct PNG frames; animation will appear static",
+                state.as_str()
+            ));
+        }
+        if opaque_state_frames > 0 {
+            warnings.push(format!(
+                "state {} has {opaque_state_frames} PNG frame(s) below 1% transparent coverage; portable skill-full-source pets require transparent pixels in every frame",
+                state.as_str()
+            ));
+        }
+        if invisible_state_frames > 0 {
+            warnings.push(format!(
+                "state {} has {invisible_state_frames} PNG frame(s) below 1% visible coverage; portable skill-full-source pets require visible pet pixels in every frame",
                 state.as_str()
             ));
         }
@@ -412,9 +508,140 @@ fn validate_relative_asset_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_preview_assets(dir: &Path, warnings: &mut Vec<String>) -> Result<()> {
+fn validate_preview_assets(
+    dir: &Path,
+    skill_full_source: bool,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
     validate_preview_image(dir, "assets/preview/cover.png", warnings)?;
     validate_preview_image(dir, "assets/preview/animated_preview.webp", warnings)?;
+    let animated_preview = dir.join("assets/preview/animated_preview.webp");
+    if let Err(issue) = inspect_animated_webp(&animated_preview) {
+        match issue {
+            AnimatedPreviewIssue::Safety(detail) => {
+                return Err(PetCoreError::Validation(format!(
+                    "animated preview assets/preview/animated_preview.webp rejected by safety budget: {detail}"
+                )));
+            }
+            AnimatedPreviewIssue::Contract(detail) => {
+                let message = format!(
+                    "animated preview assets/preview/animated_preview.webp {detail}; it must contain at least two decodable, visible, pixel-distinct frames"
+                );
+                if skill_full_source {
+                    return Err(PetCoreError::Validation(format!(
+                        "skill-full-source {message}"
+                    )));
+                }
+                warnings.push(message);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn has_skill_full_source_provenance(dir: &Path) -> Result<bool> {
+    Ok(read_json_file(dir, "source/source.json")?
+        .get("provenance")
+        .and_then(serde_json::Value::as_str)
+        == Some("skill-full-source"))
+}
+
+#[derive(Debug)]
+enum AnimatedPreviewIssue {
+    Contract(String),
+    Safety(String),
+}
+
+fn inspect_animated_webp(path: &Path) -> std::result::Result<(), AnimatedPreviewIssue> {
+    let file = File::open(path)
+        .map_err(|_| AnimatedPreviewIssue::Contract("could not be opened".to_string()))?;
+    let decoder = WebPDecoder::new(BufReader::new(file))
+        .map_err(|_| AnimatedPreviewIssue::Contract("could not be decoded as WebP".to_string()))?;
+    let mut first_frame: Option<RgbaImage> = None;
+    let mut decoded_frames = 0usize;
+    let mut decoded_bytes = 0u64;
+    let mut has_distinct_frame = false;
+    let mut invisible_frames = 0usize;
+
+    for frame in decoder.into_frames() {
+        let mut frame = frame
+            .map_err(|_| {
+                AnimatedPreviewIssue::Contract(
+                    "contains an undecodable animation frame".to_string(),
+                )
+            })?
+            .into_buffer();
+        account_animated_preview_frame(
+            &mut decoded_frames,
+            &mut decoded_bytes,
+            u64::try_from(frame.as_raw().len()).map_err(|_| {
+                AnimatedPreviewIssue::Safety("decoded frame size overflow".to_string())
+            })?,
+        )?;
+
+        let visible_pixels = frame
+            .pixels()
+            .filter(|pixel| pixel.0[3] >= MIN_VISIBLE_ALPHA)
+            .count();
+        if !has_minimum_visual_coverage(visible_pixels, frame.pixels().len()) {
+            invisible_frames += 1;
+        }
+        // Compare premultiplied visible pixels. Provider-specific RGB hidden
+        // under transparent or nearly transparent alpha must not satisfy the
+        // animation contract.
+        normalize_visible_pixels(&mut frame);
+        if let Some(first) = &first_frame {
+            has_distinct_frame |= frame.as_raw() != first.as_raw();
+        } else {
+            first_frame = Some(frame);
+        }
+    }
+
+    if decoded_frames == 0 {
+        return Err(AnimatedPreviewIssue::Contract(
+            "contains no decodable frames".to_string(),
+        ));
+    }
+    if decoded_frames < 2 {
+        return Err(AnimatedPreviewIssue::Contract(
+            "contains fewer than two decodable frames".to_string(),
+        ));
+    }
+    if invisible_frames > 0 {
+        return Err(AnimatedPreviewIssue::Contract(format!(
+            "contains {invisible_frames} frame(s) below 1% visible coverage"
+        )));
+    }
+    if !has_distinct_frame {
+        return Err(AnimatedPreviewIssue::Contract(
+            "contains no pixel-distinct frames".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn account_animated_preview_frame(
+    decoded_frames: &mut usize,
+    decoded_bytes: &mut u64,
+    frame_bytes: u64,
+) -> std::result::Result<(), AnimatedPreviewIssue> {
+    *decoded_frames = decoded_frames
+        .checked_add(1)
+        .ok_or_else(|| AnimatedPreviewIssue::Safety("decoded frame count overflow".to_string()))?;
+    if *decoded_frames > MAX_ANIMATED_PREVIEW_FRAMES {
+        return Err(AnimatedPreviewIssue::Safety(format!(
+            "contains more than {MAX_ANIMATED_PREVIEW_FRAMES} decoded frames"
+        )));
+    }
+    *decoded_bytes = decoded_bytes.checked_add(frame_bytes).ok_or_else(|| {
+        AnimatedPreviewIssue::Safety("cumulative decoded byte count overflow".to_string())
+    })?;
+    if *decoded_bytes > MAX_DECODED_ANIMATED_PREVIEW_BYTES {
+        return Err(AnimatedPreviewIssue::Safety(format!(
+            "decoded frames exceed the {} MiB limit",
+            MAX_DECODED_ANIMATED_PREVIEW_BYTES / (1024 * 1024)
+        )));
+    }
     Ok(())
 }
 
@@ -985,14 +1212,112 @@ fn validate_preview_image(
         PetCoreError::Validation(format!("invalid preview asset {relative_path}: {err}"))
     })?;
     validate_pixel_budget(width, height, &format!("preview asset {relative_path}"))?;
-    image::open(&path).map_err(|error| {
+    let decoded = image::open(&path).map_err(|error| {
         PetCoreError::Validation(format!("invalid preview asset {relative_path}: {error}"))
     })?;
+    if relative_path == "assets/preview/cover.png" {
+        validate_visible_cover(&decoded.to_rgba8(), relative_path)?;
+    }
     if width != 384 || height != 416 {
         warnings.push(format!(
             "preview asset {relative_path} is {width}x{height}; recommended preview size is 384x416"
         ));
     }
+    Ok(())
+}
+
+fn write_animated_webp(path: &Path, frames: &[RgbaImage]) -> Result<()> {
+    let first = frames.first().ok_or_else(|| {
+        PetCoreError::Validation("animated WebP requires at least one frame".to_string())
+    })?;
+    if frames.len() < 2 {
+        return Err(PetCoreError::Validation(
+            "animated WebP requires at least two frames".to_string(),
+        ));
+    }
+    if first.width() == 0 || first.height() == 0 {
+        return Err(PetCoreError::Validation(
+            "animated WebP frames must not be empty".to_string(),
+        ));
+    }
+    if frames
+        .iter()
+        .any(|frame| frame.dimensions() != first.dimensions())
+    {
+        return Err(PetCoreError::Validation(
+            "animated WebP frames must use one canvas size".to_string(),
+        ));
+    }
+
+    let mut output = Vec::new();
+    output.extend_from_slice(b"RIFF");
+    output.extend_from_slice(&[0; 4]);
+    output.extend_from_slice(b"WEBP");
+
+    let mut extended_header = vec![0x12, 0, 0, 0]; // alpha + animation
+    push_webp_u24(&mut extended_header, first.width() - 1)?;
+    push_webp_u24(&mut extended_header, first.height() - 1)?;
+    append_webp_chunk(&mut output, b"VP8X", &extended_header)?;
+
+    // Transparent background and infinite loop.
+    append_webp_chunk(&mut output, b"ANIM", &[0, 0, 0, 0, 0, 0])?;
+    for frame in frames {
+        let mut encoded = Vec::new();
+        WebPEncoder::new_lossless(&mut encoded).write_image(
+            frame.as_raw(),
+            frame.width(),
+            frame.height(),
+            image::ExtendedColorType::Rgba8,
+        )?;
+        if encoded.len() < 12 || &encoded[..4] != b"RIFF" || &encoded[8..12] != b"WEBP" {
+            return Err(PetCoreError::Validation(
+                "could not encode an animated WebP frame".to_string(),
+            ));
+        }
+
+        let mut animation_frame = Vec::new();
+        push_webp_u24(&mut animation_frame, 0)?; // x offset / 2
+        push_webp_u24(&mut animation_frame, 0)?; // y offset / 2
+        push_webp_u24(&mut animation_frame, frame.width() - 1)?;
+        push_webp_u24(&mut animation_frame, frame.height() - 1)?;
+        // Use a 100 millisecond frame duration. Replace the canvas for each
+        // full-size frame: blending two identical semi-transparent inputs
+        // would otherwise create pixel differences that are not real animation.
+        push_webp_u24(&mut animation_frame, 100)?;
+        animation_frame.push(0x02); // no blending; do not dispose
+        animation_frame.extend_from_slice(&encoded[12..]);
+        append_webp_chunk(&mut output, b"ANMF", &animation_frame)?;
+    }
+
+    let riff_size = u32::try_from(output.len().saturating_sub(8)).map_err(|_| {
+        PetCoreError::Validation("animated WebP exceeds RIFF size limits".to_string())
+    })?;
+    output[4..8].copy_from_slice(&riff_size.to_le_bytes());
+    fs::write(path, output)?;
+    Ok(())
+}
+
+fn append_webp_chunk(output: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) -> Result<()> {
+    let payload_size = u32::try_from(payload.len()).map_err(|_| {
+        PetCoreError::Validation("animated WebP chunk exceeds RIFF size limits".to_string())
+    })?;
+    output.extend_from_slice(fourcc);
+    output.extend_from_slice(&payload_size.to_le_bytes());
+    output.extend_from_slice(payload);
+    if payload.len() & 1 == 1 {
+        output.push(0);
+    }
+    Ok(())
+}
+
+fn push_webp_u24(output: &mut Vec<u8>, value: u32) -> Result<()> {
+    if value > 0x00ff_ffff {
+        return Err(PetCoreError::Validation(
+            "animated WebP dimension exceeds format limits".to_string(),
+        ));
+    }
+    let bytes = value.to_le_bytes();
+    output.extend_from_slice(&bytes[..3]);
     Ok(())
 }
 
@@ -1035,24 +1360,17 @@ pub fn write_sample_petpack_dir(
 
     let preview_dir = dir.join("assets").join("preview");
     fs::create_dir_all(&preview_dir)?;
-    draw_sample_frame(
-        RenderSize {
-            width: 384,
-            height: 416,
-        },
-        PetStateName::Idle,
-        0,
-    )
-    .save(preview_dir.join("cover.png"))?;
-    draw_sample_frame(
-        RenderSize {
-            width: 384,
-            height: 416,
-        },
-        PetStateName::Idle,
-        1,
-    )
-    .save_with_format(preview_dir.join("animated_preview.webp"), ImageFormat::WebP)?;
+    let preview_size = RenderSize {
+        width: 384,
+        height: 416,
+    };
+    let preview_cover = draw_sample_frame(preview_size, PetStateName::Idle, 0);
+    let preview_second = draw_sample_frame(preview_size, PetStateName::Idle, 1);
+    preview_cover.save(preview_dir.join("cover.png"))?;
+    write_animated_webp(
+        &preview_dir.join("animated_preview.webp"),
+        &[preview_cover, preview_second],
+    )?;
 
     let source_dir = dir.join("source");
     fs::create_dir_all(source_dir.join("references"))?;
@@ -1221,8 +1539,10 @@ fn write_generated_petpack_dir_with_identity(
         }
         None => draw_generated_frame(preview_size, PetStateName::Idle, 1, frame_count, &palette),
     };
-    preview_animated
-        .save_with_format(preview_dir.join("animated_preview.webp"), ImageFormat::WebP)?;
+    write_animated_webp(
+        &preview_dir.join("animated_preview.webp"),
+        &[preview_cover, preview_animated],
+    )?;
 
     let source_dir = dir.join("source");
     fs::create_dir_all(&source_dir)?;
@@ -1441,6 +1761,22 @@ pub fn import_petpack(
     import_petpack_with_origin(paths, database, source_path, PetOrigin::ExternalImport)
 }
 
+pub fn import_petpack_expecting_absent(
+    paths: &AppPaths,
+    database: &Database,
+    source_path: &Path,
+) -> Result<PetSummary> {
+    let store_guard = PetStoreGuard::acquire(paths)?;
+    import_petpack_with_origin_policy_guarded(
+        paths,
+        database,
+        source_path,
+        PetOrigin::ExternalImport,
+        false,
+        &store_guard,
+    )
+}
+
 pub fn import_petpack_with_origin(
     paths: &AppPaths,
     database: &Database,
@@ -1460,6 +1796,24 @@ pub(crate) fn import_petpack_with_origin_guarded(
     database: &Database,
     source_path: &Path,
     origin: PetOrigin,
+    store_guard: &PetStoreGuard,
+) -> Result<PetSummary> {
+    import_petpack_with_origin_policy_guarded(
+        paths,
+        database,
+        source_path,
+        origin,
+        true,
+        store_guard,
+    )
+}
+
+fn import_petpack_with_origin_policy_guarded(
+    paths: &AppPaths,
+    database: &Database,
+    source_path: &Path,
+    origin: PetOrigin,
+    allow_existing_id_revision: bool,
     _store_guard: &PetStoreGuard,
 ) -> Result<PetSummary> {
     let prepared = prepare_import_assets(paths, source_path)?;
@@ -1472,6 +1826,12 @@ pub(crate) fn import_petpack_with_origin_guarded(
         transaction,
     } = prepared;
     let existing_pet = database.get_pet(&validation.manifest.id)?;
+    if existing_pet.is_some() && !allow_existing_id_revision {
+        return Err(PetCoreError::Conflict(format!(
+            "pet id already exists: {}",
+            validation.manifest.id
+        )));
+    }
     let was_active = existing_pet.as_ref().is_some_and(|pet| pet.active);
     let pet = PetSummary {
         id: validation.manifest.id.clone(),
@@ -1494,18 +1854,31 @@ pub(crate) fn import_petpack_with_origin_guarded(
 }
 
 fn prepare_import_assets(paths: &AppPaths, source_path: &Path) -> Result<PreparedImport> {
+    let source_digest_before = source_path
+        .is_file()
+        .then(|| sha256_file(source_path))
+        .transpose()?;
     let validation = validate_petpack_path(source_path)?;
+    if let Some(expected) = source_digest_before {
+        if sha256_file(source_path)? != expected {
+            return Err(PetCoreError::Conflict(
+                "petpack changed while it was being validated".to_string(),
+            ));
+        }
+    }
     fs::create_dir_all(&paths.pets_dir)?;
     let transaction = PetRevisionTransaction::stage(paths, &validation.manifest.id)?;
     let package_stage_path = transaction.stage_petpack_path().to_path_buf();
     if source_path.is_dir() {
         write_petpack_zip(source_path, &package_stage_path)?;
     } else {
+        let expected_digest = source_digest_before.ok_or_else(|| {
+            PetCoreError::Validation("petpack source archive is not a regular file".to_string())
+        })?;
         fs::copy(source_path, &package_stage_path)?;
-        let staged_validation = validate_petpack_path(&package_stage_path)?;
-        if staged_validation.manifest.id != validation.manifest.id {
+        if sha256_file(&package_stage_path)? != expected_digest {
             return Err(PetCoreError::Validation(
-                "staged petpack manifest id does not match source".to_string(),
+                "staged petpack archive does not match validated source".to_string(),
             ));
         }
     }
@@ -1526,7 +1899,6 @@ fn prepare_import_assets(paths: &AppPaths, source_path: &Path) -> Result<Prepare
     let target_path = transaction.layout().petpack_path.clone();
     let cover_target_path = transaction.layout().cover_path.clone();
 
-    validate_petpack_path(&package_stage_path)?;
     validate_cover_file(transaction.stage_cover_path())?;
     validate_runtime_frames_for_manifest(transaction.stage_frames_dir(), &validation.manifest)?;
 
@@ -1538,6 +1910,20 @@ fn prepare_import_assets(paths: &AppPaths, source_path: &Path) -> Result<Prepare
         provenance,
         transaction,
     })
+}
+
+fn sha256_file(path: &Path) -> Result<[u8; 32]> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 pub fn remove_imported_pet_assets(paths: &AppPaths, pet: &PetSummary) -> Result<()> {
@@ -2447,9 +2833,9 @@ fn validate_cover_file(path: &Path) -> Result<()> {
     let (width, height) = image::image_dimensions(path)
         .map_err(|error| PetCoreError::Validation(format!("invalid cover image: {error}")))?;
     validate_pixel_budget(width, height, "cover image")?;
-    image::open(path)
-        .map(|_| ())
-        .map_err(|error| PetCoreError::Validation(format!("invalid cover image: {error}")))
+    let decoded = image::open(path)
+        .map_err(|error| PetCoreError::Validation(format!("invalid cover image: {error}")))?;
+    validate_visible_cover(&decoded.to_rgba8(), "cover image")
 }
 
 fn is_png(path: &Path) -> bool {
@@ -3249,4 +3635,454 @@ fn validate_pixel_budget(width: u32, height: u32, label: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn has_minimum_visual_coverage(matching_pixels: usize, total_pixels: usize) -> bool {
+    total_pixels > 0
+        && matching_pixels.saturating_mul(100)
+            >= total_pixels.saturating_mul(MIN_VISUAL_COVERAGE_PERCENT)
+}
+
+fn validate_visible_cover(image: &RgbaImage, label: &str) -> Result<()> {
+    let visible_pixels = image
+        .pixels()
+        .filter(|pixel| pixel.0[3] >= MIN_VISIBLE_ALPHA)
+        .count();
+    if !has_minimum_visual_coverage(visible_pixels, image.pixels().len()) {
+        return Err(PetCoreError::Validation(format!(
+            "{label} must contain at least 1% visible pixels"
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_visible_pixels(image: &mut RgbaImage) {
+    for pixel in image.pixels_mut() {
+        let alpha = pixel.0[3];
+        if alpha < MIN_VISIBLE_ALPHA {
+            pixel.0 = [0, 0, 0, 0];
+            continue;
+        }
+        for channel in &mut pixel.0[..3] {
+            *channel = ((u16::from(*channel) * u16::from(alpha) + 127) / 255) as u8;
+        }
+    }
+}
+
+#[cfg(test)]
+mod asset_contract_tests {
+    use super::*;
+
+    fn write_strict_sample(dir: &Path) -> PetManifest {
+        let manifest =
+            write_sample_petpack_dir(dir, QualityLevel::Standard, "Contract Pet", "storybook", 2)
+                .unwrap();
+        fs::write(
+            dir.join("source/source.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": PET_SOURCE_SCHEMA_VERSION,
+                "generator": "test-image-generator",
+                "provenance": "skill-full-source",
+                "created_at": manifest.created_at.clone(),
+                "manifest_id": manifest.id.clone(),
+                "pet_name": manifest.name.clone(),
+                "style": manifest.style.clone(),
+                "quality": manifest.quality,
+                "visual_source": "image-generation",
+                "frames_per_state": 2,
+                "preview_only": false,
+                "reference_files": [],
+                "runner": "petcore-test",
+                "skill_helper": "agent-pet-maker"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        manifest
+    }
+
+    fn replace_preview_with_static_webp(dir: &Path) {
+        image::open(dir.join("assets/preview/cover.png"))
+            .unwrap()
+            .save_with_format(
+                dir.join("assets/preview/animated_preview.webp"),
+                image::ImageFormat::WebP,
+            )
+            .unwrap();
+    }
+
+    fn corrupt_animation_frame(path: &Path, target_index: usize) {
+        let mut bytes = fs::read(path).unwrap();
+        let mut offset = 12usize;
+        let mut animation_index = 0usize;
+        while offset + 8 <= bytes.len() {
+            let payload_size =
+                u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let payload_start = offset + 8;
+            let payload_end = payload_start + payload_size;
+            assert!(payload_end <= bytes.len());
+            if &bytes[offset..offset + 4] == b"ANMF" {
+                if animation_index == target_index {
+                    let inner_chunk = payload_start + 16;
+                    assert_eq!(&bytes[inner_chunk..inner_chunk + 4], b"VP8L");
+                    let bitstream = inner_chunk + 8;
+                    assert_eq!(bytes[bitstream], 0x2f);
+                    bytes[bitstream] = 0;
+                    fs::write(path, bytes).unwrap();
+                    return;
+                }
+                animation_index += 1;
+            }
+            offset = payload_end + (payload_size & 1);
+        }
+        panic!("animation frame {target_index} was not found");
+    }
+
+    fn rewrite_png_with_different_encoding(source: &Path, destination: &Path) {
+        let frame = image::open(source).unwrap().to_rgba8();
+        let output = File::create(destination).unwrap();
+        image::codecs::png::PngEncoder::new_with_quality(
+            output,
+            image::codecs::png::CompressionType::Uncompressed,
+            image::codecs::png::FilterType::NoFilter,
+        )
+        .write_image(
+            frame.as_raw(),
+            frame.width(),
+            frame.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn skill_full_source_accepts_transparent_frames_and_distinct_animation() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+
+        let validation = validate_petpack_dir(temp.path()).unwrap();
+
+        assert!(validation.ok);
+        assert!(!validation.warnings.iter().any(
+            |warning| warning.contains("fully opaque") || warning.contains("animated preview")
+        ));
+    }
+
+    #[test]
+    fn skill_full_source_rejects_a_fully_opaque_png_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_strict_sample(temp.path());
+        RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([24, 48, 72, u8::MAX]),
+        )
+        .save(temp.path().join("assets/frames/idle/0000.png"))
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("skill-full-source frame"), "{error}");
+        assert!(error.contains("fully opaque"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_a_fully_transparent_png_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_strict_sample(temp.path());
+        RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([24, 48, 72, 0]),
+        )
+        .save(temp.path().join("assets/frames/idle/0000.png"))
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("skill-full-source frame"), "{error}");
+        assert!(error.contains("fully transparent"), "{error}");
+        assert!(error.contains("visible pet pixels"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_less_than_one_percent_visible_pixels() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_strict_sample(temp.path());
+        let mut frame = RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([0, 0, 0, 0]),
+        );
+        let visible_pixels = frame.pixels().len() / 200;
+        for pixel in frame.pixels_mut().take(visible_pixels) {
+            *pixel = Rgba([24, 48, 72, u8::MAX]);
+        }
+        frame
+            .save(temp.path().join("assets/frames/idle/0000.png"))
+            .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("less than 1% visible coverage"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_less_than_one_percent_transparent_pixels() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_strict_sample(temp.path());
+        let mut frame = RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([24, 48, 72, u8::MAX]),
+        );
+        let transparent_pixels = frame.pixels().len() / 200;
+        for pixel in frame.pixels_mut().take(transparent_pixels) {
+            *pixel = Rgba([0, 0, 0, 0]);
+        }
+        frame
+            .save(temp.path().join("assets/frames/idle/0000.png"))
+            .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(
+            error.contains("less than 1% transparent coverage"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn petpack_rejects_a_cover_below_one_percent_visible_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let mut cover = RgbaImage::from_pixel(384, 416, Rgba([0, 0, 0, 0]));
+        let visible_pixels = cover.pixels().len() / 200;
+        for pixel in cover.pixels_mut().take(visible_pixels) {
+            *pixel = Rgba([24, 48, 72, u8::MAX]);
+        }
+        cover
+            .save(temp.path().join("assets/preview/cover.png"))
+            .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("at least 1% visible pixels"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_a_one_frame_state_despite_claimed_count() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        fs::remove_file(temp.path().join("assets/frames/idle/0001.png")).unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("skill-full-source state idle"), "{error}");
+        assert!(error.contains("at least two frames"), "{error}");
+    }
+
+    #[test]
+    fn state_animation_compares_decoded_pixels_not_png_file_bytes() {
+        let strict = tempfile::tempdir().unwrap();
+        write_strict_sample(strict.path());
+        let strict_first = strict.path().join("assets/frames/idle/0000.png");
+        let strict_second = strict.path().join("assets/frames/idle/0001.png");
+        rewrite_png_with_different_encoding(&strict_first, &strict_second);
+        assert_ne!(
+            fs::read(&strict_first).unwrap(),
+            fs::read(&strict_second).unwrap()
+        );
+
+        let error = validate_petpack_dir(strict.path()).unwrap_err().to_string();
+
+        assert!(error.contains("state idle"), "{error}");
+        assert!(error.contains("no pixel-distinct PNG frames"), "{error}");
+
+        let legacy = tempfile::tempdir().unwrap();
+        write_sample_petpack_dir(
+            legacy.path(),
+            QualityLevel::Standard,
+            "Legacy Duplicate Frames",
+            "storybook",
+            2,
+        )
+        .unwrap();
+        let legacy_first = legacy.path().join("assets/frames/idle/0000.png");
+        let legacy_second = legacy.path().join("assets/frames/idle/0001.png");
+        rewrite_png_with_different_encoding(&legacy_first, &legacy_second);
+
+        let validation = validate_petpack_dir(legacy.path()).unwrap();
+
+        assert!(validation.ok);
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("state idle has no pixel-distinct")));
+    }
+
+    #[test]
+    fn skill_full_source_rejects_a_static_webp_preview() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        replace_preview_with_static_webp(temp.path());
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(
+            error.contains("skill-full-source animated preview"),
+            "{error}"
+        );
+        assert!(error.contains("at least two decodable"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_duplicate_animation_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let frame = image::open(temp.path().join("assets/preview/cover.png"))
+            .unwrap()
+            .to_rgba8();
+        write_animated_webp(
+            &temp.path().join("assets/preview/animated_preview.webp"),
+            &[frame.clone(), frame],
+        )
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("pixel-distinct"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_corrupt_trailing_animation_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let preview_size = RenderSize {
+            width: 384,
+            height: 416,
+        };
+        let first = draw_sample_frame(preview_size, PetStateName::Idle, 0);
+        let second = draw_sample_frame(preview_size, PetStateName::Idle, 1);
+        let preview_path = temp.path().join("assets/preview/animated_preview.webp");
+        write_animated_webp(&preview_path, &[first.clone(), second, first]).unwrap();
+        corrupt_animation_frame(&preview_path, 2);
+
+        let file = File::open(&preview_path).unwrap();
+        let decoder = WebPDecoder::new(BufReader::new(file)).unwrap();
+        let mut frames = decoder.into_frames();
+        assert!(frames.next().unwrap().is_ok());
+        assert!(frames.next().unwrap().is_ok());
+        assert!(frames.next().unwrap().is_err());
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("undecodable animation frame"), "{error}");
+    }
+
+    #[test]
+    fn transparent_hidden_rgb_does_not_count_as_distinct_visible_animation() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let first = RgbaImage::from_pixel(1, 1, Rgba([255, 0, 0, 0]));
+        let second = RgbaImage::from_pixel(1, 1, Rgba([0, 255, 0, 0]));
+        write_animated_webp(
+            &temp.path().join("assets/preview/animated_preview.webp"),
+            &[first, second],
+        )
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("below 1% visible coverage"), "{error}");
+    }
+
+    #[test]
+    fn animation_frame_budget_is_a_hard_limit_for_legacy_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        write_sample_petpack_dir(
+            temp.path(),
+            QualityLevel::Standard,
+            "Legacy Oversized Preview",
+            "storybook",
+            2,
+        )
+        .unwrap();
+        let frames = (0..=MAX_ANIMATED_PREVIEW_FRAMES)
+            .map(|index| RgbaImage::from_pixel(1, 1, Rgba([(index & 1) as u8, 24, 48, u8::MAX])))
+            .collect::<Vec<_>>();
+        write_animated_webp(
+            &temp.path().join("assets/preview/animated_preview.webp"),
+            &frames,
+        )
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("rejected by safety budget"), "{error}");
+        assert!(error.contains("more than 120 decoded frames"), "{error}");
+    }
+
+    #[test]
+    fn animation_decoded_byte_budget_rejects_overflow() {
+        let mut frame_count = 0usize;
+        let mut decoded_bytes = MAX_DECODED_ANIMATED_PREVIEW_BYTES;
+
+        let issue =
+            account_animated_preview_frame(&mut frame_count, &mut decoded_bytes, 1).unwrap_err();
+
+        assert!(matches!(
+            issue,
+            AnimatedPreviewIssue::Safety(detail) if detail.contains("128 MiB")
+        ));
+    }
+
+    #[test]
+    fn legacy_assets_remain_valid_with_contract_warnings() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_sample_petpack_dir(
+            temp.path(),
+            QualityLevel::Standard,
+            "Legacy Contract Pet",
+            "storybook",
+            2,
+        )
+        .unwrap();
+        RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([24, 48, 72, u8::MAX]),
+        )
+        .save(temp.path().join("assets/frames/idle/0000.png"))
+        .unwrap();
+        fs::remove_file(temp.path().join("assets/frames/idle/0001.png")).unwrap();
+        RgbaImage::from_pixel(
+            manifest.render_size.width,
+            manifest.render_size.height,
+            Rgba([72, 48, 24, 0]),
+        )
+        .save(temp.path().join("assets/frames/tool/0000.png"))
+        .unwrap();
+        replace_preview_with_static_webp(temp.path());
+
+        let validation = validate_petpack_dir(temp.path()).unwrap();
+
+        assert!(validation.ok);
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("below 1% transparent coverage")));
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("below 1% visible coverage")));
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("only one frame")));
+        assert!(validation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("at least two decodable")));
+    }
 }

@@ -19,7 +19,7 @@
 "library.import.message" = "请选择一个或多个本 App 自有格式的 .petpack 文件。";
 "library.import.title" = "导入本 App .petpack";
 "library.specification.unavailable" = "本地服务未报告";
-"library.specification.verified_states" = "7 个固定状态 · 每状态至少 2 帧";
+"library.specification.verified_states" = "7 个固定状态 · 每状态至少 1 张可解码 PNG";
 "library.specification.verified_fps" = "标准 12 FPS · 流畅 20 FPS";
 "library.state.idle" = "空闲";
 "library.state.not_active" = "非当前宠物，不显示全局事件";

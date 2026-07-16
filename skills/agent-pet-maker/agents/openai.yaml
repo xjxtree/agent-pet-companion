@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Pet Maker"
   short_description: "Create or revise validated portable .petpack pets"
-  default_prompt: "Use $agent-pet-maker to create or revise a real, validated Agent Pet Companion .petpack."
+  default_prompt: "Use $agent-pet-companion:agent-pet-maker to create or revise a real, validated Agent Pet Companion .petpack."

@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -39,6 +40,11 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SESSION_BYTES = 256 * 1024
 MAX_TEXT_METADATA_BYTES = 256 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
+MAX_ANIMATED_PREVIEW_FRAMES = 120
+MAX_DECODED_ANIMATED_PREVIEW_BYTES = 128 * 1024 * 1024
+VISIBLE_ALPHA_THRESHOLD = 16
+TRANSPARENT_ALPHA_THRESHOLD = 239
+MIN_VISUAL_PIXEL_PERCENT = 1
 COPY_CHUNK_BYTES = 1024 * 1024
 CLI_TIMEOUT_SECONDS = 300
 
@@ -198,6 +204,69 @@ def sha256_file(path: Path) -> str:
         while chunk := handle.read(COPY_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def minimum_visual_pixel_count(total_pixels: int) -> int:
+    """Require one percent of a raster, rounded up, and never zero pixels."""
+
+    return max(1, (total_pixels * MIN_VISUAL_PIXEL_PERCENT + 100 - 1) // 100)
+
+
+def canonical_premultiplied_rgba(image: Any) -> bytes:
+    """Return display-relevant pixels, excluding hidden RGB under transparency.
+
+    Comparing encoded PNG/WebP bytes (or straight-alpha RGBA) lets a producer
+    fake motion by changing RGB values that are invisible at alpha zero.  A
+    premultiplied representation matches the compositor-facing visual value and
+    deterministically maps every fully transparent pixel to zero RGBA.
+    """
+
+    rgba = image.convert("RGBA")
+    canonical = bytearray(rgba.width * rgba.height * 4)
+    offset = 0
+    for red, green, blue, alpha in rgba.getdata():
+        canonical[offset] = (red * alpha + 127) // 255
+        canonical[offset + 1] = (green * alpha + 127) // 255
+        canonical[offset + 2] = (blue * alpha + 127) // 255
+        canonical[offset + 3] = alpha
+        offset += 4
+    return bytes(canonical)
+
+
+def visual_pixel_counts(image: Any) -> tuple[int, int, int]:
+    """Return total, visibly occupied, and transparent-surrounding pixels."""
+
+    alpha = image.convert("RGBA").getchannel("A")
+    histogram = alpha.histogram()
+    visible = sum(histogram[VISIBLE_ALPHA_THRESHOLD:])
+    transparent = sum(histogram[: TRANSPARENT_ALPHA_THRESHOLD + 1])
+    return image.width * image.height, visible, transparent
+
+
+def decoded_png_digest(path: Path) -> str:
+    """Hash a PNG's decoded compositor-visible pixels rather than file bytes."""
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except (ImportError, OSError) as error:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow is required to inspect generated pet assets",
+            bounded(str(error)),
+        ) from error
+    try:
+        with Image.open(path) as decoded:
+            if decoded.format != "PNG":
+                raise MakerError("invalid_assets", f"Frame {path.name} is not a PNG")
+            return hashlib.sha256(canonical_premultiplied_rgba(decoded)).hexdigest()
+    except MakerError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise MakerError(
+            "invalid_assets",
+            f"Frame {path.name} could not be decoded as PNG",
+            bounded(str(error)),
+        ) from error
 
 
 def write_json_atomic(path: Path, value: Any) -> None:
@@ -406,6 +475,76 @@ def verify_image_codecs() -> dict[str, Any]:
         "png": True,
         "animated_webp": True,
     }
+
+
+def verify_cli_contract(cli: Path) -> dict[str, Any]:
+    """Probe the petpack validation command without requiring a running daemon.
+
+    Merely finding an executable is not enough: an older or unrelated binary
+    can exist at the expected path. A deliberately incomplete manifest must
+    reach both the positional `petpack validate <path>` command and the
+    `petpack build --input ... --output ...` command, fail their schema
+    contract, and produce no archive. An unknown-command diagnostic or an
+    unexpected success means the CLI cannot safely be used by this helper.
+    """
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-cli-probe-") as temporary:
+            source = Path(temporary, "source")
+            source.mkdir()
+            Path(source, "manifest.json").write_text("{}\n", encoding="utf-8")
+            output = Path(temporary, "probe.petpack")
+            probes = {
+                "petpack_validate": [str(cli), "petpack", "validate", str(source)],
+                "petpack_build": [
+                    str(cli),
+                    "petpack",
+                    "build",
+                    "--input",
+                    str(source),
+                    "--output",
+                    str(output),
+                ],
+            }
+            completed_probes = {
+                name: subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(CLI_TIMEOUT_SECONDS, 30),
+                )
+                for name, command in probes.items()
+            }
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MakerError(
+            "capability_missing",
+            "PetCore CLI contract probe could not run",
+            bounded(str(error)),
+        ) from error
+
+    verified: dict[str, bool] = {}
+    for name, completed in completed_probes.items():
+        diagnostic = bounded(completed.stderr or completed.stdout or "")
+        normalized = diagnostic.casefold()
+        if (
+            completed.returncode == 0
+            or not diagnostic
+            or "unknown" in normalized
+            or "schema_version" not in normalized
+        ):
+            raise MakerError(
+                "capability_missing",
+                f"The located PetCore CLI does not expose the required {name.replace('_', ' ')} contract",
+                diagnostic or f"unexpected exit status {completed.returncode}",
+            )
+        verified[name] = True
+    if output.exists():
+        raise MakerError(
+            "capability_missing",
+            "The PetCore CLI build probe wrote an archive for an invalid manifest",
+        )
+    return {**verified, "invalid_manifest_rejected": True}
 
 
 def run_cli_value(cli: Path, arguments: list[str], error_code: str) -> Any:
@@ -624,7 +763,7 @@ def collect_state_files(source_dir: Path, manifest: dict[str, Any]) -> tuple[dic
             if child.is_symlink() or not child.is_file():
                 raise MakerError("invalid_assets", f"State {state} contains a non-file or symlink entry")
             if child.suffix.lower() == ".png":
-                state_hashes[child.name] = sha256_file(child)
+                state_hashes[child.name] = decoded_png_digest(child)
         if not state_hashes:
             raise MakerError("invalid_assets", f"State {state} requires at least one PNG frame")
         hashes[state] = state_hashes
@@ -881,11 +1020,12 @@ def contains_absolute_local_path(text: str) -> bool:
             continue
         following = text[index + 1] if index + 1 < len(text) else None
         after_following = text[index + 2] if index + 2 < len(text) else None
-        if character == "~" and following == "/":
+        if character == "~" and following in {"/", "\\"}:
             return True
-        if character == "/" and following is not None and (
-            following.isascii() and following.isalnum() or following in "/._-"
-        ):
+        # POSIX/macOS absolute paths may start with any Unicode filename
+        # character. Exclude whitespace-delimited prose such as "use / as a
+        # separator", but do not assume a particular home directory prefix.
+        if character == "/" and following is not None and not following.isspace():
             return True
         if (
             character.isascii()
@@ -898,7 +1038,7 @@ def contains_absolute_local_path(text: str) -> bool:
             character == "\\"
             and following == "\\"
             and after_following is not None
-            and (after_following.isascii() and after_following.isalnum() or after_following in "._-")
+            and not after_following.isspace()
         ):
             return True
     return False
@@ -1058,6 +1198,127 @@ def validate_generated_motion(
             raise MakerError("invalid_assets", f"Generated state {state} contains duplicate still frames")
 
 
+def validate_portable_visual_assets(source_dir: Path, manifest: dict[str, Any]) -> None:
+    """Verify the visual promises that distinguish a portable skill result.
+
+    PetCore remains the final trust boundary, but this helper can be paired
+    with an older v1 CLI. Inspect alpha and animation locally so such a CLI
+    cannot turn an opaque rectangle or static preview into a completed
+    `skill-full-source` result.
+    """
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except (ImportError, OSError) as error:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow is required to inspect generated pet assets",
+            bounded(str(error)),
+        ) from error
+
+    render_size = manifest.get("render_size")
+    if not isinstance(render_size, dict):
+        raise MakerError("invalid_manifest", "manifest.render_size must be an object")
+    expected_size = (render_size.get("width"), render_size.get("height"))
+    if not all(isinstance(value, int) and value > 0 for value in expected_size):
+        raise MakerError("invalid_manifest", "manifest.render_size is invalid")
+
+    try:
+        for state, relative in manifest_state_paths(manifest).items():
+            for frame_path in sorted((source_dir / relative).glob("*.png")):
+                with Image.open(frame_path) as decoded:
+                    if decoded.format != "PNG" or decoded.size != expected_size:
+                        raise MakerError(
+                            "invalid_assets",
+                            f"State {state} frame {frame_path.name} must be a {expected_size[0]}x{expected_size[1]} PNG",
+                        )
+                    total_pixels, visible_pixels, transparent_pixels = visual_pixel_counts(decoded)
+                    required_pixels = minimum_visual_pixel_count(total_pixels)
+                    if transparent_pixels < required_pixels:
+                        raise MakerError(
+                            "invalid_assets",
+                            f"State {state} frame {frame_path.name} lacks transparent surroundings; "
+                            f"at least {required_pixels} pixels with alpha <= {TRANSPARENT_ALPHA_THRESHOLD} are required",
+                        )
+                    if visible_pixels < required_pixels:
+                        raise MakerError(
+                            "invalid_assets",
+                            f"State {state} frame {frame_path.name} lacks visible pet content; "
+                            f"at least {required_pixels} pixels with alpha >= {VISIBLE_ALPHA_THRESHOLD} are required",
+                        )
+
+        cover_path = source_dir / "assets" / "preview" / "cover.png"
+        with Image.open(cover_path) as cover:
+            if cover.format != "PNG":
+                raise MakerError("invalid_assets", "assets/preview/cover.png is not a PNG")
+            total_pixels, visible_pixels, _ = visual_pixel_counts(cover)
+            required_pixels = minimum_visual_pixel_count(total_pixels)
+            if visible_pixels < required_pixels:
+                raise MakerError(
+                    "invalid_assets",
+                    "assets/preview/cover.png lacks visible pet content; "
+                    f"at least {required_pixels} pixels with alpha >= {VISIBLE_ALPHA_THRESHOLD} are required",
+                )
+
+        preview_path = source_dir / "assets" / "preview" / "animated_preview.webp"
+        with Image.open(preview_path) as preview:
+            if preview.format != "WEBP":
+                raise MakerError(
+                    "invalid_assets",
+                    "assets/preview/animated_preview.webp is not a WebP image",
+                )
+            frame_count = getattr(preview, "n_frames", 1)
+            if frame_count < 2:
+                raise MakerError(
+                    "invalid_assets",
+                    "assets/preview/animated_preview.webp must contain at least two frames",
+                )
+            if frame_count > MAX_ANIMATED_PREVIEW_FRAMES:
+                raise MakerError(
+                    "invalid_assets",
+                    f"Animated preview exceeds the {MAX_ANIMATED_PREVIEW_FRAMES}-frame limit",
+                )
+
+            first_digest: bytes | None = None
+            has_distinct_frame = False
+            decoded_bytes = 0
+            for index in range(frame_count):
+                preview.seek(index)
+                rgba = preview.convert("RGBA")
+                decoded_bytes += rgba.width * rgba.height * 4
+                if decoded_bytes > MAX_DECODED_ANIMATED_PREVIEW_BYTES:
+                    raise MakerError(
+                        "invalid_assets",
+                        "Animated preview exceeds the 128 MiB decoded budget",
+                    )
+                total_pixels, visible_pixels, _ = visual_pixel_counts(rgba)
+                required_pixels = minimum_visual_pixel_count(total_pixels)
+                if visible_pixels < required_pixels:
+                    raise MakerError(
+                        "invalid_assets",
+                        f"Animated preview frame {index} lacks visible pet content; "
+                        f"at least {required_pixels} pixels with alpha >= {VISIBLE_ALPHA_THRESHOLD} are required",
+                    )
+                digest = hashlib.sha256(canonical_premultiplied_rgba(rgba)).digest()
+                if first_digest is None:
+                    first_digest = digest
+                elif digest != first_digest:
+                    has_distinct_frame = True
+            if not has_distinct_frame:
+                raise MakerError(
+                    "invalid_assets",
+                    "assets/preview/animated_preview.webp contains no pixel-distinct frames",
+                )
+    except MakerError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise MakerError(
+            "invalid_assets",
+            "Generated pet visual assets could not be fully decoded",
+            bounded(str(error)),
+        ) from error
+
+
 def validate_text_metadata(
     source_dir: Path,
     manifest: dict[str, Any],
@@ -1143,8 +1404,60 @@ def validate_text_metadata(
         raise MakerError("invalid_metadata", f"Could not read source/prompt.md: {error}") from error
     if not prompt.strip():
         raise MakerError("invalid_metadata", "source/prompt.md must not be empty")
-    if str(Path.home()) in prompt or "://" in prompt:
-        raise MakerError("privacy_violation", "source/prompt.md must not contain local home paths or URLs")
+    if contains_sensitive_string(prompt):
+        raise MakerError("privacy_violation", "source/prompt.md must not contain absolute paths or URLs")
+
+
+def build_petpack_atomically(
+    cli: Path, source_dir: Path, output: Path, replace: bool
+) -> dict[str, Any]:
+    """Build and validate beside the destination, then publish in one rename.
+
+    In particular, `--replace` must never remove the known-good package before
+    PetCore has both produced and validated its replacement. The temporary file
+    lives in the destination directory so `os.replace` is an atomic same-volume
+    handoff.
+    """
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".building", dir=output.parent
+    )
+    os.close(descriptor)
+    staged_output = Path(temporary_name)
+    staged_output.unlink()
+    try:
+        run_cli(
+            cli,
+            ["petpack", "build", "--input", str(source_dir), "--output", str(staged_output)],
+            "build_failed",
+        )
+        if staged_output.is_symlink() or not staged_output.is_file():
+            raise MakerError(
+                "build_failed",
+                "PetCore CLI reported success but wrote no safe regular package",
+            )
+        validation = run_cli(
+            cli,
+            ["petpack", "validate", str(staged_output)],
+            "validation_failed",
+        )
+
+        if replace:
+            os.replace(staged_output, output)
+        else:
+            # Hard-link publication is atomic and fails rather than replacing a
+            # destination created after the initial existence check.
+            try:
+                os.link(staged_output, output)
+            except FileExistsError as error:
+                raise MakerError(
+                    "output_exists",
+                    "Output appeared while the package was being built; no file was replaced",
+                ) from error
+            staged_output.unlink()
+        return validation
+    finally:
+        staged_output.unlink(missing_ok=True)
 
 
 def finalize(args: argparse.Namespace) -> dict[str, Any]:
@@ -1157,18 +1470,28 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     if source_dir != (workspace / "petpack-source").resolve() or not source_dir.is_dir():
         raise MakerError("invalid_workspace", "Workspace petpack-source is missing or redirected")
 
-    output = Path(args.output).expanduser().resolve()
-    result_path = Path(args.result).expanduser().resolve() if args.result else workspace / "agent-pet-maker-result.json"
+    raw_output = Path(args.output).expanduser()
+    raw_result_path = (
+        Path(args.result).expanduser()
+        if args.result
+        else workspace / "agent-pet-maker-result.json"
+    )
+    if raw_output.is_symlink():
+        raise MakerError("unsafe_output", "Package output must not be a symbolic link")
+    if raw_result_path.is_symlink():
+        raise MakerError("unsafe_output", "Result sidecar must not be a symbolic link")
+    output = raw_output.resolve()
+    result_path = raw_result_path.resolve()
     ensure_outside(output, source_dir, "Package output")
     ensure_outside(result_path, source_dir, "Result sidecar")
     if output == result_path:
         raise MakerError("unsafe_output", "Package and result paths must differ")
-    if output.is_symlink():
-        raise MakerError("unsafe_output", "Package output must not be a symbolic link")
     if output.exists() and not args.replace:
         raise MakerError("output_exists", "Output already exists; use --replace only when overwrite is intended")
     if output.exists() and output.is_dir():
         raise MakerError("unsafe_output", "Package output must not be a directory")
+    if result_path.exists() and result_path.is_dir():
+        raise MakerError("unsafe_output", "Result sidecar must not be a directory")
 
     cli = locate_cli(args.cli or context.get("cli_path"))
     manifest = read_json(source_dir / "manifest.json", "manifest.json")
@@ -1211,6 +1534,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         raise MakerError("invalid_request", "--changed-state is only valid for modify")
     else:
         validate_generated_motion(current_files, STATES)
+
+    validate_portable_visual_assets(source_dir, manifest)
 
     source_metadata = normalize_source_metadata(
         source_dir, args.operation, context, changed_states, state_counts, manifest
@@ -1274,15 +1599,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     validation = run_cli(cli, ["petpack", "validate", str(source_dir)], "validation_failed")
 
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if args.replace:
-        output.unlink(missing_ok=True)
-    run_cli(
-        cli,
-        ["petpack", "build", "--input", str(source_dir), "--output", str(output)],
-        "build_failed",
-    )
-    if not output.is_file():
-        raise MakerError("build_failed", "PetCore CLI reported success but wrote no package")
+    validation = build_petpack_atomically(cli, source_dir, output, args.replace)
 
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA,
@@ -1326,7 +1643,45 @@ def validated_manifest(validation: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
-def install_verification(cli: Path, pet_id: str) -> dict[str, Any]:
+def installed_archive_matches(
+    cli: Path, pet_id: str, expected_sha256: str
+) -> tuple[bool, bool]:
+    pets = run_cli_list(cli, ["pet", "list"], "install_verification_failed")
+    listed = pet_with_id(pets, pet_id)
+    if listed is None:
+        return False, False
+    raw_path = listed.get("petpack_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return True, False
+    archive = Path(raw_path).expanduser()
+    if archive.is_symlink() or not archive.is_file():
+        return True, False
+    try:
+        return True, sha256_file(archive) == expected_sha256
+    except OSError:
+        return True, False
+
+
+def reconcile_ambiguous_import(
+    cli: Path, pet_id: str, expected_sha256: str, attempts: int = 20
+) -> bool:
+    """Resolve a transport failure without blindly issuing a second import."""
+
+    for attempt in range(max(1, attempts)):
+        try:
+            imported, exact_archive = installed_archive_matches(cli, pet_id, expected_sha256)
+        except MakerError:
+            imported, exact_archive = False, False
+        if imported and exact_archive:
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(0.5)
+    return False
+
+
+def install_verification(
+    cli: Path, pet_id: str, expected_sha256: str | None = None
+) -> dict[str, Any]:
     pets = run_cli_list(cli, ["pet", "list"], "install_verification_failed")
     snapshot = run_cli(cli, ["state", "snapshot"], "install_verification_failed")
     snapshot_pets = snapshot.get("pets")
@@ -1357,6 +1712,11 @@ def install_verification(cli: Path, pet_id: str) -> dict[str, Any]:
         and active_in_list == active_in_snapshot
     )
     warnings: list[str] = []
+    archive_sha256_matches: bool | None = None
+    if listed is not None and expected_sha256 is not None:
+        _, archive_sha256_matches = installed_archive_matches(cli, pet_id, expected_sha256)
+        if not archive_sha256_matches:
+            warnings.append("The installed archive does not match the validated input petpack.")
     if behavior_enabled is False:
         warnings.append("The pet is installed, but desktop-pet behavior is disabled in the App.")
     if isinstance(overlay_visibility, dict) and overlay_visibility.get("pet_visible") is False:
@@ -1368,6 +1728,7 @@ def install_verification(cli: Path, pet_id: str) -> dict[str, Any]:
         "imported_in_snapshot": snapshotted is not None,
         "active": active_in_list if active_consistent else None,
         "active_consistent": active_consistent,
+        "archive_sha256_matches": archive_sha256_matches,
         "behavior_enabled": behavior_enabled,
         "overlay_visibility": overlay_visibility,
         "warnings": warnings,
@@ -1457,11 +1818,20 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
 
             import_attempted = True
             result["install"]["import"]["attempted"] = True
-            imported_pet = run_cli(
-                cli, ["petpack", "import", str(staged)], "install_import_failed"
-            )
+            import_arguments = ["petpack", "import"]
+            if not args.allow_existing_id_revision:
+                import_arguments.append("--expect-absent")
+            import_arguments.append(str(staged))
+            try:
+                imported_pet = run_cli(cli, import_arguments, "install_import_failed")
+                returned_id = imported_pet.get("id")
+            except MakerError as import_error:
+                if not reconcile_ambiguous_import(cli, pet_id, staged_hash):
+                    raise
+                returned_id = pet_id
+                result["install"]["import"]["reconciled_after_error"] = True
+                result["install"]["import"]["recovered_error"] = import_error.code
             imported = True
-            returned_id = imported_pet.get("id")
             result["install"]["import"].update(
                 {"succeeded": True, "returned_id": returned_id}
             )
@@ -1482,7 +1852,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 result["install"]["activation"]["succeeded"] = True
 
-        verification = install_verification(cli, pet_id)
+        verification = install_verification(cli, pet_id, result.get("petpack_sha256"))
         result["install"]["verification"] = verification
         if not verification["imported_in_pet_list"] or not verification["imported_in_snapshot"]:
             raise MakerError(
@@ -1492,6 +1862,11 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
             raise MakerError(
                 "install_verification_failed", "Pet active state differs between list and snapshot"
             )
+        if verification["archive_sha256_matches"] is not True:
+            raise MakerError(
+                "install_verification_failed",
+                "Installed archive differs from the validated input petpack",
+            )
         if args.activate and verification["active"] is not True:
             raise MakerError(
                 "install_verification_failed", "Activation was requested but the pet is not active"
@@ -1500,7 +1875,9 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
     except MakerError as error:
         if cli is not None and pet_id is not None and (import_attempted or imported):
             try:
-                result["install"]["verification"] = install_verification(cli, pet_id)
+                result["install"]["verification"] = install_verification(
+                    cli, pet_id, result.get("petpack_sha256")
+                )
             except MakerError as verification_error:
                 result["install"]["verification_error"] = {
                     "code": verification_error.code,
@@ -1611,6 +1988,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "status": "available",
                 "capability": "petpack-create-modify",
                 "path": str(cli),
+                "cli_contract": verify_cli_contract(cli),
                 "image_codecs": verify_image_codecs(),
             }
         elif args.command == "prepare":

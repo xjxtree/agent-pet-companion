@@ -674,7 +674,8 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
         "events.recent" => &["limit"],
         "pet.activate" | "pet.delete" => &["id"],
-        "petpack.validate" | "petpack.import" => &["path"],
+        "petpack.validate" => &["path"],
+        "petpack.import" => &["path", "expect_absent"],
         "petpack.export" => &["id", "path"],
         "generation.start" => &["description", "style", "quality", "reference_images"],
         "generation.retry" => &["job_id", "form"],
@@ -896,11 +897,18 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
         }
         "petpack.import" => {
             let path = required_string(&request.params, "path")?;
-            Ok(json!(petpack::import_petpack(
-                &state.paths,
-                &state.database,
-                &PathBuf::from(path)
-            )?))
+            let expect_absent = match request.params.get("expect_absent") {
+                None => false,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => return Err(invalid_params("expect_absent must be a boolean")),
+            };
+            let path = PathBuf::from(path);
+            let pet = if expect_absent {
+                petpack::import_petpack_expecting_absent(&state.paths, &state.database, &path)?
+            } else {
+                petpack::import_petpack(&state.paths, &state.database, &path)?
+            };
+            Ok(json!(pet))
         }
         "petpack.export" => {
             let id = required_string(&request.params, "id")?;

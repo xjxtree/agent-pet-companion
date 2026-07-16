@@ -19,7 +19,7 @@
 "library.import.message" = "Select one or more app-owned .petpack files.";
 "library.import.title" = "Import app-owned .petpack";
 "library.specification.unavailable" = "Not reported by the local service";
-"library.specification.verified_states" = "7 fixed states · at least 2 frames each";
+"library.specification.verified_states" = "7 fixed states · at least 1 decodable PNG each";
 "library.specification.verified_fps" = "Standard 12 FPS · Smooth 20 FPS";
 "library.state.idle" = "Idle";
 "library.state.not_active" = "Not the active pet";

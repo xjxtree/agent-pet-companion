@@ -1,7 +1,10 @@
 use petcore::db::Database;
 use petcore::paths::AppPaths;
 use petcore::pet_revision::rollback_imported_revision;
-use petcore::petpack::{ensure_runtime_assets, import_petpack, write_sample_petpack_dir};
+use petcore::petpack::{
+    ensure_runtime_assets, import_petpack, import_petpack_expecting_absent,
+    write_sample_petpack_dir,
+};
 use petcore_types::{PetManifest, PetOrigin, QualityLevel, REQUIRED_STATES};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -257,6 +260,37 @@ fn petpack_import_publishes_immutable_revision_and_atomic_pointer() {
     assert_eq!(
         database.get_pet(&first.id).unwrap().unwrap().name,
         "Revision Two"
+    );
+}
+
+#[test]
+fn expect_absent_rejects_same_id_without_publishing_a_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("source-v1");
+    write_sample_petpack_dir(&source, QualityLevel::High, "Revision One", "半写实", 2).unwrap();
+
+    let first = import_petpack_expecting_absent(&paths, &database, &source).unwrap();
+    let pet_root = paths.pets_dir.join(&first.id);
+    let first_pointer = fs::read(pet_root.join("active.json")).unwrap();
+    let revision_count = revision_directories(&pet_root).len();
+
+    let replacement = temp.path().join("source-v2");
+    copy_dir_all(&source, &replacement);
+    rename_petpack_source(&replacement, "Revision Two");
+    let error = import_petpack_expecting_absent(&paths, &database, &replacement)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("pet id already exists"), "{error}");
+    assert_eq!(revision_directories(&pet_root).len(), revision_count);
+    assert_eq!(
+        fs::read(pet_root.join("active.json")).unwrap(),
+        first_pointer
+    );
+    assert_eq!(
+        database.get_pet(&first.id).unwrap().unwrap().name,
+        "Revision One"
     );
 }
 

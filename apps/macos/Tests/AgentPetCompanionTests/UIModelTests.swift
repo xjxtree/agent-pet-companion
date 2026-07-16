@@ -109,7 +109,7 @@ struct UIModelTests {
         #expect(imported.validationStatus == .verified)
         #expect(imported.validationTitle == "资源校验通过")
         #expect(imported.validationDetail.contains("PetCore 已验证"))
-        #expect(imported.stateSpecification == "7 个固定状态 · 每状态至少 2 帧")
+        #expect(imported.stateSpecification == "7 个固定状态 · 每状态至少 1 张可解码 PNG")
         #expect(imported.fpsSpecification == "标准 12 FPS · 流畅 20 FPS")
 
         var verifiedPet = pet
@@ -120,8 +120,61 @@ struct UIModelTests {
         #expect(verified.validationStatus == .verified)
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
-        #expect(verified.stateSpecification == "7 个固定状态 · 每状态至少 2 帧")
+        #expect(verified.stateSpecification == "7 个固定状态 · 每状态至少 1 张可解码 PNG")
         #expect(verified.fpsSpecification == "标准 12 FPS · 流畅 20 FPS")
+    }
+
+    @MainActor
+    @Test
+    func activationRefreshFailureDoesNotMisreportTheSuccessfulMutation() async {
+        let store = makeStore()
+        let pet = makePet(id: "pet_activation_refresh", active: false)
+        var mutationCalls = 0
+        var recoveryCalls = 0
+
+        await store.finishPetActivation(
+            pet,
+            activate: { mutationCalls += 1 },
+            refreshSnapshot: {
+                throw NSError(
+                    domain: "AgentPetCompanionTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "snapshot unavailable"]
+                )
+            },
+            recoverSnapshot: { recoveryCalls += 1 }
+        )
+
+        #expect(mutationCalls == 1)
+        #expect(recoveryCalls == 1)
+        #expect(store.statusText == "已启用 pet_activation_refresh，但状态刷新失败：snapshot unavailable")
+        #expect(!store.statusText.contains("启用失败"))
+    }
+
+    @MainActor
+    @Test
+    func activationMutationFailureRemainsAnActivationFailure() async {
+        let store = makeStore()
+        let pet = makePet(id: "pet_activation_mutation", active: false)
+        var snapshotCalls = 0
+        var recoveryCalls = 0
+
+        await store.finishPetActivation(
+            pet,
+            activate: {
+                throw NSError(
+                    domain: "AgentPetCompanionTests",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "activation rejected"]
+                )
+            },
+            refreshSnapshot: { snapshotCalls += 1 },
+            recoverSnapshot: { recoveryCalls += 1 }
+        )
+
+        #expect(snapshotCalls == 0)
+        #expect(recoveryCalls == 1)
+        #expect(store.statusText == "启用失败：activation rejected")
     }
 
     @Test
@@ -324,6 +377,18 @@ struct UIModelTests {
             coverPath: "/tmp/\(id).webp",
             active: active,
             createdAt: "2026-07-10T00:00:00Z"
+        )
+    }
+
+    @MainActor
+    private func makeStore() -> AppStore {
+        AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
         )
     }
 }

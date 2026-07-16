@@ -26,7 +26,11 @@ const HTTP_MAX_BODY_BYTES: usize = 256 * 1024;
 const HTTP_MAX_CONCURRENT_CLIENTS: usize = 32;
 const HTTP_READ_DEADLINE: Duration = Duration::from_secs(5);
 const HTTP_WRITE_DEADLINE: Duration = Duration::from_secs(5);
+// This remains the hard safety deadline for server-side UDS request reads and
+// response writes, as well as client request writes. Long-running methods only
+// receive a larger client-side response wait below.
 const UDS_IO_DEADLINE: Duration = Duration::from_secs(5);
+const UDS_PETPACK_RESPONSE_DEADLINE: Duration = Duration::from_secs(120);
 const UDS_MAX_FRAME_BYTES: usize = 256 * 1024;
 const UDS_MAX_CONCURRENT_CLIENTS: usize = 32;
 
@@ -615,7 +619,6 @@ pub fn request(
             paths.socket_path.display()
         ))
     })?;
-    let deadline = Instant::now() + UDS_IO_DEADLINE;
     let request = json!({
         "jsonrpc": "2.0",
         "id": "cli",
@@ -631,9 +634,16 @@ pub fn request(
     let mut request_frame = Vec::with_capacity(request.len() + 1);
     request_frame.extend_from_slice(&request);
     request_frame.push(b'\n');
-    write_unix_with_deadline(&mut stream, &request_frame, deadline)?;
+    write_unix_with_deadline(
+        &mut stream,
+        &request_frame,
+        Instant::now() + UDS_IO_DEADLINE,
+    )?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    let response = read_unix_response_with_deadline(&mut stream, deadline)?;
+    let response = read_unix_response_with_deadline(
+        &mut stream,
+        Instant::now() + client_response_timeout(method),
+    )?;
     let response: serde_json::Value = serde_json::from_slice(trim_ascii_bytes(&response))?;
     if let Some(error) = response.get("error") {
         return Err(PetCoreError::InvalidRequest(error.to_string()));
@@ -642,6 +652,13 @@ pub fn request(
         .get("result")
         .cloned()
         .unwrap_or(serde_json::Value::Null))
+}
+
+fn client_response_timeout(method: &str) -> Duration {
+    match method {
+        "petpack.import" | "petpack.export" => UDS_PETPACK_RESPONSE_DEADLINE,
+        _ => UDS_IO_DEADLINE,
+    }
 }
 
 fn write_unix_with_deadline(
@@ -794,4 +811,38 @@ fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
         .map(|index| index + 1)
         .unwrap_or(start);
     &bytes[start..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{client_response_timeout, UDS_IO_DEADLINE, UDS_PETPACK_RESPONSE_DEADLINE};
+    use std::time::Duration;
+
+    #[test]
+    fn client_response_timeout_only_extends_long_petpack_operations() {
+        assert_eq!(UDS_IO_DEADLINE, Duration::from_secs(5));
+        assert_eq!(UDS_PETPACK_RESPONSE_DEADLINE, Duration::from_secs(120));
+        assert_eq!(
+            client_response_timeout("petpack.import"),
+            UDS_PETPACK_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("petpack.export"),
+            UDS_PETPACK_RESPONSE_DEADLINE
+        );
+
+        for method in [
+            "petpack.validate",
+            "pet.list",
+            "state.snapshot",
+            "petpack.import.preview",
+            "Petpack.import",
+        ] {
+            assert_eq!(
+                client_response_timeout(method),
+                UDS_IO_DEADLINE,
+                "ordinary RPC {method} must retain the five-second response deadline"
+            );
+        }
+    }
 }
