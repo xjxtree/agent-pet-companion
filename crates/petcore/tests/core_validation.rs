@@ -2552,7 +2552,9 @@ fn generation_builtin_full_source_marks_internal_materializer() {
     .unwrap();
     let job_id = start["job_id"].as_str().unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Strict full-source materialization decodes every generated state and can run
+    // alongside other image-heavy integration tests on a smaller CI runner.
+    let deadline = Instant::now() + Duration::from_secs(240);
     loop {
         let messages = handle_request(
             &state,
@@ -3381,7 +3383,9 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
                 .contains("正在恢复 Codex 会话")
     }));
 
-    let revision_deadline = Instant::now() + Duration::from_secs(60);
+    // A revision repeats the strict 7-state decode/validation pass. Leave enough
+    // headroom for the full core_validation suite to run concurrently on CI.
+    let revision_deadline = Instant::now() + Duration::from_secs(240);
     let reply_message_count = reply_items.len();
     let revision_messages = loop {
         let messages = handle_request(

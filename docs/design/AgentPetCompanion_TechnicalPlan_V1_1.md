@@ -195,14 +195,14 @@ Agent 连接
 | 拖动 | AppKit 处理拖拽 |
 | 缩放 | 宠物右侧 resize handle，与气泡开关纵向排列在同一控制列 |
 | 透明背景 | premultiplied alpha texture |
-| 消息气泡材质 | macOS 26 使用无 tint、无附加 opacity 的 `NSGlassEffectView.Style.clear`，完整 SwiftUI 气泡作为其 `contentView`；macOS 14–15 原生 `ultraThinMaterial` 回退 |
+| 消息气泡材质 | macOS 26 使用无 tint/填充/边框的 `NSGlassEffectView.Style.clear` 背景 sibling；最大透明基线只将该光学层降至 18%，SwiftUI 前景保持 100% 不透明；macOS 14–15 原生 `ultraThinMaterial` 回退 |
 | 桌宠控制材质 | 缩放手柄、缩放值和气泡开关共享 clear glass；不显示拖动标签、不绘制脚下底座，宠物帧位于无遮挡内容层；视觉控件紧凑但命中区独立保留 |
 | 右击菜单 | 原生 `NSMenu` + SF Symbols，不自绘菜单背景 |
 | 动画播放 | Metal texture swap |
 | 鼠标穿透 | 行为页开关控制 |
 | 收起 | 菜单栏或悬浮层按钮 |
 
-宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 使用公开 API 中最高透明度的 `NSGlassEffectView.Style.clear`，保持 `tintColor=nil`、无填充、无边框、无事后 opacity，并把完整 SwiftUI 气泡通过 `NSHostingView` 放入系统保证层级正确的 `contentView`，避免玻璃光学层覆盖文字。透明 Panel 中不再包裹会提升后代玻璃层级的 `GlassEffectContainer`。旧系统使用系统超薄材质；Reduce Transparency 与 Increase Contrast 使用与当前外观匹配的高对比回退，保证语义前景可读。
+宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 用 `NSGlassEffectView.Style.clear` 作为最底层 sibling，保持 `tintColor=nil`、无填充、无边框，并在最大透明基线中仅将该背景光学层设为 18%；完整 SwiftUI 气泡由独立 `NSHostingView` sibling 在其上方以 100% opacity 合成。不得把前景设为 `NSGlassEffectView.contentView`，因为该路径在透明 Panel 的真实合成中可能只显示玻璃而吞掉整棵 SwiftUI 前景；透明 Panel 中也不包裹会提升后代玻璃层级的 `GlassEffectContainer`。旧系统使用系统超薄材质；Reduce Transparency 使用不透明外观匹配背景，Increase Contrast 使用高对比回退，保证语义前景可读。
 
 宠物输入由最小 `NSViewRepresentable` 桥接：左键按下/拖动/抬起只维护移动生命周期，未发生拖动的左键单击不执行额外动作；只有 `rightMouseDown` 在开关允许时构造原生 `NSMenu`。菜单不再同时挂在 SwiftUI 根视图，避免左右键语义重复或一次右击出现两个入口。
 

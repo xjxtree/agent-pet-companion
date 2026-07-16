@@ -137,15 +137,19 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 enum APCBubbleGlassStyle {
     /// Clear Liquid Glass is the most transparent public system treatment on
     /// macOS 26. Keep the normal path free of supplemental fills, borders,
-    /// tint, and post-compositing opacity so the system can sample the desktop
-    /// directly.
+    /// and tint. The native optical background is attenuated independently;
+    /// the foreground is never post-composited with reduced opacity.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
+    /// Keep a visible trace of the native Clear lens while exposing as much
+    /// desktop content as possible. Only the background glass is attenuated;
+    /// labels, icons, and controls remain fully opaque in a sibling layer.
+    static let maximumClearOpticalOpacity = 0.18
     static let legacyBackdropOpacity = 0.18
     static let legacyBorderOpacity = 0.18
     static let increasedContrastBackdropOpacity = 0.42
     static let increasedContrastBorderOpacity = 0.52
-    static let reducedTransparencyBackdropOpacity = 0.86
+    static let reducedTransparencyBackdropOpacity = 1.0
     static let reducedTransparencyBorderOpacity = 0.62
 
     static func resolvedBackdropOpacity(
@@ -185,12 +189,67 @@ enum APCBubbleForegroundStyle {
     static let darkHaloOpacity = 0.76
 }
 
-/// Owns the one AppKit capability gap in the bubble implementation. On macOS
-/// 26, `NSGlassEffectView` only guarantees that its `contentView` is composed
-/// inside the glass foreground layer. Hosting the complete SwiftUI bubble as
-/// that content view prevents the optical layer from covering labels and
-/// controls in a transparent `NSPanel`.
+/// Owns the one AppKit capability gap in the bubble implementation. In a
+/// transparent `NSPanel`, embedding `NSHostingView` as
+/// `NSGlassEffectView.contentView` can leave only the optical layer visible.
+/// Keep native Clear glass and the SwiftUI foreground as ordered siblings so
+/// the glass never obscures labels or controls.
 #if compiler(>=6.2)
+@available(macOS 26.0, *)
+private final class APCBubbleBackgroundGlassView: NSGlassEffectView {
+    override func hitTest(_: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+@available(macOS 26.0, *)
+@MainActor
+final class APCNativeBubbleGlassView: NSView {
+    let glassView: NSGlassEffectView = APCBubbleBackgroundGlassView()
+    let foregroundView: NSView
+
+    init(foregroundView: NSView, cornerRadius: CGFloat) {
+        self.foregroundView = foregroundView
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        glassView.translatesAutoresizingMaskIntoConstraints = false
+        foregroundView.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(glassView)
+        addSubview(foregroundView)
+        NSLayoutConstraint.activate([
+            glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            glassView.topAnchor.constraint(equalTo: topAnchor),
+            glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            foregroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            foregroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            foregroundView.topAnchor.constraint(equalTo: topAnchor),
+            foregroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+
+        APCNativeBubbleGlassConfiguration.configureAppearance(
+            glassView,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isOpaque: Bool {
+        false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        foregroundView.hitTest(convert(point, to: foregroundView))
+    }
+}
+
 @available(macOS 26.0, *)
 @MainActor
 enum APCNativeBubbleGlassConfiguration {
@@ -211,14 +270,11 @@ enum APCNativeBubbleGlassConfiguration {
     static func makeView(
         contentView: NSView,
         cornerRadius: CGFloat
-    ) -> NSGlassEffectView {
-        let glassView = NSGlassEffectView()
-        configureAppearance(
-            glassView,
+    ) -> APCNativeBubbleGlassView {
+        APCNativeBubbleGlassView(
+            foregroundView: contentView,
             cornerRadius: cornerRadius
         )
-        install(contentView: contentView, in: glassView)
-        return glassView
     }
 
     static func configureAppearance(
@@ -228,18 +284,7 @@ enum APCNativeBubbleGlassConfiguration {
         glassView.style = .clear
         glassView.tintColor = nil
         glassView.cornerRadius = cornerRadius
-        glassView.alphaValue = 1
-    }
-
-    static func install(contentView: NSView, in glassView: NSGlassEffectView) {
-        glassView.contentView = contentView
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: glassView.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: glassView.trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: glassView.topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: glassView.bottomAnchor),
-        ])
+        glassView.alphaValue = APCBubbleGlassStyle.maximumClearOpticalOpacity
     }
 
     static func resolvedSize(
@@ -258,7 +303,7 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
     let cornerRadius: CGFloat
     let content: Content
 
-    func makeNSView(context: Context) -> NSGlassEffectView {
+    func makeNSView(context: Context) -> APCNativeBubbleGlassView {
         let hostingView = APCNativeBubbleGlassConfiguration.makeHostingView(
             rootView: content
         )
@@ -268,24 +313,24 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
         )
     }
 
-    func updateNSView(_ glassView: NSGlassEffectView, context: Context) {
-        guard let hostingView = glassView.contentView as? NSHostingView<Content> else { return }
+    func updateNSView(_ surfaceView: APCNativeBubbleGlassView, context: Context) {
+        guard let hostingView = surfaceView.foregroundView as? NSHostingView<Content> else { return }
 
         hostingView.rootView = content
         APCNativeBubbleGlassConfiguration.configureAppearance(
-            glassView,
+            surfaceView.glassView,
             cornerRadius: cornerRadius
         )
     }
 
     func sizeThatFits(
         _ proposal: ProposedViewSize,
-        nsView: NSGlassEffectView,
+        nsView: APCNativeBubbleGlassView,
         context: Context
     ) -> CGSize? {
         APCNativeBubbleGlassConfiguration.resolvedSize(
             proposal: proposal,
-            fittingSize: nsView.contentView?.fittingSize ?? .zero
+            fittingSize: nsView.foregroundView.fittingSize
         )
     }
 }
