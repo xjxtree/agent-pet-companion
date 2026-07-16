@@ -22,7 +22,10 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.3.2")
+        // Keep the test framework compatible with the Swift 6.1 toolchain on
+        // the macOS 15 CI runner. Newer 6.2/6.3 tags raise their own manifest
+        // tools version and cannot even be resolved by that baseline.
+        .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.1.3")
     ],
     targets: [
         .target(name: "AgentPetCompanionCore"),

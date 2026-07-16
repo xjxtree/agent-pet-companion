@@ -248,6 +248,15 @@ apc_stop_owned_runtime() {
   local protocol_path="$3"
   local may_stop_petcore=0
   local owned_child_pid=""
+  local allow_managed_fallback=0
+
+  # A present protocol is an ownership claim. If its live identity no longer
+  # validates, fail closed instead of replacing that claim with a path scan.
+  # The bounded managed-runtime fallback is only for startup failures that
+  # occurred before any protocol could be published.
+  if [[ ! -f "$protocol_path" ]]; then
+    allow_managed_fallback=1
+  fi
 
   if [[ -z "$APC_OWNED_APP_PID" && -f "$protocol_path" ]]; then
     apc_claim_owned_runtime "$petcore_cli" "$petcore_binary" "$protocol_path" || true
@@ -275,26 +284,35 @@ apc_stop_owned_runtime() {
   # APC_HOME/runtime/versions tree; this cannot match the user's global
   # Application Support runtime or an unrelated PetCore.
   local candidate_pid candidate_command managed_runtime_prefix
+  local duplicate_separator="//"
+  local single_separator="/"
   managed_runtime_prefix="$(python3 - "$APC_HOME" <<'PY'
 import os
 import sys
 print(os.path.normpath(os.path.join(sys.argv[1], "runtime", "versions")))
 PY
 )"
-  while read -r candidate_pid candidate_command; do
-    [[ "$candidate_pid" =~ ^[0-9]+$ ]] || continue
-    while [[ "$candidate_command" == *"//"* ]]; do
-      candidate_command="${candidate_command//\/\//\/}"
-    done
-    if [[ "$candidate_command" == *"$managed_runtime_prefix"/*"/petcore serve "* ]]; then
-      owned_child_pid="$candidate_pid"
-      break
-    fi
-  done < <(ps -axo pid=,command= 2>/dev/null || true)
+  if [[ "$allow_managed_fallback" == "1" ]]; then
+    while read -r candidate_pid candidate_command; do
+      [[ "$candidate_pid" =~ ^[0-9]+$ ]] || continue
+      # macOS still ships Bash 3.2. In that version, spelling the slash pattern
+      # and replacement inline turns the replacement into a literal `\/`.
+      # Variables keep the same normalization compatible with Bash 3.2 and 5.
+      while [[ "$candidate_command" == *"$duplicate_separator"* ]]; do
+        candidate_command="${candidate_command//$duplicate_separator/$single_separator}"
+      done
+      if [[ "$candidate_command" == *"$managed_runtime_prefix"/*"/petcore serve "* ]]; then
+        owned_child_pid="$candidate_pid"
+        break
+      fi
+    done < <(ps -axo pid=,command= 2>/dev/null || true)
+  fi
 
-  if [[ -z "$owned_child_pid" && -n "$APC_OWNED_APP_PID" ]]; then
-    # Retain the parent-scoped fallback for test fixtures that use a synthetic
-    # PetCore command outside the staged runtime tree.
+  if [[ "$allow_managed_fallback" == "1" \
+    && -z "$owned_child_pid" \
+    && -n "$APC_OWNED_APP_PID" ]]; then
+    # Retain the parent-scoped fallback for a managed PetCore that has not yet
+    # published an ownership protocol.
     managed_runtime_prefix="$(python3 - "$APC_HOME" <<'PY'
 import os
 import sys
@@ -304,6 +322,9 @@ PY
     while IFS= read -r candidate_pid; do
       [[ "$candidate_pid" =~ ^[0-9]+$ ]] || continue
       candidate_command="$(ps -p "$candidate_pid" -o command= 2>/dev/null || true)"
+      while [[ "$candidate_command" == *"$duplicate_separator"* ]]; do
+        candidate_command="${candidate_command//$duplicate_separator/$single_separator}"
+      done
       if [[ "$candidate_command" == "$managed_runtime_prefix"/*"/petcore serve "* ]]; then
         owned_child_pid="$candidate_pid"
         break
@@ -334,6 +355,10 @@ PY
     if kill -0 "$owned_child_pid" >/dev/null 2>&1; then
       kill -KILL "$owned_child_pid" >/dev/null 2>&1 || true
     fi
+    # This is a direct child in the synthetic fixture and a reparented process
+    # in the real App case. wait reaps the former and is a harmless no-op for
+    # the latter, keeping Bash 3.2 from emitting a stale job notification.
+    wait "$owned_child_pid" >/dev/null 2>&1 || true
   fi
   rm -f "$protocol_path"
 

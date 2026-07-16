@@ -51,12 +51,12 @@ jobs:
             ~/.cargo/git
             target
             apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-apc-
 
       - name: Validate default test isolation
-        run: ./script/validate_test_isolation.sh
+        run: TMPDIR="$RUNNER_TEMP/" /bin/bash ./script/validate_test_isolation.sh
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check

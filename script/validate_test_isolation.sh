@@ -8,7 +8,8 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 2
 fi
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-test-isolation.XXXXXX")"
+TMP_ROOT="${TMPDIR:-/tmp}"
+TMP_DIR="$(mktemp -d "${TMP_ROOT%/}/apc-test-isolation.XXXXXX")"
 SHIM_DIR="$TMP_DIR/shims"
 FORBIDDEN_LOG="$TMP_DIR/forbidden.log"
 FAILURES=0
@@ -359,9 +360,46 @@ else
     '  *) printf '\''{"ok":true}\n'\'' ;;' \
     'esac'
 
+  runtime_fixture_status=0
+  set +e
   (
+    set -e
     apc_use_isolated_home "$RUNTIME_HOME"
     export APC_FAKE_PETCORE="$RUNTIME_PETCORE"
+    first_app_pid=""
+    first_petcore_pid=""
+    second_app_pid=""
+    second_petcore_pid=""
+    managed_petcore_pid=""
+    runtime_fixture_cleanup_pid() {
+      local fixture_pid="${1:-}"
+      local fixture_command=""
+      [[ "$fixture_pid" =~ ^[0-9]+$ ]] || return 0
+      fixture_command="$(ps -p "$fixture_pid" -o command= 2>/dev/null || true)"
+      [[ -n "$fixture_command" && "$fixture_command" == *"$RUNTIME_FIXTURE"* ]] || return 0
+      kill "$fixture_pid" >/dev/null 2>&1 || true
+      for _ in {1..50}; do
+        kill -0 "$fixture_pid" >/dev/null 2>&1 || break
+        sleep 0.02
+      done
+      if kill -0 "$fixture_pid" >/dev/null 2>&1; then
+        kill -KILL "$fixture_pid" >/dev/null 2>&1 || true
+        for _ in {1..50}; do
+          kill -0 "$fixture_pid" >/dev/null 2>&1 || break
+          sleep 0.02
+        done
+      fi
+      wait "$fixture_pid" >/dev/null 2>&1 || true
+    }
+    runtime_fixture_cleanup() {
+      runtime_fixture_cleanup_pid "$managed_petcore_pid"
+      runtime_fixture_cleanup_pid "$second_petcore_pid"
+      runtime_fixture_cleanup_pid "$second_app_pid"
+      runtime_fixture_cleanup_pid "$first_petcore_pid"
+      runtime_fixture_cleanup_pid "$first_app_pid"
+    }
+    trap runtime_fixture_cleanup EXIT
+
     apc_start_owned_runtime "$RUNTIME_APP" "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_FIXTURE/app.log" "$RUNTIME_PROTOCOL"
     first_app_pid="$APC_OWNED_APP_PID"
     first_petcore_pid="$APC_OWNED_PETCORE_PID"
@@ -378,9 +416,20 @@ assert data["instance_id"] == "fixture-instance", data
 assert data["process_start"], data
 PY
     apc_stop_owned_runtime "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_PROTOCOL"
-    ! kill -0 "$first_app_pid" >/dev/null 2>&1
-    ! kill -0 "$first_petcore_pid" >/dev/null 2>&1
+    if kill -0 "$first_app_pid" >/dev/null 2>&1; then
+      printf 'owned runtime fixture left its first App running\n' >&2
+      exit 1
+    fi
+    if kill -0 "$first_petcore_pid" >/dev/null 2>&1; then
+      printf 'owned runtime fixture left its first PetCore running\n' >&2
+      exit 1
+    fi
 
+    TAMPERED_MANAGED_PETCORE="$APC_HOME/runtime/versions/tampered/petcore"
+    mkdir -p "$(dirname "$TAMPERED_MANAGED_PETCORE")"
+    cp "$RUNTIME_PETCORE" "$TAMPERED_MANAGED_PETCORE"
+    chmod +x "$TAMPERED_MANAGED_PETCORE"
+    export APC_FAKE_PETCORE="$TAMPERED_MANAGED_PETCORE"
     apc_start_owned_runtime "$RUNTIME_APP" "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_FIXTURE/app-tampered.log" "$RUNTIME_PROTOCOL"
     second_app_pid="$APC_OWNED_APP_PID"
     second_petcore_pid="$APC_OWNED_PETCORE_PID"
@@ -393,29 +442,61 @@ with open(path, "w", encoding="utf-8") as file:
     json.dump(data, file)
 PY
     apc_stop_owned_runtime "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_PROTOCOL"
-    ! kill -0 "$second_app_pid" >/dev/null 2>&1
+    if kill -0 "$second_app_pid" >/dev/null 2>&1; then
+      printf 'owned runtime fixture left its second App running\n' >&2
+      exit 1
+    fi
     kill -0 "$second_petcore_pid" >/dev/null 2>&1
-    kill "$second_petcore_pid" >/dev/null 2>&1 || true
+    runtime_fixture_cleanup_pid "$second_petcore_pid"
+    if kill -0 "$second_petcore_pid" >/dev/null 2>&1; then
+      printf 'owned runtime fixture could not reap its preserved PetCore\n' >&2
+      exit 1
+    fi
 
     # A Process child is reparented after the App exits. Cleanup must still
     # reclaim a daemon whose executable is inside this isolated runtime tree,
     # even when no owner protocol could be published.
-    MANAGED_PETCORE="$APC_HOME/runtime/versions/fixture/petcore"
+    # Keep a deliberate duplicate separator in the launched command. macOS
+    # system Bash 3.2 must normalize it exactly as Bash 5 does.
+    MANAGED_PETCORE="$APC_HOME/runtime//versions/fixture/petcore"
+    MANAGED_LAUNCHER="$RUNTIME_FIXTURE/managed-launcher"
+    MANAGED_PID_FILE="$RUNTIME_FIXTURE/managed-pids"
     mkdir -p "$(dirname "$MANAGED_PETCORE")"
     write_executable "$MANAGED_PETCORE" \
       '#!/usr/bin/env bash' \
       'trap '\''exit 0'\'' TERM INT' \
       'while :; do sleep 1; done'
-    "$MANAGED_PETCORE" serve --home "$APC_HOME" &
-    managed_petcore_pid="$!"
+    write_executable "$MANAGED_LAUNCHER" \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      '"$APC_MANAGED_PETCORE" serve --home "$APC_HOME" &' \
+      'printf '\''%s\t%s\n'\'' "$$" "$!" >"$APC_MANAGED_PID_FILE"'
+    export APC_MANAGED_PETCORE="$MANAGED_PETCORE"
+    export APC_MANAGED_PID_FILE="$MANAGED_PID_FILE"
+    "$MANAGED_LAUNCHER"
+    IFS=$'\t' read -r managed_launcher_pid managed_petcore_pid <"$MANAGED_PID_FILE"
+    kill -0 "$managed_petcore_pid" >/dev/null 2>&1
+    managed_parent_pid="$(ps -p "$managed_petcore_pid" -o ppid= 2>/dev/null | tr -d ' ' || true)"
+    if [[ -z "$managed_parent_pid" || "$managed_parent_pid" == "$managed_launcher_pid" ]]; then
+      printf 'owned runtime fixture did not reparent its managed PetCore\n' >&2
+      exit 1
+    fi
     APC_OWNED_APP_PID=""
     APC_OWNED_PETCORE_PID=""
     APC_OWNED_PROCESS_START=""
     APC_OWNED_INSTANCE_ID=""
     APC_OWNED_APP_BINARY=""
     apc_stop_owned_runtime "$RUNTIME_CLI" "$RUNTIME_PETCORE" "$RUNTIME_PROTOCOL"
-    ! kill -0 "$managed_petcore_pid" >/dev/null 2>&1
-  ) || record_failure 'owned runtime fixture failed PID/marker/snapshot initialization or conservative cleanup'
+    if kill -0 "$managed_petcore_pid" >/dev/null 2>&1; then
+      printf 'owned runtime fixture left its protocol-free managed PetCore running\n' >&2
+      exit 1
+    fi
+  )
+  runtime_fixture_status="$?"
+  set -e
+  if [[ "$runtime_fixture_status" != "0" ]]; then
+    record_failure 'owned runtime fixture failed PID/marker/snapshot initialization or conservative cleanup'
+  fi
 fi
 for validator in "${DEFAULT_VALIDATORS[@]}"; do
   if rg -q 'petcore" serve' "$validator" \
