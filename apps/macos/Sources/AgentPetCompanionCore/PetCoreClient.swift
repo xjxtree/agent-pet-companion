@@ -1,6 +1,6 @@
 import Foundation
 
-public enum PetCoreClientError: Error, LocalizedError {
+public enum PetCoreClientError: Error, LocalizedError, Sendable {
     case socketPathTooLong
     case connectFailed(String)
     case writeFailed
@@ -44,16 +44,10 @@ public struct PetCoreClient: Sendable {
             .path
     }
 
-    public func request(
-        method: String,
-        paramsJSONData: Data? = nil,
-        timeout: Duration = .seconds(5)
-    ) async throws -> Any {
-        let response = try await requestData(
-            method: method,
-            paramsJSONData: paramsJSONData,
-            timeout: timeout
-        )
+    /// Decodes a JSON-RPC result synchronously after the Sendable response
+    /// bytes have crossed the async transport boundary. Keeping `Any` out of
+    /// the async return type is required by Swift 6 actor isolation.
+    public static func decodeResult(from response: Data) throws -> Any {
         guard
             let object = try JSONSerialization.jsonObject(with: response) as? [String: Any]
         else {

@@ -6,6 +6,33 @@ import Testing
 @Suite
 struct PetCoreTransportTests {
     @Test
+    func clientResultDecodingValidatesEnvelopeWithoutCrossingAsyncAny() throws {
+        let success = try PetCoreClient.decodeResult(
+            from: Data(#"{"jsonrpc":"2.0","result":{"ok":true}}"#.utf8)
+        )
+        #expect((success as? [String: Any])?["ok"] as? Bool == true)
+
+        let empty = try PetCoreClient.decodeResult(from: Data(#"{"jsonrpc":"2.0"}"#.utf8))
+        #expect(empty is NSNull)
+
+        do {
+            _ = try PetCoreClient.decodeResult(
+                from: Data(#"{"jsonrpc":"2.0","error":{"message":"boom"}}"#.utf8)
+            )
+            Issue.record("Expected an RPC error")
+        } catch let PetCoreClientError.rpcError(message) {
+            #expect(message == "boom")
+        }
+
+        do {
+            _ = try PetCoreClient.decodeResult(from: Data("[]".utf8))
+            Issue.record("Expected an invalid response")
+        } catch PetCoreClientError.invalidResponse {
+            // Expected.
+        }
+    }
+
+    @Test
     func requestTimesOut() async throws {
         let server = try UnixSocketTestServer { client in
             _ = readRequestLine(from: client)

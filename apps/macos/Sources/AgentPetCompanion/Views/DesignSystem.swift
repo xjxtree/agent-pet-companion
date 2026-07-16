@@ -99,6 +99,7 @@ struct APCGlassGroup<Content: View>: View {
 
     @ViewBuilder
     var body: some View {
+#if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             GlassEffectContainer(spacing: spacing) {
                 content
@@ -106,6 +107,9 @@ struct APCGlassGroup<Content: View>: View {
         } else {
             content
         }
+#else
+        content
+#endif
     }
 }
 
@@ -115,6 +119,7 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+#if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             content.glassEffect(
                 interactive ? .clear.interactive() : .clear,
@@ -123,6 +128,9 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
         } else {
             content.background(.ultraThinMaterial, in: shape)
         }
+#else
+        content.background(.ultraThinMaterial, in: shape)
+#endif
     }
 }
 
@@ -198,6 +206,7 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+#if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             if reduceTransparency {
                 accessibilityFallback(content, supportsLiquidGlass: true)
@@ -221,6 +230,9 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
         } else {
             legacyFallback(content)
         }
+#else
+        legacyFallback(content)
+#endif
     }
 
     private func accessibilityFallback(

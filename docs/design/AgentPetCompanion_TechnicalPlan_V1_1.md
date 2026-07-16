@@ -182,7 +182,7 @@ IPC: Unix Domain Socket JSON-RPC
 Agent 连接
 ```
 
-控制中心（主窗口）使用 `NavigationSplitView`、系统 sidebar list 和 unified compact toolbar。业务内容以统一的 `GlassEffectContainer` 组织相邻面板；macOS 26 的所有自定义 surface 使用 `Glass.clear`，可点击 surface 使用 interactive clear glass，macOS 14–15 统一退回 `ultraThinMaterial`。主操作采用 `.borderedProminent`，次操作采用 `.bordered`，由系统负责选中、禁用、键盘焦点、高对比度和 Reduce Transparency，不再手工绘制按钮阴影与不透明卡片。
+控制中心（主窗口）使用 `NavigationSplitView`、系统 sidebar list 和 unified compact toolbar。业务内容以统一的 `GlassEffectContainer` 组织相邻面板；macOS 26 的所有自定义 surface 使用 `Glass.clear`，可点击 surface 使用 interactive clear glass，macOS 14–15 统一退回 `ultraThinMaterial`。这些 macOS 26 SDK 符号同时受 `compiler(>=6.2)` 编译门禁保护：Xcode 26 构建保留完整 Liquid Glass，Xcode 16 构建完全排除新符号并使用材质回退。主操作采用 `.borderedProminent`，次操作采用 `.bordered`，由系统负责选中、禁用、键盘焦点、高对比度和 Reduce Transparency，不再手工绘制按钮阴影与不透明卡片。
 
 ### 4.3 桌宠悬浮层
 

@@ -92,7 +92,7 @@ V1 仍不包含公共素材库、分享/社区、Petdex 导入、Codex 内置宠
 | 验证 | 结果 |
 |---|---:|
 | `script/test_all.sh` 默认 deterministic/simulated/security/bounded-stress 门禁 | PASS |
-| Swift tests | PASS，96 tests / 10 suites（含玻璃辅助功能回退与旧 `apc.runtime-manifest.v1` 新增字段重建回归）；`swift-testing` 固定为兼容 CI Swift 6.1.2 的 6.1.3，直接 `swift test` 与本地兼容验证入口均通过。 |
+| Swift tests | PASS，97 tests / 10 suites（含玻璃辅助功能回退、同步 RPC envelope 解码与旧 `apc.runtime-manifest.v1` 新增字段重建回归）；`swift-testing` 固定为兼容 CI Swift 6.1.2 的 6.1.3，直接 `swift test` 与本地兼容验证入口均通过。 |
 | Rust workspace tests、fmt、clippy `-D warnings` | PASS |
 | 默认测试隔离与 owned-runtime 回收 | PASS：系统 Bash 3.2、Bash 5、尾斜杠/含空格临时路径和真实 reparent 场景均通过；篡改身份时 fail closed，无夹具进程残留。 |
 | App lifecycle contract | PASS，8/8 |

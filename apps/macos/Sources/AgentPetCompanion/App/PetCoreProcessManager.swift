@@ -163,10 +163,11 @@ actor PetCoreProcessManager {
         coordinator = PetCoreServiceStartupCoordinator(
             healthCheck: {
                 do {
-                    let result = try await client.request(
+                    let response = try await client.requestData(
                         method: "petcore.health",
                         timeout: .milliseconds(200)
                     )
+                    let result = try PetCoreClient.decodeResult(from: response)
                     if PetCoreRuntimeContract.acceptsHealth(result) {
                         try? await launcher.recordHealthyCurrentRuntime()
                         return true
@@ -386,27 +387,30 @@ private actor PetCoreServiceLauncher {
 
     private func shutdownActiveRuntime() async {
         let client = PetCoreClient(socketPath: socketPath)
-        guard let health = try? await client.request(
+        guard let healthResponse = try? await client.requestData(
             method: "petcore.health",
             timeout: .milliseconds(200)
-        ), let value = health as? [String: Any],
+        ), let health = try? PetCoreClient.decodeResult(from: healthResponse),
+        let value = health as? [String: Any],
         let instanceID = value["instance_id"] as? String,
         let params = try? JSONSerialization.data(withJSONObject: ["expected_instance_id": instanceID])
         else { return }
-        _ = try? await client.request(
+        guard let shutdownResponse = try? await client.requestData(
             method: "petcore.shutdown",
             paramsJSONData: params,
             timeout: .milliseconds(500)
-        )
+        ) else { return }
+        _ = try? PetCoreClient.decodeResult(from: shutdownResponse)
     }
 
     private func waitForHealth(_ candidate: PreparedPetCoreRuntime) async -> Bool {
         let client = PetCoreClient(socketPath: socketPath)
         for _ in 0 ..< 60 {
-            if let result = try? await client.request(
+            if let response = try? await client.requestData(
                 method: "petcore.health",
                 timeout: .milliseconds(150)
-            ), PetCoreRuntimeContract.acceptsHealth(
+            ), let result = try? PetCoreClient.decodeResult(from: response),
+            PetCoreRuntimeContract.acceptsHealth(
                 result,
                 expectedBuildID: candidate.buildID,
                 expectedManifest: candidate.manifest
@@ -421,10 +425,11 @@ private actor PetCoreServiceLauncher {
     private func waitForPriorRuntimeExit() async {
         let client = PetCoreClient(socketPath: socketPath)
         for _ in 0 ..< 25 {
-            guard (try? await client.request(
+            guard let response = try? await client.requestData(
                 method: "petcore.health",
                 timeout: .milliseconds(100)
-            )) != nil else { return }
+            ), (try? PetCoreClient.decodeResult(from: response)) != nil
+            else { return }
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
