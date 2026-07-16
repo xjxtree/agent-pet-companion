@@ -305,7 +305,7 @@ private struct ConversationBubble: View {
                 cornerRadius: OverlayGeometry.bubbleCornerRadius,
                 style: .continuous
             ),
-            interactive: false
+            interactive: true
         )
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
     }
@@ -335,7 +335,7 @@ private struct SessionBubbleRow: View {
                     if !session.statusText.isEmpty {
                         Text(session.statusText)
                             .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(statusColor)
+                            .foregroundStyle(BubbleForegroundStyle.text)
                             .apcBubbleTextContrast()
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -343,11 +343,11 @@ private struct SessionBubbleRow: View {
                             .padding(.vertical, 1)
                             .background(
                                 Capsule()
-                                    .fill(statusColor.opacity(0.10))
+                                    .fill(statusColor.opacity(0.24))
                             )
                             .overlay {
                                 Capsule()
-                                    .stroke(statusColor.opacity(0.28), lineWidth: 0.75)
+                                    .stroke(statusColor.opacity(0.62), lineWidth: 0.75)
                                     .allowsHitTesting(false)
                             }
                     }

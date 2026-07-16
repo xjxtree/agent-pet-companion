@@ -128,21 +128,16 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 
 enum APCBubbleGlassStyle {
     /// Clear Liquid Glass is the most transparent public system treatment on
-    /// macOS 26. Keep the normal path free of supplemental fills and borders
-    /// so the system can sample the desktop directly.
+    /// macOS 26. Keep the normal path free of supplemental fills, borders, and
+    /// post-compositing opacity so the system can sample the desktop directly.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
-    /// Keep a visible trace of the native Clear lens while allowing the
-    /// desktop beneath a large conversation bubble to remain recognizable.
-    /// The glass is rendered on its own background layer, so this opacity
-    /// never attenuates labels, icons, or controls.
-    static let opticalOpacity = 0.24
-    static let legacyBackdropOpacity = 0.10
+    static let legacyBackdropOpacity = 0.18
     static let legacyBorderOpacity = 0.18
-    static let increasedContrastBackdropOpacity = 0.30
-    static let increasedContrastBorderOpacity = 0.34
+    static let increasedContrastBackdropOpacity = 0.42
+    static let increasedContrastBorderOpacity = 0.52
     static let reducedTransparencyBackdropOpacity = 0.86
-    static let reducedTransparencyBorderOpacity = 0.42
+    static let reducedTransparencyBorderOpacity = 0.62
 
     static func resolvedBackdropOpacity(
         reduceTransparency: Bool,
@@ -177,26 +172,22 @@ enum APCBubbleForegroundStyle {
     /// Transparency belongs to the glass surface, not to labels or icons.
     static let contentOpacity = 1.0
     static let secondaryContentOpacity = 0.86
-    static let lightHaloOpacity = 0.28
-    static let darkHaloOpacity = 0.96
+    static let lightHaloOpacity = 0.16
+    static let darkHaloOpacity = 0.82
 }
 
-/// The native Clear glass is intentionally kept on a background-only layer.
-/// `BubbleOverlayRootView` doesn't wrap these surfaces in a
-/// `GlassEffectContainer`: that container elevates descendant glass views and
-/// can place the optical layer above SwiftUI foreground content in a
+/// The native Clear glass is applied directly to the content hierarchy. This
+/// is the public maximum-clear treatment and keeps SwiftUI foreground content
+/// in the glass view's guaranteed content layer. `BubbleOverlayRootView` does
+/// not add a `GlassEffectContainer`: that container elevates descendant glass
+/// views and can place the optical layer above foreground content in a
 /// transparent `NSPanel`.
 private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let shape: S
     let interactive: Bool
-
-    private var backdropColor: Color {
-        colorScheme == .dark ? .black : .white
-    }
 
     private var backdropOpacity: Double {
         APCBubbleGlassStyle.resolvedBackdropOpacity(
@@ -209,23 +200,18 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             if reduceTransparency {
-                accessibleFallback(content, supportsLiquidGlass: true)
+                accessibilityFallback(content, supportsLiquidGlass: true)
             } else {
                 content
                     .background {
-                        Color.clear
-                            .glassEffect(
-                                interactive ? .clear.interactive() : .clear,
-                                in: shape
-                            )
-                            .opacity(APCBubbleGlassStyle.opticalOpacity)
-                            .allowsHitTesting(false)
-                    }
-                    .background {
                         if colorSchemeContrast == .increased {
-                            shape.fill(backdropColor.opacity(backdropOpacity))
+                            shape.fill(Color.black.opacity(backdropOpacity))
                         }
                     }
+                    .glassEffect(
+                        interactive ? .clear.interactive() : .clear,
+                        in: shape
+                    )
                     .overlay {
                         if colorSchemeContrast == .increased {
                             bubbleBorder(supportsLiquidGlass: true)
@@ -233,24 +219,37 @@ private struct APCTransparentBubbleGlassModifier<S: Shape>: ViewModifier {
                     }
             }
         } else {
-            accessibleFallback(content, supportsLiquidGlass: false)
+            legacyFallback(content)
         }
     }
 
-    private func accessibleFallback(
+    private func accessibilityFallback(
         _ content: Content,
         supportsLiquidGlass: Bool
     ) -> some View {
-        let opacity = if reduceTransparency || colorSchemeContrast == .increased {
+        return content
+            .background(Color.black.opacity(backdropOpacity), in: shape)
+            .overlay {
+                bubbleBorder(supportsLiquidGlass: supportsLiquidGlass)
+            }
+    }
+
+    private func legacyFallback(_ content: Content) -> some View {
+        let supplementalOpacity = if reduceTransparency || colorSchemeContrast == .increased {
             backdropOpacity
         } else {
             APCBubbleGlassStyle.legacyBackdropOpacity
         }
 
         return content
-            .background(backdropColor.opacity(opacity), in: shape)
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(Color.black.opacity(supplementalOpacity))
+                }
+            }
             .overlay {
-                bubbleBorder(supportsLiquidGlass: supportsLiquidGlass)
+                bubbleBorder(supportsLiquidGlass: false)
             }
     }
 
@@ -279,13 +278,13 @@ private struct APCBubbleTextContrastModifier: ViewModifier {
             .opacity(APCBubbleForegroundStyle.contentOpacity)
             .shadow(
                 color: .white.opacity(APCBubbleForegroundStyle.lightHaloOpacity),
-                radius: 0.45,
-                y: 0.1
+                radius: 0.3,
+                y: 0.05
             )
             .shadow(
                 color: .black.opacity(APCBubbleForegroundStyle.darkHaloOpacity),
-                radius: 1.35,
-                y: 0.4
+                radius: 0.85,
+                y: 0.25
             )
     }
 }

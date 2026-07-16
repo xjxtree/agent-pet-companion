@@ -195,14 +195,14 @@ Agent 连接
 | 拖动 | AppKit 处理拖拽 |
 | 缩放 | 宠物右侧 resize handle，与气泡开关纵向排列在同一控制列 |
 | 透明背景 | premultiplied alpha texture |
-| 消息气泡材质 | macOS 26 `Glass.clear.interactive()` + `GlassEffectContainer`；macOS 14–15 原生 `ultraThinMaterial` 回退 |
+| 消息气泡材质 | macOS 26 将无 tint、无附加 opacity 的 `Glass.clear.interactive()` 直接施加到气泡内容；macOS 14–15 原生 `ultraThinMaterial` 回退 |
 | 桌宠控制材质 | 缩放手柄、缩放值和气泡开关共享 clear glass；不显示拖动标签、不绘制脚下底座，宠物帧位于无遮挡内容层；视觉控件紧凑但命中区独立保留 |
 | 右击菜单 | 原生 `NSMenu` + SF Symbols，不自绘菜单背景 |
 | 动画播放 | Metal texture swap |
 | 鼠标穿透 | 行为页开关控制 |
 | 收起 | 菜单栏或悬浮层按钮 |
 
-宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 使用 clear Liquid Glass，附近气泡通过同一 `GlassEffectContainer` 采样；旧系统只使用系统超薄材质，保证原生可访问性与 Reduce Transparency 行为。
+宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 把最高透明度的 clear interactive glass 直接施加到包含前景的气泡内容，不加 tint、填充、边框或事后 opacity；透明 Panel 中不再包裹会提升后代玻璃层级的 `GlassEffectContainer`，避免光学层覆盖文字。旧系统使用系统超薄材质；Reduce Transparency 与 Increase Contrast 改用深色高对比回退，保证白色前景可读。
 
 宠物输入由最小 `NSViewRepresentable` 桥接：左键按下/拖动/抬起只维护移动生命周期，未发生拖动的左键单击不执行额外动作；只有 `rightMouseDown` 在开关允许时构造原生 `NSMenu`。菜单不再同时挂在 SwiftUI 根视图，避免左右键语义重复或一次右击出现两个入口。
 
@@ -831,11 +831,12 @@ V1 固定遵守：
 3. 开启事件会触发桌宠动作。
 4. 关闭事件不会触发动作，但事件仍入库。
 5. 每个 Agent 使用一个独立气泡；同一 Agent 的多个会话在气泡内按会话标题、右对齐状态和 Agent 回复正文分行展示，正文最多两行且布局测量使用同一限制，运行中尚无回复时显示「思考中」。连接器未提供标题时，PetCore 按事件时间和持久化序号读取该会话第一条 user 消息，折叠为空格并截为最多 80 个字符作为稳定标题；后续 user 消息只更新当前消息，不改写降级标题。若官方标题随后出现，始终覆盖该降级标题。
-6. 普通会话默认在最近用户激活 15 分钟后收起且能配置为 1–1440 分钟；新用户消息使其重新出现。仍 active 的 Needs input 与 Blocked 不因普通超时消失，已关闭 Waiting 不长期占位。
-7. 宠物动作能区分 Running、Needs input、Ready、Blocked，并按 Needs input > Blocked > Ready > Running 仲裁唯一主状态；气泡同时显示最多 8 个会话。
-8. Codex 气泡能显示会话标题及受控的最新 Agent 回复；UserPromptSubmit 提供标题回退，Stop 提供最终回复，缺失时可按明确 session_id 通过 App Server 只读补全；ChatGPT 桌面任务即使 hooks 暂未触发也能由有界近期活动同步在 1 秒轮询周期内出现；已完成工具不得继续显示为当前活动，持久化层省略实时 item 时不得复活旧摘要；PermissionRequest/`activeFlags` 显示明确交互提示且不泄露工具参数。精确实时工具类别的验收以用户已信任的 `PreToolUse` 为前提。
-9. 点击或右击任一会话行都路由到该行的 source/session，按钮文案仅为「打开」，关闭热区与会话热区不重叠；Warp 优先精确聚焦原 pane，其他 CLI 至少激活原终端 App；Codex 只对确认属于 ChatGPT 桌面 surface 的任务使用 `codex://threads/<session_id>`，未知/CLI surface 不盲用深链；明确关闭的会话不再提供打开操作。
-10. 新 ChatGPT 桌面 App 内嵌 Codex CLI 优先于 PATH 旧 CLI；PetCore RPC 协议或构建 ID 不匹配时 App 强制替换旧守护进程。
+6. macOS 26 气泡使用最高透明度 `Glass.clear.interactive()` 且文字、图标、状态和操作必须位于玻璃内容层；明亮、暗色和混合背景上前景均可辨认，正常模式仍能识别气泡后的桌面内容。Reduce Transparency 与 Increase Contrast 下使用更强的系统/深色回退，不能出现白字白底。
+7. 普通会话默认在最近用户激活 15 分钟后收起且能配置为 1–1440 分钟；新用户消息使其重新出现。仍 active 的 Needs input 与 Blocked 不因普通超时消失，已关闭 Waiting 不长期占位。
+8. 宠物动作能区分 Running、Needs input、Ready、Blocked，并按 Needs input > Blocked > Ready > Running 仲裁唯一主状态；气泡同时显示最多 8 个会话。
+9. Codex 气泡能显示会话标题及受控的最新 Agent 回复；UserPromptSubmit 提供标题回退，Stop 提供最终回复，缺失时可按明确 session_id 通过 App Server 只读补全；ChatGPT 桌面任务即使 hooks 暂未触发也能由有界近期活动同步在 1 秒轮询周期内出现；已完成工具不得继续显示为当前活动，持久化层省略实时 item 时不得复活旧摘要；PermissionRequest/`activeFlags` 显示明确交互提示且不泄露工具参数。精确实时工具类别的验收以用户已信任的 `PreToolUse` 为前提。
+10. 点击或右击任一会话行都路由到该行的 source/session，按钮文案仅为「打开」，关闭热区与会话热区不重叠；Warp 优先精确聚焦原 pane，其他 CLI 至少激活原终端 App；Codex 只对确认属于 ChatGPT 桌面 surface 的任务使用 `codex://threads/<session_id>`，未知/CLI surface 不盲用深链；明确关闭的会话不再提供打开操作。
+11. 新 ChatGPT 桌面 App 内嵌 Codex CLI 优先于 PATH 旧 CLI；PetCore RPC 协议或构建 ID 不匹配时 App 强制替换旧守护进程。
 
 ### 14.4 性能
 
