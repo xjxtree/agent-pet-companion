@@ -85,7 +85,7 @@ V1 仍不包含公共素材库、分享/社区、Petdex 导入、Codex 内置宠
 | 任意宠物 Codex 修订 | `generation.edit` 安全展开当前包，固定 ID/created_at/画质/尺寸/FPS/状态结构；提交前核对基线 SHA，冲突时保留用户较新 revision；非活跃宠物修改后仍非活跃。真实隔离 App Server E2E 已从外部导入的 `pet_lunari` 产生同 ID/原 created_at 的新 revision，仅重绘 `done` 两帧，其余 12/12 PNG 与基线 byte-identical。 |
 | 可移植 Agent Skill | `agent-pet-maker` 支持 create/modify、真实图像能力门禁、安全解包、状态哈希、未改状态 byte-identical、统一 CLI 校验构建和显式在线导入/激活；已完成全新月兔 14 帧真实 image generation 前向测试，以及仅修改 `tool` 状态的真实外部修订（其余 6 状态、12 帧逐字节不变）。 |
 | 真实 Codex Agent Pet Maker 闭环 | Codex 真实加载 `agent-pet-maker` 并调用 `image_gen.imagegen` 创建 `Bytebud 字节芽`（`pet_bytebudcodex`）：384×416 RGBA、七状态各 2 帧、共 14 帧，来源为 `skill-full-source`。真实在线导入与激活后，App 宠物库、七状态桌面动作和 Quit→重新打开保持均已验证。 |
-| 外部导入与视觉契约加固 | 在线导入减少重复整包图像解码，同时用源包/暂存包 SHA、运行帧与 cover 校验保持 TOCTOU 防护；`--expect-absent` 在 PetStore 锁内原子拒绝同 ID；服务端提交后连接超时等歧义失败通过已安装不可变 archive SHA 权威回读收敛，禁止盲目重试。严格来源包要求可见与透明像素覆盖、每状态至少 2 张解码后真实不同的帧、可见 cover、完整可解码且有界的动态预览；App Server 探测超时调整为 3 秒，真实生成导入测试 deadline 调整为 30 秒。两条严格 7 状态物化集成测试仅将 CI 等待预算扩至 240 秒，生产校验与超时语义不变。 |
+| 外部导入与视觉契约加固 | 在线导入减少重复整包图像解码，同时用源包/暂存包 SHA、运行帧与 cover 校验保持 TOCTOU 防护；`--expect-absent` 在 PetStore 锁内原子拒绝同 ID；服务端提交后连接超时等歧义失败通过已安装不可变 archive SHA 权威回读收敛，禁止盲目重试。严格来源包要求可见与透明像素覆盖、每状态至少 2 张解码后真实不同的帧、可见 cover、完整可解码且有界的动态预览；App Server 探测超时调整为 3 秒，真实生成导入测试 deadline 调整为 30 秒。两条严格 7 状态物化集成测试将 CI 等待预算扩至 240 秒，84 帧注入源拒绝测试扩至 120 秒；生产校验与超时语义不变。 |
 | 可移植元数据隐私 | 当前 Studio 打包移除 App Server thread/turn/session/request/command-source，并用严格 event schema 重写包内 session；对话与完整执行记录只留在私有 generation job，不随 `.petpack` 导出。 |
 | Renderer 真实性能 | high 11.936/12 FPS、CPU 2.6%、RSS 增量 19.14 MiB；ultra 19.897/20、3.433%、70.92 MiB；original 19.857/20、4.567%、274.34 MiB；隐藏态 CPU 0.133%，全部在预算内。 |
 

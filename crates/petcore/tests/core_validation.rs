@@ -2466,7 +2466,10 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
     );
     std::fs::write(&wait_file, "ok").unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The injected helper writes 84 preview frames. Rejection still decodes the
+    // full source contract, which can take longer while CI runs other image-heavy
+    // generation tests in parallel.
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let messages = handle_request(
             &state,
