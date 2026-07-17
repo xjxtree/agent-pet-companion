@@ -8,9 +8,9 @@ private enum OverlayStyle {
     static let secondaryText = Color.secondary
 }
 
-/// Keep the bubble foreground semantic and fully opaque. Clear glass does not
-/// dim the sampled desktop, so paired light/dark halos preserve contrast over
-/// mixed backgrounds without reducing the surface's transparency.
+/// Keep the bubble foreground semantic, fully opaque, and free of blur or
+/// shadows. Contrast comes from the adjustable native glass background rather
+/// than from halos that soften glyph and control edges.
 private enum BubbleForegroundStyle {
     static let text = Color.primary
     static let secondaryText = Color.primary
@@ -265,7 +265,6 @@ private struct ConversationBubble: View {
                 Text(content.agentName)
                     .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
                     .foregroundStyle(BubbleForegroundStyle.secondaryText)
-                    .apcBubbleTextContrast()
                     .lineLimit(1)
                     .layoutPriority(2)
 
@@ -325,7 +324,6 @@ private struct SessionBubbleRow: View {
                             weight: .semibold
                         ))
                         .foregroundStyle(BubbleForegroundStyle.text)
-                        .apcBubbleTextContrast()
                         .lineLimit(1)
                         .truncationMode(.tail)
 
@@ -335,7 +333,6 @@ private struct SessionBubbleRow: View {
                         Text(session.statusText)
                             .font(.system(size: 9.5, weight: .semibold))
                             .foregroundStyle(BubbleForegroundStyle.text)
-                            .apcBubbleTextContrast()
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 5)
@@ -355,7 +352,6 @@ private struct SessionBubbleRow: View {
                 Text(session.messageText)
                     .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
                     .foregroundStyle(BubbleForegroundStyle.text)
-                    .apcBubbleTextContrast()
                     .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
@@ -376,7 +372,6 @@ private struct SessionBubbleRow: View {
                     }
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(BubbleForegroundStyle.secondaryText)
-                    .apcBubbleTextContrast()
                     .fixedSize()
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
@@ -922,7 +917,6 @@ private struct BubbleIconButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(BubbleForegroundStyle.secondaryText)
-                .apcBubbleTextContrast()
                 .frame(width: 15, height: 15)
                 .background(
                     Circle()

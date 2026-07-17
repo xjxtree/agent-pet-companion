@@ -40,9 +40,8 @@ struct BubbleGlassRegressionTests {
     func clearSurfaceNeverAttenuatesItsForeground() {
         #expect(APCBubbleForegroundStyle.contentOpacity == 1)
         #expect(APCBubbleForegroundStyle.secondaryContentOpacity == 1)
-        #expect(APCBubbleForegroundStyle.lightHaloOpacity > 0)
-        #expect(APCBubbleForegroundStyle.darkHaloOpacity > 0)
-        #expect(APCBubbleForegroundStyle.darkHaloOpacity > APCBubbleForegroundStyle.lightHaloOpacity)
+        #expect(!APCBubbleForegroundStyle.usesBlur)
+        #expect(!APCBubbleForegroundStyle.usesHalo)
     }
 
 #if compiler(>=6.2)

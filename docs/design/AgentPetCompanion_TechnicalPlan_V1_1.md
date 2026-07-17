@@ -195,7 +195,7 @@ Agent 连接
 | 拖动 | AppKit 处理拖拽 |
 | 缩放 | 宠物右侧 resize handle，与气泡开关纵向排列在同一控制列 |
 | 透明背景 | premultiplied alpha texture |
-| 消息气泡材质 | macOS 26 使用无 tint/填充/边框的 `NSGlassEffectView.Style.clear` 背景 sibling；最大透明基线只将该光学层降至 18%，SwiftUI 前景保持 100% 不透明；macOS 14–15 原生 `ultraThinMaterial` 回退 |
+| 消息气泡材质 | macOS 26 使用无 tint/填充/边框的 `NSGlassEffectView.Style.clear` 背景 sibling；光学层强度随用户透明度设置变化，SwiftUI 前景保持 100% 不透明且不使用模糊、halo 或文字阴影；macOS 14–15 原生 `ultraThinMaterial` 回退 |
 | 桌宠控制材质 | 缩放手柄、缩放值和气泡开关共享 clear glass；不显示拖动标签、不绘制脚下底座，宠物帧位于无遮挡内容层；视觉控件紧凑但命中区独立保留 |
 | 右击菜单 | 原生 `NSMenu` + SF Symbols，不自绘菜单背景 |
 | 动画播放 | Metal texture swap |

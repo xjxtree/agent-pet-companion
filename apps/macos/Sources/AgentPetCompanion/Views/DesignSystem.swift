@@ -194,11 +194,13 @@ enum APCBubbleGlassStyle {
 
 enum APCBubbleForegroundStyle {
     /// Foreground content is never attenuated to make the surface look clear.
-    /// Transparency belongs to the glass surface, not to labels or icons.
+    /// Transparency belongs to the glass surface, not to labels or icons. Keep
+    /// the foreground free of blur and light/dark halos so glyph and control
+    /// edges remain native and pixel-sharp.
     static let contentOpacity = 1.0
     static let secondaryContentOpacity = 1.0
-    static let lightHaloOpacity = 0.72
-    static let darkHaloOpacity = 0.76
+    static let usesBlur = false
+    static let usesHalo = false
 }
 
 /// Owns the one AppKit capability gap in the bubble implementation. In a
@@ -459,26 +461,6 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
     }
 }
 
-private struct APCBubbleTextContrastModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        // Clear glass can span both bright and dark desktop content. A compact
-        // light + dark halo preserves each glyph edge without adding an opaque
-        // card or attenuating the text itself.
-        content
-            .opacity(APCBubbleForegroundStyle.contentOpacity)
-            .shadow(
-                color: .white.opacity(APCBubbleForegroundStyle.lightHaloOpacity),
-                radius: 0.7,
-                y: 0.1
-            )
-            .shadow(
-                color: .black.opacity(APCBubbleForegroundStyle.darkHaloOpacity),
-                radius: 0.85,
-                y: 0.2
-            )
-    }
-}
-
 extension View {
     func apcLiquidGlass<S: Shape>(
         in shape: S,
@@ -494,9 +476,6 @@ extension View {
         ))
     }
 
-    func apcBubbleTextContrast() -> some View {
-        modifier(APCBubbleTextContrastModifier())
-    }
 }
 
 struct PageScroll<Content: View>: View {
