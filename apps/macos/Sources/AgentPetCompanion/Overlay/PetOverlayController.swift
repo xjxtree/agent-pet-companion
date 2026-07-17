@@ -1,3 +1,4 @@
+import AgentPetCompanionCore
 import AppKit
 import CoreGraphics
 import MetalKit
@@ -17,6 +18,7 @@ final class PetOverlayController {
     func show(store: AppStore) {
         self.store = store
         if panel != nil {
+            updateAppearance(store.behavior.appearanceTheme)
             setVisible(store.behavior.enabled)
             return
         }
@@ -115,6 +117,7 @@ final class PetOverlayController {
         self.bubblePanel = bubblePanel
         self.menuPanel = menuPanel
         self.resizePanel = resizePanel
+        updateAppearance(store.behavior.appearanceTheme)
         syncPlacement()
         startDesktopVisibilityTracking()
         hiddenForDesktop = shouldHideForFinderDesktop()
@@ -159,6 +162,13 @@ final class PetOverlayController {
 
     func updateLayoutDuringInteraction() {
         fitPanelToContentFrame(ensurePosition: false, refreshPointer: false)
+    }
+
+    func updateAppearance(_ theme: AppearanceTheme) {
+        let appearance = APCApplicationAppearance.nsAppearance(for: theme)
+        for window in [panel, bubblePanel, menuPanel, resizePanel] {
+            window?.appearance = appearance
+        }
     }
 
     func refreshPointerPassthrough() {
@@ -588,6 +598,9 @@ private final class BubbleOverlayPanel: NSPanel {
         clickMenuTarget = target
 
         let menu = NSMenu()
+        menu.appearance = APCApplicationAppearance.nsAppearance(
+            for: overlayStore.behavior.appearanceTheme
+        )
         if let session, session.canOpen {
             let openItem = NSMenuItem(
                 title: session.actionLabel,

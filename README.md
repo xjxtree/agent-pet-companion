@@ -82,7 +82,7 @@ Local development requires Xcode 16 or newer with Swift 6, the Rust 1.96.0 toolc
 ./script/build_app_bundle.sh
 ```
 
-As of 2026-07-16, the default validation, Rust fmt/clippy/tests, and all 95 Swift tests across 10 suites are green. Real connector, real App Server, renderer-budget, packaged-App Studio, and Computer Use seven-state desktop-rendering checks have also been completed. See [project status](docs/PROJECT_STATUS.md) for the exact evidence and user-controlled confirmation items.
+As of 2026-07-17, the default validation, Rust fmt/clippy/tests, and all 105 Swift tests across 11 suites are green. Real connector, real App Server, renderer-budget, packaged-App Studio, and Computer Use seven-state desktop-rendering checks have also been completed. See [project status](docs/PROJECT_STATUS.md) for the exact evidence and user-controlled confirmation items.
 
 The default commands are isolated and never launch the GUI, mutate LaunchAgents, invoke real agents, or read credentials. Host UI checks require `APC_VALIDATE_HOST_UI=1`; real connector and real App Server checks each have their own explicit opt-in gate.
 

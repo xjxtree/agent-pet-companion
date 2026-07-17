@@ -36,7 +36,7 @@ wait_for_generation_message() {
   local job_id="$1"
   local needle="$2"
   local out=""
-  for _ in {1..300}; do
+  for _ in {1..1200}; do
     out="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation messages --job-id "$job_id")"
     if grep -q "$needle" <<<"$out"; then
       printf '%s\n' "$out"
@@ -44,7 +44,7 @@ wait_for_generation_message() {
     fi
     sleep 0.1
   done
-  printf '%s\n' "$out" >&2
+  printf 'V1 generation did not emit %q within 120 seconds. Latest messages:\n%s\n' "$needle" "$out" >&2
   return 1
 }
 

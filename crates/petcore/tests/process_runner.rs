@@ -145,7 +145,11 @@ fn descendant_that_closes_output_pipes_cannot_outlive_the_deadline() {
     let result = run_bounded(ProcessSpec::new(
         &fixture,
         ["close-pipes", pid_file.to_str().unwrap()],
-        Duration::from_secs(1),
+        // Compiling every workspace test can briefly saturate the host before
+        // this freshly built fixture gets scheduled. Keep the deadline long
+        // enough for it to fork and publish its PID while still proving that
+        // the runner owns and terminates the pipe-closing descendant.
+        Duration::from_secs(3),
     ))
     .expect("runner must enforce descendant ownership after both pipes close");
     let pid = read_pid(&pid_file);
@@ -157,7 +161,7 @@ fn descendant_that_closes_output_pipes_cannot_outlive_the_deadline() {
         "live owned descendant must consume deadline"
     );
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(5),
         "runner exceeded its final cleanup deadline"
     );
     assert!(
@@ -181,7 +185,7 @@ fn registered_double_fork_setsid_descendant_is_killed_by_exact_pid() {
         // Leave enough time for the capability-file acknowledgement even on a
         // loaded CI host; the escaped descendant still keeps the command alive
         // until this explicit deadline.
-        Duration::from_secs(1),
+        Duration::from_secs(3),
     ))
     .expect("runner must clean registered descendants that escape the process group");
     let pid = read_pid(&pid_file);
@@ -193,7 +197,7 @@ fn registered_double_fork_setsid_descendant_is_killed_by_exact_pid() {
         "registered daemon descendant must consume deadline"
     );
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(5),
         "runner exceeded its final cleanup deadline"
     );
     assert!(

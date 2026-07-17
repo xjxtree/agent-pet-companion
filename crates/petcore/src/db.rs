@@ -5,9 +5,9 @@ use crate::event_envelope::{
 };
 use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
-    FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord, OverlayPlacement,
-    PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_BUBBLE_TRANSPARENCY,
+    AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
+    BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
+    OverlayPlacement, PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_BUBBLE_TRANSPARENCY,
     MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
     MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
 };
@@ -41,6 +41,7 @@ pub struct GenerationJobRecord {
 pub struct BehaviorSettingsPatch {
     pub enabled: Option<bool>,
     pub status_bubble: Option<bool>,
+    pub appearance_theme: Option<AppearanceTheme>,
     pub bubble_transparency: Option<f64>,
     pub click_menu: Option<bool>,
     pub mouse_passthrough: Option<bool>,
@@ -55,6 +56,7 @@ impl BehaviorSettingsPatch {
     fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.status_bubble.is_none()
+            && self.appearance_theme.is_none()
             && self.bubble_transparency.is_none()
             && self.click_menu.is_none()
             && self.mouse_passthrough.is_none()
@@ -71,6 +73,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.status_bubble {
             behavior.status_bubble = value;
+        }
+        if let Some(value) = self.appearance_theme {
+            behavior.appearance_theme = value;
         }
         if let Some(value) = self.bubble_transparency {
             behavior.bubble_transparency = value;

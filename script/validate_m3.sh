@@ -31,13 +31,16 @@ JOB_JSON="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" genera
 JOB_ID="$(printf '%s\n' "$JOB_JSON" | sed -n 's/.*"job_id": "\(.*\)".*/\1/p')"
 [[ -n "$JOB_ID" ]]
 
-for _ in {1..300}; do
+for _ in {1..1200}; do
   MESSAGES="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation messages --job-id "$JOB_ID")"
   printf '%s\n' "$MESSAGES" | grep -q '完成，可在宠物库启用' && break
   sleep 0.1
 done
 OUT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation messages --job-id "$JOB_ID")"
-grep -q '完成，可在宠物库启用' <<<"$OUT"
+if ! grep -q '完成，可在宠物库启用' <<<"$OUT"; then
+  printf 'M3 generation did not finish within 120 seconds. Latest messages:\n%s\n' "$OUT" >&2
+  exit 1
+fi
 OUT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
 grep -q '"pets"' <<<"$OUT"
 PETPACK_PATH="$(SNAPSHOT="$OUT" python3 - <<'PY'

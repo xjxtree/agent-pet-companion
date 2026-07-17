@@ -82,6 +82,15 @@ impl FpsProfileName {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppearanceTheme {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PetStateName {
@@ -232,6 +241,7 @@ pub struct PetState {
 pub struct BehaviorSettings {
     pub enabled: bool,
     pub status_bubble: bool,
+    pub appearance_theme: AppearanceTheme,
     pub bubble_transparency: f64,
     pub click_menu: bool,
     pub mouse_passthrough: bool,
@@ -251,6 +261,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         struct RawBehaviorSettings {
             enabled: Option<bool>,
             status_bubble: Option<bool>,
+            appearance_theme: Option<AppearanceTheme>,
             bubble_transparency: Option<f64>,
             click_menu: Option<bool>,
             mouse_passthrough: Option<bool>,
@@ -279,6 +290,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         Ok(Self {
             enabled: raw.enabled.unwrap_or(defaults.enabled),
             status_bubble: raw.status_bubble.unwrap_or(defaults.status_bubble),
+            appearance_theme: raw.appearance_theme.unwrap_or(defaults.appearance_theme),
             bubble_transparency: raw
                 .bubble_transparency
                 .filter(|value| value.is_finite())
@@ -324,6 +336,7 @@ impl Default for BehaviorSettings {
         Self {
             enabled: true,
             status_bubble: true,
+            appearance_theme: AppearanceTheme::System,
             bubble_transparency: DEFAULT_BUBBLE_TRANSPARENCY,
             click_menu: true,
             mouse_passthrough: true,

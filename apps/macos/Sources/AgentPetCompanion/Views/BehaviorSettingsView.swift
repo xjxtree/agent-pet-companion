@@ -47,6 +47,7 @@ struct BehaviorSettingsView: View {
                     next.enabled = value
                     store.updateBehavior(next)
                 }
+                appearanceThemeSetting
                 SettingToggle(title: "状态气泡", detail: "显示简短任务状态", value: store.behavior.statusBubble) { value in
                     var next = store.behavior
                     next.statusBubble = value
@@ -124,6 +125,42 @@ struct BehaviorSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var appearanceThemeSetting: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("外观主题")
+                    .font(.headline)
+                Spacer()
+                Text(store.behavior.appearanceTheme.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("外观主题", selection: Binding(
+                get: { store.behavior.appearanceTheme },
+                set: { theme in
+                    var next = store.behavior
+                    next.appearanceTheme = theme
+                    store.updateBehavior(next)
+                }
+            )) {
+                ForEach(AppearanceTheme.allCases) { theme in
+                    Text(theme.title).tag(theme)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .accessibilityLabel("外观主题")
+            .accessibilityValue(store.behavior.appearanceTheme.title)
+
+            Text("同时应用于控制中心、消息气泡、桌宠操作按钮和右击菜单；气泡透明度单独调节。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var bubbleTransparencySetting: some View {

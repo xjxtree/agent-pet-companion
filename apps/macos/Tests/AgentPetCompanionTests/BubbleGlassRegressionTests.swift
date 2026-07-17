@@ -44,6 +44,22 @@ struct BubbleGlassRegressionTests {
         #expect(!APCBubbleForegroundStyle.usesHalo)
     }
 
+    @Test
+    func appearanceThemesMapToNativeSchemesWithoutChangingGlassStrength() {
+        #expect(APCApplicationAppearance.appearanceName(for: .system) == nil)
+        #expect(APCApplicationAppearance.appearanceName(for: .dark) == .darkAqua)
+        #expect(APCApplicationAppearance.appearanceName(for: .light) == .aqua)
+        #expect(APCApplicationAppearance.colorScheme(for: .system) == nil)
+        #expect(APCApplicationAppearance.colorScheme(for: .dark) == .dark)
+        #expect(APCApplicationAppearance.colorScheme(for: .light) == .light)
+
+        let transparency = 0.35
+        let expectedStrength = APCBubbleGlassStyle.opticalOpacity(for: transparency)
+        for _ in AppearanceTheme.allCases {
+            #expect(APCBubbleGlassStyle.opticalOpacity(for: transparency) == expectedStrength)
+        }
+    }
+
 #if compiler(>=6.2)
     @Test @MainActor
     @available(macOS 26.0, *)

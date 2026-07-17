@@ -326,10 +326,19 @@ private func writeAll(_ data: Data, to descriptor: Int32) {
     }
 }
 
-private func waitForSemaphore(_ semaphore: DispatchSemaphore) async -> Bool {
+private func waitForSemaphore(
+    _ semaphore: DispatchSemaphore,
+    timeout: DispatchTimeInterval = .seconds(3)
+) async -> Bool {
     await withCheckedContinuation { continuation in
-        DispatchQueue.global().async {
-            continuation.resume(returning: semaphore.wait(timeout: .now() + 1) == .success)
+        // A dedicated user-initiated queue prevents the test runner's highly
+        // parallel global pool from starving this bounded observation task.
+        // The wait remains off the MainActor, which is the behavior under test.
+        DispatchQueue(
+            label: "dev.agentpet.tests.semaphore-wait",
+            qos: .userInitiated
+        ).async {
+            continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
         }
     }
 }

@@ -182,7 +182,7 @@ IPC: Unix Domain Socket JSON-RPC
 Agent 连接
 ```
 
-控制中心（主窗口）使用 `NavigationSplitView`、系统 sidebar list 和 unified compact toolbar。业务内容以统一的 `GlassEffectContainer` 组织相邻面板；macOS 26 的所有自定义 surface 使用 `Glass.clear`，可点击 surface 使用 interactive clear glass，macOS 14–15 统一退回 `ultraThinMaterial`。这些 macOS 26 SDK 符号同时受 `compiler(>=6.2)` 编译门禁保护：Xcode 26 构建保留完整 Liquid Glass，Xcode 16 构建完全排除新符号并使用材质回退。主操作采用 `.borderedProminent`，次操作采用 `.bordered`，由系统负责选中、禁用、键盘焦点、高对比度和 Reduce Transparency，不再手工绘制按钮阴影与不透明卡片。
+控制中心（主窗口）使用 `NavigationSplitView`、系统 sidebar list 和 unified compact toolbar。业务内容以统一的 `GlassEffectContainer` 组织相邻面板；macOS 26 的所有自定义 surface 使用 `Glass.clear`，可点击 surface 使用 interactive clear glass，macOS 14–15 统一退回 `ultraThinMaterial`。这些 macOS 26 SDK 符号同时受 `compiler(>=6.2)` 编译门禁保护：Xcode 26 构建保留完整 Liquid Glass，Xcode 16 构建完全排除新符号并使用材质回退。`appearance_theme` 由 PetCore 持久化，App 使用全局 `NSApplication.appearance` 统一 AppKit chrome/菜单/Panel，并在各 SwiftUI 根节点显式注入对应 `preferredColorScheme`；`system` 将 appearance 复位为 nil 以持续跟随系统，`dark`/`light` 分别使用 `darkAqua`/`aqua`。主操作采用 `.borderedProminent`，次操作采用 `.bordered`，由系统负责选中、禁用、键盘焦点、高对比度和 Reduce Transparency，不再手工绘制按钮阴影与不透明卡片。
 
 ### 4.3 桌宠悬浮层
 
@@ -197,12 +197,13 @@ Agent 连接
 | 透明背景 | premultiplied alpha texture |
 | 消息气泡材质 | macOS 26 使用无 tint/填充/边框的 `NSGlassEffectView.Style.clear` 背景 sibling；光学层强度随用户透明度设置变化，SwiftUI 前景保持 100% 不透明且不使用模糊、halo 或文字阴影；macOS 14–15 原生 `ultraThinMaterial` 回退 |
 | 桌宠控制材质 | 缩放手柄、缩放值和气泡开关共享 clear glass；不显示拖动标签、不绘制脚下底座，宠物帧位于无遮挡内容层；视觉控件紧凑但命中区独立保留 |
+| 外观主题 | `system` / `dark` / `light` 同时覆盖控制中心、气泡、独立控制 Panel 和原生 `NSMenu`；只改变系统 appearance，不改变 `bubble_transparency` |
 | 右击菜单 | 原生 `NSMenu` + SF Symbols，不自绘菜单背景 |
 | 动画播放 | Metal texture swap |
 | 鼠标穿透 | 行为页开关控制 |
 | 收起 | 菜单栏或悬浮层按钮 |
 
-宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 用 `NSGlassEffectView.Style.clear` 作为最底层 sibling，保持 `tintColor=nil`、无填充、无边框，并在最大透明基线中仅将该背景光学层设为 18%；完整 SwiftUI 气泡由独立 `NSHostingView` sibling 在其上方以 100% opacity 合成。不得把前景设为 `NSGlassEffectView.contentView`，因为该路径在透明 Panel 的真实合成中可能只显示玻璃而吞掉整棵 SwiftUI 前景；透明 Panel 中也不包裹会提升后代玻璃层级的 `GlassEffectContainer`。旧系统使用系统超薄材质；Reduce Transparency 使用不透明外观匹配背景，Increase Contrast 使用高对比回退，保证语义前景可读。
+宠物本体与消息气泡分别由透明、无边框、non-activating `NSPanel` 承载；气泡开关和缩放手柄进一步各自使用与 36/38 pt 命中区等大的透明控制 panel，避免宠物主体的鼠标穿透状态让首个点击或拖拽落到下层 App。所有 panel 都属于同一个 macOS App 进程；Rust PetCore LaunchAgent 只负责状态、事件与数据，不绘制桌宠。气泡 panel 保持 `isOpaque=false` 和透明背景，SwiftUI 内容不再铺不透明白底：macOS 26 用 `NSGlassEffectView.Style.clear` 作为最底层 sibling，保持 `tintColor=nil`、无填充、无边框，并把 0–100% 用户透明度映射为 0.88–0.30 的背景光学层强度；完整 SwiftUI 气泡由独立 `NSHostingView` sibling 在其上方以 100% opacity 合成。不得把前景设为 `NSGlassEffectView.contentView`，因为该路径在透明 Panel 的真实合成中可能只显示玻璃而吞掉整棵 SwiftUI 前景；透明 Panel 中也不包裹会提升后代玻璃层级的 `GlassEffectContainer`。旧系统使用系统超薄材质；Reduce Transparency 使用不透明外观匹配背景，Increase Contrast 使用高对比回退，保证语义前景可读。
 
 宠物输入由最小 `NSViewRepresentable` 桥接：左键按下/拖动/抬起只维护移动生命周期，未发生拖动的左键单击不执行额外动作；只有 `rightMouseDown` 在开关允许时构造原生 `NSMenu`。菜单不再同时挂在 SwiftUI 根视图，避免左右键语义重复或一次右击出现两个入口。
 
@@ -728,6 +729,7 @@ CREATE TABLE state_revision (
 {
   "enabled": true,
   "status_bubble": true,
+  "appearance_theme": "system",
   "bubble_transparency": 0.55,
   "click_menu": true,
   "mouse_passthrough": true,
@@ -751,7 +753,7 @@ CREATE TABLE state_revision (
 }
 ```
 
-行为修改只使用 `behavior.patch { expected_revision, changes }`。`expected_revision` 是 Behavior 自身的 CAS revision，不受 Agent 事件等无关全局写入影响；冲突返回明确错误，客户端刷新后按字段重试。通用 `settings.update` 不能写 product settings。`bubble_transparency` 表示用户可见的气泡透明度，范围 0–1、默认 0.55；macOS 26 将其映射到原生 Clear Liquid Glass 的 0.88–0.30 光学强度，即使最高透明也保留可辨识折射，文字与操作层始终保持完全不透明。降低透明度或增强对比度辅助功能优先于用户值。`session_message_timeout_minutes` 默认 15，合法范围为 1–1440。`auto_hide` 只表示“没有可展示 Agent 会话时隐藏状态气泡”，不会隐藏 idle 宠物；宠物可见性始终由 `enabled` 控制。
+行为修改只使用 `behavior.patch { expected_revision, changes }`。`expected_revision` 是 Behavior 自身的 CAS revision，不受 Agent 事件等无关全局写入影响；冲突返回明确错误，客户端刷新后按字段重试。通用 `settings.update` 不能写 product settings。`appearance_theme` 是 `system` / `dark` / `light` 类型值，缺失的旧配置按 `system` 解码；切换主题必须同时更新 App UI、桌宠气泡、气泡按钮、缩放按钮和原生右击菜单，但不得改写 `bubble_transparency`。`bubble_transparency` 表示用户可见的气泡透明度，范围 0–1、默认 0.55；macOS 26 将其映射到原生 Clear Liquid Glass 的 0.88–0.30 光学强度，即使最高透明也保留可辨识折射，文字与操作层始终保持完全不透明。降低透明度或增强对比度辅助功能优先于用户值。`session_message_timeout_minutes` 默认 15，合法范围为 1–1440。`auto_hide` 只表示“没有可展示 Agent 会话时隐藏状态气泡”，不会隐藏 idle 宠物；宠物可见性始终由 `enabled` 控制。
 
 显示尺寸不进入设置。尺寸保存在 overlay placement：
 
@@ -832,7 +834,7 @@ V1 固定遵守：
 3. 开启事件会触发桌宠动作。
 4. 关闭事件不会触发动作，但事件仍入库。
 5. 每个 Agent 使用一个独立气泡；同一 Agent 的多个会话在气泡内按会话标题、右对齐状态和 Agent 回复正文分行展示，正文最多两行且布局测量使用同一限制，运行中尚无回复时显示「思考中」。连接器未提供标题时，PetCore 按事件时间和持久化序号读取该会话第一条 user 消息，折叠为空格并截为最多 80 个字符作为稳定标题；后续 user 消息只更新当前消息，不改写降级标题。若官方标题随后出现，始终覆盖该降级标题。
-6. macOS 26 气泡使用最高透明度 `Glass.clear.interactive()` 且文字、图标、状态和操作必须位于玻璃内容层；明亮、暗色和混合背景上前景均可辨认，正常模式仍能识别气泡后的桌面内容。Reduce Transparency 与 Increase Contrast 下使用更强的系统/深色回退，不能出现白字白底。
+6. `system`、`dark`、`light` 三种外观能即时同步到控制中心、气泡、收起/缩放控件和原生右击菜单，切换后透明度数值与相同输入下的玻璃光学强度保持不变。macOS 26 气泡使用 `Glass.clear.interactive()` 且文字、图标、状态和操作必须位于玻璃内容层；明亮、暗色和混合背景上前景均可辨认，正常模式仍能识别气泡后的桌面内容。Reduce Transparency 与 Increase Contrast 下使用更强的系统/深色回退，不能出现白字白底。
 7. 普通会话默认在最近用户激活 15 分钟后收起且能配置为 1–1440 分钟；新用户消息使其重新出现。仍 active 的 Needs input 与 Blocked 不因普通超时消失，已关闭 Waiting 不长期占位。
 8. 宠物动作能区分 Running、Needs input、Ready、Blocked，并按 Needs input > Blocked > Ready > Running 仲裁唯一主状态；气泡同时显示最多 8 个会话。
 9. Codex 气泡能显示会话标题及受控的最新 Agent 回复；UserPromptSubmit 提供标题回退，Stop 提供最终回复，缺失时可按明确 session_id 通过 App Server 只读补全；ChatGPT 桌面任务即使 hooks 暂未触发也能由有界近期活动同步在 1 秒轮询周期内出现；已完成工具不得继续显示为当前活动，持久化层省略实时 item 时不得复活旧摘要；PermissionRequest/`activeFlags` 显示明确交互提示且不泄露工具参数。精确实时工具类别的验收以用户已信任的 `PreToolUse` 为前提。

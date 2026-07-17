@@ -176,5 +176,6 @@ private struct MainWindowContent: View {
         ContentView()
             .environmentObject(store)
             .frame(minWidth: 760, minHeight: 520)
+            .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 }

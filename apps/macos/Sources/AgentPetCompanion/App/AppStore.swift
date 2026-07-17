@@ -535,12 +535,16 @@ final class AppStore: ObservableObject {
             reconcileActiveGeneration(activeGeneration)
         }
         let previousBehaviorEnabled = behavior.enabled
+        let previousAppearanceTheme = behavior.appearanceTheme
         let previousActiveEventID = activeAgentState?.event.id
         var nextEventIDs = Set(snapshot.events.map(\.id))
         if let activeEventID = snapshot.activeAgentState?.event.id {
             nextEventIDs.insert(activeEventID)
         }
         behavior = snapshot.behavior
+        if behavior.appearanceTheme != previousAppearanceTheme {
+            applyCurrentAppearance()
+        }
         behaviorRevision = snapshot.behaviorRevision ?? behaviorRevision
         activeAgentState = snapshot.activeAgentState
         activeAgentSessions = snapshot.activeAgentSessions
@@ -1028,7 +1032,11 @@ final class AppStore: ObservableObject {
     func updateBehavior(_ next: BehaviorSettings) {
         let patch = BehaviorSettingsPatch(from: behavior, to: next)
         guard !patch.isEmpty else { return }
+        let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme
         behavior = next
+        if appearanceChanged {
+            applyCurrentAppearance()
+        }
         syncOverlayVisibilityForBehavior()
         enqueueBehaviorPatch(patch, optimisticBehavior: next)
     }
@@ -1081,7 +1089,11 @@ final class AppStore: ObservableObject {
                 )
                 behaviorRevision = updated.revision
                 if behavior == optimisticBehavior {
+                    let appearanceChanged = behavior.appearanceTheme != updated.behavior.appearanceTheme
                     behavior = updated.behavior
+                    if appearanceChanged {
+                        applyCurrentAppearance()
+                    }
                     syncOverlayVisibilityForBehavior()
                 }
                 statusText = "设置已保存"
@@ -1112,6 +1124,11 @@ final class AppStore: ObservableObject {
         overlayVisible = overlayVisibility.petVisible
         overlayController.setVisible(overlayVisibility.petVisible)
         overlayController.updateLayout()
+    }
+
+    private func applyCurrentAppearance() {
+        APCApplicationAppearance.apply(behavior.appearanceTheme)
+        overlayController.updateAppearance(behavior.appearanceTheme)
     }
 
     func setSource(_ source: AgentSource, enabled: Bool) {

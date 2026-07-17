@@ -9,6 +9,7 @@ struct BehaviorSettingsTests {
         let previous = BehaviorSettings()
         var next = previous
         next.autoHide = true
+        next.appearanceTheme = .dark
         next.bubbleTransparency = 0.75
         next.sessionMessageTimeoutMinutes = 30
         next.sources[.codex] = false
@@ -22,6 +23,7 @@ struct BehaviorSettingsTests {
 
         #expect(!patch.isEmpty)
         #expect(object["auto_hide"] as? Bool == true)
+        #expect(object["appearance_theme"] as? String == "dark")
         #expect(object["bubble_transparency"] as? Double == 0.75)
         #expect(object["session_message_timeout_minutes"] as? Int == 30)
         let sources = try #require(object["sources"] as? [String: Any])
@@ -46,8 +48,19 @@ struct BehaviorSettingsTests {
         )
 
         #expect(legacy.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
+        #expect(legacy.appearanceTheme == .system)
         #expect(tooTransparent.bubbleTransparency == 1)
         #expect(BehaviorSettings.clampedBubbleTransparency(-2) == 0)
+    }
+
+    @Test
+    func appearanceThemeRoundTripsWithoutChangingTransparency() throws {
+        let behavior = BehaviorSettings(appearanceTheme: .light, bubbleTransparency: 0.35)
+        let data = try JSONEncoder().encode(behavior)
+        let decoded = try JSONDecoder().decode(BehaviorSettings.self, from: data)
+
+        #expect(decoded.appearanceTheme == .light)
+        #expect(decoded.bubbleTransparency == 0.35)
     }
 
     @Test

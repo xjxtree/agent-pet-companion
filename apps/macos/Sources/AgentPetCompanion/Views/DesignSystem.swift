@@ -69,6 +69,42 @@ enum APCDesign {
     }
 }
 
+enum APCApplicationAppearance {
+    static func colorScheme(for theme: AppearanceTheme) -> ColorScheme? {
+        switch theme {
+        case .system: nil
+        case .dark: .dark
+        case .light: .light
+        }
+    }
+
+    static func appearanceName(for theme: AppearanceTheme) -> NSAppearance.Name? {
+        switch theme {
+        case .system: nil
+        case .dark: .darkAqua
+        case .light: .aqua
+        }
+    }
+
+    static func nsAppearance(for theme: AppearanceTheme) -> NSAppearance? {
+        appearanceName(for: theme).flatMap(NSAppearance.init(named:))
+    }
+
+    @MainActor
+    static func apply(_ theme: AppearanceTheme) {
+        // Keep AppKit chrome, menu bar menus, detached NSPanels, and SwiftUI's
+        // inherited system colors on the same appearance. Setting nil restores
+        // live system following instead of snapshotting the current scheme.
+        NSApplication.shared.appearance = nsAppearance(for: theme)
+    }
+}
+
+extension View {
+    func apcAppearanceTheme(_ theme: AppearanceTheme) -> some View {
+        preferredColorScheme(APCApplicationAppearance.colorScheme(for: theme))
+    }
+}
+
 struct Surface<Content: View>: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     var padding: CGFloat = 20

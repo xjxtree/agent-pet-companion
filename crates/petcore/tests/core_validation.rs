@@ -839,6 +839,10 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     });
 
     let decoded: BehaviorSettings = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(
+        decoded.appearance_theme,
+        petcore_types::AppearanceTheme::System
+    );
     assert!(decoded.status_bubble);
     assert!(decoded.click_menu);
     assert!(decoded.mouse_passthrough);
@@ -857,6 +861,10 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     database.init().unwrap();
     database.set_setting("behavior", &legacy).unwrap();
     let stored = database.behavior().unwrap();
+    assert_eq!(
+        stored.appearance_theme,
+        petcore_types::AppearanceTheme::System
+    );
     assert!(stored.mouse_passthrough);
     assert_eq!(stored.sources.get(&AgentSource::Codex), Some(&false));
     assert_eq!(stored.sources.get(&AgentSource::ClaudeCode), Some(&true));

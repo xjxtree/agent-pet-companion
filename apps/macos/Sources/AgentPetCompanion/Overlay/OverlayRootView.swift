@@ -54,6 +54,7 @@ struct OverlayRootView: View {
                     stateEntryID: currentEvent?.id ?? "idle",
                     scale: store.overlayScale,
                     fpsProfile: store.behavior.fpsProfile,
+                    appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,
                     petScreenCenter: store.overlayPetScreenCenter,
@@ -86,6 +87,7 @@ struct OverlayRootView: View {
             }
         }
         .background(Color.clear)
+        .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 }
 
@@ -98,6 +100,7 @@ struct OverlayMenuControlRootView: View {
             onToggleBubble: { store.toggleOverlayBubble() }
         )
         .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
+        .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 }
 
@@ -170,6 +173,7 @@ struct OverlayResizeControlRootView: View {
         .onDisappear {
             scaleStepFeedbackTask?.cancel()
         }
+        .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 
     private func showScaleStepFeedback() {
@@ -203,6 +207,7 @@ struct BubbleOverlayRootView: View {
             bubbleLayer(in: proxy)
         }
         .background(Color.clear)
+        .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 
     @ViewBuilder
@@ -413,6 +418,7 @@ private struct PetInteractionLayer: View {
     var stateEntryID: String
     var scale: CGFloat
     var fpsProfile: FpsProfile
+    var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
     var petScreenCenter: CGPoint
@@ -432,6 +438,7 @@ private struct PetInteractionLayer: View {
             WindowDragRegion(
                 scale: scale,
                 petScreenCenter: petScreenCenter,
+                appearanceTheme: appearanceTheme,
                 clickMenuEnabled: clickMenuEnabled,
                 bubbleVisible: bubbleVisible,
                 petVisualEnvelope: petVisualEnvelope,
@@ -470,6 +477,7 @@ private struct PetInteractionLayer: View {
 private struct WindowDragRegion: NSViewRepresentable {
     var scale: CGFloat
     var petScreenCenter: CGPoint
+    var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
     var petVisualEnvelope: OverlayPetVisualEnvelope?
@@ -485,6 +493,7 @@ private struct WindowDragRegion: NSViewRepresentable {
         let view = DragView()
         view.scale = scale
         view.petScreenCenter = petScreenCenter
+        view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
         view.petVisualEnvelope = petVisualEnvelope
@@ -501,6 +510,7 @@ private struct WindowDragRegion: NSViewRepresentable {
     func updateNSView(_ view: DragView, context: Context) {
         view.scale = scale
         view.petScreenCenter = petScreenCenter
+        view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
         view.petVisualEnvelope = petVisualEnvelope
@@ -516,6 +526,7 @@ private struct WindowDragRegion: NSViewRepresentable {
     final class DragView: NSView {
         var scale: CGFloat = 1
         var petScreenCenter = CGPoint.zero
+        var appearanceTheme: AppearanceTheme = .system
         var clickMenuEnabled = true {
             didSet { configureAccessibilityActions() }
         }
@@ -710,6 +721,7 @@ private struct WindowDragRegion: NSViewRepresentable {
             menuTarget = target
 
             let menu = NSMenu()
+            menu.appearance = APCApplicationAppearance.nsAppearance(for: appearanceTheme)
             let bubbleItem = NSMenuItem(
                 title: bubbleVisible ? "收起气泡" : "展开气泡",
                 action: #selector(PetClickMenuTarget.toggleBubble),
