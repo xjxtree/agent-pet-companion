@@ -950,6 +950,22 @@ public struct GenerationHistory: Codable, Sendable {
         case form
         case messages
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        found = try container.decode(Bool.self, forKey: .found)
+        petId = try container.decode(String.self, forKey: .petId)
+        jobId = try container.decodeIfPresent(String.self, forKey: .jobId)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
+        resultPetId = try container.decodeIfPresent(String.self, forKey: .resultPetId)
+        retryOfJobId = try container.decodeIfPresent(String.self, forKey: .retryOfJobId)
+        operation = try container.decodeIfPresent(GenerationOperation.self, forKey: .operation)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        form = try container.decodeIfPresent(GenerationForm.self, forKey: .form)
+        messages = try container.decodeIfPresent([GenerationMessage].self, forKey: .messages) ?? []
+    }
 }
 
 public enum ActiveGenerationStatus: String, Codable, Hashable, Sendable {

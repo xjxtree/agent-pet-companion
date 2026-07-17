@@ -949,7 +949,11 @@ final class AppStore: ObservableObject {
                 let data = try JSONSerialization.data(withJSONObject: result)
                 let history = try JSONDecoder().decode(GenerationHistory.self, from: data)
                 guard history.found, let jobID = history.jobId else {
-                    statusText = "\(pet.name) 没有关联的生成会话"
+                    statusText = if pet.origin == .externalImport {
+                        "\(pet.name) 是外部导入宠物，没有关联的 App 内生成会话"
+                    } else {
+                        "\(pet.name) 没有关联的生成会话"
+                    }
                     return
                 }
 

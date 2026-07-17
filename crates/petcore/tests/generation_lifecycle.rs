@@ -81,6 +81,26 @@ fn request(method: &str, params: Value) -> RpcRequest {
     }
 }
 
+#[test]
+fn generation_history_for_unknown_pet_has_a_stable_empty_shape() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = CoreState::new(AppPaths::new(temp.path().to_path_buf()));
+    state.ensure_ready().unwrap();
+
+    let history = handle_request(
+        &state,
+        request(
+            "generation.for_pet",
+            json!({ "pet_id": "pet_without_generation_job" }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(history["found"], false);
+    assert_eq!(history["pet_id"], "pet_without_generation_job");
+    assert_eq!(history["messages"], json!([]));
+}
+
 fn start_generation(state: &CoreState, description: &str) -> String {
     let value = handle_request(
         state,

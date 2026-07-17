@@ -257,8 +257,13 @@ struct PetCard: View {
                         onRequestEdit()
                     }
                     .disabled(store.generationSession.isActive)
-                    Button("查看生成会话") {
-                        store.openGenerationHistory(for: pet)
+                    if pet.origin == .externalImport {
+                        Button("无 App 内生成会话") {}
+                            .disabled(true)
+                    } else {
+                        Button("查看生成会话") {
+                            store.openGenerationHistory(for: pet)
+                        }
                     }
                     Button("导出本 App .petpack") {
                         store.exportPet(pet)
@@ -370,10 +375,12 @@ struct CurrentPetDetail: View {
                         onRequestEdit(pet)
                     }
                     .disabled(busy || store.generationSession.isActive)
-                    SecondaryActionButton(title: "会话", systemImage: "text.bubble") {
-                        store.openGenerationHistory(for: pet)
+                    if pet.origin != .externalImport {
+                        SecondaryActionButton(title: "会话", systemImage: "text.bubble") {
+                            store.openGenerationHistory(for: pet)
+                        }
+                        .disabled(busy)
                     }
-                    .disabled(busy)
                     SecondaryActionButton(title: "删除", systemImage: "trash") {
                         onRequestDelete(pet)
                     }

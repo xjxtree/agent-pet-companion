@@ -972,7 +972,8 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 return Ok(json!({
                     "ok": true,
                     "found": false,
-                    "pet_id": pet_id
+                    "pet_id": pet_id,
+                    "messages": []
                 }));
             };
             let form: Value = serde_json::from_str(&job.form_json)?;

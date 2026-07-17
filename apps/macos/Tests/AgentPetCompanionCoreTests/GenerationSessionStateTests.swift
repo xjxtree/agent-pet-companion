@@ -4,6 +4,18 @@ import Testing
 
 @Suite
 struct GenerationSessionStateTests {
+    @Test("a pet without a private generation job decodes as empty history")
+    func missingGenerationHistoryDecodes() throws {
+        let data = Data(#"{"found":false,"ok":true,"pet_id":"pet_external"}"#.utf8)
+
+        let history = try JSONDecoder().decode(GenerationHistory.self, from: data)
+
+        #expect(!history.found)
+        #expect(history.petId == "pet_external")
+        #expect(history.jobId == nil)
+        #expect(history.messages.isEmpty)
+    }
+
     @Test("input_request remains an active generation session")
     func inputRequestRemainsActive() {
         var session = runningSession()
