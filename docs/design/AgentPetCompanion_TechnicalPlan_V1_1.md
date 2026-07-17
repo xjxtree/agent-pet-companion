@@ -728,6 +728,7 @@ CREATE TABLE state_revision (
 {
   "enabled": true,
   "status_bubble": true,
+  "bubble_transparency": 0.55,
   "click_menu": true,
   "mouse_passthrough": true,
   "auto_hide": false,
@@ -750,7 +751,7 @@ CREATE TABLE state_revision (
 }
 ```
 
-行为修改只使用 `behavior.patch { expected_revision, changes }`。`expected_revision` 是 Behavior 自身的 CAS revision，不受 Agent 事件等无关全局写入影响；冲突返回明确错误，客户端刷新后按字段重试。通用 `settings.update` 不能写 product settings。`session_message_timeout_minutes` 默认 15，合法范围为 1–1440。`auto_hide` 只表示“没有可展示 Agent 会话时隐藏状态气泡”，不会隐藏 idle 宠物；宠物可见性始终由 `enabled` 控制。
+行为修改只使用 `behavior.patch { expected_revision, changes }`。`expected_revision` 是 Behavior 自身的 CAS revision，不受 Agent 事件等无关全局写入影响；冲突返回明确错误，客户端刷新后按字段重试。通用 `settings.update` 不能写 product settings。`bubble_transparency` 表示用户可见的气泡透明度，范围 0–1、默认 0.55；macOS 26 将其映射到原生 Clear Liquid Glass 的 0.88–0.30 光学强度，即使最高透明也保留可辨识折射，文字与操作层始终保持完全不透明。降低透明度或增强对比度辅助功能优先于用户值。`session_message_timeout_minutes` 默认 15，合法范围为 1–1440。`auto_hide` 只表示“没有可展示 Agent 会话时隐藏状态气泡”，不会隐藏 idle 宠物；宠物可见性始终由 `enabled` 控制。
 
 显示尺寸不进入设置。尺寸保存在 overlay placement：
 

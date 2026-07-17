@@ -1,4 +1,5 @@
 import AppKit
+import AgentPetCompanionCore
 import SwiftUI
 import Testing
 @testable import AgentPetCompanion
@@ -6,11 +7,15 @@ import Testing
 @Suite
 struct BubbleGlassRegressionTests {
     @Test
-    func maximumClearSurfaceAddsNoSolidBackdrop() {
+    func adjustableClearSurfaceKeepsAVisibleNativeLensWithoutSolidBackdrop() {
         #expect(APCBubbleGlassStyle.backdropOpacity == 0)
         #expect(APCBubbleGlassStyle.borderOpacity == 0)
-        #expect(APCBubbleGlassStyle.maximumClearOpticalOpacity > 0)
-        #expect(APCBubbleGlassStyle.maximumClearOpticalOpacity <= 0.20)
+        #expect(APCBubbleGlassStyle.minimumOpticalOpacity >= 0.30)
+        #expect(APCBubbleGlassStyle.maximumOpticalOpacity <= 1)
+        #expect(
+            APCBubbleGlassStyle.opticalOpacity(for: 0)
+                > APCBubbleGlassStyle.opticalOpacity(for: 1)
+        )
         #expect(
             APCBubbleGlassStyle.resolvedBackdropOpacity(
                 reduceTransparency: false,
@@ -25,6 +30,10 @@ struct BubbleGlassRegressionTests {
             ) == 0
         )
         #expect(APCBubbleGlassStyle.legacyBackdropOpacity > 0)
+        #expect(
+            APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: 0)
+                > APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: 1)
+        )
     }
 
     @Test
@@ -39,7 +48,7 @@ struct BubbleGlassRegressionTests {
 #if compiler(>=6.2)
     @Test @MainActor
     @available(macOS 26.0, *)
-    func nativeMaximumClearGlassKeepsForegroundAboveOpticalSibling() {
+    func nativeAdjustableClearGlassKeepsForegroundAboveOpticalSibling() {
         let contentView = APCNativeBubbleGlassConfiguration.makeHostingView(
             rootView: ZStack {
                 Color.clear
@@ -64,7 +73,31 @@ struct BubbleGlassRegressionTests {
         #expect(
             abs(
                 Double(surfaceView.glassView.alphaValue)
-                    - APCBubbleGlassStyle.maximumClearOpticalOpacity
+                    - APCBubbleGlassStyle.opticalOpacity(
+                        for: BehaviorSettings.defaultBubbleTransparency
+                    )
+            ) < 0.000_1
+        )
+        APCNativeBubbleGlassConfiguration.configureAppearance(
+            surfaceView.glassView,
+            cornerRadius: 21,
+            transparency: 1
+        )
+        #expect(
+            abs(
+                Double(surfaceView.glassView.alphaValue)
+                    - APCBubbleGlassStyle.minimumOpticalOpacity
+            ) < 0.000_1
+        )
+        APCNativeBubbleGlassConfiguration.configureAppearance(
+            surfaceView.glassView,
+            cornerRadius: 21,
+            transparency: 0
+        )
+        #expect(
+            abs(
+                Double(surfaceView.glassView.alphaValue)
+                    - APCBubbleGlassStyle.maximumOpticalOpacity
             ) < 0.000_1
         )
         #expect(surfaceView.foregroundView === contentView)

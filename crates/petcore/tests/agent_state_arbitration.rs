@@ -495,6 +495,7 @@ fn waiting_and_failed_sessions_ignore_normal_display_timeout() {
     let sessions = current["active_agent_sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 2);
     assert_eq!(current["behavior"]["session_message_timeout_minutes"], 15);
+    assert_eq!(current["behavior"]["bubble_transparency"], 0.55);
 }
 
 #[test]
@@ -898,6 +899,21 @@ fn session_message_timeout_patch_is_typed_and_bounded() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("must be between 1 and 1440"));
+}
+
+#[test]
+fn bubble_transparency_patch_is_typed_and_bounded() {
+    let (_temp, state) = ready();
+    let initial = snapshot(&state);
+    let revision = initial["behavior_revision"].as_str().unwrap();
+    let updated = patch(&state, revision, json!({ "bubble_transparency": 0.8 })).unwrap();
+    assert_eq!(updated["behavior"]["bubble_transparency"], 0.8);
+
+    let next_revision = updated["revision"].as_str().unwrap();
+    let error = patch(&state, next_revision, json!({ "bubble_transparency": 1.1 })).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("bubble_transparency must be between 0 and 1"));
 }
 
 #[test]

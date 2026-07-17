@@ -44,6 +44,7 @@ precondition(settings.sources.count == AgentSource.allCases.count)
 precondition(settings.events.count == AgentEventKind.allCases.count)
 precondition(settings.fpsProfile.fps == 12)
 precondition(settings.mousePassthrough)
+precondition(settings.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
 precondition(settings.showsStatusBubble(hasActiveEvent: false, dismissed: false))
 precondition(!settings.showsStatusBubble(hasActiveEvent: true, dismissed: true))
 
@@ -57,6 +58,7 @@ let rustBehaviorJSON = """
 {
   "enabled": true,
   "status_bubble": true,
+  "bubble_transparency": 0.7,
   "click_menu": true,
   "mouse_passthrough": false,
   "auto_hide": false,
@@ -81,6 +83,7 @@ let rustBehaviorJSON = """
 let decoded = try JSONDecoder().decode(BehaviorSettings.self, from: rustBehaviorJSON)
 precondition(decoded.fpsProfile == .smooth)
 precondition(decoded.mousePassthrough == false)
+precondition(decoded.bubbleTransparency == 0.7)
 precondition(decoded.sources[.claudeCode] == false)
 precondition(decoded.events[.tool] == false)
 let encoded = try JSONEncoder().encode(decoded)
@@ -101,6 +104,7 @@ let legacyBehaviorJSON = """
 
 let legacyBehavior = try JSONDecoder().decode(BehaviorSettings.self, from: legacyBehaviorJSON)
 precondition(legacyBehavior.statusBubble == true)
+precondition(legacyBehavior.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
 precondition(legacyBehavior.clickMenu == true)
 precondition(legacyBehavior.mousePassthrough == true)
 precondition(legacyBehavior.autoHide == false)

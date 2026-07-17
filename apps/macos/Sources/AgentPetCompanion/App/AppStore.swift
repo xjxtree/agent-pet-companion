@@ -1030,11 +1030,32 @@ final class AppStore: ObservableObject {
         guard !patch.isEmpty else { return }
         behavior = next
         syncOverlayVisibilityForBehavior()
+        enqueueBehaviorPatch(patch, optimisticBehavior: next)
+    }
+
+    func previewBubbleTransparency(_ value: Double) {
+        var next = behavior
+        next.bubbleTransparency = BehaviorSettings.clampedBubbleTransparency(value)
+        behavior = next
+    }
+
+    func commitBubbleTransparency(from previousValue: Double) {
+        var previous = behavior
+        previous.bubbleTransparency = BehaviorSettings.clampedBubbleTransparency(previousValue)
+        let patch = BehaviorSettingsPatch(from: previous, to: behavior)
+        guard !patch.isEmpty else { return }
+        enqueueBehaviorPatch(patch, optimisticBehavior: behavior)
+    }
+
+    private func enqueueBehaviorPatch(
+        _ patch: BehaviorSettingsPatch,
+        optimisticBehavior: BehaviorSettings
+    ) {
         let predecessor = behaviorMutationTask
         behaviorMutationTask = Task { [weak self] in
             _ = await predecessor?.value
             guard let self else { return }
-            await persistBehaviorPatch(patch, optimisticBehavior: next)
+            await persistBehaviorPatch(patch, optimisticBehavior: optimisticBehavior)
         }
     }
 

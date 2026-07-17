@@ -181,8 +181,11 @@ public enum AgentEventKind: String, CaseIterable, Identifiable, Codable, Sendabl
 }
 
 public struct BehaviorSettings: Codable, Equatable, Sendable {
+    public static let defaultBubbleTransparency = 0.55
+
     public var enabled: Bool
     public var statusBubble: Bool
+    public var bubbleTransparency: Double
     public var clickMenu: Bool
     public var mousePassthrough: Bool
     public var autoHide: Bool
@@ -194,6 +197,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public init(
         enabled: Bool = true,
         statusBubble: Bool = true,
+        bubbleTransparency: Double = BehaviorSettings.defaultBubbleTransparency,
         clickMenu: Bool = true,
         mousePassthrough: Bool = true,
         autoHide: Bool = false,
@@ -204,6 +208,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     ) {
         self.enabled = enabled
         self.statusBubble = statusBubble
+        self.bubbleTransparency = Self.clampedBubbleTransparency(bubbleTransparency)
         self.clickMenu = clickMenu
         self.mousePassthrough = mousePassthrough
         self.autoHide = autoHide
@@ -216,6 +221,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case statusBubble = "status_bubble"
+        case bubbleTransparency = "bubble_transparency"
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
@@ -230,6 +236,10 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         let defaults = BehaviorSettings()
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
         statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble) ?? defaults.statusBubble
+        bubbleTransparency = Self.clampedBubbleTransparency(
+            try container.decodeIfPresent(Double.self, forKey: .bubbleTransparency)
+                ?? defaults.bubbleTransparency
+        )
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu) ?? defaults.clickMenu
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough) ?? defaults.mousePassthrough
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide) ?? defaults.autoHide
@@ -254,6 +264,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(statusBubble, forKey: .statusBubble)
+        try container.encode(bubbleTransparency, forKey: .bubbleTransparency)
         try container.encode(clickMenu, forKey: .clickMenu)
         try container.encode(mousePassthrough, forKey: .mousePassthrough)
         try container.encode(autoHide, forKey: .autoHide)
@@ -272,11 +283,16 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public func showsStatusBubble(hasActiveEvent: Bool, dismissed: Bool) -> Bool {
         enabled && statusBubble && !dismissed && (!autoHide || hasActiveEvent)
     }
+
+    public static func clampedBubbleTransparency(_ value: Double) -> Double {
+        min(max(value.isFinite ? value : defaultBubbleTransparency, 0), 1)
+    }
 }
 
 public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var enabled: Bool?
     public var statusBubble: Bool?
+    public var bubbleTransparency: Double?
     public var clickMenu: Bool?
     public var mousePassthrough: Bool?
     public var autoHide: Bool?
@@ -288,6 +304,9 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public init(from previous: BehaviorSettings, to next: BehaviorSettings) {
         enabled = previous.enabled == next.enabled ? nil : next.enabled
         statusBubble = previous.statusBubble == next.statusBubble ? nil : next.statusBubble
+        bubbleTransparency = previous.bubbleTransparency == next.bubbleTransparency
+            ? nil
+            : next.bubbleTransparency
         clickMenu = previous.clickMenu == next.clickMenu ? nil : next.clickMenu
         mousePassthrough = previous.mousePassthrough == next.mousePassthrough
             ? nil
@@ -306,6 +325,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var isEmpty: Bool {
         enabled == nil
             && statusBubble == nil
+            && bubbleTransparency == nil
             && clickMenu == nil
             && mousePassthrough == nil
             && autoHide == nil
@@ -318,6 +338,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case statusBubble = "status_bubble"
+        case bubbleTransparency = "bubble_transparency"
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
@@ -331,6 +352,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
         statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble)
+        bubbleTransparency = try container.decodeIfPresent(Double.self, forKey: .bubbleTransparency)
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough)
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide)
@@ -357,6 +379,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(enabled, forKey: .enabled)
         try container.encodeIfPresent(statusBubble, forKey: .statusBubble)
+        try container.encodeIfPresent(bubbleTransparency, forKey: .bubbleTransparency)
         try container.encodeIfPresent(clickMenu, forKey: .clickMenu)
         try container.encodeIfPresent(mousePassthrough, forKey: .mousePassthrough)
         try container.encodeIfPresent(autoHide, forKey: .autoHide)

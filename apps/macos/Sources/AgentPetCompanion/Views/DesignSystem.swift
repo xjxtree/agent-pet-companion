@@ -141,16 +141,28 @@ enum APCBubbleGlassStyle {
     /// the foreground is never post-composited with reduced opacity.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
-    /// Keep a visible trace of the native Clear lens while exposing as much
-    /// desktop content as possible. Only the background glass is attenuated;
-    /// labels, icons, and controls remain fully opaque in a sibling layer.
-    static let maximumClearOpticalOpacity = 0.18
+    /// User-facing transparency is the inverse of the native optical layer's
+    /// strength. Even the clearest endpoint keeps enough of the system lens to
+    /// preserve refraction and an identifiable glass boundary.
+    static let minimumOpticalOpacity = 0.30
+    static let maximumOpticalOpacity = 0.88
     static let legacyBackdropOpacity = 0.18
     static let legacyBorderOpacity = 0.18
     static let increasedContrastBackdropOpacity = 0.42
     static let increasedContrastBorderOpacity = 0.52
     static let reducedTransparencyBackdropOpacity = 1.0
     static let reducedTransparencyBorderOpacity = 0.62
+
+    static func opticalOpacity(for transparency: Double) -> Double {
+        let clamped = BehaviorSettings.clampedBubbleTransparency(transparency)
+        return maximumOpticalOpacity
+            - ((maximumOpticalOpacity - minimumOpticalOpacity) * clamped)
+    }
+
+    static func resolvedLegacyBackdropOpacity(for transparency: Double) -> Double {
+        let clamped = BehaviorSettings.clampedBubbleTransparency(transparency)
+        return 0.34 - (0.24 * clamped)
+    }
 
     static func resolvedBackdropOpacity(
         reduceTransparency: Bool,
@@ -208,7 +220,7 @@ final class APCNativeBubbleGlassView: NSView {
     let glassView: NSGlassEffectView = APCBubbleBackgroundGlassView()
     let foregroundView: NSView
 
-    init(foregroundView: NSView, cornerRadius: CGFloat) {
+    init(foregroundView: NSView, cornerRadius: CGFloat, transparency: Double) {
         self.foregroundView = foregroundView
         super.init(frame: .zero)
 
@@ -232,7 +244,8 @@ final class APCNativeBubbleGlassView: NSView {
 
         APCNativeBubbleGlassConfiguration.configureAppearance(
             glassView,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            transparency: transparency
         )
     }
 
@@ -269,22 +282,25 @@ enum APCNativeBubbleGlassConfiguration {
 
     static func makeView(
         contentView: NSView,
-        cornerRadius: CGFloat
+        cornerRadius: CGFloat,
+        transparency: Double = BehaviorSettings.defaultBubbleTransparency
     ) -> APCNativeBubbleGlassView {
         APCNativeBubbleGlassView(
             foregroundView: contentView,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            transparency: transparency
         )
     }
 
     static func configureAppearance(
         _ glassView: NSGlassEffectView,
-        cornerRadius: CGFloat
+        cornerRadius: CGFloat,
+        transparency: Double
     ) {
         glassView.style = .clear
         glassView.tintColor = nil
         glassView.cornerRadius = cornerRadius
-        glassView.alphaValue = APCBubbleGlassStyle.maximumClearOpticalOpacity
+        glassView.alphaValue = APCBubbleGlassStyle.opticalOpacity(for: transparency)
     }
 
     static func resolvedSize(
@@ -301,6 +317,7 @@ enum APCNativeBubbleGlassConfiguration {
 @available(macOS 26.0, *)
 private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
     let cornerRadius: CGFloat
+    let transparency: Double
     let content: Content
 
     func makeNSView(context: Context) -> APCNativeBubbleGlassView {
@@ -309,7 +326,8 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
         )
         return APCNativeBubbleGlassConfiguration.makeView(
             contentView: hostingView,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            transparency: transparency
         )
     }
 
@@ -319,7 +337,8 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
         hostingView.rootView = content
         APCNativeBubbleGlassConfiguration.configureAppearance(
             surfaceView.glassView,
-            cornerRadius: cornerRadius
+            cornerRadius: cornerRadius,
+            transparency: transparency
         )
     }
 
@@ -346,6 +365,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let cornerRadius: CGFloat
+    let transparency: Double
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -371,6 +391,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
             } else {
                 APCNativeBubbleGlassHost(
                     cornerRadius: cornerRadius,
+                    transparency: transparency,
                     content: content
                     .background {
                         if colorSchemeContrast == .increased {
@@ -407,7 +428,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
         let supplementalOpacity = if reduceTransparency || colorSchemeContrast == .increased {
             backdropOpacity
         } else {
-            APCBubbleGlassStyle.legacyBackdropOpacity
+            APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: transparency)
         }
 
         return content
@@ -466,8 +487,11 @@ extension View {
         modifier(APCLiquidGlassModifier(shape: shape, interactive: interactive))
     }
 
-    func apcTransparentBubbleGlass(cornerRadius: CGFloat) -> some View {
-        modifier(APCTransparentBubbleGlassModifier(cornerRadius: cornerRadius))
+    func apcTransparentBubbleGlass(cornerRadius: CGFloat, transparency: Double) -> some View {
+        modifier(APCTransparentBubbleGlassModifier(
+            cornerRadius: cornerRadius,
+            transparency: transparency
+        ))
     }
 
     func apcBubbleTextContrast() -> some View {

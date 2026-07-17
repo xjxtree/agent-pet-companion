@@ -9,6 +9,7 @@ struct BehaviorSettingsTests {
         let previous = BehaviorSettings()
         var next = previous
         next.autoHide = true
+        next.bubbleTransparency = 0.75
         next.sessionMessageTimeoutMinutes = 30
         next.sources[.codex] = false
         next.events[.tool] = false
@@ -21,6 +22,7 @@ struct BehaviorSettingsTests {
 
         #expect(!patch.isEmpty)
         #expect(object["auto_hide"] as? Bool == true)
+        #expect(object["bubble_transparency"] as? Double == 0.75)
         #expect(object["session_message_timeout_minutes"] as? Int == 30)
         let sources = try #require(object["sources"] as? [String: Any])
         let events = try #require(object["events"] as? [String: Any])
@@ -30,6 +32,22 @@ struct BehaviorSettingsTests {
         #expect(events["tool"] as? Bool == false)
         #expect(object["enabled"] == nil)
         #expect(object["fps_profile"] == nil)
+    }
+
+    @Test
+    func bubbleTransparencyDefaultsAndClampsLegacyValues() throws {
+        let legacy = try JSONDecoder().decode(
+            BehaviorSettings.self,
+            from: Data(#"{"enabled":true}"#.utf8)
+        )
+        let tooTransparent = try JSONDecoder().decode(
+            BehaviorSettings.self,
+            from: Data(#"{"bubble_transparency":4}"#.utf8)
+        )
+
+        #expect(legacy.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
+        #expect(tooTransparent.bubbleTransparency == 1)
+        #expect(BehaviorSettings.clampedBubbleTransparency(-2) == 0)
     }
 
     @Test

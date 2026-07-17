@@ -333,6 +333,17 @@ struct UIModelTests {
         #expect(APCBubbleGlassStyle.backdropOpacity == 0)
         #expect(APCBubbleGlassStyle.borderOpacity == 0)
         #expect(
+            APCBubbleGlassStyle.opticalOpacity(for: 0)
+                > APCBubbleGlassStyle.opticalOpacity(for: 1)
+        )
+        #expect(
+            abs(
+                APCBubbleGlassStyle.opticalOpacity(for: 1)
+                    - APCBubbleGlassStyle.minimumOpticalOpacity
+            ) < 0.000_1
+        )
+        #expect(APCBubbleGlassStyle.opticalOpacity(for: 0.55) > 0.50)
+        #expect(
             APCBubbleGlassStyle.resolvedBackdropOpacity(
                 reduceTransparency: false,
                 increasedContrast: false

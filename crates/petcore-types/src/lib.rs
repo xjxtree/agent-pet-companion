@@ -5,6 +5,9 @@ pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v1";
 pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
 pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
 pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
+pub const DEFAULT_BUBBLE_TRANSPARENCY: f64 = 0.55;
+pub const MIN_BUBBLE_TRANSPARENCY: f64 = 0.0;
+pub const MAX_BUBBLE_TRANSPARENCY: f64 = 1.0;
 pub const REQUIRED_STATES: [PetStateName; 7] = [
     PetStateName::Idle,
     PetStateName::Start,
@@ -229,6 +232,7 @@ pub struct PetState {
 pub struct BehaviorSettings {
     pub enabled: bool,
     pub status_bubble: bool,
+    pub bubble_transparency: f64,
     pub click_menu: bool,
     pub mouse_passthrough: bool,
     pub auto_hide: bool,
@@ -247,6 +251,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         struct RawBehaviorSettings {
             enabled: Option<bool>,
             status_bubble: Option<bool>,
+            bubble_transparency: Option<f64>,
             click_menu: Option<bool>,
             mouse_passthrough: Option<bool>,
             auto_hide: Option<bool>,
@@ -274,6 +279,11 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         Ok(Self {
             enabled: raw.enabled.unwrap_or(defaults.enabled),
             status_bubble: raw.status_bubble.unwrap_or(defaults.status_bubble),
+            bubble_transparency: raw
+                .bubble_transparency
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(MIN_BUBBLE_TRANSPARENCY, MAX_BUBBLE_TRANSPARENCY))
+                .unwrap_or(defaults.bubble_transparency),
             click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
             mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
             auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
@@ -314,6 +324,7 @@ impl Default for BehaviorSettings {
         Self {
             enabled: true,
             status_bubble: true,
+            bubble_transparency: DEFAULT_BUBBLE_TRANSPARENCY,
             click_menu: true,
             mouse_passthrough: true,
             auto_hide: false,

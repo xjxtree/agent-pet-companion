@@ -7,7 +7,8 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
     FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord, OverlayPlacement,
-    PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_BUBBLE_TRANSPARENCY,
+    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
     MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
@@ -40,6 +41,7 @@ pub struct GenerationJobRecord {
 pub struct BehaviorSettingsPatch {
     pub enabled: Option<bool>,
     pub status_bubble: Option<bool>,
+    pub bubble_transparency: Option<f64>,
     pub click_menu: Option<bool>,
     pub mouse_passthrough: Option<bool>,
     pub auto_hide: Option<bool>,
@@ -53,6 +55,7 @@ impl BehaviorSettingsPatch {
     fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.status_bubble.is_none()
+            && self.bubble_transparency.is_none()
             && self.click_menu.is_none()
             && self.mouse_passthrough.is_none()
             && self.auto_hide.is_none()
@@ -68,6 +71,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.status_bubble {
             behavior.status_bubble = value;
+        }
+        if let Some(value) = self.bubble_transparency {
+            behavior.bubble_transparency = value;
         }
         if let Some(value) = self.click_menu {
             behavior.click_menu = value;
@@ -781,6 +787,14 @@ impl Database {
         {
             return Err(PetCoreError::InvalidRequest(format!(
                 "invalid params: session_message_timeout_minutes must be between {MIN_SESSION_MESSAGE_TIMEOUT_MINUTES} and {MAX_SESSION_MESSAGE_TIMEOUT_MINUTES}"
+            )));
+        }
+        if changes.bubble_transparency.is_some_and(|value| {
+            !value.is_finite()
+                || !(MIN_BUBBLE_TRANSPARENCY..=MAX_BUBBLE_TRANSPARENCY).contains(&value)
+        }) {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "invalid params: bubble_transparency must be between {MIN_BUBBLE_TRANSPARENCY} and {MAX_BUBBLE_TRANSPARENCY}"
             )));
         }
         let mut connection = self.open()?;

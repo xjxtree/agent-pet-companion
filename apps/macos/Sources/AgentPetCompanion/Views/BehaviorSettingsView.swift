@@ -3,6 +3,7 @@ import SwiftUI
 
 struct BehaviorSettingsView: View {
     @EnvironmentObject private var store: AppStore
+    @State private var bubbleTransparencyBeforeEditing: Double?
 
     var body: some View {
         PageScroll {
@@ -51,6 +52,7 @@ struct BehaviorSettingsView: View {
                     next.statusBubble = value
                     store.updateBehavior(next)
                 }
+                bubbleTransparencySetting
                 SettingToggle(title: "自动收起气泡", detail: "空闲时隐藏气泡，有事件时自动显示", value: store.behavior.autoHide) { value in
                     var next = store.behavior
                     next.autoHide = value
@@ -122,6 +124,65 @@ struct BehaviorSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var bubbleTransparencySetting: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("气泡透明度")
+                    .font(.headline)
+                Spacer()
+                Text("\(Int((store.behavior.bubbleTransparency * 100).rounded()))%")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Slider(
+                value: Binding(
+                    get: { store.behavior.bubbleTransparency },
+                    set: { value in
+                        if bubbleTransparencyBeforeEditing == nil {
+                            bubbleTransparencyBeforeEditing = store.behavior.bubbleTransparency
+                        }
+                        store.previewBubbleTransparency(value)
+                    }
+                ),
+                in: 0 ... 1,
+                step: 0.05,
+                onEditingChanged: { editing in
+                    if editing {
+                        bubbleTransparencyBeforeEditing = bubbleTransparencyBeforeEditing
+                            ?? store.behavior.bubbleTransparency
+                    } else if let previousValue = bubbleTransparencyBeforeEditing {
+                        store.commitBubbleTransparency(from: previousValue)
+                        bubbleTransparencyBeforeEditing = nil
+                    }
+                }
+            )
+            .accessibilityLabel("气泡透明度")
+            .accessibilityValue("\(Int((store.behavior.bubbleTransparency * 100).rounded()))%")
+
+            HStack {
+                Text("玻璃更明显")
+                Spacer()
+                Text("更透明")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+
+            Text("实时调整原生液态玻璃的折射强度；文字和操作按钮始终保持清晰。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+        .overlay(alignment: .bottom) { Divider() }
+        .onDisappear {
+            if let previousValue = bubbleTransparencyBeforeEditing {
+                store.commitBubbleTransparency(from: previousValue)
+                bubbleTransparencyBeforeEditing = nil
+            }
+        }
     }
 
     private var sourcesSurface: some View {

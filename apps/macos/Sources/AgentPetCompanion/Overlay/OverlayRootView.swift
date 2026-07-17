@@ -225,6 +225,7 @@ struct BubbleOverlayRootView: View {
                 ConversationBubble(
                     content: content,
                     hovered: controlsVisible,
+                    glassTransparency: store.behavior.bubbleTransparency,
                     onClose: {
                         store.dismissOverlayBubble(eventIDs: content.eventIDs)
                     },
@@ -249,6 +250,7 @@ struct BubbleOverlayRootView: View {
 private struct ConversationBubble: View {
     var content: OverlayBubbleContent
     var hovered: Bool
+    var glassTransparency: Double
     var onClose: () -> Void
     var onOpenSession: (OverlaySessionContent) -> Void
 
@@ -300,7 +302,10 @@ private struct ConversationBubble: View {
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
         .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
-        .apcTransparentBubbleGlass(cornerRadius: OverlayGeometry.bubbleCornerRadius)
+        .apcTransparentBubbleGlass(
+            cornerRadius: OverlayGeometry.bubbleCornerRadius,
+            transparency: glassTransparency
+        )
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
     }
 }
