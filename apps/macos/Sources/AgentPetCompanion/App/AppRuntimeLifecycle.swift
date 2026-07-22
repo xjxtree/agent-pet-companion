@@ -191,19 +191,24 @@ final class AppUpdateHandoffCoordinator {
     }
 
     func restartIfInstalledBuildChanged() -> Bool {
-        guard !handoffScheduled,
-              Self.buildChanged(
-                  launchedBuildID: launchedBuildID,
-                  installedBuildID: Self.installedBuildID(at: bundleURL)
-              )
+        if handoffScheduled { return true }
+        guard Self.buildChanged(
+            launchedBuildID: launchedBuildID,
+            installedBuildID: Self.installedBuildID(at: bundleURL)
+        )
         else { return false }
 
+        AppDiagnostics.shared.log(
+            .notice,
+            category: "lifecycle",
+            event: "app_update_handoff_detected"
+        )
         return scheduleRestart(at: bundleURL)
     }
 
     func restartForRequestedBuildIfNeeded(_ request: AppActivationRequest?) -> Bool {
-        guard !handoffScheduled,
-              let request,
+        if handoffScheduled { return true }
+        guard let request,
               Self.shouldHandoff(
                   launchedBuildID: launchedBuildID,
                   requestedBuildID: request.buildID,
@@ -212,6 +217,11 @@ final class AppUpdateHandoffCoordinator {
               )
         else { return false }
 
+        AppDiagnostics.shared.log(
+            .notice,
+            category: "lifecycle",
+            event: "app_update_handoff_requested"
+        )
         return scheduleRestart(
             at: URL(fileURLWithPath: request.bundlePath, isDirectory: true).standardizedFileURL
         )
@@ -234,10 +244,20 @@ final class AppUpdateHandoffCoordinator {
         helper.standardError = FileHandle.nullDevice
         do {
             try helper.run()
+            AppDiagnostics.shared.log(
+                .notice,
+                category: "lifecycle",
+                event: "app_update_handoff_scheduled"
+            )
             NSApp.terminate(nil)
             return true
         } catch {
             handoffScheduled = false
+            AppDiagnostics.shared.logFailure(
+                error,
+                category: "lifecycle",
+                event: "app_update_handoff_failed"
+            )
             return false
         }
     }

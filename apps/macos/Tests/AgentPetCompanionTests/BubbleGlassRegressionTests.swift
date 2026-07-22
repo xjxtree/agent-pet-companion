@@ -7,7 +7,33 @@ import Testing
 @Suite
 struct BubbleGlassRegressionTests {
     @Test
-    func adjustableClearSurfaceKeepsAVisibleNativeLensWithoutSolidBackdrop() {
+    func bubbleUsesOneOuterGlassWithoutNestedSessionControlGlass() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let macOSRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = macOSRoot.appendingPathComponent(
+            "Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
+        )
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let conversationStart = try #require(source.range(of: "private struct ConversationBubble"))
+        let petStart = try #require(source.range(of: "private struct PetInteractionLayer"))
+        let bubbleSource = String(source[conversationStart.lowerBound..<petStart.lowerBound])
+        let countStart = try #require(bubbleSource.range(of: "private struct SessionCountButton"))
+        let toneStart = try #require(bubbleSource.range(of: "private extension OverlaySessionGroupTone"))
+        let countButtonSource = String(
+            bubbleSource[countStart.lowerBound..<toneStart.lowerBound]
+        )
+
+        #expect(bubbleSource.components(separatedBy: ".apcTransparentBubbleGlass").count - 1 == 1)
+        #expect(!bubbleSource.contains(".apcFloatingControlGlass"))
+        #expect(countButtonSource.contains("Capsule()"))
+        #expect(countButtonSource.contains(".fill(tone.color.opacity(0.24))"))
+    }
+
+    @Test
+    func adjustableRegularSurfaceKeepsAVisibleNativeLensWithoutSolidBackdrop() {
         #expect(APCBubbleGlassStyle.backdropOpacity == 0)
         #expect(APCBubbleGlassStyle.borderOpacity == 0)
         #expect(APCBubbleGlassStyle.minimumOpticalOpacity >= 0.30)
@@ -37,7 +63,7 @@ struct BubbleGlassRegressionTests {
     }
 
     @Test
-    func clearSurfaceNeverAttenuatesItsForeground() {
+    func regularSurfaceNeverAttenuatesItsForeground() {
         #expect(APCBubbleForegroundStyle.contentOpacity == 1)
         #expect(APCBubbleForegroundStyle.secondaryContentOpacity == 1)
         #expect(!APCBubbleForegroundStyle.usesBlur)
@@ -63,7 +89,7 @@ struct BubbleGlassRegressionTests {
 #if compiler(>=6.2)
     @Test @MainActor
     @available(macOS 26.0, *)
-    func nativeAdjustableClearGlassKeepsForegroundAboveOpticalSibling() {
+    func nativeAdjustableRegularGlassKeepsForegroundAboveOpticalSibling() {
         let contentView = APCNativeBubbleGlassConfiguration.makeHostingView(
             rootView: ZStack {
                 Color.clear
@@ -82,7 +108,7 @@ struct BubbleGlassRegressionTests {
             cornerRadius: 21
         )
 
-        #expect(surfaceView.glassView.style == .clear)
+        #expect(surfaceView.glassView.style == .regular)
         #expect(surfaceView.glassView.tintColor == nil)
         #expect(surfaceView.glassView.cornerRadius == 21)
         #expect(
@@ -98,6 +124,7 @@ struct BubbleGlassRegressionTests {
             cornerRadius: 21,
             transparency: 1
         )
+        #expect(surfaceView.glassView.style == .regular)
         #expect(
             abs(
                 Double(surfaceView.glassView.alphaValue)
@@ -109,6 +136,7 @@ struct BubbleGlassRegressionTests {
             cornerRadius: 21,
             transparency: 0
         )
+        #expect(surfaceView.glassView.style == .regular)
         #expect(
             abs(
                 Double(surfaceView.glassView.alphaValue)

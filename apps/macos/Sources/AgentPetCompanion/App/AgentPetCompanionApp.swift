@@ -7,11 +7,18 @@ private enum AppLaunchMode {
     static let runsUIValidation = CommandLine.arguments.contains("--run-ui-validation")
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard !AppLaunchMode.runsUIValidation else { return }
+        APCBrandAssets.applyApplicationIcon()
         switch AppSingleInstanceCoordinator.shared.claimPrimaryInstance() {
         case .primary:
+            AppDiagnostics.shared.log(
+                .notice,
+                category: "lifecycle",
+                event: "primary_instance_claimed"
+            )
             break
         case .secondary:
             NSApp.setActivationPolicy(.prohibited)
@@ -49,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard AppSingleInstanceCoordinator.shared.claim == .primary else { return }
+        AppDiagnostics.shared.log(.notice, category: "lifecycle", event: "app_did_finish_launching")
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -57,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !AppLaunchMode.runsUIValidation,
               AppSingleInstanceCoordinator.shared.claim == .primary
         else { return }
+        AppDiagnostics.shared.log(.debug, category: "lifecycle", event: "app_became_active")
         _ = AppUpdateHandoffCoordinator.shared.restartIfInstalledBuildChanged()
     }
 
@@ -64,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !AppLaunchMode.runsUIValidation,
               AppSingleInstanceCoordinator.shared.claim == .primary
         else { return false }
+        AppDiagnostics.shared.log(.info, category: "lifecycle", event: "app_reopen_requested")
         AppSingleInstanceCoordinator.shared.activatePrimaryInstance()
         // The activation handler owns the single openWindow(id:) request. Do
         // not let AppKit issue a second implicit reopen for the same scene.
@@ -77,6 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the complete UI host through AppKit's normal application lifecycle.
         false
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard !AppLaunchMode.runsUIValidation,
+              AppSingleInstanceCoordinator.shared.claim == .primary
+        else { return }
+        AppDiagnostics.shared.log(.notice, category: "lifecycle", event: "app_will_terminate")
+    }
 }
 
 @main
@@ -85,10 +102,19 @@ struct AgentPetCompanionApp: App {
     @StateObject private var store: AppStore
 
     init() {
-        let store = AppStore()
+        let claim = AppLaunchMode.runsUIValidation
+            ? AppInstanceClaim.primary
+            : AppSingleInstanceCoordinator.shared.claimPrimaryInstance()
+        let diagnostics: AppDiagnostics
+        if !AppLaunchMode.runsUIValidation, claim == .primary {
+            AppDiagnostics.shared.startSession()
+            diagnostics = .shared
+        } else {
+            diagnostics = .disabled
+        }
+        let store = AppStore(diagnostics: diagnostics)
         _store = StateObject(wrappedValue: store)
-        let isPrimary = AppLaunchMode.runsUIValidation
-            || AppSingleInstanceCoordinator.shared.claimPrimaryInstance() == .primary
+        let isPrimary = AppLaunchMode.runsUIValidation || claim == .primary
         if !AppLaunchMode.runsUIValidation, isPrimary {
             AppSingleInstanceCoordinator.shared.setActivationHandler { [weak store] request in
                 guard !AppUpdateHandoffCoordinator.shared.restartForRequestedBuildIfNeeded(request)
@@ -105,7 +131,7 @@ struct AgentPetCompanionApp: App {
     }
 
     var body: some Scene {
-        // The product has one settings/studio surface. `WindowGroup` creates a
+        // The product has one control-center surface. `WindowGroup` creates a
         // new NSWindow for every openWindow/reopen request, while `Window`
         // reuses the scene's single system-managed window.
         Window("Agent Pet Companion", id: "main") {
@@ -117,39 +143,201 @@ struct AgentPetCompanionApp: App {
         }
         .defaultSize(width: 1120, height: 720)
         .windowResizability(.contentMinSize)
-        .windowToolbarStyle(.unifiedCompact)
+        .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button(APCLocalization.text(.appActionOpenControlCenter)) {
-                    store.presentMainWindow()
-                }
-                Divider()
-                Button(APCLocalization.text(.appActionTogglePet)) {
-                    store.toggleOverlay()
-                }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-            }
+            AboutWindowCommands()
+            ControlCenterCommands(store: store)
         }
 
+        Window(APCLocalization.text(.appActionAbout), id: "about") {
+            if AppLaunchMode.runsUIValidation {
+                EmptyView()
+            } else {
+                AboutView(store: store)
+                    .apcAppearanceTheme(store.behavior.appearanceTheme)
+                    .background {
+                        InitialAppearanceWindowGateView(
+                            readiness: store.initialAppearanceReadiness,
+                            theme: store.behavior.appearanceTheme
+                        )
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                    }
+            }
+        }
+        .defaultSize(width: 440, height: 360)
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
+            AppStatusMenuContent(store: store)
+        } label: {
+            AppStatusItemLabel(store: store)
+        }
+    }
+}
+
+/// The status-menu content is a standalone view so the exact production menu
+/// can be exercised by deterministic UI Next fixtures without creating a
+/// second menu-only implementation. Fixture previews suppress side effects,
+/// while production keeps the normal actions and shortcuts.
+struct AppStatusMenuContent: View {
+    @ObservedObject var store: AppStore
+    var performsActions = true
+
+    var body: some View {
+        Group {
+            Text(APCLocalization.format(
+                .appMenuCurrentPet,
+                MenuBarSummary.short(
+                    store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
+                )
+            ))
+                .accessibilityIdentifier("menubar.summary.pet")
+            Text(APCLocalization.format(
+                .appMenuRecentAgent,
+                MenuBarSummary.short(MenuBarLocalizedSummary.recentEvent(store.recentEvents.first))
+            ))
+                .accessibilityIdentifier("menubar.summary.agent")
+            Text(APCLocalization.format(
+                .appMenuPetCore,
+                MenuBarSummary.short(MenuBarLocalizedSummary.petCore(store.petCoreRuntimeInfo))
+            ))
+                .accessibilityIdentifier("menubar.summary.petcore")
+            Divider()
             Button(APCLocalization.text(.appActionOpenControlCenter)) {
+                guard performsActions else { return }
                 store.presentMainWindow()
             }
-            Button(store.behavior.enabled ? "隐藏桌宠" : "显示桌宠") {
+            .keyboardShortcut("0", modifiers: [.command])
+            .accessibilityIdentifier("menubar.open-control-center")
+            Button(APCLocalization.text(
+                store.behavior.enabled ? .appActionHidePet : .appActionShowPet
+            )) {
+                guard performsActions else { return }
                 store.toggleOverlay()
             }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .accessibilityIdentifier("menubar.toggle-pet")
+            Button(APCLocalization.text(.appActionFocusPetSessions)) {
+                guard performsActions else { return }
+                store.focusOverlayBubbleForKeyboardNavigation()
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
+            .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
+            .accessibilityIdentifier("menubar.focus-pet-sessions")
+            Button(APCLocalization.text(.appActionFocusPetResize)) {
+                guard performsActions else { return }
+                store.focusOverlayResizeForKeyboardNavigation()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
+            .accessibilityIdentifier("menubar.focus-pet-resize")
             Divider()
-            Button("检查连接") {
+            Button(APCLocalization.text(.appActionCheckConnections)) {
+                guard performsActions else { return }
                 store.selection = .connections
                 store.checkAllConnections()
                 store.presentMainWindow()
             }
+            .disabled(store.connectionOperationState.isRunning)
+            .accessibilityIdentifier("menubar.check-connections")
             Divider()
             Button(APCLocalization.text(.appActionQuit)) {
+                guard performsActions else { return }
+                if AppSingleInstanceCoordinator.shared.claim == .primary {
+                    AppDiagnostics.shared.log(
+                        .notice,
+                        category: "lifecycle",
+                        event: "quit_requested"
+                    )
+                }
                 NSApplication.shared.terminate(nil)
             }
-        } label: {
-            AppStatusItemLabel(store: store)
+            .accessibilityIdentifier("menubar.quit")
+        }
+    }
+}
+
+private struct AboutWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button(APCLocalization.text(.appActionAbout)) {
+                openWindow(id: "about")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+    }
+}
+
+private struct ControlCenterCommands: Commands {
+    let store: AppStore
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button(APCLocalization.text(.appActionOpenControlCenter)) {
+                store.presentMainWindow()
+            }
+            .keyboardShortcut("0", modifiers: [.command])
+
+            Button(APCLocalization.text(.appActionTogglePet)) {
+                store.toggleOverlay()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            Button(APCLocalization.text(.appActionFocusPetSessions)) {
+                store.focusOverlayBubbleForKeyboardNavigation()
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
+            .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
+
+            Button(APCLocalization.text(.appActionFocusPetResize)) {
+                store.focusOverlayResizeForKeyboardNavigation()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
+
+            Divider()
+
+            Button(APCLocalization.text(.navigationDiagnostics)) {
+                store.selection = .diagnostics
+                store.presentMainWindow()
+            }
+
+            Button(APCLocalization.text(.appActionCheckConnections)) {
+                store.selection = .connections
+                store.checkAllConnections()
+                store.presentMainWindow()
+            }
+            .disabled(store.connectionOperationState.isRunning)
+        }
+    }
+}
+
+private enum MenuBarSummary {
+    static func short(_ value: String, maximumCharacters: Int = 18) -> String {
+        guard value.count > maximumCharacters else { return value }
+        return String(value.prefix(maximumCharacters - 1)) + "…"
+    }
+}
+
+private enum MenuBarLocalizedSummary {
+    static func recentEvent(_ event: AgentEvent?) -> String {
+        guard let event else { return APCLocalization.text(.appStateNoRecentActivity) }
+        return "\(event.source.shortTitle) · \(APCLocalizedPresentation.eventTitle(event.eventType))"
+    }
+
+    static func petCore(_ runtimeInfo: PetCoreRuntimeInfo) -> String {
+        switch runtimeInfo.phase {
+        case .checking:
+            APCLocalization.text(.appStatePetCoreChecking)
+        case .running:
+            runtimeInfo.version.map {
+                APCLocalization.format(.servicePetCoreRunningVersionFormat, $0)
+            } ?? APCLocalization.text(.appStatePetCoreRunning)
+        case .failed:
+            APCLocalization.text(.appStatePetCoreFailed)
         }
     }
 }
@@ -159,7 +347,7 @@ private struct AppStatusItemLabel: View {
     @ObservedObject var store: AppStore
 
     var body: some View {
-        Label("Agent Pet", systemImage: "pawprint.fill")
+        APCBrandMark(size: 18)
             .onAppear {
                 store.setMainWindowPresenter {
                     openWindow(id: "main")
@@ -177,5 +365,57 @@ private struct MainWindowContent: View {
             .environmentObject(store)
             .frame(minWidth: 760, minHeight: 520)
             .apcAppearanceTheme(store.behavior.appearanceTheme)
+            .background {
+                ZStack {
+                    InitialAppearanceWindowGateView(
+                        readiness: store.initialAppearanceReadiness,
+                        theme: store.behavior.appearanceTheme
+                    )
+                    ControlCenterWindowRegistrationView(store: store)
+                }
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            }
+    }
+}
+
+private struct ControlCenterWindowRegistrationView: NSViewRepresentable {
+    let store: AppStore
+
+    func makeNSView(context: Context) -> ControlCenterWindowRegistrationHostView {
+        ControlCenterWindowRegistrationHostView(store: store)
+    }
+
+    func updateNSView(
+        _ nsView: ControlCenterWindowRegistrationHostView,
+        context: Context
+    ) {
+        nsView.store = store
+        nsView.registerWindowIfAvailable()
+    }
+}
+
+@MainActor
+private final class ControlCenterWindowRegistrationHostView: NSView {
+    weak var store: AppStore?
+
+    init(store: AppStore) {
+        self.store = store
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        registerWindowIfAvailable()
+    }
+
+    func registerWindowIfAvailable() {
+        guard let window else { return }
+        store?.registerControlCenterWindow(window)
     }
 }

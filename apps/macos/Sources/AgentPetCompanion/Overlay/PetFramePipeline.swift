@@ -42,22 +42,39 @@ struct PetDecodedFrame: @unchecked Sendable {
     let pixelWidth: Int
     let pixelHeight: Int
     let visibleBounds: CGRect
+    let alphaMask: OverlayPetAlphaMask?
+    let hitTestIdentity: UUID
     let byteCost: Int
 
     init(
         image: CIImage,
         pixelWidth: Int,
         pixelHeight: Int,
-        visibleBounds: CGRect? = nil
+        visibleBounds: CGRect? = nil,
+        alphaMask: OverlayPetAlphaMask? = nil,
+        hitTestIdentity: UUID = UUID()
     ) {
         self.image = image
-        self.pixelWidth = max(0, pixelWidth)
-        self.pixelHeight = max(0, pixelHeight)
-        let extent = CGRect(x: 0, y: 0, width: self.pixelWidth, height: self.pixelHeight)
+        let resolvedPixelWidth = max(0, pixelWidth)
+        let resolvedPixelHeight = max(0, pixelHeight)
+        self.pixelWidth = resolvedPixelWidth
+        self.pixelHeight = resolvedPixelHeight
+        let extent = CGRect(x: 0, y: 0, width: resolvedPixelWidth, height: resolvedPixelHeight)
         self.visibleBounds = visibleBounds.map { $0.intersection(extent) } ?? extent
-        let (pixels, pixelOverflow) = self.pixelWidth.multipliedReportingOverflow(by: self.pixelHeight)
-        let (bytes, byteOverflow) = pixels.multipliedReportingOverflow(by: 4)
-        byteCost = pixelOverflow || byteOverflow ? Int.max : bytes
+        self.alphaMask = alphaMask.flatMap { mask in
+            mask.pixelWidth == resolvedPixelWidth && mask.pixelHeight == resolvedPixelHeight
+                ? mask
+                : nil
+        }
+        self.hitTestIdentity = hitTestIdentity
+        let (pixels, pixelOverflow) = resolvedPixelWidth.multipliedReportingOverflow(
+            by: resolvedPixelHeight
+        )
+        let (rgbaBytes, rgbaOverflow) = pixels.multipliedReportingOverflow(by: 4)
+        let (totalBytes, totalOverflow) = rgbaBytes.addingReportingOverflow(
+            self.alphaMask?.storageByteCount ?? 0
+        )
+        byteCost = pixelOverflow || rgbaOverflow || totalOverflow ? Int.max : totalBytes
     }
 
     var extent: CGRect {
@@ -357,23 +374,40 @@ actor PetFramePipeline {
         else {
             return nil
         }
+        let alphaAnalysis = alphaAnalysis(of: image)
         return PetDecodedFrame(
             image: CIImage(cgImage: image),
             pixelWidth: image.width,
             pixelHeight: image.height,
-            visibleBounds: alphaVisibleBounds(of: image)
+            visibleBounds: alphaAnalysis.visibleBounds,
+            alphaMask: alphaAnalysis.mask
         )
     }
 
     nonisolated static func alphaVisibleBounds(of image: CGImage) -> CGRect {
+        alphaAnalysis(of: image).visibleBounds
+    }
+
+    nonisolated static func alphaHitTestMask(of image: CGImage) -> OverlayPetAlphaMask? {
+        alphaAnalysis(of: image).mask
+    }
+
+    private struct AlphaAnalysis {
+        var visibleBounds: CGRect
+        var mask: OverlayPetAlphaMask?
+    }
+
+    private nonisolated static func alphaAnalysis(of image: CGImage) -> AlphaAnalysis {
         let width = image.width
         let height = image.height
-        guard width > 0, height > 0 else { return .zero }
+        guard width > 0, height > 0 else {
+            return AlphaAnalysis(visibleBounds: .zero, mask: nil)
+        }
 
         let bytesPerPixel = 4
         let bytesPerRow = width * bytesPerPixel
         var rgba = [UInt8](repeating: 0, count: bytesPerRow * height)
-        let bounds = rgba.withUnsafeMutableBytes { buffer -> CGRect in
+        let analysis = rgba.withUnsafeMutableBytes { buffer -> AlphaAnalysis in
             guard let context = CGContext(
                 data: buffer.baseAddress,
                 width: width,
@@ -384,35 +418,61 @@ actor PetFramePipeline {
                 bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
                     | CGImageAlphaInfo.premultipliedLast.rawValue
             ) else {
-                return CGRect(x: 0, y: 0, width: width, height: height)
+                return AlphaAnalysis(
+                    visibleBounds: CGRect(x: 0, y: 0, width: width, height: height),
+                    mask: nil
+                )
             }
             context.clear(CGRect(x: 0, y: 0, width: width, height: height))
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
             let pixels = buffer.bindMemory(to: UInt8.self)
+            guard let maskByteCount = OverlayPetAlphaMask.requiredByteCount(
+                pixelWidth: width,
+                pixelHeight: height
+            ) else {
+                return AlphaAnalysis(
+                    visibleBounds: CGRect(x: 0, y: 0, width: width, height: height),
+                    mask: nil
+                )
+            }
+            var opaqueBits = [UInt8](repeating: 0, count: maskByteCount)
             var minX = width
             var minY = height
             var maxX = -1
             var maxY = -1
             for y in 0..<height {
                 let rowStart = y * bytesPerRow
-                for x in 0..<width where pixels[rowStart + x * bytesPerPixel + 3] > 2 {
+                for x in 0..<width where pixels[rowStart + x * bytesPerPixel + 3]
+                    > OverlayPetAlphaMask.interactionAlphaThreshold {
+                    let pixelIndex = y * width + x
+                    opaqueBits[pixelIndex >> 3] |= UInt8(1 << (pixelIndex & 7))
                     minX = min(minX, x)
                     minY = min(minY, y)
                     maxX = max(maxX, x)
                     maxY = max(maxY, y)
                 }
             }
-            guard maxX >= minX, maxY >= minY else { return .zero }
+            let mask = OverlayPetAlphaMask(
+                pixelWidth: width,
+                pixelHeight: height,
+                opaqueBits: opaqueBits
+            )
+            guard maxX >= minX, maxY >= minY else {
+                return AlphaAnalysis(visibleBounds: .zero, mask: mask)
+            }
             let bottomOriginMinY = height - 1 - maxY
-            return CGRect(
-                x: minX,
-                y: bottomOriginMinY,
-                width: maxX - minX + 1,
-                height: maxY - minY + 1
+            return AlphaAnalysis(
+                visibleBounds: CGRect(
+                    x: minX,
+                    y: bottomOriginMinY,
+                    width: maxX - minX + 1,
+                    height: maxY - minY + 1
+                ),
+                mask: mask
             )
         }
-        return bounds
+        return analysis
     }
 }
 
@@ -423,6 +483,18 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
         var missingRingIndex: Int?
         var shouldPauseAfterDraw: Bool
         var generation: UUID
+        var stateEntryID: String
+
+        var frameHitTest: OverlayPetFrameHitTest? {
+            guard let frame, let alphaMask = frame.alphaMask else { return nil }
+            let resolvedCanvas = canvasExtent.isEmpty ? frame.extent : canvasExtent
+            guard !resolvedCanvas.isEmpty else { return nil }
+            return OverlayPetFrameHitTest(
+                frameID: frame.hitTestIdentity,
+                canvasSize: resolvedCanvas.size,
+                alphaMask: alphaMask
+            )
+        }
     }
 
     private struct State {
@@ -448,6 +520,24 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             playback: FramePlaybackState(stateID: stateID, enteredAt: enteredAt),
             priorFrame: prior,
             lastFrame: nil
+        )
+        lock.unlock()
+    }
+
+    func restartPlayback(stateID: String, enteredAt: TimeInterval) {
+        lock.lock()
+        state.playback = FramePlaybackState(stateID: stateID, enteredAt: enteredAt)
+        state.lastFrame = nil
+        lock.unlock()
+    }
+
+    /// Changes the semantic owner of the already-presented one-shot frame
+    /// without rewinding its playback clock or discarding its final frame.
+    func relabelPlayback(stateID: String) {
+        lock.lock()
+        state.playback = FramePlaybackState(
+            stateID: stateID,
+            enteredAt: state.playback.enteredAt
         )
         lock.unlock()
     }
@@ -495,7 +585,8 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
                 canvasExtent: state.priorFrame?.extent ?? .zero,
                 missingRingIndex: nil,
                 shouldPauseAfterDraw: false,
-                generation: state.generation
+                generation: state.generation,
+                stateEntryID: state.playback.stateID
             )
         }
 
@@ -520,7 +611,8 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             missingRingIndex: prepared.sourceKind == .ring && exactFrame == nil ? index : nil,
             shouldPauseAfterDraw: exactFrame != nil
                 && state.playback.hasCompleted(at: time, scheduler: scheduler),
-            generation: state.generation
+            generation: state.generation,
+            stateEntryID: state.playback.stateID
         )
     }
 }
@@ -710,13 +802,286 @@ private final class PetFramePrefetchGate: @unchecked Sendable {
     }
 }
 
+struct PetPlaybackEntryTransition: Equatable, Sendable {
+    var isNewEntry: Bool
+    var shouldRestartPlayback: Bool
+}
+
+enum PetMotionPresentation {
+    static func playbackTime(
+        now: CFTimeInterval,
+        enteredAt: CFTimeInterval,
+        reduceMotion: Bool
+    ) -> CFTimeInterval {
+        reduceMotion ? enteredAt : now
+    }
+
+    static func shouldPauseAfterRepresentativeFrame(
+        reduceMotion: Bool,
+        frameCount: Int
+    ) -> Bool {
+        reduceMotion || frameCount <= 1
+    }
+}
+
+struct PetFramePresentationContext: Equatable, Sendable {
+    var renderGeneration: UUID
+    var stateEntryID: String
+}
+
+struct PetFramePresentationToken: Equatable, Sendable {
+    let epoch: UInt64
+    let sequence: UInt64
+    let context: PetFramePresentationContext
+}
+
+enum PetFramePresentationResolution: Equatable, Sendable {
+    /// The drawable reached its presentation callback. A nil hit test is a
+    /// real presentation result (for example, an all-transparent or
+    /// mask-less frame), not an absent callback.
+    case presented(OverlayPetFrameHitTest?)
+    /// The command buffer did not complete successfully. Because that
+    /// drawable was not presented, the previously presented frame (and its
+    /// mask) remains authoritative.
+    case failed
+    /// Metal reported a presented callback without a nonzero on-screen
+    /// presentation time, which means the drawable was skipped.
+    case skipped
+
+    var hitTest: OverlayPetFrameHitTest? {
+        switch self {
+        case let .presented(hitTest): hitTest
+        case .failed, .skipped: nil
+        }
+    }
+}
+
+enum PetFramePresentationDecision: Equatable, Sendable {
+    case rejected
+    case acceptedUnchanged
+    case publish(OverlayPetFrameHitTest?)
+}
+
+struct PetFramePresentationSnapshot: Equatable, Sendable {
+    let epoch: UInt64
+    let latestAcceptedSequence: UInt64?
+    let context: PetFramePresentationContext?
+    let hitTest: OverlayPetFrameHitTest?
+}
+
+/// Thread-safe ordering gate between MTKView's draw path, Metal's callback
+/// queues, and the MainActor-owned overlay model. Tokens are reserved only for
+/// the currently activated handoff context. Resolution is deliberately
+/// MainActor-only so no callback queue can directly mutate AppStore state.
+final class PetFramePresentationCoordinator: @unchecked Sendable {
+    private struct State {
+        var epoch: UInt64 = 0
+        var nextSequence: UInt64 = 0
+        var latestAcceptedSequence: UInt64?
+        var context: PetFramePresentationContext?
+        var hitTest: OverlayPetFrameHitTest?
+    }
+
+    private let lock = NSLock()
+    private var state = State()
+
+    /// Invalidates every in-flight callback and clears the interaction mask.
+    /// The renderer calls this before changing the handoff state, leaving no
+    /// interval in which an old lookup can reserve a token for the new epoch.
+    @MainActor
+    @discardableResult
+    func invalidate() -> PetFramePresentationSnapshot {
+        withLock { state in
+            state.epoch = Self.incrementing(state.epoch)
+            state.latestAcceptedSequence = nil
+            state.context = nil
+            state.hitTest = nil
+            return Self.snapshot(of: state)
+        }
+    }
+
+    /// Activates the exact generation/state pair that draw lookups must
+    /// report. Activation owns a fresh epoch even when a decoded generation is
+    /// reused for another semantic state entry.
+    @MainActor
+    @discardableResult
+    func activate(
+        _ context: PetFramePresentationContext
+    ) -> PetFramePresentationSnapshot {
+        withLock { state in
+            state.epoch = Self.incrementing(state.epoch)
+            state.latestAcceptedSequence = nil
+            state.context = context
+            state.hitTest = nil
+            return Self.snapshot(of: state)
+        }
+    }
+
+    /// Assigns a globally monotonic submission sequence. A lookup produced
+    /// before or during reconfiguration cannot reserve against the new epoch
+    /// because its handoff context will not match.
+    func reserve(
+        for observedContext: PetFramePresentationContext
+    ) -> PetFramePresentationToken? {
+        withLock { state in
+            guard state.context == observedContext else { return nil }
+            state.nextSequence = Self.incrementing(state.nextSequence)
+            return PetFramePresentationToken(
+                epoch: state.epoch,
+                sequence: state.nextSequence,
+                context: observedContext
+            )
+        }
+    }
+
+    /// Accepts only a still-current epoch/context and a newer presentation
+    /// sequence. A successfully presented sequence advances even when its
+    /// resolved mask is nil or equal to the current mask, preventing a late
+    /// older callback from restoring stale interaction geometry.
+    @MainActor
+    func resolve(
+        _ resolution: PetFramePresentationResolution,
+        token: PetFramePresentationToken
+    ) -> PetFramePresentationDecision {
+        withLock { state in
+            guard token.epoch == state.epoch,
+                  token.context == state.context
+            else {
+                return .rejected
+            }
+
+            // A failed command buffer never presented its drawable. Do not
+            // let its higher submission sequence suppress an older callback
+            // that did actually present, and do not clear the still-visible
+            // prior frame's mask.
+            switch resolution {
+            case .failed, .skipped:
+                return token.sequence > (state.latestAcceptedSequence ?? 0)
+                    ? .acceptedUnchanged
+                    : .rejected
+            case .presented:
+                break
+            }
+
+            guard token.sequence > (state.latestAcceptedSequence ?? 0) else {
+                return .rejected
+            }
+
+            state.latestAcceptedSequence = token.sequence
+            let resolvedHitTest = resolution.hitTest
+            guard resolvedHitTest != state.hitTest else {
+                return .acceptedUnchanged
+            }
+            state.hitTest = resolvedHitTest
+            return .publish(resolvedHitTest)
+        }
+    }
+
+    @MainActor
+    var snapshot: PetFramePresentationSnapshot {
+        withLock { Self.snapshot(of: $0) }
+    }
+
+    @MainActor
+    func replayCurrent(
+        to handler: @MainActor (OverlayPetFrameHitTest?) -> Void
+    ) {
+        // Read under the coordinator lock, then invoke outside it so a handler
+        // can synchronously trigger layout without re-entering the lock.
+        handler(snapshot.hitTest)
+    }
+
+    private func withLock<Result>(
+        _ body: (inout State) -> Result
+    ) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&state)
+    }
+
+    private static func snapshot(of state: State) -> PetFramePresentationSnapshot {
+        PetFramePresentationSnapshot(
+            epoch: state.epoch,
+            latestAcceptedSequence: state.latestAcceptedSequence,
+            context: state.context,
+            hitTest: state.hitTest
+        )
+    }
+
+    private static func incrementing(_ value: UInt64) -> UInt64 {
+        precondition(value < .max, "Pet frame presentation counter exhausted")
+        return value + 1
+    }
+}
+
+/// Remembers recently entered one-shot animations so canonical A/B/A session
+/// rotation does not replay A's animation. Looping states intentionally retain
+/// the renderer's current-entry behavior and are never suppressed by history.
+struct PetPlaybackEntryHistory: Sendable {
+    private let capacity: Int
+    private(set) var currentEntryID: String?
+    private var enteredOneShotEntryIDs: Set<String> = []
+    private var oneShotEntryOrder: [String] = []
+
+    init(capacity: Int = 64) {
+        self.capacity = max(1, capacity)
+    }
+
+    mutating func transition(
+        to entryID: String,
+        loops: Bool
+    ) -> PetPlaybackEntryTransition {
+        guard entryID != currentEntryID else {
+            return PetPlaybackEntryTransition(
+                isNewEntry: false,
+                shouldRestartPlayback: false
+            )
+        }
+        currentEntryID = entryID
+
+        guard !loops else {
+            return PetPlaybackEntryTransition(
+                isNewEntry: true,
+                shouldRestartPlayback: true
+            )
+        }
+        guard enteredOneShotEntryIDs.insert(entryID).inserted else {
+            return PetPlaybackEntryTransition(
+                isNewEntry: true,
+                shouldRestartPlayback: false
+            )
+        }
+
+        oneShotEntryOrder.append(entryID)
+        if oneShotEntryOrder.count > capacity {
+            let evicted = oneShotEntryOrder.removeFirst()
+            enteredOneShotEntryIDs.remove(evicted)
+        }
+        return PetPlaybackEntryTransition(
+            isNewEntry: true,
+            shouldRestartPlayback: true
+        )
+    }
+}
+
 final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecycle, @unchecked Sendable {
+    private struct PresentationConfigurationIdentity: Equatable, Sendable {
+        var assetKey: String
+        var stateEntryID: String
+        var active: Bool
+    }
+
     private struct Configuration: Sendable {
         var pet: PetSummary
         var stateName: String
         var stateEntryID: String
         var fpsProfile: FpsProfile
         var active: Bool
+        var reduceMotion: Bool
+
+        var loops: Bool {
+            stateName != "start" && stateName != "done"
+        }
 
         var assetKey: String {
             [
@@ -726,9 +1091,17 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 pet.createdAt,
                 pet.quality.rawValue,
                 stateName,
-                stateEntryID,
-                fpsProfile.rawValue
+                fpsProfile.rawValue,
+                reduceMotion ? "reduced-motion" : "motion"
             ].joined(separator: ":")
+        }
+
+        var presentationIdentity: PresentationConfigurationIdentity {
+            PresentationConfigurationIdentity(
+                assetKey: assetKey,
+                stateEntryID: stateEntryID,
+                active: active
+            )
         }
     }
 
@@ -736,11 +1109,13 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     private let handoff = PetFrameRenderHandoff()
     private let prefetchGate = PetFramePrefetchGate()
     private let renderMetrics = PetRenderMetrics()
+    private let presentationCoordinator = PetFramePresentationCoordinator()
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
     private var ciContext: CIContext?
     private var currentAssetKey = ""
+    private var playbackEntryHistory = PetPlaybackEntryHistory()
     private var generation = UUID()
     private var loadTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
@@ -751,6 +1126,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     private var hasPublishedCurrentEntry = false
     private var visualEnvelopeHandler: ((OverlayPetVisualEnvelope?) -> Void)?
     private var publishedVisualEnvelope: OverlayPetVisualEnvelope?
+    private var frameHitTestHandler: (@MainActor (OverlayPetFrameHitTest?) -> Void)?
 
     @MainActor
     func makeView() -> MTKView {
@@ -784,17 +1160,29 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         stateEntryID: String,
         fpsProfile: FpsProfile,
         active: Bool,
-        onVisualEnvelopeChanged: @escaping (OverlayPetVisualEnvelope?) -> Void
+        reduceMotion: Bool,
+        onVisualEnvelopeChanged: @escaping (OverlayPetVisualEnvelope?) -> Void,
+        onFrameHitTestChanged: @escaping @MainActor (OverlayPetFrameHitTest?) -> Void = { _ in }
     ) {
         let configuration = Configuration(
             pet: pet,
             stateName: stateName,
             stateEntryID: stateEntryID,
             fpsProfile: fpsProfile,
-            active: active
+            active: active,
+            reduceMotion: reduceMotion
         )
+        let isPresentationReconfiguration = lastConfiguration?.presentationIdentity
+            != configuration.presentationIdentity
+        if isPresentationReconfiguration {
+            // Invalidate before replacing the handoff state or callback. This
+            // prevents both an old Metal callback and the new SwiftUI closure
+            // from relabelling a stale frame as the new semantic entry.
+            invalidateFramePresentations(notifyHandler: false)
+        }
         visualEnvelopeHandler = onVisualEnvelopeChanged
         lastConfiguration = configuration
+        setFrameHitTestHandler(onFrameHitTestChanged)
         view.preferredFramesPerSecond = fpsProfile.fps
 
         guard active else {
@@ -804,26 +1192,76 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             return
         }
 
-        let isNewEntry = configuration.assetKey != currentAssetKey
-        guard isNewEntry || suspended else { return }
-        currentAssetKey = configuration.assetKey
-        suspended = false
-        if isNewEntry {
-            hasPublishedCurrentEntry = false
-            publishedVisualEnvelope = nil
-            visualEnvelopeHandler?(nil)
-        }
-        beginLoading(
-            configuration,
-            in: view,
-            resetsPlayback: isNewEntry || !hasPublishedCurrentEntry
+        let isNewAsset = configuration.assetKey != currentAssetKey
+        let playbackTransition = playbackEntryHistory.transition(
+            to: configuration.stateEntryID,
+            loops: configuration.loops
         )
+        guard isNewAsset || playbackTransition.isNewEntry || suspended else { return }
+        currentAssetKey = configuration.assetKey
+        let wasSuspended = suspended
+        suspended = false
+        if isNewAsset {
+            hasPublishedCurrentEntry = false
+        }
+        if isNewAsset || wasSuspended {
+            beginLoading(
+                configuration,
+                in: view,
+                resetsPlayback: playbackTransition.shouldRestartPlayback
+                    || !hasPublishedCurrentEntry
+            )
+            return
+        }
+
+        guard playbackTransition.shouldRestartPlayback else {
+            // A previously seen one-shot must remain on its final frame. Give
+            // that already-decoded frame the new semantic entry identity and
+            // submit it once so the new epoch receives a real presented
+            // callback without replaying the animation.
+            handoff.relabelPlayback(stateID: configuration.stateEntryID)
+            activateFramePresentations(
+                generation: generation,
+                stateEntryID: configuration.stateEntryID
+            )
+            view.isPaused = false
+            view.draw()
+            return
+        }
+
+        // The same visual state may receive many hook events. Restart one-shot
+        // playback when its semantic entry changes, but keep decoded frames and
+        // the visual envelope in place so the pet and bubble do not jump.
+        playbackEnteredAt = CACurrentMediaTime()
+        handoff.restartPlayback(
+            stateID: configuration.stateEntryID,
+            enteredAt: playbackEnteredAt
+        )
+        activateFramePresentations(
+            generation: generation,
+            stateEntryID: configuration.stateEntryID
+        )
+        renderMetrics.reset()
+        view.isPaused = false
+        view.draw()
     }
 
     @MainActor
     func suspendPipeline() {
         suspended = true
+        invalidateFramePresentations(notifyHandler: true)
         cancelLoading(releaseFrames: true)
+    }
+
+    @MainActor
+    func dismantlePipeline() {
+        suspended = true
+        // A successor representable with the same pet/state may already have
+        // installed its handler. Invalidate this renderer's callbacks without
+        // sending a teardown nil that could clear the successor's mask.
+        invalidateFramePresentations(notifyHandler: false)
+        cancelLoading(releaseFrames: true)
+        frameHitTestHandler = nil
     }
 
     @MainActor
@@ -846,9 +1284,27 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
 
-        clear(drawable: drawable, commandBuffer: commandBuffer)
-        let lookup = handoff.lookup(at: CACurrentMediaTime())
+        let now = CACurrentMediaTime()
+        let lookup = handoff.lookup(at: PetMotionPresentation.playbackTime(
+            now: now,
+            enteredAt: playbackEnteredAt,
+            reduceMotion: lastConfiguration?.reduceMotion ?? false
+        ))
+        let presentationContext = PetFramePresentationContext(
+            renderGeneration: lookup.generation,
+            stateEntryID: lookup.stateEntryID
+        )
+        guard let presentationToken = presentationCoordinator.reserve(
+            for: presentationContext
+        ) else {
+            // Reconfiguration may race a display-link callback. Do not submit
+            // that mismatched lookup; the newly activated context will request
+            // its own draw.
+            return
+        }
 
+        clear(drawable: drawable, commandBuffer: commandBuffer)
+        let presentedFrameHitTest: OverlayPetFrameHitTest?
         if let decoded = lookup.frame, let ciContext {
             render(
                 decoded.image,
@@ -858,8 +1314,29 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 context: ciContext,
                 drawableSize: view.drawableSize
             )
+            presentedFrameHitTest = lookup.frameHitTest
+        } else {
+            presentedFrameHitTest = nil
         }
 
+        // A successful command-buffer completion only means the GPU work
+        // finished. Publish from the drawable's presented callback so pointer
+        // geometry follows the frame that actually reached the display.
+        drawable.addPresentedHandler { [weak self] presentedDrawable in
+            self?.enqueueFramePresentationResolution(
+                presentedDrawable.presentedTime > 0
+                    ? .presented(presentedFrameHitTest)
+                    : .skipped,
+                token: presentationToken
+            )
+        }
+        commandBuffer.addCompletedHandler { [weak self] completedBuffer in
+            guard completedBuffer.status != .completed else { return }
+            self?.enqueueFramePresentationResolution(
+                .failed,
+                token: presentationToken
+            )
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         renderMetrics.recordDraw(
@@ -871,7 +1348,32 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             requestPrefetch(index: missingIndex, generation: lookup.generation, in: view)
         }
         if lookup.shouldPauseAfterDraw {
+            // This is a display-link pause, not a renderer suspension. The
+            // final drawable's token remains valid until its presented
+            // callback publishes the final frame mask.
             view.isPaused = true
+        }
+    }
+
+    nonisolated private func enqueueFramePresentationResolution(
+        _ resolution: PetFramePresentationResolution,
+        token: PetFramePresentationToken
+    ) {
+        Task { @MainActor [weak self] in
+            self?.resolveFramePresentation(resolution, token: token)
+        }
+    }
+
+    @MainActor
+    private func resolveFramePresentation(
+        _ resolution: PetFramePresentationResolution,
+        token: PetFramePresentationToken
+    ) {
+        if case let .publish(hitTest) = presentationCoordinator.resolve(
+            resolution,
+            token: token
+        ) {
+            frameHitTestHandler?(hitTest)
         }
     }
 
@@ -884,12 +1386,11 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         cancelLoading(releaseFrames: false)
         generation = UUID()
         let loadGeneration = generation
-        let loops = configuration.stateName != "start" && configuration.stateName != "done"
         let request = PetFrameLoadRequest(
             pet: configuration.pet,
             stateName: configuration.stateName,
             fps: configuration.fpsProfile.fps,
-            loops: loops
+            loops: configuration.loops
         )
         if resetsPlayback {
             playbackEnteredAt = CACurrentMediaTime()
@@ -898,6 +1399,10 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             generation: loadGeneration,
             stateID: configuration.stateEntryID,
             enteredAt: playbackEnteredAt
+        )
+        activateFramePresentations(
+            generation: loadGeneration,
+            stateEntryID: configuration.stateEntryID
         )
         renderMetrics.reset()
         view.isPaused = false
@@ -928,7 +1433,11 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                     cacheMetrics: cacheMetrics
                 )
                 self.scheduleTelemetry(telemetry)
-                view.isPaused = !configuration.active || prepared.frameCount <= 1
+                view.isPaused = !configuration.active
+                    || PetMotionPresentation.shouldPauseAfterRepresentativeFrame(
+                        reduceMotion: configuration.reduceMotion,
+                        frameCount: prepared.frameCount
+                    )
                 view.draw()
             } catch is CancellationError {
                 // A newer pet/state owns the renderer now.
@@ -1053,6 +1562,37 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
         descriptor.colorAttachments[0].storeAction = .store
         commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)?.endEncoding()
+    }
+
+    @MainActor
+    private func setFrameHitTestHandler(
+        _ handler: @escaping @MainActor (OverlayPetFrameHitTest?) -> Void
+    ) {
+        frameHitTestHandler = handler
+        // SwiftUI may replace the closure without changing the renderer
+        // configuration. Replay only the coordinator's last accepted
+        // presentation, never a fresh playback lookup.
+        presentationCoordinator.replayCurrent(to: handler)
+    }
+
+    @MainActor
+    private func activateFramePresentations(
+        generation: UUID,
+        stateEntryID: String
+    ) {
+        presentationCoordinator.activate(PetFramePresentationContext(
+            renderGeneration: generation,
+            stateEntryID: stateEntryID
+        ))
+        frameHitTestHandler?(nil)
+    }
+
+    @MainActor
+    private func invalidateFramePresentations(notifyHandler: Bool) {
+        presentationCoordinator.invalidate()
+        if notifyHandler {
+            frameHitTestHandler?(nil)
+        }
     }
 
     @MainActor

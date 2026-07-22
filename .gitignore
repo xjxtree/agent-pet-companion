@@ -35,6 +35,9 @@ __pycache__/
 
 # Generated pet assets
 *.petpack
+!apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/
+!apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/pet_xingwutuanzi.petpack
+!apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/pet_bytebudcodex.petpack
 *.job.jsonl
 generation-jobs/
 .agent-pet-companion/

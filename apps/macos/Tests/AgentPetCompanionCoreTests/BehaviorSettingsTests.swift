@@ -12,6 +12,7 @@ struct BehaviorSettingsTests {
         next.appearanceTheme = .dark
         next.bubbleTransparency = 0.75
         next.sessionMessageTimeoutMinutes = 30
+        next.sessionGroupDisplay = .expanded
         next.sources[.codex] = false
         next.events[.tool] = false
 
@@ -26,6 +27,7 @@ struct BehaviorSettingsTests {
         #expect(object["appearance_theme"] as? String == "dark")
         #expect(object["bubble_transparency"] as? Double == 0.75)
         #expect(object["session_message_timeout_minutes"] as? Int == 30)
+        #expect(object["session_group_display"] as? String == "expanded")
         let sources = try #require(object["sources"] as? [String: Any])
         let events = try #require(object["events"] as? [String: Any])
         #expect(sources.count == 1)
@@ -49,18 +51,39 @@ struct BehaviorSettingsTests {
 
         #expect(legacy.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
         #expect(legacy.appearanceTheme == .system)
+        #expect(legacy.sessionGroupDisplay == .stacked)
         #expect(tooTransparent.bubbleTransparency == 1)
         #expect(BehaviorSettings.clampedBubbleTransparency(-2) == 0)
     }
 
     @Test
-    func appearanceThemeRoundTripsWithoutChangingTransparency() throws {
-        let behavior = BehaviorSettings(appearanceTheme: .light, bubbleTransparency: 0.35)
+    func appearanceAndSessionGroupingRoundTripWithoutChangingTransparency() throws {
+        let behavior = BehaviorSettings(
+            appearanceTheme: .light,
+            bubbleTransparency: 0.35,
+            sessionGroupDisplay: .expanded
+        )
         let data = try JSONEncoder().encode(behavior)
         let decoded = try JSONDecoder().decode(BehaviorSettings.self, from: data)
 
         #expect(decoded.appearanceTheme == .light)
         #expect(decoded.bubbleTransparency == 0.35)
+        #expect(decoded.sessionGroupDisplay == .expanded)
+        #expect(SessionGroupDisplay.allCases.map(\.title) == ["堆叠", "展开"])
+    }
+
+    @Test
+    func sessionGroupingPatchDecodesAndEncodesItsJSONKey() throws {
+        let data = Data(#"{"session_group_display":"expanded"}"#.utf8)
+        let patch = try JSONDecoder().decode(BehaviorSettingsPatch.self, from: data)
+
+        #expect(patch.sessionGroupDisplay == .expanded)
+        #expect(!patch.isEmpty)
+
+        let encoded = try JSONEncoder().encode(patch)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object.count == 1)
+        #expect(object["session_group_display"] as? String == "expanded")
     }
 
     @Test

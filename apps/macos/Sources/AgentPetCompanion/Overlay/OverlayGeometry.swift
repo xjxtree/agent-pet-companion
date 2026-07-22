@@ -1,6 +1,8 @@
 import AppKit
 import AgentPetCompanionCore
+import Combine
 import CoreGraphics
+import Foundation
 
 struct OverlayDisplayGeometry: Equatable, Sendable {
     var frame: CGRect
@@ -13,6 +15,157 @@ struct OverlayPetVisualEnvelope: Equatable, Sendable {
     var visibleBounds: CGRect
 }
 
+/// A one-bit-per-pixel interaction mask extracted while a pet frame is
+/// decoded. Rows are stored in the same top-to-bottom order as the source
+/// `CGImage`; callers query it with bottom-left image coordinates so the
+/// conversion to the Metal renderer's coordinate system stays explicit.
+struct OverlayPetAlphaMask: Equatable, Sendable {
+    static let interactionAlphaThreshold: UInt8 = 2
+
+    let pixelWidth: Int
+    let pixelHeight: Int
+    private let opaqueBits: [UInt8]
+
+    var storageByteCount: Int { opaqueBits.count }
+
+    init?(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        opaqueBits: [UInt8]
+    ) {
+        guard let requiredByteCount = Self.requiredByteCount(
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        ), opaqueBits.count == requiredByteCount else {
+            return nil
+        }
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.opaqueBits = opaqueBits
+    }
+
+    /// Test/support initializer for top-to-bottom, one-byte alpha samples.
+    init?(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        alphaValuesTopToBottom: [UInt8],
+        alphaThreshold: UInt8 = interactionAlphaThreshold
+    ) {
+        guard
+            let pixelCount = Self.pixelCount(pixelWidth: pixelWidth, pixelHeight: pixelHeight),
+            alphaValuesTopToBottom.count == pixelCount,
+            let byteCount = Self.requiredByteCount(
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight
+            )
+        else {
+            return nil
+        }
+        var bits = [UInt8](repeating: 0, count: byteCount)
+        for index in 0..<pixelCount where alphaValuesTopToBottom[index] > alphaThreshold {
+            bits[index >> 3] |= UInt8(1 << (index & 7))
+        }
+        self.init(pixelWidth: pixelWidth, pixelHeight: pixelHeight, opaqueBits: bits)
+    }
+
+    func containsOpaquePixel(atBottomLeftPoint point: CGPoint) -> Bool {
+        guard point.x.isFinite, point.y.isFinite,
+              point.x >= 0, point.y >= 0,
+              point.x < CGFloat(pixelWidth), point.y < CGFloat(pixelHeight) else {
+            return false
+        }
+        let x = Int(point.x.rounded(.down))
+        let bottomRow = Int(point.y.rounded(.down))
+        let topRow = pixelHeight - 1 - bottomRow
+        let index = topRow * pixelWidth + x
+        return opaqueBits[index >> 3] & UInt8(1 << (index & 7)) != 0
+    }
+
+    static func requiredByteCount(pixelWidth: Int, pixelHeight: Int) -> Int? {
+        guard let pixels = pixelCount(pixelWidth: pixelWidth, pixelHeight: pixelHeight) else {
+            return nil
+        }
+        let (adjusted, overflow) = pixels.addingReportingOverflow(7)
+        return overflow ? nil : adjusted / 8
+    }
+
+    private static func pixelCount(pixelWidth: Int, pixelHeight: Int) -> Int? {
+        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let (count, overflow) = pixelWidth.multipliedReportingOverflow(by: pixelHeight)
+        return overflow ? nil : count
+    }
+}
+
+/// Describes the exact decoded frame currently presented by the Metal view.
+/// `frameID` lets the renderer and AppStore coalesce repeated display-link
+/// draws without comparing the mask payload at 12/20 FPS.
+struct OverlayPetFrameHitTest: Equatable, Sendable {
+    let frameID: UUID
+    let canvasSize: CGSize
+    let alphaMask: OverlayPetAlphaMask
+
+    init(
+        frameID: UUID = UUID(),
+        canvasSize: CGSize,
+        alphaMask: OverlayPetAlphaMask
+    ) {
+        self.frameID = frameID
+        self.canvasSize = canvasSize
+        self.alphaMask = alphaMask
+    }
+}
+
+enum OverlayPetAnimationIdentity {
+    static func stateEntryID(for state: ActiveAgentState?) -> String {
+        guard let state else { return "idle" }
+        if let projectedID = nonEmpty(state.overlayDisplay?.stateEntryID) {
+            return projectedID
+        }
+        let event = state.event
+        switch event.eventType {
+        case .start:
+            let activation = nonEmpty(state.sessionActivatedAt)
+                ?? event.id
+            return scopedEntryID(
+                event: event,
+                sessionID: state.sessionID ?? event.sessionID,
+                marker: activation
+            )
+        case .done:
+            let completion = nonEmpty(state.sessionActivatedAt)
+                ?? event.id
+            return scopedEntryID(
+                event: event,
+                sessionID: state.sessionID ?? event.sessionID,
+                marker: completion
+            )
+        case .tool, .waiting, .review, .failed:
+            return event.eventType.rawValue
+        }
+    }
+
+    private static func scopedEntryID(
+        event: AgentEvent,
+        sessionID: String?,
+        marker: String
+    ) -> String {
+        [
+            event.eventType.rawValue,
+            event.source.rawValue,
+            nonEmpty(sessionID),
+            marker
+        ]
+        .compactMap { $0 }
+        .joined(separator: ":")
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
+    }
+
+}
+
 enum OverlayScaleFeedbackVisibility {
     static func isVisible(
         isFocused _: Bool,
@@ -20,6 +173,237 @@ enum OverlayScaleFeedbackVisibility {
         isStepFeedbackVisible: Bool
     ) -> Bool {
         isResizing || isStepFeedbackVisible
+    }
+}
+
+enum OverlayControlVisibility {
+    static let hoverShowDelay = Duration.zero
+    static let hoverHideDelay = Duration.milliseconds(300)
+
+    static func isVisible(
+        pointerNearPet: Bool,
+        petDragInProgress: Bool,
+        resizeInProgress: Bool,
+        keyboardFocusActive: Bool = false
+    ) -> Bool {
+        pointerNearPet || petDragInProgress || resizeInProgress || keyboardFocusActive
+    }
+
+    static func transitionDelay(showing: Bool, forced: Bool) -> Duration {
+        forced ? .zero : (showing ? hoverShowDelay : hoverHideDelay)
+    }
+}
+
+/// Motion values shared by SwiftUI content and the AppKit overlay panels.
+/// They intentionally stay inside the ranges defined by UI-NEXT section 6.5.
+enum OverlayMotion {
+    static let controlFadeDuration: TimeInterval = 0.14
+    static let controlFadeDelay = Duration.milliseconds(140)
+    static let bubbleLayoutDuration: TimeInterval = 0.20
+    static let bubbleLayoutDelay = Duration.milliseconds(200)
+    static let reducedMotionCrossfadeDuration: TimeInterval = 0.16
+    static let reducedMotionCrossfadeDelay = Duration.milliseconds(160)
+    static let reducedMotionCrossfadeHalfDelay = Duration.milliseconds(80)
+}
+
+/// One presentation state coordinates every transient overlay control. Pointer
+/// hover begins the visual fade immediately, while pointer exit is delayed to
+/// avoid flicker between the pet and its controls. Keyboard focus and active
+/// drag/resize interactions remain immediate.
+@MainActor
+final class OverlayControlPresentationState: ObservableObject {
+    typealias TransitionSleeper = @MainActor @Sendable (Duration) async throws -> Void
+
+    enum Region: Hashable {
+        case pet
+        case bubble
+        case menu
+        case resize
+    }
+
+    @Published private(set) var isVisible = false
+    @Published private(set) var keyboardNavigationActive = false
+    var visibilityDidChange: (() -> Void)?
+
+    private var hoveredRegions: Set<Region> = []
+    private var focusedRegions: Set<Region> = []
+    private var activeRegions: Set<Region> = []
+    private var transitionTask: Task<Void, Never>?
+    private let transitionSleeper: TransitionSleeper
+
+    init(
+        transitionSleeper: @escaping TransitionSleeper = { delay in
+            try await Task.sleep(for: delay)
+        }
+    ) {
+        self.transitionSleeper = transitionSleeper
+    }
+
+    func setHovered(_ region: Region, _ hovered: Bool) {
+        update(region, enabled: hovered, in: &hoveredRegions)
+        scheduleVisibilityUpdate()
+    }
+
+    func setFocused(_ region: Region, _ focused: Bool) {
+        update(region, enabled: focused, in: &focusedRegions)
+        let nextKeyboardNavigationActive = !focusedRegions.isEmpty
+        if keyboardNavigationActive != nextKeyboardNavigationActive {
+            keyboardNavigationActive = nextKeyboardNavigationActive
+        }
+        scheduleVisibilityUpdate()
+    }
+
+    func setActive(_ region: Region, _ active: Bool) {
+        update(region, enabled: active, in: &activeRegions)
+        scheduleVisibilityUpdate()
+    }
+
+    func reset() {
+        transitionTask?.cancel()
+        transitionTask = nil
+        hoveredRegions.removeAll()
+        focusedRegions.removeAll()
+        activeRegions.removeAll()
+        keyboardNavigationActive = false
+        setVisible(false)
+    }
+
+    private func update(
+        _ region: Region,
+        enabled: Bool,
+        in regions: inout Set<Region>
+    ) {
+        if enabled {
+            regions.insert(region)
+        } else {
+            regions.remove(region)
+        }
+    }
+
+    private func scheduleVisibilityUpdate() {
+        transitionTask?.cancel()
+        let shouldShow = !hoveredRegions.isEmpty
+            || !focusedRegions.isEmpty
+            || !activeRegions.isEmpty
+        let forced = !focusedRegions.isEmpty || !activeRegions.isEmpty
+        guard shouldShow != isVisible else { return }
+        let delay = OverlayControlVisibility.transitionDelay(
+            showing: shouldShow,
+            forced: forced
+        )
+        if delay == .zero {
+            setVisible(shouldShow)
+            return
+        }
+        let transitionSleeper = transitionSleeper
+        transitionTask = Task { @MainActor [weak self] in
+            do {
+                try await transitionSleeper(delay)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            let latestShouldShow = !self.hoveredRegions.isEmpty
+                || !self.focusedRegions.isEmpty
+                || !self.activeRegions.isEmpty
+            guard latestShouldShow == shouldShow else { return }
+            self.setVisible(shouldShow)
+        }
+    }
+
+    private func setVisible(_ visible: Bool) {
+        guard isVisible != visible else { return }
+        isVisible = visible
+        visibilityDidChange?()
+    }
+}
+
+enum OverlayPetPointerGesture {
+    static let dragThreshold: CGFloat = 3
+
+    static func exceedsDragThreshold(from start: CGPoint, to current: CGPoint) -> Bool {
+        hypot(current.x - start.x, current.y - start.y) > dragThreshold
+    }
+}
+
+enum OverlayPetActivationDestination: Equatable {
+    case session(OverlaySessionContent)
+    case bubble
+    case controlCenter
+
+    static func resolve(
+        activeState: ActiveAgentState?,
+        bubbleDismissed: Bool,
+        hasAvailableBubbleContent: Bool
+    ) -> OverlayPetActivationDestination {
+        resolve(
+            activeSession: activeState.map(OverlaySessionContent.init(state:)),
+            bubbleDismissed: bubbleDismissed,
+            hasAvailableBubbleContent: hasAvailableBubbleContent
+        )
+    }
+
+    static func resolve(
+        activeSession: OverlaySessionContent?,
+        bubbleDismissed _: Bool,
+        hasAvailableBubbleContent: Bool
+    ) -> OverlayPetActivationDestination {
+        if let activeSession {
+            if activeSession.canOpen {
+                return .session(activeSession)
+            }
+            if hasAvailableBubbleContent {
+                return .bubble
+            }
+        }
+        return .controlCenter
+    }
+}
+
+enum OverlayPresentedAgentState {
+    static func resolve(
+        canonicalState: ActiveAgentState?,
+        activeSessions: [ActiveAgentState],
+        dismissedSessionIDs: Set<String>
+    ) -> ActiveAgentState? {
+        if let visible = activeSessions.first(where: {
+            !isDismissed($0, dismissedSessionIDs: dismissedSessionIDs)
+        }) {
+            return visible
+        }
+        guard let canonicalState,
+              !isDismissed(canonicalState, dismissedSessionIDs: dismissedSessionIDs)
+        else {
+            return nil
+        }
+        return canonicalState
+    }
+
+    static func newlyActivatedDismissalIDs(
+        activeSessions: [ActiveAgentState],
+        knownReopenIDs: Set<String>
+    ) -> Set<String> {
+        Set(activeSessions.compactMap { state -> String? in
+            guard !knownReopenIDs.contains(OverlaySessionContent.reopenID(for: state)) else {
+                return nil
+            }
+            return OverlaySessionContent.stableID(
+                source: state.source,
+                sessionID: state.sessionID ?? state.event.sessionID,
+                fallbackEventID: state.event.id
+            )
+        })
+    }
+
+    private static func isDismissed(
+        _ state: ActiveAgentState,
+        dismissedSessionIDs: Set<String>
+    ) -> Bool {
+        dismissedSessionIDs.contains(OverlaySessionContent.stableID(
+            source: state.source,
+            sessionID: state.sessionID ?? state.event.sessionID,
+            fallbackEventID: state.event.id
+        ))
     }
 }
 
@@ -40,6 +424,7 @@ enum OverlayGeometry {
     static let bubbleVerticalPadding: CGFloat = 7
     static let bubbleGroupHeaderHeight: CGFloat = 17
     static let bubbleGroupHeaderSpacing: CGFloat = 4
+    static let bubbleGroupToggleWidth: CGFloat = 44
     static let bubbleSessionHorizontalPadding: CGFloat = 8
     static let bubbleSessionVerticalPadding: CGFloat = 5
     static let bubbleSessionTitleFontSize: CGFloat = 11.4
@@ -47,14 +432,20 @@ enum OverlayGeometry {
     static let bubbleDetailLineLimit = 2
     static let bubbleSessionDividerHeight: CGFloat = 1
     static let bubbleHeaderAvatarWidth: CGFloat = 14
+    static let bubbleHeaderButtonSize: CGFloat = 15
     static let bubbleHeaderGap: CGFloat = 5
     static let bubbleHeaderFontSize: CGFloat = 11.2
     static let bubbleDetailFontSize: CGFloat = 11.8
-    static let menuVisualSize = CGSize(width: 22, height: 22)
-    static let menuHitSize = CGSize(width: 36, height: 36)
-    static let resizeVisualSize = CGSize(width: 16, height: 16)
+    static let bubbleCollapsedStackDepth: CGFloat = 8
+    static let bubbleCollapsedStackLayerCount = 2
+    static let bubbleCollapsedStackLayerOffset: CGFloat = 4
+    static let bubbleCollapsedStackLayerInset: CGFloat = 5
+    static let menuVisualSize = CGSize(width: 24, height: 24)
+    static let menuHitSize = CGSize(width: 38, height: 38)
+    static let resizeVisualSize = CGSize(width: 24, height: 24)
     static let resizeHitSize = CGSize(width: 38, height: 38)
     static let pointerNearMargin: CGFloat = 12
+    static let controlVisibilitySlop: CGFloat = 4
     private static let petStageBaseSize = CGSize(width: 238, height: 318)
     private static let petSpriteBaseSize = CGSize(width: 230, height: 310)
     private static let petShadowRadius: CGFloat = 10
@@ -131,11 +522,28 @@ enum OverlayGeometry {
         let headerHitHeight = bubbleVerticalPadding
             + bubbleGroupHeaderHeight
             + bubbleGroupHeaderSpacing
+        let headerTrailingControlWidth = bubbleTrailingPadding
+            + bubbleHeaderButtonSize
+            + bubbleHeaderGap
         return CGRect(
-            x: bubbleRect.maxX - 34,
+            x: bubbleRect.maxX - headerTrailingControlWidth,
             y: bubbleRect.minY,
-            width: 34,
+            width: headerTrailingControlWidth,
             height: min(headerHitHeight, bubbleRect.height)
+        )
+    }
+
+    static func bubbleGroupToggleHitRect(
+        in bubbleRect: CGRect,
+        content: OverlayBubbleContent
+    ) -> CGRect {
+        guard content.hasMultipleSessions else { return .zero }
+        let closeRect = bubbleCloseHitRect(in: bubbleRect)
+        return CGRect(
+            x: closeRect.minX - bubbleGroupToggleWidth,
+            y: bubbleRect.minY,
+            width: bubbleGroupToggleWidth,
+            height: closeRect.height
         )
     }
 
@@ -162,7 +570,7 @@ enum OverlayGeometry {
         bubbleWidth: CGFloat,
         content: OverlayBubbleContent
     ) -> [CGFloat] {
-        content.sessions.map { session in
+        content.visibleSessions.map { session in
             measuredSessionRowHeight(width: bubbleWidth, session: session)
         }
     }
@@ -624,22 +1032,161 @@ enum OverlayGeometry {
     static func pointerNearPetScreenRect(
         scale: CGFloat,
         petScreenCenter: CGPoint,
-        clickMenuEnabled: Bool
+        clickMenuEnabled: Bool,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         var rects = [
-            rect(center: petScreenCenter, size: petVisibleSize(scale: scale)),
+            petVisualScreenRect(
+                scale: scale,
+                petScreenCenter: petScreenCenter,
+                petVisualEnvelope: petVisualEnvelope
+            ),
             rect(center: petScreenCenter, size: petDragSize(scale: scale)),
-            rect(center: resizeScreenCenter(petScreenCenter: petScreenCenter, scale: scale), size: resizeHitSize)
+            rect(
+                center: resizeScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: resizeHitSize
+            )
         ]
 
         if clickMenuEnabled {
-            rects.append(rect(center: menuScreenCenter(petScreenCenter: petScreenCenter, scale: scale), size: menuHitSize))
+            rects.append(rect(
+                center: menuScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: menuHitSize
+            ))
         }
 
         let union = rects.dropFirst().reduce(rects[0]) { partial, rect in
             partial.union(rect)
         }
         return union.insetBy(dx: -pointerNearMargin, dy: -pointerNearMargin)
+    }
+
+    /// The compact controls use a tighter visual hover region than the broad
+    /// activation rectangle above. The activation rectangle deliberately
+    /// includes a margin and the empty corridor between windows so a first
+    /// click cannot fall through; using it for opacity would leave the resize
+    /// affordance visible after the pointer has left the actual pet/control
+    /// surfaces.
+    static func shouldShowControls(
+        at screenPoint: CGPoint,
+        scale: CGFloat,
+        petScreenCenter: CGPoint,
+        clickMenuEnabled: Bool,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> Bool {
+        var regions = [
+            petVisualScreenRect(
+                scale: scale,
+                petScreenCenter: petScreenCenter,
+                petVisualEnvelope: petVisualEnvelope
+            ).insetBy(dx: -controlVisibilitySlop, dy: -controlVisibilitySlop),
+            rect(
+                center: resizeScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: resizeHitSize
+            ).insetBy(dx: -controlVisibilitySlop, dy: -controlVisibilitySlop)
+        ]
+
+        if clickMenuEnabled {
+            regions.append(rect(
+                center: menuScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    scale: scale,
+                    petVisualEnvelope: petVisualEnvelope
+                ),
+                size: menuHitSize
+            ).insetBy(dx: -controlVisibilitySlop, dy: -controlVisibilitySlop))
+        }
+
+        return regions.contains { $0.contains(screenPoint) }
+    }
+
+    static func petVisualScreenRect(
+        scale: CGFloat,
+        petScreenCenter: CGPoint,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGRect {
+        let horizontal = petVisualHorizontalOffsets(scale: scale, envelope: petVisualEnvelope)
+        let vertical = petVisualVerticalOffsets(scale: scale, envelope: petVisualEnvelope)
+        return CGRect(
+            x: petScreenCenter.x + horizontal.left,
+            y: petScreenCenter.y + vertical.bottom,
+            width: max(0, horizontal.right - horizontal.left),
+            height: max(0, vertical.top - vertical.bottom)
+        )
+    }
+
+    /// Maps a top-left panel point through the same aspect-fit transform used
+    /// by `PetMetalFrameRenderer`. The frame image is centered horizontally in
+    /// its animation canvas and bottom-aligned; the resulting image point is
+    /// then sampled from the immutable one-bit alpha mask.
+    static func petFrameContainsOpaquePixel(
+        atTopLeftPoint point: CGPoint,
+        scale: CGFloat,
+        petCenter: CGPoint,
+        frameHitTest: OverlayPetFrameHitTest
+    ) -> Bool {
+        guard scale.isFinite, scale > 0,
+              point.x.isFinite, point.y.isFinite,
+              frameHitTest.canvasSize.width.isFinite,
+              frameHitTest.canvasSize.height.isFinite,
+              frameHitTest.canvasSize.width > 0,
+              frameHitTest.canvasSize.height > 0 else {
+            return false
+        }
+
+        let drawableSize = CGSize(
+            width: petSpriteBaseSize.width * scale,
+            height: petSpriteBaseSize.height * scale
+        )
+        let drawableRect = rect(center: petCenter, size: drawableSize)
+        guard drawableRect.contains(point) else { return false }
+
+        let fittedScale = min(
+            drawableSize.width / frameHitTest.canvasSize.width,
+            drawableSize.height / frameHitTest.canvasSize.height
+        )
+        guard fittedScale.isFinite, fittedScale > 0 else { return false }
+
+        let fittedCanvasSize = CGSize(
+            width: frameHitTest.canvasSize.width * fittedScale,
+            height: frameHitTest.canvasSize.height * fittedScale
+        )
+        let fittedCanvasOrigin = CGPoint(
+            x: (drawableSize.width - fittedCanvasSize.width) / 2,
+            y: (drawableSize.height - fittedCanvasSize.height) / 2
+        )
+        let localBottomLeftPoint = CGPoint(
+            x: point.x - drawableRect.minX,
+            y: drawableRect.maxY - point.y
+        )
+        let canvasPoint = CGPoint(
+            x: (localBottomLeftPoint.x - fittedCanvasOrigin.x) / fittedScale,
+            y: (localBottomLeftPoint.y - fittedCanvasOrigin.y) / fittedScale
+        )
+        let imageOriginInCanvas = CGPoint(
+            x: max(
+                0,
+                (frameHitTest.canvasSize.width
+                    - CGFloat(frameHitTest.alphaMask.pixelWidth)) / 2
+            ),
+            y: 0
+        )
+        return frameHitTest.alphaMask.containsOpaquePixel(atBottomLeftPoint: CGPoint(
+            x: canvasPoint.x - imageOriginInCanvas.x,
+            y: canvasPoint.y - imageOriginInCanvas.y
+        ))
     }
 
     static func dragTargetDisplay(
@@ -741,7 +1288,7 @@ enum OverlayGeometry {
         let displayPetCenter = petCenter
         let menuCenter = menuCenter(petCenter: displayPetCenter, scale: scale)
         var rects: [CGRect] = [
-            rect(center: displayPetCenter, size: petDragSize(scale: scale))
+            rect(center: displayPetCenter, size: petVisibleSize(scale: scale))
         ]
 
         if includeResize {
@@ -779,9 +1326,16 @@ enum OverlayGeometry {
         screenFrame: CGRect,
         includeBubble: Bool,
         includeResize: Bool = true,
-        bubbleContent: OverlayBubbleContent = .idle
+        bubbleContent: OverlayBubbleContent = .idle,
+        mousePassthroughEnabled: Bool = true,
+        petFrameHitTest: OverlayPetFrameHitTest? = nil
     ) -> Bool {
-        interactiveRects(
+        guard CGRect(origin: .zero, size: containerSize).contains(point) else {
+            return false
+        }
+        guard mousePassthroughEnabled else { return true }
+
+        let rects = interactiveRects(
             in: containerSize,
             scale: scale,
             petCenter: petCenter,
@@ -793,7 +1347,25 @@ enum OverlayGeometry {
             includeResize: includeResize,
             bubbleContent: bubbleContent
         )
-        .contains { $0.contains(point) }
+        guard let petDragRect = rects.first else { return false }
+
+        // Resize, menu, and bubble surfaces keep their geometric hit regions.
+        // Only the pet body is narrowed to the currently presented frame.
+        if rects.dropFirst().contains(where: { $0.contains(point) }) {
+            return true
+        }
+        guard petDragRect.contains(point), let petFrameHitTest else {
+            // With passthrough enabled, an unavailable/corrupt alpha mask must
+            // fail transparent so an invisible rectangle never blocks another
+            // app. The independent menu/resize panels remain reachable.
+            return false
+        }
+        return petFrameContainsOpaquePixel(
+            atTopLeftPoint: point,
+            scale: scale,
+            petCenter: petCenter,
+            frameHitTest: petFrameHitTest
+        )
     }
 
     private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
@@ -805,30 +1377,23 @@ enum OverlayGeometry {
                 + bubbleGroupHeaderSpacing
                 + rowHeights.reduce(0, +)
                 + dividers
+                + content.stackDecorationDepth
         )
     }
 
     private static func measuredSessionRowHeight(
-        width: CGFloat,
-        session: OverlaySessionContent
+        width _: CGFloat,
+        session _: OverlaySessionContent
     ) -> CGFloat {
-        let textWidth = max(
-            76,
-            width - bubbleLeadingPadding - bubbleTrailingPadding
-                - bubbleSessionHorizontalPadding * 2
-        )
         let titleHeight = lineHeight(
             for: .systemFont(ofSize: bubbleSessionTitleFontSize, weight: .semibold)
         )
         let detailFont = NSFont.systemFont(ofSize: bubbleDetailFontSize, weight: .medium)
         let detailLineHeight = lineHeight(for: detailFont)
-        let detailHeight = measuredTextHeight(
-            session.messageText,
-            font: detailFont,
-            width: textWidth,
-            lineHeight: detailLineHeight,
-            maximumLines: bubbleDetailLineLimit
-        )
+        // Reserve the full two-line detail region. Tool activity often changes
+        // between one and two lines; allowing that to resize an NSPanel on
+        // every hook makes the whole bubble stack visibly jump.
+        let detailHeight = detailLineHeight * CGFloat(bubbleDetailLineLimit)
         return ceil(
             bubbleSessionVerticalPadding * 2
                 + titleHeight
@@ -877,8 +1442,32 @@ enum OverlayGeometry {
     }
 }
 
+enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
+    case running = 0
+    case ready = 1
+    case failed = 2
+    case needsInput = 3
+
+    init(eventType: AgentEventKind?) {
+        self = switch eventType {
+        case .waiting: .needsInput
+        case .failed: .failed
+        case .review, .done: .ready
+        case .start, .tool, nil: .running
+        }
+    }
+
+    static func aggregate(_ sessions: [OverlaySessionContent]) -> OverlaySessionGroupTone {
+        sessions
+            .map { OverlaySessionGroupTone(eventType: $0.eventType) }
+            .max(by: { $0.rawValue < $1.rawValue })
+            ?? .running
+    }
+}
+
 struct OverlaySessionContent: Equatable, Identifiable {
     var id: String
+    var eventID: String
     var source: AgentSource?
     var sessionID: String?
     var eventType: AgentEventKind?
@@ -889,9 +1478,16 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var navigation: AgentSessionNavigation
 
     var canOpen: Bool { !navigation.explicitlyClosed }
+    var dismissesAfterActivation: Bool {
+        switch eventType {
+        case .review, .done: true
+        case .start, .tool, .waiting, .failed, nil: false
+        }
+    }
 
     static let idle = OverlaySessionContent(
         id: "idle",
+        eventID: "idle",
         source: nil,
         sessionID: nil,
         eventType: nil,
@@ -902,8 +1498,24 @@ struct OverlaySessionContent: Equatable, Identifiable {
         navigation: AgentSessionNavigation()
     )
 
+    static func omittedSummary(count: Int) -> OverlaySessionContent {
+        OverlaySessionContent(
+            id: "omitted-session-summary",
+            eventID: "omitted-session-summary",
+            source: nil,
+            sessionID: nil,
+            eventType: nil,
+            sessionTitle: APCLocalization.text(.overlayMoreSessionsTitle),
+            messageText: APCLocalization.format(.overlayMoreSessionsDetailFormat, count),
+            statusText: "",
+            actionLabel: APCLocalization.text(.overlayActionOpen),
+            navigation: AgentSessionNavigation()
+        )
+    }
+
     init(
         id: String,
+        eventID: String? = nil,
         source: AgentSource?,
         sessionID: String?,
         eventType: AgentEventKind?,
@@ -914,6 +1526,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         navigation: AgentSessionNavigation = AgentSessionNavigation()
     ) {
         self.id = id
+        self.eventID = eventID ?? id
         self.source = source
         self.sessionID = sessionID
         self.eventType = eventType
@@ -926,117 +1539,112 @@ struct OverlaySessionContent: Equatable, Identifiable {
 
     init(state: ActiveAgentState) {
         let event = state.event
-        id = event.id
+        let resolvedSessionID = state.sessionID ?? event.sessionID
+        id = Self.stableID(
+            source: event.source,
+            sessionID: resolvedSessionID,
+            fallbackEventID: event.id
+        )
+        eventID = event.id
         source = event.source
-        sessionID = state.sessionID ?? event.sessionID
+        sessionID = resolvedSessionID
         eventType = event.eventType
         sessionTitle = Self.sessionTitle(for: state)
         statusText = Self.statusText(for: event.eventType)
         actionLabel = Self.actionLabel(for: event.eventType)
-        navigation = event.sessionNavigation
+        navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
         messageText = Self.displayMessage(for: state)
     }
 
     init(event: AgentEvent) {
-        id = event.id
+        id = Self.stableID(
+            source: event.source,
+            sessionID: event.sessionID,
+            fallbackEventID: event.id
+        )
+        eventID = event.id
         source = event.source
         sessionID = event.sessionID
         eventType = event.eventType
-        sessionTitle = Self.compactTitle(event.payloadJSON?.projectLabel)
-            ?? "\(event.source.shortTitle) 会话"
+        sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
         statusText = Self.statusText(for: event.eventType)
         actionLabel = Self.actionLabel(for: event.eventType)
         navigation = event.sessionNavigation
-        messageText = event.payloadJSON?.messageRole == "assistant"
-            ? event.messageContent ?? Self.fallbackDetail(for: event.eventType)
-            : Self.fallbackDetail(for: event.eventType)
+        messageText = Self.fallbackDetail(for: event.eventType)
+    }
+
+    static func stableID(
+        source: AgentSource,
+        sessionID: String?,
+        fallbackEventID _: String
+    ) -> String {
+        let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let sessionID, !sessionID.isEmpty else {
+            // PetCore groups unattributed events into one source-scoped session.
+            // Match that identity here so hook revisions update the existing row
+            // instead of removing/reinserting it and clearing manual dismissal.
+            return "session-\(source.rawValue)-unattributed"
+        }
+        return "session-\(source.rawValue)-\(sessionID)"
+    }
+
+    static func reopenID(for state: ActiveAgentState) -> String {
+        let stableID = stableID(
+            source: state.source,
+            sessionID: state.sessionID ?? state.event.sessionID,
+            fallbackEventID: state.event.id
+        )
+        switch state.event.eventType {
+        case .waiting, .review, .failed:
+            return "attention:\(stableID):\(state.event.id)"
+        case .start, .tool, .done:
+            return "activation:\(stableID):\(state.sessionActivatedAt ?? "initial")"
+        }
     }
 
     private static func sessionTitle(for state: ActiveAgentState) -> String {
-        if let title = compactTitle(state.sessionTitle) {
-            return title
-        }
-        if state.sessionUserMessage?.role == "user",
-           let title = compactTitle(state.sessionUserMessage?.content)
-        {
-            return title
-        }
-        if state.latestUserMessage?.payloadJSON?.messageRole == "user",
-           let title = compactTitle(state.latestUserMessage?.messageContent)
-        {
-            return title
-        }
-        if state.event.payloadJSON?.messageRole == "user",
-           let title = compactTitle(state.event.messageContent)
-        {
-            return title
-        }
-        return compactTitle(state.event.payloadJSON?.projectLabel)
-            ?? "\(state.source.shortTitle) 会话"
-    }
-
-    private static func assistantMessage(for state: ActiveAgentState) -> String? {
-        if state.sessionMessage?.role == "assistant",
-           let message = compactMessage(state.sessionMessage?.content)
-        {
-            return message
-        }
-        if state.latestMessage?.payloadJSON?.messageRole == "assistant",
-           let message = compactMessage(state.latestMessage?.messageContent)
-        {
-            return message
-        }
-        if state.event.payloadJSON?.messageRole == "assistant" {
-            return compactMessage(state.event.messageContent)
-        }
-        return nil
+        APCLocalization.format(.overlaySessionTitleFormat, state.source.shortTitle)
     }
 
     private static func displayMessage(for state: ActiveAgentState) -> String {
-        switch state.event.eventType {
-        case .waiting, .failed:
-            return fallbackDetail(for: state.event.eventType)
-        case .start, .tool:
-            return activityMessage(for: state)
-                ?? assistantMessage(for: state)
-                ?? fallbackDetail(for: state.event.eventType)
-        case .review, .done:
-            return assistantMessage(for: state)
-                ?? fallbackDetail(for: state.event.eventType)
+        summaryMessage(
+            for: state.overlayDisplay?.summaryKind
+                ?? fallbackSummaryKind(for: state.event.eventType)
+        )
+    }
+
+    private static func fallbackSummaryKind(
+        for eventType: AgentEventKind
+    ) -> AgentOverlaySummaryKind {
+        switch eventType {
+        case .start: .running
+        case .tool: .tool
+        case .waiting: .needsInput
+        case .review: .review
+        case .done: .done
+        case .failed: .failed
         }
     }
 
-    private static func activityMessage(for state: ActiveAgentState) -> String? {
-        if let content = compactMessage(state.sessionActivity?.content) {
-            return content
-        }
-        guard let kind = state.sessionActivity?.kind else { return nil }
+    private static func summaryMessage(for kind: AgentOverlaySummaryKind) -> String {
         let key: APCLocalizationKey = switch kind {
-        case "thinking": .overlayActivityThinking
-        case "plan": .overlayActivityPlan
-        case "command": .overlayActivityCommand
-        case "file": .overlayActivityFile
-        case "file_change": .overlayActivityFileChange
-        case "tool": .overlayActivityTool
-        case "subagent": .overlayActivitySubagent
-        case "search": .overlayActivitySearch
-        case "network": .overlayActivityNetwork
-        case "image": .overlayActivityImage
-        case "compaction": .overlayActivityCompaction
-        default: .overlayDetailRunning
+        case .running: .overlayDetailRunning
+        case .thinking: .overlayActivityThinking
+        case .plan: .overlayActivityPlan
+        case .command: .overlayActivityCommand
+        case .file: .overlayActivityFile
+        case .fileChange: .overlayActivityFileChange
+        case .tool: .overlayActivityTool
+        case .subagent: .overlayActivitySubagent
+        case .search: .overlayActivitySearch
+        case .network: .overlayActivityNetwork
+        case .image: .overlayActivityImage
+        case .compaction: .overlayActivityCompaction
+        case .needsInput: .overlayDetailNeedsInput
+        case .review, .done: .overlayDetailReady
+        case .failed: .overlayDetailBlocked
         }
         return APCLocalization.text(key)
-    }
-
-    private static func compactTitle(_ value: String?) -> String? {
-        guard let value = compactMessage(value) else { return nil }
-        let firstLine = value.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? value
-        return firstLine.count > 80 ? "\(firstLine.prefix(79))…" : firstLine
-    }
-
-    private static func compactMessage(_ value: String?) -> String? {
-        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static func statusText(for eventType: AgentEventKind) -> String {
@@ -1044,7 +1652,8 @@ struct OverlaySessionContent: Equatable, Identifiable {
         case .start: APCLocalization.text(.overlayStatusRunning)
         case .tool: APCLocalization.text(.overlayStatusTool)
         case .waiting: APCLocalization.text(.overlayStatusNeedsInput)
-        case .review, .done: APCLocalization.text(.overlayStatusReady)
+        case .review: APCLocalization.text(.overlayStatusReview)
+        case .done: APCLocalization.text(.overlayStatusDone)
         case .failed: APCLocalization.text(.overlayStatusBlocked)
         }
     }
@@ -1068,33 +1677,95 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     var source: AgentSource?
     var agentName: String
     var sessions: [OverlaySessionContent]
+    var isExpanded: Bool
+    var omittedSessionCount: Int
 
-    var eventIDs: [String] { sessions.map(\.id) }
+    var eventIDs: [String] { sessions.map(\.eventID) }
+    var dismissalIDs: [String] { canDismiss ? sessions.map(\.id) : [] }
+    var visibleSessions: [OverlaySessionContent] {
+        guard !isExpanded, sessions.count > 1 else { return sessions }
+        let latest = sessions[0]
+        let attention = sessions.dropFirst().filter {
+            $0.eventType == .waiting || $0.eventType == .review || $0.eventType == .failed
+        }
+        return [latest] + attention
+    }
+    var sessionCount: Int { sessions.count }
+    var representedSessionCount: Int {
+        // Idle is a visual placeholder, not an Agent session. Keeping it out
+        // of the count prevents the session toggle from appearing when no
+        // real session content exists.
+        if id == "idle" { return 0 }
+        return omittedSessionCount > 0 ? omittedSessionCount : sessionCount
+    }
+    var isOmittedSummary: Bool { omittedSessionCount > 0 }
+    var canDismiss: Bool { !isOmittedSummary }
+    var hasMultipleSessions: Bool { sessions.count > 1 }
+    var isStacked: Bool { hasMultipleSessions && !isExpanded }
+    var stackDecorationDepth: CGFloat {
+        isStacked ? OverlayGeometry.bubbleCollapsedStackDepth : 0
+    }
+    var statusTone: OverlaySessionGroupTone {
+        OverlaySessionGroupTone.aggregate(sessions)
+    }
 
     static let idle = OverlayBubbleContent(
         id: "idle",
         source: nil,
         agentName: "Agent",
-        sessions: [.idle]
+        sessions: [.idle],
+        isExpanded: true,
+        omittedSessionCount: 0
     )
+
+    static func omittedSummary(count: Int) -> OverlayBubbleContent {
+        OverlayBubbleContent(
+            id: "omitted-session-summary",
+            source: nil,
+            agentName: "Agent Pet Companion",
+            sessions: [.omittedSummary(count: count)],
+            isExpanded: true,
+            omittedSessionCount: count
+        )
+    }
 
     init(
         id: String,
         source: AgentSource?,
         agentName: String,
-        sessions: [OverlaySessionContent]
+        sessions: [OverlaySessionContent],
+        isExpanded: Bool = true,
+        omittedSessionCount: Int = 0
     ) {
         self.id = id
         self.source = source
         self.agentName = agentName
         self.sessions = sessions
+        self.isExpanded = isExpanded
+        self.omittedSessionCount = omittedSessionCount
     }
 
-    init(source: AgentSource, states: [ActiveAgentState]) {
+    init(source: AgentSource, states: [ActiveAgentState], isExpanded: Bool = true) {
         id = "agent-\(source.rawValue)"
         self.source = source
         agentName = source.title
-        sessions = states.map(OverlaySessionContent.init(state:))
+        let orderedStates = Array(states
+            .enumerated()
+            .sorted(by: Self.isMoreRecentlyActivated)
+            .prefix(8))
+        sessions = orderedStates.enumerated().map { index, entry in
+            var content = OverlaySessionContent(state: entry.element)
+            if orderedStates.count > 1 {
+                // Session titles must remain content-free, but two rows from
+                // the same Agent still need distinct visual and accessible
+                // identities. The display-order ordinal contains no host
+                // prompt, project, path, or raw session identifier.
+                content.sessionTitle += " \(index + 1)"
+            }
+            return content
+        }
+        self.isExpanded = isExpanded
+        omittedSessionCount = 0
     }
 
     init(state: ActiveAgentState) {
@@ -1110,5 +1781,71 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         source = event.source
         agentName = event.source.title
         sessions = [OverlaySessionContent(event: event)]
+        isExpanded = true
+        omittedSessionCount = 0
+    }
+
+    private static func isMoreRecentlyActivated(
+        _ left: EnumeratedSequence<[ActiveAgentState]>.Element,
+        _ right: EnumeratedSequence<[ActiveAgentState]>.Element
+    ) -> Bool {
+        if let leftTime = left.element.sessionActivatedAt,
+           let rightTime = right.element.sessionActivatedAt,
+           leftTime != rightTime
+        {
+            return leftTime > rightTime
+        }
+        // PetCore has already projected a stable first-seen order for legacy
+        // sessions without an activation timestamp. Preserve that order and
+        // do not let a later Waiting/Failed status edge promote an old session.
+        return left.offset < right.offset
+    }
+}
+
+struct OverlayBubbleAccessibilityModel: Equatable {
+    var sessionActionLabels: [String]
+    var sessionCloseActionLabels: [String?]
+    var closeActionLabel: String?
+    var closeActionHint: String?
+    var groupActionLabel: String?
+
+    init(content: OverlayBubbleContent, locale: String? = nil) {
+        sessionActionLabels = content.visibleSessions.map { _ in
+            Self.text(.overlayActionOpen, locale: locale)
+        }
+        sessionCloseActionLabels = content.visibleSessions.map { _ in
+            content.canDismiss
+                ? Self.text(.overlayDismissSession, locale: locale)
+                : nil
+        }
+        closeActionLabel = content.canDismiss
+            ? Self.text(.overlayCloseBubbleAccessibility, locale: locale)
+            : nil
+        closeActionHint = content.canDismiss
+            ? Self.text(.overlayCloseBubbleHint, locale: locale)
+            : nil
+        groupActionLabel = content.hasMultipleSessions
+            ? Self.format(
+                content.isExpanded
+                    ? .overlayCollapseSessionsFormat
+                    : .overlayExpandSessionsFormat,
+                content.sessionCount,
+                locale: locale
+            )
+            : nil
+    }
+
+    private static func text(_ key: APCLocalizationKey, locale: String?) -> String {
+        locale.map { APCLocalization.text(key, locale: $0) }
+            ?? APCLocalization.text(key)
+    }
+
+    private static func format(
+        _ key: APCLocalizationKey,
+        _ count: Int,
+        locale: String?
+    ) -> String {
+        locale.map { APCLocalization.format(key, locale: $0, count) }
+            ?? APCLocalization.format(key, count)
     }
 }

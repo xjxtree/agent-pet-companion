@@ -107,28 +107,34 @@ extension View {
 
 struct Surface<Content: View>: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
     var padding: CGFloat = 20
     @ViewBuilder var content: Content
+
+    private var increasedContrast: Bool {
+        accessibilityOverrides.increasedContrast ?? (colorSchemeContrast == .increased)
+    }
 
     var body: some View {
         content
             .padding(padding)
-            .apcLiquidGlass(
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous),
-                interactive: false
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
             )
             .overlay {
-                if colorSchemeContrast == .increased {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(APCDesign.stroke, lineWidth: 2)
-                        .allowsHitTesting(false)
-                }
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(
+                        APCDesign.stroke.opacity(increasedContrast ? 1 : 0.72),
+                        lineWidth: increasedContrast ? 2 : 1
+                    )
+                    .allowsHitTesting(false)
             }
     }
 }
 
 /// Groups nearby glass surfaces so macOS can render them as one native optical layer.
-/// On macOS 14–15 the same hierarchy falls back to native ultra-thin material.
+/// On macOS 14–15 the same hierarchy falls back to native regular material.
 struct APCGlassGroup<Content: View>: View {
     var spacing: CGFloat = 18
     @ViewBuilder var content: Content
@@ -158,23 +164,23 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             content.glassEffect(
-                interactive ? .clear.interactive() : .clear,
+                interactive ? .regular.interactive() : .regular,
                 in: shape
             )
         } else {
-            content.background(.ultraThinMaterial, in: shape)
+            content.background(.regularMaterial, in: shape)
         }
 #else
-        content.background(.ultraThinMaterial, in: shape)
+        content.background(.regularMaterial, in: shape)
 #endif
     }
 }
 
 enum APCBubbleGlassStyle {
-    /// Clear Liquid Glass is the most transparent public system treatment on
-    /// macOS 26. Keep the normal path free of supplemental fills, borders,
-    /// and tint. The native optical background is attenuated independently;
-    /// the foreground is never post-composited with reduced opacity.
+    /// Regular Liquid Glass is the default functional surface on macOS 26.
+    /// Keep the normal path free of supplemental fills, borders, and tint. The
+    /// native optical background is attenuated independently; the foreground
+    /// is never post-composited with reduced opacity.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
     /// User-facing transparency is the inverse of the native optical layer's
@@ -242,7 +248,7 @@ enum APCBubbleForegroundStyle {
 /// Owns the one AppKit capability gap in the bubble implementation. In a
 /// transparent `NSPanel`, embedding `NSHostingView` as
 /// `NSGlassEffectView.contentView` can leave only the optical layer visible.
-/// Keep native Clear glass and the SwiftUI foreground as ordered siblings so
+/// Keep native regular glass and the SwiftUI foreground as ordered siblings so
 /// the glass never obscures labels or controls.
 #if compiler(>=6.2)
 @available(macOS 26.0, *)
@@ -335,7 +341,7 @@ enum APCNativeBubbleGlassConfiguration {
         cornerRadius: CGFloat,
         transparency: Double
     ) {
-        glassView.style = .clear
+        glassView.style = .regular
         glassView.tintColor = nil
         glassView.cornerRadius = cornerRadius
         glassView.alphaValue = APCBubbleGlassStyle.opticalOpacity(for: transparency)
@@ -398,9 +404,10 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
 /// can place the optical layer above foreground content in a transparent
 /// `NSPanel`.
 private struct APCTransparentBubbleGlassModifier: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
 
     let cornerRadius: CGFloat
     let transparency: Double
@@ -413,10 +420,27 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
         colorScheme == .dark ? .black : .white
     }
 
+    private var accessibilityPresentation: APCVisualAccessibilityPresentation {
+        .resolve(
+            systemReduceTransparency: systemReduceTransparency,
+            systemIncreasedContrast: colorSchemeContrast == .increased,
+            systemReduceMotion: false,
+            overrides: accessibilityOverrides
+        )
+    }
+
+    private var reduceTransparency: Bool {
+        accessibilityPresentation.reduceTransparency
+    }
+
+    private var increasedContrast: Bool {
+        accessibilityPresentation.increasedContrast
+    }
+
     private var backdropOpacity: Double {
         APCBubbleGlassStyle.resolvedBackdropOpacity(
             reduceTransparency: reduceTransparency,
-            increasedContrast: colorSchemeContrast == .increased
+            increasedContrast: increasedContrast
         )
     }
 
@@ -432,12 +456,12 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
                     transparency: transparency,
                     content: content
                     .background {
-                        if colorSchemeContrast == .increased {
+                        if increasedContrast {
                             shape.fill(backdropColor.opacity(backdropOpacity))
                         }
                     }
                     .overlay {
-                        if colorSchemeContrast == .increased {
+                        if increasedContrast {
                             bubbleBorder(supportsLiquidGlass: true)
                         }
                     }
@@ -463,7 +487,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
     }
 
     private func legacyFallback(_ content: Content) -> some View {
-        let supplementalOpacity = if reduceTransparency || colorSchemeContrast == .increased {
+        let supplementalOpacity = if reduceTransparency || increasedContrast {
             backdropOpacity
         } else {
             APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: transparency)
@@ -472,7 +496,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
         return content
             .background {
                 ZStack {
-                    shape.fill(.ultraThinMaterial)
+                    shape.fill(.regularMaterial)
                     shape.fill(backdropColor.opacity(supplementalOpacity))
                 }
             }
@@ -487,7 +511,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
                 .primary.opacity(
                     APCBubbleGlassStyle.resolvedBorderOpacity(
                         reduceTransparency: reduceTransparency,
-                        increasedContrast: colorSchemeContrast == .increased,
+                        increasedContrast: increasedContrast,
                         supportsLiquidGlass: supportsLiquidGlass
                     )
                 ),
@@ -498,7 +522,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
 }
 
 extension View {
-    func apcLiquidGlass<S: Shape>(
+    func apcFloatingControlGlass<S: Shape>(
         in shape: S,
         interactive: Bool = false
     ) -> some View {
@@ -521,17 +545,58 @@ struct PageScroll<Content: View>: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            APCGlassGroup(spacing: 18) {
-                VStack(alignment: .leading, spacing: 18) {
-                    content
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, verticalPadding)
+            VStack(alignment: .leading, spacing: 18) {
+                content
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
         }
         .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Shared page heading for actions that belong to one feature rather than the
+/// fixed window toolbar. Actions stay immediately below or beside the title
+/// and collapse vertically at compact widths.
+struct PageActionHeader<Actions: View>: View {
+    var title: String
+    var subtitle: String? = nil
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            titleBlock
+            actions
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.title2.weight(.semibold))
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Compatibility wrapper while feature views migrate to `PageActionHeader`.
+struct HeaderView<Trailing: View>: View {
+    var title: String
+    var subtitle: String
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        PageActionHeader(title: title, subtitle: subtitle) {
+            trailing
+        }
     }
 }
 
@@ -648,13 +713,21 @@ struct PillButton: View {
         .foregroundStyle(selected ? APCDesign.accent : .primary)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .apcLiquidGlass(in: Capsule(), interactive: true)
+        .background(
+            Capsule()
+                .fill(
+                    selected
+                        ? APCDesign.accentSoft
+                        : Color(nsColor: .controlBackgroundColor)
+                )
+        )
         .overlay {
-            if selected {
-                Capsule()
-                    .stroke(APCDesign.accent.opacity(0.72), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
+            Capsule()
+                .stroke(
+                    selected ? APCDesign.accent.opacity(0.72) : APCDesign.stroke,
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
         }
     }
 }
@@ -669,7 +742,7 @@ struct PrimaryActionButton: View {
             buttonLabel
         }
         .buttonStyle(.borderedProminent)
-        .controlSize(.large)
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -694,7 +767,7 @@ struct SecondaryActionButton: View {
             buttonLabel
         }
         .buttonStyle(.bordered)
-        .controlSize(.large)
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -726,7 +799,7 @@ struct StatusBadge: View {
             .foregroundStyle(toneColor)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .apcLiquidGlass(in: Capsule())
+            .background(Capsule().fill(toneColor.opacity(0.10)))
             .overlay {
                 Capsule()
                     .stroke(toneColor.opacity(0.36), lineWidth: 1)

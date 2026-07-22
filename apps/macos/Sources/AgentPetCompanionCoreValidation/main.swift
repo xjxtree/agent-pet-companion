@@ -1,12 +1,27 @@
 import AgentPetCompanionCore
 import Foundation
 
-precondition(NavigationSection.allCases == [.studio, .behavior, .connections])
-precondition(NavigationSection.allCases.map(\.title) == ["宠物 Studio", "启用与行为", "Agent 连接"])
-precondition(NavigationSection.allCases.map(\.subtitle) == ["Pet Studio", "Enable & Behavior", "Agent Connections"])
-
-precondition(StudioTab.allCases == [.new, .library])
-precondition(StudioTab.allCases.map(\.title) == ["新建", "宠物库"])
+precondition(NavigationSection.allCases == [
+    .library,
+    .maker,
+    .configuration,
+    .connections,
+    .diagnostics,
+])
+precondition(NavigationSection.allCases.map(\.title) == [
+    "宠物库",
+    "AI宠物制作",
+    "宠物配置",
+    "Agent 连接",
+    "服务与诊断",
+])
+precondition(NavigationSection.allCases.map(\.subtitle) == [
+    "Pet Library",
+    "AI Pet Maker",
+    "Pet Configuration",
+    "Agent Connections",
+    "Service & Diagnostics",
+])
 
 precondition(AgentSource.allCases == [.codex, .claudeCode, .pi, .opencode])
 precondition(AgentSource.allCases.map(\.title) == ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"])
@@ -14,6 +29,8 @@ precondition(AgentSource.allCases.map(\.title) == ["Codex", "Claude Code", "Pi C
 precondition(AgentEventKind.allCases == [.start, .tool, .waiting, .review, .done, .failed])
 precondition(AgentEventKind.allCases.map(\.title) == ["开始处理", "执行工具", "等待确认", "待查看", "完成", "失败"])
 precondition(AgentEventKind.allCases.map(\.petState) == ["start", "tool", "waiting", "review", "done", "failed"])
+precondition(SessionGroupDisplay.allCases == [.stacked, .expanded])
+precondition(SessionGroupDisplay.allCases.map(\.title) == ["堆叠", "展开"])
 
 let scheduler = FrameScheduler(fps: 12, frameCount: 24)
 precondition(scheduler.frameIndex(elapsedSeconds: 0) == 0)
@@ -46,6 +63,7 @@ precondition(settings.fpsProfile.fps == 12)
 precondition(settings.mousePassthrough)
 precondition(settings.appearanceTheme == .system)
 precondition(settings.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
+precondition(settings.sessionGroupDisplay == .stacked)
 precondition(settings.showsStatusBubble(hasActiveEvent: false, dismissed: false))
 precondition(!settings.showsStatusBubble(hasActiveEvent: true, dismissed: true))
 
@@ -53,7 +71,7 @@ let autoHideSettings = BehaviorSettings(autoHide: true)
 precondition(!autoHideSettings.showsStatusBubble(hasActiveEvent: false, dismissed: false))
 precondition(autoHideSettings.showsStatusBubble(hasActiveEvent: true, dismissed: false))
 
-precondition(PetStudioDefaults.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+precondition(AIPetMakerDefaults.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
 let rustBehaviorJSON = """
 {
@@ -64,6 +82,7 @@ let rustBehaviorJSON = """
   "click_menu": true,
   "mouse_passthrough": false,
   "auto_hide": false,
+  "session_group_display": "expanded",
   "fps_profile": "smooth",
   "sources": {
     "codex": true,
@@ -87,11 +106,13 @@ precondition(decoded.fpsProfile == .smooth)
 precondition(decoded.mousePassthrough == false)
 precondition(decoded.appearanceTheme == .dark)
 precondition(decoded.bubbleTransparency == 0.7)
+precondition(decoded.sessionGroupDisplay == .expanded)
 precondition(decoded.sources[.claudeCode] == false)
 precondition(decoded.events[.tool] == false)
 let encoded = try JSONEncoder().encode(decoded)
 let encodedObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
 precondition((encodedObject["sources"] as! [String: Bool])["claude_code"] == false)
+precondition(encodedObject["session_group_display"] as! String == "expanded")
 
 let legacyBehaviorJSON = """
 {
@@ -112,6 +133,7 @@ precondition(legacyBehavior.bubbleTransparency == BehaviorSettings.defaultBubble
 precondition(legacyBehavior.clickMenu == true)
 precondition(legacyBehavior.mousePassthrough == true)
 precondition(legacyBehavior.autoHide == false)
+precondition(legacyBehavior.sessionGroupDisplay == .stacked)
 precondition(legacyBehavior.fpsProfile == .standard)
 precondition(legacyBehavior.sources[.codex] == false)
 precondition(legacyBehavior.sources[.claudeCode] == true)
@@ -182,15 +204,16 @@ let successfulGeneration = [
     GenerationMessage(role: "assistant", content: "完成，可在宠物库启用。", progress: 1, createdAt: "", kind: "generation_completed")
 ]
 precondition(GenerationConversation.succeeded(successfulGeneration))
-precondition(GenerationConversation.canSendReply(successfulGeneration))
+precondition(!GenerationConversation.canSendReply(successfulGeneration))
 precondition(!GenerationConversation.terminalUnsuccessful(successfulGeneration))
 precondition(GenerationConversation.activeStepIndex(messages: successfulGeneration, progress: 1) == 3)
 
-let legacySuccessfulGeneration = [
+let untypedLegacyGeneration = [
     GenerationMessage(role: "assistant", content: "完成，可在宠物库启用。", progress: 1, createdAt: "")
 ]
-precondition(GenerationConversation.succeeded(legacySuccessfulGeneration))
-precondition(GenerationConversation.canSendReply(legacySuccessfulGeneration))
+precondition(!GenerationConversation.succeeded(untypedLegacyGeneration))
+precondition(!GenerationConversation.terminalUnsuccessful(untypedLegacyGeneration))
+precondition(!GenerationConversation.canSendReply(untypedLegacyGeneration))
 
 let inputRequestGeneration = [
     GenerationMessage(role: "assistant", content: "需要补充角色参考。", progress: 0.18, createdAt: "", kind: "input_request")
@@ -398,9 +421,24 @@ let codexConnectionRepairable = AgentConnectionStatus(
     source: .codex,
     items: [
         ConnectionCheckItem(name: "Codex CLI", status: .ok, detail: "命令可用"),
-        ConnectionCheckItem(name: "插件源", status: .needsFix, detail: "待写入")
+        ConnectionCheckItem(
+            code: .managedConnector,
+            name: "插件源",
+            status: .needsFix,
+            detail: "待写入",
+            recoveryAction: .confirmManagedRepair
+        )
     ],
-    installPaths: ["/tmp/agent-pet-companion"]
+    installPaths: ["/tmp/agent-pet-companion"],
+    capabilities: AgentConnectorCapabilities(
+        contractVersion: "codex-current",
+        subscribedEvents: [],
+        mappedInformation: [],
+        privacyExclusions: [],
+        repairableConnectorIssue: true,
+        managedPathConflict: false,
+        canUninstallManagedConnector: false
+    )
 )
 precondition(!codexConnectionRepairable.hasInstalledConnectorArtifacts)
 precondition(codexConnectionRepairable.hasRepairableConnectorIssue)
@@ -412,7 +450,17 @@ let opencodeConnectionInstalled = AgentConnectionStatus(
         ConnectionCheckItem(name: "Plugin", status: .ok, detail: "已安装"),
         ConnectionCheckItem(name: "OpenCode Server", status: .ok, detail: "已配置")
     ],
-    installPaths: ["/tmp/opencode"]
+    installPaths: ["/tmp/opencode"],
+    connectorInstalled: true,
+    capabilities: AgentConnectorCapabilities(
+        contractVersion: "opencode-current",
+        subscribedEvents: [],
+        mappedInformation: [],
+        privacyExclusions: [],
+        repairableConnectorIssue: false,
+        managedPathConflict: false,
+        canUninstallManagedConnector: true
+    )
 )
 precondition(opencodeConnectionInstalled.hasInstalledConnectorArtifacts)
 precondition(!opencodeConnectionInstalled.hasRepairableConnectorIssue)

@@ -3,238 +3,310 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct PetStudioView: View {
+struct AIPetMakerView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.controlCenterShellMode) private var shellMode
 
     var body: some View {
         PageScroll {
-            HeaderView(
-                title: "宠物 Studio",
-                subtitle: store.studioTab == .new
-                    ? studioSubtitle
-                    : "历史创建的宠物"
-            ) {
-                Picker(APCLocalization.text(.studioPickerLabel), selection: $store.studioTab) {
-                    ForEach(StudioTab.allCases) { tab in
-                        Text(tabTitle(tab)).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .accessibilityLabel(APCLocalization.text(.studioPickerLabel))
-                .frame(width: 206)
+            PageActionHeader(title: pageTitle, subtitle: pageSubtitle) {
+                headerActions
             }
+            .accessibilityIdentifier("maker.page.header")
 
-            if store.studioTab == .new {
-                AdaptiveTwoColumnLayout(minimumColumnWidth: 300, spacing: 18) {
-                    NewPetFormView()
-                    AISessionPanel()
-                }
+            if PetStudioPresentation.showsModificationWorkspace(for: store.generationSession) {
+                modificationWorkspace
             } else {
-                PetLibraryView()
+                creationWorkspace
+            }
+        }
+        .accessibilityIdentifier("maker.page")
+    }
+
+    @ViewBuilder
+    private var creationWorkspace: some View {
+        if shellMode == .allColumns {
+            HStack(alignment: .top, spacing: 0) {
+                MakerBriefView()
+                    .frame(minWidth: 300, idealWidth: 320, maxWidth: 340)
+                    .padding(.trailing, 20)
+                Divider()
+                GenerationSessionView()
+                    .frame(minWidth: 380, maxWidth: .infinity)
+                    .padding(.leading, 20)
+            }
+            .accessibilityIdentifier("maker.layout.two-stage")
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                MakerBriefView()
+                Divider()
+                GenerationSessionView()
+            }
+            .accessibilityIdentifier("maker.layout.stacked")
+        }
+    }
+
+    @ViewBuilder
+    private var modificationWorkspace: some View {
+        if shellMode == .allColumns {
+            HStack(alignment: .top, spacing: 0) {
+                GenerationSessionView()
+                    .frame(minWidth: 420, maxWidth: .infinity)
+                    .padding(.trailing, 20)
+                Divider()
+                ValidatedBaselineInspector()
+                    .frame(width: 284)
+                    .padding(.leading, 20)
+            }
+            .accessibilityIdentifier("maker.layout.modification-wide")
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                ValidatedBaselineInspector()
+                Divider()
+                GenerationSessionView()
+            }
+            .accessibilityIdentifier("maker.layout.modification-stacked")
+        }
+    }
+
+    @ViewBuilder
+    private var headerActions: some View {
+        HStack(spacing: 8) {
+            if store.generationSession.isActive {
+                Button {
+                    store.cancelGeneration()
+                } label: {
+                    Label(
+                        APCLocalization.text(
+                            store.generationSession.state == .cancelling
+                                ? .studioActionCancelling
+                                : .studioActionCancelTask
+                        ),
+                        systemImage: "xmark.circle"
+                    )
+                }
+                .disabled(!store.generationSession.canCancel)
+                .accessibilityIdentifier("maker.action.cancel")
+            } else if store.generationSession.canRetry {
+                Button {
+                    store.retryGeneration()
+                } label: {
+                    Label(APCLocalization.text(.commonRetry), systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!store.canRetryGeneration)
+                .help(retryAvailabilityHint)
+                .accessibilityHint(retryAvailabilityHint)
+                .accessibilityIdentifier("maker.action.retry")
+            } else if store.generationSession.state == .idle {
+                Button(APCLocalization.text(.commonClear)) {
+                    store.clearStudioForm()
+                }
+                .disabled(store.descriptionText.isEmpty && store.referenceImages.isEmpty)
+                .accessibilityIdentifier("maker.action.clear")
+
+                Button {
+                    store.startGeneration()
+                } label: {
+                    Label(APCLocalization.text(.studioActionStart), systemImage: "sparkles")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!store.canStartGeneration)
+                .accessibilityIdentifier("maker.action.start")
+            } else {
+                Button {
+                    store.showNewPetDraft()
+                } label: {
+                    Label(APCLocalization.text(.studioActionNew), systemImage: "plus")
+                }
+                .accessibilityIdentifier("maker.action.new")
             }
         }
     }
 
-    private func tabTitle(_ tab: StudioTab) -> String {
-        APCLocalization.text(tab == .new ? .studioTabNew : .studioTabLibrary)
+    private var retryAvailabilityHint: String {
+        guard store.referenceReselectionCount > 0 else { return "" }
+        return APCLocalizedPresentation.referenceImageIssue(
+            .reselectionRequired(store.referenceReselectionCount)
+        )
     }
 
-    private var studioSubtitle: String {
-        if store.generationSession.operation == .modify,
-           store.generationSession.state != .idle
-        {
-            return store.generationStateTitle
+    private var pageTitle: String {
+        guard store.generationSession.operation == .modify,
+              store.generationSession.state != .idle
+        else { return APCLocalization.text(.studioPageTitle) }
+        if let petID = store.generationSession.resultPetID,
+           let pet = store.pets.first(where: { $0.id == petID }) {
+            return APCLocalization.format(.studioPageModifyFormat, pet.name)
         }
-        return store.generationSession.isActive
-            ? store.generationStateTitle
-            : "新建桌面宠物预览"
+        return APCLocalization.text(.studioPageModifySession)
+    }
+
+    private var pageSubtitle: String {
+        switch store.generationSession.state {
+        case .idle:
+            APCLocalization.text(.studioSubtitleIdle)
+        case .starting, .running, .waitingForInput, .cancelling:
+            APCLocalizedPresentation.generationStateTitle(
+                store.generationSession.state,
+                operation: store.generationSession.operation
+            )
+        case .succeeded:
+            PetStudioPresentation.completedHistoryIsIncomplete(store.generationSession)
+                ? APCLocalization.text(.studioIncompleteHistoryTitle)
+                : APCLocalization.text(.studioSubtitleSucceeded)
+        case .failed:
+            APCLocalization.text(.studioSubtitleFailed)
+        case .cancelled:
+            APCLocalization.text(.studioSubtitleCancelled)
+        }
     }
 }
 
-struct HeaderView<Trailing: View>: View {
-    var title: String
-    var subtitle: String
-    @ViewBuilder var trailing: Trailing
+struct MakerBriefView: View {
+    @EnvironmentObject private var store: AppStore
+
+    private var fieldsAreLocked: Bool {
+        store.generationSession.isActive
+    }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top) {
-                titleBlock
-                Spacer(minLength: 16)
-                trailing
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Text(APCLocalization.text(.studioNewPet))
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                if fieldsAreLocked {
+                    Label(APCLocalization.text(.studioSubmitted), systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                titleBlock
-                trailing
+            descriptionField
+            Divider()
+            stylePicker
+            Divider()
+            qualityPicker
+            Divider()
+            referenceImages
+
+            if fieldsAreLocked, let form = store.generationSession.submittedForm {
+                Divider()
+                SubmittedFormSummary(form: form)
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("maker.brief")
+    }
+
+    private var descriptionField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(APCLocalization.text(.studioDescriptionHeading))
+                .font(.headline)
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: Binding(
+                    get: { store.descriptionText },
+                    set: { store.updateGenerationDescription($0) }
+                ))
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 112)
+                .disabled(fieldsAreLocked)
+                .accessibilityLabel(APCLocalization.text(.studioDescriptionLabel))
+                .accessibilityIdentifier("maker.brief.description")
+
+                if store.descriptionText.isEmpty {
+                    Text(APCLocalization.text(.studioDescriptionExample))
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 16)
+                        .allowsHitTesting(false)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(APCDesign.stroke, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+
+            if store.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label(APCLocalization.text(.studioDescriptionRequired), systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("\(GenerationPromptPolicy.scalarCount(store.descriptionText))/\(AIPetMakerDefaults.maximumDescriptionCharacters)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityLabel(APCLocalization.format(
+                    .commonValueOfTotalFormat,
+                    APCLocalization.text(.studioDescriptionLabel),
+                    GenerationPromptPolicy.scalarCount(store.descriptionText),
+                    AIPetMakerDefaults.maximumDescriptionCharacters
+                ))
         }
     }
 
-    private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 24, weight: .bold))
-            Text(subtitle)
-                .font(.callout)
+    private var stylePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(APCLocalization.text(.studioStyleHeading))
+                .font(.headline)
+            FlowLayout(spacing: 8) {
+                ForEach(StylePreset.allCases) { style in
+                    PillButton(
+                        title: APCLocalizedPresentation.styleTitle(style),
+                        selected: style == store.selectedStyle,
+                        semanticLabel: UIControlSemantics.styleLabel(style)
+                    ) {
+                        store.selectGenerationStyle(style)
+                    }
+                    .disabled(fieldsAreLocked)
+                }
+            }
+            .accessibilityIdentifier("maker.brief.style")
+        }
+    }
+
+    private var qualityPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(APCLocalization.text(.studioQualityHeading))
+                .font(.headline)
+
+            Picker(APCLocalization.text(.studioQualityHeading), selection: Binding(
+                get: { store.selectedQuality },
+                set: { store.selectGenerationQuality($0) }
+            )) {
+                ForEach(QualityLevel.allCases) { quality in
+                    Text(APCLocalizedPresentation.qualityTitle(quality)).tag(quality)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(fieldsAreLocked)
+            .accessibilityIdentifier("maker.brief.quality")
+
+            Text(APCLocalization.format(
+                .studioQualityContractFormat,
+                APCLocalizedPresentation.qualityDetail(store.selectedQuality)
+            ))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
-}
 
-struct NewPetFormView: View {
-    @EnvironmentObject private var store: AppStore
-
-    var body: some View {
-        Surface {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(isModificationSession ? "修改宠物" : "新建宠物")
-                    .font(.title3.bold())
-
-                if store.generationSession.isActive {
-                    Label(
-                        isModificationSession
-                            ? "活动修改使用已校验的宠物基线；完成或取消前表单已冻结"
-                            : "活动任务使用已提交表单；完成或取消前草稿已冻结",
-                        systemImage: "lock.fill"
-                    )
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("已提交表单已冻结")
-                }
-
-                if isModificationSession {
-                    Divider()
-                    SubmittedFormSummary(form: store.generationSession.submittedForm)
-                } else {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("描述")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ZStack(alignment: .topLeading) {
-                        TextEditor(text: Binding(
-                            get: { store.descriptionText },
-                            set: { store.updateGenerationDescription($0) }
-                        ))
-                            .font(.body)
-                            .scrollContentBackground(.hidden)
-                            .padding(10)
-                            .frame(height: 112)
-                            .accessibilityLabel("宠物描述")
-                            .disabled(store.generationSession.isActive)
-
-                        if store.descriptionText.isEmpty {
-                            Text("描述宠物外观、气质和动作")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 18)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .apcLiquidGlass(
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous),
-                        interactive: true
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("风格预设")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    FlowLayout(spacing: 9) {
-                        ForEach(StylePreset.allCases) { style in
-                            PillButton(
-                                title: style.rawValue,
-                                selected: style == store.selectedStyle,
-                                semanticLabel: UIControlSemantics.styleLabel(style)
-                            ) {
-                                store.selectGenerationStyle(style)
-                            }
-                            .disabled(store.generationSession.isActive)
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("图像画质 · 实机渲染分辨率")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 12)], spacing: 12) {
-                        ForEach(QualityLevel.allCases) { quality in
-                            Button {
-                                store.selectGenerationQuality(quality)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    HStack {
-                                        Text(quality.title)
-                                            .font(.headline)
-                                        Spacer()
-                                        if quality == store.selectedQuality {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(APCDesign.accent)
-                                                .accessibilityHidden(true)
-                                        }
-                                    }
-                                    Text(quality.detail)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
-                                .padding(12)
-                                .apcLiquidGlass(
-                                    in: RoundedRectangle(cornerRadius: 14, style: .continuous),
-                                    interactive: true
-                                )
-                                .overlay {
-                                    if quality == store.selectedQuality {
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .stroke(APCDesign.accent.opacity(0.62), lineWidth: 1.25)
-                                            .allowsHitTesting(false)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(UIControlSemantics.qualityLabel(quality))
-                            .accessibilityValue(
-                                "\(quality.detail)，\(UIControlSemantics.selectionValue(isSelected: quality == store.selectedQuality))"
-                            )
-                            .accessibilityAddTraits(quality == store.selectedQuality ? .isSelected : [])
-                            .disabled(store.generationSession.isActive)
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("参考图")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ReferenceImageDropZone()
-                }
-
-                if store.generationSession.isActive {
-                    Divider()
-                    SubmittedFormSummary(form: store.generationSession.submittedForm)
-                }
-
-                HStack {
-                    Spacer()
-                    SecondaryActionButton(title: "清空", systemImage: "xmark") {
-                        store.clearStudioForm()
-                    }
-                    .disabled(store.generationSession.isActive)
-                    PrimaryActionButton(
-                        title: store.generationSession.isActive ? store.generationStateTitle : "发起 AI 辅助会话",
-                        systemImage: "sparkles"
-                    ) {
-                        store.startGeneration()
-                    }
-                    .disabled(!store.canStartGeneration)
-                }
-                }
-            }
+    private var referenceImages: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(APCLocalization.text(.studioReferencesHeading))
+                .font(.headline)
+            ReferenceImageDropZone()
         }
     }
 }
@@ -244,55 +316,76 @@ struct ReferenceImageDropZone: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        Button {
-            store.chooseReferenceImages()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                Text(title)
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                store.chooseReferenceImages()
+            } label: {
+                Label(title, systemImage: "photo.badge.plus")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(isDropTargeted ? APCDesign.accent : .secondary)
+                    .frame(maxWidth: .infinity, minHeight: 72)
+                    .contentShape(Rectangle())
             }
-            .font(.callout.weight(.semibold))
-            .foregroundStyle(isDropTargeted ? APCDesign.accent : .secondary)
-            .frame(maxWidth: .infinity, minHeight: 76)
-            .apcLiquidGlass(
-                in: RoundedRectangle(cornerRadius: 16, style: .continuous),
-                interactive: true
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(
-                        isDropTargeted ? APCDesign.accent.opacity(0.65) : APCDesign.stroke,
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 4])
+                        isDropTargeted ? APCDesign.accent : APCDesign.stroke,
+                        style: StrokeStyle(lineWidth: 1, dash: [5, 4])
                     )
                     .allowsHitTesting(false)
             }
-        }
-        .buttonStyle(.plain)
-        .disabled(store.generationSession.isActive)
-        .onDrop(
-            of: [UTType.fileURL.identifier],
-            isTargeted: $isDropTargeted,
-            perform: handleDrop(providers:)
-        )
-        if !store.referenceImages.isEmpty {
-            ReferenceImageStrip(paths: store.referenceImages)
-                .disabled(store.generationSession.isActive)
+            .disabled(store.generationSession.isActive)
+            .onDrop(
+                of: [UTType.fileURL.identifier],
+                isTargeted: $isDropTargeted,
+                perform: handleDrop(providers:)
+            )
+            .accessibilityIdentifier("maker.brief.references.dropzone")
+
+            if !store.referenceImages.isEmpty {
+                ReferenceImageStrip(paths: store.referenceImages)
+                    .disabled(store.generationSession.isActive)
+            }
+
+            if let issue = store.referenceImageIssue {
+                Label(
+                    APCLocalizedPresentation.referenceImageIssue(issue),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(APCDesign.destructive)
+                .accessibilityIdentifier("maker.brief.references.error")
+            }
+
+            Text(APCLocalization.text(.studioReferencesContract))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(APCLocalization.text(.studioReferencesPrivacy))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
     private var title: String {
-        if store.referenceImages.isEmpty {
-            return "拖入图片或点击选择"
-        }
-        return "已选择 \(store.referenceImages.count) 张，继续添加"
+        store.referenceImages.isEmpty
+            ? APCLocalization.text(.studioReferencesDropEmpty)
+            : APCLocalization.format(
+                .studioReferencesDropCountFormat,
+                store.referenceImages.count
+            )
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard !store.generationSession.isActive else { return false }
-        var acceptedDrop = false
-
+        var accepted = false
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            acceptedDrop = true
+            accepted = true
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                 guard let url = ReferenceImageDropItem.fileURL(from: item) else { return }
                 Task { @MainActor in
@@ -300,8 +393,7 @@ struct ReferenceImageDropZone: View {
                 }
             }
         }
-
-        return acceptedDrop
+        return accepted
     }
 }
 
@@ -311,9 +403,9 @@ struct ReferenceImageStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(paths, id: \.self) { path in
-                    ReferenceImageChip(path: path) {
+            HStack(spacing: 8) {
+                ForEach(Array(paths.enumerated()), id: \.element) { index, path in
+                    ReferenceImageChip(index: index + 1, path: path) {
                         store.removeReferenceImage(path)
                     }
                 }
@@ -324,296 +416,337 @@ struct ReferenceImageStrip: View {
 }
 
 struct ReferenceImageChip: View {
+    var index: Int
     var path: String
     var remove: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             Group {
-                if let image {
+                if let image = NSImage(contentsOfFile: path) {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFill()
                 } else {
                     Image(systemName: "photo")
-                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 38, height: 38)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(APCDesign.stroke))
+            .frame(width: 34, height: 34)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-            Text(fileName)
-                .font(.caption.weight(.semibold))
+            Text(APCLocalization.format(.studioReferenceItemFormat, index))
+                .font(.caption.weight(.medium))
                 .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 122, alignment: .leading)
+                .frame(maxWidth: 120, alignment: .leading)
 
             Button(action: remove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
+                Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .apcLiquidGlass(in: Circle(), interactive: true)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(APCLocalization.text(.studioReferencesRemove))
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 7)
-        .padding(.vertical, 6)
-        .apcLiquidGlass(
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
-            interactive: true
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
         )
-    }
-
-    private var image: NSImage? {
-        NSImage(contentsOfFile: path)
-    }
-
-    private var fileName: String {
-        URL(fileURLWithPath: path).lastPathComponent
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(APCDesign.stroke, lineWidth: 1)
+        }
     }
 }
 
-private enum ReferenceImageDropItem {
+enum ReferenceImageDropItem {
     static func fileURL(from item: NSSecureCoding?) -> URL? {
-        if let url = item as? URL {
-            return url
-        }
-
-        if let nsURL = item as? NSURL {
-            return nsURL as URL
-        }
-
+        if let url = item as? URL { return url }
+        if let nsURL = item as? NSURL { return nsURL as URL }
         if let data = item as? Data,
            let string = String(data: data, encoding: .utf8),
            let url = URL(string: string) {
             return url
         }
-
-        if let string = item as? String {
-            return URL(string: string)
-        }
-
+        if let string = item as? String { return URL(string: string) }
         return nil
     }
 }
 
-struct AISessionPanel: View {
+struct GenerationSessionView: View {
     @EnvironmentObject private var store: AppStore
+    @FocusState private var replyIsFocused: Bool
 
     var body: some View {
-        Surface {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("AI 辅助会话")
-                    .font(.title3.bold())
-
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if store.generationSession.state != .idle {
-                            FormSummary()
-                        }
-                        GenerationSteps()
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .scrollIndicators(.visible)
-                .frame(maxWidth: .infinity, minHeight: 360, maxHeight: 520, alignment: .topLeading)
-                .apcLiquidGlass(
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                APCBrandMark(size: 24)
+                    .accessibilityHidden(true)
+                Text(APCLocalization.text(
+                    store.generationSession.operation == .modify
+                        ? .studioPageModifySession
+                        : .studioSessionCreate
+                ))
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                StatusBadge(
+                    title: APCLocalizedPresentation.generationStateTitle(
+                        store.generationSession.state,
+                        operation: store.generationSession.operation
+                    ),
+                    tone: PetStudioPresentation.statusTone(for: store.generationSession.state)
                 )
+            }
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        replyField
-                        sessionActions
-                    }
-                    VStack(alignment: .leading, spacing: 10) {
-                        replyField
-                        HStack(spacing: 10) {
-                            sessionActions
-                        }
-                    }
+            GenerationProgressView()
+
+            Group {
+                if store.generationSession.state == .idle {
+                    welcomeState
+                } else {
+                    timeline
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 330, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(APCDesign.stroke, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+
+            if store.generationSession.state != .idle {
+                terminalAction
+                if !store.generationSession.state.isTerminal {
+                    replyComposer
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onChange(of: store.generationSession.state) { _, newState in
+            if newState == .waitingForInput {
+                replyIsFocused = true
+            }
+        }
+        .onAppear {
+            guard PetStudioPresentation.shouldFocusComposer(
+                onAppearFor: store.generationSession.state
+            ) else { return }
+            Task { @MainActor in
+                replyIsFocused = true
+            }
+        }
+        .accessibilityIdentifier("maker.session")
     }
 
-    private var replyField: some View {
-        TextField(replyPlaceholder, text: $store.generationReplyText)
-            .textFieldStyle(.plain)
-            .onSubmit {
-                store.sendGenerationReply()
+    private var welcomeState: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Spacer(minLength: 28)
+            HStack {
+                Spacer()
+                VStack(spacing: 10) {
+                    APCBrandMark(size: 48)
+                        .accessibilityHidden(true)
+                    Text(APCLocalization.text(.studioWelcomeTitle))
+                        .font(.title3.weight(.semibold))
+                    Text(APCLocalization.text(.studioWelcomeDetail))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
             }
-            .disabled(!replyInputEnabled)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .apcLiquidGlass(
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous),
-                interactive: true
-            )
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label(APCLocalization.text(.studioOutputContractTitle), systemImage: "checkmark.seal")
+                    .font(.headline)
+                Text(APCLocalization.text(.studioOutputContractDetail))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(
+                    APCLocalization.text(.studioOutputPrivacy),
+                    systemImage: "lock.shield"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            Spacer(minLength: 20)
+        }
+        .padding(20)
+    }
+
+    private var timeline: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if let form = store.generationSession.submittedForm {
+                    SubmittedFormSummary(form: form)
+                    Divider()
+                }
+
+                ForEach(PetStudioPresentation.timelineMessages(
+                    store.generationSession.messages
+                )) { message in
+                    GenerationTimelineRow(message: message)
+                }
+
+                if store.generationSession.messages.isEmpty {
+                    ProgressView(APCLocalization.text(.studioPreparing))
+                        .frame(maxWidth: .infinity, minHeight: 160)
+                }
+            }
+            .padding(16)
+        }
+        .scrollIndicators(.visible)
     }
 
     @ViewBuilder
-    private var sessionActions: some View {
-        if store.generationSession.isActive {
-            SecondaryActionButton(
-                title: store.generationSession.state == .cancelling ? "正在取消" : "取消",
-                systemImage: "xmark.circle"
+    private var terminalAction: some View {
+        switch store.generationSession.state {
+        case .failed:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioFailedTitle),
+                detail: PetStudioPresentation.failureDetail(
+                    for: store.generationSession.messages
+                ),
+                systemImage: "exclamationmark.triangle",
+                color: APCDesign.destructive
+            )
+        case .cancelled:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioCancelledTitle),
+                detail: APCLocalization.text(.studioCancelledDetail),
+                systemImage: "xmark.circle",
+                color: .secondary
+            )
+        case .succeeded:
+            if PetStudioPresentation.completedHistoryIsIncomplete(
+                store.generationSession
             ) {
-                store.cancelGeneration()
+                InlineSessionNotice(
+                    title: APCLocalization.text(.studioIncompleteHistoryTitle),
+                    detail: APCLocalization.text(.studioIncompleteHistoryDetail),
+                    systemImage: "exclamationmark.triangle.fill",
+                    color: APCDesign.warning
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    InlineSessionNotice(
+                        title: APCLocalization.text(.studioSucceededTitle),
+                        detail: APCLocalization.text(.studioSuccessGeneric),
+                        systemImage: "checkmark.seal.fill",
+                        color: APCDesign.success
+                    )
+
+                    if let petID = store.generationSession.resultPetID {
+                        LabeledContent(APCLocalization.text(.studioSuccessPetID)) {
+                            Text(petID)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let revisionID = store.generationSession.resultRevisionID {
+                        LabeledContent(APCLocalization.text(.studioSuccessRevision)) {
+                            Text(revisionID)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let validation = store.generationSession.validationSummary {
+                        LabeledContent(
+                            APCLocalization.text(.studioSuccessValidation),
+                            value: APCLocalization.format(
+                                .studioSuccessValidationFormat,
+                                validation.stateCount,
+                                validation.frameCount,
+                                validation.warningCount
+                            )
+                        )
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button(APCLocalization.text(.studioViewLibrary)) {
+                            store.selection = .library
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("maker.action.view-library")
+                    }
+                }
             }
-            .disabled(!store.generationSession.canCancel)
+        case .cancelling:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioActionCancelling),
+                detail: APCLocalization.text(.studioCancellingDetail),
+                systemImage: "hourglass",
+                color: .secondary
+            )
+        default:
+            EmptyView()
         }
-        if store.canRetryGeneration {
-            SecondaryActionButton(title: "重试", systemImage: "arrow.clockwise") {
-                store.retryGeneration()
-            }
-        }
-        Button {
-            store.sendGenerationReply()
-        } label: {
-            Label("发送", systemImage: "arrow.up")
-                .font(.callout.weight(.semibold))
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .disabled(!canSend)
     }
 
-    private var canSend: Bool {
-        replyInputEnabled && !store.generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private var replyComposer: some View {
+        HStack(spacing: 8) {
+            TextField(replyPlaceholder, text: $store.generationReplyText)
+                .textFieldStyle(.roundedBorder)
+                .focused($replyIsFocused)
+                .onSubmit { store.sendGenerationReply() }
+                .disabled(!store.canSendGenerationReply)
+                .accessibilityIdentifier("maker.session.reply")
+
+            Button {
+                store.sendGenerationReply()
+            } label: {
+                Image(systemName: "arrow.up")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canSendReply)
+            .accessibilityLabel(APCLocalization.text(.studioReplySend))
+            .accessibilityIdentifier("maker.session.send")
+        }
     }
 
-    private var replyInputEnabled: Bool {
+    private var canSendReply: Bool {
         store.canSendGenerationReply
+            && !store.generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var replyPlaceholder: String {
-        let modifying = store.generationSession.operation == .modify
-        if store.isWaitingForGenerationInput {
-            return modifying ? "回复 AI 的追问后继续修改" : "回复 AI 的追问后继续生成"
+        switch store.generationSession.state {
+        case .waitingForInput: APCLocalization.text(.studioReplyWaiting)
+        case .succeeded: APCLocalization.text(.studioReplySucceeded)
+        case .starting, .running: APCLocalization.text(.studioReplyRunning)
+        case .cancelling: APCLocalization.text(.studioReplyCancelling)
+        case .failed: APCLocalization.text(.studioReplyFailed)
+        case .cancelled: APCLocalization.text(.studioReplyCancelled)
+        case .idle: APCLocalization.text(.studioReplyIdle)
         }
-        if store.generationSession.state == .cancelling {
-            return "正在取消当前任务"
-        }
-        if store.generationSession.isActive {
-            return modifying ? "修改完成后可继续调整" : "生成完成后可继续调整"
-        }
-        if store.generationSession.jobID == nil {
-            return "发起 AI 辅助会话后可继续调整"
-        }
-        if !store.canSendGenerationReply {
-            return modifying ? "修改成功后可继续调整" : "生成成功后可继续调整"
-        }
-        return "继续描述或输入调整意见"
     }
 
 }
 
-struct FormSummary: View {
-    @EnvironmentObject private var store: AppStore
-
-    var body: some View {
-        SubmittedFormSummary(form: store.generationSession.submittedForm)
-    }
-}
-
-struct SubmittedFormSummary: View {
-    @EnvironmentObject private var store: AppStore
-    var form: GenerationForm?
-
-    var body: some View {
-        if let form {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 138), spacing: 10)], spacing: 10) {
-                SummaryTile(title: "描述", value: form.description)
-                SummaryTile(title: "风格", value: form.style)
-                SummaryTile(
-                    title: "画质",
-                    value: "\(form.quality.title) · \(form.quality.renderSize.width)×\(form.quality.renderSize.height)"
-                )
-                SummaryTile(title: "参考图", value: "\(form.referenceImages.count) 张")
-                SummaryTile(title: "会话状态", value: store.generationStateTitle)
-            }
-        } else {
-            Label("当前会话未提供已提交表单摘要", systemImage: "info.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct SummaryTile: View {
-    var title: String
-    var value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.callout.weight(.bold))
-            Text(value)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .apcLiquidGlass(
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-    }
-}
-
-struct GenerationSteps: View {
+struct GenerationProgressView: View {
     @EnvironmentObject private var store: AppStore
 
     private var steps: [String] {
         store.generationSession.operation == .modify
-            ? ["读取基线", "补充需求", "生成修订", "校验并替换"]
-            : ["读取表单", "补充需求", "生成预览", "保存入库"]
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, title in
-                let active = activeIndex >= index
-                HStack(spacing: 12) {
-                    Text("\(index + 1)")
-                        .font(.headline.bold())
-                        .foregroundStyle(active ? APCDesign.onAccent : .secondary)
-                        .frame(width: 28, height: 28)
-                        .background(Circle().fill(active ? APCDesign.accent : Color(nsColor: .quaternaryLabelColor).opacity(0.18)))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(title)
-                            .font(.headline)
-                        Text(stepDetail(index))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(12)
-                .apcLiquidGlass(
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                )
-                .overlay {
-                    if active {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(APCDesign.accent.opacity(0.32), lineWidth: 1)
-                            .allowsHitTesting(false)
-                    }
-                }
-            }
-
-            if !store.generationSession.messages.isEmpty {
-                Divider()
-                ForEach(store.generationSession.messages) { message in
-                    MessageBubble(message: message)
-                }
-            }
-        }
+            ? [
+                APCLocalization.text(.studioStepBaseline),
+                APCLocalization.text(.studioStepBrief),
+                APCLocalization.text(.studioStepRevision),
+                APCLocalization.text(.studioStepValidation)
+            ]
+            : [
+                APCLocalization.text(.studioStepBrief),
+                APCLocalization.text(.studioStepGeneration),
+                APCLocalization.text(.studioStepValidation),
+                APCLocalization.text(.studioStepLibrary)
+            ]
     }
 
     private var activeIndex: Int {
@@ -623,57 +756,481 @@ struct GenerationSteps: View {
         )
     }
 
-    private func stepDetail(_ index: Int) -> String {
-        let needsInput = store.isWaitingForGenerationInput
-        let failed = store.generationSession.state == .failed
-        let succeeded = store.generationSession.state == .succeeded
-        let modifying = store.generationSession.operation == .modify
-
-        if modifying {
-            return switch index {
-            case 0: "读取当前 .petpack，并锁定同一宠物 ID。"
-            case 1: needsInput ? "等待你的回复后继续修改。" : "信息不足时在会话中追问。"
-            case 2: failed ? "修改未完成，当前版本保持不变。" : "仅生成要求调整的状态资源。"
-            default: succeeded ? "新修订已校验并写回宠物库。" : "校验通过后原子提交新修订。"
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                stepViews(horizontal: true)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                stepViews(horizontal: false)
             }
         }
+        .accessibilityIdentifier("maker.session.progress")
+    }
 
-        return switch index {
-        case 0: "描述、风格、画质、参考图。"
-        case 1: needsInput ? "等待你的回复后继续生成。" : "信息不足时在会话中追问。"
-        case 2: failed ? "生成未完成，查看会话消息。" : "主形象与状态动作。"
-        default: succeeded ? "已进入宠物库。" : "完成后进入宠物库。"
+    @ViewBuilder
+    private func stepViews(horizontal: Bool) -> some View {
+        ForEach(Array(steps.enumerated()), id: \.offset) { index, title in
+            let state = PetStudioPresentation.stageState(
+                at: index,
+                activeIndex: activeIndex,
+                sessionState: store.generationSession.state
+            )
+            HStack(spacing: 6) {
+                Image(systemName: state.systemImage)
+                    .foregroundStyle(state.color)
+                    .accessibilityHidden(true)
+                Text(title)
+                    .font(.caption.weight(state == .current ? .semibold : .regular))
+                    .foregroundStyle(state == .upcoming ? .secondary : .primary)
+            }
+            .accessibilityLabel(APCLocalization.format(
+                .connectionsMetadataFormat,
+                title,
+                state.accessibilityTitle
+            ))
+
+            if horizontal, index < steps.count - 1 {
+                Divider()
+                    .frame(maxWidth: .infinity)
+            }
         }
     }
 }
 
-private extension NewPetFormView {
-    var isModificationSession: Bool {
-        store.generationSession.operation == .modify
-            && store.generationSession.isActive
-    }
-}
-
-struct MessageBubble: View {
-    var message: GenerationMessage
+struct SubmittedFormSummary: View {
+    var form: GenerationForm?
 
     var body: some View {
-        Text(message.content)
-            .font(.callout)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-            .apcLiquidGlass(
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        if let form {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(APCLocalization.text(.studioSubmittedBrief))
+                    .font(.headline)
+                LabeledContent(APCLocalization.text(.studioFieldDescription), value: form.description)
+                LabeledContent(
+                    APCLocalization.text(.studioFieldStyle),
+                    value: localizedStyle(form.style)
+                )
+                LabeledContent(
+                    APCLocalization.text(.studioFieldQuality),
+                    value: "\(APCLocalizedPresentation.qualityTitle(form.quality)) · \(form.quality.renderSize.width)×\(form.quality.renderSize.height)"
+                )
+                LabeledContent(
+                    APCLocalization.text(.studioFieldReferences),
+                    value: APCLocalization.format(.commonImagesFormat, form.referenceImages.count)
+                )
+            }
+            .font(.caption)
+        } else {
+            Label(APCLocalization.text(.studioSubmittedPending), systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func localizedStyle(_ storedValue: String) -> String {
+        guard let style = StylePreset(rawValue: storedValue) else { return storedValue }
+        return APCLocalizedPresentation.styleTitle(style)
+    }
+}
+
+struct GenerationTimelineRow: View {
+    var message: GenerationMessage
+
+    private var isUser: Bool { message.role == "user" }
+
+    var body: some View {
+        if PetStudioPresentation.isProgressMessage(message) {
+            Label(message.content, systemImage: "gearshape.2")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isUser ? APCLocalization.text(.studioMessageYou) : "AI")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(message.content)
+                    .font(.callout)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isUser ? APCDesign.accentSoft : Color(nsColor: .controlBackgroundColor))
             )
             .overlay {
-                if message.role == "user" {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(APCDesign.accent.opacity(0.45), lineWidth: 1)
-                        .allowsHitTesting(false)
-                }
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isUser ? APCDesign.accent.opacity(0.35) : APCDesign.stroke, lineWidth: 1)
             }
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+            .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        }
+    }
+}
+
+struct ValidatedBaselineInspector: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var baselineRevision: PetRevisionHistoryRecord?
+    @State private var baselineLoadState = BaselineLoadState.idle
+
+    private var pet: PetSummary? {
+        guard let petID = store.generationSession.resultPetID else { return nil }
+        return store.pets.first(where: { $0.id == petID })
+    }
+
+    private var requestedRevisionID: String? {
+        store.generationSession.baselineRevisionID
+    }
+
+    private var lookupIdentity: String {
+        [
+            store.generationSession.resultPetID ?? "missing-pet",
+            requestedRevisionID ?? "unversioned-submitted-baseline",
+            pet?.petpackPath ?? "pet-not-loaded",
+        ].joined(separator: "|")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(APCLocalization.text(.studioBaselineTitle))
+                    .font(.headline)
+                Spacer()
+                baselineStatusBadge
+            }
+
+            baselineContent
+
+            Label(
+                APCLocalization.text(.studioBaselineSafety),
+                systemImage: "lock.shield"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("maker.baseline.inspector")
+        .task(id: lookupIdentity) {
+            await loadSubmittedRevision()
+        }
+    }
+
+    @ViewBuilder
+    private var baselineStatusBadge: some View {
+        if baselineRevision != nil {
+            StatusBadge(title: APCLocalization.text(.studioBaselineVerified), tone: .good)
+        } else if baselineLoadState == .loading || baselineLoadState == .idle {
+            if requestedRevisionID == nil {
+                StatusBadge(
+                    title: APCLocalization.text(.studioBaselineUnavailableTitle),
+                    tone: .warning
+                )
+            } else {
+                StatusBadge(title: APCLocalization.text(.studioBaselineRestoring), tone: .neutral)
+            }
+        } else {
+            StatusBadge(title: APCLocalization.text(.studioBaselineUnavailableTitle), tone: .warning)
+        }
+    }
+
+    @ViewBuilder
+    private var baselineContent: some View {
+        if let requestedRevisionID {
+            if let baselineRevision {
+                SubmittedRevisionCoverImage(revision: baselineRevision)
+                    .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 240)
+                    .background(baselinePreviewBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                baselineDetails(revisionID: baselineRevision.revisionID)
+            } else if baselineLoadState == .loading || baselineLoadState == .idle {
+                ContentUnavailableView(
+                    APCLocalization.text(.studioBaselineRestoring),
+                    systemImage: "clock.arrow.circlepath",
+                    description: Text(APCLocalization.text(.studioBaselineRestoringDetail))
+                )
+            } else {
+                MissingPetCoverPlaceholder(scale: 0.38)
+                    .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 240)
+                    .background(baselinePreviewBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                Text(APCLocalization.text(.studioBaselineUnavailableDetail))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                baselineDetails(revisionID: requestedRevisionID)
+            }
+        } else if pet != nil {
+            MissingPetCoverPlaceholder(scale: 0.38)
+                .frame(maxWidth: .infinity, minHeight: 190, maxHeight: 240)
+                .background(baselinePreviewBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            Text(APCLocalization.text(.studioBaselineUnavailableDetail))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            unversionedBaselineDetails
+        } else {
+            ContentUnavailableView(
+                APCLocalization.text(.studioBaselineRestoring),
+                systemImage: "clock.arrow.circlepath",
+                description: Text(APCLocalization.text(.studioBaselineRestoringDetail))
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var unversionedBaselineDetails: some View {
+        if let petID = store.generationSession.resultPetID {
+            LabeledContent(APCLocalization.text(.studioBaselinePetID), value: petID)
+        }
+    }
+
+    @ViewBuilder
+    private func baselineDetails(revisionID: String?) -> some View {
+        if let pet {
+            Text(pet.name)
+                .font(.title3.weight(.semibold))
+            LabeledContent(APCLocalization.text(.studioBaselinePetID), value: pet.id)
+        } else if let petID = store.generationSession.resultPetID {
+            LabeledContent(APCLocalization.text(.studioBaselinePetID), value: petID)
+        }
+        if let revisionID {
+            LabeledContent(APCLocalization.text(.libraryFieldRevisionID), value: revisionID)
+                .textSelection(.enabled)
+        }
+        if let pet {
+            LabeledContent(APCLocalization.text(.studioBaselineTargetState), value: targetState)
+            LabeledContent(
+                APCLocalization.text(.studioBaselineQuality),
+                value: "\(pet.renderSize.width)×\(pet.renderSize.height)"
+            )
+            LabeledContent(
+                APCLocalization.text(.studioBaselineAnimation),
+                value: APCLocalization.text(.studioBaselineAnimationValue)
+            )
+        }
+    }
+
+    private var baselinePreviewBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color(nsColor: .controlBackgroundColor))
+    }
+
+    @MainActor
+    private func loadSubmittedRevision() async {
+        baselineRevision = nil
+        guard let requestedRevisionID else {
+            baselineLoadState = .idle
+            return
+        }
+        guard let pet else {
+            baselineLoadState = .loading
+            return
+        }
+        baselineLoadState = .loading
+        do {
+            let history = try await store.fetchPetHistory(for: pet, limit: 32)
+            guard !Task.isCancelled else { return }
+            baselineRevision = PetStudioPresentation.validatedBaselineRevision(
+                in: history,
+                revisionID: requestedRevisionID
+            )
+            baselineLoadState = .loaded
+        } catch {
+            guard !Task.isCancelled else { return }
+            baselineLoadState = .failed
+        }
+    }
+
+    private var targetState: String {
+        PetStudioPresentation.baselineTargetState()
+    }
+
+    private enum BaselineLoadState {
+        case idle
+        case loading
+        case loaded
+        case failed
+    }
+}
+
+private struct SubmittedRevisionCoverImage: View {
+    let revision: PetRevisionHistoryRecord
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .padding(12)
+        } else {
+            // An explicit historical baseline never borrows the current
+            // head's cover when its own preview is unavailable.
+            MissingPetCoverPlaceholder(scale: 0.38)
+        }
+    }
+
+    private var image: NSImage? {
+        guard let coverPath = revision.coverPath else { return nil }
+        return NSImage(contentsOfFile: coverPath)
+    }
+}
+
+private struct InlineSessionNotice: View {
+    var title: String
+    var detail: String
+    var systemImage: String
+    var color: Color
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+enum PetStudioPresentation {
+    enum StageState: Equatable {
+        case complete
+        case current
+        case upcoming
+        case failed
+
+        var systemImage: String {
+            switch self {
+            case .complete: "checkmark.circle.fill"
+            case .current: "circle.fill"
+            case .upcoming: "circle"
+            case .failed: "exclamationmark.circle.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .complete: APCDesign.success
+            case .current: APCDesign.accent
+            case .upcoming: .secondary
+            case .failed: APCDesign.destructive
+            }
+        }
+
+        var accessibilityTitle: String {
+            switch self {
+            case .complete: APCLocalization.text(.studioStageComplete)
+            case .current: APCLocalization.text(.studioStageCurrent)
+            case .upcoming: APCLocalization.text(.studioStageUpcoming)
+            case .failed: APCLocalization.text(.studioStageFailed)
+            }
+        }
+    }
+
+    static func showsModificationWorkspace(for session: GenerationSession) -> Bool {
+        session.operation == .modify && session.state != .idle
+    }
+
+    static func completedHistoryIsIncomplete(_ session: GenerationSession) -> Bool {
+        session.state == .succeeded
+            && (session.resultPetID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                != false)
+    }
+
+    static func validatedBaselineRevision(
+        in history: PetHistorySnapshot,
+        revisionID: String
+    ) -> PetRevisionHistoryRecord? {
+        history.revisions.first {
+            $0.revisionID == revisionID && $0.validated
+        }
+    }
+
+    static func timelineMessages(_ messages: [GenerationMessage]) -> [GenerationMessage] {
+        let structuralTerminalKinds: Set<String> = [
+            "generation_failed",
+            "generation_canceled",
+            "generation_completed",
+        ]
+        return messages.filter { message in
+            guard let kind = message.kind else { return true }
+            return !structuralTerminalKinds.contains(kind)
+        }
+    }
+
+    static func isProgressMessage(_ message: GenerationMessage) -> Bool {
+        message.kind == "generation_progress" || message.kind == "generation_started"
+    }
+
+    static func failureDetail(
+        for messages: [GenerationMessage],
+        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        maximumSummaryScalars: Int = 240
+    ) -> String {
+        let recovery = APCLocalization.text(.studioFailedDetail)
+        guard maximumSummaryScalars > 0,
+              let failure = messages.last(where: { $0.kind == "generation_failed" })
+        else { return recovery }
+
+        let sanitized = AppDiagnosticRedactor.sanitizeLegacyLog(
+            failure.content,
+            homeURL: homeURL
+        )
+        let normalized = sanitized
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return recovery }
+
+        let scalars = normalized.unicodeScalars
+        let summary: String
+        if scalars.count > maximumSummaryScalars {
+            summary = String(String.UnicodeScalarView(scalars.prefix(maximumSummaryScalars))) + "…"
+        } else {
+            summary = normalized
+        }
+        return "\(summary)\n\(recovery)"
+    }
+
+    static func baselineTargetState(
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.text(.studioBaselineKeepContract, locale: localeIdentifier)
+    }
+
+    static func statusTone(for state: GenerationSessionState) -> StatusBadge.Tone {
+        switch state {
+        case .succeeded: .good
+        case .failed: .warning
+        case .starting, .running, .waitingForInput, .cancelling: .accent
+        case .idle, .cancelled: .neutral
+        }
+    }
+
+    static func shouldFocusComposer(onAppearFor state: GenerationSessionState) -> Bool {
+        state == .waitingForInput
+    }
+
+    static func stageState(
+        at index: Int,
+        activeIndex: Int,
+        sessionState: GenerationSessionState
+    ) -> StageState {
+        if sessionState == .failed, index == activeIndex { return .failed }
+        if sessionState == .succeeded || index < activeIndex { return .complete }
+        if index == activeIndex, sessionState != .idle { return .current }
+        return .upcoming
     }
 }
 
@@ -682,9 +1239,7 @@ struct FlowLayout<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        WrappingFlowLayout(spacing: spacing) {
-            content
-        }
+        WrappingFlowLayout(spacing: spacing) { content }
     }
 }
 
@@ -694,25 +1249,24 @@ private struct WrappingFlowLayout: Layout {
     func sizeThatFits(
         proposal: ProposedViewSize,
         subviews: Subviews,
-        cache: inout ()
+        cache _: inout ()
     ) -> CGSize {
         let rows = rows(for: subviews, maxWidth: resolvedMaxWidth(from: proposal))
-        let width = rows.map(\.width).max() ?? 0
-        let height = rows.reduce(CGFloat.zero) { partial, row in
-            partial + row.height
-        } + spacing * CGFloat(max(0, rows.count - 1))
-        return CGSize(width: width, height: height)
+        return CGSize(
+            width: rows.map(\.width).max() ?? 0,
+            height: rows.reduce(CGFloat.zero) { $0 + $1.height }
+                + spacing * CGFloat(max(0, rows.count - 1))
+        )
     }
 
     func placeSubviews(
         in bounds: CGRect,
-        proposal: ProposedViewSize,
+        proposal _: ProposedViewSize,
         subviews: Subviews,
-        cache: inout ()
+        cache _: inout ()
     ) {
         let rows = rows(for: subviews, maxWidth: bounds.width)
         var y = bounds.minY
-
         for row in rows {
             var x = bounds.minX
             for item in row.items {
@@ -730,21 +1284,17 @@ private struct WrappingFlowLayout: Layout {
     private func rows(for subviews: Subviews, maxWidth: CGFloat) -> [FlowRow] {
         var rows: [FlowRow] = []
         var current = FlowRow()
-        let wrappingWidth = maxWidth.isFinite && maxWidth > 0 ? maxWidth : .greatestFiniteMagnitude
-
+        let width = maxWidth.isFinite && maxWidth > 0 ? maxWidth : .greatestFiniteMagnitude
         for index in subviews.indices {
             let size = subviews[index].sizeThatFits(.unspecified)
             let nextWidth = current.items.isEmpty ? size.width : current.width + spacing + size.width
-            if !current.items.isEmpty && nextWidth > wrappingWidth {
+            if !current.items.isEmpty, nextWidth > width {
                 rows.append(current)
                 current = FlowRow()
             }
             current.append(FlowItem(index: index, size: size), spacing: spacing)
         }
-
-        if !current.items.isEmpty {
-            rows.append(current)
-        }
+        if !current.items.isEmpty { rows.append(current) }
         return rows
     }
 
@@ -766,9 +1316,7 @@ private struct WrappingFlowLayout: Layout {
         var height: CGFloat = 0
 
         mutating func append(_ item: FlowItem, spacing: CGFloat) {
-            if !items.isEmpty {
-                width += spacing
-            }
+            if !items.isEmpty { width += spacing }
             items.append(item)
             width += item.size.width
             height = max(height, item.size.height)

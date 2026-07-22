@@ -1,4 +1,5 @@
 import AppKit
+import AgentPetCompanionCore
 import Testing
 @testable import AgentPetCompanion
 
@@ -17,12 +18,48 @@ struct OverlayGeometryTests {
         #expect(OverlayGeometry.bubbleDetailLineLimit == 2)
         #expect(OverlayGeometry.bubbleWidth == 344)
         #expect(OverlayGeometry.bubbleGap <= 3)
-        #expect(OverlayGeometry.menuHitSize.width >= 36)
-        #expect(OverlayGeometry.menuHitSize.height >= 36)
+        #expect(OverlayGeometry.menuHitSize.width >= 38)
+        #expect(OverlayGeometry.menuHitSize.height >= 38)
         #expect(OverlayGeometry.resizeHitSize.width >= 38)
         #expect(OverlayGeometry.resizeHitSize.height >= 38)
+        #expect(OverlayGeometry.menuVisualSize.width == OverlayGeometry.menuVisualSize.height)
+        #expect(OverlayGeometry.menuHitSize.width == OverlayGeometry.menuHitSize.height)
         #expect(OverlayGeometry.menuVisualSize.width < OverlayGeometry.menuHitSize.width)
         #expect(OverlayGeometry.resizeVisualSize.width < OverlayGeometry.resizeHitSize.width)
+    }
+
+    @Test
+    func testResizeContractUsesExactVisualHitRangeAndStepValues() {
+        #expect(OverlayGeometry.resizeVisualSize == CGSize(width: 24, height: 24))
+        #expect(OverlayGeometry.resizeHitSize == CGSize(width: 38, height: 38))
+        #expect(OverlayGeometry.minimumScale == 0.10)
+        #expect(OverlayGeometry.maximumScale == 1.80)
+        #expect(OverlayGeometry.resizeStep == 0.05)
+    }
+
+    @Test
+    func testBubbleToggleUsesCountChevronAndVisibilityBySessionCount() {
+        #expect(OverlayBubbleContent.idle.representedSessionCount == 0)
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 0,
+            collapsed: true
+        ) == nil)
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 1,
+            collapsed: true
+        ) == .chevron(systemImage: "chevron.up"))
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 1,
+            collapsed: false
+        ) == .chevron(systemImage: "chevron.down"))
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 2,
+            collapsed: true
+        ) == .count(2))
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 12,
+            collapsed: false
+        ) == .count(12))
     }
 
     @Test
@@ -92,6 +129,231 @@ struct OverlayGeometryTests {
             envelope: nil
         ).top
         #expect(abs(bubbleRect.minY - (petTop + OverlayGeometry.bubbleGap)) < 0.001)
+    }
+
+    @Test
+    func testBroadActivationZoneDoesNotKeepResizeArtworkVisible() {
+        let scale: CGFloat = 0.72
+        let petCenter = CGPoint(x: 900, y: 420)
+        let activationRect = OverlayGeometry.pointerNearPetScreenRect(
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true
+        )
+        let activationOnlyPoint = CGPoint(
+            x: activationRect.minX + 1,
+            y: activationRect.maxY - 1
+        )
+
+        #expect(activationRect.contains(activationOnlyPoint))
+        #expect(!OverlayGeometry.shouldShowControls(
+            at: activationOnlyPoint,
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true
+        ))
+        #expect(OverlayGeometry.shouldShowControls(
+            at: petCenter,
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true
+        ))
+        #expect(OverlayGeometry.shouldShowControls(
+            at: OverlayGeometry.resizeScreenCenter(
+                petScreenCenter: petCenter,
+                scale: scale
+            ),
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true
+        ))
+    }
+
+    @Test
+    func testPointerRegionsTrackTheActualPetEnvelope() {
+        let scale: CGFloat = 1
+        let petCenter = CGPoint(x: 500, y: 400)
+        let envelope = OverlayPetVisualEnvelope(
+            canvasSize: CGSize(width: 1_000, height: 1_000),
+            visibleBounds: CGRect(x: 700, y: 200, width: 120, height: 500)
+        )
+        let visualRect = OverlayGeometry.petVisualScreenRect(
+            scale: scale,
+            petScreenCenter: petCenter,
+            petVisualEnvelope: envelope
+        )
+        let resizeCenter = OverlayGeometry.resizeScreenCenter(
+            petScreenCenter: petCenter,
+            scale: scale,
+            petVisualEnvelope: envelope
+        )
+        let activationRect = OverlayGeometry.pointerNearPetScreenRect(
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true,
+            petVisualEnvelope: envelope
+        )
+
+        #expect(visualRect.midX > petCenter.x)
+        #expect(resizeCenter.x > visualRect.maxX)
+        #expect(activationRect.contains(resizeCenter))
+        #expect(OverlayGeometry.shouldShowControls(
+            at: CGPoint(x: visualRect.midX, y: visualRect.midY),
+            scale: scale,
+            petScreenCenter: petCenter,
+            clickMenuEnabled: true,
+            petVisualEnvelope: envelope
+        ))
+    }
+
+    @Test
+    func transparentPixelsInsideThePetDragRegionPassThroughWhileOpaquePixelsHandle() throws {
+        let mask = try #require(OverlayPetAlphaMask(
+            pixelWidth: 3,
+            pixelHeight: 3,
+            alphaValuesTopToBottom: [
+                255, 255, 255,
+                255, 0, 255,
+                255, 255, 255,
+            ]
+        ))
+        let hitTest = OverlayPetFrameHitTest(
+            canvasSize: CGSize(width: 3, height: 3),
+            alphaMask: mask
+        )
+        let containerSize = CGSize(width: 800, height: 600)
+        let petCenter = CGPoint(x: 400, y: 300)
+        let panelFrame = CGRect(origin: .zero, size: containerSize)
+
+        func handles(_ point: CGPoint, hitTest candidate: OverlayPetFrameHitTest?) -> Bool {
+            OverlayGeometry.shouldHandleMouse(
+                atTopLeftPoint: point,
+                in: containerSize,
+                scale: 1,
+                petCenter: petCenter,
+                bubbleVisible: false,
+                clickMenuEnabled: true,
+                panelFrame: panelFrame,
+                screenFrame: panelFrame,
+                includeBubble: false,
+                petFrameHitTest: candidate
+            )
+        }
+
+        #expect(!handles(petCenter, hitTest: hitTest))
+        #expect(handles(CGPoint(x: petCenter.x - 70, y: petCenter.y), hitTest: hitTest))
+
+        // Missing/corrupt frame masks fail transparent for the pet, while the
+        // independent resize/menu targets remain fully interactive.
+        #expect(!handles(petCenter, hitTest: nil))
+        #expect(handles(
+            OverlayGeometry.resizeCenter(petCenter: petCenter, scale: 1),
+            hitTest: nil
+        ))
+        #expect(handles(
+            OverlayGeometry.menuCenter(petCenter: petCenter, scale: 1),
+            hitTest: nil
+        ))
+    }
+
+    @Test
+    func alphaHitTestingUsesMetalAspectFitScaleAndTopLeftViewConversion() throws {
+        let mask = try #require(OverlayPetAlphaMask(
+            pixelWidth: 2,
+            pixelHeight: 2,
+            alphaValuesTopToBottom: [
+                255, 0,
+                0, 0,
+            ]
+        ))
+        let hitTest = OverlayPetFrameHitTest(
+            // Exercise the renderer's horizontal centering for a frame that
+            // is narrower than the animation's stable canvas.
+            canvasSize: CGSize(width: 4, height: 2),
+            alphaMask: mask
+        )
+        let petCenter = CGPoint(x: 360, y: 280)
+        let viewHeight: CGFloat = 700
+
+        func topLeftPointForPixel(x: Int, topRow: Int, scale: CGFloat) -> CGPoint {
+            let drawableSize = CGSize(width: 230 * scale, height: 310 * scale)
+            let fittedScale = min(drawableSize.width / 4, drawableSize.height / 2)
+            let fittedOrigin = CGPoint(
+                x: (drawableSize.width - 4 * fittedScale) / 2,
+                y: (drawableSize.height - 2 * fittedScale) / 2
+            )
+            let bottomRow = 1 - topRow
+            let localBottomLeft = CGPoint(
+                x: fittedOrigin.x + (1 + CGFloat(x) + 0.5) * fittedScale,
+                y: fittedOrigin.y + (CGFloat(bottomRow) + 0.5) * fittedScale
+            )
+            return CGPoint(
+                x: petCenter.x - drawableSize.width / 2 + localBottomLeft.x,
+                y: petCenter.y + drawableSize.height / 2 - localBottomLeft.y
+            )
+        }
+
+        for scale in [CGFloat(0.25), CGFloat(1.8)] {
+            let opaqueTopLeft = topLeftPointForPixel(x: 0, topRow: 0, scale: scale)
+            let transparentBottomLeft = topLeftPointForPixel(x: 0, topRow: 1, scale: scale)
+
+            #expect(OverlayGeometry.petFrameContainsOpaquePixel(
+                atTopLeftPoint: opaqueTopLeft,
+                scale: scale,
+                petCenter: petCenter,
+                frameHitTest: hitTest
+            ))
+            #expect(!OverlayGeometry.petFrameContainsOpaquePixel(
+                atTopLeftPoint: transparentBottomLeft,
+                scale: scale,
+                petCenter: petCenter,
+                frameHitTest: hitTest
+            ))
+
+            let flippedPoint = OverlayGeometry.topLeftPoint(
+                forViewPoint: opaqueTopLeft,
+                in: viewHeight,
+                isFlipped: true
+            )
+            let unflippedPoint = OverlayGeometry.topLeftPoint(
+                forViewPoint: CGPoint(
+                    x: opaqueTopLeft.x,
+                    y: viewHeight - opaqueTopLeft.y
+                ),
+                in: viewHeight,
+                isFlipped: false
+            )
+            #expect(flippedPoint == opaqueTopLeft)
+            #expect(unflippedPoint == opaqueTopLeft)
+        }
+    }
+
+    @Test
+    func disablingMousePassthroughRestoresWholePanelHitTesting() throws {
+        let transparentMask = try #require(OverlayPetAlphaMask(
+            pixelWidth: 1,
+            pixelHeight: 1,
+            alphaValuesTopToBottom: [0]
+        ))
+        let containerSize = CGSize(width: 800, height: 600)
+        let panelFrame = CGRect(origin: .zero, size: containerSize)
+
+        #expect(OverlayGeometry.shouldHandleMouse(
+            atTopLeftPoint: CGPoint(x: 40, y: 40),
+            in: containerSize,
+            scale: 1,
+            petCenter: CGPoint(x: 400, y: 300),
+            bubbleVisible: false,
+            clickMenuEnabled: false,
+            panelFrame: panelFrame,
+            screenFrame: panelFrame,
+            includeBubble: false,
+            mousePassthroughEnabled: false,
+            petFrameHitTest: OverlayPetFrameHitTest(
+                canvasSize: CGSize(width: 1, height: 1),
+                alphaMask: transparentMask
+            )
+        ))
     }
 
     @Test
@@ -444,6 +706,8 @@ struct OverlayGeometryTests {
     func testKeyboardResizeClampsScale() {
         #expect(OverlayGeometry.clampedScale(0.05) == OverlayGeometry.minimumScale)
         #expect(OverlayGeometry.clampedScale(4) == OverlayGeometry.maximumScale)
+        #expect(OverlayGeometry.clampedScale(0.10) == 0.10)
+        #expect(OverlayGeometry.clampedScale(1.80) == 1.80)
         #expect(abs(OverlayGeometry.clampedScale(0.72 + OverlayGeometry.resizeStep) - 0.77) < 0.0001)
     }
 
@@ -472,6 +736,30 @@ struct OverlayGeometryTests {
     }
 
     @Test
+    func testResizeControlHidesOutsidePetUnlessInteractionIsActive() {
+        #expect(!OverlayControlVisibility.isVisible(
+            pointerNearPet: false,
+            petDragInProgress: false,
+            resizeInProgress: false
+        ))
+        #expect(OverlayControlVisibility.isVisible(
+            pointerNearPet: true,
+            petDragInProgress: false,
+            resizeInProgress: false
+        ))
+        #expect(OverlayControlVisibility.isVisible(
+            pointerNearPet: false,
+            petDragInProgress: true,
+            resizeInProgress: false
+        ))
+        #expect(OverlayControlVisibility.isVisible(
+            pointerNearPet: false,
+            petDragInProgress: false,
+            resizeInProgress: true
+        ))
+    }
+
+    @Test
     func testCalibratedScaleOnlyAppliesToNeverPositionedPlacement() {
         #expect(
             OverlayGeometry.resolvedInitialScale(
@@ -496,7 +784,9 @@ struct OverlayGeometryTests {
     @MainActor
     @Test
     func testResizeViewSupportsKeyboardAndAccessibilityIncrement() {
-        let view = OverlayResizeAccessibilityView(frame: CGRect(x: 0, y: 0, width: 38, height: 38))
+        let view = OverlayResizeAccessibilityView(
+            frame: CGRect(origin: .zero, size: OverlayGeometry.resizeHitSize)
+        )
         var steps: [CGFloat] = []
         view.scale = 0.72
         view.onScaleStep = { steps.append($0) }
@@ -506,7 +796,342 @@ struct OverlayGeometryTests {
         #expect(view.accessibilityPerformIncrement())
         #expect(view.accessibilityPerformDecrement())
         #expect(steps == [0.05, -0.05])
+        #expect((view.accessibilityMinValue() as? NSNumber)?.doubleValue == 0.10)
+        #expect((view.accessibilityMaxValue() as? NSNumber)?.doubleValue == 1.80)
         let accessibilityScale = (view.accessibilityValue() as? NSNumber)?.doubleValue ?? -1
         #expect(abs(accessibilityScale - 0.72) < 0.0001)
+    }
+
+    @Test
+    func petClickAndDragUseOneExclusiveThreshold() {
+        #expect(!OverlayPetPointerGesture.exceedsDragThreshold(
+            from: CGPoint(x: 10, y: 10),
+            to: CGPoint(x: 13, y: 10)
+        ))
+        #expect(OverlayPetPointerGesture.exceedsDragThreshold(
+            from: CGPoint(x: 10, y: 10),
+            to: CGPoint(x: 13.1, y: 10)
+        ))
+    }
+
+    @Test
+    func petActivationPrioritizesOpenSessionThenBubbleThenControlCenter() {
+        let openSession = OverlaySessionContent(
+            id: "session-open",
+            source: .codex,
+            sessionID: "s1",
+            eventType: .tool,
+            sessionTitle: "Session",
+            messageText: "Working",
+            statusText: "",
+            actionLabel: "Open"
+        )
+        var closedSession = openSession
+        closedSession.navigation.sessionOpen = false
+
+        #expect(OverlayPetActivationDestination.resolve(
+            activeSession: openSession,
+            bubbleDismissed: true,
+            hasAvailableBubbleContent: true
+        ) == .session(openSession))
+        #expect(OverlayPetActivationDestination.resolve(
+            activeSession: closedSession,
+            bubbleDismissed: true,
+            hasAvailableBubbleContent: true
+        ) == .bubble)
+        #expect(OverlayPetActivationDestination.resolve(
+            activeSession: closedSession,
+            bubbleDismissed: false,
+            hasAvailableBubbleContent: true
+        ) == .bubble)
+        #expect(OverlayPetActivationDestination.resolve(
+            activeSession: closedSession,
+            bubbleDismissed: false,
+            hasAvailableBubbleContent: false
+        ) == .controlCenter)
+        #expect(OverlayPetActivationDestination.resolve(
+            activeSession: nil,
+            bubbleDismissed: true,
+            hasAvailableBubbleContent: true
+        ) == .controlCenter)
+    }
+
+    @MainActor
+    @Test
+    func petDragViewExposesAccessibilityDefaultAction() {
+        let view = WindowDragRegion.DragView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
+        var activationCount = 0
+        view.onActivate = { activationCount += 1 }
+
+        #expect(view.accessibilityRole() == .button)
+        #expect(view.accessibilityPerformPress())
+        #expect(activationCount == 1)
+    }
+
+    @Test
+    func overlayControlsFadeInImmediatelyAndDelayOnlyPointerExit() {
+        #expect(OverlayControlVisibility.transitionDelay(showing: true, forced: false)
+            == .zero)
+        #expect(OverlayControlVisibility.transitionDelay(showing: false, forced: false)
+            == .milliseconds(300))
+        #expect(OverlayControlVisibility.transitionDelay(showing: true, forced: true) == .zero)
+        #expect(OverlayControlVisibility.isVisible(
+            pointerNearPet: false,
+            petDragInProgress: false,
+            resizeInProgress: false,
+            keyboardFocusActive: true
+        ))
+        #expect((0.12 ... 0.16).contains(OverlayMotion.controlFadeDuration))
+        #expect(OverlayMotion.controlFadeDelay == .milliseconds(140))
+        #expect((0.18 ... 0.22).contains(OverlayMotion.bubbleLayoutDuration))
+        #expect(OverlayMotion.reducedMotionCrossfadeDuration > 0)
+        #expect(OverlayMotion.reducedMotionCrossfadeDuration <= 0.22)
+    }
+
+    @Test
+    func overlayContentConsumesOnlyTheTypedSafeDisplayProjection() throws {
+        let rawPrompt = "PROMPT_DO_NOT_RENDER sk-live-secret /Users/alice/private.txt"
+        let rawCommand = "COMMAND_DO_NOT_RENDER /bin/sh -c curl-secret"
+        let json = """
+        {
+          "state":"tool",
+          "official_status":"running",
+          "source":"codex",
+          "session_id":"safe-session",
+          "session_active":true,
+          "source_session_sequence":3,
+          "priority":300,
+          "lease_seconds":null,
+          "expires_at":null,
+          "event":{
+            "id":"safe-event",
+            "source":"codex",
+            "session_id":"safe-session",
+            "event_type":"tool",
+            "title":"执行工具",
+            "detail":null,
+            "payload_json":{
+              "message_role":"assistant",
+              "message_content":"\(rawPrompt)",
+              "activity_kind":"command",
+              "activity_content":"\(rawCommand)",
+              "project_label":"/Users/alice/private"
+            },
+            "created_at":"2026-07-21T00:00:00Z"
+          },
+          "latest_message":{
+            "id":"raw-message",
+            "source":"codex",
+            "session_id":"safe-session",
+            "event_type":"review",
+            "title":"待查看",
+            "detail":null,
+            "payload_json":{"message_role":"assistant","message_content":"\(rawPrompt)"},
+            "created_at":"2026-07-21T00:00:00Z"
+          },
+          "session_title":"\(rawPrompt)",
+          "session_message":{"role":"assistant","content":"\(rawPrompt)"},
+          "session_activity":{"kind":"command","content":"\(rawCommand)"},
+          "overlay_display":{
+            "summary_kind":"command",
+            "navigation":{
+              "session_open":true,
+              "surface":"cli_terminal",
+              "terminal_app":"terminal",
+              "open_url":null
+            }
+          }
+        }
+        """
+        let state = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(json.utf8)
+        )
+        let content = OverlaySessionContent(state: state)
+
+        #expect(content.sessionID == "safe-session")
+        #expect(content.sessionTitle == APCLocalization.format(
+            .overlaySessionTitleFormat,
+            AgentSource.codex.shortTitle
+        ))
+        #expect(content.messageText == APCLocalization.text(.overlayActivityCommand))
+        #expect(content.navigation.sessionOpen == true)
+        #expect(!content.sessionTitle.contains(rawPrompt))
+        #expect(!content.messageText.contains(rawPrompt))
+        #expect(!content.messageText.contains(rawCommand))
+    }
+
+    @Test
+    func legacyStateFallsBackToClosedEventCopyInsteadOfRawContent() throws {
+        let state = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER"},"created_at":"2026-07-21T00:00:00Z"},"session_title":"PRIVATE_TITLE_DO_NOT_RENDER","session_message":{"role":"assistant","content":"PRIVATE_RESULT_DO_NOT_RENDER"}}"#.utf8)
+        )
+        let content = OverlaySessionContent(state: state)
+
+        #expect(content.messageText == APCLocalization.text(.overlayDetailReady))
+        #expect(!content.sessionTitle.contains("PRIVATE"))
+        #expect(!content.messageText.contains("PRIVATE"))
+    }
+
+    @Test
+    func omittedSessionSummaryIsBoundedAndOpensTheControlCenterPath() {
+        let content = OverlayBubbleContent.omittedSummary(count: 5)
+        let accessibility = OverlayBubbleAccessibilityModel(content: content, locale: "en")
+
+        #expect(content.sessions.count == 1)
+        #expect(content.representedSessionCount == 5)
+        #expect(content.isOmittedSummary)
+        #expect(!content.canDismiss)
+        #expect(content.sessions[0].source == nil)
+        #expect(content.sessions[0].canOpen)
+        #expect(content.sessions[0].messageText == APCLocalization.format(
+            .overlayMoreSessionsDetailFormat,
+            5
+        ))
+        #expect(accessibility.sessionActionLabels == ["Open"])
+        #expect(accessibility.sessionCloseActionLabels == [nil])
+        #expect(accessibility.closeActionLabel == nil)
+    }
+
+    @Test
+    func bubbleAccessibilityModelOffersLocalizedSessionCloseAndGroupActions() {
+        let sessionA = OverlaySessionContent(
+            id: "a",
+            source: .codex,
+            sessionID: "a",
+            eventType: .tool,
+            sessionTitle: "A",
+            messageText: "A",
+            statusText: "",
+            actionLabel: "Open"
+        )
+        let sessionB = OverlaySessionContent(
+            id: "b",
+            source: .codex,
+            sessionID: "b",
+            eventType: .review,
+            sessionTitle: "B",
+            messageText: "B",
+            statusText: "",
+            actionLabel: "Open"
+        )
+        let content = OverlayBubbleContent(
+            id: "codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: [sessionA, sessionB],
+            isExpanded: true
+        )
+        let english = OverlayBubbleAccessibilityModel(content: content, locale: "en")
+        let chinese = OverlayBubbleAccessibilityModel(content: content, locale: "zh-Hans")
+
+        #expect(english.sessionActionLabels == ["Open", "Open"])
+        #expect(english.sessionCloseActionLabels == ["Hide This Session", "Hide This Session"])
+        #expect(english.closeActionLabel == "Close session bubble")
+        #expect(english.groupActionLabel == "Collapse 2 sessions")
+        #expect(chinese.sessionActionLabels == ["打开", "打开"])
+        #expect(chinese.sessionCloseActionLabels == ["收起此会话", "收起此会话"])
+        #expect(chinese.closeActionLabel == "关闭会话气泡")
+        #expect(chinese.groupActionLabel == "收起 2 个会话")
+    }
+
+    @Test
+    func bubbleLayoutSignatureTracksAttentionRowsAndDismissalReopen() {
+        let first = OverlaySessionContent(
+            id: "first",
+            source: .codex,
+            sessionID: "first",
+            eventType: .tool,
+            sessionTitle: "Codex session 1",
+            messageText: "Working",
+            statusText: "Working",
+            actionLabel: "Open"
+        )
+        let secondRunning = OverlaySessionContent(
+            id: "second",
+            source: .codex,
+            sessionID: "second",
+            eventType: .tool,
+            sessionTitle: "Codex session 2",
+            messageText: "Working",
+            statusText: "Working",
+            actionLabel: "Open"
+        )
+        var secondAttention = secondRunning
+        secondAttention.eventType = .waiting
+        let collapsedRunning = OverlayBubbleContent(
+            id: "agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: [first, secondRunning],
+            isExpanded: false
+        )
+        let collapsedAttention = OverlayBubbleContent(
+            id: "agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: [first, secondAttention],
+            isExpanded: false
+        )
+
+        let running = OverlayBubbleLayoutSignature(
+            contents: [collapsedRunning],
+            bubbleDismissed: false
+        )
+        let attention = OverlayBubbleLayoutSignature(
+            contents: [collapsedAttention],
+            bubbleDismissed: false
+        )
+        let dismissed = OverlayBubbleLayoutSignature(contents: [], bubbleDismissed: true)
+
+        #expect(running.groups[0].visibleSessionCount == 1)
+        #expect(attention.groups[0].visibleSessionCount == 2)
+        #expect(running != attention)
+        #expect(dismissed != attention)
+    }
+
+    @MainActor
+    @Test
+    func sharedControlPresentationStartsHoverImmediatelyAndDelaysExit() async throws {
+        var requestedDelays: [Duration] = []
+        let presentation = OverlayControlPresentationState { delay in
+            requestedDelays.append(delay)
+        }
+
+        presentation.setHovered(.pet, true)
+        #expect(presentation.isVisible)
+
+        presentation.setHovered(.pet, false)
+        #expect(presentation.isVisible)
+        for _ in 0 ..< 10 where presentation.isVisible {
+            await Task.yield()
+        }
+        #expect(requestedDelays == [OverlayControlVisibility.hoverHideDelay])
+        #expect(!presentation.isVisible)
+
+        presentation.setActive(.resize, true)
+        #expect(presentation.isVisible)
+        presentation.setActive(.resize, false)
+        #expect(presentation.isVisible)
+
+        presentation.setFocused(.bubble, true)
+        #expect(presentation.keyboardNavigationActive)
+        #expect(presentation.isVisible)
+        presentation.setFocused(.bubble, false)
+        #expect(!presentation.keyboardNavigationActive)
+    }
+
+    @MainActor
+    @Test
+    func resizeAccessibilityCopyIsLocalizedForEnglishAndChinese() {
+        #expect(OverlayResizeAccessibilityView.accessibilityLabel(localeIdentifier: "en")
+            == "Display Size")
+        #expect(OverlayResizeAccessibilityView.accessibilityLabel(localeIdentifier: "zh-Hans")
+            == "显示尺寸")
+        #expect(OverlayResizeAccessibilityView.accessibilityHelp(localeIdentifier: "en")
+            == "Drag to resize the desktop pet")
+        #expect(OverlayResizeAccessibilityView.accessibilityHelp(localeIdentifier: "zh-Hans")
+            == "拖拽调整桌宠大小")
     }
 }

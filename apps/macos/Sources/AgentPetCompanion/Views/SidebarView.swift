@@ -9,25 +9,22 @@ struct SidebarView: View {
             Section {
                 ForEach(NavigationSection.allCases) { section in
                     Label {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(title(for: section))
-                                .font(.callout.weight(.semibold))
-                            Text(section.subtitle)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(section.localizedTitle)
+                            .lineLimit(1)
                     } icon: {
                         Image(systemName: section.systemImage)
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 20)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .tag(section)
+                    .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
                     .accessibilityRepresentation {
-                        Button(title(for: section)) {
+                        Button(section.localizedTitle) {
                             store.selection = section
                         }
+                        .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
                         .accessibilityValue(
                             UIControlSemantics.selectionValue(isSelected: section == store.selection)
                         )
@@ -35,66 +32,58 @@ struct SidebarView: View {
                     }
                 }
             } header: {
-                Label("Agent Pet", systemImage: "pawprint.fill")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                Label {
+                    Text(APCLocalization.text(.sidebarBrand))
+                } icon: {
+                    APCBrandMark(size: 22)
+                        .accessibilityHidden(true)
+                }
+                .font(.headline)
+                .foregroundStyle(.primary)
             }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            SidebarStatusView()
+            SidebarCurrentPetView()
                 .environmentObject(store)
-                .padding(12)
         }
     }
 
-    private func title(for section: NavigationSection) -> String {
-        switch section {
-        case .studio:
-            APCLocalization.text(.navigationStudio)
-        case .behavior:
-            APCLocalization.text(.navigationBehavior)
-        case .connections:
-            APCLocalization.text(.navigationConnections)
-        }
-    }
 }
 
-private struct SidebarStatusView: View {
+private struct SidebarCurrentPetView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 0) {
+            Divider()
             HStack(spacing: 8) {
-                Image(systemName: store.behavior.enabled ? "pawprint.fill" : "pawprint")
-                    .foregroundStyle(store.behavior.enabled ? APCDesign.success : .secondary)
-                Text(store.activePet?.name ?? "未启用")
-                    .font(.callout.weight(.semibold))
+                APCBrandMark(size: 18)
+                    .saturation(store.behavior.enabled ? 1 : 0)
+                    .opacity(store.behavior.enabled ? 1 : 0.55)
+                    .accessibilityHidden(true)
+                Text(store.activePet?.name ?? APCLocalization.text(.appStateNoPetEnabled))
+                    .font(.callout.weight(.medium))
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                Text(UIControlSemantics.toggleValue(isOn: store.behavior.enabled))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
                 Circle()
                     .fill(store.behavior.enabled ? APCDesign.success : Color.secondary)
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
             }
-
-            Text(store.activeAgentEventText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-
-            Text(store.statusText)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(2)
-                .textSelection(.enabled)
-                .accessibilityLabel("应用状态：\(store.statusText)")
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .apcLiquidGlass(
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous),
-            interactive: true
-        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("sidebar.current-pet")
+        .accessibilityLabel(APCLocalization.format(
+            .configCurrentPetFormat,
+            store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
+        ))
+        .accessibilityValue(UIControlSemantics.toggleValue(isOn: store.behavior.enabled))
     }
 }

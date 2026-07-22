@@ -20,10 +20,39 @@ enum OverlayPetMenuPolicy {
     static func shouldOpen(buttonNumber: Int, isEnabled: Bool) -> Bool {
         isEnabled && buttonNumber == 1
     }
+
+    static func showsBubbleToggle(hasAvailableBubbleContent: Bool) -> Bool {
+        hasAvailableBubbleContent
+    }
+}
+
+enum OverlayBubbleToggleContent: Equatable {
+    case count(Int)
+    case chevron(systemImage: String)
+}
+
+enum OverlayBubbleTogglePresentation {
+    static func content(
+        sessionCount: Int,
+        collapsed: Bool
+    ) -> OverlayBubbleToggleContent? {
+        guard sessionCount > 0 else { return nil }
+        if sessionCount > 1 {
+            return .count(sessionCount)
+        }
+        return .chevron(systemImage: collapsed ? "chevron.up" : "chevron.down")
+    }
 }
 
 struct OverlayRootView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
 
     private var currentEvent: AgentEvent? {
         store.activeOverlayEvent
@@ -41,9 +70,7 @@ struct OverlayRootView: View {
                 fallbackIn: proxy.size
             )
             let displayPetCenter = petCenter
-            let controlsVisible = store.overlayPointerNearPet
-                || store.overlayPetDragInProgress
-                || store.overlayResizeInProgress
+            let controlsVisible = controlPresentation.isVisible
 
             ZStack {
                 Color.clear
@@ -51,21 +78,44 @@ struct OverlayRootView: View {
                 PetInteractionLayer(
                     pet: store.activePet,
                     state: currentEvent?.eventType,
-                    stateEntryID: currentEvent?.id ?? "idle",
+                    stateEntryID: OverlayPetAnimationIdentity.stateEntryID(
+                        for: store.presentedActiveAgentState
+                    ),
                     scale: store.overlayScale,
                     fpsProfile: store.behavior.fpsProfile,
                     appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,
+                    bubbleToggleAvailable: store.hasAvailableOverlayBubbleContent,
                     petScreenCenter: store.overlayPetScreenCenter,
                     petVisualEnvelope: store.overlayPetVisualEnvelope,
                     controlsVisible: controlsVisible,
                     active: store.behavior.enabled,
+                    reduceMotion: reduceMotion,
+                    onVisualEnvelopeChanged: { [weak store] envelope, petID, stateEntryID in
+                        store?.updateOverlayPetVisualEnvelope(
+                            envelope,
+                            petID: petID,
+                            stateEntryID: stateEntryID
+                        )
+                    },
+                    onFrameHitTestChanged: { [weak store] hitTest, petID, stateEntryID in
+                        store?.updateOverlayPetFrameHitTest(
+                            hitTest,
+                            petID: petID,
+                            stateEntryID: stateEntryID
+                        )
+                    },
+                    onActivate: activatePet,
                     onToggleBubble: { store.toggleOverlayBubble() },
                     onOpenMainWindow: { store.presentMainWindow() },
                     onHidePet: { store.toggleOverlay() },
-                    onHoverChanged: { store.setOverlayPointerNearPet($0) },
+                    onHoverChanged: { hovering in
+                        controlPresentation.setHovered(.pet, hovering)
+                        store.refreshOverlayPointerState()
+                    },
                     onDragActiveChanged: { active in
+                        controlPresentation.setActive(.pet, active)
                         store.setOverlayPetDragInProgress(active)
                     },
                     onDragChanged: { center, visibleFrame in
@@ -79,42 +129,87 @@ struct OverlayRootView: View {
                 )
                 .position(displayPetCenter)
             }
-            .onChange(of: currentEvent?.id) { _, _ in
-                store.updateOverlayLayout()
-            }
-            .onChange(of: store.overlayBubbleDismissed) { _, _ in
-                store.updateOverlayLayout()
-            }
         }
         .background(Color.clear)
         .apcAppearanceTheme(store.behavior.appearanceTheme)
+    }
+
+    private func activatePet() {
+        switch OverlayPetActivationDestination.resolve(
+            activeState: store.presentedActiveAgentState,
+            bubbleDismissed: store.overlayBubbleDismissed,
+            hasAvailableBubbleContent: store.overlayBubbleSessionCount > 0
+        ) {
+        case let .session(session):
+            store.activateOverlaySession(session)
+        case .bubble:
+            store.revealOverlayBubble()
+            controlPresentation.setFocused(.bubble, true)
+            controlPresentation.setFocused(.bubble, false)
+        case .controlCenter:
+            store.presentMainWindow()
+        }
     }
 }
 
 struct OverlayMenuControlRootView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
 
     var body: some View {
-        PetMenuButton(
-            collapsed: store.overlayBubbleContents.isEmpty,
-            onToggleBubble: { store.toggleOverlayBubble() }
+        let sessionCount = store.overlayBubbleSessionCount
+        let content = OverlayBubbleTogglePresentation.content(
+            sessionCount: sessionCount,
+            collapsed: store.overlayBubbleIsCollapsed
         )
+
+        Group {
+            if let content {
+                PetMenuButton(
+                    collapsed: store.overlayBubbleIsCollapsed,
+                    sessionCount: sessionCount,
+                    content: content,
+                    tone: store.overlayBubbleStatusTone,
+                    onToggleBubble: { store.toggleOverlayBubble() }
+                )
+            } else {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
+        .opacity(controlPresentation.isVisible ? 1 : 0)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: OverlayMotion.controlFadeDuration),
+            value: controlPresentation.isVisible
+        )
+        .onHover { controlPresentation.setHovered(.menu, $0) }
+        .onDisappear { controlPresentation.setHovered(.menu, false) }
         .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 }
 
 struct OverlayResizeControlRootView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var resizeFocused = false
+    @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
     @State private var scaleStepFeedbackVisible = false
     @State private var scaleStepFeedbackTask: Task<Void, Never>?
 
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
+
     private var controlsVisible: Bool {
-        store.overlayPointerNearPet
-            || store.overlayPetDragInProgress
-            || store.overlayResizeInProgress
-            || resizeFocused
+        controlPresentation.isVisible
     }
 
     var body: some View {
@@ -122,29 +217,30 @@ struct OverlayResizeControlRootView: View {
             ResizeHandle(
                 scale: store.overlayScale,
                 showScaleValue: OverlayScaleFeedbackVisibility.isVisible(
-                    isFocused: resizeFocused,
+                    isFocused: false,
                     isResizing: store.overlayResizeInProgress,
                     isStepFeedbackVisible: scaleStepFeedbackVisible
                 )
             )
+            .accessibilityHidden(true)
             .opacity(controlsVisible ? 1 : 0)
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                value: controlsVisible
+            )
             .allowsHitTesting(false)
 
             ResizeInteractionRegion(
                 scale: store.overlayScale,
                 onHoverChanged: { hovering in
-                    store.setOverlayPointerNearPet(hovering)
+                    controlPresentation.setHovered(.resize, hovering)
+                    store.refreshOverlayPointerState()
                 },
                 onFocusChanged: { focused in
-                    resizeFocused = focused
-                    if focused {
-                        store.setOverlayPointerNearPet(true)
-                    }
+                    controlPresentation.setFocused(.resize, focused)
                 },
                 onResizeActiveChanged: { active in
-                    if active {
-                        store.setOverlayPointerNearPet(true)
-                    }
+                    controlPresentation.setActive(.resize, active)
                     store.setOverlayResizeInProgress(active)
                 },
                 onResizeChanged: { initialScale, screenTranslation in
@@ -160,7 +256,6 @@ struct OverlayResizeControlRootView: View {
                         screenTranslation: screenTranslation,
                         commit: true
                     )
-                    store.setOverlayPointerNearPet(true)
                     store.updateOverlayLayout()
                 },
                 onScaleStep: { step in
@@ -172,6 +267,7 @@ struct OverlayResizeControlRootView: View {
         .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
         .onDisappear {
             scaleStepFeedbackTask?.cancel()
+            controlPresentation.setHovered(.resize, false)
         }
         .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
@@ -189,14 +285,16 @@ struct OverlayResizeControlRootView: View {
 
 struct BubbleOverlayRootView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var hovered = false
+    @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
 
     private var contents: [OverlayBubbleContent] {
         store.overlayBubbleContents
-    }
-
-    private var controlsVisible: Bool {
-        hovered
     }
 
     var body: some View {
@@ -208,6 +306,9 @@ struct BubbleOverlayRootView: View {
         }
         .background(Color.clear)
         .apcAppearanceTheme(store.behavior.appearanceTheme)
+        .onDisappear {
+            controlPresentation.setHovered(.bubble, false)
+        }
     }
 
     @ViewBuilder
@@ -224,42 +325,110 @@ struct BubbleOverlayRootView: View {
         )
 
         ZStack(alignment: .topLeading) {
-            ForEach(contents.indices, id: \.self) { index in
-                let content = contents[index]
+            ForEach(Array(contents.enumerated()), id: \.element.id) { index, content in
                 let rect = bubbleRects.indices.contains(index) ? bubbleRects[index] : .zero
                 ConversationBubble(
                     content: content,
-                    hovered: controlsVisible,
+                    hovered: controlPresentation.isVisible,
+                    keyboardNavigationActive: controlPresentation.keyboardNavigationActive,
                     glassTransparency: store.behavior.bubbleTransparency,
                     onClose: {
-                        store.dismissOverlayBubble(eventIDs: content.eventIDs)
+                        store.dismissOverlayBubble(eventIDs: content.dismissalIDs)
                     },
-                    onOpenSession: { session in
-                        store.presentAgentSession(
-                            source: session.source,
-                            sessionID: session.sessionID,
-                            navigation: session.navigation
-                        )
+                    onToggleGroup: {
+                        guard let source = content.source else { return }
+                        store.toggleOverlayAgentGroup(source)
+                    },
+                    onActivateSession: { session in
+                        store.activateOverlaySession(session)
+                    },
+                    onDismissSession: { session in
+                        store.dismissOverlayBubble(eventID: session.id)
                     }
                 )
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
+                .transition(reduceMotion
+                    ? .opacity
+                    : .opacity.combined(with: .scale(scale: 0.98)))
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
-        .onHover { hovered = $0 }
-        .animation(.easeOut(duration: 0.08), value: controlsVisible)
+        .animation(
+            .easeInOut(duration: reduceMotion
+                ? OverlayMotion.reducedMotionCrossfadeDuration
+                : OverlayMotion.bubbleLayoutDuration),
+            value: contents
+        )
+        .onHover { controlPresentation.setHovered(.bubble, $0) }
     }
 }
 
 private struct ConversationBubble: View {
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
+
     var content: OverlayBubbleContent
     var hovered: Bool
+    var keyboardNavigationActive: Bool
     var glassTransparency: Double
     var onClose: () -> Void
-    var onOpenSession: (OverlaySessionContent) -> Void
+    var onToggleGroup: () -> Void
+    var onActivateSession: (OverlaySessionContent) -> Void
+    var onDismissSession: (OverlaySessionContent) -> Void
+
+    private var accessibilityModel: OverlayBubbleAccessibilityModel {
+        OverlayBubbleAccessibilityModel(content: content)
+    }
 
     var body: some View {
+        GeometryReader { proxy in
+            let surfaceHeight = max(0, proxy.size.height - content.stackDecorationDepth)
+
+            ZStack(alignment: .topLeading) {
+                if content.isStacked {
+                    ForEach(
+                        Array((1 ... OverlayGeometry.bubbleCollapsedStackLayerCount).reversed()),
+                        id: \.self
+                    ) { layer in
+                        let inset = CGFloat(layer) * OverlayGeometry.bubbleCollapsedStackLayerInset
+                        let offset = CGFloat(layer) * OverlayGeometry.bubbleCollapsedStackLayerOffset
+
+                        RoundedRectangle(
+                            cornerRadius: OverlayGeometry.bubbleCornerRadius,
+                            style: .continuous
+                        )
+                        .fill(Color.primary.opacity(0.035))
+                        .overlay {
+                            RoundedRectangle(
+                                cornerRadius: OverlayGeometry.bubbleCornerRadius,
+                                style: .continuous
+                            )
+                            .stroke(.primary.opacity(0.16), lineWidth: 0.7)
+                        }
+                        .frame(
+                            width: max(0, proxy.size.width - inset * 2),
+                            height: surfaceHeight
+                        )
+                        .offset(x: inset, y: offset)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                    }
+                }
+
+                bubbleSurface
+                    .frame(width: proxy.size.width, height: surfaceHeight, alignment: .top)
+            }
+            .animation(bubbleAnimation, value: content.visibleSessions.map(\.id))
+            .animation(bubbleAnimation, value: content.isStacked)
+        }
+    }
+
+    private var bubbleSurface: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
                 AgentIconView(
@@ -275,8 +444,33 @@ private struct ConversationBubble: View {
 
                 Spacer(minLength: 8)
 
-                if hovered {
-                    BubbleIconButton(systemImage: "xmark", action: onClose)
+                if content.hasMultipleSessions {
+                    SessionCountButton(
+                        count: content.sessionCount,
+                        expanded: content.isExpanded,
+                        tone: content.statusTone,
+                        action: onToggleGroup
+                    )
+                }
+
+                if content.canDismiss {
+                    BubbleIconButton(
+                        systemImage: "xmark",
+                        accessibilityLabel: accessibilityModel.closeActionLabel
+                            ?? APCLocalization.text(.overlayCloseBubbleAccessibility),
+                        accessibilityHint: accessibilityModel.closeActionHint
+                            ?? APCLocalization.text(.overlayCloseBubbleHint),
+                        action: onClose
+                    )
+                    // Keep the control in the AX tree while preserving the
+                    // hover-only visual treatment for pointer users.
+                    .opacity(hovered || keyboardNavigationActive ? 1 : 0.001)
+                    .animation(
+                        reduceMotion ? nil : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                        value: hovered || keyboardNavigationActive
+                    )
+                    .allowsHitTesting(hovered || keyboardNavigationActive)
+                    .accessibilityHidden(false)
                 }
             }
             .frame(height: OverlayGeometry.bubbleGroupHeaderHeight)
@@ -288,19 +482,22 @@ private struct ConversationBubble: View {
                 bubbleWidth: OverlayGeometry.bubbleWidth,
                 content: content
             )
-            ForEach(content.sessions.indices, id: \.self) { index in
-                let session = content.sessions[index]
+            ForEach(Array(content.visibleSessions.enumerated()), id: \.element.id) { index, session in
                 SessionBubbleRow(
                     session: session,
-                    hovered: hovered,
-                    action: { onOpenSession(session) }
+                    action: { onActivateSession(session) },
+                    dismissAction: content.canDismiss
+                        ? { onDismissSession(session) }
+                        : nil
                 )
                 .frame(height: rowHeights.indices.contains(index) ? rowHeights[index] : nil)
+                .transition(sessionTransition)
 
-                if index < content.sessions.count - 1 {
+                if index < content.visibleSessions.count - 1 {
                     Divider()
                         .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
                         .frame(height: OverlayGeometry.bubbleSessionDividerHeight)
+                        .transition(.opacity)
                 }
             }
         }
@@ -311,13 +508,340 @@ private struct ConversationBubble: View {
             transparency: glassTransparency
         )
         .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
+        .modifier(ConversationBubbleAccessibilityActions(
+            model: accessibilityModel,
+            onClose: onClose,
+            onToggleGroup: onToggleGroup
+        ))
+    }
+
+    private var bubbleAnimation: Animation {
+        .easeInOut(duration: reduceMotion
+            ? OverlayMotion.reducedMotionCrossfadeDuration
+            : OverlayMotion.bubbleLayoutDuration)
+    }
+
+    private var sessionTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .move(edge: .top).combined(with: .opacity)
     }
 }
 
+#if DEBUG
+enum OverlayCoreFixturePet {
+    static let bytebud: PetSummary = {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let assetRoot = repositoryRoot.appendingPathComponent(
+            "ui-next/codex/assets/bytebud",
+            isDirectory: true
+        )
+        return PetSummary(
+            id: "pet_bytebudcodex",
+            name: "Bytebud 字节芽",
+            style: StylePreset.pixel.rawValue,
+            quality: .high,
+            renderSize: QualityLevel.high.renderSize,
+            petpackPath: assetRoot
+                .appendingPathComponent(PetAssetLocator.uiNextFixturePetpackMarker)
+                .path,
+            coverPath: assetRoot
+                .appendingPathComponent("assets/preview/cover.png")
+                .path,
+            origin: .verifiedSkillSource,
+            generator: "agent-pet-companion.release-inventory",
+            provenance: "apc.bundled-pets.v1",
+            revisionID: "rev_fixture_bytebud",
+            revisionCount: 1,
+            active: true,
+            createdAt: "2026-07-21T00:00:00Z"
+        )
+    }()
+
+    static func representativeFrameURL(stateName: String) -> URL? {
+        PetAssetLocator.frameURLs(for: bytebud, stateName: stateName).first
+    }
+
+    static func representativeFrameImage(stateName: String) -> NSImage? {
+        representativeFrameURL(stateName: stateName).flatMap(NSImage.init(contentsOf:))
+    }
+}
+
+/// Pure fixture projection that keeps protocol state and session cardinality
+/// aligned with the production overlay model without consulting AppStore or
+/// PetCore.
+struct OverlayCoreFixtureModel {
+    let state: UINextOverlayFixtureState
+    let source: AgentSource
+    let requestedActiveSessionCount: Int
+    var groupPresentation: UINextOverlayGroupFixturePresentation = .automatic
+
+    var eventKind: AgentEventKind? {
+        state.eventKind
+    }
+
+    var petStateName: String {
+        eventKind?.petState ?? "idle"
+    }
+
+    var resolvedActiveSessionCount: Int {
+        guard eventKind != nil else { return 0 }
+        return min(8, max(0, requestedActiveSessionCount))
+    }
+
+    var bubbleContent: OverlayBubbleContent? {
+        guard let eventKind, resolvedActiveSessionCount > 0 else { return nil }
+        let sessions = (0 ..< resolvedActiveSessionCount).map { index in
+            OverlaySessionContent(
+                id: "fixture-overlay-\(state.rawValue)-\(index)",
+                source: source,
+                sessionID: "fixture-session-\(index)",
+                eventType: eventKind,
+                sessionTitle: APCLocalization.format(
+                    .overlaySessionTitleFormat,
+                    "\(source.shortTitle) \(index + 1)"
+                ),
+                messageText: APCLocalizedPresentation.eventTitle(eventKind),
+                statusText: APCLocalizedPresentation.eventTitle(eventKind),
+                actionLabel: APCLocalization.text(.overlayActionOpen)
+            )
+        }
+        return OverlayBubbleContent(
+            id: "fixture-agent-\(source.rawValue)",
+            source: source,
+            agentName: source.title,
+            sessions: sessions,
+            isExpanded: groupPresentation.isExpanded(
+                sessionCount: resolvedActiveSessionCount
+            )
+        )
+    }
+
+    var visibleSessionRowCount: Int {
+        bubbleContent?.visibleSessions.count ?? 0
+    }
+}
+
+/// Renders the production conversation bubble and pet stage against a
+/// deterministic desktop stand-in. The fixture deliberately avoids AppStore
+/// and PetCore so every protocol state remains stable in previews and
+/// screenshot regression runs.
+struct OverlayCoreFixtureView: View {
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+    @State private var rendererHasContent = false
+
+    let state: UINextOverlayFixtureState
+    let theme: AppearanceTheme
+    var source: AgentSource = .codex
+    var activeSessionCount = 1
+    var groupPresentation: UINextOverlayGroupFixturePresentation = .automatic
+    var controlPresentation: UINextOverlayControlFixturePresentation = .resting
+    var mixedAgentBubbleContents: [OverlayBubbleContent]? = nil
+
+    private let petScale: CGFloat = 0.52
+
+    private var reduceMotion: Bool {
+        accessibilityOverrides.reduceMotion ?? systemReduceMotion
+    }
+
+    private var model: OverlayCoreFixtureModel {
+        OverlayCoreFixtureModel(
+            state: state,
+            source: source,
+            requestedActiveSessionCount: activeSessionCount,
+            groupPresentation: groupPresentation
+        )
+    }
+
+    private var bubbleContents: [OverlayBubbleContent] {
+        if let mixedAgentBubbleContents {
+            return mixedAgentBubbleContents
+        }
+        return model.bubbleContent.map { [$0] } ?? []
+    }
+
+    private var concreteSessionCount: Int {
+        bubbleContents
+            .filter { !$0.isOmittedSummary }
+            .map(\.sessionCount)
+            .reduce(0, +)
+    }
+
+    private var visibleSessionRowCount: Int {
+        bubbleContents.map { $0.visibleSessions.count }.reduce(0, +)
+    }
+
+    private var bubbleStatusTone: OverlaySessionGroupTone {
+        OverlaySessionGroupTone.aggregate(
+            bubbleContents
+                .filter { !$0.isOmittedSummary }
+                .flatMap(\.sessions)
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color.indigo.opacity(0.34),
+                    Color.cyan.opacity(0.20),
+                    Color(nsColor: .windowBackgroundColor),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            HStack(alignment: .bottom, spacing: 18) {
+                if !bubbleContents.isEmpty {
+                    fixtureBubbleStack
+                }
+
+                petPresentation
+            }
+            .padding(24)
+        }
+        .apcAppearanceTheme(theme)
+        .accessibilityIdentifier("fixture.overlay.\(state.rawValue)")
+        .accessibilityValue(
+            "pet-state=\(model.petStateName);sessions=\(concreteSessionCount);rows=\(visibleSessionRowCount);groups=\(bubbleContents.count);group=\(bubbleContents.count > 1 ? "mixed" : groupPresentation.rawValue);controls=\(controlPresentation.rawValue)"
+        )
+        .onChange(of: model.petStateName) {
+            rendererHasContent = false
+        }
+    }
+
+    private var fixtureBubbleStack: some View {
+        let availableSize = CGSize(width: 376, height: 680)
+        let stackSize = OverlayGeometry.resolvedBubbleStackSize(
+            in: availableSize,
+            contents: bubbleContents
+        )
+        let rects = OverlayGeometry.bubbleRects(
+            inPanelSize: stackSize,
+            visibleFrameSize: availableSize,
+            contents: bubbleContents,
+            alignLeft: true
+        )
+
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(bubbleContents.enumerated()), id: \.element.id) { index, content in
+                let rect = rects.indices.contains(index) ? rects[index] : .zero
+                ConversationBubble(
+                    content: content,
+                    hovered: controlPresentation.controlsVisible,
+                    keyboardNavigationActive: false,
+                    glassTransparency: BehaviorSettings.defaultBubbleTransparency,
+                    onClose: {},
+                    onToggleGroup: {},
+                    onActivateSession: { _ in },
+                    onDismissSession: { _ in }
+                )
+                .frame(width: rect.width, height: rect.height)
+                .background {
+                    UINextOverlayBubbleLayoutMarker(contentID: content.id)
+                }
+                .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .frame(width: stackSize.width, height: stackSize.height)
+    }
+
+    @ViewBuilder
+    private var petPresentation: some View {
+        if controlPresentation.controlsVisible {
+            GeometryReader { proxy in
+                let petCenter = CGPoint(x: 72, y: proxy.size.height / 2)
+                let menuCenter = OverlayGeometry.menuCenter(
+                    petCenter: petCenter,
+                    scale: petScale
+                )
+                let resizeCenter = OverlayGeometry.resizeCenter(
+                    petCenter: petCenter,
+                    scale: petScale
+                )
+
+                fixturePet
+                    .position(petCenter)
+
+                if let toggleContent = OverlayBubbleTogglePresentation.content(
+                    sessionCount: concreteSessionCount,
+                    collapsed: false
+                ) {
+                    PetMenuButton(
+                        collapsed: false,
+                        sessionCount: concreteSessionCount,
+                        content: toggleContent,
+                        tone: bubbleStatusTone,
+                        onToggleBubble: {}
+                    )
+                    .position(menuCenter)
+                    .accessibilityIdentifier("fixture.overlay.menu-control")
+                }
+
+                ResizeHandle(
+                    scale: OverlayGeometry.defaultScale,
+                    showScaleValue: controlPresentation.showsScaleValue
+                )
+                .position(resizeCenter)
+                .accessibilityIdentifier("fixture.overlay.resize-control")
+            }
+            .frame(width: 176, height: 220)
+            .accessibilityIdentifier(
+                "fixture.overlay.controls.\(controlPresentation.rawValue)"
+            )
+        } else {
+            fixturePet
+        }
+    }
+
+    private var fixturePet: some View {
+        ZStack {
+            // Offscreen AppKit snapshots can be captured before a CAMetalLayer
+            // obtains its first drawable. Use the same checked-in state frame
+            // as a synchronous first-frame handoff, then remove it as soon as
+            // the production Metal pipeline publishes a visual envelope.
+            if let frame = OverlayCoreFixturePet.representativeFrameImage(
+                stateName: model.petStateName
+            ) {
+                Image(nsImage: frame)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 230 * petScale, height: 310 * petScale)
+                    .opacity(rendererHasContent ? 0 : 1)
+                    .accessibilityHidden(true)
+            }
+
+            PetStage(
+                pet: OverlayCoreFixturePet.bytebud,
+                state: model.eventKind,
+                stateEntryID: "fixture-overlay-\(state.rawValue)",
+                scale: petScale,
+                fpsProfile: .standard,
+                active: true,
+                reduceMotion: reduceMotion,
+                hovered: controlPresentation.controlsVisible,
+                onVisualEnvelopeChanged: { envelope, _, _ in
+                    rendererHasContent = envelope != nil
+                }
+            )
+        }
+        .accessibilityIdentifier("fixture.overlay.pet.\(model.petStateName)")
+    }
+}
+#endif
+
 private struct SessionBubbleRow: View {
     var session: OverlaySessionContent
-    var hovered: Bool
     var action: () -> Void
+    var dismissAction: (() -> Void)?
+    @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
@@ -369,36 +893,35 @@ private struct SessionBubbleRow: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(hovered ? Color.primary.opacity(0.05) : .clear)
             )
-            .overlay(alignment: .bottomTrailing) {
-                if hovered && session.canOpen {
-                    HStack(spacing: 2) {
-                        Text(session.actionLabel)
-                        Image(systemName: "chevron.right")
-                    }
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(BubbleForegroundStyle.secondaryText)
-                    .fixedSize()
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(Color.primary.opacity(0.07))
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(Color.primary.opacity(0.14), lineWidth: 0.6)
-                    }
-                    .padding(.trailing, OverlayGeometry.bubbleSessionHorizontalPadding)
-                    .padding(.bottom, OverlayGeometry.bubbleSessionVerticalPadding)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-                }
-            }
         }
         .buttonStyle(.plain)
-        .disabled(!session.canOpen)
-        .accessibilityLabel("\(session.sessionTitle)，\(session.statusText)，\(session.messageText)")
-        .help(session.actionLabel)
+        .onHover { hovered = $0 }
+        .accessibilityLabel(APCLocalization.format(
+            .overlaySessionAccessibilityFormat,
+            session.sessionTitle,
+            session.statusText,
+            session.messageText
+        ))
+        .modifier(SessionBubbleAccessibilityActions(
+            openLabel: session.actionLabel,
+            closeLabel: dismissAction == nil
+                ? nil
+                : APCLocalization.text(.overlayDismissSession),
+            onOpen: action,
+            onClose: dismissAction
+        ))
+        .help(helpText)
+    }
+
+    private var helpText: String {
+        if session.dismissesAfterActivation {
+            return APCLocalization.text(
+                session.canOpen ? .overlayHelpOpenAndDismiss : .overlayHelpDismiss
+            )
+        }
+        return APCLocalization.text(
+            session.canOpen ? .overlayHelpOpen : .overlayHelpUnavailable
+        )
     }
 
     private var statusColor: Color {
@@ -412,6 +935,85 @@ private struct SessionBubbleRow: View {
     }
 }
 
+private struct SessionBubbleAccessibilityActions: ViewModifier {
+    var openLabel: String
+    var closeLabel: String?
+    var onOpen: () -> Void
+    var onClose: (() -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let closeLabel, let onClose {
+            content
+                .accessibilityAction(named: openLabel) { onOpen() }
+                .accessibilityAction(named: closeLabel) { onClose() }
+        } else {
+            content.accessibilityAction(named: openLabel) { onOpen() }
+        }
+    }
+}
+
+private struct SessionCountButton: View {
+    var count: Int
+    var expanded: Bool
+    var tone: OverlaySessionGroupTone
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text("\(count)")
+                    .monospacedDigit()
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 7.5, weight: .bold))
+            }
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(BubbleForegroundStyle.text)
+            .frame(minWidth: 28, minHeight: 17)
+            .padding(.horizontal, 5)
+            .background(
+                Capsule()
+                    .fill(tone.color.opacity(0.24))
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(width: OverlayGeometry.bubbleGroupToggleWidth)
+        .contentShape(Capsule())
+        .accessibilityLabel(sessionToggleLabel)
+        .help(sessionToggleLabel)
+    }
+
+    private var sessionToggleLabel: String {
+        APCLocalization.format(
+            expanded ? .overlayCollapseSessionsFormat : .overlayExpandSessionsFormat,
+            count
+        )
+    }
+}
+
+private extension OverlaySessionGroupTone {
+    var color: Color {
+        switch self {
+        case .needsInput: .orange
+        case .failed: .red
+        case .ready: .green
+        case .running: .gray
+        }
+    }
+}
+
+private typealias PetVisualEnvelopeHandler = (
+    OverlayPetVisualEnvelope?,
+    String,
+    String
+) -> Void
+
+private typealias PetFrameHitTestHandler = @MainActor (
+    OverlayPetFrameHitTest?,
+    String,
+    String
+) -> Void
+
 private struct PetInteractionLayer: View {
     var pet: PetSummary?
     var state: AgentEventKind?
@@ -421,10 +1023,15 @@ private struct PetInteractionLayer: View {
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
+    var bubbleToggleAvailable: Bool
     var petScreenCenter: CGPoint
     var petVisualEnvelope: OverlayPetVisualEnvelope?
     var controlsVisible: Bool
     var active: Bool
+    var reduceMotion: Bool
+    var onVisualEnvelopeChanged: PetVisualEnvelopeHandler?
+    var onFrameHitTestChanged: PetFrameHitTestHandler?
+    var onActivate: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
@@ -441,7 +1048,9 @@ private struct PetInteractionLayer: View {
                 appearanceTheme: appearanceTheme,
                 clickMenuEnabled: clickMenuEnabled,
                 bubbleVisible: bubbleVisible,
+                bubbleToggleAvailable: bubbleToggleAvailable,
                 petVisualEnvelope: petVisualEnvelope,
+                onActivate: onActivate,
                 onToggleBubble: onToggleBubble,
                 onOpenMainWindow: onOpenMainWindow,
                 onHidePet: onHidePet,
@@ -451,8 +1060,8 @@ private struct PetInteractionLayer: View {
                 onDragEnded: onDragEnded
             )
             .frame(
-                width: OverlayGeometry.petDragSize(scale: scale).width,
-                height: OverlayGeometry.petDragSize(scale: scale).height
+                width: OverlayGeometry.petVisibleSize(scale: scale).width,
+                height: OverlayGeometry.petVisibleSize(scale: scale).height
             )
 
             PetStage(
@@ -462,7 +1071,10 @@ private struct PetInteractionLayer: View {
                 scale: scale,
                 fpsProfile: fpsProfile,
                 active: active,
-                hovered: controlsVisible
+                reduceMotion: reduceMotion,
+                hovered: controlsVisible,
+                onVisualEnvelopeChanged: onVisualEnvelopeChanged,
+                onFrameHitTestChanged: onFrameHitTestChanged
             )
             .allowsHitTesting(false)
         }
@@ -474,13 +1086,15 @@ private struct PetInteractionLayer: View {
     }
 }
 
-private struct WindowDragRegion: NSViewRepresentable {
+struct WindowDragRegion: NSViewRepresentable {
     var scale: CGFloat
     var petScreenCenter: CGPoint
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
+    var bubbleToggleAvailable: Bool
     var petVisualEnvelope: OverlayPetVisualEnvelope?
+    var onActivate: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
@@ -496,7 +1110,9 @@ private struct WindowDragRegion: NSViewRepresentable {
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
+        view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -513,7 +1129,9 @@ private struct WindowDragRegion: NSViewRepresentable {
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
+        view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -531,7 +1149,9 @@ private struct WindowDragRegion: NSViewRepresentable {
             didSet { configureAccessibilityActions() }
         }
         var bubbleVisible = true
+        var bubbleToggleAvailable = true
         var petVisualEnvelope: OverlayPetVisualEnvelope?
+        var onActivate: () -> Void = {}
         var onToggleBubble: () -> Void = {}
         var onOpenMainWindow: () -> Void = {}
         var onHidePet: () -> Void = {}
@@ -572,9 +1192,17 @@ private struct WindowDragRegion: NSViewRepresentable {
             return true
         }
 
+        override func accessibilityPerformPress() -> Bool {
+            onActivate()
+            return true
+        }
+
         override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
             if selector == #selector(accessibilityPerformShowMenu) {
                 return clickMenuEnabled
+            }
+            if selector == #selector(accessibilityPerformPress) {
+                return true
             }
             return super.isAccessibilitySelectorAllowed(selector)
         }
@@ -617,13 +1245,11 @@ private struct WindowDragRegion: NSViewRepresentable {
             else { return }
 
             let currentMouseLocation = NSEvent.mouseLocation
-            let distance = hypot(
-                currentMouseLocation.x - dragStartMouseLocation.x,
-                currentMouseLocation.y - dragStartMouseLocation.y
-            )
-            if distance > 3 {
-                didDrag = true
-            }
+            guard OverlayPetPointerGesture.exceedsDragThreshold(
+                from: dragStartMouseLocation,
+                to: currentMouseLocation
+            ) else { return }
+            didDrag = true
             let proposedCenter = CGPoint(
                 x: dragStartPetCenter.x + currentMouseLocation.x - dragStartMouseLocation.x,
                 y: dragStartPetCenter.y + currentMouseLocation.y - dragStartMouseLocation.y
@@ -664,6 +1290,8 @@ private struct WindowDragRegion: NSViewRepresentable {
             dragStartPetCenter = nil
             if didDrag {
                 onDragEnded(finalCenter, visibleFrame)
+            } else {
+                onActivate()
             }
             onDragActiveChanged(false)
         }
@@ -684,9 +1312,9 @@ private struct WindowDragRegion: NSViewRepresentable {
 
         private func configureAccessibility() {
             setAccessibilityElement(true)
-            setAccessibilityRole(.group)
-            setAccessibilityLabel("桌宠")
-            setAccessibilityHelp("按住左键拖动，右击打开快捷菜单")
+            setAccessibilityRole(.button)
+            setAccessibilityLabel(APCLocalization.text(.overlayPetAccessibility))
+            setAccessibilityHelp(APCLocalization.text(.overlayPetAccessibilityHelp))
             configureAccessibilityActions()
         }
 
@@ -695,7 +1323,9 @@ private struct WindowDragRegion: NSViewRepresentable {
                 setAccessibilityCustomActions([])
                 return
             }
-            let showMenuAction = NSAccessibilityCustomAction(name: "打开快捷菜单") { [weak self] in
+            let showMenuAction = NSAccessibilityCustomAction(
+                name: APCLocalization.text(.overlayOpenQuickMenu)
+            ) { [weak self] in
                 self?.accessibilityPerformShowMenu() ?? false
             }
             setAccessibilityCustomActions([showMenuAction])
@@ -722,17 +1352,23 @@ private struct WindowDragRegion: NSViewRepresentable {
 
             let menu = NSMenu()
             menu.appearance = APCApplicationAppearance.nsAppearance(for: appearanceTheme)
-            let bubbleItem = NSMenuItem(
-                title: bubbleVisible ? "收起气泡" : "展开气泡",
-                action: #selector(PetClickMenuTarget.toggleBubble),
-                keyEquivalent: ""
-            )
-            bubbleItem.target = target
-            bubbleItem.image = NSImage(
-                systemSymbolName: bubbleVisible ? "chevron.down" : "chevron.up",
-                accessibilityDescription: nil
-            )
-            menu.addItem(bubbleItem)
+            if OverlayPetMenuPolicy.showsBubbleToggle(
+                hasAvailableBubbleContent: bubbleToggleAvailable
+            ) {
+                let bubbleItem = NSMenuItem(
+                    title: APCLocalization.text(
+                        bubbleVisible ? .overlayCollapseBubble : .overlayExpandBubble
+                    ),
+                    action: #selector(PetClickMenuTarget.toggleBubble),
+                    keyEquivalent: ""
+                )
+                bubbleItem.target = target
+                bubbleItem.image = NSImage(
+                    systemSymbolName: bubbleVisible ? "chevron.down" : "chevron.up",
+                    accessibilityDescription: nil
+                )
+                menu.addItem(bubbleItem)
+            }
 
             let openItem = NSMenuItem(
                 title: APCLocalization.text(.appActionOpenControlCenter),
@@ -745,7 +1381,7 @@ private struct WindowDragRegion: NSViewRepresentable {
 
             menu.addItem(.separator())
             let hideItem = NSMenuItem(
-                title: "隐藏桌宠",
+                title: APCLocalization.text(.appActionHidePet),
                 action: #selector(PetClickMenuTarget.hidePet),
                 keyEquivalent: ""
             )
@@ -792,7 +1428,10 @@ private struct PetStage: View {
     var scale: CGFloat
     var fpsProfile: FpsProfile
     var active: Bool
+    var reduceMotion: Bool
     var hovered: Bool
+    var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
+    var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
 
     var body: some View {
         ZStack {
@@ -802,7 +1441,10 @@ private struct PetStage: View {
                 stateEntryID: stateEntryID,
                 scale: scale,
                 fpsProfile: fpsProfile,
-                active: active
+                active: active,
+                reduceMotion: reduceMotion,
+                onVisualEnvelopeChanged: onVisualEnvelopeChanged,
+                onFrameHitTestChanged: onFrameHitTestChanged
             )
                 .shadow(color: .black.opacity(hovered ? 0.09 : 0.05), radius: hovered ? 10 : 6, y: 6)
         }
@@ -818,6 +1460,9 @@ private struct FloatingPetSprite: View {
     var scale: CGFloat
     var fpsProfile: FpsProfile
     var active: Bool
+    var reduceMotion: Bool
+    var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
+    var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
 
     var body: some View {
         if let pet {
@@ -826,25 +1471,30 @@ private struct FloatingPetSprite: View {
                 stateName: state?.petState ?? "idle",
                 stateEntryID: stateEntryID,
                 fpsProfile: fpsProfile,
-                active: active
+                active: active,
+                reduceMotion: reduceMotion,
+                onVisualEnvelopeChanged: onVisualEnvelopeChanged,
+                onFrameHitTestChanged: onFrameHitTestChanged
             )
                 .frame(width: 230 * scale, height: 310 * scale)
         } else {
             Color.clear
                 .frame(width: 230 * scale, height: 310 * scale)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("尚未启用桌宠")
+                .accessibilityLabel(APCLocalization.text(.overlayNoPet))
         }
     }
 }
 
 private struct PetFrameLayerView: NSViewRepresentable {
-    @EnvironmentObject private var store: AppStore
     var pet: PetSummary
     var stateName: String
     var stateEntryID: String
     var fpsProfile: FpsProfile
     var active: Bool
+    var reduceMotion: Bool
+    var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
+    var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
 
     func makeCoordinator() -> PetMetalFrameRenderer {
         PetMetalFrameRenderer()
@@ -855,9 +1505,10 @@ private struct PetFrameLayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: MTKView, context: Context) {
-        let store = store
         let petID = pet.id
         let currentStateEntryID = stateEntryID
+        let onVisualEnvelopeChanged = onVisualEnvelopeChanged
+        let onFrameHitTestChanged = onFrameHitTestChanged
         context.coordinator.configure(
             view: view,
             pet: pet,
@@ -865,40 +1516,82 @@ private struct PetFrameLayerView: NSViewRepresentable {
             stateEntryID: stateEntryID,
             fpsProfile: fpsProfile,
             active: active,
-            onVisualEnvelopeChanged: { [weak store] envelope in
-                store?.updateOverlayPetVisualEnvelope(
+            reduceMotion: reduceMotion,
+            onVisualEnvelopeChanged: { envelope in
+                onVisualEnvelopeChanged?(
                     envelope,
-                    petID: petID,
-                    stateEntryID: currentStateEntryID
+                    petID,
+                    currentStateEntryID
+                )
+            },
+            onFrameHitTestChanged: { hitTest in
+                onFrameHitTestChanged?(
+                    hitTest,
+                    petID,
+                    currentStateEntryID
                 )
             }
         )
+    }
+
+    @MainActor
+    static func dismantleNSView(_ view: MTKView, coordinator: PetMetalFrameRenderer) {
+        // Invalidate every in-flight presentation before SwiftUI releases or
+        // replaces this representable. Late drawable callbacks must never
+        // reach a handler owned by a successor view with the same pet/state.
+        coordinator.dismantlePipeline()
+        view.isPaused = true
+        view.delegate = nil
     }
 }
 
 private struct PetMenuButton: View {
     @EnvironmentObject private var store: AppStore
     var collapsed: Bool
+    var sessionCount: Int
+    var content: OverlayBubbleToggleContent
+    var tone: OverlaySessionGroupTone
     var onToggleBubble: () -> Void
 
     var body: some View {
         Button(action: onToggleBubble) {
-            Image(systemName: collapsed ? "chevron.up" : "chevron.down")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(OverlayStyle.secondaryText)
-                .frame(width: OverlayGeometry.menuVisualSize.width, height: OverlayGeometry.menuVisualSize.height)
-                .apcLiquidGlass(in: Circle(), interactive: true)
+            Group {
+                switch content {
+                case let .count(count):
+                    Text("\(count)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .accessibilityHidden(true)
+                case let .chevron(systemImage):
+                    Image(systemName: systemImage)
+                        .font(.system(size: 9, weight: .bold))
+                        .accessibilityHidden(true)
+                }
+            }
+            .foregroundStyle(OverlayStyle.text)
+            .frame(
+                width: OverlayGeometry.menuVisualSize.width,
+                height: OverlayGeometry.menuVisualSize.height
+            )
+            .background(
+                Capsule()
+                    .fill(tone.color.opacity(sessionCount > 0 ? 0.28 : 0.12))
+            )
+            .apcFloatingControlGlass(in: Capsule(), interactive: true)
         }
         .buttonStyle(.plain)
         .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
-        .contentShape(Circle())
-        .help(collapsed ? "展开气泡" : "收起气泡")
+        .contentShape(Capsule())
+        .accessibilityLabel(accessibilityLabel)
+        .help(accessibilityLabel)
         .contextMenu {
             Button {
                 onToggleBubble()
             } label: {
                 Label(
-                    collapsed ? "展开气泡" : "收起气泡",
+                    accessibilityLabel,
                     systemImage: collapsed ? "chevron.up" : "chevron.down"
                 )
             }
@@ -914,14 +1607,25 @@ private struct PetMenuButton: View {
             Button {
                 store.toggleOverlay()
             } label: {
-                Label("隐藏桌宠", systemImage: "eye.slash")
+                Label(APCLocalization.text(.appActionHidePet), systemImage: "eye.slash")
             }
         }
+    }
+
+    private var accessibilityLabel: String {
+        let action = APCLocalization.text(
+            collapsed ? .overlayExpandBubble : .overlayCollapseBubble
+        )
+        return sessionCount > 0
+            ? APCLocalization.format(.overlayBubbleCountFormat, action, sessionCount)
+            : action
     }
 }
 
 private struct BubbleIconButton: View {
     var systemImage: String
+    var accessibilityLabel: String
+    var accessibilityHint: String
     var action: () -> Void
 
     var body: some View {
@@ -929,7 +1633,10 @@ private struct BubbleIconButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(BubbleForegroundStyle.secondaryText)
-                .frame(width: 15, height: 15)
+                .frame(
+                    width: OverlayGeometry.bubbleHeaderButtonSize,
+                    height: OverlayGeometry.bubbleHeaderButtonSize
+                )
                 .background(
                     Circle()
                         .fill(Color.black.opacity(0.12))
@@ -940,6 +1647,31 @@ private struct BubbleIconButton: View {
                 }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(accessibilityHint)
+        .help(accessibilityHint)
+    }
+}
+
+private struct ConversationBubbleAccessibilityActions: ViewModifier {
+    var model: OverlayBubbleAccessibilityModel
+    var onClose: () -> Void
+    var onToggleGroup: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch (model.closeActionLabel, model.groupActionLabel) {
+        case let (.some(close), .some(group)):
+            content
+                .accessibilityAction(named: close) { onClose() }
+                .accessibilityAction(named: group) { onToggleGroup() }
+        case let (.some(close), nil):
+            content.accessibilityAction(named: close) { onClose() }
+        case let (nil, .some(group)):
+            content.accessibilityAction(named: group) { onToggleGroup() }
+        case (nil, nil):
+            content
+        }
     }
 }
 
@@ -985,24 +1717,34 @@ struct ResizeHandle: View {
                 .font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(OverlayStyle.secondaryText)
                 .frame(width: OverlayGeometry.resizeVisualSize.width, height: OverlayGeometry.resizeVisualSize.height)
-                .apcLiquidGlass(
+                .apcFloatingControlGlass(
                     in: RoundedRectangle(cornerRadius: 6, style: .continuous),
                     interactive: true
                 )
 
             if showScaleValue {
-                Text("\(Int((scale * 100).rounded()))%")
+                Text(APCLocalization.format(
+                    .commonPercentFormat,
+                    Int((scale * 100).rounded())
+                ))
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(OverlayStyle.text)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .apcLiquidGlass(in: Capsule())
+                    .apcFloatingControlGlass(in: Capsule())
                     .offset(x: -24, y: -27)
                     .accessibilityHidden(true)
             }
         }
             .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
             .contentShape(Rectangle())
-            .help("拖拽调整桌宠大小")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(APCLocalization.text(.overlayResizeHelp))
+            .accessibilityValue(APCLocalization.format(
+                .commonPercentFormat,
+                Int((scale * 100).rounded())
+            ))
+            .accessibilityHint(APCLocalization.text(.overlayResizeHelp))
+            .help(APCLocalization.text(.overlayResizeHelp))
     }
 }

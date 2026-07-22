@@ -50,6 +50,10 @@ public struct GenerationSessionRestore: Equatable, Sendable {
     public var messageRevision: String
     public var operation: GenerationOperation
     public var resultPetID: String?
+    public var baselineRevisionID: String?
+    public var resultRevisionID: String?
+    public var validationSummary: GenerationValidationSummary?
+    public var referenceReselectionCount: Int
 
     public init(
         state: GenerationSessionState,
@@ -59,7 +63,11 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         progress: Double,
         messageRevision: String,
         operation: GenerationOperation = .create,
-        resultPetID: String? = nil
+        resultPetID: String? = nil,
+        baselineRevisionID: String? = nil,
+        resultRevisionID: String? = nil,
+        validationSummary: GenerationValidationSummary? = nil,
+        referenceReselectionCount: Int = 0
     ) {
         self.state = state
         self.jobID = jobID
@@ -69,6 +77,10 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         self.messageRevision = messageRevision
         self.operation = operation
         self.resultPetID = resultPetID
+        self.baselineRevisionID = baselineRevisionID
+        self.resultRevisionID = resultRevisionID
+        self.validationSummary = validationSummary
+        self.referenceReselectionCount = min(4, max(0, referenceReselectionCount))
     }
 
     public init(snapshot: ActiveGenerationSnapshot) {
@@ -89,6 +101,39 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         messageRevision = snapshot.messageRevision
         operation = snapshot.operation ?? .create
         resultPetID = snapshot.resultPetID
+        baselineRevisionID = snapshot.baselineRevisionID
+        resultRevisionID = nil
+        validationSummary = nil
+        referenceReselectionCount = min(4, max(0, snapshot.referenceReselectionCount))
+    }
+
+    public init?(snapshot: LatestGenerationSessionSnapshot) {
+        guard snapshot.found,
+              let jobID = snapshot.jobID,
+              !jobID.isEmpty,
+              let status = snapshot.status,
+              snapshot.form != nil,
+              (0 ... 4).contains(snapshot.referenceReselectionCount)
+        else { return nil }
+        state = switch status {
+        case .pending: .starting
+        case .running: .running
+        case .waitingForUser: .waitingForInput
+        case .completed: .succeeded
+        case .failed: .failed
+        case .canceled: .cancelled
+        }
+        self.jobID = jobID
+        submittedForm = snapshot.form
+        messages = snapshot.messages
+        progress = snapshot.messages.last?.progress ?? (state.isTerminal ? 1 : 0)
+        messageRevision = snapshot.messageRevision
+        operation = snapshot.operation ?? .create
+        resultPetID = snapshot.resultPetID
+        baselineRevisionID = snapshot.baselineRevisionID
+        resultRevisionID = snapshot.revisionID
+        validationSummary = snapshot.validationSummary
+        referenceReselectionCount = snapshot.referenceReselectionCount
     }
 }
 
@@ -97,12 +142,14 @@ public enum GenerationSessionAction: Equatable, Sendable {
     case editRequested(
         form: GenerationForm,
         initialMessage: GenerationMessage,
-        petID: String
+        petID: String,
+        baselineRevisionID: String? = nil
     )
     case retryRequested(form: GenerationForm, initialMessage: GenerationMessage)
-    case startAccepted(jobID: String)
+    case startAccepted(jobID: String, baselineRevisionID: String? = nil)
     case startFailed(message: GenerationMessage)
     case messagesReceived([GenerationMessage], revision: String?)
+    case resultMetadataReceived(GenerationResultMetadata)
     case restore(GenerationSessionRestore)
     case replySubmitted
     case replyFailed(restoring: GenerationSessionState)
@@ -122,6 +169,10 @@ public struct GenerationSession: Equatable, Sendable {
     public private(set) var messageRevision: String
     public private(set) var operation: GenerationOperation
     public private(set) var resultPetID: String?
+    public private(set) var baselineRevisionID: String?
+    public private(set) var resultRevisionID: String?
+    public private(set) var validationSummary: GenerationValidationSummary?
+    public private(set) var referenceReselectionCount: Int
 
     public init(
         state: GenerationSessionState = .idle,
@@ -131,7 +182,11 @@ public struct GenerationSession: Equatable, Sendable {
         progress: Double = 0,
         messageRevision: String = "",
         operation: GenerationOperation = .create,
-        resultPetID: String? = nil
+        resultPetID: String? = nil,
+        baselineRevisionID: String? = nil,
+        resultRevisionID: String? = nil,
+        validationSummary: GenerationValidationSummary? = nil,
+        referenceReselectionCount: Int = 0
     ) {
         self.state = state
         self.jobID = jobID
@@ -141,6 +196,10 @@ public struct GenerationSession: Equatable, Sendable {
         self.messageRevision = messageRevision
         self.operation = operation
         self.resultPetID = resultPetID
+        self.baselineRevisionID = baselineRevisionID
+        self.resultRevisionID = resultRevisionID
+        self.validationSummary = validationSummary
+        self.referenceReselectionCount = min(4, max(0, referenceReselectionCount))
     }
 
     public var isActive: Bool { state.isActive }
@@ -150,7 +209,7 @@ public struct GenerationSession: Equatable, Sendable {
     }
 
     public var canSendReply: Bool {
-        jobID != nil && (state == .waitingForInput || state == .succeeded)
+        jobID != nil && state == .waitingForInput
     }
 
     public var canRetry: Bool {
@@ -170,9 +229,13 @@ public struct GenerationSession: Equatable, Sendable {
             messageRevision = ""
             operation = .create
             resultPetID = nil
+            baselineRevisionID = nil
+            resultRevisionID = nil
+            validationSummary = nil
+            referenceReselectionCount = 0
             return []
 
-        case let .editRequested(form, initialMessage, petID):
+        case let .editRequested(form, initialMessage, petID, baselineRevisionID):
             guard !state.isActive, !petID.isEmpty else { return [] }
             state = .starting
             jobID = nil
@@ -182,6 +245,10 @@ public struct GenerationSession: Equatable, Sendable {
             messageRevision = ""
             operation = .modify
             resultPetID = petID
+            self.baselineRevisionID = baselineRevisionID
+            resultRevisionID = nil
+            validationSummary = nil
+            referenceReselectionCount = 0
             return []
 
         case let .retryRequested(form, initialMessage):
@@ -191,14 +258,38 @@ public struct GenerationSession: Equatable, Sendable {
             messages = [initialMessage]
             progress = initialMessage.progress
             messageRevision = ""
-            // Keep jobID, operation, and resultPetID until the retry RPC is
-            // accepted. If transport/startup fails, the same safe retry can be
-            // attempted again instead of falling back to a new create job.
+            resultRevisionID = nil
+            validationSummary = nil
+            referenceReselectionCount = 0
+            // Keep jobID, operation, resultPetID, and baselineRevisionID until
+            // the retry RPC is accepted. If transport/startup fails, the same
+            // safe immutable baseline can be retried instead of falling back
+            // to the current head or a new create job.
             return []
 
-        case let .startAccepted(jobID):
+        case let .resultMetadataReceived(metadata):
+            if let petID = metadata.resultPetID, !petID.isEmpty {
+                if operation == .modify,
+                   let currentPetID = resultPetID,
+                   currentPetID != petID {
+                    return []
+                }
+                resultPetID = petID
+            }
+            if let revisionID = metadata.revisionID, !revisionID.isEmpty {
+                resultRevisionID = revisionID
+            }
+            if let summary = metadata.validationSummary {
+                validationSummary = summary
+            }
+            return []
+
+        case let .startAccepted(jobID, baselineRevisionID):
             guard state == .starting else { return [] }
             self.jobID = jobID
+            if let baselineRevisionID {
+                self.baselineRevisionID = baselineRevisionID
+            }
             state = .running
             return [.startMessageStream]
 
@@ -239,6 +330,10 @@ public struct GenerationSession: Equatable, Sendable {
             messageRevision = restore.messageRevision
             operation = restore.operation
             resultPetID = restore.resultPetID
+            baselineRevisionID = restore.baselineRevisionID
+            resultRevisionID = restore.resultRevisionID
+            validationSummary = restore.validationSummary
+            referenceReselectionCount = restore.referenceReselectionCount
             var effects: GenerationSessionEffects = []
             if wasActive, previousJobID != restore.jobID || !restore.state.isActive {
                 effects.insert(.stopMessageStream)
@@ -255,7 +350,7 @@ public struct GenerationSession: Equatable, Sendable {
 
         case let .replyFailed(previousState):
             guard state == .running,
-                  previousState == .waitingForInput || previousState == .succeeded
+                  previousState == .waitingForInput
             else {
                 return []
             }

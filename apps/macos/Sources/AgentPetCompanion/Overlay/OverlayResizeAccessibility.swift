@@ -141,8 +141,12 @@ final class OverlayResizeAccessibilityView: NSView {
         focusRingType = .exterior
         setAccessibilityElement(true)
         setAccessibilityRole(.slider)
-        setAccessibilityLabel("桌宠显示大小")
-        setAccessibilityHelp("拖拽、方向键或加减键调整桌宠显示大小")
+        setAccessibilityLabel(Self.accessibilityLabel(
+            localeIdentifier: APCLocalization.interfaceLocaleIdentifier
+        ))
+        setAccessibilityHelp(Self.accessibilityHelp(
+            localeIdentifier: APCLocalization.interfaceLocaleIdentifier
+        ))
         setAccessibilityMinValue(Double(OverlayGeometry.minimumScale))
         setAccessibilityMaxValue(Double(OverlayGeometry.maximumScale))
         setAccessibilityValue(Double(scale))
@@ -165,5 +169,13 @@ final class OverlayResizeAccessibilityView: NSView {
 
     private static func valueDescription(for scale: CGFloat) -> String {
         "\(Int((scale * 100).rounded()))%"
+    }
+
+    static func accessibilityLabel(localeIdentifier: String) -> String {
+        APCLocalization.text(.configDisplaySize, locale: localeIdentifier)
+    }
+
+    static func accessibilityHelp(localeIdentifier: String) -> String {
+        APCLocalization.text(.overlayResizeHelp, locale: localeIdentifier)
     }
 }

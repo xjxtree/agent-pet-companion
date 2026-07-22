@@ -28,10 +28,10 @@ public enum AgentPetCompanionUIValidationContract {
         passed.append("bubble.active-session-content-retention")
 
         try validateBubbleActionRouting()
-        passed.append("bubble.open-close-hit-regions-and-deeplink")
+        passed.append("bubble.session-group-close-hit-regions-and-deeplink")
 
         try await validateBubbleDisclosureState()
-        passed.append("bubble.expand-clears-all-dismissal-layers")
+        passed.append("bubble.expand-preserves-consumed-sessions")
 
         try validateScheduler()
         passed.append("scheduler.loop-and-one-shot")
@@ -65,8 +65,8 @@ public enum AgentPetCompanionUIValidationContract {
 
         try require(!store.overlayBubbleDismissed, "expand left the global bubble dismissal active")
         try require(
-            store.overlayDismissedBubbleEventIDs.isEmpty,
-            "expand left session-level bubble dismissals active"
+            store.overlayDismissedBubbleEventIDs == ["codex-session-event", "pi-session-event"],
+            "expand restored session rows that had already been consumed"
         )
     }
 
@@ -279,6 +279,15 @@ public enum AgentPetCompanionUIValidationContract {
           "session_activity": {
             "kind": "thinking",
             "content": "Verifying live activity synchronization"
+          },
+          "overlay_display": {
+            "summary_kind": "thinking",
+            "navigation": {
+              "session_open": true,
+              "surface": "chatgpt_app",
+              "terminal_app": null,
+              "open_url": null
+            }
           }
         }
         """#
@@ -289,8 +298,8 @@ public enum AgentPetCompanionUIValidationContract {
         }
 
         try require(
-            session.messageText == "Verifying live activity synchronization",
-            "active bubble did not prefer the current activity over an earlier Agent message"
+            session.messageText == APCLocalization.text(.overlayActivityThinking),
+            "active bubble did not render the typed safe activity summary"
         )
         try require(
             content.agentName == "Codex",
@@ -298,8 +307,14 @@ public enum AgentPetCompanionUIValidationContract {
         )
         try require(session.sessionID == "session_validation", "active bubble omitted its session id")
         try require(
-            session.sessionTitle == "Persistent Codex task title",
-            "active bubble omitted its session title"
+            session.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Codex"),
+            "active bubble did not use the content-free session title"
+        )
+        try require(
+            !session.messageText.contains("Verifying live activity synchronization")
+                && !session.sessionTitle.contains("Persistent Codex task title")
+                && !session.messageText.contains("Latest App Server message"),
+            "active bubble rendered private Agent content"
         )
         try require(!session.statusText.isEmpty, "active bubble omitted its run status")
         try require(!session.actionLabel.isEmpty, "active bubble omitted its interaction action")
@@ -319,14 +334,26 @@ public enum AgentPetCompanionUIValidationContract {
             ActiveAgentState.self,
             from: Data(secondStateJSON.utf8)
         )
-        let grouped = OverlayBubbleContent(source: .codex, states: [state, secondState])
+        let grouped = OverlayBubbleContent(
+            source: .codex,
+            states: [state, secondState],
+            isExpanded: true
+        )
         try require(grouped.sessions.count == 2, "same-Agent sessions were not grouped")
+        let safeSessionTitle = APCLocalization.format(.overlaySessionTitleFormat, "Codex")
         try require(
             grouped.sessions.map(\.sessionTitle) == [
-                "Persistent Codex task title",
-                "Second Codex task title",
+                "\(safeSessionTitle) 1",
+                "\(safeSessionTitle) 2",
             ],
             "grouped session titles lost their visual identity"
+        )
+        try require(
+            grouped.sessions.allSatisfy {
+                !$0.sessionTitle.contains("Persistent Codex task title")
+                    && !$0.sessionTitle.contains("Second Codex task title")
+            },
+            "grouped session titles rendered private Agent content"
         )
         let groupedSize = OverlayGeometry.resolvedBubbleSize(
             in: CGSize(width: 1512, height: 934),
@@ -340,21 +367,58 @@ public enum AgentPetCompanionUIValidationContract {
             groupedRects.count == 2 && !groupedRects[0].intersects(groupedRects[1]),
             "grouped session rows overlap or lack distinct hit regions"
         )
+
+        let stacked = OverlayBubbleContent(
+            source: .codex,
+            states: [state, secondState],
+            isExpanded: false
+        )
+        try require(stacked.visibleSessions.count == 1, "stacked group exposed hidden rows")
+        try require(stacked.sessionCount == 2, "stacked group lost its full session count")
+        try require(stacked.stackDecorationDepth > 0, "stacked group lost its depth treatment")
     }
 
     private static func validateBubbleActionRouting() throws {
-        let content = OverlayBubbleContent.idle
+        let sessions = (0 ..< 2).map { index in
+            OverlaySessionContent(
+                id: "validation-session-\(index)",
+                source: .codex,
+                sessionID: "validation-session-\(index)",
+                eventType: .tool,
+                sessionTitle: "Validation \(index)",
+                messageText: "Running",
+                statusText: "Running",
+                actionLabel: "Open"
+            )
+        }
+        let content = OverlayBubbleContent(
+            id: "validation-agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: sessions,
+            isExpanded: false
+        )
         let size = OverlayGeometry.resolvedBubbleSize(
             in: CGSize(width: 1512, height: 934),
             content: content
         )
         let bubbleRect = CGRect(origin: .zero, size: size)
         let closeRect = OverlayGeometry.bubbleCloseHitRect(in: bubbleRect)
+        let groupRect = OverlayGeometry.bubbleGroupToggleHitRect(
+            in: bubbleRect,
+            content: content
+        )
         let sessionRects = OverlayGeometry.bubbleSessionRects(in: bubbleRect, content: content)
         try require(sessionRects.count == 1, "bubble session hit regions did not match session rows")
+        try require(!groupRect.isEmpty, "multi-session bubble omitted its group control hit region")
         try require(
             !sessionRects.contains(where: { $0.intersects(closeRect) }),
             "bubble session and close hit regions overlap"
+        )
+        try require(!groupRect.intersects(closeRect), "bubble group and close hit regions overlap")
+        try require(
+            !sessionRects.contains(where: { $0.intersects(groupRect) }),
+            "bubble session and group hit regions overlap"
         )
         try require(
             closeRect.contains(CGPoint(x: bubbleRect.maxX - 12, y: 12)),
@@ -373,6 +437,10 @@ public enum AgentPetCompanionUIValidationContract {
         try require(
             AgentSessionDeepLink.url(source: .codex, sessionID: "unsafe/session") == nil,
             "unsafe session id was accepted for deep-link routing"
+        )
+        try require(
+            AgentSessionDeepLink.url(source: .codex, sessionID: "thread-confirmed") == nil,
+            "non-UUID session id was accepted for deep-link routing"
         )
         try require(
             AgentSessionDeepLink.url(source: .claudeCode, sessionID: "session") == nil,

@@ -62,8 +62,23 @@ public struct PetCoreClient: Sendable {
     public func requestData(
         method: String,
         paramsJSONData: Data? = nil,
-        timeout: Duration = .seconds(5)
+        timeout: Duration? = nil
     ) async throws -> Data {
-        try await transport.request(method: method, params: paramsJSONData, timeout: timeout)
+        try await transport.request(
+            method: method,
+            params: paramsJSONData,
+            timeout: timeout ?? Self.defaultTimeout(for: method)
+        )
+    }
+
+    public static func defaultTimeout(for method: String) -> Duration {
+        switch method {
+        case "pet.history", "petpack.import", "petpack.seed_bundled", "petpack.export", "diagnostics.export":
+            .seconds(120)
+        case "connections.check", "connections.repair", "connections.uninstall":
+            .seconds(180)
+        default:
+            .seconds(5)
+        }
     }
 }

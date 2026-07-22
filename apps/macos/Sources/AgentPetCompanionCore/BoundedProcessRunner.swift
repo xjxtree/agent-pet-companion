@@ -115,22 +115,15 @@ private final class BoundedProcessOperation: @unchecked Sendable {
         }
         try throwIfCancelled()
 
-        let process = Process()
         let standardOutputPipe = Pipe()
         let standardErrorPipe = Pipe()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        process.environment = environment
-        process.standardOutput = standardOutputPipe
-        process.standardError = standardErrorPipe
-
-        let termination = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in termination.signal() }
-        do {
-            try process.run()
-        } catch {
-            throw BoundedProcessRunnerError.launchFailed(error.localizedDescription)
-        }
+        let processIdentifier = try spawnProcessGroup(
+            executableURL: executableURL,
+            arguments: arguments,
+            environment: environment,
+            standardOutputPipe: standardOutputPipe,
+            standardErrorPipe: standardErrorPipe
+        )
 
         let outputSink = BoundedDataSink(limit: outputLimit)
         let errorSink = BoundedDataSink(limit: outputLimit)
@@ -149,7 +142,12 @@ private final class BoundedProcessOperation: @unchecked Sendable {
         let deadline = DispatchTime.now() + timeout
         var didTimeOut = false
         var wasCancelled = false
+        var waitStatus: Int32?
         while true {
+            if let status = try pollWaitStatus(for: processIdentifier) {
+                waitStatus = status
+                break
+            }
             if isCancelled {
                 wasCancelled = true
                 break
@@ -159,14 +157,25 @@ private final class BoundedProcessOperation: @unchecked Sendable {
                 didTimeOut = true
                 break
             }
-            let nextPoll = min(deadline, now + .milliseconds(20))
-            if termination.wait(timeout: nextPoll) == .success {
-                break
-            }
+            let remaining = Double(deadline.uptimeNanoseconds - now.uptimeNanoseconds)
+                / 1_000_000_000
+            Thread.sleep(forTimeInterval: min(0.02, remaining))
         }
 
         if didTimeOut || wasCancelled {
-            try terminate(process, termination: termination)
+            waitStatus = try terminateProcessGroup(
+                processIdentifier,
+                initialWaitStatus: waitStatus
+            )
+        } else if processGroupExists(processIdentifier) {
+            // The direct child may exit after starting background work that no
+            // longer owns either output pipe. Preserve the leader's wait status
+            // while still draining every remaining member of this operation's
+            // private process group before returning.
+            waitStatus = try terminateProcessGroup(
+                processIdentifier,
+                initialWaitStatus: waitStatus
+            )
         }
 
         if drainGroup.wait(timeout: .now() + .seconds(1)) == .timedOut {
@@ -182,7 +191,7 @@ private final class BoundedProcessOperation: @unchecked Sendable {
         }
         let terminationReason: BoundedProcessTermination = didTimeOut
             ? .timedOut
-            : .exited(status: process.terminationStatus)
+            : .exited(status: Self.terminationStatus(from: waitStatus ?? 0))
         return BoundedProcessResult(
             termination: terminationReason,
             standardOutput: outputSink.data,
@@ -203,19 +212,223 @@ private final class BoundedProcessOperation: @unchecked Sendable {
         }
     }
 
-    private func terminate(_ process: Process, termination: DispatchSemaphore) throws {
-        if process.isRunning {
-            process.terminate()
+    private func terminateProcessGroup(
+        _ processIdentifier: pid_t,
+        initialWaitStatus: Int32?
+    ) throws -> Int32 {
+        var waitStatus = initialWaitStatus
+
+        // `spawnProcessGroup` makes the direct child the leader of a process
+        // group owned by this operation. Signals sent to the negative PGID
+        // therefore reach the command and every descendant it started, without
+        // relying on Foundation.Process's launcher PID or enumerating unrelated
+        // processes.
+        try signalProcessGroup(processIdentifier, signal: SIGTERM)
+        if try waitForProcessGroupExit(
+            processIdentifier,
+            waitStatus: &waitStatus,
+            deadline: .now() + .milliseconds(250)
+        ) {
+            return waitStatus ?? 0
         }
-        if process.isRunning, termination.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+
+        try signalProcessGroup(processIdentifier, signal: SIGKILL)
+        guard try waitForProcessGroupExit(
+            processIdentifier,
+            waitStatus: &waitStatus,
+            deadline: .now() + .seconds(1)
+        ), let waitStatus else {
+            throw BoundedProcessRunnerError.terminationFailed
         }
-        if process.isRunning,
-           termination.wait(timeout: .now() + .seconds(1)) == .timedOut,
-           process.isRunning {
+        return waitStatus
+    }
+
+    private func waitForProcessGroupExit(
+        _ processIdentifier: pid_t,
+        waitStatus: inout Int32?,
+        deadline: DispatchTime
+    ) throws -> Bool {
+        while true {
+            if waitStatus == nil {
+                waitStatus = try pollWaitStatus(for: processIdentifier)
+            }
+            if !processGroupExists(processIdentifier), waitStatus != nil {
+                return true
+            }
+            guard DispatchTime.now() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
+    private func pollWaitStatus(for processIdentifier: pid_t) throws -> Int32? {
+        while true {
+            var status: Int32 = 0
+            let result = Darwin.waitpid(processIdentifier, &status, WNOHANG)
+            if result == processIdentifier {
+                return status
+            }
+            if result == 0 {
+                return nil
+            }
+            if errno == EINTR {
+                continue
+            }
             throw BoundedProcessRunnerError.terminationFailed
         }
     }
+
+    private func processGroupExists(_ processGroupIdentifier: pid_t) -> Bool {
+        if Darwin.kill(-processGroupIdentifier, 0) == 0 {
+            return true
+        }
+        return errno != ESRCH
+    }
+
+    private func signalProcessGroup(_ processGroupIdentifier: pid_t, signal: Int32) throws {
+        guard Darwin.kill(-processGroupIdentifier, signal) != 0 else { return }
+        guard errno == ESRCH else {
+            throw BoundedProcessRunnerError.terminationFailed
+        }
+    }
+
+    private static func terminationStatus(from waitStatus: Int32) -> Int32 {
+        let terminatingSignal = waitStatus & 0x7f
+        if terminatingSignal == 0 {
+            return (waitStatus >> 8) & 0xff
+        }
+        return terminatingSignal
+    }
+}
+
+private func spawnProcessGroup(
+    executableURL: URL,
+    arguments: [String],
+    environment: [String: String]?,
+    standardOutputPipe: Pipe,
+    standardErrorPipe: Pipe
+) throws -> pid_t {
+    var fileActions: posix_spawn_file_actions_t?
+    var attributes: posix_spawnattr_t?
+    var fileActionsInitialized = false
+    var attributesInitialized = false
+
+    defer {
+        if attributesInitialized {
+            posix_spawnattr_destroy(&attributes)
+        }
+        if fileActionsInitialized {
+            posix_spawn_file_actions_destroy(&fileActions)
+        }
+    }
+
+    try checkSpawnCall(posix_spawn_file_actions_init(&fileActions))
+    fileActionsInitialized = true
+    try checkSpawnCall(posix_spawnattr_init(&attributes))
+    attributesInitialized = true
+
+    let outputReadDescriptor = standardOutputPipe.fileHandleForReading.fileDescriptor
+    let outputWriteDescriptor = standardOutputPipe.fileHandleForWriting.fileDescriptor
+    let errorReadDescriptor = standardErrorPipe.fileHandleForReading.fileDescriptor
+    let errorWriteDescriptor = standardErrorPipe.fileHandleForWriting.fileDescriptor
+
+    try checkSpawnCall(posix_spawn_file_actions_adddup2(
+        &fileActions,
+        outputWriteDescriptor,
+        STDOUT_FILENO
+    ))
+    try checkSpawnCall(posix_spawn_file_actions_adddup2(
+        &fileActions,
+        errorWriteDescriptor,
+        STDERR_FILENO
+    ))
+    for descriptor in [
+        outputReadDescriptor,
+        outputWriteDescriptor,
+        errorReadDescriptor,
+        errorWriteDescriptor
+    ] where descriptor != STDOUT_FILENO && descriptor != STDERR_FILENO {
+        try checkSpawnCall(posix_spawn_file_actions_addclose(&fileActions, descriptor))
+    }
+
+    try checkSpawnCall(posix_spawnattr_setflags(
+        &attributes,
+        Int16(POSIX_SPAWN_SETPGROUP)
+    ))
+    // A pgroup value of zero makes the spawned child's PID its PGID.
+    try checkSpawnCall(posix_spawnattr_setpgroup(&attributes, 0))
+
+    let executablePath = executableURL.path
+    var argumentPointers = try makeCStringArray([executablePath] + arguments)
+    let inheritedEnvironment = environment ?? ProcessInfo.processInfo.environment
+    var environmentPointers = try makeCStringArray(
+        inheritedEnvironment
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+    )
+    defer {
+        freeCStringArray(&argumentPointers)
+        freeCStringArray(&environmentPointers)
+    }
+
+    var processIdentifier: pid_t = 0
+    let spawnResult = executablePath.withCString { executablePointer in
+        argumentPointers.withUnsafeMutableBufferPointer { argumentBuffer in
+            environmentPointers.withUnsafeMutableBufferPointer { environmentBuffer in
+                posix_spawn(
+                    &processIdentifier,
+                    executablePointer,
+                    &fileActions,
+                    &attributes,
+                    argumentBuffer.baseAddress,
+                    environmentBuffer.baseAddress
+                )
+            }
+        }
+    }
+    guard spawnResult == 0 else {
+        try? standardOutputPipe.fileHandleForReading.close()
+        try? standardErrorPipe.fileHandleForReading.close()
+        try? standardOutputPipe.fileHandleForWriting.close()
+        try? standardErrorPipe.fileHandleForWriting.close()
+        throw BoundedProcessRunnerError.launchFailed(spawnErrorDescription(spawnResult))
+    }
+
+    // Only the child may retain the write ends. Closing them in the parent lets
+    // the drain tasks observe EOF after the complete process group exits.
+    try? standardOutputPipe.fileHandleForWriting.close()
+    try? standardErrorPipe.fileHandleForWriting.close()
+    return processIdentifier
+}
+
+private func checkSpawnCall(_ result: Int32) throws {
+    guard result == 0 else {
+        throw BoundedProcessRunnerError.launchFailed(spawnErrorDescription(result))
+    }
+}
+
+private func spawnErrorDescription(_ error: Int32) -> String {
+    String(cString: strerror(error))
+}
+
+private func makeCStringArray(_ strings: [String]) throws -> [UnsafeMutablePointer<CChar>?] {
+    var pointers: [UnsafeMutablePointer<CChar>?] = []
+    pointers.reserveCapacity(strings.count + 1)
+    for string in strings {
+        guard let pointer = strdup(string) else {
+            freeCStringArray(&pointers)
+            throw BoundedProcessRunnerError.launchFailed("Could not allocate process arguments.")
+        }
+        pointers.append(pointer)
+    }
+    pointers.append(nil)
+    return pointers
+}
+
+private func freeCStringArray(_ pointers: inout [UnsafeMutablePointer<CChar>?]) {
+    for pointer in pointers {
+        free(pointer)
+    }
+    pointers.removeAll(keepingCapacity: false)
 }
 
 private final class BoundedDataSink: @unchecked Sendable {

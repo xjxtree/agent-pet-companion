@@ -14,6 +14,8 @@ struct GenerationSessionStateTests {
         #expect(history.petId == "pet_external")
         #expect(history.jobId == nil)
         #expect(history.messages.isEmpty)
+        #expect(history.revisionId == nil)
+        #expect(history.validationSummary == nil)
     }
 
     @Test("input_request remains an active generation session")
@@ -55,6 +57,92 @@ struct GenerationSessionStateTests {
         #expect(effects.contains(.startMessageStream))
     }
 
+    @Test("latest Maker recovery restores every persisted terminal state without a pet ID")
+    func latestTerminalSessionRestoresAfterRestart() throws {
+        for (rawStatus, expectedState) in [
+            ("failed", GenerationSessionState.failed),
+            ("canceled", .cancelled),
+            ("completed", .succeeded),
+        ] {
+            let data = Data(#"""
+            {
+              "found":true,
+              "job_id":"job_\#(rawStatus)",
+              "status":"\#(rawStatus)",
+              "result_pet_id":null,
+              "operation":"create",
+              "form":{"description":"Recovered \#(rawStatus)","style":"像素","quality":"standard","reference_images":[]},
+              "message_revision":"9",
+              "messages":[{"id":"msg_\#(rawStatus)","role":"assistant","kind":"generation_\#(rawStatus)","content":"terminal","progress":1,"created_at":"2026-07-22T00:00:00Z"}]
+            }
+            """#.utf8)
+
+            let snapshot = try JSONDecoder().decode(
+                LatestGenerationSessionSnapshot.self,
+                from: data
+            )
+            let restore = try #require(GenerationSessionRestore(snapshot: snapshot))
+
+            #expect(restore.state == expectedState)
+            #expect(restore.jobID == "job_\(rawStatus)")
+            #expect(restore.resultPetID == nil)
+            #expect(restore.submittedForm?.description == "Recovered \(rawStatus)")
+            #expect(restore.messageRevision == "9")
+            #expect(restore.progress == 1)
+        }
+    }
+
+    @Test("an empty latest Maker response cannot create a phantom session")
+    func emptyLatestSessionDoesNotRestore() throws {
+        let snapshot = try JSONDecoder().decode(
+            LatestGenerationSessionSnapshot.self,
+            from: Data(#"{"found":false,"messages":[]}"#.utf8)
+        )
+
+        #expect(GenerationSessionRestore(snapshot: snapshot) == nil)
+    }
+
+    @Test("recovery projections decode a bounded reference reselection count compatibly")
+    func recoveryReferenceReselectionCountIsBoundedAndCompatible() throws {
+        let latest = try JSONDecoder().decode(
+            LatestGenerationSessionSnapshot.self,
+            from: Data(#"{"found":true,"job_id":"job_refs","status":"failed","form":{"description":"Retry","style":"像素","quality":"standard","reference_images":[]},"reference_reselection_count":2,"messages":[]}"#.utf8)
+        )
+        let history = try JSONDecoder().decode(
+            GenerationHistory.self,
+            from: Data(#"{"found":true,"pet_id":"pet_refs","reference_reselection_count":2,"form":{"description":"Retry","style":"像素","quality":"standard","reference_images":[]},"messages":[]}"#.utf8)
+        )
+        let active = try JSONDecoder().decode(
+            ActiveGenerationSnapshot.self,
+            from: Data(#"{"job_id":"job_refs","status":"waiting_for_user","form":{"description":"Retry","style":"像素","quality":"standard","reference_images":[]},"heartbeat_at":"2026-07-22T00:00:00Z","message_revision":"1","reference_reselection_count":2,"messages":[]}"#.utf8)
+        )
+        let legacyLatest = try JSONDecoder().decode(
+            LatestGenerationSessionSnapshot.self,
+            from: Data(#"{"found":false,"messages":[]}"#.utf8)
+        )
+
+        #expect(latest.referenceReselectionCount == 2)
+        #expect(try #require(GenerationSessionRestore(snapshot: latest))
+            .referenceReselectionCount == 2)
+        #expect(history.referenceReselectionCount == 2)
+        #expect(active.referenceReselectionCount == 2)
+        #expect(GenerationSessionRestore(snapshot: active).referenceReselectionCount == 2)
+        #expect(legacyLatest.referenceReselectionCount == 0)
+
+        for malformed in [
+            #"{"found":false,"reference_reselection_count":-1,"messages":[]}"#,
+            #"{"found":false,"reference_reselection_count":5,"messages":[]}"#,
+            #"{"found":true,"job_id":"job_refs","status":"failed","form":{"description":"Retry","style":"像素","quality":"standard","reference_images":["/private/tmp/original.png"]},"reference_reselection_count":1,"messages":[]}"#,
+        ] {
+            #expect(throws: DecodingError.self) {
+                _ = try JSONDecoder().decode(
+                    LatestGenerationSessionSnapshot.self,
+                    from: Data(malformed.utf8)
+                )
+            }
+        }
+    }
+
     @Test("daemon active_generation decodes into a resumable waiting session")
     func daemonActiveGenerationSnapshotDecodes() throws {
         let data = Data(#"""
@@ -65,6 +153,7 @@ struct GenerationSessionStateTests {
           "session_id":"session_snapshot",
           "result_pet_id":"pet_existing",
           "operation":"modify",
+          "baseline_revision_id":"rev_11111111111111111111111111111111",
           "owner_instance_id":"instance_old",
           "heartbeat_at":"2026-07-10T00:00:00Z",
           "message_revision":"11",
@@ -85,6 +174,7 @@ struct GenerationSessionStateTests {
         #expect(restore.messageRevision == "11")
         #expect(restore.operation == .modify)
         #expect(restore.resultPetID == "pet_existing")
+        #expect(restore.baselineRevisionID == "rev_11111111111111111111111111111111")
     }
 
     @Test("an edit session preserves its target across start, failure, and retry setup")
@@ -95,7 +185,8 @@ struct GenerationSessionStateTests {
         _ = session.reduce(.editRequested(
             form: submitted,
             initialMessage: message(id: "msg_edit", progress: 0.01),
-            petID: "pet_existing"
+            petID: "pet_existing",
+            baselineRevisionID: "rev_11111111111111111111111111111111"
         ))
         _ = session.reduce(.startAccepted(jobID: "job_edit"))
         _ = session.reduce(.messagesReceived(
@@ -106,6 +197,7 @@ struct GenerationSessionStateTests {
         #expect(session.state == .failed)
         #expect(session.operation == .modify)
         #expect(session.resultPetID == "pet_existing")
+        #expect(session.baselineRevisionID == "rev_11111111111111111111111111111111")
         #expect(session.canRetry)
 
         _ = session.reduce(.retryRequested(
@@ -116,6 +208,7 @@ struct GenerationSessionStateTests {
         #expect(session.jobID == "job_edit")
         #expect(session.operation == .modify)
         #expect(session.resultPetID == "pet_existing")
+        #expect(session.baselineRevisionID == "rev_11111111111111111111111111111111")
 
         _ = session.reduce(.startFailed(message: message(
             id: "msg_retry_failed",
@@ -124,6 +217,7 @@ struct GenerationSessionStateTests {
         )))
         #expect(session.state == .failed)
         #expect(session.jobID == "job_edit")
+        #expect(session.baselineRevisionID == "rev_11111111111111111111111111111111")
         #expect(session.canRetry)
     }
 
@@ -198,6 +292,57 @@ struct GenerationSessionStateTests {
         #expect(legacyFirst.id.hasPrefix("msg_legacy_"))
     }
 
+    @Test("localized message copy never infers a terminal generation state")
+    func terminalInferenceRequiresTypedKinds() {
+        let localizedOnly = [
+            GenerationMessage(
+                role: "assistant",
+                content: "完成，可在宠物库启用。",
+                progress: 1,
+                createdAt: "2026-07-10T00:00:00Z"
+            ),
+        ]
+        let renamedCopyOnly = [
+            GenerationMessage(
+                role: "assistant",
+                content: "Finished and ready to use.",
+                progress: 1,
+                createdAt: "2026-07-10T00:00:00Z"
+            ),
+        ]
+
+        for messages in [localizedOnly, renamedCopyOnly] {
+            #expect(!GenerationConversation.succeeded(messages))
+            #expect(!GenerationConversation.cancelled(messages))
+            #expect(!GenerationConversation.failed(messages))
+            #expect(!GenerationConversation.terminalUnsuccessful(messages))
+        }
+    }
+
+    @Test("generation history decodes terminal status into a typed bounded value")
+    func generationHistoryStatusIsTyped() throws {
+        for (rawStatus, expected) in [
+            ("completed", GenerationJobHistoryStatus.completed),
+            ("cancelled", GenerationJobHistoryStatus.canceled),
+            ("failed", GenerationJobHistoryStatus.failed),
+        ] {
+            let data = Data(
+                "{\"found\":true,\"pet_id\":\"pet_fixture\",\"status\":\"\(rawStatus)\"}"
+                    .utf8
+            )
+            let history = try JSONDecoder().decode(GenerationHistory.self, from: data)
+            #expect(history.status == expected)
+        }
+
+        let unknown = try JSONDecoder().decode(
+            GenerationHistory.self,
+            from: Data(
+                #"{"found":true,"pet_id":"pet_fixture","status":"future_status"}"#.utf8
+            )
+        )
+        #expect(unknown.status == nil)
+    }
+
     @Test("a terminal job requests stream shutdown exactly once")
     func terminalJobStopsStreamOnce() {
         var session = runningSession()
@@ -211,6 +356,71 @@ struct GenerationSessionStateTests {
         #expect(firstEffects.contains(.refreshSnapshot))
         #expect(!secondEffects.contains(.stopMessageStream))
         #expect(!secondEffects.contains(.refreshSnapshot))
+        #expect(!session.canSendReply)
+        #expect(!GenerationConversation.canSendReply(completed))
+    }
+
+    @Test("typed terminal metadata restores the real pet and revision independently")
+    func terminalMetadataRestoresWithoutConfusingPetAndRevisionIDs() throws {
+        let data = Data(#"""
+        {
+          "found":true,
+          "pet_id":"pet_created",
+          "job_id":"job_created",
+          "status":"completed",
+          "result_pet_id":"pet_created",
+          "revision_id":"rev_0123456789abcdef0123456789abcdef",
+          "validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":0},
+          "messages":[]
+        }
+        """#.utf8)
+        let history = try JSONDecoder().decode(GenerationHistory.self, from: data)
+        let restore = GenerationSessionRestore(
+            state: .succeeded,
+            jobID: try #require(history.jobId),
+            submittedForm: history.form,
+            messages: history.messages,
+            progress: 1,
+            messageRevision: "",
+            resultPetID: history.resultPetId,
+            resultRevisionID: history.revisionId,
+            validationSummary: history.validationSummary
+        )
+        var session = GenerationSession()
+
+        _ = session.reduce(.restore(restore))
+
+        #expect(session.resultPetID == "pet_created")
+        #expect(session.resultRevisionID == "rev_0123456789abcdef0123456789abcdef")
+        #expect(session.resultPetID != session.resultRevisionID)
+        #expect(session.validationSummary?.stateCount == 7)
+        #expect(session.validationSummary?.frameCount == 168)
+        #expect(!session.canSendReply)
+    }
+
+    @Test("a create session accepts typed result metadata when the terminal wait response arrives")
+    func createSessionAcceptsTerminalResultMetadata() {
+        var session = runningSession()
+        _ = session.reduce(.messagesReceived(
+            [message(id: "msg_done", kind: "generation_completed", progress: 1)],
+            revision: "3"
+        ))
+
+        _ = session.reduce(.resultMetadataReceived(GenerationResultMetadata(
+            resultPetID: "pet_result",
+            revisionID: "rev_0123456789abcdef0123456789abcdef",
+            validationSummary: GenerationValidationSummary(
+                ok: true,
+                stateCount: 7,
+                frameCount: 168,
+                warningCount: 0
+            )
+        )))
+
+        #expect(session.state == .succeeded)
+        #expect(session.resultPetID == "pet_result")
+        #expect(session.resultRevisionID == "rev_0123456789abcdef0123456789abcdef")
+        #expect(session.validationSummary?.ok == true)
     }
 
     @Test("a structured reply explicitly reactivates a waiting session")

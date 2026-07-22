@@ -1,67 +1,197 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var appliedShellMode: ControlCenterShellMode?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 206, ideal: 232, max: 280)
-        } detail: {
-            mainContent
-                .navigationTitle(navigationTitle)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                HStack(spacing: 7) {
-                    Image(systemName: "pawprint.fill")
-                        .foregroundStyle(APCDesign.accent)
-                    Text(store.activePet?.name ?? "未启用宠物")
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("当前宠物：\(store.activePet?.name ?? "未启用")")
-            }
+        GeometryReader { geometry in
+            let policy = ControlCenterShellPolicy(windowWidth: geometry.size.width)
 
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    store.toggleOverlay()
-                } label: {
-                    Label(
-                        store.behavior.enabled ? "隐藏桌宠" : "显示桌宠",
-                        systemImage: store.behavior.enabled ? "eye.slash" : "eye"
-                    )
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 232, max: 248)
+            } detail: {
+                VStack(spacing: 0) {
+                    if store.petCoreRuntimeInfo.errorMessage != nil,
+                       store.selection != .diagnostics
+                    {
+                        PetCoreFailureBanner(
+                            operationalState: store.petCoreOperationalState,
+                            retrying: store.petCoreRuntimeInfo.phase == .checking,
+                            onRetry: { store.retryPetCoreStartup() }
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.top, 14)
+                    }
+                    mainContent
                 }
-                .help(store.behavior.enabled ? "隐藏桌面上的宠物" : "显示桌面上的宠物")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .navigationSplitViewStyle(.balanced)
+            .environment(\.controlCenterShellMode, policy.mode)
+            .background {
+                ControlCenterWindowTitleUpdater(title: store.selection.localizedTitle)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        store.toggleOverlay()
+                    } label: {
+                        Label(
+                            APCLocalization.text(
+                                store.behavior.enabled ? .appActionHidePet : .appActionShowPet
+                            ),
+                            systemImage: store.behavior.enabled ? "eye.slash" : "eye"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .help(APCLocalization.text(
+                        store.behavior.enabled ? .appHelpHidePet : .appHelpShowPet
+                    ))
+                    .accessibilityIdentifier("toolbar.toggle-pet")
+
+                    Button {
+                        store.selection = .diagnostics
+                    } label: {
+                        Label(serviceToolbar.title, systemImage: serviceToolbar.systemImage)
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(serviceToolbar.tone.color)
+                    }
+                    .help(APCLocalization.format(.appHelpServiceStatus, serviceToolbar.title))
+                    .accessibilityLabel(
+                        APCLocalization.format(.contentServiceStatusLabel, serviceToolbar.title)
+                    )
+                    .accessibilityIdentifier("toolbar.service-status")
+
+                    Menu {
+                        Button(APCLocalization.text(.navigationConnections)) {
+                            store.selection = .connections
+                        }
+                        Divider()
+                        Button(APCLocalization.text(.appActionQuit), role: .destructive) {
+                            NSApplication.shared.terminate(nil)
+                        }
+                    } label: {
+                        Label(APCLocalization.text(.appActionMore), systemImage: "ellipsis.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help(APCLocalization.text(.appHelpMore))
+                    .accessibilityIdentifier("toolbar.more")
+                }
+            }
+            .onAppear {
+                apply(policy)
+            }
+            .onChange(of: policy.mode) { _, _ in
+                apply(policy)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func apply(_ policy: ControlCenterShellPolicy) {
+        guard appliedShellMode != policy.mode else { return }
+        appliedShellMode = policy.mode
+        columnVisibility = policy.preferredColumnVisibility
+    }
+
     @ViewBuilder
     private var mainContent: some View {
         switch store.selection {
-        case .studio:
-            PetStudioView()
-        case .behavior:
+        case .library:
+            PetLibraryView()
+        case .maker:
+            AIPetMakerView()
+        case .configuration:
             BehaviorSettingsView()
         case .connections:
             AgentConnectionsView()
+        case .diagnostics:
+            ServiceDiagnosticsView()
         }
     }
 
-    private var navigationTitle: String {
-        switch store.selection {
-        case .studio:
-            APCLocalization.text(.navigationStudio)
-        case .behavior:
-            APCLocalization.text(.navigationBehavior)
-        case .connections:
-            APCLocalization.text(.navigationConnections)
+    private var serviceToolbar: ServiceToolbarPresentation {
+        ServiceDiagnosticsPresentation.toolbar(
+            operationalState: store.petCoreOperationalState,
+            runtimeInfo: store.petCoreRuntimeInfo
+        )
+    }
+}
+
+enum PetCoreFailurePresentation {
+    static func detail(
+        for state: PetCoreOperationalState,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch state {
+        case .checking, .recovering: .servicePetCoreRecoveringDetail
+        case .offline: .servicePetCoreOfflineDetail
+        case .runtimeMismatch: .servicePetCoreRuntimeMismatchDetail
+        case .error: .servicePetCoreFailedDetail
+        case .online: .servicePetCoreRunning
         }
+        return APCLocalization.text(key, locale: localeIdentifier)
+    }
+}
+
+private struct PetCoreFailureBanner: View {
+    var operationalState: PetCoreOperationalState
+    var retrying: Bool
+    var onRetry: () -> Void
+
+    private var localizedDetail: String {
+        PetCoreFailurePresentation.detail(for: operationalState)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(APCDesign.warning)
+                .font(.title3)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(APCLocalization.text(
+                    retrying ? .petCoreFailureRetryingTitle : .petCoreFailureTitle
+                ))
+                    .font(.callout.weight(.semibold))
+                Text(localizedDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            if retrying {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(
+                        APCLocalization.text(.petCoreFailureRetryingAccessibility)
+                    )
+            } else {
+                Button(APCLocalization.text(.petCoreFailureRetryAction), action: onRetry)
+                    .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(APCDesign.warning.opacity(0.45), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .accessibilityElement(children: .contain)
     }
 }

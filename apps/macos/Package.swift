@@ -11,6 +11,10 @@ let package = Package(
     products: [
         .library(name: "AgentPetCompanionCore", targets: ["AgentPetCompanionCore"]),
         .executable(name: "AgentPetCompanion", targets: ["AgentPetCompanion"]),
+        .executable(
+            name: "AgentPetCompanionLifecycleClient",
+            targets: ["AgentPetCompanionLifecycleClient"]
+        ),
         .executable(name: "AgentPetCompanionCoreValidation", targets: ["AgentPetCompanionCoreValidation"]),
         .executable(
             name: "AgentPetCompanionTransportValidation",
@@ -33,9 +37,19 @@ let package = Package(
             name: "AgentPetCompanion",
             dependencies: ["AgentPetCompanionCore"],
             resources: [
-                .process("Resources")
+                .process("Resources/AgentPetCompanionMark.png"),
+                .process("Resources/PiBadge.svg"),
+                .process("Resources/Localizable.xcstrings"),
+                .process("Resources/en.lproj"),
+                .process("Resources/zh-Hans.lproj"),
+                // Keep the inventory as one named directory. Processing the
+                // parent Resources directory flattens unknown files, which
+                // would make the fixed-root PetCore seed contract impossible
+                // to verify in a packaged App.
+                .copy("Resources/BuiltInPets")
             ]
         ),
+        .executableTarget(name: "AgentPetCompanionLifecycleClient"),
         .executableTarget(
             name: "AgentPetCompanionCoreValidation",
             dependencies: ["AgentPetCompanionCore"]

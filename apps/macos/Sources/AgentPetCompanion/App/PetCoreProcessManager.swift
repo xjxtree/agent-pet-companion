@@ -43,7 +43,8 @@ enum PetCoreRuntimeContract {
     static func acceptsHealth(
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
-        expectedManifest: RuntimeReleaseManifest? = requiredManifest
+        expectedManifest: RuntimeReleaseManifest? = requiredManifest,
+        expectedConnectorEnvironment: [String: String]? = nil
     ) -> Bool {
         guard let health = result as? [String: Any] else { return false }
         guard health["ok"] as? Bool == true,
@@ -57,18 +58,28 @@ enum PetCoreRuntimeContract {
                     == expectedManifest
             else { return false }
         }
+        if let expectedConnectorEnvironment {
+            guard let rawEnvironment = health["connector_environment"] as? [String: Any]
+            else { return false }
+            let connectorEnvironment = rawEnvironment.compactMapValues { $0 as? String }
+            guard connectorEnvironment.count == rawEnvironment.count,
+                  connectorEnvironment == expectedConnectorEnvironment
+            else { return false }
+        }
         return true
     }
 
     static func incompatibleInstanceID(
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
-        expectedManifest: RuntimeReleaseManifest? = requiredManifest
+        expectedManifest: RuntimeReleaseManifest? = requiredManifest,
+        expectedConnectorEnvironment: [String: String]? = nil
     ) -> String? {
         guard !acceptsHealth(
                   result,
                   expectedBuildID: expectedBuildID,
-                  expectedManifest: expectedManifest
+                  expectedManifest: expectedManifest,
+                  expectedConnectorEnvironment: expectedConnectorEnvironment
               ),
               let health = result as? [String: Any],
               health["ok"] as? Bool == true,
@@ -76,6 +87,155 @@ enum PetCoreRuntimeContract {
               !instanceID.isEmpty
         else { return nil }
         return instanceID
+    }
+}
+
+enum PetCoreServiceEnvironmentPolicy {
+    static let connectorPathKeys = [
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "PI_CODING_AGENT_DIR",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG",
+        "XDG_CONFIG_HOME",
+        "APC_CODEX_CLI_PATH",
+        "APC_CLAUDE_CLI_PATH",
+        "APC_PI_CLI_PATH",
+        "APC_OPENCODE_CLI_PATH"
+    ]
+
+    static func userPathEnvironment(
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String: String] {
+        let normalizedHome = URL(
+            fileURLWithPath: userHome,
+            isDirectory: true
+        ).standardizedFileURL.path
+        var result = ["HOME": normalizedHome]
+        for key in connectorPathKeys {
+            guard let raw = processEnvironment[key]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !raw.isEmpty
+            else { continue }
+            let expanded: String
+            if raw == "~" {
+                expanded = normalizedHome
+            } else if raw.hasPrefix("~/") {
+                expanded = URL(fileURLWithPath: normalizedHome, isDirectory: true)
+                    .appendingPathComponent(String(raw.dropFirst(2)))
+                    .path
+            } else {
+                expanded = raw
+            }
+            guard (expanded as NSString).isAbsolutePath else { continue }
+            result[key] = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        }
+        return result
+    }
+
+    static func defaultExecutableSearchPaths(
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> [String] {
+        var paths = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+            userHome + "/.local/bin",
+            userHome + "/.cargo/bin",
+            userHome + "/.bun/bin",
+            userHome + "/.opencode/bin",
+            userHome + "/.volta/bin",
+            userHome + "/.asdf/shims",
+            userHome + "/.local/share/mise/shims",
+            userHome + "/.fnm/current/bin",
+            userHome + "/.nvm/current/bin",
+            userHome + "/.nodenv/shims",
+            userHome + "/.npm-global/bin",
+            userHome + "/.local/share/pnpm",
+            userHome + "/Library/pnpm",
+            userHome + "/.yarn/bin",
+            userHome + "/bin"
+        ]
+        paths.append(contentsOf: versionManagerBinPaths(
+            root: userHome + "/.nvm/versions/node",
+            suffix: "bin",
+            fileManager: fileManager
+        ))
+        paths.append(contentsOf: versionManagerBinPaths(
+            root: userHome + "/.local/share/fnm/node-versions",
+            suffix: "installation/bin",
+            fileManager: fileManager
+        ))
+        return paths
+    }
+
+    static func executableSearchPath(
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> String {
+        let current = (processEnvironment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        let candidates = current + defaultExecutableSearchPaths(
+            userHome: userHome,
+            fileManager: fileManager
+        )
+        var seen = Set<String>()
+        var paths: [String] = []
+        for candidate in candidates {
+            guard (candidate as NSString).isAbsolutePath else { continue }
+            let normalized = URL(fileURLWithPath: candidate).standardizedFileURL.path
+            guard seen.insert(normalized).inserted else { continue }
+            paths.append(normalized)
+        }
+        return paths.joined(separator: ":")
+    }
+
+    static func serviceIdentityEnvironment(
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        var environment = userPathEnvironment(
+            processEnvironment: processEnvironment,
+            userHome: userHome
+        )
+        environment["PATH"] = executableSearchPath(
+            processEnvironment: processEnvironment,
+            userHome: userHome,
+            fileManager: fileManager
+        )
+        return environment
+    }
+
+    private static func versionManagerBinPaths(
+        root: String,
+        suffix: String,
+        fileManager: FileManager
+    ) -> [String] {
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: root) else {
+            return []
+        }
+        let candidates = entries.sorted().compactMap { entry -> String? in
+            let candidate = URL(fileURLWithPath: root, isDirectory: true)
+                .appendingPathComponent(entry, isDirectory: true)
+                .appendingPathComponent(suffix, isDirectory: true)
+                .standardizedFileURL.path
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: candidate, isDirectory: &isDirectory),
+                  isDirectory.boolValue
+            else { return nil }
+            return candidate
+        }
+        return Array(candidates.prefix(32))
     }
 }
 
@@ -145,6 +305,18 @@ enum PetCoreLaunchControlPolicy {
     }
 }
 
+enum PetCoreLaunchAgentMigrationPolicy {
+    static func requiresLegacyOutputMigration(
+        launchAgentDisabled: Bool,
+        hasInstalledPropertyList: Bool,
+        standardOutPath: String?,
+        standardErrorPath: String?
+    ) -> Bool {
+        guard !launchAgentDisabled, hasInstalledPropertyList else { return false }
+        return standardOutPath != "/dev/null" || standardErrorPath != "/dev/null"
+    }
+}
+
 actor PetCoreProcessManager {
     typealias HealthCheck = PetCoreServiceStartupCoordinator.HealthCheck
     typealias ServiceRunner = PetCoreServiceStartupCoordinator.ServiceRunner
@@ -168,7 +340,14 @@ actor PetCoreProcessManager {
                         timeout: .milliseconds(200)
                     )
                     let result = try PetCoreClient.decodeResult(from: response)
-                    if PetCoreRuntimeContract.acceptsHealth(result) {
+                    if PetCoreRuntimeContract.acceptsHealth(
+                        result,
+                        expectedConnectorEnvironment: PetCoreServiceEnvironmentPolicy
+                            .serviceIdentityEnvironment()
+                    ) {
+                        if await launcher.requiresLegacyLaunchOutputMigration() {
+                            return false
+                        }
                         try? await launcher.recordHealthyCurrentRuntime()
                         return true
                     }
@@ -238,6 +417,75 @@ private actor PetCoreServiceLauncher {
         let candidate = try await prepareCandidate()
         try await runtimeStore.commitHealthy(candidate)
         await refreshInstalledConnectorReferences(using: candidate)
+    }
+
+    func requiresLegacyLaunchOutputMigration() -> Bool {
+        guard !launchAgentDisabled, let launchAgentsURL = launchAgentsDirectoryURL() else {
+            return false
+        }
+        let propertyListURL = launchAgentsURL.appendingPathComponent("\(launchAgentLabel).plist")
+        var status = stat()
+        guard lstat(propertyListURL.path, &status) == 0 else {
+            return false
+        }
+        guard status.st_mode & S_IFMT == S_IFREG,
+              status.st_uid == getuid(),
+              status.st_nlink == 1,
+              status.st_size > 0,
+              status.st_size <= 1_024 * 1_024,
+              let data = securePropertyListData(
+                  at: propertyListURL,
+                  expectedStatus: status
+              ),
+              let propertyList = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: Any]
+        else {
+            // An installed but unreadable or unsafe property list must not be accepted as
+            // migrated. The existing restart path will replace it atomically or surface a
+            // bounded startup failure instead of silently keeping unbounded launchd output.
+            return true
+        }
+        return PetCoreLaunchAgentMigrationPolicy.requiresLegacyOutputMigration(
+            launchAgentDisabled: false,
+            hasInstalledPropertyList: true,
+            standardOutPath: propertyList["StandardOutPath"] as? String,
+            standardErrorPath: propertyList["StandardErrorPath"] as? String
+        )
+    }
+
+    private func securePropertyListData(at url: URL, expectedStatus: stat) -> Data? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+        var openedStatus = stat()
+        guard fstat(descriptor, &openedStatus) == 0,
+              openedStatus.st_dev == expectedStatus.st_dev,
+              openedStatus.st_ino == expectedStatus.st_ino,
+              openedStatus.st_mode & S_IFMT == S_IFREG,
+              openedStatus.st_uid == getuid(),
+              openedStatus.st_nlink == 1,
+              openedStatus.st_size == expectedStatus.st_size
+        else { return nil }
+        var data = Data(count: Int(openedStatus.st_size))
+        let bytesRead = data.withUnsafeMutableBytes { bytes -> Int in
+            guard let baseAddress = bytes.baseAddress else { return 0 }
+            var total = 0
+            while total < bytes.count {
+                let count = Darwin.read(
+                    descriptor,
+                    baseAddress.advanced(by: total),
+                    bytes.count - total
+                )
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { break }
+                total += count
+            }
+            return total
+        }
+        return bytesRead == data.count ? data : nil
     }
 
     func startUsingLaunchAgent() async throws {
@@ -334,13 +582,13 @@ private actor PetCoreServiceLauncher {
     }
 
     private func performLaunchAgentStart(_ candidate: PreparedPetCoreRuntime) async throws {
-        let paths = try prepareRuntimePaths()
+        _ = try prepareRuntimePaths()
         guard let launchAgentsURL = launchAgentsDirectoryURL() else {
             throw PetCoreServiceLauncherError.message("无法定位用户 LaunchAgents 目录")
         }
         try FileManager.default.createDirectory(at: launchAgentsURL, withIntermediateDirectories: true)
         let plistURL = launchAgentsURL.appendingPathComponent("\(launchAgentLabel).plist")
-        let data = try launchAgentPropertyList(candidate: candidate, logsURL: paths.logsURL)
+        let data = try launchAgentPropertyList(candidate: candidate)
         try data.write(to: plistURL, options: .atomic)
         try await execute([
             PetCoreLaunchctlInvocation(
@@ -351,14 +599,15 @@ private actor PetCoreServiceLauncher {
     }
 
     private func performDirectStart(_ candidate: PreparedPetCoreRuntime) async throws {
-        let paths = try prepareRuntimePaths()
         if let process, process.isRunning {
             process.terminate()
             self.process = nil
         }
+        try? logHandle?.close()
+        logHandle = nil
+        let paths = try prepareRuntimePaths()
         try? FileManager.default.removeItem(at: paths.readyURL)
-        logHandle = try FileHandle(forWritingTo: paths.logURL)
-        try logHandle?.seekToEnd()
+        logHandle = try AppLegacyLogMaintenance.openSecureAppendHandle(at: paths.logURL)
 
         let process = Process()
         process.executableURL = candidate.executableURL
@@ -369,12 +618,8 @@ private actor PetCoreServiceLauncher {
         let logURL = paths.logURL
         process.terminationHandler = { process in
             let message = "petcore exited with status \(process.terminationStatus)\n"
-            guard let data = message.data(using: .utf8),
-                  let handle = try? FileHandle(forWritingTo: logURL)
-            else { return }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-            try? handle.close()
+            guard let data = message.data(using: .utf8) else { return }
+            try? AppLegacyLogMaintenance.appendSecurely(data, to: logURL)
         }
         do {
             try process.run()
@@ -413,7 +658,9 @@ private actor PetCoreServiceLauncher {
             PetCoreRuntimeContract.acceptsHealth(
                 result,
                 expectedBuildID: candidate.buildID,
-                expectedManifest: candidate.manifest
+                expectedManifest: candidate.manifest,
+                expectedConnectorEnvironment: PetCoreServiceEnvironmentPolicy
+                    .serviceIdentityEnvironment()
             ) {
                 return true
             }
@@ -442,7 +689,6 @@ private actor PetCoreServiceLauncher {
     }
 
     private struct RuntimePaths {
-        let logsURL: URL
         let readyURL: URL
         let logURL: URL
     }
@@ -454,11 +700,8 @@ private actor PetCoreServiceLauncher {
         let logURL = logsURL.appendingPathComponent("petcore-launch.log")
         do {
             try FileManager.default.createDirectory(at: runURL, withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: logsURL, withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: logURL.path) {
-                _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
-            }
-            return RuntimePaths(logsURL: logsURL, readyURL: readyURL, logURL: logURL)
+            try AppLegacyLogMaintenance.maintain(logsURL: logsURL)
+            return RuntimePaths(readyURL: readyURL, logURL: logURL)
         } catch {
             throw PetCoreServiceLauncherError.message(
                 "准备 petcore 运行目录失败：\(error.localizedDescription)"
@@ -505,13 +748,9 @@ private actor PetCoreServiceLauncher {
     }
 
     private func launchAgentPropertyList(
-        candidate: PreparedPetCoreRuntime,
-        logsURL: URL
+        candidate: PreparedPetCoreRuntime
     ) throws -> Data {
-        let stdoutURL = logsURL.appendingPathComponent("petcore.launchd.out.log")
-        let stderrURL = logsURL.appendingPathComponent("petcore.launchd.err.log")
-        var environmentVariables = serviceEnvironment(for: candidate)
-        environmentVariables["PATH"] = launchAgentPathEnvironment()
+        let environmentVariables = serviceEnvironment(for: candidate)
         let plist: [String: Any] = [
             "Label": launchAgentLabel,
             "ProgramArguments": [
@@ -522,8 +761,10 @@ private actor PetCoreServiceLauncher {
             ],
             "RunAtLoad": true,
             "KeepAlive": true,
-            "StandardOutPath": stdoutURL.path,
-            "StandardErrorPath": stderrURL.path,
+            // PetCore owns its bounded structured log files. launchd output is
+            // only a bootstrap sink and must never bypass that retention policy.
+            "StandardOutPath": "/dev/null",
+            "StandardErrorPath": "/dev/null",
             "EnvironmentVariables": environmentVariables
         ]
         return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
@@ -532,9 +773,11 @@ private actor PetCoreServiceLauncher {
     private func serviceEnvironment(for candidate: PreparedPetCoreRuntime) -> [String: String] {
         var environment = PetCoreRuntimeContract.requiredGenerationEnvironment.merging([
             "APC_HOME": homeURL.path,
-            "RUST_LOG": "info",
-            "PATH": launchAgentPathEnvironment()
+            "RUST_LOG": "info"
         ]) { _, serviceValue in serviceValue }
+        environment.merge(PetCoreServiceEnvironmentPolicy.serviceIdentityEnvironment()) {
+            _, userPathValue in userPathValue
+        }
         if let buildID = candidate.buildID {
             environment["APC_EXPECTED_BUILD_ID"] = buildID
         }
@@ -586,32 +829,6 @@ private actor PetCoreServiceLauncher {
         }
     }
 
-    private func launchAgentPathEnvironment() -> String {
-        let current = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        let additions = [
-            "/opt/homebrew/bin",
-            "/opt/homebrew/sbin",
-            "/usr/local/bin",
-            "/usr/local/sbin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
-            NSHomeDirectory() + "/.local/bin",
-            NSHomeDirectory() + "/.cargo/bin",
-            NSHomeDirectory() + "/.bun/bin",
-            NSHomeDirectory() + "/bin"
-        ]
-
-        var seen = Set<String>()
-        var parts: [String] = []
-        for path in current.split(separator: ":").map(String.init) + additions {
-            guard !path.isEmpty, !seen.contains(path) else { continue }
-            seen.insert(path)
-            parts.append(path)
-        }
-        return parts.joined(separator: ":")
-    }
 }
 
 private enum PetCoreServiceLauncherError: LocalizedError {
