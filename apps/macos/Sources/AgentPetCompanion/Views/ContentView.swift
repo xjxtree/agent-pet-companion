@@ -12,7 +12,11 @@ struct ContentView: View {
 
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 SidebarView()
-                    .navigationSplitViewColumnWidth(min: 220, ideal: 232, max: 248)
+                    .navigationSplitViewColumnWidth(
+                        min: ControlCenterShellPolicy.primarySidebarMinimumWidth,
+                        ideal: ControlCenterShellPolicy.primarySidebarIdealWidth,
+                        max: ControlCenterShellPolicy.primarySidebarMaximumWidth
+                    )
             } detail: {
                 VStack(spacing: 0) {
                     if store.petCoreRuntimeInfo.errorMessage != nil,
@@ -29,11 +33,28 @@ struct ContentView: View {
                     mainContent
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle(store.selection.localizedTitle)
+                .navigationTitle("")
             }
             .navigationSplitViewStyle(.balanced)
             .environment(\.controlCenterShellMode, policy.mode)
             .toolbar {
+#if compiler(>=6.2)
+                if #available(macOS 26.0, *) {
+                    ToolbarItem(placement: .navigation) {
+                        ControlCenterBrandTitle()
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .navigation) {
+                        ControlCenterBrandTitle()
+                    }
+                }
+#else
+                ToolbarItem(placement: .navigation) {
+                    ControlCenterBrandTitle()
+                }
+#endif
+
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
                         store.toggleOverlay()
@@ -117,6 +138,21 @@ struct ContentView: View {
             operationalState: store.petCoreOperationalState,
             runtimeInfo: store.petCoreRuntimeInfo
         )
+    }
+}
+
+private struct ControlCenterBrandTitle: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            APCBrandMark(size: 24)
+                .accessibilityHidden(true)
+            Text(APCLocalization.text(.appName))
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(APCLocalization.text(.appName))
+        .accessibilityIdentifier("toolbar.brand")
     }
 }
 

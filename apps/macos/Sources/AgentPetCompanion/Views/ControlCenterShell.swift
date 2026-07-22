@@ -12,6 +12,9 @@ enum ControlCenterShellMode: Equatable, Sendable {
 }
 
 struct ControlCenterShellPolicy: Equatable, Sendable {
+    static let primarySidebarMinimumWidth: CGFloat = 248
+    static let primarySidebarIdealWidth: CGFloat = 264
+    static let primarySidebarMaximumWidth: CGFloat = 288
     static let fullLayoutMinimumWidth: CGFloat = 1_120
     static let sidebarLayoutMinimumWidth: CGFloat = 880
 

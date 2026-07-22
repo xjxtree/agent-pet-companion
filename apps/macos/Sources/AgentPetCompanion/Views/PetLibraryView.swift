@@ -940,7 +940,7 @@ struct PetCard: View {
                 .frame(height: 104)
                 .background {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(nsColor: .underPageBackgroundColor))
+                        .fill(Color(nsColor: .controlBackgroundColor))
                 }
 
                 Text(pet.name)

@@ -18,6 +18,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Changed / 变更
 
+- Moved the enlarged Agent Pet Companion brand into the fixed control-center toolbar without a shared glass background, widened and increased the row height of the primary navigation, and unified nested navigation and pet-preview backgrounds with the surrounding App surfaces. / 将放大后的 Agent Pet Companion 品牌移至控制中心的固定工具栏并去除共享玻璃背景，加宽主导航并增大选项行高，同时将嵌套导航与宠物预览背景统一为 App 周边界面样式。
 - Development builds now produce only the ad-hoc-signed local App by default; the verified handoff ZIP is available through explicit `--archive`. / 开发构建默认仅生成 ad-hoc 签名的本机 App；已校验的交接 ZIP 改为通过显式 `--archive` 生成。
 - Rebuilt the control center with native sidebar, content, inspector, and page-action layouts across Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, and the new Service & Diagnostics entry. / 控制中心重构为原生侧边栏、内容区、检查器与页面动作布局，并调整为宠物库、AI 宠物制作、宠物配置、Agent 连接和新增的服务与诊断五个入口。
 - Refined desktop-pet bubbles with per-Agent session groups, attention-state pinning, regular Liquid Glass on macOS 26, accessible hover controls, and a 24 pt bottom-right resize handle. / 桌宠气泡改为按 Agent 分组，并加入需关注状态置顶、macOS 26 原生 regular Liquid Glass、无障碍悬停控件与 24 pt 右下缩放手柄。
@@ -37,7 +38,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Fixed / 修复
 
-- Fixed the control-center title so it follows the selected top-level page, kept the longest English configuration label fully visible at the default width, and exposed a direct reference-image reselection action when a recovered Maker session cannot retry yet. / 修复控制中心标题未随顶层页面切换的问题；默认宽度下最长的英文配置标签现在可完整显示，恢复后的 Maker 会话若尚不能重试，也会直接提供重新选择参考图的操作。
+- Fixed the control-center chrome so the Agent Pet brand remains stable while each top-level page keeps its own heading, kept the longest English configuration label fully visible at the default width, and exposed a direct reference-image reselection action when a recovered Maker session cannot retry yet. / 修复控制中心标题栏，使 Agent Pet 品牌保持固定，各顶层页面则保留自身标题；默认宽度下最长的英文配置标签现在可完整显示，恢复后的 Maker 会话若尚不能重试，也会直接提供重新选择参考图的操作。
 - Desktop-pet bubbles now distinguish a result that is ready to review from a task that has already completed, in both the safe summary and status badge. / 桌宠气泡现在会在安全摘要与状态 badge 中明确区分“待查看结果”和“任务已完成”。
 - Fixed Release app-bundle assembly so the Swift build keeps its required `build` subcommand when selecting the release configuration. / 修复 Release App 包组装脚本，选择 release 配置时会保留 Swift 所需的 `build` 子命令。
 - Fixed desktop-pet hit testing so transparent pixels pass pointer events through, while the per-frame alpha mask follows the drawable that actually reached the display across skipped frames, failures, state changes, and renderer teardown. / 修复桌宠命中测试：透明像素现在会透传指针事件；逐帧 alpha 蒙版会跟随真正显示到屏幕上的 drawable，并在跳帧、渲染失败、状态切换与渲染器销毁时保持正确。

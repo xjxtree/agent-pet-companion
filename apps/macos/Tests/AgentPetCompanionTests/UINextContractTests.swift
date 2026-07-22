@@ -37,6 +37,9 @@ struct UINextContractTests {
         #expect(ControlCenterShellPolicy(windowWidth: 880).mode == .sidebarAndContent)
         #expect(ControlCenterShellPolicy(windowWidth: 879).mode == .singleContent)
         #expect(ControlCenterShellPolicy(windowWidth: 760).mode == .singleContent)
+        #expect(ControlCenterShellPolicy.primarySidebarMinimumWidth == 248)
+        #expect(ControlCenterShellPolicy.primarySidebarIdealWidth == 264)
+        #expect(ControlCenterShellPolicy.primarySidebarMaximumWidth == 288)
         #expect(ControlCenterShellMode.allColumns.keepsInspectorPresented)
         #expect(!ControlCenterShellMode.sidebarAndContent.keepsInspectorPresented)
         #expect(!ControlCenterShellMode.singleContent.keepsInspectorPresented)
@@ -73,7 +76,17 @@ struct UINextContractTests {
         )
 
         let shell = try source("AgentPetCompanion/Views/ControlCenterShell.swift")
-        #expect(content.contains(".navigationTitle(store.selection.localizedTitle)"))
+        #expect(content.contains(".navigationTitle(\"\")"))
+        #expect(content.contains("ToolbarItem(placement: .navigation)"))
+        #expect(content.contains("ControlCenterBrandTitle()"))
+        #expect(content.contains("Text(APCLocalization.text(.appName))"))
+        #expect(content.contains("APCBrandMark(size: 24)"))
+        #expect(content.contains(".font(.title3.weight(.semibold))"))
+        #expect(content.contains(".sharedBackgroundVisibility(.hidden)"))
+        #expect(content.contains("if #available(macOS 26.0, *)"))
+        #expect(!content.contains("Text(APCLocalization.text(.sidebarBrand))"))
+        #expect(content.contains(".accessibilityIdentifier(\"toolbar.brand\")"))
+        #expect(!content.contains(".navigationTitle(store.selection.localizedTitle)"))
         #expect(!content.contains("ControlCenterWindowTitleUpdater"))
         #expect(!shell.contains("WindowTitleHostView"))
         #expect(content.contains("store.selection != .diagnostics"))
@@ -84,7 +97,7 @@ struct UINextContractTests {
     func pagesOwnOnePrimaryTitleWithoutAContainerNavigationTitle() throws {
         let content = try source("AgentPetCompanion/Views/ContentView.swift")
         #expect(occurrences(of: ".navigationTitle(", in: content) == 1)
-        #expect(content.contains(".navigationTitle(store.selection.localizedTitle)"))
+        #expect(content.contains(".navigationTitle(\"\")"))
 
         let library = try source("AgentPetCompanion/Views/PetLibraryView.swift")
         let maker = try source("AgentPetCompanion/Views/PetStudioView.swift")
@@ -287,6 +300,13 @@ struct UINextContractTests {
         #expect(!source.contains("configuration.appearance.size-guidance"))
         #expect(!source.contains("exportDiagnostics"))
         #expect(!source.contains("ServiceDiagnosticsView"))
+
+        let subnavigation = try section(
+            in: source,
+            from: "private struct BehaviorSettingsSubnavigation:",
+            to: "struct SettingToggle:"
+        )
+        #expect(subnavigation.contains(".scrollContentBackground(.hidden)"))
     }
 
     @Test
@@ -358,6 +378,30 @@ struct UINextContractTests {
         #expect(!source.contains("ServiceDiagnosticsView("))
         #expect(!source.contains("diagnostics.service-status"))
         #expect(!source.contains("diagnostics.log-package"))
+
+        let agentList = try section(
+            in: source,
+            from: "struct AgentConnectionList:",
+            to: "private struct AgentConnectionListRow:"
+        )
+        #expect(agentList.contains(".scrollContentBackground(.hidden)"))
+    }
+
+    @Test
+    func primarySidebarAndPetCardsUseTheUnifiedControlCenterSurfaces() throws {
+        let sidebar = try source("AgentPetCompanion/Views/SidebarView.swift")
+        #expect(!sidebar.contains("APCLocalization.text(.sidebarBrand)"))
+        #expect(!sidebar.contains("APCBrandMark(size: 22)"))
+        #expect(sidebar.contains(".padding(.vertical, 5)"))
+
+        let library = try source("AgentPetCompanion/Views/PetLibraryView.swift")
+        let petCard = try section(
+            in: library,
+            from: "struct PetCard:",
+            to: "struct PetCardAccessibilityPresentation:"
+        )
+        #expect(petCard.contains("Color(nsColor: .controlBackgroundColor)"))
+        #expect(!petCard.contains("Color(nsColor: .underPageBackgroundColor)"))
     }
 
     @Test

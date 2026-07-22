@@ -548,6 +548,7 @@ private struct BehaviorSettingsSubnavigation: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .accessibilityLabel(APCLocalization.text(.configSubnavigationAccessibility))
         .accessibilityIdentifier("configuration.subnavigation")
     }

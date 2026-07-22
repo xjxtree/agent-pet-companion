@@ -6,40 +6,30 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $store.selection) {
-            Section {
-                ForEach(NavigationSection.allCases) { section in
-                    Label {
-                        Text(section.localizedTitle)
-                            .lineLimit(1)
-                    } icon: {
-                        Image(systemName: section.systemImage)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .tag(section)
-                    .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
-                    .accessibilityRepresentation {
-                        Button(section.localizedTitle) {
-                            store.selection = section
-                        }
-                        .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
-                        .accessibilityValue(
-                            UIControlSemantics.selectionValue(isSelected: section == store.selection)
-                        )
-                        .accessibilityAddTraits(section == store.selection ? .isSelected : [])
-                    }
-                }
-            } header: {
+            ForEach(NavigationSection.allCases) { section in
                 Label {
-                    Text(APCLocalization.text(.sidebarBrand))
+                    Text(section.localizedTitle)
+                        .lineLimit(1)
                 } icon: {
-                    APCBrandMark(size: 22)
-                        .accessibilityHidden(true)
+                    Image(systemName: section.systemImage)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
                 }
-                .font(.headline)
-                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+                .tag(section)
+                .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
+                .accessibilityRepresentation {
+                    Button(section.localizedTitle) {
+                        store.selection = section
+                    }
+                    .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
+                    .accessibilityValue(
+                        UIControlSemantics.selectionValue(isSelected: section == store.selection)
+                    )
+                    .accessibilityAddTraits(section == store.selection ? .isSelected : [])
+                }
             }
         }
         .listStyle(.sidebar)

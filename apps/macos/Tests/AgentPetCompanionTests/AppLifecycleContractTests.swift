@@ -169,7 +169,13 @@ struct AppLifecycleContractTests {
             "Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
         )
 
-        #expect(contentSource.contains(".navigationTitle(store.selection.localizedTitle)"))
+        #expect(contentSource.contains(".navigationTitle(\"\")"))
+        #expect(contentSource.contains("ToolbarItem(placement: .navigation)"))
+        #expect(contentSource.contains("ControlCenterBrandTitle()"))
+        #expect(contentSource.contains("Text(APCLocalization.text(.appName))"))
+        #expect(contentSource.contains(".sharedBackgroundVisibility(.hidden)"))
+        #expect(contentSource.contains(".accessibilityIdentifier(\"toolbar.brand\")"))
+        #expect(!contentSource.contains(".navigationTitle(store.selection.localizedTitle)"))
         #expect(!contentSource.contains("ControlCenterWindowTitleUpdater"))
         #expect(!shellSource.contains("window?.title = title"))
 

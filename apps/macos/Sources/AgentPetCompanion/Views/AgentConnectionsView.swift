@@ -666,6 +666,7 @@ struct AgentConnectionList: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
         .accessibilityLabel(APCLocalization.text(.connectionsListAccessibility))
         .accessibilityIdentifier("connections.agent-list")
