@@ -265,7 +265,7 @@ for identifier in \
   sidebar.navigation.library sidebar.navigation.maker sidebar.navigation.configuration \
   sidebar.navigation.connections sidebar.navigation.diagnostics \
   pet-library.page pet-library.inspector \
-  maker.page maker.brief maker.session maker.brief.references.dropzone maker.action.start \
+  maker.page maker.layout.two-stage maker.layout.stacked maker.action.start \
   configuration.root configuration.page.appearance configuration.appearance.mouse-passthrough \
   connections.root connections.agent-list connections.detail connections.action.check-all \
   diagnostics.page diagnostics.service-status diagnostics.export \

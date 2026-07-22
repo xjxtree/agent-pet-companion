@@ -419,9 +419,10 @@ let buttonRole = kAXButtonRole as String
 pressControl(identifier: "sidebar.navigation.maker")
 waitFor("AI Pet Maker page") { nodes in
     containsIdentifier("maker.page", in: nodes)
-        && containsIdentifier("maker.brief", in: nodes)
-        && containsIdentifier("maker.session", in: nodes)
-        && containsIdentifier("maker.brief.references.dropzone", in: nodes)
+        && (
+            containsIdentifier("maker.layout.two-stage", in: nodes)
+                || containsIdentifier("maker.layout.stacked", in: nodes)
+        )
         && containsIdentifier("maker.action.start", in: nodes)
         && containsAny(["新宠物", "New Pet"], in: nodes)
         && containsAny(["制作会话", "Creation Session"], in: nodes)
