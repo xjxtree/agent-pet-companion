@@ -314,10 +314,19 @@ fi
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 for current_contract in \
   'findDesktopPetFrame' \
+  'pressButton' \
+  'AXUIElementPerformAction' \
+  '关闭会话气泡' \
+  'Close session bubble' \
   'waitForDesktopPetFrame' \
   'resolveOverlayControlPoints' \
+  'quartzPoint(cocoaX: persisted.x, cocoaY: persisted.y)' \
+  'lastDragStart.x - 48' \
   'window.width >= 36 && window.width <= 40' \
-  'resizeStart.y + 110'; do
+  'resizeStart.x + 16' \
+  'abs(next.scale - moved.scale) >= 0.075' \
+  'evt_overlay_interaction_follow_up_' \
+  'for _ in 0..<7'; do
   if ! rg -Fq "$current_contract" "$OVERLAY_INTERACTION_VALIDATOR"; then
     record_failure "overlay interaction validator is missing current hit geometry: $current_contract"
   fi
@@ -325,6 +334,7 @@ done
 if rg -Fq 'quartzPoint(cocoaX: initial.x, cocoaY: initial.y)' "$OVERLAY_INTERACTION_VALIDATOR" \
   || rg -Fq 'resizeY = moved.y - petHeight / 2 - 8' "$OVERLAY_INTERACTION_VALIDATOR" \
   || rg -Fq 'cocoaY: resizeY - 110' "$OVERLAY_INTERACTION_VALIDATOR" \
+  || rg -Fq 'bubble.x + bubble.width - 17' "$OVERLAY_INTERACTION_VALIDATOR" \
   || rg -Fq 'menuPoint(for:' "$OVERLAY_INTERACTION_VALIDATOR"; then
   record_failure 'overlay interaction validator still hard-codes the legacy monolithic overlay geometry'
 fi

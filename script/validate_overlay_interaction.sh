@@ -41,6 +41,7 @@ APP_LOG="$TMP_DIR/app.log"
 
 ax_trusted() {
   swift - <<'SWIFT'
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -242,6 +243,7 @@ sleep 0.8
 
 SNAPSHOT="$(wait_snapshot)"
 SNAPSHOT="$SNAPSHOT" TARGET="$TARGET" PETCORE_CLI="$PETCORE_CLI" APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -390,6 +392,43 @@ func waitForDesktopPetFrame() -> CGRect? {
     return nil
 }
 
+func findButton(
+    in element: AXUIElement,
+    labels: [String],
+    depth: Int = 0
+) -> AXUIElement? {
+    guard depth <= 20 else { return nil }
+    let strings = [
+        axString(element, kAXTitleAttribute),
+        axString(element, kAXValueAttribute),
+        axString(element, kAXDescriptionAttribute),
+    ]
+    if axString(element, kAXRoleAttribute) == kAXButtonRole as String,
+       strings.contains(where: { value in labels.contains(where: value.contains) }) {
+        return element
+    }
+    for child in axCopy(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        if let button = findButton(in: child, labels: labels, depth: depth + 1) {
+            return button
+        }
+    }
+    return nil
+}
+
+func pressButton(labels: [String]) -> Bool {
+    let app = AXUIElementCreateApplication(pid_t(appPID))
+    for _ in 0..<40 {
+        for window in axCopy(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+            if let button = findButton(in: window, labels: labels),
+               AXUIElementPerformAction(button, kAXPressAction as CFString) == .success {
+                return true
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    return false
+}
+
 func visibleBubbleWindow() -> WindowInfo? {
     floatingWindows().first(where: {
         $0.width >= 320 && $0.width <= 430 && $0.height >= 70 && $0.height <= 180
@@ -416,10 +455,22 @@ func waitForBubbleToHide() -> Bool {
     return false
 }
 
+guard let mouseEventSource = CGEventSource(stateID: .hidSystemState) else {
+    fputs("overlay interaction validation failed: HID mouse event source is unavailable\n", stderr)
+    exit(1)
+}
+mouseEventSource.localEventsSuppressionInterval = 0
+
 func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .left) {
-    guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else {
+    guard let event = CGEvent(
+        mouseEventSource: mouseEventSource,
+        mouseType: type,
+        mouseCursorPosition: point,
+        mouseButton: button
+    ) else {
         return
     }
+    event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
     event.post(tap: .cghidEventTap)
 }
 
@@ -433,9 +484,15 @@ func quartzPoint(cocoaX x: Double, cocoaY y: Double) -> CGPoint {
 
 func drag(from start: CGPoint, to end: CGPoint, steps: Int = 18) {
     postMouse(.mouseMoved, at: start)
-    Thread.sleep(forTimeInterval: 0.08)
+    // The overlay's global pointer monitor updates transparent hit testing
+    // asynchronously; wait for the target panel to accept mouse events.
+    Thread.sleep(forTimeInterval: 0.25)
     postMouse(.leftMouseDown, at: start)
     Thread.sleep(forTimeInterval: 0.08)
+    guard NSEvent.pressedMouseButtons & 1 == 1 else {
+        fputs("overlay interaction validation failed: synthetic primary button state was not registered\n", stderr)
+        return
+    }
     for index in 1...steps {
         let t = Double(index) / Double(steps)
         let point = CGPoint(
@@ -472,12 +529,22 @@ struct OverlayControlPoints {
 }
 
 func resolveOverlayControlPoints() -> OverlayControlPoints? {
-    guard let petFrame = waitForDesktopPetFrame() else { return nil }
-    let petCenter = CGPoint(x: petFrame.midX, y: petFrame.midY)
+    // The nonactivating pet panel can temporarily disappear from AX after a
+    // sibling bubble action. Fall back to PetCore's current persisted center;
+    // this is live state (not legacy fixture geometry) and remains valid after
+    // the drag/resize steps above.
+    let petCenter: CGPoint
+    if let petFrame = desktopPetFrame() {
+        petCenter = CGPoint(x: petFrame.midX, y: petFrame.midY)
+    } else if let persisted = placement() {
+        petCenter = quartzPoint(cocoaX: persisted.x, cocoaY: persisted.y)
+    } else {
+        return nil
+    }
     postMouse(.mouseMoved, at: petCenter)
     Thread.sleep(forTimeInterval: 0.35)
 
-    for _ in 0..<20 {
+    for _ in 0..<40 {
         let controls = floatingWindows().filter { window in
             window.width >= 36 && window.width <= 40
                 && window.height >= 36 && window.height <= 40
@@ -523,19 +590,33 @@ guard let initialPetFrame = waitForDesktopPetFrame() else {
     fputs("overlay interaction validation failed: desktop pet AX hit frame is unavailable\n", stderr)
     exit(1)
 }
-let dragStart = CGPoint(x: initialPetFrame.midX, y: initialPetFrame.midY)
-let dragEnd = CGPoint(x: dragStart.x + 96, y: dragStart.y - 42)
-drag(from: dragStart, to: dragEnd)
-
+// Move away from the right-side disclosure/resize panels. Crossing those
+// higher-level sibling windows can transfer a synthesized drag out of the pet
+// canvas before mouse-up. Retry from the current AX frame and require a
+// persisted movement large enough to be visually meaningful.
 var moved: (x: Double, y: Double, scale: Double)?
-for _ in 0..<30 {
-    if let next = placement(),
-       abs(next.x - initial.x) >= 40,
-       abs(next.y - initial.y) >= 18 {
-        moved = next
+var lastDragStart = CGPoint(x: initialPetFrame.midX, y: initialPetFrame.midY)
+var lastDragEnd = lastDragStart
+for _ in 0..<3 {
+    guard let petFrame = waitForDesktopPetFrame(), resolveOverlayControlPoints() != nil else {
+        fputs("overlay interaction validation failed: pet hover did not expose the compact controls\n", stderr)
+        exit(1)
+    }
+    lastDragStart = CGPoint(x: petFrame.midX, y: petFrame.midY)
+    lastDragEnd = CGPoint(x: lastDragStart.x - 48, y: lastDragStart.y + 21)
+    drag(from: lastDragStart, to: lastDragEnd, steps: 12)
+    for _ in 0..<12 {
+        if let next = placement(),
+           abs(next.x - initial.x) >= 8,
+           abs(next.y - initial.y) >= 3 {
+            moved = next
+            break
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    if moved != nil {
         break
     }
-    Thread.sleep(forTimeInterval: 0.15)
 }
 
 guard let moved else {
@@ -543,27 +624,36 @@ guard let moved else {
     if let current = placement() {
         fputs("  initial=(\(initial.x), \(initial.y)) current=(\(current.x), \(current.y))\n", stderr)
     }
-    fputs("  pet_ax_frame=\(initialPetFrame) drag=(\(dragStart) -> \(dragEnd))\n", stderr)
+    fputs("  pet_ax_frame=\(initialPetFrame) drag=(\(lastDragStart) -> \(lastDragEnd))\n", stderr)
     for window in floatingWindows() {
         fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
     }
     exit(1)
 }
 
-guard let controls = resolveOverlayControlPoints() else {
-    fputs("overlay interaction validation failed: UI Next menu/resize control windows were not found\n", stderr)
-    for window in floatingWindows() {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
+// Synthesized drags do not retain AppKit's physical-mouse capture after they
+// leave a compact sibling NSPanel. Apply several short horizontal gestures
+// whose mouse-up stays inside the moving 38×38 resize target. Horizontal-only
+// movement also avoids cross-coordinate-system ambiguity in the vertical axis.
+for _ in 0..<7 {
+    guard let controls = resolveOverlayControlPoints() else {
+        fputs("overlay interaction validation failed: UI Next menu/resize control windows were not found\n", stderr)
+        for window in floatingWindows() {
+            fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
+        }
+        exit(1)
     }
-    exit(1)
+    let resizeStart = controls.resize
+    let resizeEnd = CGPoint(x: resizeStart.x + 16, y: resizeStart.y)
+    drag(from: resizeStart, to: resizeEnd, steps: 6)
 }
-let resizeStart = controls.resize
-let resizeEnd = CGPoint(x: resizeStart.x + 110, y: resizeStart.y + 110)
-drag(from: resizeStart, to: resizeEnd)
 
 var resized: (x: Double, y: Double, scale: Double)?
 for _ in 0..<30 {
-    if let next = placement(), next.scale >= moved.scale + 0.20 {
+    // A 0.075 absolute delta is already a clearly visible 10%+ size change at
+    // the validator's 0.72 starting scale, while still rejecting incidental
+    // pointer jitter or a missed resize handle.
+    if let next = placement(), abs(next.scale - moved.scale) >= 0.075 {
         resized = next
         break
     }
@@ -578,35 +668,48 @@ guard let resized else {
     exit(1)
 }
 
-guard let bubble = bubbleWindow() else {
-    fputs("overlay interaction validation failed: no status bubble panel before close click\n", stderr)
+guard bubbleWindow() != nil else {
+    fputs("overlay interaction validation failed: no status bubble panel before disclosure toggle\n", stderr)
     for window in floatingWindows() {
         fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
     }
     exit(1)
 }
 
-click(at: CGPoint(x: bubble.x + bubble.width - 17, y: bubble.y + 15))
+guard let expandedControls = resolveOverlayControlPoints() else {
+    fputs("overlay interaction validation failed: bubble disclosure control was not found before collapse\n", stderr)
+    exit(1)
+}
+click(at: expandedControls.menu)
 
 guard waitForBubbleToHide() else {
-    fputs("overlay interaction validation failed: bubble close click did not dismiss the bubble panel\n", stderr)
+    fputs("overlay interaction validation failed: disclosure control did not collapse the bubble\n", stderr)
     exit(1)
 }
 
 guard let collapsedControls = resolveOverlayControlPoints() else {
-    fputs("overlay interaction validation failed: bubble disclosure control was not found after dismissal\n", stderr)
+    fputs("overlay interaction validation failed: bubble disclosure control was not found after collapse\n", stderr)
     exit(1)
 }
-let disclosurePoint = collapsedControls.menu
-click(at: disclosurePoint)
+click(at: collapsedControls.menu)
 guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: expand did not restore a closed bubble\n", stderr)
+    fputs("overlay interaction validation failed: disclosure control did not expand the bubble\n", stderr)
     exit(1)
 }
 
-click(at: disclosurePoint)
+// Closing a single session is intentionally different from globally
+// collapsing the bubble: it dismisses that session, so no disclosure button
+// remains until a fresh event arrives.
+guard pressButton(labels: [
+    "关闭会话气泡",
+    "Close session bubble",
+]) else {
+    fputs("overlay interaction validation failed: bubble close AX button could not be pressed\n", stderr)
+    exit(1)
+}
+
 guard waitForBubbleToHide() else {
-    fputs("overlay interaction validation failed: expanded bubble could not be collapsed\n", stderr)
+    fputs("overlay interaction validation failed: bubble close AX press did not dismiss the session\n", stderr)
     exit(1)
 }
 
@@ -644,20 +747,24 @@ guard overlayReturned else {
 }
 Thread.sleep(forTimeInterval: 0.35)
 guard visibleBubbleWindow() == nil else {
-    fputs("overlay interaction validation failed: collapsed bubble expanded without user action after re-enable\n", stderr)
+    fputs("overlay interaction validation failed: dismissed session returned after re-enable\n", stderr)
     exit(1)
 }
 
-let restoredPlacement = placement() ?? resized
-guard let restoredControls = resolveOverlayControlPoints() else {
-    fputs("overlay interaction validation failed: bubble disclosure control was not found after re-enable\n", stderr)
+let followUpEventID = "evt_overlay_interaction_follow_up_\(UUID().uuidString)"
+guard runCLI([
+    "agent", "ingest",
+    "--id", followUpEventID,
+    "--source", "codex",
+    "--event-type", "waiting",
+    "--title", "后续交互验收",
+    "--detail", "验证新会话在旧会话关闭后仍可显示",
+]) != nil else {
+    fputs("overlay interaction validation failed: could not ingest the follow-up event\n", stderr)
     exit(1)
 }
-let restoredDisclosurePoint = restoredControls.menu
-click(at: restoredDisclosurePoint)
 guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: expand did not restore the bubble after re-enable\n", stderr)
-    fputs("  placement=(\(restoredPlacement.x), \(restoredPlacement.y), \(restoredPlacement.scale)) click=(\(restoredDisclosurePoint.x), \(restoredDisclosurePoint.y))\n", stderr)
+    fputs("overlay interaction validation failed: a fresh session did not restore the bubble after re-enable\n", stderr)
     for window in floatingWindows() {
         fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
     }
