@@ -169,10 +169,9 @@ struct AppLifecycleContractTests {
             "Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
         )
 
-        #expect(contentSource.contains("ControlCenterWindowTitleUpdater"))
-        #expect(contentSource.contains("store.selection.localizedTitle"))
-        #expect(shellSource.contains("window?.title = title"))
-        #expect(!contentSource.contains(".navigationTitle("))
+        #expect(contentSource.contains(".navigationTitle(store.selection.localizedTitle)"))
+        #expect(!contentSource.contains("ControlCenterWindowTitleUpdater"))
+        #expect(!shellSource.contains("window?.title = title"))
 
         let commands = try #require(appSource.range(of: "private struct ControlCenterCommands"))
         let summaries = try #require(appSource.range(of: "private enum MenuBarSummary"))

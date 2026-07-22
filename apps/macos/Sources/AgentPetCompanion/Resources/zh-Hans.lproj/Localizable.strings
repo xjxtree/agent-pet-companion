@@ -47,6 +47,7 @@
 "overlay.activity.thinking" = "正在思考";
 "overlay.activity.tool" = "正在调用工具";
 "overlay.detail.blocked" = "任务遇到错误，请打开 Agent 查看详情。";
+"overlay.detail.completed" = "Agent 已完成任务。";
 "overlay.detail.needs_input" = "请回到 Agent 完成确认、回答或决策。";
 "overlay.detail.ready" = "最新结果已就绪，等待查看。";
 "overlay.detail.running" = "思考中";

@@ -37,6 +37,8 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Fixed / 修复
 
+- Fixed the control-center title so it follows the selected top-level page, kept the longest English configuration label fully visible at the default width, and exposed a direct reference-image reselection action when a recovered Maker session cannot retry yet. / 修复控制中心标题未随顶层页面切换的问题；默认宽度下最长的英文配置标签现在可完整显示，恢复后的 Maker 会话若尚不能重试，也会直接提供重新选择参考图的操作。
+- Desktop-pet bubbles now distinguish a result that is ready to review from a task that has already completed, in both the safe summary and status badge. / 桌宠气泡现在会在安全摘要与状态 badge 中明确区分“待查看结果”和“任务已完成”。
 - Fixed Release app-bundle assembly so the Swift build keeps its required `build` subcommand when selecting the release configuration. / 修复 Release App 包组装脚本，选择 release 配置时会保留 Swift 所需的 `build` 子命令。
 - Fixed desktop-pet hit testing so transparent pixels pass pointer events through, while the per-frame alpha mask follows the drawable that actually reached the display across skipped frames, failures, state changes, and renderer teardown. / 修复桌宠命中测试：透明像素现在会透传指针事件；逐帧 alpha 蒙版会跟随真正显示到屏幕上的 drawable，并在跳帧、渲染失败、状态切换与渲染器销毁时保持正确。
 - Corrected the diagnostics archive scope copy to match the bounded retention contract of up to 14 days. / 修正诊断归档范围文案，使其与最长 14 天的有界保留契约一致。

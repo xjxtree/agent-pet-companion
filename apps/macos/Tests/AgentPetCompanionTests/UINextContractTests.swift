@@ -73,16 +73,18 @@ struct UINextContractTests {
         )
 
         let shell = try source("AgentPetCompanion/Views/ControlCenterShell.swift")
-        #expect(shell.contains("window?.title = title"))
-        #expect(content.contains("ControlCenterWindowTitleUpdater"))
+        #expect(content.contains(".navigationTitle(store.selection.localizedTitle)"))
+        #expect(!content.contains("ControlCenterWindowTitleUpdater"))
+        #expect(!shell.contains("WindowTitleHostView"))
         #expect(content.contains("store.selection != .diagnostics"))
-        #expect(!content.contains(".navigationTitle("))
+        #expect(occurrences(of: ".navigationTitle(", in: content) == 1)
     }
 
     @Test
     func pagesOwnOnePrimaryTitleWithoutAContainerNavigationTitle() throws {
         let content = try source("AgentPetCompanion/Views/ContentView.swift")
-        #expect(!content.contains(".navigationTitle("))
+        #expect(occurrences(of: ".navigationTitle(", in: content) == 1)
+        #expect(content.contains(".navigationTitle(store.selection.localizedTitle)"))
 
         let library = try source("AgentPetCompanion/Views/PetLibraryView.swift")
         let maker = try source("AgentPetCompanion/Views/PetStudioView.swift")
@@ -132,9 +134,10 @@ struct UINextContractTests {
         #expect(store.contains("await restoreLatestGenerationSessionIfNeeded()"))
         #expect(store.contains("method: \"generation.latest\""))
         #expect(store.contains("generationDraftIsPristineForAutomaticRestore"))
-        #expect(maker.contains("else if store.generationSession.canRetry"))
+        #expect(maker.contains("PetStudioPresentation.failureRecoveryAction"))
+        #expect(maker.contains("maker.action.retry"))
+        #expect(maker.contains("maker.action.reselect-references"))
         #expect(maker.contains(".disabled(!store.canRetryGeneration)"))
-        #expect(maker.contains(".accessibilityHint(retryAvailabilityHint)"))
     }
 
     @Test
@@ -524,6 +527,9 @@ struct UINextContractTests {
         #expect(commands.contains(".disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)"))
         #expect(commands.contains("store.focusOverlayResizeForKeyboardNavigation()"))
         #expect(commands.contains(".disabled(!store.canFocusOverlayResizeForKeyboardNavigation)"))
+
+        let fixtures = try source("AgentPetCompanion/Views/UINextPreviewFixtures.swift")
+        #expect(!fixtures.contains("Text(\"MenuBarExtra\")"))
     }
 
     @Test

@@ -295,6 +295,12 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "任务遇到错误，请打开 Agent 查看详情。" } }
       }
     },
+    "overlay.detail.completed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The agent finished the task." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Agent 已完成任务。" } }
+      }
+    },
     "overlay.detail.needs_input" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Return to the agent to approve, answer, or decide." } },

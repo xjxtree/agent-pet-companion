@@ -134,6 +134,46 @@ struct OverlayCoreFixtureTests {
     }
 
     @Test
+    func activeFixtureBubbleUsesTheProductionTypedSummaryInsteadOfRepeatingTheBadge() throws {
+        try APCLocalizationFixtureScope.withLocale("zh-Hans") {
+            let model = OverlayCoreFixtureModel(
+                state: .tool,
+                source: .codex,
+                requestedActiveSessionCount: 1
+            )
+            let session = try #require(model.bubbleContent?.sessions.first)
+
+            #expect(session.messageText == "正在调用工具")
+            #expect(session.statusText == "执行工具")
+            #expect(session.messageText != session.statusText)
+
+            let expectedStatuses: [(AgentEventKind, String)] = [
+                (.waiting, "需要输入"),
+                (.review, "待查看"),
+                (.done, "已完成"),
+                (.failed, "已阻塞"),
+            ]
+            for (eventType, expectedStatus) in expectedStatuses {
+                let state = OverlayCoreFixtureModel(
+                    state: UINextOverlayFixtureState(rawValue: eventType.rawValue) ?? .idle,
+                    source: .codex,
+                    requestedActiveSessionCount: 1
+                )
+                let rendered = try #require(state.bubbleContent?.sessions.first)
+                #expect(rendered.statusText == expectedStatus)
+            }
+
+            #expect(OverlaySessionContent.displayMessage(
+                summaryKind: nil,
+                eventType: .review
+            ) != OverlaySessionContent.displayMessage(
+                summaryKind: nil,
+                eventType: .done
+            ))
+        }
+    }
+
+    @Test
     func idleStateNeverInventsAnActiveSession() {
         let idle = OverlayCoreFixtureModel(
             state: .idle,

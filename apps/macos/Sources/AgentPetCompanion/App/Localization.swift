@@ -63,6 +63,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayDetailRunning = "overlay.detail.running"
     case overlayDetailNeedsInput = "overlay.detail.needs_input"
     case overlayDetailReady = "overlay.detail.ready"
+    case overlayDetailCompleted = "overlay.detail.completed"
     case overlayDetailBlocked = "overlay.detail.blocked"
     case overlayActionOpen = "overlay.action.open"
     case overlayActionHandle = "overlay.action.handle"

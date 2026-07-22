@@ -1658,6 +1658,16 @@ final class AppStore: ObservableObject {
         case .offline, .runtimeMismatch, .error:
             petCoreRuntimeInfo.markFailed("UI Next fixture: \(operationalState.rawValue)")
         }
+        // Keep About, diagnostics, MenuBarExtra, and connection-inspector
+        // fixtures representative of a packaged runtime rather than showing
+        // development placeholders that never appear in a validated bundle.
+        petCoreRuntimeInfo.version = "0.1.0"
+        petCoreRuntimeInfo.appBuild = "20260721.1"
+        petCoreRuntimeInfo.buildID = "apc-ui-next-fixture-v1"
+        petCoreRuntimeInfo.rpcProtocol = "v2"
+        petCoreRuntimeInfo.releaseChannel = "develop"
+        petCoreRuntimeInfo.databaseSchemaRange = "0–5"
+        petCoreRuntimeInfo.instanceID = "fixture-instance"
         hasLoadedStateSnapshot = true
         initialAppearanceReadiness = .authoritative
     }

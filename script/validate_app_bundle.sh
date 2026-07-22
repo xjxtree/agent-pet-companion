@@ -259,6 +259,24 @@ grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
 grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
 [[ -x "$BUNDLED_PORTABLE_SKILL/scripts/petpack_workspace.py" ]]
 
+# Run the exact packaged Swift/AppKit executable through its prohibited-
+# activation validation mode. This exercises packaged optimization, resources,
+# overlay geometry, keyboard accessibility, and frame-pipeline wiring without
+# opening windows or taking user input.
+UI_VALIDATION_OUTPUT="$(
+  APC_HOME="$TMP_DIR/ui-validation-home" \
+  APC_DISABLE_LAUNCH_AGENT=1 \
+  APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
+  "$APP_BINARY" --run-ui-validation
+)"
+grep -q '^AgentPetCompanionUIValidation ok: [0-9][0-9]*/[0-9][0-9]* checks passed$' \
+  <<<"$UI_VALIDATION_OUTPUT" || {
+  echo 'app bundle validation failed: packaged UI validation did not complete' >&2
+  printf '%s\n' "$UI_VALIDATION_OUTPUT" >&2
+  exit 1
+}
+printf '%s\n' "$UI_VALIDATION_OUTPUT"
+
 APC_HOME="$TMP_DIR/home" "$PETCORE" preflight \
   --home "$TMP_DIR/home" \
   --manifest "$RUNTIME_MANIFEST" >/dev/null

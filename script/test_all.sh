@@ -170,4 +170,4 @@ else
   run_step "real app server" "real Codex App Server stdio validation" "$ROOT_DIR/script/validate_real_app_server.sh"
 fi
 
-echo "All Agent Pet Companion validations passed"
+echo "All enabled Agent Pet Companion validations passed; any skipped gates remain unverified"

@@ -44,7 +44,9 @@ enum BehaviorSettingsNextCatalog {
 
 enum BehaviorSettingsNextLayout {
     static let wideBreakpoint: CGFloat = 800
-    static let navigationWidth: CGFloat = 176
+    // The longest English label ("Appearance & Desktop Pet") must remain
+    // readable beside its leading symbol at the default 1120 pt window.
+    static let navigationWidth: CGFloat = 248
     static let previewWidth: CGFloat = 292
     static let resizeHitTarget: CGFloat = 38
     static let resizeVisualSize: CGFloat = 24
@@ -677,17 +679,8 @@ struct EventToggle: View {
         .accessibilityLabel(UIControlSemantics.eventLabel(event))
         .accessibilityValue(UIControlSemantics.toggleValue(isOn: isEnabled))
         .accessibilityIdentifier("configuration.messages.event.\(event.rawValue)")
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
     private var isEnabled: Bool {

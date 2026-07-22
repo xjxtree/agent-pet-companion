@@ -607,8 +607,11 @@ struct OverlayCoreFixtureModel {
                     .overlaySessionTitleFormat,
                     "\(source.shortTitle) \(index + 1)"
                 ),
-                messageText: APCLocalizedPresentation.eventTitle(eventKind),
-                statusText: APCLocalizedPresentation.eventTitle(eventKind),
+                messageText: OverlaySessionContent.displayMessage(
+                    summaryKind: nil,
+                    eventType: eventKind
+                ),
+                statusText: OverlaySessionContent.displayStatus(for: eventKind),
                 actionLabel: APCLocalization.text(.overlayActionOpen)
             )
         }

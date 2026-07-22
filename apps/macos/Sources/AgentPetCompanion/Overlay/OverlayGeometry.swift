@@ -1550,7 +1550,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionID = resolvedSessionID
         eventType = event.eventType
         sessionTitle = Self.sessionTitle(for: state)
-        statusText = Self.statusText(for: event.eventType)
+        statusText = Self.displayStatus(for: event.eventType)
         actionLabel = Self.actionLabel(for: event.eventType)
         navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
         messageText = Self.displayMessage(for: state)
@@ -1567,7 +1567,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionID = event.sessionID
         eventType = event.eventType
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
-        statusText = Self.statusText(for: event.eventType)
+        statusText = Self.displayStatus(for: event.eventType)
         actionLabel = Self.actionLabel(for: event.eventType)
         navigation = event.sessionNavigation
         messageText = Self.fallbackDetail(for: event.eventType)
@@ -1606,10 +1606,17 @@ struct OverlaySessionContent: Equatable, Identifiable {
         APCLocalization.format(.overlaySessionTitleFormat, state.source.shortTitle)
     }
 
+    static func displayMessage(
+        summaryKind: AgentOverlaySummaryKind?,
+        eventType: AgentEventKind
+    ) -> String {
+        summaryMessage(for: summaryKind ?? fallbackSummaryKind(for: eventType))
+    }
+
     private static func displayMessage(for state: ActiveAgentState) -> String {
-        summaryMessage(
-            for: state.overlayDisplay?.summaryKind
-                ?? fallbackSummaryKind(for: state.event.eventType)
+        displayMessage(
+            summaryKind: state.overlayDisplay?.summaryKind,
+            eventType: state.event.eventType
         )
     }
 
@@ -1641,13 +1648,14 @@ struct OverlaySessionContent: Equatable, Identifiable {
         case .image: .overlayActivityImage
         case .compaction: .overlayActivityCompaction
         case .needsInput: .overlayDetailNeedsInput
-        case .review, .done: .overlayDetailReady
+        case .review: .overlayDetailReady
+        case .done: .overlayDetailCompleted
         case .failed: .overlayDetailBlocked
         }
         return APCLocalization.text(key)
     }
 
-    private static func statusText(for eventType: AgentEventKind) -> String {
+    static func displayStatus(for eventType: AgentEventKind) -> String {
         switch eventType {
         case .start: APCLocalization.text(.overlayStatusRunning)
         case .tool: APCLocalization.text(.overlayStatusTool)
@@ -1662,7 +1670,8 @@ struct OverlaySessionContent: Equatable, Identifiable {
         switch eventType {
         case .start, .tool: APCLocalization.text(.overlayDetailRunning)
         case .waiting: APCLocalization.text(.overlayDetailNeedsInput)
-        case .review, .done: APCLocalization.text(.overlayDetailReady)
+        case .review: APCLocalization.text(.overlayDetailReady)
+        case .done: APCLocalization.text(.overlayDetailCompleted)
         case .failed: APCLocalization.text(.overlayDetailBlocked)
         }
     }

@@ -46,6 +46,21 @@ struct UINextVisualFixtureTests {
         })
     }
 
+    @MainActor
+    @Test
+    func packagedSurfaceFixturesExposeDeterministicRuntimeIdentity() throws {
+        let scenario = try #require(UINextVisualFixtureCatalog.baselineScenarios.first {
+            $0.surface == .about
+        })
+        let store = UINextVisualFixtureView.makeStore(for: scenario)
+
+        #expect(store.petCoreRuntimeInfo.version == "0.1.0")
+        #expect(store.petCoreRuntimeInfo.appBuild == "20260721.1")
+        #expect(store.petCoreRuntimeInfo.buildID == "apc-ui-next-fixture-v1")
+        #expect(store.petCoreRuntimeInfo.rpcProtocol == "v2")
+        #expect(store.petCoreRuntimeInfo.databaseSchemaRange == "0–5")
+    }
+
     @Test
     func fixtureConnectionsUseExplicitNonDestructiveManagementCapabilities() {
         let connections = UINextVisualFixtureData.connections

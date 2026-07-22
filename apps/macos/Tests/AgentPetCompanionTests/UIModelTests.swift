@@ -1154,8 +1154,10 @@ struct UIModelTests {
 
         #expect(status(.start) == "思考中")
         #expect(status(.tool) == "执行工具")
+        #expect(status(.waiting) == "需要输入")
         #expect(status(.review) == "待查看")
         #expect(status(.done) == "已完成")
+        #expect(status(.failed) == "已阻塞")
         #expect(status(.review) != status(.done))
     }
 

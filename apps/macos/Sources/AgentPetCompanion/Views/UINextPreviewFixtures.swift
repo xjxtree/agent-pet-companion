@@ -1895,12 +1895,6 @@ private struct UINextMenuBarFixtureSurface: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                APCBrandMark(size: 18)
-                Text("MenuBarExtra")
-                    .font(.headline)
-            }
-            Divider()
             AppStatusMenuContent(store: store, performsActions: false)
         }
         .buttonStyle(.plain)

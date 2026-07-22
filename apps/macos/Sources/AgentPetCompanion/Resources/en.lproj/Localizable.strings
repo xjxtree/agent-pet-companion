@@ -47,6 +47,7 @@
 "overlay.activity.thinking" = "Thinking";
 "overlay.activity.tool" = "Using a tool";
 "overlay.detail.blocked" = "The task is blocked. Open the agent for details.";
+"overlay.detail.completed" = "The agent finished the task.";
 "overlay.detail.needs_input" = "Return to the agent to approve, answer, or decide.";
 "overlay.detail.ready" = "The latest result is ready to review.";
 "overlay.detail.running" = "Thinking";

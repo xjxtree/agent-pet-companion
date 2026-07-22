@@ -87,17 +87,32 @@ struct AIPetMakerView: View {
                 }
                 .disabled(!store.generationSession.canCancel)
                 .accessibilityIdentifier("maker.action.cancel")
-            } else if store.generationSession.canRetry {
-                Button {
-                    store.retryGeneration()
-                } label: {
-                    Label(APCLocalization.text(.commonRetry), systemImage: "arrow.clockwise")
+            } else if let recoveryAction = PetStudioPresentation.failureRecoveryAction(
+                sessionCanRetry: store.generationSession.canRetry,
+                referenceReselectionCount: store.referenceReselectionCount
+            ) {
+                switch recoveryAction {
+                case .retry:
+                    Button {
+                        store.retryGeneration()
+                    } label: {
+                        Label(APCLocalization.text(.commonRetry), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!store.canRetryGeneration)
+                    .accessibilityIdentifier("maker.action.retry")
+                case .reselectReferences:
+                    Button {
+                        store.chooseReferenceImages()
+                    } label: {
+                        Label(
+                            APCLocalization.text(.studioReferencesPanelTitle),
+                            systemImage: "photo.badge.plus"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("maker.action.reselect-references")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!store.canRetryGeneration)
-                .help(retryAvailabilityHint)
-                .accessibilityHint(retryAvailabilityHint)
-                .accessibilityIdentifier("maker.action.retry")
             } else if store.generationSession.state == .idle {
                 Button(APCLocalization.text(.commonClear)) {
                     store.clearStudioForm()
@@ -122,13 +137,6 @@ struct AIPetMakerView: View {
                 .accessibilityIdentifier("maker.action.new")
             }
         }
-    }
-
-    private var retryAvailabilityHint: String {
-        guard store.referenceReselectionCount > 0 else { return "" }
-        return APCLocalizedPresentation.referenceImageIssue(
-            .reselectionRequired(store.referenceReselectionCount)
-        )
     }
 
     private var pageTitle: String {
@@ -500,6 +508,10 @@ struct GenerationSessionView: View {
 
             GenerationProgressView()
 
+            if store.generationSession.state == .failed {
+                terminalAction
+            }
+
             Group {
                 if store.generationSession.state == .idle {
                     welcomeState
@@ -519,7 +531,9 @@ struct GenerationSessionView: View {
             }
 
             if store.generationSession.state != .idle {
-                terminalAction
+                if store.generationSession.state != .failed {
+                    terminalAction
+                }
                 if !store.generationSession.state.isTerminal {
                     replyComposer
                 }
@@ -610,9 +624,7 @@ struct GenerationSessionView: View {
         case .failed:
             InlineSessionNotice(
                 title: APCLocalization.text(.studioFailedTitle),
-                detail: PetStudioPresentation.failureDetail(
-                    for: store.generationSession.messages
-                ),
+                detail: failureNoticeDetail,
                 systemImage: "exclamationmark.triangle",
                 color: APCDesign.destructive
             )
@@ -688,6 +700,17 @@ struct GenerationSessionView: View {
         default:
             EmptyView()
         }
+    }
+
+    private var failureNoticeDetail: String {
+        let failure = PetStudioPresentation.failureDetail(
+            for: store.generationSession.messages
+        )
+        guard store.referenceReselectionCount > 0 else { return failure }
+        let recovery = APCLocalizedPresentation.referenceImageIssue(
+            .reselectionRequired(store.referenceReselectionCount)
+        )
+        return "\(failure)\n\(recovery)"
     }
 
     private var replyComposer: some View {
@@ -1103,6 +1126,20 @@ private struct InlineSessionNotice: View {
 }
 
 enum PetStudioPresentation {
+    enum FailureRecoveryAction: Equatable {
+        case retry
+        case reselectReferences(count: Int)
+    }
+
+    static func failureRecoveryAction(
+        sessionCanRetry: Bool,
+        referenceReselectionCount: Int
+    ) -> FailureRecoveryAction? {
+        guard sessionCanRetry else { return nil }
+        let boundedCount = max(0, referenceReselectionCount)
+        return boundedCount > 0 ? .reselectReferences(count: boundedCount) : .retry
+    }
+
     enum StageState: Equatable {
         case complete
         case current

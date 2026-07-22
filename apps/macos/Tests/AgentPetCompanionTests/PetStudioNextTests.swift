@@ -107,6 +107,26 @@ struct PetStudioNextTests {
     }
 
     @Test
+    func failedSessionUsesAVisibleReferenceReselectionActionBeforeRetry() {
+        #expect(PetStudioPresentation.failureRecoveryAction(
+            sessionCanRetry: false,
+            referenceReselectionCount: 2
+        ) == nil)
+        #expect(PetStudioPresentation.failureRecoveryAction(
+            sessionCanRetry: true,
+            referenceReselectionCount: 0
+        ) == .retry)
+        #expect(PetStudioPresentation.failureRecoveryAction(
+            sessionCanRetry: true,
+            referenceReselectionCount: 2
+        ) == .reselectReferences(count: 2))
+        #expect(PetStudioPresentation.failureRecoveryAction(
+            sessionCanRetry: true,
+            referenceReselectionCount: -1
+        ) == .retry)
+    }
+
+    @Test
     func exactHistoricalBaselineDoesNotFollowLaterHeadChanges() {
         let baselineID = "rev_11111111111111111111111111111111"
         let oldRevision = PetRevisionHistoryRecord(

@@ -1,5 +1,4 @@
 import AgentPetCompanionCore
-import AppKit
 import SwiftUI
 
 enum ControlCenterShellMode: Equatable, Sendable {
@@ -59,42 +58,5 @@ extension NavigationSection {
         case .diagnostics: .navigationDiagnostics
         }
         return APCLocalization.text(key)
-    }
-}
-
-struct ControlCenterWindowTitleUpdater: NSViewRepresentable {
-    let title: String
-
-    func makeNSView(context: Context) -> WindowTitleHostView {
-        WindowTitleHostView(title: title)
-    }
-
-    func updateNSView(_ nsView: WindowTitleHostView, context: Context) {
-        nsView.title = title
-    }
-}
-
-final class WindowTitleHostView: NSView {
-    var title: String {
-        didSet { applyTitle() }
-    }
-
-    init(title: String) {
-        self.title = title
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        applyTitle()
-    }
-
-    private func applyTitle() {
-        window?.title = title
     }
 }

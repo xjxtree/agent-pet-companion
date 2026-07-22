@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
@@ -34,6 +35,21 @@ struct BehaviorSettingsNextTests {
         #expect(BehaviorSettingsNextLayout.resizeHitTarget == CGFloat(38))
         #expect(BehaviorSettingsNextLayout.resizeVisualSize == CGFloat(24))
         #expect(BehaviorSettingsNextLayout.resizeHitTarget > BehaviorSettingsNextLayout.resizeVisualSize)
+    }
+
+    @Test
+    func wideSubnavigationFitsTheLongestEnglishLabelWithoutTruncation() {
+        let titles = APCLocalizationFixtureScope.withLocale("en") {
+            BehaviorSettingsSection.allCases.map(\.title)
+        }
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let longestTextWidth = titles
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+
+        // Reserve native source-list space for the symbol, label gap, row insets,
+        // split-view divider, and the trailing selection-pill breathing room.
+        #expect(BehaviorSettingsNextLayout.navigationWidth >= longestTextWidth + 80)
     }
 
     @MainActor

@@ -29,14 +29,10 @@ struct ContentView: View {
                     mainContent
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(store.selection.localizedTitle)
             }
             .navigationSplitViewStyle(.balanced)
             .environment(\.controlCenterShellMode, policy.mode)
-            .background {
-                ControlCenterWindowTitleUpdater(title: store.selection.localizedTitle)
-                    .frame(width: 0, height: 0)
-                    .accessibilityHidden(true)
-            }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
