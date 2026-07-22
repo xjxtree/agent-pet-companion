@@ -453,6 +453,8 @@ struct PetLibraryNextTests {
         #expect(source.contains(".disabled(retrying)"))
         #expect(source.contains("LazyVGrid("))
         #expect(source.contains(".inspector(isPresented:"))
+        #expect(source.contains("pet-library.layout.wide"))
+        #expect(source.contains(".frame(width: Self.wideInspectorWidth)"))
         #expect(source.contains("TapGesture(count: 2)"))
         #expect(source.contains(".onKeyPress(.return)"))
         #expect(source.contains("pet-library.inspector.activate"))
@@ -629,6 +631,30 @@ struct PetLibraryNextTests {
     }
 
     @MainActor
+    @Test
+    func inspectorScrollViewConstrainsInfoRowsToItsVisibleWidth() throws {
+        let states = "idle · start · tool · waiting · review · done · failed"
+
+        for viewportWidth: CGFloat in [286, 330, 390] {
+            let rendering = try renderedInfoRowInInspectorScrollView(
+                viewportWidth: viewportWidth,
+                title: "七状态",
+                value: states
+            )
+            let doneBounds = try glyphBounds(of: "done", in: rendering.textView)
+            let doneBoundsInHost = rendering.textView.convert(
+                doneBounds,
+                to: rendering.hostingView
+            )
+
+            #expect(rendering.textView.string == states)
+            #expect(doneBounds.maxX <= rendering.textView.bounds.width + 0.5)
+            #expect(doneBoundsInHost.minX >= -0.5)
+            #expect(doneBoundsInHost.maxX <= viewportWidth + 0.5)
+        }
+    }
+
+    @MainActor
     private func renderedInfoRow(
         width: CGFloat,
         title: String,
@@ -715,6 +741,28 @@ struct PetLibraryNextTests {
             origin: .zero,
             size: CGSize(width: width, height: ceil(fittingSize.height))
         )
+        hostingView.layoutSubtreeIfNeeded()
+        return (try #require(firstTextView(in: hostingView)), hostingView)
+    }
+
+    @MainActor
+    private func renderedInfoRowInInspectorScrollView(
+        viewportWidth: CGFloat,
+        title: String,
+        value: String
+    ) throws -> (textView: NSTextView, hostingView: NSView) {
+        let hostingView = NSHostingView(rootView: ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox("Current Info") {
+                    VStack(spacing: 0) {
+                        InfoRow(title: title, value: value)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: viewportWidth, height: 240))
+        hostingView.frame = CGRect(x: 0, y: 0, width: viewportWidth, height: 240)
         hostingView.layoutSubtreeIfNeeded()
         return (try #require(firstTextView(in: hostingView)), hostingView)
     }

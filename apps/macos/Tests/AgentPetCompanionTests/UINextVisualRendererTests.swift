@@ -62,6 +62,25 @@ struct UINextVisualRendererTests {
 
     @MainActor
     @Test
+    func defaultWidthLibraryRendersInspectorInsideTrailingViewport() throws {
+        let rendered = try UINextVisualFixtureRenderer.render(rootScenario(
+            id: "render.root.library-visible-inspector",
+            section: .library,
+            theme: .light,
+            serviceState: .online,
+            displayScale: 2
+        ))
+        let pixels = try UINextPNGPixelMap(pngData: rendered.pngData)
+        let inspectorRegion = CGRect(x: 0.77, y: 0.08, width: 0.21, height: 0.84)
+        let inspector = pixels.statistics(in: inspectorRegion)
+
+        #expect(rendered.logicalSize == CGSize(width: 1_120, height: 720))
+        #expect(inspector.nonDominantColorFraction > 0.02)
+        #expect(inspector.edgeFraction > 0.001)
+    }
+
+    @MainActor
+    @Test
     func minimumWindowRootAcceptanceScenariosRenderOpaqueVisibleCoreRegions() async throws {
         let scenarios = UINextVisualFixtureCatalog.minimumWindowAcceptanceScenarios
         let coreRegion = CGRect(x: 0.04, y: 0.06, width: 0.92, height: 0.88)

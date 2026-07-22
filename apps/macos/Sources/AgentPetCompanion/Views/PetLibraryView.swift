@@ -31,6 +31,7 @@ enum PetLibraryGridPolicy {
 
 struct PetLibraryView: View {
     private static let maximumEditInstructionCharacters = GenerationPromptPolicy.maximumScalarCount
+    private static let wideInspectorWidth: CGFloat = 330
 
     @EnvironmentObject private var store: AppStore
     @Environment(\.controlCenterShellMode) private var shellMode
@@ -81,26 +82,7 @@ struct PetLibraryView: View {
     }
 
     var body: some View {
-        PageScroll {
-            PageActionHeader(
-                title: APCLocalization.text(.navigationLibrary),
-                subtitle: APCLocalization.text(.libraryPageSubtitle)
-            ) {
-                libraryActions
-            }
-
-            if let notice = store.petLibraryNotice {
-                PetLibraryNoticeBanner(
-                    notice: notice,
-                    retrying: store.isImportingPetpack,
-                    onRetry: { store.importPetpacks() },
-                    onDismiss: { store.dismissPetLibraryNotice() }
-                )
-            }
-
-            libraryContent
-        }
-        .accessibilityIdentifier("pet-library.page")
+        responsiveLibrarySurface
         .toolbar {
             if !shellMode.keepsInspectorPresented {
                 ToolbarItem(placement: .secondaryAction) {
@@ -115,17 +97,6 @@ struct PetLibraryView: View {
                     .disabled(selectedPet == nil)
                     .accessibilityIdentifier("pet-library.inspector-toggle")
                 }
-            }
-        }
-        .inspector(isPresented: inspectorIsPresented) {
-            if let selectedPet {
-                PetLibraryInspector(
-                    pet: selectedPet,
-                    onRequestEdit: requestEdit,
-                    onRequestHistory: requestHistory,
-                    onRequestDelete: { pendingDeletePet = $0 }
-                )
-                .inspectorColumnWidth(min: 286, ideal: 330, max: 390)
             }
         }
         .onAppear {
@@ -180,6 +151,62 @@ struct PetLibraryView: View {
                 }
             )
         }
+    }
+
+    @ViewBuilder
+    private var responsiveLibrarySurface: some View {
+        if shellMode.keepsInspectorPresented {
+            HStack(spacing: 0) {
+                libraryPage
+
+                if let selectedPet {
+                    Divider()
+                    inspector(for: selectedPet)
+                        .frame(width: Self.wideInspectorWidth)
+                }
+            }
+            .accessibilityIdentifier("pet-library.layout.wide")
+        } else {
+            libraryPage
+                .inspector(isPresented: inspectorIsPresented) {
+                    if let selectedPet {
+                        inspector(for: selectedPet)
+                            .inspectorColumnWidth(min: 286, ideal: 330, max: 390)
+                    }
+                }
+        }
+    }
+
+    private var libraryPage: some View {
+        PageScroll {
+            PageActionHeader(
+                title: APCLocalization.text(.navigationLibrary),
+                subtitle: APCLocalization.text(.libraryPageSubtitle)
+            ) {
+                libraryActions
+            }
+
+            if let notice = store.petLibraryNotice {
+                PetLibraryNoticeBanner(
+                    notice: notice,
+                    retrying: store.isImportingPetpack,
+                    onRetry: { store.importPetpacks() },
+                    onDismiss: { store.dismissPetLibraryNotice() }
+                )
+            }
+
+            libraryContent
+        }
+        .accessibilityIdentifier("pet-library.page")
+    }
+
+    private func inspector(for pet: PetSummary) -> some View {
+        PetLibraryInspector(
+            pet: pet,
+            onRequestEdit: requestEdit,
+            onRequestHistory: requestHistory,
+            onRequestDelete: { pendingDeletePet = $0 }
+        )
     }
 
     private var libraryActions: some View {
