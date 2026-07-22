@@ -165,7 +165,6 @@ struct PetLibraryView: View {
                         .frame(width: Self.wideInspectorWidth)
                 }
             }
-            .accessibilityIdentifier("pet-library.layout.wide")
         } else {
             libraryPage
                 .inspector(isPresented: inspectorIsPresented) {
