@@ -1,55 +1,39 @@
-# macOS release procedure / macOS 发布流程
+# macOS Release Procedure / macOS 发布流程
 
-Agent Pet Companion has no public V1 release yet. A distributable build is complete only after the universal Release app is signed with Developer ID, submitted to Apple notarization, stapled, and accepted by the local validation gate. An ad-hoc-signed or unsigned development bundle must never be described as a public release.
+A public Agent Pet Companion release is one versioned runtime set: macOS App, PetCore, `petcore-cli`, runtime manifest, connector contracts, Skills, schemas, and bundled pets. It is distributable only when the exact universal archive is Developer ID-signed, Apple-notarized, stapled, accepted on a supported Mac, and recorded in the root [CHANGELOG](../../CHANGELOG.md).
 
-Agent Pet Companion 尚未发布公开 V1。只有 universal Release App 完成 Developer ID 签名、Apple notarization、staple，并通过本地门禁后，才是可分发构建。ad-hoc 签名或未签名开发 bundle 不能称为公开发布版本。
+公开版本是一个统一的运行时集合，包括 macOS App、PetCore、`petcore-cli`、runtime manifest、连接器契约、Skills、schemas 与内置宠物。只有最终 universal 归档完成 Developer ID 签名、Apple 公证、staple、受支持 Mac 实机验收，并写入根目录 [CHANGELOG](../../CHANGELOG.md) 后，才可以发布。
 
-The dated [project status](../PROJECT_STATUS.md) is the release-readiness ledger. Do not start a distribution release while it lists a failing default gate, blocked Swift tests, an unverified runtime migration, or pending current-build host acceptance.
+Development bundles, ad-hoc signatures, unsigned builds, and evidence from another commit or archive are never public release evidence.
 
-带日期的[项目状态](../PROJECT_STATUS.md)是发布就绪账本。只要其中仍记录默认门禁失败、Swift tests 阻塞、运行时迁移未验证或当前候选实机验收未完成，就不得开始分发发布。
+开发 bundle、ad-hoc 签名、未签名构建，以及来自其他 commit 或归档的验证结果，都不能作为公开发布证据。
 
-## 0. Freeze the runtime release set / 冻结运行时版本集
+## 1. Freeze version and changelog / 冻结版本与变更记录
 
-Before building a candidate, freeze one manifest that binds all components that can affect persisted data or desktop-pet behavior:
+Choose a semantic version `X.Y.Z` and positive build number. The Git tag must be `vX.Y.Z`.
 
-- App semantic version, bundle build and `APCBuildID`;
-- PetCore RPC protocol/build and PetCore CLI build;
-- SQLite schema, Agent event schema, and `.petpack` readable/writable versions;
-- Codex, Claude Code, Pi and OpenCode connector contract versions;
-- minimum/maximum compatible runtime and downgrade policy;
-- last-known-good artifact identity and rollback procedure.
+Before the release build:
 
-构建候选版本前，必须冻结一份统一 manifest，绑定 App version/build/`APCBuildID`、PetCore RPC/build、CLI、数据库与事件 schema、`.petpack` 可读/写版本、四个 connector contract、兼容范围、降级策略和 last-known-good 回滚目标。当前 develop 实现已通过 `apc.runtime-manifest.v1`、候选预检、exact health 和 LKG 回滚满足这一工程门禁；正式分发还必须让该 manifest 处于 Developer ID 签名范围内并完成安装器级演练。
+1. confirm every user-visible change is under `[Unreleased]` in [CHANGELOG.md](../../CHANGELOG.md);
+2. rename `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`;
+3. add a new empty `[Unreleased]` section above it;
+4. verify no other changelog section or GitHub Release uses the same version;
+5. keep validation logs and pending work out of the changelog.
 
-Exercise the update path with both an older and a newer installed runtime. The candidate Core must pass build/schema/read-only data checks before the old Core is retired; a failed candidate must restore the last-known-good runtime without leaving the pet connected to an incompatible or empty service.
+发布前选择语义版本 `X.Y.Z` 和正整数 build，tag 必须为 `vX.Y.Z`；将 CHANGELOG 的 `[Unreleased]` 改为 `[X.Y.Z] - YYYY-MM-DD`，在上方新建空的 `[Unreleased]`，并确认版本唯一。CHANGELOG 只记录用户可见变化，不保存测试日志或待办。
 
-发布演练必须覆盖旧版升级和新版误开旧 App 两个方向。候选 Core 需要在旧 Core 退役前通过构建、schema 与只读数据检查；候选失败后应自动恢复 last-known-good，不能让桌宠继续连接不兼容或空服务。
+The generated `apc.runtime-manifest.v1` must bind the App version/build/shared build ID, PetCore RPC and component build IDs, SQLite range, event schema, `.petpack` read/write versions, and all connector contracts. See [Runtime and IPC](../architecture/runtime-and-ipc.md).
 
-## Develop package / 非正式开发包
+## 2. Run the source gate / 运行源码门禁
 
-The current requested delivery is an informal, ad-hoc-signed develop package:
+Requirements:
 
-```bash
-./script/test_all.sh
-./script/build_app_bundle.sh
-```
+- macOS 14+ and Xcode 16+ with command-line tools;
+- Rust 1.96.0 and `aarch64-apple-darwin` plus `x86_64-apple-darwin` targets;
+- Python 3 for validators;
+- an explicit Developer ID Application identity and `notarytool` keychain profile for distribution.
 
-The build produces `dist/AgentPetCompanion.app` and `dist/AgentPetCompanion-develop.zip`. Assembly, ad-hoc signing, and archive creation happen outside the File Provider workspace. The ZIP is the supported develop handoff: it excludes resource-fork/xattr metadata and is extracted into a second temporary directory for `codesign --verify --deep --strict`. If the repository is under a File Provider-managed Documents directory, Finder metadata may later change strict verification of the naked `.app`; this does not alter the already verified ZIP contents.
-
-当前要求的交付物是非正式 ad-hoc develop 包。脚本会先在 File Provider 工作区外完成 App 组装、签名和归档，再生成裸 `.app` 和 `AgentPetCompanion-develop.zip`；ZIP 才是支持的 develop 交接物，会排除资源 fork/xattr，并在另一临时目录解压后做严格签名校验。该包未使用 Developer ID、未公证、未 staple，也不承诺 Gatekeeper 或正式自动更新。
-
-## Requirements / 前置条件
-
-- macOS 14+ and Xcode 16+ with command-line tools
-- Rust 1.96.0 and both `aarch64-apple-darwin` and `x86_64-apple-darwin` targets
-- a Developer ID Application certificate available to `codesign`
-- a notarytool keychain profile created by the release operator
-
-The scripts consume only explicit environment values. They do not enumerate certificates, inspect the keychain, read `.env` files, or discover credentials.
-
-脚本只使用显式环境变量，不枚举证书、不检查 keychain、不读取 `.env`，也不自动发现凭据。
-
-## 1. Run the delivery gate / 运行交付门禁
+Run fresh checks for the release commit:
 
 ```bash
 ./script/validate_test_isolation.sh
@@ -60,56 +44,110 @@ cargo test --workspace --locked
 ./script/validate_schema_fixtures.sh
 ./script/validate_source_syntax.sh
 ./script/validate_build_scripts_safety.sh
+./script/validate_security_boundaries.sh
 ```
 
-Real connector and App Server checks remain separate explicit acceptance gates and must not be folded into the release script.
+Real connectors, real Codex App Server generation, and visible macOS UI remain explicit acceptance gates. The [validation profiles](../development/validation.md) define what each result can and cannot prove.
 
-真实 connector 与 App Server 检查仍是独立的显式验收门禁，不得被发布脚本自动触发。
+真实连接器、真实 Codex App Server 制作与可见 macOS UI 均属于显式验收门禁；每层结果的证明范围以[验证层级](../development/validation.md)为准。
 
-If `swift test` cannot import Swift `Testing`, select the complete supported Xcode toolchain and rerun it. Executable Swift validators do not replace the unit-test gate. Likewise, a field-allowlist assertion failure in `test_all.sh` is a release failure until the validator and canonical schema are synchronized.
+## 3. Build artifacts / 构建产物
 
-如果 `swift test` 无法导入 Swift `Testing`，应切换到受支持的完整 Xcode 工具链后重跑；Swift executable validator 不能替代单元测试。`test_all.sh` 中字段 allowlist 断言失败同样属于发布失败，必须同步 validator 与规范 schema，不能按环境跳过处理。
+### Local development App / 本机开发 App
 
-## 2. Build an unsigned universal candidate / 构建未签名 universal 候选
+```bash
+./script/build_app_bundle.sh
+```
+
+This creates an ad-hoc-signed `dist/AgentPetCompanion.app` for local testing. It is not notarized or distributable.
+
+该命令默认只生成用于本机测试的 ad-hoc 签名 App；它未经公证，不可对外分发。
+
+For informal handoff, request and verify a separate archive explicitly:
+
+如需非正式交接，显式生成并校验独立归档：
+
+```bash
+./script/build_app_bundle.sh --archive
+```
+
+This additionally creates `dist/AgentPetCompanion-develop.zip`. Use the ZIP as the authoritative handoff artifact when copying through a File Provider-managed folder.
+
+该命令会额外生成 `dist/AgentPetCompanion-develop.zip`；通过 File Provider 管理的目录复制时，应以该 ZIP 作为交接产物。
+
+### Unsigned universal inspection
 
 ```bash
 ./script/build_release.sh --unsigned
 ```
 
-This creates `dist/AgentPetCompanion.app` from Release binaries and verifies both architectures. It is useful for local inspection only.
+This builds a universal Release candidate for local inspection. It is not distributable.
 
-该命令生成使用 Release 二进制的 `dist/AgentPetCompanion.app` 并验证双架构，仅用于本地检查。
+### Signed distribution
 
-## 3. Sign, notarize and staple / 签名、公证与装订
-
-Set the values explicitly in the current shell. Do not commit them:
+Set values explicitly in the release shell. Do not commit them or add credential discovery to the scripts.
 
 ```bash
+export APC_RELEASE_VERSION='X.Y.Z'
+export APC_RELEASE_BUILD='1'
+export APC_RELEASE_CHANNEL='release'
 export APC_CODESIGN_IDENTITY='Developer ID Application: Example Team (TEAMID)'
 export APC_NOTARY_PROFILE='agent-pet-companion-notary'
 ./script/build_release.sh --distribution
 ```
 
-The script performs these exact stages:
+The script builds universal Rust/Swift Release binaries, signs nested executables and the App with hardened runtime and timestamp, verifies signatures and slices, submits with `notarytool`, staples and validates the ticket, requires `spctl` acceptance, then writes:
 
-1. build universal Rust and Swift Release binaries;
-2. sign nested executables with hardened runtime and a trusted timestamp;
-3. sign the outer app bundle;
-4. verify the signature and universal slices;
-5. create a temporary ZIP with `ditto`;
-6. submit it with `xcrun notarytool --keychain-profile ... --wait`;
-7. staple and validate the ticket;
-8. require `spctl` acceptance;
-9. create `dist/AgentPetCompanion-macos-universal.zip` and its SHA-256 file.
+- `dist/AgentPetCompanion-macos-universal.zip`
+- `dist/AgentPetCompanion-macos-universal.zip.sha256`
 
-脚本依次完成 universal Release 构建、嵌套二进制与 App hardened runtime 签名、签名/架构验证、notarytool 提交、staple、`spctl` 验收，以及最终 ZIP 和 SHA-256 生成。
+Missing signing/notary values or any failed stage must stop the release.
 
-Missing identity/profile values fail with a clear instruction. A failed or unavailable notarization is never reported as success.
+## 4. Accept the exact archive / 验收最终归档
 
-缺少签名 identity/profile 会明确失败；notarization 失败或不可用时绝不会伪报成功。
+All checks must use the final signed/notarized archive after extracting it into a clean temporary directory.
 
-## 4. Final evidence / 最终证据
+### Runtime and lifecycle
 
-Record the commit, runtime manifest, toolchain versions, validation output, notarization request ID, archive hash, update/rollback drill, and macOS 14+ launch/accessibility check in the release notes. The host pass must also cover closing and reopening the singleton control center, standard Quit, PetCore survival after UI exit, duplicate-open rejection, message-bubble expand/open behavior, and the applicable Liquid Glass/fallback appearance. Use Computer Use first with Accessibility reads and element-based actions; any fallback that can take over the user's input requires explicit approval immediately before use. Never include credential values or private notary logs.
+- Verify `arm64` and `x86_64` slices, signature, notarization, staple, `spctl`, archive hash, and exact runtime-manifest/build identity.
+- Exercise upgrade from an older compatible runtime, rejection of an incompatible newer database, candidate failure, and last-known-good rollback.
+- Verify single-instance control center behavior, normal close/reopen, Dock/menu **Quit**, App relaunch, PetCore continuity after UI exit, and no duplicate UI host.
+- Confirm a newly opened valid bundle can trigger the event-driven handoff; do not test or document a periodic background updater.
 
-发布记录需包含 commit、runtime manifest、toolchain 版本、门禁输出、notarization request ID、归档 hash、升级/回滚演练和 macOS 14+ 启动/无障碍检查；实机检查还必须覆盖单例控制中心关闭与重开、标准 Quit、UI 退出后 PetCore 继续存活、重复打开不会产生第二实例、消息气泡展开/打开，以及适用的 Liquid Glass/回退外观。检查必须优先使用 Computer Use 的 Accessibility 读取和元素级操作；任何可能接管用户输入的替代方法都需要在执行前取得明确授权。不得记录凭据值或私有公证日志。
+### Product UI
+
+- Verify sidebar order: **Pet Library → AI Pet Maker → Pet Configuration → Agent Connections → Service & Diagnostics**.
+- Verify Pet Configuration contains only **Appearance & Desktop Pet** and **Messages & Sources**, while diagnostics export remains available only from the root **Service & Diagnostics** page.
+- On a clean App home, verify both bundled pets are present and one valid pet is active.
+- Verify overlay drag/resize/right-click, first-click session controls, bubble expand/open behavior, and resize-handle hiding when the pointer leaves.
+- Verify create, cancel, retry, reply, generation history, import, export, activation, and edit-from-import flows that apply to the release.
+
+Use Computer Use first with Accessibility reads and element actions. Any fallback that can move the pointer, inject input, activate an App, or steal focus requires explicit user approval immediately before use.
+
+### Pet library and package safety
+
+- Validate/render all seven states from both packaged built-in archives.
+- In an isolated existing library, verify same ID is preserved, same name with a different ID coexists, repeated seeding is idempotent, and an existing active pet is not replaced.
+- Verify bundled pets can be previewed, enabled, and exported, while UI and RPC reject deletion and same-ID modification/import.
+- Verify ordinary imported pets remain editable even without an App creation history, and stale-base edits cannot overwrite a newer revision.
+- Re-run `.petpack` structure, budget, provenance, visual-difference, and recursive privacy gates against the packaged artifact.
+
+### Connectors and diagnostics
+
+- Verify supported connector install/repair/check/test/uninstall behavior against the current runtime contract without reading credentials.
+- Export diagnostics with PetCore healthy and unavailable. Both paths must produce `apc.diagnostics-bundle.v1`, obey the fixed allowlist and retention bounds, and exclude prompts, full messages, tool data, credentials, paths, identifiers, SQLite, pets, jobs, runtime tokens, and connector configuration.
+
+Use [System architecture](../architecture/overview.md), [Data model](../architecture/data-model.md), [Agent connectors](../integrations/agent-connectors.md), and the [`.petpack` specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) as the acceptance contract rather than copying those rules into release notes.
+
+## 5. Publish the GitHub Release / 发布 GitHub Release
+
+After the release commit and exact archive pass:
+
+1. create and push tag `vX.Y.Z` for that commit;
+2. create one GitHub Release for `vX.Y.Z`;
+3. attach the universal ZIP and SHA-256 file;
+4. copy the matching changelog section into concise release notes;
+5. record the commit, runtime manifest identity, supported macOS baseline, archive hash, notarization request ID, and links to CI/acceptance evidence;
+6. verify the Release version, tag, manifest version, and changelog version agree.
+
+发布完成后，每个 GitHub Release、tag 与 CHANGELOG 版本段必须一一对应。不得把用户诊断包、凭据、公证私有日志或包含用户数据的验收产物附加到 Release。
