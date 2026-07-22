@@ -1302,11 +1302,117 @@ enum InfoRowLayoutMode: Equatable {
 }
 
 enum InfoRowLayoutPolicy {
-    static let minimumSideBySideWidth: CGFloat = 240
+    static let minimumSideBySideWidth: CGFloat = 300
     static let minimumSideBySideValueWidth: CGFloat = 112
 
     static func mode(for availableWidth: CGFloat) -> InfoRowLayoutMode {
         availableWidth >= minimumSideBySideWidth ? .sideBySide : .stacked
+    }
+}
+
+private struct InfoRowResponsiveLayout: Layout {
+    private let horizontalSpacing: CGFloat = 12
+    private let verticalSpacing: CGFloat = 4
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+
+        let availableWidth = finiteWidth(from: proposal)
+        switch availableWidth.map(InfoRowLayoutPolicy.mode(for:)) ?? .stacked {
+        case .sideBySide:
+            return sideBySideSize(width: availableWidth!, subviews: subviews)
+        case .stacked:
+            return stackedSize(width: availableWidth, subviews: subviews)
+        }
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+
+        switch InfoRowLayoutPolicy.mode(for: bounds.width) {
+        case .sideBySide:
+            placeSideBySide(in: bounds, subviews: subviews)
+        case .stacked:
+            placeStacked(in: bounds, subviews: subviews)
+        }
+    }
+
+    private func finiteWidth(from proposal: ProposedViewSize) -> CGFloat? {
+        guard let width = proposal.width, width.isFinite else { return nil }
+        return max(0, width)
+    }
+
+    private func sideBySideSize(width: CGFloat, subviews: Subviews) -> CGSize {
+        let titleSize = subviews[0].sizeThatFits(.unspecified)
+        let valueWidth = max(
+            InfoRowLayoutPolicy.minimumSideBySideValueWidth,
+            width - titleSize.width - horizontalSpacing
+        )
+        let valueSize = subviews[1].sizeThatFits(ProposedViewSize(width: valueWidth, height: nil))
+        return CGSize(width: width, height: max(titleSize.height, valueSize.height))
+    }
+
+    private func stackedSize(width: CGFloat?, subviews: Subviews) -> CGSize {
+        let childProposal = ProposedViewSize(width: width, height: nil)
+        let titleSize = subviews[0].sizeThatFits(childProposal)
+        let valueSize = subviews[1].sizeThatFits(childProposal)
+        return CGSize(
+            width: width ?? max(titleSize.width, valueSize.width),
+            height: titleSize.height + verticalSpacing + valueSize.height
+        )
+    }
+
+    private func placeSideBySide(in bounds: CGRect, subviews: Subviews) {
+        let titleSize = subviews[0].sizeThatFits(.unspecified)
+        let valueWidth = max(
+            InfoRowLayoutPolicy.minimumSideBySideValueWidth,
+            bounds.width - titleSize.width - horizontalSpacing
+        )
+        let valueProposal = ProposedViewSize(width: valueWidth, height: nil)
+        let valueSize = subviews[1].sizeThatFits(valueProposal)
+        let titleDimensions = subviews[0].dimensions(in: .unspecified)
+        let valueDimensions = subviews[1].dimensions(in: valueProposal)
+        let baseline = max(
+            titleDimensions[VerticalAlignment.firstTextBaseline],
+            valueDimensions[VerticalAlignment.firstTextBaseline]
+        )
+
+        subviews[0].place(
+            at: CGPoint(
+                x: bounds.minX,
+                y: bounds.minY + baseline - titleDimensions[VerticalAlignment.firstTextBaseline]
+            ),
+            proposal: ProposedViewSize(titleSize)
+        )
+        subviews[1].place(
+            at: CGPoint(
+                x: bounds.maxX - valueSize.width,
+                y: bounds.minY + baseline - valueDimensions[VerticalAlignment.firstTextBaseline]
+            ),
+            proposal: valueProposal
+        )
+    }
+
+    private func placeStacked(in bounds: CGRect, subviews: Subviews) {
+        let childProposal = ProposedViewSize(width: bounds.width, height: nil)
+        let titleSize = subviews[0].sizeThatFits(childProposal)
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY),
+            proposal: childProposal
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + titleSize.height + verticalSpacing),
+            proposal: childProposal
+        )
     }
 }
 
@@ -1315,34 +1421,15 @@ struct InfoRow: View {
     var value: String
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 0)
-                Text(value)
-                    .font(.callout.weight(.medium))
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(
-                        minWidth: InfoRowLayoutPolicy.minimumSideBySideValueWidth,
-                        maxWidth: 210,
-                        alignment: .trailing
-                    )
-            }
-            .frame(minWidth: InfoRowLayoutPolicy.minimumSideBySideWidth)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(value)
-                    .font(.callout.weight(.medium))
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        InfoRowResponsiveLayout {
+            Text(title)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(value)
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.leading)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 9)

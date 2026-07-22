@@ -528,7 +528,7 @@ struct PetLibraryNextTests {
     @MainActor
     @Test
     func narrowInfoRowRendersAsAStackWithoutCompressingCriticalValues() throws {
-        let narrowWidth: CGFloat = 210
+        let narrowWidth: CGFloat = 240
         let wideWidth: CGFloat = 340
         let title = "Revision ID"
         let value = "rev_00000000000000000000000000000003"
@@ -544,6 +544,38 @@ struct PetLibraryNextTests {
         #expect(narrow.size.height > wide.size.height + 12)
         #expect(narrow.bitmap.pixelsWide > 0)
         #expect(narrow.bitmap.pixelsHigh > wide.bitmap.pixelsHigh)
+    }
+
+    @MainActor
+    @Test
+    func inspectorInfoRowsWrapRealValuesWithoutPaintingPastTheirAvailableWidth() throws {
+        let values = [
+            (".petpack 版本", "apc.petpack.v1"),
+            ("七状态", "idle · start · tool · waiting · review · done · failed"),
+            ("帧率", "标准 12 FPS · 流畅 20 FPS"),
+            ("Revision ID", "rev_00000000000000000000000000000003"),
+        ]
+
+        for width: CGFloat in [240, 272, 290] {
+            #expect(InfoRowLayoutPolicy.mode(for: width) == .stacked)
+
+            for (title, value) in values {
+                let rendering = try renderedInfoRowInSafetyCanvas(
+                    width: width,
+                    title: title,
+                    value: value
+                )
+                #expect(rendering.rowHeight >= 36)
+                #expect(!rendering.hasInkPastRowWidth)
+            }
+        }
+
+        let wrappedRevision = try renderedInfoRow(
+            width: 240,
+            title: "Revision ID",
+            value: "rev_00000000000000000000000000000003"
+        )
+        #expect(wrappedRevision.size.height >= 50)
     }
 
     @MainActor
@@ -565,6 +597,59 @@ struct PetLibraryNextTests {
         )
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         return (hostingView.bounds.size, bitmap)
+    }
+
+    @MainActor
+    private func renderedInfoRowInSafetyCanvas(
+        width: CGFloat,
+        title: String,
+        value: String
+    ) throws -> (rowHeight: CGFloat, hasInkPastRowWidth: Bool) {
+        let row = try renderedInfoRow(width: width, title: title, value: value)
+        let safetyMargin: CGFloat = 48
+        let canvasWidth = width + safetyMargin
+        let hostingView = NSHostingView(rootView: ZStack(alignment: .topLeading) {
+            Color.white
+            InfoRow(title: title, value: value)
+                .frame(width: width)
+        }
+        .frame(width: canvasWidth, height: row.size.height, alignment: .topLeading)
+        .environment(\.colorScheme, .light))
+        hostingView.frame = CGRect(
+            origin: .zero,
+            size: CGSize(width: canvasWidth, height: row.size.height)
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        let bitmap = try #require(
+            hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        )
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+
+        let scale = CGFloat(bitmap.pixelsWide) / canvasWidth
+        let firstSafetyPixel = min(
+            bitmap.pixelsWide,
+            Int(ceil((width + 2) * scale))
+        )
+        var hasInkPastRowWidth = false
+        if firstSafetyPixel < bitmap.pixelsWide {
+            for x in firstSafetyPixel ..< bitmap.pixelsWide {
+                for y in 0 ..< bitmap.pixelsHigh {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+                        continue
+                    }
+                    if color.redComponent < 0.97
+                        || color.greenComponent < 0.97
+                        || color.blueComponent < 0.97
+                    {
+                        hasInkPastRowWidth = true
+                        break
+                    }
+                }
+                if hasInkPastRowWidth { break }
+            }
+        }
+
+        return (row.size.height, hasInkPastRowWidth)
     }
 
     private var petLibraryViewURL: URL {
