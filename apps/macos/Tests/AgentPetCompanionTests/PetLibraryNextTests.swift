@@ -579,6 +579,56 @@ struct PetLibraryNextTests {
     }
 
     @MainActor
+    @Test
+    func inspectorInfoRowsLayOutTrailingStateAndRevisionGlyphsInsideTheValueView() throws {
+        let states = "idle · start · tool · waiting · review · done · failed"
+        let revision = "rev_00000000000000000000000000000003"
+
+        for width: CGFloat in [240, 272, 290] {
+            let statesRendering = try renderedInfoRowValueView(
+                width: width,
+                title: "七状态",
+                value: states
+            )
+            let statesView = statesRendering.textView
+            let doneBounds = try glyphBounds(of: "done", in: statesView)
+            let doneBoundsInHost = statesView.convert(doneBounds, to: statesRendering.hostingView)
+            #expect(statesView.string == states)
+            #expect(statesView.accessibilityLabel() == states)
+            #expect(statesView.textContainer?.lineBreakMode == .byCharWrapping)
+            #expect(doneBounds.width > 0 && doneBounds.height > 0)
+            #expect(doneBounds.minX >= 0 && doneBounds.maxX <= statesView.bounds.width + 0.5)
+            #expect(doneBounds.minY >= 0 && doneBounds.maxY <= statesView.bounds.height + 0.5)
+            #expect(doneBoundsInHost.minX >= 0)
+            #expect(doneBoundsInHost.maxX <= statesRendering.hostingView.bounds.width + 0.5)
+            #expect(doneBoundsInHost.minY >= 0)
+            #expect(doneBoundsInHost.maxY <= statesRendering.hostingView.bounds.height + 0.5)
+
+            let revisionRendering = try renderedInfoRowValueView(
+                width: width,
+                title: "Revision ID",
+                value: revision
+            )
+            let revisionView = revisionRendering.textView
+            let suffixBounds = try glyphBounds(of: "03", in: revisionView)
+            let suffixBoundsInHost = revisionView.convert(
+                suffixBounds,
+                to: revisionRendering.hostingView
+            )
+            #expect(revisionView.string == revision)
+            #expect(revisionView.accessibilityLabel() == revision)
+            #expect(revisionView.textContainer?.lineBreakMode == .byCharWrapping)
+            #expect(suffixBounds.width > 0 && suffixBounds.height > 0)
+            #expect(suffixBounds.minX >= 0 && suffixBounds.maxX <= revisionView.bounds.width + 0.5)
+            #expect(suffixBounds.minY >= 0 && suffixBounds.maxY <= revisionView.bounds.height + 0.5)
+            #expect(suffixBoundsInHost.minX >= 0)
+            #expect(suffixBoundsInHost.maxX <= revisionRendering.hostingView.bounds.width + 0.5)
+            #expect(suffixBoundsInHost.minY >= 0)
+            #expect(suffixBoundsInHost.maxY <= revisionRendering.hostingView.bounds.height + 0.5)
+        }
+    }
+
+    @MainActor
     private func renderedInfoRow(
         width: CGFloat,
         title: String,
@@ -650,6 +700,50 @@ struct PetLibraryNextTests {
         }
 
         return (row.size.height, hasInkPastRowWidth)
+    }
+
+    @MainActor
+    private func renderedInfoRowValueView(
+        width: CGFloat,
+        title: String,
+        value: String
+    ) throws -> (textView: NSTextView, hostingView: NSView) {
+        let hostingView = NSHostingView(rootView: InfoRow(title: title, value: value)
+            .frame(width: width))
+        let fittingSize = hostingView.fittingSize
+        hostingView.frame = CGRect(
+            origin: .zero,
+            size: CGSize(width: width, height: ceil(fittingSize.height))
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        return (try #require(firstTextView(in: hostingView)), hostingView)
+    }
+
+    @MainActor
+    private func firstTextView(in root: NSView) -> NSTextView? {
+        if let textView = root as? NSTextView { return textView }
+        for subview in root.subviews {
+            if let textView = firstTextView(in: subview) { return textView }
+        }
+        return nil
+    }
+
+    @MainActor
+    private func glyphBounds(of suffix: String, in textView: NSTextView) throws -> CGRect {
+        let characterRange = (textView.string as NSString).range(
+            of: suffix,
+            options: .backwards
+        )
+        #expect(characterRange.location != NSNotFound)
+        let layoutManager = try #require(textView.layoutManager)
+        let textContainer = try #require(textView.textContainer)
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: characterRange,
+            actualCharacterRange: nil
+        )
+        #expect(glyphRange.length > 0)
+        return layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
     }
 
     private var petLibraryViewURL: URL {

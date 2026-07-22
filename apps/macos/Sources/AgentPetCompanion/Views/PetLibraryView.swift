@@ -1416,6 +1416,73 @@ private struct InfoRowResponsiveLayout: Layout {
     }
 }
 
+private struct InfoRowWrappingValue: NSViewRepresentable {
+    let value: String
+
+    func makeNSView(context: Context) -> NSTextView {
+        let textView = NSTextView(frame: .zero)
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.textContainer?.lineBreakMode = .byCharWrapping
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.setAccessibilityRole(.staticText)
+        update(textView)
+        return textView
+    }
+
+    func updateNSView(_ textView: NSTextView, context: Context) {
+        update(textView)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView textView: NSTextView,
+        context: Context
+    ) -> CGSize? {
+        guard let proposedWidth = proposal.width, proposedWidth.isFinite else { return nil }
+        let width = max(0, proposedWidth)
+        textView.frame.size.width = width
+        guard let textContainer = textView.textContainer,
+              let layoutManager = textView.layoutManager
+        else {
+            return CGSize(width: width, height: ceil(textView.intrinsicContentSize.height))
+        }
+
+        textContainer.containerSize = NSSize(
+            width: width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return CGSize(width: width, height: ceil(max(usedRect.height, textView.font?.pointSize ?? 0)))
+    }
+
+    private func update(_ textView: NSTextView) {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byCharWrapping
+        paragraphStyle.alignment = .left
+        let attributedValue = NSAttributedString(
+            string: value,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: paragraphStyle,
+            ]
+        )
+        if !textView.attributedString().isEqual(to: attributedValue) {
+            textView.textStorage?.setAttributedString(attributedValue)
+        }
+        textView.setAccessibilityLabel(value)
+    }
+}
+
 struct InfoRow: View {
     var title: String
     var value: String
@@ -1425,11 +1492,7 @@ struct InfoRow: View {
             Text(title)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(value)
-                .font(.callout.weight(.medium))
-                .multilineTextAlignment(.leading)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            InfoRowWrappingValue(value: value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 9)
