@@ -219,6 +219,54 @@ struct UINextVisualRendererTests {
     }
 
     @Test
+    func evidenceExportRejectsMissingRepositoryChildrenThroughASymlinkAlias() throws {
+        let fileManager = FileManager.default
+        let sandbox = fileManager.temporaryDirectory.appendingPathComponent(
+            "apc-ui-next-evidence-alias-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let repository = sandbox.appendingPathComponent(
+            "repository",
+            isDirectory: true
+        )
+        let repositoryAlias = sandbox.appendingPathComponent(
+            "repository-alias",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: repository,
+            withIntermediateDirectories: true
+        )
+        try fileManager.createSymbolicLink(
+            at: repositoryAlias,
+            withDestinationURL: repository
+        )
+        defer { try? fileManager.removeItem(at: sandbox) }
+
+        let missingOutput = repositoryAlias
+            .appendingPathComponent("nested", isDirectory: true)
+            .appendingPathComponent("evidence", isDirectory: true)
+        #expect(!fileManager.fileExists(atPath: missingOutput.path))
+
+        do {
+            _ = try UINextVisualFixtureEvidenceExporter.outputDirectory(
+                from: [
+                    UINextVisualFixtureEvidenceExporter.environmentKey:
+                        missingOutput.path
+                ],
+                fileManager: fileManager,
+                protectedRepositoryRoot: repository
+            )
+            Issue.record(
+                "A symlinked repository child was accepted as visual evidence"
+            )
+        } catch let error as UINextVisualFixtureEvidenceExporterError {
+            #expect(error == .outputDirectoryMustBeOutsideRepository)
+        }
+        #expect(!fileManager.fileExists(atPath: missingOutput.path))
+    }
+
+    @Test
     func evidenceExportUsesStableCollisionResistantScenarioFileNames() throws {
         let scenarios = UINextVisualFixtureCatalog.regressionScenarios
         let names = try scenarios.map {

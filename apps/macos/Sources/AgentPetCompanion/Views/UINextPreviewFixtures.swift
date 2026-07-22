@@ -1773,7 +1773,8 @@ enum UINextVisualFixtureEvidenceExporter {
 
     static func outputDirectory(
         from environment: [String: String],
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        protectedRepositoryRoot: URL = repositoryRoot
     ) throws -> URL? {
         guard let value = environment[environmentKey] else { return nil }
         let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1782,14 +1783,20 @@ enum UINextVisualFixtureEvidenceExporter {
             throw UINextVisualFixtureEvidenceExporterError.outputDirectoryMustBeAbsolute
         }
 
-        let outputURL = canonicalFileURL(for: path, isDirectory: true)
+        let outputURL = canonicalFileURL(
+            for: path,
+            isDirectory: true,
+            fileManager: fileManager
+        )
         guard outputURL.path != "/" else {
             throw UINextVisualFixtureEvidenceExporterError
                 .outputDirectoryMustNotBeFilesystemRoot
         }
-        let canonicalRepositoryRoot = repositoryRoot
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
+        let canonicalRepositoryRoot = canonicalFileURL(
+            for: protectedRepositoryRoot.path,
+            isDirectory: true,
+            fileManager: fileManager
+        )
         guard !contains(outputURL, inside: canonicalRepositoryRoot) else {
             throw UINextVisualFixtureEvidenceExporterError
                 .outputDirectoryMustBeOutsideRepository
@@ -1877,11 +1884,29 @@ enum UINextVisualFixtureEvidenceExporter {
 
     private static func canonicalFileURL(
         for path: String,
-        isDirectory: Bool
+        isDirectory: Bool,
+        fileManager: FileManager
     ) -> URL {
-        URL(fileURLWithPath: path, isDirectory: isDirectory)
+        let standardized = URL(fileURLWithPath: path, isDirectory: isDirectory)
             .standardizedFileURL
-            .resolvingSymlinksInPath()
+        var existingAncestor = standardized
+        var missingComponents: [String] = []
+
+        while existingAncestor.path != "/",
+              !fileManager.fileExists(atPath: existingAncestor.path)
+        {
+            missingComponents.append(existingAncestor.lastPathComponent)
+            existingAncestor.deleteLastPathComponent()
+        }
+
+        var canonical = existingAncestor.resolvingSymlinksInPath()
+        for (index, component) in missingComponents.reversed().enumerated() {
+            canonical.appendPathComponent(
+                component,
+                isDirectory: index < missingComponents.count - 1 || isDirectory
+            )
+        }
+        return canonical.standardizedFileURL
     }
 
     private static func contains(_ candidate: URL, inside root: URL) -> Bool {
