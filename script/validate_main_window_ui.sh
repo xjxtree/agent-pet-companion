@@ -444,7 +444,8 @@ if makerNodes.contains(where: { node in
 pressControl(identifier: "sidebar.navigation.configuration")
 waitFor("Pet Configuration page") { nodes in
     containsIdentifier("configuration.root", in: nodes)
-        && containsIdentifier("configuration.page.appearance", in: nodes)
+        && containsIdentifier("configuration.subpage.appearance", in: nodes)
+        && containsIdentifier("configuration.subpage.messages", in: nodes)
         && containsIdentifier("configuration.appearance.mouse-passthrough", in: nodes)
         && containsAny(["透明区域穿透", "Transparent-area Click-through"], in: nodes)
         && mainWindowTitleMatches(["宠物配置", "Pet Configuration"])
@@ -453,8 +454,8 @@ waitFor("Pet Configuration page") { nodes in
 pressControl(identifier: "sidebar.navigation.connections")
 waitFor("Agent Connections page") { nodes in
     containsIdentifier("connections.root", in: nodes)
-        && containsIdentifier("connections.agent-list", in: nodes)
-        && containsIdentifier("connections.detail", in: nodes)
+        && containsIdentifier("connections.agent.codex", in: nodes)
+        && containsIdentifier("connections.detail.header", in: nodes)
         && containsIdentifier("connections.action.check-all", in: nodes)
         && mainWindowTitleMatches(["Agent 连接", "Agent Connections"])
 }
@@ -462,11 +463,19 @@ waitFor("Agent Connections page") { nodes in
 pressControl(identifier: "sidebar.navigation.diagnostics")
 waitFor("Service & Diagnostics page") { nodes in
     containsIdentifier("diagnostics.page", in: nodes)
-        && containsIdentifier("diagnostics.service-status", in: nodes)
-        && containsIdentifier("diagnostics.export", in: nodes)
-        && containsIdentifier("diagnostics.service.petCore", in: nodes)
-        && containsIdentifier("diagnostics.service.localRPC", in: nodes)
-        && containsIdentifier("diagnostics.service.eventChannel", in: nodes)
+        && containsIdentifier("diagnostics.refresh", in: nodes)
+        && (
+            containsIdentifier("diagnostics.layout.two-column", in: nodes)
+                || containsIdentifier("diagnostics.layout.single-column", in: nodes)
+                || containsIdentifier("diagnostics.layout.fitted-single-column", in: nodes)
+        )
+        && containsAny(["服务状态", "Service Status"], in: nodes)
+        && containsAny(["日志打包下载", "Diagnostic Download"], in: nodes)
+        && contains("PetCore", in: nodes)
+        && containsAny(["本地 RPC", "Local RPC"], in: nodes)
+        && containsAny(["事件通道", "Event Channel"], in: nodes)
+        && containsAny(["桌宠渲染", "Desktop Pet"], in: nodes)
+        && containsAny(["打包并下载", "Package and Download"], in: nodes)
         && mainWindowTitleMatches(["服务与诊断", "Service & Diagnostics"])
 }
 

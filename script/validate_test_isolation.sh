@@ -266,16 +266,19 @@ for identifier in \
   sidebar.navigation.connections sidebar.navigation.diagnostics \
   pet-library.page pet-library.inspector \
   maker.page maker.layout.two-stage maker.layout.stacked maker.action.start \
-  configuration.root configuration.page.appearance configuration.appearance.mouse-passthrough \
-  connections.root connections.agent-list connections.detail connections.action.check-all \
-  diagnostics.page diagnostics.service-status diagnostics.export \
-  diagnostics.service.petCore diagnostics.service.localRPC diagnostics.service.eventChannel; do
+  configuration.root configuration.subpage.appearance configuration.subpage.messages \
+  configuration.appearance.mouse-passthrough \
+  connections.root connections.agent.codex connections.detail.header connections.action.check-all \
+  diagnostics.page diagnostics.refresh diagnostics.layout.two-column \
+  diagnostics.layout.single-column diagnostics.layout.fitted-single-column; do
   if ! rg -Fq "$identifier" "$MAIN_UI_VALIDATOR"; then
     record_failure "main window validator is missing semantic AX identifier: $identifier"
   fi
 done
 for current_copy in '新宠物' '制作会话' '参考图（可选）' '开始制作' \
-  'New Pet' 'Creation Session' 'Reference Images (Optional)' 'Create Pet'; do
+  'New Pet' 'Creation Session' 'Reference Images (Optional)' 'Create Pet' \
+  '服务状态' '日志打包下载' '打包并下载' \
+  'Service Status' 'Diagnostic Download' 'Package and Download'; do
   if ! rg -Fq "$current_copy" "$MAIN_UI_VALIDATOR"; then
     record_failure "main window validator is missing current localized Maker copy: $current_copy"
   fi
