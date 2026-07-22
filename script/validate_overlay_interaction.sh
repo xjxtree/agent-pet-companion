@@ -324,6 +324,72 @@ func floatingWindows() -> [WindowInfo] {
     }
 }
 
+func axCopy(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
+    var value: AnyObject?
+    return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
+        ? value
+        : nil
+}
+
+func axString(_ element: AXUIElement, _ attribute: String) -> String {
+    (axCopy(element, attribute) as? String) ?? ""
+}
+
+func axPoint(_ element: AXUIElement, _ attribute: String) -> CGPoint? {
+    guard let value = axCopy(element, attribute) else { return nil }
+    var point = CGPoint.zero
+    guard AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
+    return point
+}
+
+func axSize(_ element: AXUIElement, _ attribute: String) -> CGSize? {
+    guard let value = axCopy(element, attribute) else { return nil }
+    var size = CGSize.zero
+    guard AXValueGetValue(value as! AXValue, .cgSize, &size) else { return nil }
+    return size
+}
+
+func findDesktopPetFrame(in element: AXUIElement, depth: Int = 0) -> CGRect? {
+    guard depth <= 20 else { return nil }
+    let strings = [
+        axString(element, kAXTitleAttribute),
+        axString(element, kAXValueAttribute),
+        axString(element, kAXDescriptionAttribute),
+    ]
+    if axString(element, kAXRoleAttribute) == kAXButtonRole as String,
+       strings.contains(where: { $0 == "桌宠" || $0 == "Desktop pet" }),
+       let position = axPoint(element, kAXPositionAttribute),
+       let size = axSize(element, kAXSizeAttribute) {
+        return CGRect(origin: position, size: size)
+    }
+    for child in axCopy(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+        if let frame = findDesktopPetFrame(in: child, depth: depth + 1) {
+            return frame
+        }
+    }
+    return nil
+}
+
+func desktopPetFrame() -> CGRect? {
+    let app = AXUIElementCreateApplication(pid_t(appPID))
+    for window in axCopy(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
+        if let frame = findDesktopPetFrame(in: window) {
+            return frame
+        }
+    }
+    return nil
+}
+
+func waitForDesktopPetFrame() -> CGRect? {
+    for _ in 0..<40 {
+        if let frame = desktopPetFrame(), frame.width >= 30, frame.height >= 42 {
+            return frame
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    return nil
+}
+
 func visibleBubbleWindow() -> WindowInfo? {
     floatingWindows().first(where: {
         $0.width >= 320 && $0.width <= 430 && $0.height >= 70 && $0.height <= 180
@@ -400,13 +466,33 @@ func click(at point: CGPoint) {
     Thread.sleep(forTimeInterval: 0.35)
 }
 
-func menuPoint(for placement: (x: Double, y: Double, scale: Double)) -> CGPoint {
-    let petWidth = max(34, 230 * placement.scale)
-    let petHeight = max(48, 310 * placement.scale)
-    return quartzPoint(
-        cocoaX: placement.x + petWidth / 2 + 14,
-        cocoaY: placement.y + petHeight / 2 - 10
-    )
+struct OverlayControlPoints {
+    let menu: CGPoint
+    let resize: CGPoint
+}
+
+func resolveOverlayControlPoints() -> OverlayControlPoints? {
+    guard let petFrame = waitForDesktopPetFrame() else { return nil }
+    let petCenter = CGPoint(x: petFrame.midX, y: petFrame.midY)
+    postMouse(.mouseMoved, at: petCenter)
+    Thread.sleep(forTimeInterval: 0.35)
+
+    for _ in 0..<20 {
+        let controls = floatingWindows().filter { window in
+            window.width >= 36 && window.width <= 40
+                && window.height >= 36 && window.height <= 40
+                && abs((window.x + window.width / 2) - petCenter.x) <= 220
+                && abs((window.y + window.height / 2) - petCenter.y) <= 260
+        }.sorted { $0.y < $1.y }
+        if let menu = controls.first, let resize = controls.last, controls.count >= 2 {
+            return OverlayControlPoints(
+                menu: CGPoint(x: menu.x + menu.width / 2, y: menu.y + menu.height / 2),
+                resize: CGPoint(x: resize.x + resize.width / 2, y: resize.y + resize.height / 2)
+            )
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    return nil
 }
 
 func setBehaviorEnabled(_ enabled: Bool) -> Bool {
@@ -433,8 +519,12 @@ guard bubbleWindow() != nil else {
     exit(1)
 }
 
-let dragStart = quartzPoint(cocoaX: initial.x, cocoaY: initial.y)
-let dragEnd = quartzPoint(cocoaX: initial.x + 96, cocoaY: initial.y + 42)
+guard let initialPetFrame = waitForDesktopPetFrame() else {
+    fputs("overlay interaction validation failed: desktop pet AX hit frame is unavailable\n", stderr)
+    exit(1)
+}
+let dragStart = CGPoint(x: initialPetFrame.midX, y: initialPetFrame.midY)
+let dragEnd = CGPoint(x: dragStart.x + 96, y: dragStart.y - 42)
 drag(from: dragStart, to: dragEnd)
 
 var moved: (x: Double, y: Double, scale: Double)?
@@ -453,15 +543,22 @@ guard let moved else {
     if let current = placement() {
         fputs("  initial=(\(initial.x), \(initial.y)) current=(\(current.x), \(current.y))\n", stderr)
     }
+    fputs("  pet_ax_frame=\(initialPetFrame) drag=(\(dragStart) -> \(dragEnd))\n", stderr)
+    for window in floatingWindows() {
+        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
+    }
     exit(1)
 }
 
-let petWidth = max(34, 230 * moved.scale)
-let petHeight = max(48, 310 * moved.scale)
-let resizeX = moved.x + petWidth / 2 + 8
-let resizeY = moved.y - petHeight / 2 - 8
-let resizeStart = quartzPoint(cocoaX: resizeX, cocoaY: resizeY)
-let resizeEnd = quartzPoint(cocoaX: resizeX + 110, cocoaY: resizeY - 110)
+guard let controls = resolveOverlayControlPoints() else {
+    fputs("overlay interaction validation failed: UI Next menu/resize control windows were not found\n", stderr)
+    for window in floatingWindows() {
+        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
+    }
+    exit(1)
+}
+let resizeStart = controls.resize
+let resizeEnd = CGPoint(x: resizeStart.x + 110, y: resizeStart.y + 110)
 drag(from: resizeStart, to: resizeEnd)
 
 var resized: (x: Double, y: Double, scale: Double)?
@@ -496,7 +593,11 @@ guard waitForBubbleToHide() else {
     exit(1)
 }
 
-let disclosurePoint = menuPoint(for: resized)
+guard let collapsedControls = resolveOverlayControlPoints() else {
+    fputs("overlay interaction validation failed: bubble disclosure control was not found after dismissal\n", stderr)
+    exit(1)
+}
+let disclosurePoint = collapsedControls.menu
 click(at: disclosurePoint)
 guard bubbleWindow() != nil else {
     fputs("overlay interaction validation failed: expand did not restore a closed bubble\n", stderr)
@@ -548,7 +649,11 @@ guard visibleBubbleWindow() == nil else {
 }
 
 let restoredPlacement = placement() ?? resized
-let restoredDisclosurePoint = menuPoint(for: restoredPlacement)
+guard let restoredControls = resolveOverlayControlPoints() else {
+    fputs("overlay interaction validation failed: bubble disclosure control was not found after re-enable\n", stderr)
+    exit(1)
+}
+let restoredDisclosurePoint = restoredControls.menu
 click(at: restoredDisclosurePoint)
 guard bubbleWindow() != nil else {
     fputs("overlay interaction validation failed: expand did not restore the bubble after re-enable\n", stderr)

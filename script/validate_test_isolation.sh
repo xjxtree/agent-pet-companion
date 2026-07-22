@@ -311,6 +311,24 @@ if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \
   record_failure 'overlay non-mouse validator still assumes the removed single-agent legacy bubble'
 fi
 
+OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
+for current_contract in \
+  'findDesktopPetFrame' \
+  'waitForDesktopPetFrame' \
+  'resolveOverlayControlPoints' \
+  'window.width >= 36 && window.width <= 40' \
+  'resizeStart.y + 110'; do
+  if ! rg -Fq "$current_contract" "$OVERLAY_INTERACTION_VALIDATOR"; then
+    record_failure "overlay interaction validator is missing current hit geometry: $current_contract"
+  fi
+done
+if rg -Fq 'quartzPoint(cocoaX: initial.x, cocoaY: initial.y)' "$OVERLAY_INTERACTION_VALIDATOR" \
+  || rg -Fq 'resizeY = moved.y - petHeight / 2 - 8' "$OVERLAY_INTERACTION_VALIDATOR" \
+  || rg -Fq 'cocoaY: resizeY - 110' "$OVERLAY_INTERACTION_VALIDATOR" \
+  || rg -Fq 'menuPoint(for:' "$OVERLAY_INTERACTION_VALIDATOR"; then
+  record_failure 'overlay interaction validator still hard-codes the legacy monolithic overlay geometry'
+fi
+
 for validator in "${HOST_MUTATING_VALIDATORS[@]}"; do
   if ! rg -q 'apc_require_host_ui_opt_in' "$validator"; then
     record_failure "host-mutating validator lacks an independent APC_VALIDATE_HOST_UI gate: $validator"
