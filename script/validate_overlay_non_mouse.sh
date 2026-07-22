@@ -318,7 +318,7 @@ if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
 
 if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
     && bubble.frame.height >= 70 && bubble.frame.height <= 680) {
-    fputs("overlay non-mouse validation failed: grouped bubble frame is outside the UI Next bounds \(bubble.frame)\n", stderr)
+    fputs("overlay non-mouse validation failed: grouped bubble frame is outside the supported bounds \(bubble.frame)\n", stderr)
     exit(1)
 }
 
@@ -472,7 +472,7 @@ if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
 
 if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
     && bubble.frame.height >= 70 && bubble.frame.height <= 130) {
-    fputs("overlay short-bubble validation failed: single-agent bubble is outside the UI Next bounds, frame=\(bubble.frame)\n", stderr)
+    fputs("overlay short-bubble validation failed: single-agent bubble is outside the supported bounds, frame=\(bubble.frame)\n", stderr)
     exit(1)
 }
 

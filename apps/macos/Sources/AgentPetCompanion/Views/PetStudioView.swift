@@ -9,15 +9,15 @@ struct AIPetMakerView: View {
 
     var body: some View {
         PageScroll {
-            PageActionHeader(title: pageTitle, subtitle: pageSubtitle) {
-                headerActions
-            }
-            .accessibilityIdentifier("maker.page.header")
-
             if PetStudioPresentation.showsModificationWorkspace(for: store.generationSession) {
                 modificationWorkspace
             } else {
                 creationWorkspace
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .secondaryAction) {
+                toolbarActions
             }
         }
         .accessibilityIdentifier("maker.page")
@@ -70,103 +70,85 @@ struct AIPetMakerView: View {
     }
 
     @ViewBuilder
-    private var headerActions: some View {
-        HStack(spacing: 8) {
-            if store.generationSession.isActive {
+    private var toolbarActions: some View {
+        if store.generationSession.isActive {
+            Button {
+                store.cancelGeneration()
+            } label: {
+                Label(
+                    APCLocalization.text(
+                        store.generationSession.state == .cancelling
+                            ? .studioActionCancelling
+                            : .studioActionCancelTask
+                    ),
+                    systemImage: "xmark.circle"
+                )
+                .labelStyle(.iconOnly)
+            }
+            .help(APCLocalization.text(
+                store.generationSession.state == .cancelling
+                    ? .studioActionCancelling
+                    : .studioActionCancelTask
+            ))
+            .disabled(!store.generationSession.canCancel)
+            .accessibilityIdentifier("maker.action.cancel")
+        } else if let recoveryAction = PetStudioPresentation.failureRecoveryAction(
+            sessionCanRetry: store.generationSession.canRetry,
+            referenceReselectionCount: store.referenceReselectionCount
+        ) {
+            switch recoveryAction {
+            case .retry:
                 Button {
-                    store.cancelGeneration()
+                    store.retryGeneration()
+                } label: {
+                    Label(APCLocalization.text(.commonRetry), systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                }
+                .help(APCLocalization.text(.commonRetry))
+                .disabled(!store.canRetryGeneration)
+                .accessibilityIdentifier("maker.action.retry")
+            case .reselectReferences:
+                Button {
+                    store.chooseReferenceImages()
                 } label: {
                     Label(
-                        APCLocalization.text(
-                            store.generationSession.state == .cancelling
-                                ? .studioActionCancelling
-                                : .studioActionCancelTask
-                        ),
-                        systemImage: "xmark.circle"
+                        APCLocalization.text(.studioReferencesPanelTitle),
+                        systemImage: "photo.badge.plus"
                     )
+                    .labelStyle(.iconOnly)
                 }
-                .disabled(!store.generationSession.canCancel)
-                .accessibilityIdentifier("maker.action.cancel")
-            } else if let recoveryAction = PetStudioPresentation.failureRecoveryAction(
-                sessionCanRetry: store.generationSession.canRetry,
-                referenceReselectionCount: store.referenceReselectionCount
-            ) {
-                switch recoveryAction {
-                case .retry:
-                    Button {
-                        store.retryGeneration()
-                    } label: {
-                        Label(APCLocalization.text(.commonRetry), systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!store.canRetryGeneration)
-                    .accessibilityIdentifier("maker.action.retry")
-                case .reselectReferences:
-                    Button {
-                        store.chooseReferenceImages()
-                    } label: {
-                        Label(
-                            APCLocalization.text(.studioReferencesPanelTitle),
-                            systemImage: "photo.badge.plus"
-                        )
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("maker.action.reselect-references")
-                }
-            } else if store.generationSession.state == .idle {
-                Button(APCLocalization.text(.commonClear)) {
-                    store.clearStudioForm()
-                }
-                .disabled(store.descriptionText.isEmpty && store.referenceImages.isEmpty)
-                .accessibilityIdentifier("maker.action.clear")
-
-                Button {
-                    store.startGeneration()
-                } label: {
-                    Label(APCLocalization.text(.studioActionStart), systemImage: "sparkles")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!store.canStartGeneration)
-                .accessibilityIdentifier("maker.action.start")
-            } else {
-                Button {
-                    store.showNewPetDraft()
-                } label: {
-                    Label(APCLocalization.text(.studioActionNew), systemImage: "plus")
-                }
-                .accessibilityIdentifier("maker.action.new")
+                .help(APCLocalization.text(.studioReferencesPanelTitle))
+                .accessibilityIdentifier("maker.action.reselect-references")
             }
-        }
-    }
+        } else if store.generationSession.state == .idle {
+            Button {
+                store.clearStudioForm()
+            } label: {
+                Label(APCLocalization.text(.commonClear), systemImage: "eraser")
+                    .labelStyle(.iconOnly)
+            }
+            .help(APCLocalization.text(.commonClear))
+            .disabled(store.descriptionText.isEmpty && store.referenceImages.isEmpty)
+            .accessibilityIdentifier("maker.action.clear")
 
-    private var pageTitle: String {
-        guard store.generationSession.operation == .modify,
-              store.generationSession.state != .idle
-        else { return APCLocalization.text(.studioPageTitle) }
-        if let petID = store.generationSession.resultPetID,
-           let pet = store.pets.first(where: { $0.id == petID }) {
-            return APCLocalization.format(.studioPageModifyFormat, pet.name)
-        }
-        return APCLocalization.text(.studioPageModifySession)
-    }
-
-    private var pageSubtitle: String {
-        switch store.generationSession.state {
-        case .idle:
-            APCLocalization.text(.studioSubtitleIdle)
-        case .starting, .running, .waitingForInput, .cancelling:
-            APCLocalizedPresentation.generationStateTitle(
-                store.generationSession.state,
-                operation: store.generationSession.operation
-            )
-        case .succeeded:
-            PetStudioPresentation.completedHistoryIsIncomplete(store.generationSession)
-                ? APCLocalization.text(.studioIncompleteHistoryTitle)
-                : APCLocalization.text(.studioSubtitleSucceeded)
-        case .failed:
-            APCLocalization.text(.studioSubtitleFailed)
-        case .cancelled:
-            APCLocalization.text(.studioSubtitleCancelled)
+            Button {
+                store.startGeneration()
+            } label: {
+                Label(APCLocalization.text(.studioActionStart), systemImage: "sparkles")
+                    .labelStyle(.iconOnly)
+            }
+            .help(APCLocalization.text(.studioActionStart))
+            .disabled(!store.canStartGeneration)
+            .accessibilityIdentifier("maker.action.start")
+        } else {
+            Button {
+                store.showNewPetDraft()
+            } label: {
+                Label(APCLocalization.text(.studioActionNew), systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+            .help(APCLocalization.text(.studioActionNew))
+            .accessibilityIdentifier("maker.action.new")
         }
     }
 }
@@ -198,11 +180,6 @@ struct MakerBriefView: View {
             qualityPicker
             Divider()
             referenceImages
-
-            if fieldsAreLocked, let form = store.generationSession.submittedForm {
-                Divider()
-                SubmittedFormSummary(form: form)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("maker.brief")
@@ -243,12 +220,6 @@ struct MakerBriefView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(APCDesign.stroke, lineWidth: 1)
                     .allowsHitTesting(false)
-            }
-
-            if store.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Label(APCLocalization.text(.studioDescriptionRequired), systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Text("\(GenerationPromptPolicy.scalarCount(store.descriptionText))/\(AIPetMakerDefaults.maximumDescriptionCharacters)")
@@ -298,16 +269,19 @@ struct MakerBriefView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .disabled(fieldsAreLocked)
+            .help(qualityGuidance)
+            .accessibilityHint(qualityGuidance)
             .accessibilityIdentifier("maker.brief.quality")
-
-            Text(APCLocalization.format(
-                .studioQualityContractFormat,
-                APCLocalizedPresentation.qualityDetail(store.selectedQuality)
-            ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
+    }
+
+    private var qualityGuidance: String {
+        APCLocalization.format(
+            .studioQualityContractFormat,
+            APCLocalizedPresentation.qualityDetail(store.selectedQuality)
+        )
     }
 
     private var referenceImages: some View {
@@ -348,6 +322,8 @@ struct ReferenceImageDropZone: View {
                     .allowsHitTesting(false)
             }
             .disabled(store.generationSession.isActive)
+            .help(referenceGuidance)
+            .accessibilityHint(referenceGuidance)
             .onDrop(
                 of: [UTType.fileURL.identifier],
                 isTargeted: $isDropTargeted,
@@ -370,14 +346,14 @@ struct ReferenceImageDropZone: View {
                 .accessibilityIdentifier("maker.brief.references.error")
             }
 
-            Text(APCLocalization.text(.studioReferencesContract))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text(APCLocalization.text(.studioReferencesPrivacy))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
+    }
+
+    private var referenceGuidance: String {
+        [
+            APCLocalization.text(.studioReferencesContract),
+            APCLocalization.text(.studioReferencesPrivacy),
+        ].joined(separator: "\n")
     }
 
     private var title: String {
@@ -506,7 +482,9 @@ struct GenerationSessionView: View {
                 )
             }
 
-            GenerationProgressView()
+            if store.generationSession.state != .idle {
+                GenerationProgressView()
+            }
 
             if store.generationSession.state == .failed {
                 terminalAction
@@ -557,47 +535,18 @@ struct GenerationSessionView: View {
     }
 
     private var welcomeState: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Spacer(minLength: 28)
-            HStack {
-                Spacer()
-                VStack(spacing: 10) {
-                    APCBrandMark(size: 48)
-                        .accessibilityHidden(true)
-                    Text(APCLocalization.text(.studioWelcomeTitle))
-                        .font(.title3.weight(.semibold))
-                    Text(APCLocalization.text(.studioWelcomeDetail))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                Label(APCLocalization.text(.studioOutputContractTitle), systemImage: "checkmark.seal")
-                    .font(.headline)
-                Text(APCLocalization.text(.studioOutputContractDetail))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Label(
-                    APCLocalization.text(.studioOutputPrivacy),
-                    systemImage: "lock.shield"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(16)
-            Spacer(minLength: 20)
-        }
-        .padding(20)
+        Label(APCLocalization.text(.studioWelcomeDetail), systemImage: "sparkles")
+            .font(.callout.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(20)
+            .frame(maxWidth: .infinity, minHeight: 290, alignment: .center)
     }
 
     private var timeline: some View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 12) {
-                if let form = store.generationSession.submittedForm {
+                if store.generationSession.operation == .modify,
+                   let form = store.generationSession.submittedForm {
                     SubmittedFormSummary(form: form)
                     Divider()
                 }

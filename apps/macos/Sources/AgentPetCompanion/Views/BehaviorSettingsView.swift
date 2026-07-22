@@ -15,13 +15,6 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var subtitle: String {
-        switch self {
-        case .appearance: APCLocalization.text(.configSubtitleAppearance)
-        case .messages: APCLocalization.text(.configSubtitleMessages)
-        }
-    }
-
     var systemImage: String {
         switch self {
         case .appearance: "circle.lefthalf.filled"
@@ -30,7 +23,7 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
-enum BehaviorSettingsNextCatalog {
+enum BehaviorSettingsCatalog {
     static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
     static let events: [AgentEventKind] = [.start, .tool, .waiting, .review, .done, .failed]
     static let appearanceThemes: [AppearanceTheme] = [.system, .light, .dark]
@@ -42,7 +35,7 @@ enum BehaviorSettingsNextCatalog {
     }
 }
 
-enum BehaviorSettingsNextLayout {
+enum BehaviorSettingsLayout {
     static let wideBreakpoint: CGFloat = 800
     // The longest English label ("Appearance & Desktop Pet") must remain
     // readable beside its leading symbol at the default 1120 pt window.
@@ -62,24 +55,25 @@ enum BehaviorSettingsNextLayout {
 struct BehaviorSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.controlCenterShellMode) private var shellMode
-    @Environment(\.apcVisualFixtureSelections) private var fixtureSelections
     @SceneStorage("apc.configuration.selected-subpage")
     private var selectedSectionRawValue = BehaviorSettingsSection.appearance.rawValue
     @State private var bubbleTransparencyBeforeEditing: Double?
 
-    private var selectedSection: BehaviorSettingsSection {
-        fixtureSelections.resolveConfigurationSection(
-            stored: BehaviorSettingsSection(rawValue: selectedSectionRawValue) ?? .appearance
+    init(initialSection: BehaviorSettingsSection = .appearance) {
+        _selectedSectionRawValue = SceneStorage(
+            wrappedValue: initialSection.rawValue,
+            "apc.configuration.selected-subpage"
         )
+    }
+
+    private var selectedSection: BehaviorSettingsSection {
+        BehaviorSettingsSection(rawValue: selectedSectionRawValue) ?? .appearance
     }
 
     private var sectionSelection: Binding<BehaviorSettingsSection> {
         Binding(
             get: { selectedSection },
-            set: {
-                guard fixtureSelections.configurationSection == nil else { return }
-                selectedSectionRawValue = $0.rawValue
-            }
+            set: { selectedSectionRawValue = $0.rawValue }
         )
     }
 
@@ -87,13 +81,16 @@ struct BehaviorSettingsView: View {
         if shellMode == .singleContent {
             [GridItem(.flexible(), spacing: 12)]
         } else {
-            [GridItem(.adaptive(minimum: 170), spacing: 12)]
+            [
+                GridItem(.flexible(), spacing: 12),
+                GridItem(.flexible(), spacing: 12),
+            ]
         }
     }
 
     var body: some View {
         GeometryReader { geometry in
-            if BehaviorSettingsNextLayout.usesWideLayout(
+            if BehaviorSettingsLayout.usesWideLayout(
                 contentWidth: geometry.size.width,
                 shellMode: shellMode
             ) {
@@ -108,7 +105,7 @@ struct BehaviorSettingsView: View {
     private var wideLayout: some View {
         HStack(spacing: 0) {
             BehaviorSettingsSubnavigation(selection: sectionSelection)
-                .frame(width: BehaviorSettingsNextLayout.navigationWidth)
+                .frame(width: BehaviorSettingsLayout.navigationWidth)
 
             Divider()
 
@@ -118,7 +115,7 @@ struct BehaviorSettingsView: View {
             Divider()
 
             previewPane
-                .frame(width: BehaviorSettingsNextLayout.previewWidth)
+                .frame(width: BehaviorSettingsLayout.previewWidth)
         }
         .accessibilityIdentifier("configuration.layout.wide")
     }
@@ -156,165 +153,128 @@ struct BehaviorSettingsView: View {
     }
 
     private func appearanceSettingsPane(showsInlinePreview: Bool) -> some View {
-        VStack(spacing: 0) {
-            pageHeader(for: .appearance)
-            Divider()
-
-            Form {
-                Section {
-                    SettingToggle(
-                        title: APCLocalization.text(.configShowPet),
-                        detail: APCLocalization.text(.configShowPetDetail),
-                        value: store.behavior.enabled,
-                        accessibilityIdentifier: "configuration.appearance.enabled"
-                    ) { value in
-                        updateBehavior(\.enabled, value: value)
-                    }
-
-                    appearanceThemeSetting
-                    fpsSetting
-                } header: {
-                    Text(APCLocalization.text(.configDisplayAppearance))
+        Form {
+            Section {
+                SettingToggle(
+                    title: APCLocalization.text(.configShowPet),
+                    detail: APCLocalization.text(.configShowPetDetail),
+                    value: store.behavior.enabled,
+                    accessibilityIdentifier: "configuration.appearance.enabled"
+                ) { value in
+                    updateBehavior(\.enabled, value: value)
                 }
 
-                Section {
-                    SettingToggle(
-                        title: APCLocalization.text(.configStatusBubble),
-                        detail: APCLocalization.text(.configStatusBubbleDetail),
-                        value: store.behavior.statusBubble,
-                        accessibilityIdentifier: "configuration.appearance.status-bubble"
-                    ) { value in
-                        updateBehavior(\.statusBubble, value: value)
-                    }
+                appearanceThemeSetting
+                fpsSetting
+            } header: {
+                Text(APCLocalization.text(.configDisplayAppearance))
+            }
 
-                    bubbleTransparencySetting
-
-                    SettingToggle(
-                        title: APCLocalization.text(.configAutoHide),
-                        detail: APCLocalization.text(.configAutoHideDetail),
-                        value: store.behavior.autoHide,
-                        accessibilityIdentifier: "configuration.appearance.auto-hide"
-                    ) { value in
-                        updateBehavior(\.autoHide, value: value)
-                    }
-                } header: {
-                    Text(APCLocalization.text(.configStatusBubble))
+            Section {
+                SettingToggle(
+                    title: APCLocalization.text(.configStatusBubble),
+                    detail: APCLocalization.text(.configStatusBubbleDetail),
+                    value: store.behavior.statusBubble,
+                    accessibilityIdentifier: "configuration.appearance.status-bubble"
+                ) { value in
+                    updateBehavior(\.statusBubble, value: value)
                 }
 
-                Section {
-                    SettingToggle(
-                        title: APCLocalization.text(.configContextMenu),
-                        detail: APCLocalization.text(.configContextMenuDetail),
-                        value: store.behavior.clickMenu,
-                        accessibilityIdentifier: "configuration.appearance.context-menu"
-                    ) { value in
-                        updateBehavior(\.clickMenu, value: value)
-                    }
+                bubbleTransparencySetting
 
-                    SettingToggle(
-                        title: APCLocalization.text(.configMousePassthrough),
-                        detail: APCLocalization.text(.configMousePassthroughDetail),
-                        value: store.behavior.mousePassthrough,
-                        accessibilityIdentifier: "configuration.appearance.mouse-passthrough"
-                    ) { value in
-                        updateBehavior(\.mousePassthrough, value: value)
-                    }
-
-                } header: {
-                    Text(APCLocalization.text(.configPetInteraction))
-                } footer: {
-                    Text(APCLocalization.text(.configSizeFooter))
-                }
-
-                if showsInlinePreview {
-                    Section {
-                        appearancePreview
-                            .frame(maxWidth: .infinity)
-                    } header: {
-                        Text(APCLocalization.text(.configLivePreview))
-                    }
+                SettingToggle(
+                    title: APCLocalization.text(.configAutoHide),
+                    detail: APCLocalization.text(.configAutoHideDetail),
+                    value: store.behavior.autoHide,
+                    accessibilityIdentifier: "configuration.appearance.auto-hide"
+                ) { value in
+                    updateBehavior(\.autoHide, value: value)
                 }
             }
-            .formStyle(.grouped)
+
+            Section {
+                SettingToggle(
+                    title: APCLocalization.text(.configContextMenu),
+                    detail: APCLocalization.text(.configContextMenuDetail),
+                    value: store.behavior.clickMenu,
+                    accessibilityIdentifier: "configuration.appearance.context-menu"
+                ) { value in
+                    updateBehavior(\.clickMenu, value: value)
+                }
+
+                SettingToggle(
+                    title: APCLocalization.text(.configMousePassthrough),
+                    detail: APCLocalization.text(.configMousePassthroughDetail),
+                    value: store.behavior.mousePassthrough,
+                    accessibilityIdentifier: "configuration.appearance.mouse-passthrough"
+                ) { value in
+                    updateBehavior(\.mousePassthrough, value: value)
+                }
+
+            } header: {
+                Text(APCLocalization.text(.configPetInteraction))
+            } footer: {
+                Text(APCLocalization.text(.configSizeFooter))
+            }
+
+            if showsInlinePreview {
+                Section {
+                    appearancePreview
+                        .frame(maxWidth: .infinity)
+                } header: {
+                    Text(APCLocalization.text(.configLivePreview))
+                }
+            }
         }
+        .formStyle(.grouped)
         .accessibilityIdentifier("configuration.page.appearance")
     }
 
     private func messageSettingsPane(showsInlinePreview: Bool) -> some View {
-        VStack(spacing: 0) {
-            pageHeader(for: .messages)
-            Divider()
-
-            Form {
-                Section {
-                    ForEach(BehaviorSettingsNextCatalog.sources) { source in
-                        SourceToggle(source: source)
-                    }
-                } header: {
-                    Text(APCLocalization.text(.configResponseSources))
-                } footer: {
-                    Text(APCLocalization.text(.configSourcesFooter))
+        Form {
+            Section {
+                ForEach(BehaviorSettingsCatalog.sources) { source in
+                    SourceToggle(source: source)
                 }
+            } header: {
+                Text(APCLocalization.text(.configResponseSources))
+            }
 
-                Section {
-                    LazyVGrid(
-                        columns: eventGridColumns,
-                        spacing: 10
-                    ) {
-                        ForEach(BehaviorSettingsNextCatalog.events) { event in
-                            EventToggle(event: event)
-                        }
+            Section {
+                LazyVGrid(
+                    columns: eventGridColumns,
+                    spacing: 10
+                ) {
+                    ForEach(BehaviorSettingsCatalog.events) { event in
+                        EventToggle(event: event)
                     }
-                    .padding(.vertical, 2)
-                } header: {
-                    Text(APCLocalization.text(.configResponseEvents))
                 }
+                .padding(.vertical, 2)
+            } header: {
+                Text(APCLocalization.text(.configResponseEvents))
+            }
 
-                Section {
-                    sessionTimeoutSetting
-                    sessionGroupDisplaySetting
-
-                    Label {
-                        Text(APCLocalization.text(.configPersistenceNote))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } icon: {
-                        Image(systemName: "exclamationmark.bubble")
-                            .foregroundStyle(APCDesign.warning)
-                    }
-                    .accessibilityElement(children: .combine)
+            Section {
+                sessionTimeoutSetting
+                sessionGroupDisplaySetting
+            } header: {
+                Text(APCLocalization.text(.configSessionDisplay))
+            } footer: {
+                Text(APCLocalization.text(.configPersistenceNote))
                     .accessibilityIdentifier("configuration.messages.persistence-note")
-                } header: {
-                    Text(APCLocalization.text(.configSessionDisplay))
-                }
+            }
 
-                if showsInlinePreview {
-                    Section {
-                        messagePreview
-                            .frame(maxWidth: .infinity)
-                    } header: {
-                        Text(APCLocalization.text(.configMessagePreview))
-                    }
+            if showsInlinePreview {
+                Section {
+                    messagePreview
+                        .frame(maxWidth: .infinity)
+                } header: {
+                    Text(APCLocalization.text(.configMessagePreview))
                 }
             }
-            .formStyle(.grouped)
         }
+        .formStyle(.grouped)
         .accessibilityIdentifier("configuration.page.messages")
-    }
-
-    private func pageHeader(for section: BehaviorSettingsSection) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(section.title)
-                .font(.title2.weight(.semibold))
-            Text(section.subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("configuration.page-header.\(section.rawValue)")
     }
 
     private var previewPane: some View {
@@ -339,25 +299,22 @@ struct BehaviorSettingsView: View {
             }
         }
         .padding(16)
-        .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("configuration.preview-pane")
     }
 
     private var appearanceThemeSetting: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker(APCLocalization.text(.configThemePicker), selection: behaviorBinding(\.appearanceTheme)) {
-                ForEach(BehaviorSettingsNextCatalog.appearanceThemes) { theme in
-                    Text(BehaviorSettingsNextCatalog.title(for: theme)).tag(theme)
+                ForEach(BehaviorSettingsCatalog.appearanceThemes) { theme in
+                    Text(BehaviorSettingsCatalog.title(for: theme)).tag(theme)
                 }
             }
             .pickerStyle(.segmented)
             .accessibilityLabel(APCLocalization.text(.configThemeAccessibility))
-            .accessibilityValue(BehaviorSettingsNextCatalog.title(for: store.behavior.appearanceTheme))
+            .accessibilityValue(BehaviorSettingsCatalog.title(for: store.behavior.appearanceTheme))
+            .help(APCLocalization.text(.configThemeDetail))
+            .accessibilityHint(APCLocalization.text(.configThemeDetail))
             .accessibilityIdentifier("configuration.appearance.theme")
-
-            Text(APCLocalization.text(.configThemeDetail))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
@@ -365,7 +322,7 @@ struct BehaviorSettingsView: View {
     private var fpsSetting: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker(APCLocalization.text(.configFPSPicker), selection: behaviorBinding(\.fpsProfile)) {
-                ForEach(BehaviorSettingsNextCatalog.fpsProfiles) { profile in
+                ForEach(BehaviorSettingsCatalog.fpsProfiles) { profile in
                     Text(APCLocalization.format(.commonFPSFormat, profile.fps)).tag(profile)
                 }
             }
@@ -430,6 +387,8 @@ struct BehaviorSettingsView: View {
                 .commonPercentFormat,
                 Int((store.behavior.bubbleTransparency * 100).rounded())
             ))
+            .help(APCLocalization.text(.configTransparencyDetail))
+            .accessibilityHint(APCLocalization.text(.configTransparencyDetail))
             .accessibilityIdentifier("configuration.appearance.bubble-transparency")
 
             HStack {
@@ -440,9 +399,6 @@ struct BehaviorSettingsView: View {
             .font(.caption2)
             .foregroundStyle(.tertiary)
 
-            Text(APCLocalization.text(.configTransparencyDetail))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
         .onDisappear {
@@ -458,22 +414,17 @@ struct BehaviorSettingsView: View {
             value: behaviorBinding(\.sessionMessageTimeoutMinutes),
             in: 1 ... 1_440
         ) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(APCLocalization.text(.configTimeout))
-                        .font(.headline)
-                    Spacer()
-                    Text(APCLocalization.format(
-                        .commonMinutesFormat,
-                        store.behavior.sessionMessageTimeoutMinutes
-                    ))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Text(APCLocalization.text(.configTimeoutDetail))
-                    .font(.caption)
+            HStack {
+                Text(APCLocalization.text(.configTimeout))
+                    .font(.headline)
+                Spacer()
+                Text(APCLocalization.format(
+                    .commonMinutesFormat,
+                    store.behavior.sessionMessageTimeoutMinutes
+                ))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .accessibilityLabel(APCLocalization.text(.configTimeout))
@@ -481,6 +432,8 @@ struct BehaviorSettingsView: View {
             .commonMinutesFormat,
             store.behavior.sessionMessageTimeoutMinutes
         ))
+        .help(APCLocalization.text(.configTimeoutDetail))
+        .accessibilityHint(APCLocalization.text(.configTimeoutDetail))
         .accessibilityIdentifier("configuration.messages.timeout")
         .padding(.vertical, 4)
     }
@@ -488,7 +441,7 @@ struct BehaviorSettingsView: View {
     private var sessionGroupDisplaySetting: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker(APCLocalization.text(.configGroupDisplay), selection: behaviorBinding(\.sessionGroupDisplay)) {
-                ForEach(BehaviorSettingsNextCatalog.groupDisplays) { display in
+                ForEach(BehaviorSettingsCatalog.groupDisplays) { display in
                     Text(APCLocalizedPresentation.sessionGroupTitle(display)).tag(display)
                 }
             }
@@ -497,11 +450,9 @@ struct BehaviorSettingsView: View {
             .accessibilityValue(
                 APCLocalizedPresentation.sessionGroupTitle(store.behavior.sessionGroupDisplay)
             )
+            .help(APCLocalization.text(.configGroupDisplayDetail))
+            .accessibilityHint(APCLocalization.text(.configGroupDisplayDetail))
             .accessibilityIdentifier("configuration.messages.group-display")
-
-            Text(APCLocalization.text(.configGroupDisplayDetail))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
@@ -548,7 +499,6 @@ private struct BehaviorSettingsSubnavigation: View {
             }
         }
         .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .accessibilityLabel(APCLocalization.text(.configSubnavigationAccessibility))
         .accessibilityIdentifier("configuration.subnavigation")
     }
@@ -568,18 +518,15 @@ struct SettingToggle: View {
                 set: { onChange($0) }
             )
         ) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(title)
+                .font(.headline)
         }
         .toggleStyle(.switch)
         .tint(APCDesign.accent)
+        .help(detail)
         .accessibilityLabel(title)
         .accessibilityValue(UIControlSemantics.toggleValue(isOn: value))
+        .accessibilityHint(detail)
         .accessibilityIdentifier(accessibilityIdentifier)
         .padding(.vertical, 4)
     }
@@ -602,24 +549,20 @@ struct SourceToggle: View {
         ) {
             HStack(spacing: 10) {
                 AgentIconView(source: source, size: 30)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(source.title)
-                        .font(.headline)
-                    Text(sourceDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                Text(source.title)
+                    .font(.headline)
             }
         }
         .toggleStyle(.switch)
         .tint(APCDesign.accent)
+        .help(sourceDetail)
         .accessibilityLabel(UIControlSemantics.sourceLabel(source))
         .accessibilityValue(APCLocalization.format(
             .connectionsMetadataFormat,
             UIControlSemantics.toggleValue(isOn: isEnabled),
             sourceDetail
         ))
+        .accessibilityHint(sourceDetail)
         .accessibilityIdentifier("configuration.messages.source.\(source.rawValue)")
         .padding(.vertical, 4)
     }
@@ -667,13 +610,8 @@ struct EventToggle: View {
                 }
             )
         ) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(APCLocalizedPresentation.eventTitle(event))
-                    .font(.headline)
-                Text(event.rawValue)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
+            Text(APCLocalizedPresentation.eventTitle(event))
+                .font(.headline)
         }
         .toggleStyle(.switch)
         .tint(APCDesign.accent)
@@ -734,24 +672,11 @@ private struct BehaviorAppearancePreview: View {
                     .stroke(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
                     .allowsHitTesting(false)
             }
-            .overlay(alignment: .topTrailing) {
-                Text(APCLocalization.format(.commonFPSFormat, behavior.fpsProfile.fps))
-                    .font(.caption2.weight(.semibold))
-                    .monospacedDigit()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(10)
-            }
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(APCLocalization.text(.configDesktopPreviewAccessibility))
             .accessibilityIdentifier("configuration.preview.desktop")
 
-            Label(APCLocalization.text(.configSizeOnlyOnPet), systemImage: "arrow.up.left.and.arrow.down.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("configuration.preview.size-guidance")
         }
         .apcAppearanceTheme(behavior.appearanceTheme)
     }
@@ -847,8 +772,8 @@ private struct BehaviorAppearancePreview: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(.regularMaterial)
                 .frame(
-                    width: BehaviorSettingsNextLayout.resizeVisualSize,
-                    height: BehaviorSettingsNextLayout.resizeVisualSize
+                    width: BehaviorSettingsLayout.resizeVisualSize,
+                    height: BehaviorSettingsLayout.resizeVisualSize
                 )
                 .overlay {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -857,8 +782,8 @@ private struct BehaviorAppearancePreview: View {
                 }
         }
         .frame(
-            width: BehaviorSettingsNextLayout.resizeHitTarget,
-            height: BehaviorSettingsNextLayout.resizeHitTarget
+            width: BehaviorSettingsLayout.resizeHitTarget,
+            height: BehaviorSettingsLayout.resizeHitTarget
         )
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
@@ -916,11 +841,11 @@ private struct BehaviorMessagePreview: View {
     let behavior: BehaviorSettings
 
     private var enabledSources: [AgentSource] {
-        BehaviorSettingsNextCatalog.sources.filter { behavior.sources[$0, default: true] }
+        BehaviorSettingsCatalog.sources.filter { behavior.sources[$0, default: true] }
     }
 
     private var enabledEvents: [AgentEventKind] {
-        BehaviorSettingsNextCatalog.events.filter { behavior.events[$0, default: true] }
+        BehaviorSettingsCatalog.events.filter { behavior.events[$0, default: true] }
     }
 
     private var visibleEvents: [AgentEventKind] {
@@ -930,30 +855,6 @@ private struct BehaviorMessagePreview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label(APCLocalization.text(.configLiveMessagePreview), systemImage: "bubble.left.and.bubble.right")
-                    .font(.headline)
-                Spacer()
-                Text(APCLocalizedPresentation.sessionGroupTitle(behavior.sessionGroupDisplay))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                previewCount(
-                    APCLocalization.text(.configPreviewSources),
-                    value: enabledSources.count,
-                    total: BehaviorSettingsNextCatalog.sources.count
-                )
-                previewCount(
-                    APCLocalization.text(.configPreviewEvents),
-                    value: enabledEvents.count,
-                    total: BehaviorSettingsNextCatalog.events.count
-                )
-            }
-
-            Divider()
-
             if enabledSources.isEmpty {
                 ContentUnavailableView(
                     APCLocalization.text(.configNoSources),
@@ -979,19 +880,6 @@ private struct BehaviorMessagePreview: View {
                 }
             }
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(APCLocalization.format(
-                    .configTimeoutPreviewFormat,
-                    behavior.sessionMessageTimeoutMinutes
-                ))
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                Text(APCLocalization.text(.configPersistencePreview))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(14)
         .background(
@@ -1007,14 +895,6 @@ private struct BehaviorMessagePreview: View {
         .accessibilityIdentifier("configuration.preview.messages")
     }
 
-    private func previewCount(_ title: String, value: Int, total: Int) -> some View {
-        Text(APCLocalization.format(.commonValueOfTotalFormat, title, value, total))
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(nsColor: .windowBackgroundColor), in: Capsule())
-    }
 }
 
 private struct MessagePreviewRow: View {

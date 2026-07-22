@@ -414,7 +414,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsCheckAccessibilityFormat = "connections.check.accessibility_format"
     case connectionsCheckNameAgentCLI = "connections.check.name.agent_cli"
     case connectionsCheckNameEventCLI = "connections.check.name.event_cli"
-    case connectionsCheckNameProjectDirectory = "connections.check.name.project_directory"
     case connectionsCheckNameAgentVersion = "connections.check.name.agent_version"
     case connectionsCheckNameManagedConnector = "connections.check.name.managed_connector"
     case connectionsCheckNameClaudeHooksPolicy = "connections.check.name.claude_hooks_policy"
@@ -427,7 +426,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsCheckNameGeneric = "connections.check.name.generic"
     case connectionsCheckDescriptionAgentCLI = "connections.check.description.agent_cli"
     case connectionsCheckDescriptionEventCLI = "connections.check.description.event_cli"
-    case connectionsCheckDescriptionProjectDirectory = "connections.check.description.project_directory"
     case connectionsCheckDescriptionAgentVersion = "connections.check.description.agent_version"
     case connectionsCheckDescriptionManagedConnector = "connections.check.description.managed_connector"
     case connectionsCheckDescriptionClaudeHooksPolicy = "connections.check.description.claude_hooks_policy"
@@ -464,14 +462,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsCapabilitiesSummaryFormat = "connections.capabilities.summary_format"
     case connectionsCapabilitiesListFormat = "connections.capabilities.list_format"
     case connectionsEnvironmentTitle = "connections.environment.title"
-    case connectionsDefaultHome = "connections.environment.default_home"
-    case connectionsDirectoryDetail = "connections.environment.directory_detail"
-    case connectionsChooseDirectory = "connections.environment.choose_directory"
-    case connectionsResetDirectory = "connections.environment.reset_directory"
-    case connectionsDirectoryPanelTitle = "connections.environment.directory_panel.title"
-    case connectionsDirectoryPanelPrompt = "connections.environment.directory_panel.prompt"
-    case connectionsDirectoryPanelMessage = "connections.environment.directory_panel.message"
-    case connectionsProjectDirectory = "connections.environment.project_directory"
     case connectionsInstanceID = "connections.environment.instance_id"
     case connectionsRuntimeIdentity = "connections.environment.runtime_identity"
     case connectionsRuntimeFooter = "connections.environment.runtime_footer"
@@ -701,43 +691,10 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case aboutLocalBuild = "about.local_build"
 }
 
-/// A non-global locale override for deterministic visual fixtures and tests.
-///
-/// Production views continue to follow `Locale.preferredLanguages`. A renderer
-/// may scope one complete SwiftUI layout transaction with `withLocale`, which
-/// lets the same implicit localization calls exercise English and Chinese in a
-/// single process without mutating defaults or the user's language settings.
-enum APCLocalizationFixtureScope {
-    @TaskLocal static var localeIdentifier: String?
-
-    static func withLocale<Result>(
-        _ identifier: String,
-        operation: () throws -> Result
-    ) rethrows -> Result {
-        let supported = APCLocalization.resolvedInterfaceLocaleIdentifier(
-            preferredLanguages: [identifier]
-        )
-        return try $localeIdentifier.withValue(supported, operation: operation)
-    }
-
-    static func withLocale<Result>(
-        _ identifier: String,
-        operation: () async throws -> Result
-    ) async rethrows -> Result {
-        let supported = APCLocalization.resolvedInterfaceLocaleIdentifier(
-            preferredLanguages: [identifier]
-        )
-        return try await $localeIdentifier.withValue(supported, operation: operation)
-    }
-}
-
 enum APCLocalization {
     static let requiredV1Keys = APCLocalizationKey.allCases
     static var interfaceLocaleIdentifier: String {
-        if let fixtureLocaleIdentifier = APCLocalizationFixtureScope.localeIdentifier {
-            return fixtureLocaleIdentifier
-        }
-        return resolvedInterfaceLocaleIdentifier(preferredLanguages: Locale.preferredLanguages)
+        resolvedInterfaceLocaleIdentifier(preferredLanguages: Locale.preferredLanguages)
     }
 
     static func resolvedInterfaceLocaleIdentifier(

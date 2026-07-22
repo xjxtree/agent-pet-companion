@@ -47,12 +47,7 @@ enum OverlayBubbleTogglePresentation {
 struct OverlayRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var currentEvent: AgentEvent? {
         store.activeOverlayEvent
@@ -155,12 +150,7 @@ struct OverlayRootView: View {
 struct OverlayMenuControlRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let sessionCount = store.overlayBubbleSessionCount
@@ -199,14 +189,9 @@ struct OverlayMenuControlRootView: View {
 struct OverlayResizeControlRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scaleStepFeedbackVisible = false
     @State private var scaleStepFeedbackTask: Task<Void, Never>?
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
 
     private var controlsVisible: Bool {
         controlPresentation.isVisible
@@ -286,12 +271,7 @@ struct OverlayResizeControlRootView: View {
 struct BubbleOverlayRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var contents: [OverlayBubbleContent] {
         store.overlayBubbleContents
@@ -365,12 +345,7 @@ struct BubbleOverlayRootView: View {
 }
 
 private struct ConversationBubble: View {
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var content: OverlayBubbleContent
     var hovered: Bool
@@ -528,317 +503,6 @@ private struct ConversationBubble: View {
     }
 }
 
-#if DEBUG
-enum OverlayCoreFixturePet {
-    static let bytebud: PetSummary = {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let assetRoot = repositoryRoot.appendingPathComponent(
-            "ui-next/codex/assets/bytebud",
-            isDirectory: true
-        )
-        return PetSummary(
-            id: "pet_bytebudcodex",
-            name: "Bytebud 字节芽",
-            style: StylePreset.pixel.rawValue,
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
-            petpackPath: assetRoot
-                .appendingPathComponent(PetAssetLocator.uiNextFixturePetpackMarker)
-                .path,
-            coverPath: assetRoot
-                .appendingPathComponent("assets/preview/cover.png")
-                .path,
-            origin: .verifiedSkillSource,
-            generator: "agent-pet-companion.release-inventory",
-            provenance: "apc.bundled-pets.v1",
-            revisionID: "rev_fixture_bytebud",
-            revisionCount: 1,
-            active: true,
-            createdAt: "2026-07-21T00:00:00Z"
-        )
-    }()
-
-    static func representativeFrameURL(stateName: String) -> URL? {
-        PetAssetLocator.frameURLs(for: bytebud, stateName: stateName).first
-    }
-
-    static func representativeFrameImage(stateName: String) -> NSImage? {
-        representativeFrameURL(stateName: stateName).flatMap(NSImage.init(contentsOf:))
-    }
-}
-
-/// Pure fixture projection that keeps protocol state and session cardinality
-/// aligned with the production overlay model without consulting AppStore or
-/// PetCore.
-struct OverlayCoreFixtureModel {
-    let state: UINextOverlayFixtureState
-    let source: AgentSource
-    let requestedActiveSessionCount: Int
-    var groupPresentation: UINextOverlayGroupFixturePresentation = .automatic
-
-    var eventKind: AgentEventKind? {
-        state.eventKind
-    }
-
-    var petStateName: String {
-        eventKind?.petState ?? "idle"
-    }
-
-    var resolvedActiveSessionCount: Int {
-        guard eventKind != nil else { return 0 }
-        return min(8, max(0, requestedActiveSessionCount))
-    }
-
-    var bubbleContent: OverlayBubbleContent? {
-        guard let eventKind, resolvedActiveSessionCount > 0 else { return nil }
-        let sessions = (0 ..< resolvedActiveSessionCount).map { index in
-            OverlaySessionContent(
-                id: "fixture-overlay-\(state.rawValue)-\(index)",
-                source: source,
-                sessionID: "fixture-session-\(index)",
-                eventType: eventKind,
-                sessionTitle: APCLocalization.format(
-                    .overlaySessionTitleFormat,
-                    "\(source.shortTitle) \(index + 1)"
-                ),
-                messageText: OverlaySessionContent.displayMessage(
-                    summaryKind: nil,
-                    eventType: eventKind
-                ),
-                statusText: OverlaySessionContent.displayStatus(for: eventKind),
-                actionLabel: APCLocalization.text(.overlayActionOpen)
-            )
-        }
-        return OverlayBubbleContent(
-            id: "fixture-agent-\(source.rawValue)",
-            source: source,
-            agentName: source.title,
-            sessions: sessions,
-            isExpanded: groupPresentation.isExpanded(
-                sessionCount: resolvedActiveSessionCount
-            )
-        )
-    }
-
-    var visibleSessionRowCount: Int {
-        bubbleContent?.visibleSessions.count ?? 0
-    }
-}
-
-/// Renders the production conversation bubble and pet stage against a
-/// deterministic desktop stand-in. The fixture deliberately avoids AppStore
-/// and PetCore so every protocol state remains stable in previews and
-/// screenshot regression runs.
-struct OverlayCoreFixtureView: View {
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
-    @State private var rendererHasContent = false
-
-    let state: UINextOverlayFixtureState
-    let theme: AppearanceTheme
-    var source: AgentSource = .codex
-    var activeSessionCount = 1
-    var groupPresentation: UINextOverlayGroupFixturePresentation = .automatic
-    var controlPresentation: UINextOverlayControlFixturePresentation = .resting
-    var mixedAgentBubbleContents: [OverlayBubbleContent]? = nil
-
-    private let petScale: CGFloat = 0.52
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
-
-    private var model: OverlayCoreFixtureModel {
-        OverlayCoreFixtureModel(
-            state: state,
-            source: source,
-            requestedActiveSessionCount: activeSessionCount,
-            groupPresentation: groupPresentation
-        )
-    }
-
-    private var bubbleContents: [OverlayBubbleContent] {
-        if let mixedAgentBubbleContents {
-            return mixedAgentBubbleContents
-        }
-        return model.bubbleContent.map { [$0] } ?? []
-    }
-
-    private var concreteSessionCount: Int {
-        bubbleContents
-            .filter { !$0.isOmittedSummary }
-            .map(\.sessionCount)
-            .reduce(0, +)
-    }
-
-    private var visibleSessionRowCount: Int {
-        bubbleContents.map { $0.visibleSessions.count }.reduce(0, +)
-    }
-
-    private var bubbleStatusTone: OverlaySessionGroupTone {
-        OverlaySessionGroupTone.aggregate(
-            bubbleContents
-                .filter { !$0.isOmittedSummary }
-                .flatMap(\.sessions)
-        )
-    }
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color.indigo.opacity(0.34),
-                    Color.cyan.opacity(0.20),
-                    Color(nsColor: .windowBackgroundColor),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            HStack(alignment: .bottom, spacing: 18) {
-                if !bubbleContents.isEmpty {
-                    fixtureBubbleStack
-                }
-
-                petPresentation
-            }
-            .padding(24)
-        }
-        .apcAppearanceTheme(theme)
-        .accessibilityIdentifier("fixture.overlay.\(state.rawValue)")
-        .accessibilityValue(
-            "pet-state=\(model.petStateName);sessions=\(concreteSessionCount);rows=\(visibleSessionRowCount);groups=\(bubbleContents.count);group=\(bubbleContents.count > 1 ? "mixed" : groupPresentation.rawValue);controls=\(controlPresentation.rawValue)"
-        )
-        .onChange(of: model.petStateName) {
-            rendererHasContent = false
-        }
-    }
-
-    private var fixtureBubbleStack: some View {
-        let availableSize = CGSize(width: 376, height: 680)
-        let stackSize = OverlayGeometry.resolvedBubbleStackSize(
-            in: availableSize,
-            contents: bubbleContents
-        )
-        let rects = OverlayGeometry.bubbleRects(
-            inPanelSize: stackSize,
-            visibleFrameSize: availableSize,
-            contents: bubbleContents,
-            alignLeft: true
-        )
-
-        return ZStack(alignment: .topLeading) {
-            ForEach(Array(bubbleContents.enumerated()), id: \.element.id) { index, content in
-                let rect = rects.indices.contains(index) ? rects[index] : .zero
-                ConversationBubble(
-                    content: content,
-                    hovered: controlPresentation.controlsVisible,
-                    keyboardNavigationActive: false,
-                    glassTransparency: BehaviorSettings.defaultBubbleTransparency,
-                    onClose: {},
-                    onToggleGroup: {},
-                    onActivateSession: { _ in },
-                    onDismissSession: { _ in }
-                )
-                .frame(width: rect.width, height: rect.height)
-                .background {
-                    UINextOverlayBubbleLayoutMarker(contentID: content.id)
-                }
-                .position(x: rect.midX, y: rect.midY)
-            }
-        }
-        .frame(width: stackSize.width, height: stackSize.height)
-    }
-
-    @ViewBuilder
-    private var petPresentation: some View {
-        if controlPresentation.controlsVisible {
-            GeometryReader { proxy in
-                let petCenter = CGPoint(x: 72, y: proxy.size.height / 2)
-                let menuCenter = OverlayGeometry.menuCenter(
-                    petCenter: petCenter,
-                    scale: petScale
-                )
-                let resizeCenter = OverlayGeometry.resizeCenter(
-                    petCenter: petCenter,
-                    scale: petScale
-                )
-
-                fixturePet
-                    .position(petCenter)
-
-                if let toggleContent = OverlayBubbleTogglePresentation.content(
-                    sessionCount: concreteSessionCount,
-                    collapsed: false
-                ) {
-                    PetMenuButton(
-                        collapsed: false,
-                        sessionCount: concreteSessionCount,
-                        content: toggleContent,
-                        tone: bubbleStatusTone,
-                        onToggleBubble: {}
-                    )
-                    .position(menuCenter)
-                    .accessibilityIdentifier("fixture.overlay.menu-control")
-                }
-
-                ResizeHandle(
-                    scale: OverlayGeometry.defaultScale,
-                    showScaleValue: controlPresentation.showsScaleValue
-                )
-                .position(resizeCenter)
-                .accessibilityIdentifier("fixture.overlay.resize-control")
-            }
-            .frame(width: 176, height: 220)
-            .accessibilityIdentifier(
-                "fixture.overlay.controls.\(controlPresentation.rawValue)"
-            )
-        } else {
-            fixturePet
-        }
-    }
-
-    private var fixturePet: some View {
-        ZStack {
-            // Offscreen AppKit snapshots can be captured before a CAMetalLayer
-            // obtains its first drawable. Use the same checked-in state frame
-            // as a synchronous first-frame handoff, then remove it as soon as
-            // the production Metal pipeline publishes a visual envelope.
-            if let frame = OverlayCoreFixturePet.representativeFrameImage(
-                stateName: model.petStateName
-            ) {
-                Image(nsImage: frame)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 230 * petScale, height: 310 * petScale)
-                    .opacity(rendererHasContent ? 0 : 1)
-                    .accessibilityHidden(true)
-            }
-
-            PetStage(
-                pet: OverlayCoreFixturePet.bytebud,
-                state: model.eventKind,
-                stateEntryID: "fixture-overlay-\(state.rawValue)",
-                scale: petScale,
-                fpsProfile: .standard,
-                active: true,
-                reduceMotion: reduceMotion,
-                hovered: controlPresentation.controlsVisible,
-                onVisualEnvelopeChanged: { envelope, _, _ in
-                    rendererHasContent = envelope != nil
-                }
-            )
-        }
-        .accessibilityIdentifier("fixture.overlay.pet.\(model.petStateName)")
-    }
-}
-#endif
 
 private struct SessionBubbleRow: View {
     var session: OverlaySessionContent

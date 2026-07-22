@@ -4,7 +4,7 @@ import Testing
 @testable import AgentPetCompanionCore
 
 @Suite
-struct PetStudioNextTests {
+struct PetStudioTests {
     @Test
     func briefKeepsTheSixSupportedStylesAndFourRenderContracts() {
         #expect(StylePreset.allCases == [

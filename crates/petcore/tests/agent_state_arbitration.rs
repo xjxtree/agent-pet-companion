@@ -1078,6 +1078,46 @@ fn display_projection_reports_sessions_omitted_by_the_eight_session_bound() {
 }
 
 #[test]
+fn same_agent_projects_share_one_session_projection_without_project_filtering() {
+    let (_temp, state) = ready();
+    let projects = [
+        ("project-a-event", "project-a-session", "/tmp/project-a"),
+        ("project-b-event", "project-b-session", "/tmp/project-b"),
+    ];
+
+    for (index, (id, session_id, project_path)) in projects.iter().enumerate() {
+        handle_request(
+            &state,
+            request(
+                "agent.ingest",
+                json!({
+                    "id": id,
+                    "source": "codex",
+                    "project_path": project_path,
+                    "session_id": session_id,
+                    "event_type": "tool",
+                    "title": id,
+                    "created_at": timestamp(index as i64 + 1),
+                }),
+            ),
+        )
+        .unwrap();
+    }
+
+    let current = snapshot(&state);
+    let sessions = current["active_agent_sessions"].as_array().unwrap();
+    for (_, session_id, _) in projects {
+        assert!(sessions
+            .iter()
+            .any(|session| session["session_id"] == projected_session_id(session_id)));
+    }
+
+    let serialized = current.to_string();
+    assert!(!serialized.contains("/tmp/project-a"));
+    assert!(!serialized.contains("/tmp/project-b"));
+}
+
+#[test]
 fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
     let (_temp, state) = ready();
     let prompt = "PROMPT_DO_NOT_EXPORT use credential sk-live-super-secret";

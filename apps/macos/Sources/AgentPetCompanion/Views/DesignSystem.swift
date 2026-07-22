@@ -107,12 +107,11 @@ extension View {
 
 struct Surface<Content: View>: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
     var padding: CGFloat = 20
     @ViewBuilder var content: Content
 
     private var increasedContrast: Bool {
-        accessibilityOverrides.increasedContrast ?? (colorSchemeContrast == .increased)
+        colorSchemeContrast == .increased
     }
 
     var body: some View {
@@ -407,7 +406,6 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
 
     let cornerRadius: CGFloat
     let transparency: Double
@@ -420,21 +418,12 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
         colorScheme == .dark ? .black : .white
     }
 
-    private var accessibilityPresentation: APCVisualAccessibilityPresentation {
-        .resolve(
-            systemReduceTransparency: systemReduceTransparency,
-            systemIncreasedContrast: colorSchemeContrast == .increased,
-            systemReduceMotion: false,
-            overrides: accessibilityOverrides
-        )
-    }
-
     private var reduceTransparency: Bool {
-        accessibilityPresentation.reduceTransparency
+        systemReduceTransparency
     }
 
     private var increasedContrast: Bool {
-        accessibilityPresentation.increasedContrast
+        colorSchemeContrast == .increased
     }
 
     private var backdropOpacity: Double {
@@ -554,49 +543,6 @@ struct PageScroll<Content: View>: View {
         }
         .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-}
-
-/// Shared page heading for actions that belong to one feature rather than the
-/// fixed window toolbar. Actions stay immediately below or beside the title
-/// and collapse vertically at compact widths.
-struct PageActionHeader<Actions: View>: View {
-    var title: String
-    var subtitle: String? = nil
-    @ViewBuilder var actions: Actions
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            titleBlock
-            actions
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-            if let subtitle, !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-/// Compatibility wrapper while feature views migrate to `PageActionHeader`.
-struct HeaderView<Trailing: View>: View {
-    var title: String
-    var subtitle: String
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        PageActionHeader(title: title, subtitle: subtitle) {
-            trailing
-        }
     }
 }
 

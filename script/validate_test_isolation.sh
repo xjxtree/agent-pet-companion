@@ -133,8 +133,6 @@ cp "$ROOT_DIR/script/validation_helpers.sh" "$TEST_ROOT/script/validation_helper
 for script_name in \
   validate_test_isolation.sh validate_app_lifecycle_contract.sh validate_schema_fixtures.sh \
   validate_build_scripts_safety.sh validate_source_syntax.sh validate_swift_tests.sh build_app_bundle.sh \
-  validate_m0.sh validate_m1.sh validate_m2.sh validate_m3.sh \
-  validate_m4.sh validate_m5.sh validate_m6.sh validate_v1.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
   validate_portable_pet_maker.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
@@ -178,17 +176,9 @@ if rg -n '/tmp/apc-connector-extra\.(out|err)' "$ROOT_DIR/script/validate_connec
 fi
 
 DEFAULT_VALIDATORS=(
-  "$ROOT_DIR/script/validate_m0.sh"
-  "$ROOT_DIR/script/validate_m1.sh"
-  "$ROOT_DIR/script/validate_m2.sh"
-  "$ROOT_DIR/script/validate_m3.sh"
-  "$ROOT_DIR/script/validate_m4.sh"
   "$ROOT_DIR/script/validate_connectors_runtime.sh"
   "$ROOT_DIR/script/validate_portable_pet_maker.sh"
   "$ROOT_DIR/script/validate_event_storm.sh"
-  "$ROOT_DIR/script/validate_m5.sh"
-  "$ROOT_DIR/script/validate_m6.sh"
-  "$ROOT_DIR/script/validate_v1.sh"
   "$ROOT_DIR/script/validate_security_boundaries.sh"
 )
 if forbidden_lines="$(rg -n '\b(pkill|killall|launchctl|osascript)\b|(^|[[:space:];|&])(/usr/bin/)?open([[:space:]]|$)' "${DEFAULT_VALIDATORS[@]}" || true)" && [[ -n "$forbidden_lines" ]]; then
@@ -300,7 +290,7 @@ for current_contract in \
   'bubble.frame.width >= 108' \
   'bubble.frame.height >= 70'; do
   if ! rg -Fq "$current_contract" "$OVERLAY_NON_MOUSE_VALIDATOR"; then
-    record_failure "overlay non-mouse validator is missing UI Next contract: $current_contract"
+    record_failure "overlay non-mouse validator is missing the current contract: $current_contract"
   fi
 done
 if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \

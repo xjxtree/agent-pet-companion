@@ -310,28 +310,14 @@ struct UIModelTests {
         #expect(UIControlSemantics.toggleValue(isOn: true) != UIControlSemantics.toggleValue(isOn: false))
     }
 
-    @Test
-    func connectionGridIsTopAligned() throws {
-        let overview = try #require(ConnectionGridLayout.overviewColumns.first)
-        let cards = try #require(ConnectionGridLayout.cardColumns.first)
-        #expect(overview.alignment == .top)
-        #expect(cards.alignment == .top)
-    }
-
     @MainActor
     @Test
-    func connectionOperationsIncludeTheSelectedProjectDirectory() {
-        let scoped = AppStore.connectionOperationParameters(
-            source: .pi,
-            cwd: "/tmp/current-project"
-        )
-        #expect(scoped == [
-            "source": AgentSource.pi.rawValue,
-            "cwd": "/tmp/current-project"
-        ])
+    func connectionOperationsAreAgentScopedWithoutAProjectDimension() {
+        let selectedAgent = AppStore.connectionOperationParameters(source: .pi)
+        #expect(selectedAgent == ["source": AgentSource.pi.rawValue])
 
-        let defaultScope = AppStore.connectionOperationParameters(cwd: nil)
-        #expect(defaultScope.isEmpty)
+        let allAgents = AppStore.connectionOperationParameters()
+        #expect(allAgents.isEmpty)
     }
 
     @MainActor

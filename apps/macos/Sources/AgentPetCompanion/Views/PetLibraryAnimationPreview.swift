@@ -41,14 +41,9 @@ struct PetLibraryAnimationPreview: View {
 }
 
 private struct PetLibraryIdleMetalView: NSViewRepresentable {
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(\.apcVisualAccessibilityOverrides) private var accessibilityOverrides
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let pet: PetSummary
     let onRendererContentChanged: @MainActor (Bool) -> Void
-
-    private var reduceMotion: Bool {
-        accessibilityOverrides.reduceMotion ?? systemReduceMotion
-    }
 
     func makeCoordinator() -> PetMetalFrameRenderer {
         PetMetalFrameRenderer()

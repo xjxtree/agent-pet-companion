@@ -6,7 +6,7 @@ Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode t
 
 | Source | Managed integration | In-app role |
 |---|---|---|
-| Codex | Project plugin and hooks using the stable `petcore-cli` adapter | Agent activity plus Codex App Server for AI Pet Maker |
+| Codex | User-level plugin and hooks using the stable `petcore-cli` adapter | Agent activity plus Codex App Server for AI Pet Maker |
 | Claude Code | Managed hook settings fragment invoking `petcore-cli` | Agent activity only |
 | Pi Coding Agent | Managed TypeScript extension and portable Skill support | Agent activity only |
 | OpenCode | Managed JavaScript plugin and portable Skill support | Agent activity only |
@@ -28,6 +28,8 @@ flowchart LR
 
 The normal managed path invokes `runtime/current/petcore-cli`, so a PetCore runtime replacement does not leave connector files pointing to an obsolete version. A token-protected `127.0.0.1` event endpoint is available for adapters that cannot use UDS directly; it enters the same normalization path.
 
+Connections and desktop bubbles are Agent-scoped, not project-scoped. The App does not select a project folder for an Agent connection. Supported events from every project enter the same source/session projection, and each concurrent session can appear in its Agent's message-bubble group. A bounded `project_path` may still be normalized internally as event correlation metadata, but it is not a connection setting, display filter, or user-facing identity.
+
 ## Contract layers
 
 1. **Host input** — host-specific payloads are treated as untrusted data. Adapters extract a closed, size-bounded field set rather than forwarding arbitrary JSON.
@@ -42,18 +44,18 @@ Relevant sources are [CLI adapters](../../crates/petcore-cli/src/main.rs), [adap
 The App exposes source-scoped operations:
 
 - **Check** inspects expected CLI availability and managed artifacts without reading credentials.
-- **Repair** installs or updates the project-owned hook/plugin/extension files.
+- **Repair** installs or updates the App-managed hook/plugin/extension files for that Agent.
 - **Test** emits a diagnostic event through the current local runtime.
-- **Uninstall** removes only project-owned integration artifacts.
+- **Uninstall** removes only App-managed integration artifacts.
 - **Refresh** rewrites installed references after a managed runtime replacement.
 
 PetCore stores connection status and computes evidence from bounded events. Ordinary, diagnostic, and full task receipts are distinguished and checked against the current connector contract and installation time. A diagnostic test proves the local adapter path; it does not prove provider authentication, real model execution, or a complete interactive task.
 
-Check, test, repair, and uninstall share one App-side typed operation coordinator and one PetCore-side serial gate. A running operation disables conflicting actions regardless of whether it was started from the connection page, menu bar, or application commands. Failures remain as typed inline state with an explicit retry action instead of existing only in the App's general status copy. The connection page owns these operations and its environment inspector; privacy-filtered archive export remains exclusively under **Service & Diagnostics**.
+Check, test, repair, and uninstall share one App-side typed operation coordinator and one PetCore-side serial gate. A running operation disables conflicting actions regardless of whether it was started from the connection page, menu bar, or application commands. Failures remain as typed inline state with an explicit retry action instead of existing only in the App's general status copy. The connection page owns these Agent-scoped operations; privacy-filtered archive export remains exclusively under **Service & Diagnostics**.
 
-Each current status also reports three optional typed management capabilities under `capabilities`: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. PetCore derives them from managed-path ownership and structured check results; Agent CLI availability, project-directory access, runtime smoke tests, and real-task verification never make a connector appear repairable. The fields remain optional so older PetCore responses decode safely, but missing or incomplete capability tuples never authorize repair or uninstall. The App does not infer mutation authority from item names or technical detail.
+Each current status also reports three optional typed management capabilities under `capabilities`: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. PetCore derives them from managed-path ownership and structured check results; Agent CLI availability, runtime smoke tests, and real-task verification never make a connector appear repairable. The fields remain optional so older PetCore responses decode safely, but missing or incomplete capability tuples never authorize repair or uninstall. The App does not infer mutation authority from item names or technical detail.
 
-Every serialized check item also carries a stable presentation `code` and an optional item-scoped `recovery_action`: `choose_project_directory`, `confirm_managed_repair`, `test_channel`, or `recheck`. Producers assign both fields directly; neither is derived from human-readable `name` or `detail`. The App localizes each check name and a code-specific, recovery-oriented explanation from `code` plus the typed `status`; it does not render PetCore's internal Chinese `name` or `detail` as ordinary interface copy. In particular, the channel-test explanation says that a local diagnostic round trip does not verify a real Agent task. Unknown or legacy codes use a localized generic row, while an absent or unknown recovery action safely becomes recheck (or no action for terminal rows), never repair. `confirm_managed_repair` is still accepted only when the status explicitly reports `repairable_connector_issue=true` and `managed_path_conflict=false`, and the App then opens the existing impact confirmation rather than mutating immediately. Claude Hooks Policy uses the dedicated `claude_hooks_policy` presentation code and always reports `recovery_action=recheck`; its localized explanation directs the user to adjust `disableAllHooks`, `allowManagedHooksOnly`, or another managed policy, or to contact an administrator. It never presents Install or Repair as a policy remedy, even when a separate missing connector-owned file makes the overall connector repairable.
+Every serialized check item also carries a stable presentation `code` and an optional item-scoped `recovery_action`: `confirm_managed_repair`, `test_channel`, or `recheck`. Producers assign both fields directly; neither is derived from human-readable `name` or `detail`. The App localizes each check name and a code-specific, recovery-oriented explanation from `code` plus the typed `status`; it does not render PetCore's internal Chinese `name` or `detail` as ordinary interface copy. In particular, the channel-test explanation says that a local diagnostic round trip does not verify a real Agent task. Unknown or legacy codes use a localized generic row, while an absent or unknown recovery action safely becomes recheck (or no action for terminal rows), never repair. Older PetCore responses may still contain `project_directory` and `choose_project_directory`; the App hides that obsolete implementation detail and maps its recovery to a non-mutating recheck instead of restoring project-scoped UI. `confirm_managed_repair` is still accepted only when the status explicitly reports `repairable_connector_issue=true` and `managed_path_conflict=false`, and the App then opens the existing impact confirmation rather than mutating immediately. Claude Hooks Policy uses the dedicated `claude_hooks_policy` presentation code and always reports `recovery_action=recheck`; its localized explanation directs the user to adjust `disableAllHooks`, `allowManagedHooksOnly`, or another managed policy, or to contact an administrator. It never presents Install or Repair as a policy remedy, even when a separate missing connector-owned file makes the overall connector repairable.
 
 ## Security and privacy boundary
 
@@ -62,8 +64,8 @@ Every serialized check item also carries a stable presentation `code` and an opt
 - Only explicit, bounded user/assistant display text may enter a message bubble.
 - Project paths and session IDs are normalized for local correlation and removed or redacted from diagnostics.
 - Internal Codex suggestion/Pet Studio sessions are suppressed from ordinary desktop activity.
-- Connector files must be attributable to the project, updated atomically, and removed without changing unrelated user configuration.
-- UDS and loopback ingress are local-only. Loopback access requires the project-owned capability token.
+- Connector files must be attributable to Agent Pet Companion, updated atomically, and removed without changing unrelated user configuration or projects.
+- UDS and loopback ingress are local-only. Loopback access requires the App-managed capability token.
 
 The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can create or modify a `.petpack` in another image-capable Agent host. That workflow remains outside the in-app AI Pet Maker. Import and activation require explicit user actions, and the package still crosses the standard PetCore validator.
 
@@ -72,7 +74,7 @@ The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can 
 1. Add a typed host adapter and a versioned connector contract.
 2. Restrict raw input to an explicit allowlist with size limits and negative security fixtures.
 3. Normalize into the shared source/event/session model; do not add host-specific UI parsing.
-4. Implement project-owned check, repair, refresh, test, receipt, and uninstall behavior.
+4. Implement Agent-scoped check, repair, refresh, test, receipt, and uninstall behavior for App-managed artifacts.
 5. Point managed commands at `runtime/current/petcore-cli` and preserve local-only transport.
 6. Add simulated contract tests and keep real-host validation behind the explicit gate in [Validation profiles](../development/validation.md).
 7. Update the runtime manifest, this document, public feature list, and root changelog if the supported user surface changes.

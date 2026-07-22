@@ -3,8 +3,8 @@ import Testing
 @testable import AgentPetCompanion
 @testable import AgentPetCompanionCore
 
-@Suite("UI Next localization")
-struct LocalizationNextTests {
+@Suite("Localization")
+struct LocalizationTests {
     @Test
     func preferredLanguageResolutionSupportsEnglishAndSimplifiedChinese() {
         #expect(APCLocalization.resolvedInterfaceLocaleIdentifier(
@@ -44,50 +44,6 @@ struct LocalizationNextTests {
             == "聚焦桌宠会话")
         #expect(APCLocalization.text(.appActionFocusPetResize, locale: "en")
             == "Focus Pet Resize Handle")
-    }
-
-    @Test
-    func scopedFixtureLocaleDrivesTheSameImplicitLocalizationPathAsProductionViews() {
-        let english = APCLocalizationFixtureScope.withLocale("en") {
-            (
-                APCLocalization.interfaceLocaleIdentifier,
-                APCLocalization.text(.navigationLibrary),
-                APCLocalization.format(.libraryDeleteActionFormat, "Bytebud")
-            )
-        }
-        let chinese = APCLocalizationFixtureScope.withLocale("zh-Hans") {
-            (
-                APCLocalization.interfaceLocaleIdentifier,
-                APCLocalization.text(.navigationLibrary),
-                APCLocalization.format(.libraryDeleteActionFormat, "Bytebud")
-            )
-        }
-
-        #expect(english.0 == "en")
-        #expect(english.1 == "Pet Library")
-        #expect(english.2 == "Delete Bytebud")
-        #expect(chinese.0 == "zh-Hans")
-        #expect(chinese.1 == "宠物库")
-        #expect(chinese.2 == "删除 Bytebud")
-        #expect(english.1 != chinese.1)
-    }
-
-    @Test
-    func scopedFixtureLocaleIsNestedAndTaskLocalWithoutLeakingToTheCaller() async {
-        let systemLocale = APCLocalization.interfaceLocaleIdentifier
-        let values = await APCLocalizationFixtureScope.withLocale("en-US") {
-            let outerBefore = APCLocalization.interfaceLocaleIdentifier
-            let inner = await APCLocalizationFixtureScope.withLocale("zh-CN") {
-                await Task.yield()
-                return APCLocalization.interfaceLocaleIdentifier
-            }
-            return (outerBefore, inner, APCLocalization.interfaceLocaleIdentifier)
-        }
-
-        #expect(values.0 == "en")
-        #expect(values.1 == "zh-Hans")
-        #expect(values.2 == "en")
-        #expect(APCLocalization.interfaceLocaleIdentifier == systemLocale)
     }
 
     @Test

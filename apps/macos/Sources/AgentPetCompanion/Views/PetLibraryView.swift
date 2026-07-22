@@ -83,74 +83,110 @@ struct PetLibraryView: View {
 
     var body: some View {
         responsiveLibrarySurface
-        .toolbar {
-            if !shellMode.keepsInspectorPresented {
-                ToolbarItem(placement: .secondaryAction) {
+            .searchable(
+                text: $searchText,
+                placement: .toolbar,
+                prompt: Text(APCLocalization.text(.librarySearchPlaceholder))
+            )
+            .toolbar {
+                ToolbarItemGroup(placement: .secondaryAction) {
                     Button {
-                        transientInspectorPresented.toggle()
+                        store.importPetpacks()
                     } label: {
                         Label(
-                            APCLocalization.text(.libraryInspectorTitle),
-                            systemImage: "sidebar.right"
+                            APCLocalization.text(
+                                store.isImportingPetpack
+                                    ? .libraryImportInProgress
+                                    : .libraryImportAction
+                            ),
+                            systemImage: "square.and.arrow.down"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .help(APCLocalization.text(.libraryImportAction))
+                    .disabled(store.isImportingPetpack)
+                    .accessibilityIdentifier("pet-library.import")
+
+                    Button {
+                        store.selection = .maker
+                    } label: {
+                        Label(
+                            APCLocalization.text(.libraryMakeAction),
+                            systemImage: "wand.and.stars"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .help(APCLocalization.text(.libraryMakeAction))
+                    .accessibilityIdentifier("pet-library.make")
+
+                    if !shellMode.keepsInspectorPresented {
+                        Button {
+                            transientInspectorPresented.toggle()
+                        } label: {
+                            Label(
+                                APCLocalization.text(.libraryInspectorTitle),
+                                systemImage: "sidebar.right"
+                            )
+                            .labelStyle(.iconOnly)
+                        }
+                        .help(APCLocalization.text(.libraryInspectorTitle))
+                        .disabled(selectedPet == nil)
+                        .accessibilityIdentifier("pet-library.inspector-toggle")
+                    }
+                }
+            }
+            .onAppear {
+                selectDefaultPetIfNeeded()
+            }
+            .onChange(of: store.pets.map(\.id)) { oldIDs, newIDs in
+                reconcileSelection(oldIDs: oldIDs, newIDs: newIDs)
+            }
+            .onChange(of: shellMode) { _, _ in
+                transientInspectorPresented = false
+            }
+            .confirmationDialog(
+                pendingDeletePet.map {
+                    APCLocalization.text(
+                        $0.active ? .libraryDeleteCurrentTitle : .libraryDeleteTitle
+                    )
+                } ?? APCLocalization.text(.libraryDeleteTitle),
+                isPresented: Binding(
+                    get: { pendingDeletePet != nil },
+                    set: { isPresented in
+                        if !isPresented { pendingDeletePet = nil }
+                    }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingDeletePet
+            ) { pet in
+                Button(APCLocalization.format(.libraryDeleteActionFormat, pet.name), role: .destructive) {
+                    store.deletePet(pet)
+                    pendingDeletePet = nil
+                }
+                Button(APCLocalization.text(.commonCancel), role: .cancel) {
+                    pendingDeletePet = nil
+                }
+            } message: { pet in
+                Text(APCLocalization.format(.libraryDeleteMessageFormat, pet.name, pet.id))
+            }
+            .sheet(item: $pendingPetSheet) { request in
+                PetHistorySheet(
+                    pet: request.pet,
+                    initialMode: request.mode,
+                    maximumInstructionCharacters: Self.maximumEditInstructionCharacters,
+                    onCancel: {
+                        pendingPetSheet = nil
+                    },
+                    onStart: { baselineRevisionID, instruction in
+                        pendingPetSheet = nil
+                        store.startPetEdit(
+                            request.pet,
+                            baselineRevisionID: baselineRevisionID,
+                            instruction: instruction
                         )
                     }
-                    .disabled(selectedPet == nil)
-                    .accessibilityIdentifier("pet-library.inspector-toggle")
-                }
-            }
-        }
-        .onAppear {
-            selectDefaultPetIfNeeded()
-        }
-        .onChange(of: store.pets.map(\.id)) { oldIDs, newIDs in
-            reconcileSelection(oldIDs: oldIDs, newIDs: newIDs)
-        }
-        .onChange(of: shellMode) { _, _ in
-            transientInspectorPresented = false
-        }
-        .confirmationDialog(
-            pendingDeletePet.map {
-                APCLocalization.text(
-                    $0.active ? .libraryDeleteCurrentTitle : .libraryDeleteTitle
                 )
-            } ?? APCLocalization.text(.libraryDeleteTitle),
-            isPresented: Binding(
-                get: { pendingDeletePet != nil },
-                set: { isPresented in
-                    if !isPresented { pendingDeletePet = nil }
-                }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingDeletePet
-        ) { pet in
-            Button(APCLocalization.format(.libraryDeleteActionFormat, pet.name), role: .destructive) {
-                store.deletePet(pet)
-                pendingDeletePet = nil
             }
-            Button(APCLocalization.text(.commonCancel), role: .cancel) {
-                pendingDeletePet = nil
-            }
-        } message: { pet in
-            Text(APCLocalization.format(.libraryDeleteMessageFormat, pet.name, pet.id))
-        }
-        .sheet(item: $pendingPetSheet) { request in
-            PetHistorySheet(
-                pet: request.pet,
-                initialMode: request.mode,
-                maximumInstructionCharacters: Self.maximumEditInstructionCharacters,
-                onCancel: {
-                    pendingPetSheet = nil
-                },
-                onStart: { baselineRevisionID, instruction in
-                    pendingPetSheet = nil
-                    store.startPetEdit(
-                        request.pet,
-                        baselineRevisionID: baselineRevisionID,
-                        instruction: instruction
-                    )
-                }
-            )
-        }
     }
 
     @ViewBuilder
@@ -178,13 +214,6 @@ struct PetLibraryView: View {
 
     private var libraryPage: some View {
         PageScroll {
-            PageActionHeader(
-                title: APCLocalization.text(.navigationLibrary),
-                subtitle: APCLocalization.text(.libraryPageSubtitle)
-            ) {
-                libraryActions
-            }
-
             if let notice = store.petLibraryNotice {
                 PetLibraryNoticeBanner(
                     notice: notice,
@@ -206,37 +235,6 @@ struct PetLibraryView: View {
             onRequestHistory: requestHistory,
             onRequestDelete: { pendingDeletePet = $0 }
         )
-    }
-
-    private var libraryActions: some View {
-        HStack(spacing: 8) {
-            TextField(APCLocalization.text(.librarySearchPlaceholder), text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 190, idealWidth: 240, maxWidth: 280)
-                .accessibilityIdentifier("pet-library.search")
-
-            Button {
-                store.importPetpacks()
-            } label: {
-                Label(
-                    APCLocalization.text(
-                        store.isImportingPetpack ? .libraryImportInProgress : .libraryImportAction
-                    ),
-                    systemImage: "square.and.arrow.down"
-                )
-            }
-            .buttonStyle(.bordered)
-            .disabled(store.isImportingPetpack)
-            .accessibilityIdentifier("pet-library.import")
-
-            Button {
-                store.selection = .maker
-            } label: {
-                Label(APCLocalization.text(.libraryMakeAction), systemImage: "wand.and.stars")
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("pet-library.make")
-        }
     }
 
     @ViewBuilder
@@ -282,14 +280,8 @@ struct PetLibraryView: View {
                 .accessibilityIdentifier("pet-library.search-empty")
 
         case .results:
-            VStack(alignment: .leading, spacing: 12) {
-                Text(APCLocalization.format(.libraryAllCountFormat, filteredPets.count))
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-
-                petGrid
-                    .accessibilityIdentifier("pet-library.grid")
-            }
+            petGrid
+                .accessibilityIdentifier("pet-library.grid")
         }
     }
 
@@ -857,26 +849,6 @@ private struct PetHistorySheet: View {
     }
 }
 
-#if DEBUG
-/// Production sheet content hosted directly by the deterministic UI Next
-/// renderer. The fixture store supplies the same typed history snapshot that
-/// the live sheet receives from PetCore, so visual evidence never duplicates
-/// or approximates this workflow.
-struct UINextPetHistorySheetFixture: View {
-    let pet: PetSummary
-
-    var body: some View {
-        PetHistorySheet(
-            pet: pet,
-            initialMode: .edit,
-            maximumInstructionCharacters: GenerationPromptPolicy.maximumScalarCount,
-            onCancel: {},
-            onStart: { _, _ in }
-        )
-    }
-}
-#endif
-
 private struct RevisionCoverImage: View {
     let pet: PetSummary
     let revision: PetRevisionHistoryRecord?
@@ -926,17 +898,8 @@ struct PetCard: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 10) {
-                ZStack(alignment: .topTrailing) {
-                    PetCoverImage(pet: pet, fallbackScale: 0.34)
-                        .frame(maxWidth: .infinity)
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(Color.accentColor)
-                            .padding(8)
-                            .accessibilityHidden(true)
-                    }
-                }
+                PetCoverImage(pet: pet, fallbackScale: 0.34)
+                    .frame(maxWidth: .infinity)
                 .frame(height: 104)
                 .background {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -949,14 +912,22 @@ struct PetCard: View {
 
                 PetLibrarySourceBadge(petID: pet.id, badge: presentation.sourceBadge)
 
-                HStack(spacing: 5) {
-                    Image(systemName: pet.active ? "bolt.fill" : "circle")
-                        .accessibilityHidden(true)
-                    Text(presentation.currentStateSummary(activeEvent: activeEvent))
-                        .lineLimit(1)
+                Group {
+                    if pet.active {
+                        HStack(spacing: 5) {
+                            Image(systemName: "bolt.fill")
+                                .accessibilityHidden(true)
+                            Text(presentation.currentStateSummary(activeEvent: activeEvent))
+                                .lineLimit(1)
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                    } else {
+                        Color.clear
+                            .frame(height: 14)
+                            .accessibilityHidden(true)
+                    }
                 }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(pet.active ? Color.accentColor : Color.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(12)
@@ -1082,9 +1053,6 @@ private struct PetLibraryInspector: View {
     let onRequestHistory: (PetSummary) -> Void
     let onRequestDelete: (PetSummary) -> Void
 
-    @State private var historyRecordCount: Int?
-    @State private var historyLookupFailed = false
-
     private var presentation: PetLibraryPresentation {
         PetLibraryPresentation(
             pet: pet,
@@ -1095,8 +1063,14 @@ private struct PetLibraryInspector: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(APCLocalization.text(.libraryInspectorTitle))
-                    .font(.title3.weight(.semibold))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(pet.name)
+                        .font(.title3.weight(.semibold))
+                    Text(pet.id)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
 
                 PetLibraryAnimationPreview(pet: pet)
                     .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 190)
@@ -1108,15 +1082,6 @@ private struct PetLibraryInspector: View {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
                     }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(pet.name)
-                        .font(.title3.weight(.semibold))
-                    Text(pet.id)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
 
                 Button {
                     store.activatePet(pet)
@@ -1131,62 +1096,45 @@ private struct PetLibraryInspector: View {
                 .disabled(pet.active || isBusy)
                 .accessibilityIdentifier("pet-library.inspector.activate")
 
-                GroupBox(APCLocalization.text(.libraryCurrentInfo)) {
+                DisclosureGroup {
                     VStack(spacing: 0) {
-                        InfoRow(title: APCLocalization.text(.libraryFieldCurrentState), value: presentation.currentStateSummary(activeEvent: store.activeOverlayEvent))
-                        InfoRow(title: APCLocalization.text(.libraryFieldSource), value: presentation.sourceTitle)
-                        InfoRow(title: APCLocalization.text(.libraryFieldPackageVersion), value: presentation.packageVersionSummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldQuality), value: "\(pet.renderSize.width)×\(pet.renderSize.height)")
-                        InfoRow(title: APCLocalization.text(.libraryFieldStates), value: presentation.stateSummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldFPS), value: presentation.fpsSummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldRevisionID), value: presentation.revisionIDSummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldImmutableRevisions), value: presentation.revisionCountSummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldRevisionPolicy), value: presentation.revisionPolicySummary)
-                        InfoRow(title: APCLocalization.text(.libraryFieldValidation), value: presentation.validationTitle)
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldQuality),
+                            value: "\(pet.renderSize.width)×\(pet.renderSize.height)"
+                        )
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldRevisionID),
+                            value: presentation.revisionIDSummary
+                        )
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldImmutableRevisions),
+                            value: presentation.revisionCountSummary
+                        )
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldValidation),
+                            value: presentation.validationTitle
+                        )
                     }
+                } label: {
+                    Text(APCLocalization.text(.libraryCurrentInfo))
+                        .font(.headline)
                 }
+                .accessibilityIdentifier("pet-library.inspector.details")
 
-                Text(presentation.validationDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel(APCLocalization.format(
-                        .libraryValidationDetailAccessibilityFormat,
-                        presentation.validationDetail
-                    ))
-
-                if presentation.canModify {
-                    GroupBox(APCLocalization.text(.libraryHistoryAction)) {
-                        Label {
-                            Text(historySummary)
-                                .font(.callout.weight(.medium))
-                        } icon: {
-                            Image(systemName: historyRecordCount == 0 ? "clock" : "clock.arrow.circlepath")
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                    }
-                    .accessibilityIdentifier("pet-library.inspector.history-summary")
-                }
-
-                if presentation.isBundled {
-                    Label(
-                        APCLocalization.text(.libraryBundledNote),
-                        systemImage: "shippingbox.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("pet-library.inspector.bundled-note")
+                if presentation.validationStatus != .verified {
+                    Text(presentation.validationDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(APCLocalization.format(
+                            .libraryValidationDetailAccessibilityFormat,
+                            presentation.validationDetail
+                        ))
                 }
 
                 Divider()
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(APCLocalization.text(.libraryObjectActions))
-                        .font(.headline)
-
                     if presentation.canCustomizeAsCopy {
                         Button(APCLocalization.text(.libraryCustomizeCopy), systemImage: "doc.on.doc") {
                             store.preparePetCustomizationCopy(pet)
@@ -1240,32 +1188,6 @@ private struct PetLibraryInspector: View {
             .padding(16)
         }
         .accessibilityIdentifier("pet-library.inspector")
-        .task(id: pet.id) {
-            guard presentation.canModify else { return }
-            historyRecordCount = nil
-            historyLookupFailed = false
-            do {
-                let history = try await store.fetchPetHistory(for: pet, limit: 1)
-                guard !Task.isCancelled else { return }
-                historyRecordCount = history.jobs.count
-            } catch {
-                guard !Task.isCancelled else { return }
-                historyLookupFailed = true
-            }
-        }
-    }
-
-    private var historySummary: String {
-        if historyLookupFailed {
-            return APCLocalization.text(.libraryHistoryFailedTitle)
-        }
-        guard let historyRecordCount else {
-            return APCLocalization.text(.libraryHistoryCheckingTitle)
-        }
-        if historyRecordCount == 0 {
-            return APCLocalization.text(.libraryHistoryNoRecords)
-        }
-        return APCLocalization.text(.libraryHistoryAvailableTitle)
     }
 
     private var isBusy: Bool {
@@ -1328,7 +1250,7 @@ enum InfoRowLayoutMode: Equatable {
 }
 
 enum InfoRowLayoutPolicy {
-    static let minimumSideBySideWidth: CGFloat = 300
+    static let minimumSideBySideWidth: CGFloat = 260
     static let minimumSideBySideValueWidth: CGFloat = 112
 
     static func mode(for availableWidth: CGFloat) -> InfoRowLayoutMode {
@@ -1378,13 +1300,24 @@ private struct InfoRowResponsiveLayout: Layout {
     }
 
     private func sideBySideSize(width: CGFloat, subviews: Subviews) -> CGSize {
-        let titleSize = subviews[0].sizeThatFits(.unspecified)
+        let titleDimensions = subviews[0].dimensions(in: .unspecified)
         let valueWidth = max(
             InfoRowLayoutPolicy.minimumSideBySideValueWidth,
-            width - titleSize.width - horizontalSpacing
+            width - titleDimensions.width - horizontalSpacing
         )
-        let valueSize = subviews[1].sizeThatFits(ProposedViewSize(width: valueWidth, height: nil))
-        return CGSize(width: width, height: max(titleSize.height, valueSize.height))
+        let valueProposal = ProposedViewSize(width: valueWidth, height: nil)
+        let valueDimensions = subviews[1].dimensions(in: valueProposal)
+        let baseline = max(
+            titleDimensions[VerticalAlignment.firstTextBaseline],
+            valueDimensions[VerticalAlignment.firstTextBaseline]
+        )
+        let height = max(
+            baseline + titleDimensions.height
+                - titleDimensions[VerticalAlignment.firstTextBaseline],
+            baseline + valueDimensions.height
+                - valueDimensions[VerticalAlignment.firstTextBaseline]
+        )
+        return CGSize(width: width, height: height)
     }
 
     private func stackedSize(width: CGFloat?, subviews: Subviews) -> CGSize {
@@ -1521,7 +1454,7 @@ struct InfoRow: View {
             InfoRowWrappingValue(value: value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 9)
+        .padding(.vertical, 10)
         .overlay(alignment: .bottom) {
             Divider()
         }

@@ -4,20 +4,17 @@ import Testing
 @testable import AgentPetCompanionCore
 
 @Suite
-struct AgentConnectionsNextTests {
+struct AgentConnectionsTests {
     @Test
-    func layoutKeepsFourAgentsAndTheThreeWindowWidthModes() {
+    func layoutKeepsFourAgentsInOneStableSplitOrCompactMode() {
         #expect(
-            AgentConnectionsNextCatalog.sources
+            AgentConnectionsCatalog.sources
                 == [.codex, .claudeCode, .pi, .opencode]
         )
-        #expect(AgentConnectionsNextLayout.fullLayoutMinimumWidth == 1_120)
-        #expect(AgentConnectionsNextLayout.listDetailMinimumWidth == 880)
-        #expect(AgentConnectionsNextLayout.mode(for: .allColumns) == .full)
-        #expect(AgentConnectionsNextLayout.mode(for: .sidebarAndContent) == .listDetail)
-        #expect(AgentConnectionsNextLayout.mode(for: .singleContent) == .compact)
-        #expect(AgentConnectionsNextLayout.listWidth == 190)
-        #expect(AgentConnectionsNextLayout.inspectorWidth == 292)
+        #expect(AgentConnectionsLayout.mode(for: .allColumns) == .split)
+        #expect(AgentConnectionsLayout.mode(for: .sidebarAndContent) == .split)
+        #expect(AgentConnectionsLayout.mode(for: .singleContent) == .compact)
+        #expect(AgentConnectionsLayout.listWidth == 190)
     }
 
     @Test
@@ -56,27 +53,6 @@ struct AgentConnectionsNextTests {
         #expect(operation.sources == [.codex, .pi, .opencode])
     }
 
-    @Test
-    func failedOperationWithNoSnapshotLeavesRetryAsTheOnlyProminentAction() {
-        let failure = AgentConnectionOperationFailure(
-            operation: .init(kind: .check, sources: [.codex]),
-            reason: .transportUnavailable
-        )
-
-        #expect(AgentConnectionsNextPresentation.noSnapshotActionEmphasis(
-            status: nil,
-            operationState: .failed(failure)
-        ) == .secondary)
-        #expect(AgentConnectionsNextPresentation.noSnapshotActionEmphasis(
-            status: nil,
-            operationState: .idle
-        ) == .prominent)
-        #expect(AgentConnectionsNextPresentation.noSnapshotActionEmphasis(
-            status: makeStatus(source: .codex),
-            operationState: .failed(failure)
-        ) == .hidden)
-    }
-
     @MainActor
     @Test
     func operationFailuresNeverExposeRawErrorTextAcrossLocales() {
@@ -86,11 +62,11 @@ struct AgentConnectionsNextTests {
         )
         #expect(reason == .rejected)
 
-        let english = AgentConnectionsNextPresentation.operationFailureDetail(
+        let english = AgentConnectionsPresentation.operationFailureDetail(
             reason,
             locale: "en"
         )
-        let chinese = AgentConnectionsNextPresentation.operationFailureDetail(
+        let chinese = AgentConnectionsPresentation.operationFailureDetail(
             reason,
             locale: "zh-Hans"
         )
@@ -102,34 +78,34 @@ struct AgentConnectionsNextTests {
 
     @Test
     func overallHealthUsesOnlyTypedStatusFields() {
-        #expect(AgentConnectionsNextPresentation.health(for: nil) == .pending)
+        #expect(AgentConnectionsPresentation.health(for: nil) == .pending)
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(checkMode: .light)
             ) == .lightCheck
         )
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(items: [item(.needsFix)])
             ) == .needsAttention(1)
         )
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(verification: verification(.actionRequired))
             ) == .actionRequired
         )
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(items: [item(.unverified)])
             ) == .unverified
         )
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(items: [item(.unsupported)])
             ) == .limited
         )
         #expect(
-            AgentConnectionsNextPresentation.health(
+            AgentConnectionsPresentation.health(
                 for: makeStatus(items: [item(.ok)])
             ) == .healthy
         )
@@ -143,62 +119,62 @@ struct AgentConnectionsNextTests {
         let renamedStatus = makeStatus(items: [renamed])
 
         #expect(
-            AgentConnectionsNextPresentation.health(for: chineseStatus)
-                == AgentConnectionsNextPresentation.health(for: renamedStatus)
+            AgentConnectionsPresentation.health(for: chineseStatus)
+                == AgentConnectionsPresentation.health(for: renamedStatus)
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTone(for: chinese, checkMode: .runtime)
-                == AgentConnectionsNextPresentation.itemTone(for: renamed, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTone(for: chinese, checkMode: .runtime)
+                == AgentConnectionsPresentation.itemTone(for: renamed, checkMode: .runtime)
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTitle(for: chinese, checkMode: .runtime)
-                == AgentConnectionsNextPresentation.itemTitle(for: renamed, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTitle(for: chinese, checkMode: .runtime)
+                == AgentConnectionsPresentation.itemTitle(for: renamed, checkMode: .runtime)
         )
     }
 
     @Test
     func stableCheckCodeLocalizesRowsWithoutRenderingPetCoreChineseCopy() {
         let item = ConnectionCheckItem(
-            code: "project_directory",
-            name: "检查目录访问",
+            code: "agent_cli",
+            name: "检查 Agent 命令",
             status: .needsFix,
             detail: "任意中文技术输出"
         )
 
-        #expect(AgentConnectionsNextPresentation.itemDisplayName(
+        #expect(AgentConnectionsPresentation.itemDisplayName(
             for: item,
             locale: "en"
-        ) == "Project Folder Access")
-        let englishDetail = AgentConnectionsNextPresentation.itemDisplayDetail(
+        ) == "Agent CLI")
+        let englishDetail = AgentConnectionsPresentation.itemDisplayDetail(
             for: item,
             locale: "en"
         )
-        #expect(englishDetail.contains("Needs repair"))
-        #expect(englishDetail.contains("selected project folder"))
+        #expect(englishDetail.contains("selected agent command"))
+        #expect(!englishDetail.contains("Needs repair"))
         #expect(!englishDetail.contains(item.detail))
 
         let renamed = ConnectionCheckItem(
-            code: "project_directory",
-            name: "Project workspace access v3",
+            code: "agent_cli",
+            name: "Agent executable v3",
             status: .needsFix,
             detail: "renamed backend guidance"
         )
-        #expect(AgentConnectionsNextPresentation.itemDisplayDetail(
+        #expect(AgentConnectionsPresentation.itemDisplayDetail(
             for: renamed,
             locale: "en"
         ) == englishDetail)
 
-        #expect(AgentConnectionsNextPresentation.itemDisplayName(
+        #expect(AgentConnectionsPresentation.itemDisplayName(
             for: item,
             locale: "zh-Hans"
-        ) == "项目目录访问")
+        ) == "Agent CLI")
 
         let legacy = ConnectionCheckItem(
             name: "任意旧名称",
             status: .unverified,
             detail: "任意旧详情"
         )
-        #expect(AgentConnectionsNextPresentation.itemDisplayName(
+        #expect(AgentConnectionsPresentation.itemDisplayName(
             for: legacy,
             locale: "en"
         ) == "Connection Check")
@@ -209,7 +185,7 @@ struct AgentConnectionsNextTests {
             status: .ok,
             detail: "raw probe output"
         )
-        let channelDetail = AgentConnectionsNextPresentation.itemDisplayDetail(
+        let channelDetail = AgentConnectionsPresentation.itemDisplayDetail(
             for: channelTest,
             locale: "en"
         )
@@ -223,11 +199,11 @@ struct AgentConnectionsNextTests {
             detail: "backend-only policy detail",
             recoveryAction: .recheck
         )
-        #expect(AgentConnectionsNextPresentation.itemDisplayName(
+        #expect(AgentConnectionsPresentation.itemDisplayName(
             for: claudePolicy,
             locale: "en"
         ) == "Claude Hooks Policy")
-        let englishPolicyDetail = AgentConnectionsNextPresentation.itemDisplayDetail(
+        let englishPolicyDetail = AgentConnectionsPresentation.itemDisplayDetail(
             for: claudePolicy,
             locale: "en"
         )
@@ -238,11 +214,11 @@ struct AgentConnectionsNextTests {
         #expect(!englishPolicyDetail.contains("Install or Repair"))
         #expect(!englishPolicyDetail.contains(claudePolicy.detail))
 
-        #expect(AgentConnectionsNextPresentation.itemDisplayName(
+        #expect(AgentConnectionsPresentation.itemDisplayName(
             for: claudePolicy,
             locale: "zh-Hans"
         ) == "Claude Hooks 策略")
-        let chinesePolicyDetail = AgentConnectionsNextPresentation.itemDisplayDetail(
+        let chinesePolicyDetail = AgentConnectionsPresentation.itemDisplayDetail(
             for: claudePolicy,
             locale: "zh-Hans"
         )
@@ -254,12 +230,12 @@ struct AgentConnectionsNextTests {
         #expect(!chinesePolicyDetail.contains(claudePolicy.detail))
 
         let stableCodes = [
-            "agent_cli", "event_cli", "project_directory", "agent_version",
+            "agent_cli", "event_cli", "agent_version",
             "managed_connector", "host_runtime", "host_verification", "event_delivery",
             "channel_test", "app_server", "host_server", "claude_hooks_policy"
         ]
         let descriptions = stableCodes.map { code in
-            AgentConnectionsNextPresentation.itemDisplayDetail(
+            AgentConnectionsPresentation.itemDisplayDetail(
                 for: ConnectionCheckItem(
                     code: code,
                     name: "renamed \(code)",
@@ -273,18 +249,31 @@ struct AgentConnectionsNextTests {
     }
 
     @Test
+    func legacyProjectCheckIsNotPartOfTheAgentScopedPresentation() {
+        let projectCheck = item(
+            .needsFix,
+            code: "project_directory",
+            recovery: .chooseProjectDirectory
+        )
+        let agentCheck = item(.ok, code: "agent_cli")
+        let status = makeStatus(items: [projectCheck, agentCheck])
+
+        #expect(AgentConnectionsPresentation.displayItems(in: status) == [agentCheck])
+    }
+
+    @Test
     func lightCheckPresentationNeverClaimsRuntimeVerification() {
         let located = item(.ok)
         #expect(
-            AgentConnectionsNextPresentation.itemTitle(for: located, checkMode: .light)
+            AgentConnectionsPresentation.itemTitle(for: located, checkMode: .light)
                 == "已定位"
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTone(for: located, checkMode: .light)
+            AgentConnectionsPresentation.itemTone(for: located, checkMode: .light)
                 == .neutral
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTitle(for: located, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTitle(for: located, checkMode: .runtime)
                 == CheckStatus.ok.title
         )
     }
@@ -297,20 +286,20 @@ struct AgentConnectionsNextTests {
         let unsupported = item(.unsupported)
 
         #expect(
-            AgentConnectionsNextPresentation.itemTone(for: missing, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTone(for: missing, checkMode: .runtime)
                 == .destructive
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTone(for: repair, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTone(for: repair, checkMode: .runtime)
                 == .warning
         )
         #expect(
-            AgentConnectionsNextPresentation.itemSystemImage(for: unverified, checkMode: .runtime)
-                != AgentConnectionsNextPresentation.itemSystemImage(for: unsupported, checkMode: .runtime)
+            AgentConnectionsPresentation.itemSystemImage(for: unverified, checkMode: .runtime)
+                != AgentConnectionsPresentation.itemSystemImage(for: unsupported, checkMode: .runtime)
         )
         #expect(
-            AgentConnectionsNextPresentation.itemTitle(for: unverified, checkMode: .runtime)
-                != AgentConnectionsNextPresentation.itemTitle(for: unsupported, checkMode: .runtime)
+            AgentConnectionsPresentation.itemTitle(for: unverified, checkMode: .runtime)
+                != AgentConnectionsPresentation.itemTitle(for: unsupported, checkMode: .runtime)
         )
     }
 
@@ -318,7 +307,7 @@ struct AgentConnectionsNextTests {
     func recoveryActionsUseTypedCodesAndStatusesWithoutParsingHumanCopy() throws {
         let status = makeStatus(source: .pi)
 
-        let directory = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let legacyDirectory = try #require(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .needsFix,
                 code: "project_directory",
@@ -328,11 +317,14 @@ struct AgentConnectionsNextTests {
             ),
             in: status
         ))
-        #expect(directory.kind == .chooseProjectDirectory)
-        #expect(directory.source == .pi)
-        #expect(directory.operation == nil)
+        #expect(legacyDirectory.kind == .recheck)
+        #expect(legacyDirectory.source == .pi)
+        #expect(legacyDirectory.operation == AgentConnectionOperation(
+            kind: .check,
+            sources: [.pi]
+        ))
 
-        let generic = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let generic = try #require(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .missing,
                 code: "agent_cli",
@@ -346,7 +338,7 @@ struct AgentConnectionsNextTests {
         #expect(generic.operation == AgentConnectionOperation(kind: .check, sources: [.pi]))
 
         for terminalStatus in [CheckStatus.ok, .notRequired, .unsupported] {
-            #expect(AgentConnectionsNextPresentation.recoveryAction(
+            #expect(AgentConnectionsPresentation.recoveryAction(
                 for: item(
                     terminalStatus,
                     code: "project_directory",
@@ -363,7 +355,7 @@ struct AgentConnectionsNextTests {
             source: .opencode,
             capabilities: capabilities(repairable: true, conflict: false)
         )
-        let action = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let action = try #require(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .missing,
                 code: "managed_connector",
@@ -376,7 +368,7 @@ struct AgentConnectionsNextTests {
         #expect(action.operation == nil)
 
         let unreported = makeStatus(source: .opencode)
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .missing,
                 code: "managed_connector",
@@ -391,7 +383,7 @@ struct AgentConnectionsNextTests {
             source: .opencode,
             capabilities: capabilities(repairable: false, conflict: false)
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .needsFix,
                 code: "managed_connector",
@@ -404,7 +396,7 @@ struct AgentConnectionsNextTests {
             source: .opencode,
             capabilities: capabilities(repairable: true, conflict: nil)
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .needsFix,
                 code: "managed_connector",
@@ -417,7 +409,7 @@ struct AgentConnectionsNextTests {
             source: .opencode,
             capabilities: capabilities(repairable: true, conflict: true)
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: item(
                 .needsFix,
                 code: "managed_connector",
@@ -448,11 +440,11 @@ struct AgentConnectionsNextTests {
             capabilities: capabilities(repairable: true, conflict: false)
         )
 
-        let connector = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let connector = try #require(AgentConnectionsPresentation.recoveryAction(
             for: status.items[0],
             in: status
         ))
-        let policy = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let policy = try #require(AgentConnectionsPresentation.recoveryAction(
             for: status.items[1],
             in: status
         ))
@@ -471,7 +463,7 @@ struct AgentConnectionsNextTests {
             detail: "arbitrary localized guidance",
             recovery: .recheck
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: renamedPolicy,
             in: status
         ) == policy)
@@ -481,7 +473,7 @@ struct AgentConnectionsNextTests {
             code: "managed_connector",
             name: "Legacy connector-looking policy"
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: legacyWithoutRowRecovery,
             in: status
         )?.kind == .recheck)
@@ -492,7 +484,7 @@ struct AgentConnectionsNextTests {
                 #"{"code":"managed_connector","name":"future","status":"needs_fix","detail":"future","recovery_action":"future_mutation"}"#.utf8
             )
         )
-        #expect(AgentConnectionsNextPresentation.recoveryAction(
+        #expect(AgentConnectionsPresentation.recoveryAction(
             for: unknownRecovery,
             in: status
         )?.kind == .recheck)
@@ -503,7 +495,7 @@ struct AgentConnectionsNextTests {
         let status = makeStatus(source: .claudeCode)
 
         for code in ["event_delivery", "channel_test"] {
-            let action = try #require(AgentConnectionsNextPresentation.recoveryAction(
+            let action = try #require(AgentConnectionsPresentation.recoveryAction(
                 for: item(.unverified, code: code, recovery: .testChannel),
                 in: status
             ))
@@ -514,7 +506,7 @@ struct AgentConnectionsNextTests {
             ))
         }
 
-        let eventCLI = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let eventCLI = try #require(AgentConnectionsPresentation.recoveryAction(
             for: item(.missing, code: "event_cli", recovery: .recheck),
             in: status
         ))
@@ -527,12 +519,12 @@ struct AgentConnectionsNextTests {
 
     @Test
     func recoveryButtonPresentationKeepsBusyAndAccessibilityContractsTyped() throws {
-        let action = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let action = try #require(AgentConnectionsPresentation.recoveryAction(
             for: item(.unverified, code: "event_delivery", recovery: .testChannel),
             in: makeStatus(source: .pi)
         ))
         let checkItem = item(.unverified, code: "event_delivery", recovery: .testChannel)
-        let enabled = AgentConnectionsNextPresentation.recoveryButtonPresentation(
+        let enabled = AgentConnectionsPresentation.recoveryButtonPresentation(
             for: action,
             item: checkItem,
             itemIndex: 3,
@@ -548,7 +540,7 @@ struct AgentConnectionsNextTests {
         #expect(enabled.accessibilityIdentifier == "connections.detail.check-action.test-channel.pi.3")
         #expect(enabled.isEnabled)
 
-        let busy = AgentConnectionsNextPresentation.recoveryButtonPresentation(
+        let busy = AgentConnectionsPresentation.recoveryButtonPresentation(
             for: action,
             item: checkItem,
             itemIndex: 3,
@@ -573,22 +565,22 @@ struct AgentConnectionsNextTests {
             code: "host_verification",
             recovery: .recheck
         )
-        let firstAction = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let firstAction = try #require(AgentConnectionsPresentation.recoveryAction(
             for: firstItem,
             in: status
         ))
-        let secondAction = try #require(AgentConnectionsNextPresentation.recoveryAction(
+        let secondAction = try #require(AgentConnectionsPresentation.recoveryAction(
             for: secondItem,
             in: status
         ))
-        let first = AgentConnectionsNextPresentation.recoveryButtonPresentation(
+        let first = AgentConnectionsPresentation.recoveryButtonPresentation(
             for: firstAction,
             item: firstItem,
             itemIndex: 4,
             busy: false,
             locale: "en"
         )
-        let second = AgentConnectionsNextPresentation.recoveryButtonPresentation(
+        let second = AgentConnectionsPresentation.recoveryButtonPresentation(
             for: secondAction,
             item: secondItem,
             itemIndex: 5,

@@ -12,15 +12,13 @@ trap 'rm -rf "$TMP_DIR"' EXIT
     --product AgentPetCompanion \
     -Xswiftc -strict-concurrency=complete \
     -Xswiftc -warnings-as-errors >/dev/null
-  swift build \
-    --product AgentPetCompanionCoreValidation \
-    -Xswiftc -strict-concurrency=complete \
-    -Xswiftc -warnings-as-errors >/dev/null
 )
 
 BIN_DIR="$(cd "$MACOS_DIR" && swift build --show-bin-path)"
-"$BIN_DIR/AgentPetCompanionCoreValidation" >/dev/null
-(cd "$MACOS_DIR" && swift run AgentPetCompanionUIValidation)
+APC_HOME="$TMP_DIR/ui-validation-home" \
+APC_DISABLE_LAUNCH_AGENT=1 \
+APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
+  "$BIN_DIR/AgentPetCompanion" --run-ui-validation
 CORE_OBJECT_DIR="$BIN_DIR/AgentPetCompanionCore.build"
 CORE_OBJECTS=(
   "$CORE_OBJECT_DIR/AppModels.swift.o"

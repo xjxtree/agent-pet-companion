@@ -2,14 +2,6 @@ import AgentPetCompanionCore
 import Foundation
 
 enum PetAssetLocator {
-#if DEBUG
-    /// Marker used only by checked-in, non-interactive UI regression fixtures.
-    /// The file itself need not exist; its parent owns `assets/frames` and the
-    /// fixture supplies a readable explicit cover path. Release builds retain
-    /// only the normal PetCore-extracted `<pet-id>-frames` contract.
-    static let uiNextFixturePetpackMarker = ".ui-next-visual-fixture.petpack"
-#endif
-
     static func coverURL(for pet: PetSummary) -> URL? {
         candidateURLs(for: pet).first { FileManager.default.isReadableFile(atPath: $0.path) }
     }
@@ -37,13 +29,6 @@ enum PetAssetLocator {
     static func framesRoot(for pet: PetSummary) -> URL? {
         guard !pet.petpackPath.isEmpty else { return nil }
         guard let petpackURL = petpackURL(for: pet) else { return nil }
-#if DEBUG
-        if petpackURL.lastPathComponent == uiNextFixturePetpackMarker {
-            return petpackURL
-                .deletingLastPathComponent()
-                .appendingPathComponent("assets/frames", isDirectory: true)
-        }
-#endif
         return petpackURL
             .deletingLastPathComponent()
             .appendingPathComponent("\(pet.id)-frames", isDirectory: true)

@@ -6,7 +6,7 @@ import Testing
 @testable import AgentPetCompanionCore
 
 @Suite
-struct BehaviorSettingsNextTests {
+struct BehaviorSettingsViewTests {
     @Test
     func configurationHasExactlyTwoStableSubpages() {
         #expect(BehaviorSettingsSection.allCases == [.appearance, .messages])
@@ -15,33 +15,34 @@ struct BehaviorSettingsNextTests {
 
     @Test
     func messageCatalogContainsOnlyTheSupportedSourcesAndEvents() {
-        #expect(BehaviorSettingsNextCatalog.sources == [.codex, .claudeCode, .pi, .opencode])
+        #expect(BehaviorSettingsCatalog.sources == [.codex, .claudeCode, .pi, .opencode])
         #expect(
-            BehaviorSettingsNextCatalog.events
+            BehaviorSettingsCatalog.events
                 == [.start, .tool, .waiting, .review, .done, .failed]
         )
     }
 
     @Test
     func appearanceCatalogKeepsTheClosedThemeAndFpsProfiles() {
-        #expect(BehaviorSettingsNextCatalog.appearanceThemes == [.system, .light, .dark])
-        #expect(BehaviorSettingsNextCatalog.fpsProfiles == [.standard, .smooth])
-        #expect(BehaviorSettingsNextCatalog.fpsProfiles.map(\.fps) == [12, 20])
-        #expect(BehaviorSettingsNextCatalog.groupDisplays == [.stacked, .expanded])
+        #expect(BehaviorSettingsCatalog.appearanceThemes == [.system, .light, .dark])
+        #expect(BehaviorSettingsCatalog.fpsProfiles == [.standard, .smooth])
+        #expect(BehaviorSettingsCatalog.fpsProfiles.map(\.fps) == [12, 20])
+        #expect(BehaviorSettingsCatalog.groupDisplays == [.stacked, .expanded])
     }
 
     @Test
     func resizePreviewMatchesTheOverlayInteractionContract() {
-        #expect(BehaviorSettingsNextLayout.resizeHitTarget == CGFloat(38))
-        #expect(BehaviorSettingsNextLayout.resizeVisualSize == CGFloat(24))
-        #expect(BehaviorSettingsNextLayout.resizeHitTarget > BehaviorSettingsNextLayout.resizeVisualSize)
+        #expect(BehaviorSettingsLayout.resizeHitTarget == CGFloat(38))
+        #expect(BehaviorSettingsLayout.resizeVisualSize == CGFloat(24))
+        #expect(BehaviorSettingsLayout.resizeHitTarget > BehaviorSettingsLayout.resizeVisualSize)
     }
 
     @Test
     func wideSubnavigationFitsTheLongestEnglishLabelWithoutTruncation() {
-        let titles = APCLocalizationFixtureScope.withLocale("en") {
-            BehaviorSettingsSection.allCases.map(\.title)
-        }
+        let titles = [
+            APCLocalization.text(.configSectionAppearance, locale: "en"),
+            APCLocalization.text(.configSectionMessages, locale: "en"),
+        ]
         let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         let longestTextWidth = titles
             .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
@@ -49,7 +50,7 @@ struct BehaviorSettingsNextTests {
 
         // Reserve native source-list space for the symbol, label gap, row insets,
         // split-view divider, and the trailing selection-pill breathing room.
-        #expect(BehaviorSettingsNextLayout.navigationWidth >= longestTextWidth + 80)
+        #expect(BehaviorSettingsLayout.navigationWidth >= longestTextWidth + 80)
     }
 
     @MainActor

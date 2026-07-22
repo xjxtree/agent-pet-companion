@@ -480,39 +480,6 @@ struct ServiceDiagnosticsView: View {
 
     var body: some View {
         PageScroll {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(APCLocalization.text(.diagnosticsPageTitle))
-                    .font(.title2.weight(.semibold))
-                Button {
-                    performServiceAction()
-                } label: {
-                    if serviceActionIsBusy {
-                        Label(
-                            APCLocalization.text(
-                                primaryAction == .refresh
-                                    ? .diagnosticsRefreshing
-                                    : .diagnosticsRecovering
-                            ),
-                            systemImage: "arrow.triangle.2.circlepath"
-                        )
-                    } else {
-                        Label(
-                            APCLocalization.text(
-                                primaryAction == .refresh
-                                    ? .diagnosticsRefresh
-                                    : .diagnosticsRecover
-                            ),
-                            systemImage: "arrow.clockwise"
-                        )
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(serviceActionIsBusy)
-                .accessibilityIdentifier("diagnostics.refresh")
-            }
-
             if shellMode == .singleContent {
                 VStack(alignment: .leading, spacing: 18) {
                     serviceStatusRegion
@@ -535,6 +502,42 @@ struct ServiceDiagnosticsView: View {
                     }
                     .accessibilityIdentifier("diagnostics.layout.fitted-single-column")
                 }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    performServiceAction()
+                } label: {
+                    if serviceActionIsBusy {
+                        Label(
+                            APCLocalization.text(
+                                primaryAction == .refresh
+                                    ? .diagnosticsRefreshing
+                                    : .diagnosticsRecovering
+                            ),
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .labelStyle(.iconOnly)
+                    } else {
+                        Label(
+                            APCLocalization.text(
+                                primaryAction == .refresh
+                                    ? .diagnosticsRefresh
+                                    : .diagnosticsRecover
+                            ),
+                            systemImage: "arrow.clockwise"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                }
+                .help(APCLocalization.text(
+                    primaryAction == .refresh
+                        ? .diagnosticsRefresh
+                        : .diagnosticsRecover
+                ))
+                .disabled(serviceActionIsBusy)
+                .accessibilityIdentifier("diagnostics.refresh")
             }
         }
         .accessibilityIdentifier("diagnostics.page")
@@ -561,39 +564,18 @@ struct ServiceDiagnosticsView: View {
     private var diagnosticPackageRegion: some View {
         Surface {
             VStack(alignment: .leading, spacing: 16) {
-                Text(APCLocalization.text(.diagnosticsLogDownload))
+                Label(
+                    APCLocalization.text(.diagnosticsPackageTitle),
+                    systemImage: "doc.zipper"
+                )
                     .font(.title3.weight(.semibold))
 
-                Label {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(APCLocalization.text(.diagnosticsPackageTitle))
-                            .font(.headline)
-                        Text(APCLocalization.text(.diagnosticsPackageDetail))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(systemName: "doc.zipper")
-                        .font(.title2)
-                        .foregroundStyle(APCDesign.accent)
-                }
-
-                VStack(spacing: 0) {
-                    DiagnosticPackageMetadataRow(
-                        title: APCLocalization.text(.diagnosticsMetadataScope),
-                        value: APCLocalization.text(.diagnosticsMetadataBounded14Days)
-                    )
-                    Divider()
-                    DiagnosticPackageMetadataRow(
-                        title: APCLocalization.text(.diagnosticsMetadataPrivacy),
-                        value: APCLocalization.text(.diagnosticsMetadataRedacted)
-                    )
-                    Divider()
-                    DiagnosticPackageMetadataRow(
-                        title: APCLocalization.text(.diagnosticsMetadataFormat),
-                        value: APCLocalization.text(.technicalZIP)
-                    )
-                }
+                Text(diagnosticPackageSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(APCLocalization.text(.diagnosticsPrivacy))
+                    .accessibilityHint(APCLocalization.text(.diagnosticsPrivacy))
 
                 Button {
                     performDiagnosticsArchiveAction()
@@ -612,15 +594,18 @@ struct ServiceDiagnosticsView: View {
                         .textSelection(.enabled)
                 }
 
-                Label(
-                    APCLocalization.text(.diagnosticsPrivacy),
-                    systemImage: "hand.raised.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
         .accessibilityIdentifier("diagnostics.log-package")
+    }
+
+    private var diagnosticPackageSummary: String {
+        [
+            APCLocalization.text(.diagnosticsPackageDetail),
+            APCLocalization.text(.diagnosticsMetadataBounded14Days),
+            APCLocalization.text(.diagnosticsMetadataRedacted),
+            APCLocalization.text(.technicalZIP),
+        ].joined(separator: " · ")
     }
 
     private var exportStatusMessage: String? {
@@ -700,13 +685,9 @@ private struct ServiceDiagnosticRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 12)
-
-            Text(presentation.status)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(presentation.tone.color)
         }
         .padding(.vertical, 11)
+        .help(presentation.status)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(APCLocalization.format(
             .diagnosticsRowAccessibilityFormat,
@@ -716,19 +697,5 @@ private struct ServiceDiagnosticRow: View {
         ))
         .accessibilityValue(presentation.status)
         .accessibilityIdentifier("diagnostics.service.\(presentation.id.rawValue)")
-    }
-}
-
-private struct DiagnosticPackageMetadataRow: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        LabeledContent(title) {
-            Text(value)
-                .fontWeight(.semibold)
-        }
-        .font(.callout)
-        .padding(.vertical, 9)
     }
 }

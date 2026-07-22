@@ -1,52 +1,28 @@
 import AgentPetCompanionCore
 import AppKit
-import Foundation
 import SwiftUI
 
-// Kept as a source-compatible presentation contract for existing validation.
-// UI Next no longer lays out overview or Agent cards with these grids.
-enum ConnectionGridLayout {
-    static let overviewColumns = [
-        GridItem(.adaptive(minimum: 140), spacing: 12, alignment: .top)
-    ]
-    static let cardColumns = [
-        GridItem(.adaptive(minimum: 260), spacing: 14, alignment: .top)
-    ]
-}
-
-enum AgentConnectionsNextCatalog {
+enum AgentConnectionsCatalog {
     static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
 }
 
-enum AgentConnectionsNextLayout {
-    static let fullLayoutMinimumWidth: CGFloat = 1_120
-    static let listDetailMinimumWidth: CGFloat = 880
+enum AgentConnectionsLayout {
     static let listWidth: CGFloat = 190
-    static let inspectorWidth: CGFloat = 292
 
     static func mode(for shellMode: ControlCenterShellMode) -> AgentConnectionsLayoutMode {
         switch shellMode {
-        case .allColumns: .full
-        case .sidebarAndContent: .listDetail
+        case .allColumns, .sidebarAndContent: .split
         case .singleContent: .compact
         }
     }
 }
 
 enum AgentConnectionsLayoutMode: Equatable, Sendable {
-    case full
-    case listDetail
+    case split
     case compact
 }
 
-enum AgentConnectionNoSnapshotActionEmphasis: Equatable, Sendable {
-    case hidden
-    case secondary
-    case prominent
-}
-
 enum ConnectionCheckRecoveryActionKind: String, Equatable, Sendable {
-    case chooseProjectDirectory = "choose-project-directory"
     case confirmManagedRepair = "confirm-managed-repair"
     case testChannel = "test-channel"
     case recheck
@@ -62,7 +38,7 @@ struct ConnectionCheckRecoveryAction: Equatable, Sendable {
             AgentConnectionOperation(kind: .test, sources: [source])
         case .recheck:
             AgentConnectionOperation(kind: .check, sources: [source])
-        case .chooseProjectDirectory, .confirmManagedRepair:
+        case .confirmManagedRepair:
             nil
         }
     }
@@ -142,19 +118,21 @@ enum AgentConnectionHealth: Equatable {
     }
 }
 
-enum AgentConnectionsNextPresentation {
-    static func noSnapshotActionEmphasis(
-        status: AgentConnectionStatus?,
-        operationState: AgentConnectionOperationState
-    ) -> AgentConnectionNoSnapshotActionEmphasis {
-        guard status == nil else { return .hidden }
-        return operationState.failedOperation == nil ? .prominent : .secondary
+enum AgentConnectionsPresentation {
+    static func displayItems(in status: AgentConnectionStatus) -> [ConnectionCheckItem] {
+        // Older PetCore versions reported the working directory used by their
+        // host canary as a product-facing project check. Connection management
+        // is Agent-scoped, so that implementation detail must not reintroduce a
+        // project dimension in the App.
+        status.items.filter { $0.code != .projectDirectory }
     }
 
     static func health(for status: AgentConnectionStatus?) -> AgentConnectionHealth {
         guard let status else { return .pending }
-        if !status.blockingItems.isEmpty {
-            return .needsAttention(status.blockingItems.count)
+        let items = displayItems(in: status)
+        let blockingItems = items.filter { $0.status.isBlocking }
+        if !blockingItems.isEmpty {
+            return .needsAttention(blockingItems.count)
         }
         if status.verification.status.requiresUserAction {
             return .actionRequired
@@ -162,10 +140,11 @@ enum AgentConnectionsNextPresentation {
         if status.checkMode == .light {
             return .lightCheck
         }
-        if status.verification.status == .unverified || !status.unverifiedItems.isEmpty {
+        if status.verification.status == .unverified
+            || items.contains(where: { $0.status == .unverified }) {
             return .unverified
         }
-        if !status.unsupportedItems.isEmpty {
+        if items.contains(where: { $0.status == .unsupported }) {
             return .limited
         }
         return .healthy
@@ -188,7 +167,7 @@ enum AgentConnectionsNextPresentation {
         let key: APCLocalizationKey = switch item.code {
         case .agentCLI: .connectionsCheckNameAgentCLI
         case .eventCLI: .connectionsCheckNameEventCLI
-        case .projectDirectory: .connectionsCheckNameProjectDirectory
+        case .projectDirectory, .unknown: .connectionsCheckNameGeneric
         case .agentVersion: .connectionsCheckNameAgentVersion
         case .managedConnector: .connectionsCheckNameManagedConnector
         case .claudeHooksPolicy: .connectionsCheckNameClaudeHooksPolicy
@@ -198,7 +177,6 @@ enum AgentConnectionsNextPresentation {
         case .channelTest: .connectionsCheckNameChannelTest
         case .appServer: .connectionsCheckNameAppServer
         case .hostServer: .connectionsCheckNameHostServer
-        case .unknown: .connectionsCheckNameGeneric
         }
         return APCLocalization.text(key, locale: locale)
     }
@@ -210,7 +188,7 @@ enum AgentConnectionsNextPresentation {
         let descriptionKey: APCLocalizationKey = switch item.code {
         case .agentCLI: .connectionsCheckDescriptionAgentCLI
         case .eventCLI: .connectionsCheckDescriptionEventCLI
-        case .projectDirectory: .connectionsCheckDescriptionProjectDirectory
+        case .projectDirectory, .unknown: .connectionsCheckDescriptionGeneric
         case .agentVersion: .connectionsCheckDescriptionAgentVersion
         case .managedConnector: .connectionsCheckDescriptionManagedConnector
         case .claudeHooksPolicy: .connectionsCheckDescriptionClaudeHooksPolicy
@@ -220,14 +198,8 @@ enum AgentConnectionsNextPresentation {
         case .channelTest: .connectionsCheckDescriptionChannelTest
         case .appServer: .connectionsCheckDescriptionAppServer
         case .hostServer: .connectionsCheckDescriptionHostServer
-        case .unknown: .connectionsCheckDescriptionGeneric
         }
-        return APCLocalization.format(
-            .connectionsCheckDetailFormat,
-            locale: locale,
-            APCLocalizedPresentation.checkStatusTitle(item.status, locale: locale),
-            APCLocalization.text(descriptionKey, locale: locale)
-        )
+        return APCLocalization.text(descriptionKey, locale: locale)
     }
 
     static func operationFailureDetail(
@@ -291,7 +263,9 @@ enum AgentConnectionsNextPresentation {
         let kind: ConnectionCheckRecoveryActionKind
         switch item.recoveryAction ?? .recheck {
         case .chooseProjectDirectory:
-            kind = .chooseProjectDirectory
+            // Decode the legacy protocol value safely, but never reopen a
+            // project-folder picker from an Agent-scoped connection page.
+            kind = .recheck
         case .confirmManagedRepair:
             kind = status.capabilities.repairableConnectorIssue == true
                 && status.capabilities.managedPathConflict == false
@@ -316,10 +290,6 @@ enum AgentConnectionsNextPresentation {
         let hintKey: APCLocalizationKey
         let systemImage: String
         switch action.kind {
-        case .chooseProjectDirectory:
-            titleKey = .connectionsChooseDirectory
-            hintKey = .connectionsDirectoryDetail
-            systemImage = "folder"
         case .confirmManagedRepair:
             titleKey = .connectionsInstallRepair
             hintKey = .connectionsRepairHintPreview
@@ -348,64 +318,24 @@ enum AgentConnectionsNextPresentation {
         )
     }
 
-    static func checkMetadata(
-        for status: AgentConnectionStatus,
-        locale: String = APCLocalization.interfaceLocaleIdentifier
-    ) -> String {
-        let mode = APCLocalizedPresentation.connectionCheckModeTitle(
-            status.checkMode,
-            locale: locale
-        )
-        guard let checkedAt = status.checkedAt else {
-            return mode
-        }
-        guard let date = connectionDate(from: checkedAt) else {
-            return mode
-        }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: locale)
-        formatter.dateStyle = .short
-        formatter.timeStyle = .medium
-        return APCLocalization.format(
-            .connectionsMetadataFormat,
-            locale: locale,
-            mode,
-            formatter.string(from: date)
-        )
-    }
-
-    static func connectionDate(from value: String) -> Date? {
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let standardFormatter = ISO8601DateFormatter()
-        standardFormatter.formatOptions = [.withInternetDateTime]
-        return fractionalFormatter.date(from: value) ?? standardFormatter.date(from: value)
-    }
 }
 
 struct AgentConnectionsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.controlCenterShellMode) private var shellMode
-    @Environment(\.apcVisualFixtureSelections) private var fixtureSelections
     @SceneStorage("apc.connections.selected-source")
     private var selectedSourceRawValue = AgentSource.codex.rawValue
     @State private var confirmingRepairAll = false
     @State private var confirmingUninstallAll = false
-    @State private var showingEnvironmentInspector = false
 
     private var selectedSource: AgentSource {
-        fixtureSelections.resolveConnectionSource(
-            stored: AgentSource(rawValue: selectedSourceRawValue) ?? .codex
-        )
+        AgentSource(rawValue: selectedSourceRawValue) ?? .codex
     }
 
     private var sourceSelection: Binding<AgentSource> {
         Binding(
             get: { selectedSource },
-            set: {
-                guard fixtureSelections.connectionSource == nil else { return }
-                selectedSourceRawValue = $0.rawValue
-            }
+            set: { selectedSourceRawValue = $0.rawValue }
         )
     }
 
@@ -415,11 +345,9 @@ struct AgentConnectionsView: View {
 
     var body: some View {
         Group {
-            switch AgentConnectionsNextLayout.mode(for: shellMode) {
-            case .full:
-                fullLayout
-            case .listDetail:
-                listDetailLayout
+            switch AgentConnectionsLayout.mode(for: shellMode) {
+            case .split:
+                splitLayout
             case .compact:
                 compactLayout
             }
@@ -454,75 +382,69 @@ struct AgentConnectionsView: View {
         } message: {
             Text(uninstallAllConfirmationMessage)
         }
-        .sheet(isPresented: $showingEnvironmentInspector) {
-            ConnectionEnvironmentInspector(
-                source: selectedSource,
-                status: selectedStatus
-            )
-            .environmentObject(store)
-            .frame(minWidth: 520, minHeight: 520)
-            .accessibilityIdentifier("connections.inspector-sheet")
-        }
         .toolbar {
-            if !shellMode.keepsInspectorPresented {
-                ToolbarItem(placement: .secondaryAction) {
-                    Button {
-                        showingEnvironmentInspector.toggle()
-                    } label: {
-                        Label(
-                            APCLocalization.text(.connectionsEnvironmentTitle),
-                            systemImage: "sidebar.right"
-                        )
-                    }
-                    .accessibilityIdentifier("connections.inspector-toggle")
+            ToolbarItemGroup(placement: .secondaryAction) {
+                Button {
+                    store.checkAllConnections()
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsCheckAll),
+                        systemImage: "checkmark.seal"
+                    )
+                    .labelStyle(.iconOnly)
                 }
+                .help(APCLocalization.text(.connectionsCheckAllHint))
+                .disabled(store.connectionOperationState.isRunning)
+                .accessibilityIdentifier("connections.action.check-all")
+
+                Menu {
+                    Button(APCLocalization.text(.connectionsRepairAll)) {
+                        confirmingRepairAll = true
+                    }
+                    .disabled(repairableSources.isEmpty || store.connectionOperationState.isRunning)
+
+                    Divider()
+
+                    Button(APCLocalization.text(.connectionsUninstallAll), role: .destructive) {
+                        confirmingUninstallAll = true
+                    }
+                    .disabled(installedSources.isEmpty || store.connectionOperationState.isRunning)
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsBulkActions),
+                        systemImage: "ellipsis.circle"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .help(APCLocalization.text(.connectionsBulkActions))
+                .disabled(store.connectionOperationState.isRunning)
+                .accessibilityIdentifier("connections.action.bulk-menu")
             }
         }
         .accessibilityIdentifier("connections.root")
     }
 
-    private var fullLayout: some View {
+    private var splitLayout: some View {
         HStack(spacing: 0) {
             AgentConnectionList(
                 selection: sourceSelection,
                 statuses: store.connections
             )
-            .frame(width: AgentConnectionsNextLayout.listWidth)
+            .frame(width: AgentConnectionsLayout.listWidth)
 
             Divider()
 
-            connectionDetail(showsEnvironmentAction: false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
-
-            connectionInspector
-                .frame(width: AgentConnectionsNextLayout.inspectorWidth)
-        }
-        .accessibilityIdentifier("connections.layout.wide")
-    }
-
-    private var listDetailLayout: some View {
-        HStack(spacing: 0) {
-            AgentConnectionList(
-                selection: sourceSelection,
-                statuses: store.connections
-            )
-            .frame(width: AgentConnectionsNextLayout.listWidth)
-
-            Divider()
-
-            connectionDetail(showsEnvironmentAction: false)
+            connectionDetail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .accessibilityIdentifier("connections.layout.list-detail")
+        .accessibilityIdentifier("connections.layout.split")
     }
 
     private var compactLayout: some View {
         VStack(spacing: 0) {
             compactControls
             Divider()
-            connectionDetail(showsEnvironmentAction: false)
+            connectionDetail
         }
         .accessibilityIdentifier("connections.layout.compact")
     }
@@ -539,7 +461,7 @@ struct AgentConnectionsView: View {
 
     private var sourcePicker: some View {
         Picker(APCLocalization.text(.connectionsAgentLabel), selection: sourceSelection) {
-            ForEach(AgentConnectionsNextCatalog.sources) { source in
+            ForEach(AgentConnectionsCatalog.sources) { source in
                 Text(source.title).tag(source)
             }
         }
@@ -548,22 +470,8 @@ struct AgentConnectionsView: View {
         .accessibilityIdentifier("connections.agent-picker")
     }
 
-    private func connectionDetail(showsEnvironmentAction: Bool) -> some View {
+    private var connectionDetail: some View {
         ConnectionCheckDetail(
-            source: selectedSource,
-            status: selectedStatus,
-            repairableCount: repairableSources.count,
-            installedCount: installedSources.count,
-            onRepairAll: { confirmingRepairAll = true },
-            onUninstallAll: { confirmingUninstallAll = true },
-            onShowEnvironment: { showingEnvironmentInspector = true },
-            showsEnvironmentAction: showsEnvironmentAction
-        )
-        .id(selectedSource)
-    }
-
-    private var connectionInspector: some View {
-        ConnectionEnvironmentInspector(
             source: selectedSource,
             status: selectedStatus
         )
@@ -641,33 +549,17 @@ struct AgentConnectionList: View {
     let statuses: [AgentConnectionStatus]
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(APCLocalization.text(.connectionsListTitle))
-                    .font(.headline)
-                Spacer()
-                Text("\(AgentConnectionsNextCatalog.sources.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+        List(selection: $selection) {
+            ForEach(AgentConnectionsCatalog.sources) { source in
+                AgentConnectionListRow(
+                    source: source,
+                    status: status(for: source)
+                )
+                .tag(source)
+                .accessibilityIdentifier("connections.agent.\(source.rawValue)")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-
-            Divider()
-
-            List(selection: $selection) {
-                ForEach(AgentConnectionsNextCatalog.sources) { source in
-                    AgentConnectionListRow(
-                        source: source,
-                        status: status(for: source)
-                    )
-                    .tag(source)
-                    .accessibilityIdentifier("connections.agent.\(source.rawValue)")
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
         }
+        .listStyle(.sidebar)
         .accessibilityLabel(APCLocalization.text(.connectionsListAccessibility))
         .accessibilityIdentifier("connections.agent-list")
     }
@@ -682,33 +574,22 @@ private struct AgentConnectionListRow: View {
     let status: AgentConnectionStatus?
 
     private var health: AgentConnectionHealth {
-        AgentConnectionsNextPresentation.health(for: status)
+        AgentConnectionsPresentation.health(for: status)
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            AgentIconView(source: source, size: 30)
+            AgentIconView(source: source, size: 26)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(source.title)
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 2)
-
-                    Image(systemName: health.systemImage)
-                        .font(.caption)
-                        .foregroundStyle(health.tone.color)
-                        .accessibilityHidden(true)
-                }
+                Text(source.title)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
 
                 Text(rowDetail)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(health.tone.color)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -722,12 +603,7 @@ private struct AgentConnectionListRow: View {
     }
 
     private var rowDetail: String {
-        guard let status else { return health.title }
-        return APCLocalization.format(
-            .connectionsMetadataFormat,
-            APCLocalizedPresentation.connectionCheckModeTitle(status.checkMode),
-            health.title
-        )
+        health.title
     }
 }
 
@@ -738,37 +614,24 @@ struct ConnectionCheckDetail: View {
 
     let source: AgentSource
     let status: AgentConnectionStatus?
-    let repairableCount: Int
-    let installedCount: Int
-    let onRepairAll: () -> Void
-    let onUninstallAll: () -> Void
-    let onShowEnvironment: () -> Void
-    let showsEnvironmentAction: Bool
 
     private var busy: Bool {
         store.connectionOperationState.isRunning
     }
 
     private var health: AgentConnectionHealth {
-        AgentConnectionsNextPresentation.health(for: status)
+        AgentConnectionsPresentation.health(for: status)
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                pageActionHeader
-                Divider()
+            VStack(alignment: .leading, spacing: 14) {
                 selectedAgentHeader
                 ConnectionActionBar(source: source, busy: busy)
                 operationNotice
 
                 if let status {
-                    AgentVerificationSection(
-                        source: source,
-                        verification: status.verification
-                    )
                     connectionChecks(status)
-                    AgentCapabilitiesSection(capabilities: status.capabilities)
                     managedActions(status)
                 } else {
                     noSnapshotState
@@ -805,86 +668,12 @@ struct ConnectionCheckDetail: View {
         .accessibilityIdentifier("connections.detail")
     }
 
-    private var pageActionHeader: some View {
-        PageActionHeader(
-            title: APCLocalization.text(.connectionsPageTitle),
-            subtitle: APCLocalization.text(.connectionsPageSubtitle)
-        ) {
-            globalActions
-        }
-        .accessibilityIdentifier("connections.detail.header")
-    }
-
-    private var globalActions: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                globalActionItems
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                globalActionItems
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var globalActionItems: some View {
-        Button {
-            store.checkAllConnections()
-        } label: {
-            Label(APCLocalization.text(.connectionsCheckAll), systemImage: "checkmark.seal")
-        }
-        .buttonStyle(.bordered)
-        .disabled(busy)
-        .accessibilityHint(APCLocalization.text(
-            busy ? .connectionsBusyHint : .connectionsCheckAllHint
-        ))
-        .accessibilityIdentifier("connections.action.check-all")
-
-        Menu {
-            Button(APCLocalization.text(.connectionsRepairAll)) {
-                onRepairAll()
-            }
-            .disabled(repairableCount == 0 || busy)
-
-            Divider()
-
-            Button(APCLocalization.text(.connectionsUninstallAll), role: .destructive) {
-                onUninstallAll()
-            }
-            .disabled(installedCount == 0 || busy)
-        } label: {
-            Label(APCLocalization.text(.connectionsBulkActions), systemImage: "ellipsis.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .disabled(busy)
-        .accessibilityIdentifier("connections.action.bulk-menu")
-
-        if showsEnvironmentAction {
-            Button(action: onShowEnvironment) {
-                Label(
-                    APCLocalization.text(.connectionsEnvironmentTitle),
-                    systemImage: "sidebar.right"
-                )
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("connections.action.environment")
-        }
-    }
-
     private var selectedAgentHeader: some View {
         HStack(alignment: .center, spacing: 12) {
             AgentIconView(source: source, size: 42)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(source.title)
-                    .font(.title2.weight(.semibold))
-                Text(status.map {
-                    AgentConnectionsNextPresentation.checkMetadata(for: $0)
-                } ?? APCLocalization.text(.connectionsNoSnapshot))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(source.title)
+                .font(.title2.weight(.semibold))
 
             Spacer(minLength: 8)
 
@@ -939,7 +728,7 @@ struct ConnectionCheckDetail: View {
 
                 Text(connectionOperationTitle(failure.operation))
                     .font(.caption.weight(.semibold))
-                Text(AgentConnectionsNextPresentation.operationFailureDetail(failure.reason))
+                Text(AgentConnectionsPresentation.operationFailureDetail(failure.reason))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -990,8 +779,9 @@ struct ConnectionCheckDetail: View {
     }
 
     private func connectionChecks(_ status: AgentConnectionStatus) -> some View {
-        ConnectionPanel(title: APCLocalization.text(.connectionsChecksTitle), systemImage: "checklist") {
-            if status.items.isEmpty {
+        let items = AgentConnectionsPresentation.displayItems(in: status)
+        return ConnectionPanel(title: APCLocalization.text(.connectionsChecksTitle), systemImage: "checklist") {
+            if items.isEmpty {
                 Text(APCLocalization.text(.connectionsChecksEmpty))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -1001,19 +791,19 @@ struct ConnectionCheckDetail: View {
                     // A localized/human-readable row name is not identity.
                     // The typed result order is bounded and stable for one
                     // check response, so duplicate names remain distinct.
-                    ForEach(Array(status.items.enumerated()), id: \.offset) { index, item in
+                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         ConnectionCheckRow(
                             item: item,
                             checkMode: status.checkMode,
                             index: index,
-                            recoveryAction: AgentConnectionsNextPresentation.recoveryAction(
+                            recoveryAction: AgentConnectionsPresentation.recoveryAction(
                                 for: item,
                                 in: status
                             ),
                             busy: busy,
                             onRecovery: performRecoveryAction
                         )
-                        if index < status.items.count - 1 {
+                        if index < items.count - 1 {
                             Divider()
                         }
                     }
@@ -1025,8 +815,6 @@ struct ConnectionCheckDetail: View {
 
     private func performRecoveryAction(_ action: ConnectionCheckRecoveryAction) {
         switch action.kind {
-        case .chooseProjectDirectory:
-            store.chooseConnectionCheckDirectory()
         case .confirmManagedRepair:
             guard action.source == source,
                   status?.capabilities.repairableConnectorIssue == true,
@@ -1039,14 +827,19 @@ struct ConnectionCheckDetail: View {
         }
     }
 
+    @ViewBuilder
     private func managedActions(_ status: AgentConnectionStatus) -> some View {
-        ConnectionPanel(title: APCLocalization.text(.connectionsManagedTitle), systemImage: "shippingbox") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(APCLocalization.text(.connectionsManagedDetail))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        if status.hasRepairableConnectorIssue || status.canUninstallManagedConnector {
+            HStack(spacing: 10) {
+                Label(
+                    APCLocalization.text(.connectionsManagedTitle),
+                    systemImage: "shippingbox"
+                )
+                .font(.callout.weight(.semibold))
 
-                HStack(spacing: 10) {
+                Spacer(minLength: 12)
+
+                if status.hasRepairableConnectorIssue {
                     Button {
                         confirmingRepair = true
                     } label: {
@@ -1060,26 +853,24 @@ struct ConnectionCheckDetail: View {
                         )
                     }
                     .buttonStyle(.bordered)
-                    .disabled(!status.hasRepairableConnectorIssue || busy)
+                    .disabled(busy)
                     .accessibilityLabel(APCLocalization.format(
                         .connectionsRepairAccessibilityFormat,
                         source.title
                     ))
                     .accessibilityHint(repairHint(for: status))
                     .accessibilityIdentifier("connections.action.repair.\(source.rawValue)")
+                }
 
+                if status.canUninstallManagedConnector {
                     Button {
                         confirmingUninstall = true
                     } label: {
                         Label(APCLocalization.text(.connectionsUninstall), systemImage: "trash")
-                            .foregroundStyle(
-                                status.canUninstallManagedConnector
-                                    ? APCDesign.destructive
-                                    : .secondary
-                            )
+                            .foregroundStyle(APCDesign.destructive)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(!status.canUninstallManagedConnector || busy)
+                    .disabled(busy)
                     .accessibilityLabel(APCLocalization.format(
                         .connectionsUninstallAccessibilityFormat,
                         source.title
@@ -1088,48 +879,26 @@ struct ConnectionCheckDetail: View {
                     .accessibilityIdentifier("connections.action.uninstall.\(source.rawValue)")
                 }
             }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .accessibilityIdentifier("connections.detail.managed-actions")
         }
-        .accessibilityIdentifier("connections.detail.managed-actions")
     }
 
     private var noSnapshotState: some View {
         ContentUnavailableView {
             Label(APCLocalization.text(.connectionsNoSnapshot), systemImage: "antenna.radiowaves.left.and.right.slash")
-        } description: {
-            Text(APCLocalization.format(
-                .connectionsSnapshotDescriptionFormat,
-                source.title
-            ))
-        } actions: {
-            noSnapshotCheckAction
         }
-        .frame(maxWidth: .infinity, minHeight: 250)
+        .frame(maxWidth: .infinity, minHeight: 220)
         .accessibilityIdentifier("connections.detail.empty")
-    }
-
-    @ViewBuilder
-    private var noSnapshotCheckAction: some View {
-        switch AgentConnectionsNextPresentation.noSnapshotActionEmphasis(
-            status: status,
-            operationState: store.connectionOperationState
-        ) {
-        case .hidden:
-            EmptyView()
-        case .secondary:
-            noSnapshotCheckButton
-                .buttonStyle(.bordered)
-        case .prominent:
-            noSnapshotCheckButton
-                .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var noSnapshotCheckButton: some View {
-        Button(APCLocalization.format(.connectionsCheckSourceFormat, source.title)) {
-            store.checkConnection(source)
-        }
-        .disabled(busy)
-        .accessibilityIdentifier("connections.empty.check.\(source.rawValue)")
     }
 
     private var repairConfirmationMessage: String {
@@ -1163,7 +932,8 @@ struct ConnectionCheckDetail: View {
         if status.hasRepairableConnectorIssue {
             return APCLocalization.text(.connectionsRepairHintPreview)
         }
-        if status.blockingItems.isEmpty {
+        if AgentConnectionsPresentation.displayItems(in: status)
+            .allSatisfy({ !$0.status.isBlocking }) {
             return APCLocalization.text(.connectionsRepairHintNone)
         }
         return APCLocalization.text(.connectionsRepairHintManual)
@@ -1176,35 +946,32 @@ struct ConnectionActionBar: View {
     let busy: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Button {
-                    store.checkConnection(source)
-                } label: {
-                    Label(APCLocalization.text(.connectionsRecheck), systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .disabled(busy)
-                .accessibilityHint(APCLocalization.text(
-                    busy ? .connectionsBusyHint : .connectionsRecheckHint
-                ))
-                .accessibilityIdentifier("connections.action.check.\(source.rawValue)")
-
-                Button {
-                    store.sendConnectionTestEvent(source)
-                } label: {
-                    Label(APCLocalization.text(.connectionsTestChannel), systemImage: "play.circle")
-                }
-                .buttonStyle(.bordered)
-                .disabled(busy)
-                .accessibilityHint(APCLocalization.text(.connectionsTestHint))
-                .accessibilityIdentifier("connections.action.test.\(source.rawValue)")
+        HStack(spacing: 10) {
+            Button {
+                store.checkConnection(source)
+            } label: {
+                Label(APCLocalization.text(.connectionsRecheck), systemImage: "arrow.clockwise")
             }
+            .buttonStyle(.bordered)
+            .disabled(busy)
+            .help(APCLocalization.text(
+                busy ? .connectionsBusyHint : .connectionsRecheckHint
+            ))
+            .accessibilityHint(APCLocalization.text(
+                busy ? .connectionsBusyHint : .connectionsRecheckHint
+            ))
+            .accessibilityIdentifier("connections.action.check.\(source.rawValue)")
 
-            Text(APCLocalization.format(.connectionsTestDetailFormat, source.title))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                store.sendConnectionTestEvent(source)
+            } label: {
+                Label(APCLocalization.text(.connectionsTestChannel), systemImage: "play.circle")
+            }
+            .buttonStyle(.bordered)
+            .disabled(busy)
+            .help(APCLocalization.format(.connectionsTestDetailFormat, source.title))
+            .accessibilityHint(APCLocalization.text(.connectionsTestHint))
+            .accessibilityIdentifier("connections.action.test.\(source.rawValue)")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("connections.detail.action-bar")
@@ -1220,17 +987,17 @@ private struct ConnectionCheckRow: View {
     let onRecovery: (ConnectionCheckRecoveryAction) -> Void
 
     private var tone: AgentConnectionVisualTone {
-        AgentConnectionsNextPresentation.itemTone(for: item, checkMode: checkMode)
+        AgentConnectionsPresentation.itemTone(for: item, checkMode: checkMode)
     }
 
     private var statusTitle: String {
-        AgentConnectionsNextPresentation.itemTitle(for: item, checkMode: checkMode)
+        AgentConnectionsPresentation.itemTitle(for: item, checkMode: checkMode)
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(
-                systemName: AgentConnectionsNextPresentation.itemSystemImage(
+                systemName: AgentConnectionsPresentation.itemSystemImage(
                     for: item,
                     checkMode: checkMode
                 )
@@ -1241,9 +1008,9 @@ private struct ConnectionCheckRow: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(AgentConnectionsNextPresentation.itemDisplayName(for: item))
+                Text(AgentConnectionsPresentation.itemDisplayName(for: item))
                     .font(.callout.weight(.semibold))
-                Text(AgentConnectionsNextPresentation.itemDisplayDetail(for: item))
+                Text(AgentConnectionsPresentation.itemDisplayDetail(for: item))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -1255,15 +1022,13 @@ private struct ConnectionCheckRow: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 8) {
-                ConnectionStatusPill(
-                    title: statusTitle,
-                    tone: tone,
-                    systemImage: nil
-                )
-                .accessibilityHidden(true)
+                Text(statusTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tone.color)
+                    .accessibilityHidden(true)
 
                 if let recoveryAction {
-                    let presentation = AgentConnectionsNextPresentation.recoveryButtonPresentation(
+                    let presentation = AgentConnectionsPresentation.recoveryButtonPresentation(
                         for: recoveryAction,
                         item: item,
                         itemIndex: index,
@@ -1292,401 +1057,10 @@ private struct ConnectionCheckRow: View {
     private var checkAccessibilityLabel: String {
         APCLocalization.format(
             .connectionsCheckAccessibilityFormat,
-            AgentConnectionsNextPresentation.itemDisplayName(for: item),
+            AgentConnectionsPresentation.itemDisplayName(for: item),
             statusTitle,
-            AgentConnectionsNextPresentation.itemDisplayDetail(for: item)
+            AgentConnectionsPresentation.itemDisplayDetail(for: item)
         )
-    }
-}
-
-private struct AgentVerificationSection: View {
-    let source: AgentSource
-    let verification: AgentVerification
-
-    private var tone: AgentConnectionVisualTone {
-        switch verification.status {
-        case .verified: .good
-        case .actionRequired: .warning
-        case .unverified, .notRequired: .neutral
-        }
-    }
-
-    var body: some View {
-        ConnectionPanel(title: APCLocalization.text(.connectionsVerificationTitle), systemImage: "checkmark.shield") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(resolvedTitle)
-                        .font(.callout.weight(.semibold))
-                    Spacer(minLength: 8)
-                    ConnectionStatusPill(
-                        title: APCLocalizedPresentation.verificationStatusTitle(
-                            verification.status
-                        ),
-                        tone: tone,
-                        systemImage: nil
-                    )
-                }
-
-                Text(resolvedDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if verification.status != .verified,
-                   verification.status != .notRequired {
-                    Label(
-                        APCLocalization.format(
-                            .connectionsVerificationInstructionFormat,
-                            source.title
-                        ),
-                        systemImage: "person.crop.circle.badge.exclamationmark"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(verification.status.requiresUserAction ? APCDesign.warning : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if hasMetadata {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 5) {
-                        if let checkedCWD = nonEmpty(verification.checkedCWD) {
-                            metadataRow(
-                                title: APCLocalization.text(.connectionsMetadataCWD),
-                                value: checkedCWD
-                            )
-                        }
-                        if let lastEvent = nonEmpty(verification.lastEvent) {
-                            metadataRow(
-                                title: APCLocalization.text(.connectionsMetadataLastReceipt),
-                                value: lastEvent
-                            )
-                        }
-                        if let lastVerifiedAt = nonEmpty(verification.lastVerifiedAt) {
-                            metadataRow(
-                                title: APCLocalization.text(.connectionsMetadataVerifiedAt),
-                                value: localizedTimestamp(lastVerifiedAt)
-                            )
-                        }
-                    }
-                }
-
-            }
-        }
-        .accessibilityIdentifier("connections.detail.verification")
-    }
-
-    private var resolvedTitle: String {
-        let key: APCLocalizationKey = switch verification.status {
-        case .verified: .connectionsVerificationVerifiedTitle
-        case .actionRequired: .connectionsVerificationActionTitle
-        case .unverified: .connectionsVerificationPendingTitle
-        case .notRequired: .connectionsVerificationNotRequiredTitle
-        }
-        return APCLocalization.text(key)
-    }
-
-    private var resolvedDetail: String {
-        let key: APCLocalizationKey = switch verification.status {
-        case .verified: .connectionsVerificationVerifiedDetail
-        case .actionRequired: .connectionsVerificationActionDetail
-        case .unverified: .connectionsVerificationPendingDetail
-        case .notRequired: .connectionsVerificationNotRequiredDetail
-        }
-        return APCLocalization.text(key)
-    }
-
-    private var hasMetadata: Bool {
-        nonEmpty(verification.checkedCWD) != nil
-            || nonEmpty(verification.lastEvent) != nil
-            || nonEmpty(verification.lastVerifiedAt) != nil
-    }
-
-    private func metadataRow(title: String, value: String) -> some View {
-        LabeledContent(title) {
-            Text(value)
-                .font(.caption.monospaced())
-                .textSelection(.enabled)
-                .multilineTextAlignment(.trailing)
-        }
-        .font(.caption)
-    }
-
-    private func nonEmpty(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func localizedTimestamp(_ value: String) -> String {
-        guard let date = AgentConnectionsNextPresentation.connectionDate(from: value) else {
-            return value
-        }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: APCLocalization.interfaceLocaleIdentifier)
-        formatter.dateStyle = .short
-        formatter.timeStyle = .medium
-        return formatter.string(from: date)
-    }
-}
-
-private struct AgentCapabilitiesSection: View {
-    @State private var isExpanded = false
-    let capabilities: AgentConnectorCapabilities
-
-    var body: some View {
-        ConnectionPanel(title: APCLocalization.text(.connectionsCapabilitiesTitle), systemImage: "list.bullet.rectangle") {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    if capabilities.hasReportedCapabilities {
-                        capabilityList(
-                            title: APCLocalization.text(.connectionsCapabilitiesAudited),
-                            values: capabilities.auditedEvents
-                        )
-                        capabilityList(
-                            title: APCLocalization.text(.connectionsCapabilitiesSubscribed),
-                            values: capabilities.subscribedEvents
-                        )
-                        capabilityList(
-                            title: APCLocalization.text(.connectionsCapabilitiesMapped),
-                            values: capabilities.mappedInformation
-                        )
-                        capabilityList(
-                            title: APCLocalization.text(.connectionsCapabilitiesPrivacy),
-                            values: capabilities.privacyExclusions
-                        )
-                    } else {
-                        Text(APCLocalization.text(.connectionsCapabilitiesUnavailable))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
-            } label: {
-                HStack(spacing: 8) {
-                    Text(capabilitySummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                }
-            }
-            .accessibilityLabel(APCLocalization.format(
-                .connectionsCapabilitiesAccessibilityFormat,
-                capabilitySummary
-            ))
-            .accessibilityIdentifier("connections.detail.capabilities-disclosure")
-        }
-        .accessibilityIdentifier("connections.detail.capabilities")
-    }
-
-    private var capabilitySummary: String {
-        guard capabilities.hasReportedCapabilities else {
-            return APCLocalization.text(.connectionsCapabilitiesUnreported)
-        }
-        let version = capabilities.contractVersion.isEmpty
-            ? APCLocalization.text(.connectionsCapabilitiesVersionUnreported)
-            : capabilities.contractVersion
-        return APCLocalization.format(
-            .connectionsCapabilitiesSummaryFormat,
-            version,
-            capabilities.auditedEvents.count,
-            capabilities.subscribedEvents.count
-        )
-    }
-
-    private func capabilityList(title: String, values: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(APCLocalization.format(
-                .connectionsCapabilitiesListFormat,
-                title,
-                values.count
-            ))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            if values.isEmpty {
-                Text(APCLocalization.text(.connectionsCapabilitiesUnreported))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(Array(values.enumerated()), id: \.offset) { _, value in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Circle()
-                            .fill(Color.secondary)
-                            .frame(width: 3, height: 3)
-                            .accessibilityHidden(true)
-                        Text(value)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct ConnectionEnvironmentInspector: View {
-    @EnvironmentObject private var store: AppStore
-    let source: AgentSource
-    let status: AgentConnectionStatus?
-
-    private var busy: Bool {
-        store.connectionOperationState.isRunning
-    }
-
-    private var runtimeInfo: PetCoreRuntimeInfo {
-        store.petCoreRuntimeInfo
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(APCLocalization.text(.connectionsEnvironmentTitle))
-                    .font(.headline)
-                Text(source.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(store.connectionCheckCWD ?? APCLocalization.text(.connectionsDefaultHome))
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(APCLocalization.text(.connectionsDirectoryDetail))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Button {
-                        store.chooseConnectionCheckDirectory()
-                    } label: {
-                        Label(APCLocalization.text(.connectionsChooseDirectory), systemImage: "folder")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(busy)
-                    .accessibilityIdentifier("connections.inspector.directory.choose")
-
-                    if store.connectionCheckCWD != nil {
-                        Button(APCLocalization.text(.connectionsResetDirectory)) {
-                            store.resetConnectionCheckDirectory()
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(busy)
-                        .accessibilityIdentifier("connections.inspector.directory.reset")
-                    }
-                } header: {
-                    Text(APCLocalization.text(.connectionsProjectDirectory))
-                }
-
-                Section {
-                    InspectorValueRow(
-                        title: APCLocalization.text(.technicalPetCore),
-                        value: runtimeInfo.version ?? APCLocalization.text(.commonNotReported)
-                    )
-                    InspectorValueRow(
-                        title: APCLocalization.text(.technicalRPC),
-                        value: runtimeInfo.rpcProtocol ?? APCLocalization.text(.commonNotReported)
-                    )
-                    InspectorValueRow(
-                        title: APCLocalization.text(.technicalSchema),
-                        value: runtimeInfo.databaseSchemaRange
-                            ?? APCLocalization.text(.commonNotReported)
-                    )
-                    InspectorValueRow(
-                        title: APCLocalization.text(.technicalAppBuild),
-                        value: runtimeInfo.appBuild ?? APCLocalization.text(.commonNotReported)
-                    )
-                    InspectorValueRow(
-                        title: APCLocalization.text(.technicalBuildID),
-                        value: runtimeInfo.buildID ?? APCLocalization.text(.commonNotReported)
-                    )
-                    InspectorValueRow(
-                        title: APCLocalization.text(.connectionsInstanceID),
-                        value: runtimeInfo.instanceID ?? APCLocalization.text(.commonNotReported)
-                    )
-                } header: {
-                    Text(APCLocalization.text(.connectionsRuntimeIdentity))
-                } footer: {
-                    Text(APCLocalization.text(.connectionsRuntimeFooter))
-                }
-
-                Section {
-                    DisclosureGroup {
-                        if let status, !status.installPaths.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(status.installPaths, id: \.self) { path in
-                                    Text(path)
-                                        .font(.caption2.monospaced())
-                                        .textSelection(.enabled)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                            .padding(.top, 6)
-                        } else {
-                            Text(APCLocalization.text(.connectionsInstallLocationsEmpty))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 6)
-                        }
-                    } label: {
-                        Text(APCLocalization.format(
-                            .connectionsInstallLocationsFormat,
-                            status?.installPaths.count ?? 0
-                        ))
-                    }
-                    .accessibilityIdentifier("connections.inspector.install-paths")
-                } header: {
-                    Text(APCLocalization.text(.connectionsInstallLocationTitle))
-                }
-
-                Section {
-                    Label(
-                        APCLocalization.text(.connectionsPrivacyDetail),
-                        systemImage: "hand.raised.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("connections.inspector.privacy")
-                } header: {
-                    Text(APCLocalization.text(.connectionsPrivacyTitle))
-                }
-            }
-            .formStyle(.grouped)
-        }
-        .accessibilityIdentifier("connections.inspector")
-    }
-}
-
-private struct InspectorValueRow: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        LabeledContent(title) {
-            Text(value)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-                .multilineTextAlignment(.trailing)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(APCLocalization.format(
-            .connectionsInspectorValueFormat,
-            title,
-            value
-        ))
     }
 }
 

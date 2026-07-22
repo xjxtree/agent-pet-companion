@@ -195,7 +195,6 @@ enum OverlayControlVisibility {
 }
 
 /// Motion values shared by SwiftUI content and the AppKit overlay panels.
-/// They intentionally stay inside the ranges defined by UI-NEXT section 6.5.
 enum OverlayMotion {
     static let controlFadeDuration: TimeInterval = 0.14
     static let controlFadeDelay = Duration.milliseconds(140)

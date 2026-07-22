@@ -637,7 +637,7 @@ guard let moved else {
 // movement also avoids cross-coordinate-system ambiguity in the vertical axis.
 for _ in 0..<7 {
     guard let controls = resolveOverlayControlPoints() else {
-        fputs("overlay interaction validation failed: UI Next menu/resize control windows were not found\n", stderr)
+        fputs("overlay interaction validation failed: menu/resize control windows were not found\n", stderr)
         for window in floatingWindows() {
             fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
         }

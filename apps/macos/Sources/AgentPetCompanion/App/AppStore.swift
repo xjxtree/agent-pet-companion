@@ -450,9 +450,6 @@ final class AppStore: ObservableObject {
     @Published var recentEvents: [AgentEvent] = []
     @Published var connections: [AgentConnectionStatus] = []
     @Published private(set) var generationSession = GenerationSession()
-    #if DEBUG
-    private var uiNextFixturePetHistories: [String: PetHistorySnapshot] = [:]
-    #endif
     @Published var generationReplyText = ""
     @Published var statusText = "正在初始化"
     @Published var serviceStatusText = "正在初始化"
@@ -488,7 +485,6 @@ final class AppStore: ObservableObject {
     @Published private(set) var petLibraryNotice: PetLibraryNotice?
     @Published private(set) var diagnosticsExportState = DiagnosticsExportState.idle
     @Published private(set) var connectionOperationState = AgentConnectionOperationState.idle
-    @Published private(set) var connectionCheckCWD: String?
 
     private let client: PetCoreClient
     private let overlayController: PetOverlayController
@@ -1620,59 +1616,6 @@ final class AppStore: ObservableObject {
         overlayPresenter(overlayController, self)
     }
 
-    #if DEBUG
-    /// Deterministic preview-only state injection. It intentionally bypasses
-    /// bootstrap, persistence, and the real overlay presenter while using the
-    /// same observable properties consumed by production views.
-    func configureForUINextVisualFixture(
-        pets: [PetSummary],
-        connections: [AgentConnectionStatus],
-        events: [AgentEvent],
-        operationalState: PetCoreOperationalState,
-        connectionOperationState: AgentConnectionOperationState = .idle,
-        connectionCheckCWD: String? = nil,
-        petHistories: [String: PetHistorySnapshot] = [:],
-        generationRestore: GenerationSessionRestore? = nil
-    ) {
-        self.pets = pets
-        self.connections = connections
-        self.events = events
-        recentEvents = events
-        self.connectionOperationState = connectionOperationState
-        self.connectionCheckCWD = connectionCheckCWD
-        uiNextFixturePetHistories = petHistories
-        if let generationRestore {
-            let restore = sanitizedGenerationRestore(generationRestore)
-            _ = reduceGeneration(.restore(restore))
-            applyRestoredGenerationForm(
-                restore.submittedForm,
-                referenceReselectionCount: restore.referenceReselectionCount
-            )
-        }
-        petCoreOperationalState = operationalState
-        switch operationalState {
-        case .online:
-            petCoreRuntimeInfo.markRunning()
-        case .checking, .recovering:
-            petCoreRuntimeInfo.markChecking()
-        case .offline, .runtimeMismatch, .error:
-            petCoreRuntimeInfo.markFailed("UI Next fixture: \(operationalState.rawValue)")
-        }
-        // Keep About, diagnostics, MenuBarExtra, and connection-inspector
-        // fixtures representative of a packaged runtime rather than showing
-        // development placeholders that never appear in a validated bundle.
-        petCoreRuntimeInfo.version = "0.1.0"
-        petCoreRuntimeInfo.appBuild = "20260721.1"
-        petCoreRuntimeInfo.buildID = "apc-ui-next-fixture-v1"
-        petCoreRuntimeInfo.rpcProtocol = "v2"
-        petCoreRuntimeInfo.releaseChannel = "develop"
-        petCoreRuntimeInfo.databaseSchemaRange = "0–5"
-        petCoreRuntimeInfo.instanceID = "fixture-instance"
-        hasLoadedStateSnapshot = true
-        initialAppearanceReadiness = .authoritative
-    }
-    #endif
-
     private func reconcileActiveGeneration(_ snapshot: ActiveGenerationSnapshot) {
         let previousJobID = generationSession.jobID
         var restore = GenerationSessionRestore(snapshot: snapshot)
@@ -2370,13 +2313,6 @@ final class AppStore: ObservableObject {
         limit: Int = 16
     ) async throws -> PetHistorySnapshot {
         let boundedLimit = min(max(limit, 1), 32)
-        #if DEBUG
-        if var fixtureHistory = uiNextFixturePetHistories[pet.id] {
-            fixtureHistory.revisions = Array(fixtureHistory.revisions.prefix(boundedLimit))
-            fixtureHistory.jobs = Array(fixtureHistory.jobs.prefix(boundedLimit))
-            return fixtureHistory
-        }
-        #endif
         let result = try await requestPetCore(
             method: "pet.history",
             params: ["pet_id": pet.id, "limit": boundedLimit]
@@ -3014,50 +2950,12 @@ final class AppStore: ObservableObject {
         launchConnectionOperation(.init(kind: .check, sources: AgentSource.allCases))
     }
 
-    func chooseConnectionCheckDirectory() {
-        let panel = NSOpenPanel()
-        panel.title = APCLocalization.text(.connectionsDirectoryPanelTitle)
-        panel.prompt = APCLocalization.text(.connectionsDirectoryPanelPrompt)
-        panel.message = APCLocalization.text(.connectionsDirectoryPanelMessage)
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.resolvesAliases = true
-        panel.canCreateDirectories = false
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        setConnectionCheckDirectory(url.standardizedFileURL.path)
-        checkAllConnections()
-    }
-
-    func resetConnectionCheckDirectory() {
-        setConnectionCheckDirectory(nil)
-        checkAllConnections()
-    }
-
-    func setConnectionCheckDirectory(_ path: String?) {
-        guard let normalized = path?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !normalized.isEmpty
-        else {
-            connectionCheckCWD = nil
-            return
-        }
-        connectionCheckCWD = URL(
-            fileURLWithPath: normalized,
-            isDirectory: true
-        ).standardizedFileURL.path
-    }
-
     static func connectionOperationParameters(
-        source: AgentSource? = nil,
-        cwd: String?
+        source: AgentSource? = nil
     ) -> [String: String] {
         var params: [String: String] = [:]
         if let source {
             params["source"] = source.rawValue
-        }
-        if let cwd, !cwd.isEmpty {
-            params["cwd"] = cwd
         }
         return params
     }
@@ -3143,7 +3041,7 @@ final class AppStore: ObservableObject {
         if sources == AgentSource.allCases {
             let result = try await requestPetCore(
                 method: "connections.check",
-                params: Self.connectionOperationParameters(cwd: connectionCheckCWD)
+                params: Self.connectionOperationParameters()
             )
             let data = try JSONSerialization.data(withJSONObject: result)
             connections = try JSONDecoder().decode([AgentConnectionStatus].self, from: data)
@@ -3154,10 +3052,7 @@ final class AppStore: ObservableObject {
         for source in sources {
             let result = try await requestPetCore(
                 method: "connections.check",
-                params: Self.connectionOperationParameters(
-                    source: source,
-                    cwd: connectionCheckCWD
-                )
+                params: Self.connectionOperationParameters(source: source)
             )
             try updateConnectionStatus(from: result)
         }
@@ -3174,10 +3069,7 @@ final class AppStore: ObservableObject {
             do {
                 let result = try await requestPetCore(
                     method: "connections.repair",
-                    params: Self.connectionOperationParameters(
-                        source: source,
-                        cwd: connectionCheckCWD
-                    )
+                    params: Self.connectionOperationParameters(source: source)
                 )
                 let status = try updateConnectionStatus(from: result)
                 if unresolvedConnectionItemCount(status) == 0 {

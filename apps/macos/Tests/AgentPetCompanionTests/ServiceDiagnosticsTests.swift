@@ -3,7 +3,7 @@ import Testing
 @testable import AgentPetCompanion
 
 @Suite
-struct ServiceDiagnosticsNextTests {
+struct ServiceDiagnosticsTests {
     @Test
     func diagnosticPackageScopeMatchesTheFourteenDayRetentionContract() {
         #expect(

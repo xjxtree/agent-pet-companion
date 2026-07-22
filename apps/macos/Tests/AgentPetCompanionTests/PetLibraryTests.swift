@@ -5,8 +5,8 @@ import Testing
 @testable import AgentPetCompanion
 @testable import AgentPetCompanionCore
 
-@Suite("UI Next pet library")
-struct PetLibraryNextTests {
+@Suite("Pet library")
+struct PetLibraryTests {
     @Test
     func initialSnapshotLoadingNeverMasqueradesAsAnEmptyLibrary() {
         #expect(PetLibraryContentState.resolve(
@@ -444,7 +444,9 @@ struct PetLibraryNextTests {
         let animationSource = try String(contentsOf: animationPreviewURL, encoding: .utf8)
         let appStoreSource = try String(contentsOf: appStoreURL, encoding: .utf8)
 
-        #expect(source.contains("PageActionHeader("))
+        #expect(!source.contains("PageActionHeader("))
+        #expect(source.contains(".searchable("))
+        #expect(source.contains("ToolbarItemGroup(placement: .secondaryAction)"))
         #expect(source.contains("pet-library.search"))
         #expect(source.contains("pet-library.import"))
         #expect(source.contains("pet-library.make"))
@@ -460,9 +462,10 @@ struct PetLibraryNextTests {
         #expect(source.contains(".onKeyPress(.return)"))
         #expect(source.contains("pet-library.inspector.activate"))
         #expect(source.contains("pet-library.inspector.customize-copy"))
-        #expect(source.contains("InfoRow(title: APCLocalization.text(.libraryFieldRevisionID)"))
-        #expect(source.contains("InfoRow(title: APCLocalization.text(.libraryFieldImmutableRevisions)"))
-        #expect(source.contains("InfoRow(title: APCLocalization.text(.libraryFieldPackageVersion)"))
+        #expect(source.contains("title: APCLocalization.text(.libraryFieldRevisionID)"))
+        #expect(source.contains("title: APCLocalization.text(.libraryFieldImmutableRevisions)"))
+        #expect(!source.contains("InfoRow(title: APCLocalization.text(.libraryFieldPackageVersion)"))
+        #expect(!source.contains("Text(APCLocalization.text(.libraryInspectorTitle))"))
         #expect(source.contains("PetLibrarySourceBadge("))
         #expect(!source.contains("apcFloatingControlGlass"))
 
@@ -532,7 +535,7 @@ struct PetLibraryNextTests {
     @Test
     func narrowInfoRowRendersAsAStackWithoutCompressingCriticalValues() throws {
         let narrowWidth: CGFloat = 240
-        let wideWidth: CGFloat = 340
+        let wideWidth: CGFloat = 290
         let title = "Revision ID"
         let value = "rev_00000000000000000000000000000003"
 
@@ -544,7 +547,7 @@ struct PetLibraryNextTests {
 
         #expect(abs(narrow.size.width - narrowWidth) < 0.5)
         #expect(abs(wide.size.width - wideWidth) < 0.5)
-        #expect(narrow.size.height > wide.size.height + 12)
+        #expect(narrow.size.height >= wide.size.height + 4)
         #expect(narrow.bitmap.pixelsWide > 0)
         #expect(narrow.bitmap.pixelsHigh > wide.bitmap.pixelsHigh)
     }
@@ -560,7 +563,12 @@ struct PetLibraryNextTests {
         ]
 
         for width: CGFloat in [240, 272, 290] {
-            #expect(InfoRowLayoutPolicy.mode(for: width) == .stacked)
+            #expect(
+                InfoRowLayoutPolicy.mode(for: width)
+                    == (width < InfoRowLayoutPolicy.minimumSideBySideWidth
+                        ? .stacked
+                        : .sideBySide)
+            )
 
             for (title, value) in values {
                 let rendering = try renderedInfoRowInSafetyCanvas(

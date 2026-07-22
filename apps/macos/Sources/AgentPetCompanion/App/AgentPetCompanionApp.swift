@@ -176,13 +176,10 @@ struct AgentPetCompanionApp: App {
     }
 }
 
-/// The status-menu content is a standalone view so the exact production menu
-/// can be exercised by deterministic UI Next fixtures without creating a
-/// second menu-only implementation. Fixture previews suppress side effects,
-/// while production keeps the normal actions and shortcuts.
+/// The status-menu content is a standalone view so the production menu stays
+/// reusable and testable without a second menu-only implementation.
 struct AppStatusMenuContent: View {
     @ObservedObject var store: AppStore
-    var performsActions = true
 
     var body: some View {
         Group {
@@ -205,7 +202,6 @@ struct AppStatusMenuContent: View {
                 .accessibilityIdentifier("menubar.summary.petcore")
             Divider()
             Button(APCLocalization.text(.appActionOpenControlCenter)) {
-                guard performsActions else { return }
                 store.presentMainWindow()
             }
             .keyboardShortcut("0", modifiers: [.command])
@@ -213,20 +209,17 @@ struct AppStatusMenuContent: View {
             Button(APCLocalization.text(
                 store.behavior.enabled ? .appActionHidePet : .appActionShowPet
             )) {
-                guard performsActions else { return }
                 store.toggleOverlay()
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
             .accessibilityIdentifier("menubar.toggle-pet")
             Button(APCLocalization.text(.appActionFocusPetSessions)) {
-                guard performsActions else { return }
                 store.focusOverlayBubbleForKeyboardNavigation()
             }
             .keyboardShortcut("b", modifiers: [.command, .shift])
             .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
             .accessibilityIdentifier("menubar.focus-pet-sessions")
             Button(APCLocalization.text(.appActionFocusPetResize)) {
-                guard performsActions else { return }
                 store.focusOverlayResizeForKeyboardNavigation()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -234,7 +227,6 @@ struct AppStatusMenuContent: View {
             .accessibilityIdentifier("menubar.focus-pet-resize")
             Divider()
             Button(APCLocalization.text(.appActionCheckConnections)) {
-                guard performsActions else { return }
                 store.selection = .connections
                 store.checkAllConnections()
                 store.presentMainWindow()
@@ -243,7 +235,6 @@ struct AppStatusMenuContent: View {
             .accessibilityIdentifier("menubar.check-connections")
             Divider()
             Button(APCLocalization.text(.appActionQuit)) {
-                guard performsActions else { return }
                 if AppSingleInstanceCoordinator.shared.claim == .primary {
                     AppDiagnostics.shared.log(
                         .notice,

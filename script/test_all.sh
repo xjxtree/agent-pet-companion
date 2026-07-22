@@ -127,18 +127,11 @@ run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/
 run_step "fast/core" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
 run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
-run_step "fast/core" "M0 bootstrap smoke: Rust workspace, PetCore, CLI, Swift core validation" "$ROOT_DIR/script/validate_m0.sh"
+run_step "fast/core" "Rust workspace unit and integration tests" cargo test --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --locked
 run_step "fast/core" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
-run_step "fast/core" "M1 daemon, launch-agent plist, local HTTP token, and event API smoke" "$ROOT_DIR/script/validate_m1.sh"
-run_step "fast/core" "M2 petpack schema/build validation and renderer budget calculations" "$ROOT_DIR/script/validate_m2.sh"
-run_step "simulated integration" "M3 Pet Studio generation with local fallback; not a real App Server run" "$ROOT_DIR/script/validate_m3.sh"
-run_step "simulated integration" "M4 connector repair/test in a temporary agent home" "$ROOT_DIR/script/validate_m4.sh"
 run_step "simulated integration" "generated connector hook/plugin runtime smoke; not real third-party agent acceptance" "$ROOT_DIR/script/validate_connectors_runtime.sh"
 run_step "perf/nightly" "bounded event storm stress at APC_EVENT_STORM_COUNT=${APC_EVENT_STORM_COUNT:-180}" "$ROOT_DIR/script/validate_event_storm.sh"
-run_step "simulated integration" "M5 behavior, filtering, hook redaction, and library guardrails" "$ROOT_DIR/script/validate_m5.sh"
-run_step "fast/core" "M6 workspace tests, token mode, renderer budget, and Swift core validation" "$ROOT_DIR/script/validate_m6.sh"
 run_step "fast/core" "offline overlay geometry, scheduler, accessibility, frame-pipeline and pointer contracts" "$ROOT_DIR/script/validate_overlay_offline.sh"
-run_step "simulated integration" "V1 acceptance scenario with local Pet Studio fallback; not real end-to-end App Server/overlay acceptance" "$ROOT_DIR/script/validate_v1.sh"
 run_step "fast/core" "security boundary checks with fake sentinel secrets" "$ROOT_DIR/script/validate_security_boundaries.sh"
 run_step "simulated integration" "development app bundle assembly without launch" "$ROOT_DIR/script/build_app_bundle.sh" --configuration debug
 

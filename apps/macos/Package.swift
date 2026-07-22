@@ -14,15 +14,6 @@ let package = Package(
         .executable(
             name: "AgentPetCompanionLifecycleClient",
             targets: ["AgentPetCompanionLifecycleClient"]
-        ),
-        .executable(name: "AgentPetCompanionCoreValidation", targets: ["AgentPetCompanionCoreValidation"]),
-        .executable(
-            name: "AgentPetCompanionTransportValidation",
-            targets: ["AgentPetCompanionTransportValidation"]
-        ),
-        .executable(
-            name: "AgentPetCompanionUIValidation",
-            targets: ["AgentPetCompanionUIValidation"]
         )
     ],
     dependencies: [
@@ -50,18 +41,6 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "AgentPetCompanionLifecycleClient"),
-        .executableTarget(
-            name: "AgentPetCompanionCoreValidation",
-            dependencies: ["AgentPetCompanionCore"]
-        ),
-        .executableTarget(
-            name: "AgentPetCompanionTransportValidation",
-            dependencies: ["AgentPetCompanionCore"]
-        ),
-        .executableTarget(
-            name: "AgentPetCompanionUIValidation",
-            dependencies: ["AgentPetCompanion", "AgentPetCompanionCore"]
-        ),
         .testTarget(
             name: "AgentPetCompanionCoreTests",
             dependencies: [
