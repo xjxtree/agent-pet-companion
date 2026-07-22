@@ -13,9 +13,9 @@ Treat `AGENTS.md` as the canonical shared instruction entrypoint. Do not duplica
 When starting a task, use this reading order:
 
 1. The user request
-2. The relevant design document under `docs/design/`
-3. `docs/PROJECT_STATUS.md` for current implementation and validation claims
-4. Existing code in the touched area
+2. `AGENTS.md`
+3. Existing code, schemas, manifests, and tests in the touched area
+4. A relevant durable contract document listed in `docs/README.md`, when one applies
 
 If a rule should apply to every agent, update `AGENTS.md` instead of adding it to this file.
 
@@ -24,4 +24,4 @@ If a rule should apply to every agent, update `AGENTS.md` instead of adding it t
 - Keep responses explicit about whether a requested behavior is planned, implemented, or not yet available.
 - For docs-only changes, verify Markdown links and referenced assets when practical.
 - For future code changes, report the exact Swift, Rust, or integration checks that were run. If the project skeleton needed for a check does not exist yet, say that directly.
-- When working on Claude Code integration later, keep it in `plugins/claude-code/` and follow the shared event model defined by the active schemas and design docs.
+- When working on Claude Code integration, keep it in `plugins/claude-code/` and follow the shared event model defined by the active schemas, implementation, and tests.

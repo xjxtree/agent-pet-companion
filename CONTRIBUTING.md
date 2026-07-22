@@ -1,8 +1,8 @@
 # Contributing to Agent Pet Companion / 参与贡献
 
-Thanks for helping improve Agent Pet Companion. The project is a local-first macOS V1; please keep changes inside the scope documented in the product and technical plans.
+Thanks for helping improve Agent Pet Companion. The project is a local-first macOS V1; keep changes aligned with the current product surface, implementation contracts, and tests.
 
-感谢你参与 Agent Pet Companion。项目当前聚焦本地优先的 macOS V1；提交改动前，请遵循产品方案与技术方案中已经冻结的范围。
+感谢你参与 Agent Pet Companion。项目当前聚焦本地优先的 macOS V1；提交改动应与当前产品入口、实现契约和测试保持一致。
 
 ## Prerequisites / 开发环境
 
@@ -17,12 +17,9 @@ V1 的主要性能目标是 Apple Silicon。发布构建只有在同时编译并
 
 ## Before changing behavior / 修改行为前
 
-Read these sources of truth:
+Start with [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, and tests in the area being changed. Use the [documentation index](docs/README.md) to find the durable architecture, data, integration, `.petpack`, validation, or release contract that applies. The repository does not use a rolling status document; verification claims must come from a fresh run for the exact commit or artifact.
 
-- [Product plan V5](docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md)
-- [Technical plan V1.1](docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md)
-- [Current project status](docs/PROJECT_STATUS.md)
-- [Design index](docs/design/README.md)
+修改前先阅读 [AGENTS.md](AGENTS.md)，再检查相关实现、schema、manifest 和测试；通过[文档索引](docs/README.md)找到对应的架构、数据、集成、`.petpack`、验证或发布契约。仓库不维护滚动状态文档；验收结论必须来自对当前 commit 或产物的实际运行。
 
 Do not add cloud accounts, public galleries, sharing/community features, Petdex import, Codex built-in pet export, Windows UI, or a mission-control platform unless the project scope is explicitly changed.
 
@@ -41,7 +38,7 @@ The default validation gate is deliberately host-safe: it uses isolated temporar
 ```bash
 ./script/validate_test_isolation.sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 (cd apps/macos && swift test)
 ./script/validate_schema_fixtures.sh
@@ -53,9 +50,25 @@ Real UI, real connector, and real App Server checks are separate opt-in gates. U
 
 真实 UI、真实 connector 与真实 App Server 检查均为独立 opt-in 门禁。只能使用文档规定的环境变量，并且不得检查 auth、token、cookie、API Key 或其他密钥文件。
 
+See [Validation profiles](docs/development/validation.md) for the proof boundary of each gate. A skipped environment-dependent gate must be reported as skipped, never as passed.
+
+各门禁的证明边界见[验证层级](docs/development/validation.md)。因环境缺失而跳过的门禁必须明确报告为 skipped，不能写成 passed。
+
 For live macOS UI verification, use Computer Use first and prefer Accessibility reads and element-based actions that do not take over the user's pointer, keyboard, or active focus. Do not default to `open -n`, AppleScript/System Events, CGEvent synthesis, `cliclick`, `pyautogui`, or equivalent direct input automation. If Computer Use cannot cover a required interaction and the fallback can interrupt the user, obtain explicit approval immediately before using it.
 
 真实 macOS UI 验证必须优先使用 Computer Use，并优先采用 Accessibility 状态读取和元素级操作，避免接管用户的鼠标、键盘或当前输入焦点。不得默认使用 `open -n`、AppleScript/System Events、CGEvent、`cliclick`、`pyautogui` 等直接输入自动化；若 Computer Use 无法覆盖且替代方法可能打断用户，必须在执行前取得明确授权。
+
+## Documentation and changelog / 文档与变更记录
+
+- Keep the public READMEs human-facing. Put durable implementation knowledge in the owning `docs/` subdirectory and link to source rather than copying it.
+- Do not add rolling status, dated audits, implementation diaries, validation logs, or pending-work documents. Use issues, CI, and GitHub Release notes.
+- Add every user-visible change to `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). A GitHub Release is not complete until its tag and version section match one-to-one.
+- Update schemas, runtime manifests, fixtures, Swift/Rust mirrors, tests, and the owning document together when a contract changes.
+
+- README 面向普通用户；长期实现信息进入对应 `docs/` 子目录，并通过链接指向源码。
+- 不新增滚动状态、按日期审计、实现过程、验证日志或待办文档；分别使用 issue、CI 与 GitHub Release notes。
+- 所有用户可见变化写入 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]`；GitHub Release、tag 与版本段必须一一对应。
+- 契约变化时同步 schema、runtime manifest、fixtures、Swift/Rust 镜像、测试与对应文档。
 
 ## Pull requests / 合并请求
 

@@ -1,29 +1,29 @@
 # Agent Instructions
 
-This repository is the workspace for Agent Pet Companion, a planned native macOS desktop pet app that combines an AI pet studio, a local pet library, a desktop overlay, and multi-agent event responses.
+This repository is the workspace for Agent Pet Companion, a native macOS desktop pet app that combines an AI pet studio, a local pet library, a desktop overlay, and multi-agent event responses.
 
-## Source Of Truth
+## Sources Of Truth
 
-Before changing product or architecture behavior, read the relevant design docs:
+Use sources in this order when changing behavior or architecture:
 
-- Product design: `docs/design/product-plan-v5/AgentPetCompanion_ProductPlan_V5.md`
-- Technical design: `docs/design/AgentPetCompanion_TechnicalPlan_V1_1.md`
-- Current implementation and validation status: `docs/PROJECT_STATUS.md`
+1. The current user request.
+2. The implementation, typed schemas, runtime manifests, and tests in the touched area.
+3. Durable implementation documentation indexed by `docs/README.md`, including architecture, data, integration, validation, format, and release contracts when relevant.
+4. `README.md` / `README.zh-CN.md` for the supported public product surface.
+
+The repository intentionally does not maintain a rolling project-status ledger or target-design plan. Fresh command output, CI artifacts, and release notes are the evidence for a particular commit or build; do not copy transient pass counts, dated audits, or pending-work lists back into long-lived docs. If prose disagrees with code, schemas, or tests, investigate the implementation and update the durable documentation instead of reviving deleted plans.
 
 The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope.
 
-## Planned Architecture
+## Architecture And Data
 
-- macOS app: SwiftUI for app UI, AppKit/NSPanel for the desktop overlay, Metal-backed rendering for pet frames.
-- Core service: Rust PetCore daemon with Unix Domain Socket JSON-RPC and SQLite.
-- Pet format: app-owned `.petpack`, not a Codex built-in pet compatibility package.
-- AI generation: Codex App Server plus an internal Pet Studio Skill.
-- Portable generation/editing: the provider-neutral `agent-pet-maker` Skill for image-capable external Agent hosts; import/activation requires explicit user authorization.
-- Agent integrations: Codex, Claude Code, Pi Coding Agent, and OpenCode via their supported hooks, plugins, extensions, or event streams.
+Before a cross-component change, read the current [system architecture](docs/architecture/overview.md), [runtime and IPC](docs/architecture/runtime-and-ipc.md), and [data model](docs/architecture/data-model.md). Connector work also uses [Agent connector contracts](docs/integrations/agent-connectors.md); pet format work uses the [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md).
+
+PetCore is the normal online state owner. Keep App/PetCore/CLI runtime identities synchronized, route external data through bounded typed validation, preserve ID-based immutable pet revisions, and do not read Agent credential stores. Do not restate the complete architecture in this instruction file; update the owning document and source together.
 
 ## Repository Layout
 
-Use the planned repository layout below unless the codebase establishes a better local pattern:
+Use the repository layout below unless the codebase establishes a better local pattern:
 
 ```text
 apps/macos/
@@ -45,6 +45,7 @@ docs/
 - Keep changes scoped to the user's request, the product baseline, and the architecture already present in the repo.
 - Prefer typed schemas and structured parsers over ad hoc string parsing.
 - Keep user-facing text bilingual when it belongs in public documentation or product onboarding.
+- Record user-visible changes under `[Unreleased]` in root `CHANGELOG.md`; every GitHub Release, tag, and changelog version must match one-to-one.
 - Avoid committing generated build output, local credentials, `.env` files, DerivedData, or temporary pet assets.
 - Do not read agent auth, token, cookie, API key, or secret files. The app should only consume explicit local event channels and capability tokens designed for this project.
 - When adding code, include the smallest useful tests or validation steps for the changed behavior.
@@ -59,8 +60,10 @@ docs/
 
 ## Product Constraints
 
-- Main navigation has three entries: Pet Studio, Enable & Behavior, Agent Connections.
-- Pet Studio has two tabs: New and Pet Library.
+- Main navigation has five entries in this order: Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, Service & Diagnostics.
+- AI Pet Maker contains only new/edit briefs and their AI creation sessions. Pet Library and Service & Diagnostics remain separate top-level pages.
+- Release bundles seed the local library with the validated `星雾团子` and `Bytebud 字节芽` petpacks. Bundled and user pets are identified by stable manifest ID, not display name: same-name/different-ID pets coexist, and seeding never overwrites an existing same-ID local pet.
+- Bundled pets are read-only defaults: they can be previewed, enabled, and exported, but not deleted or modified in place. Customization must use a new pet ID.
 - Display size is adjusted on the overlay with a bottom-right resize handle, not through a settings field.
-- The fixed pet states are `idle`, `thinking`/`start`, `working`/`tool`, `waiting`, `review`, `done`, and `failed`; keep naming consistent with the active schema once implemented.
-- Performance budgets and frame-rate choices should follow the technical plan: 12 FPS standard animation and 20 FPS smooth animation.
+- The fixed protocol and package states are `idle`, `start`, `tool`, `waiting`, `review`, `done`, and `failed`; UI copy may describe `start` as thinking and `tool` as working without changing the stored names.
+- Keep the implemented animation profiles at 12 FPS standard and 20 FPS smooth unless the user explicitly changes the performance target and the schemas/tests are updated together.
