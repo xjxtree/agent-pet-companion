@@ -259,6 +259,35 @@ HOST_MUTATING_VALIDATORS=(
   "$ROOT_DIR/script/validate_renderer_runtime_budget.sh"
   "$ROOT_DIR/script/validate_app_recovery.sh"
 )
+
+MAIN_UI_VALIDATOR="$ROOT_DIR/script/validate_main_window_ui.sh"
+for identifier in \
+  sidebar.navigation.library sidebar.navigation.maker sidebar.navigation.configuration \
+  sidebar.navigation.connections sidebar.navigation.diagnostics \
+  pet-library.page pet-library.inspector \
+  maker.page maker.brief maker.session maker.brief.references.dropzone maker.action.start \
+  configuration.root configuration.page.appearance configuration.appearance.mouse-passthrough \
+  connections.root connections.agent-list connections.detail connections.action.check-all \
+  diagnostics.page diagnostics.service-status diagnostics.export \
+  diagnostics.service.petCore diagnostics.service.localRPC diagnostics.service.eventChannel; do
+  if ! rg -Fq "$identifier" "$MAIN_UI_VALIDATOR"; then
+    record_failure "main window validator is missing semantic AX identifier: $identifier"
+  fi
+done
+for current_copy in '新宠物' '制作会话' '参考图（可选）' '开始制作' \
+  'New Pet' 'Creation Session' 'Reference Images (Optional)' 'Create Pet'; do
+  if ! rg -Fq "$current_copy" "$MAIN_UI_VALIDATOR"; then
+    record_failure "main window validator is missing current localized Maker copy: $current_copy"
+  fi
+done
+if rg -q 'AI 辅助会话|发起 AI 辅助会话|contains[(]"响应来源"|contains[(]"响应事件"' \
+  "$MAIN_UI_VALIDATOR"; then
+  record_failure 'main window validator still waits for removed or mutually exclusive UI copy'
+fi
+if ! rg -Fq 'kAXIdentifierAttribute' "$MAIN_UI_VALIDATOR"; then
+  record_failure 'main window validator does not read semantic AX identifiers'
+fi
+
 for validator in "${HOST_MUTATING_VALIDATORS[@]}"; do
   if ! rg -q 'apc_require_host_ui_opt_in' "$validator"; then
     record_failure "host-mutating validator lacks an independent APC_VALIDATE_HOST_UI gate: $validator"

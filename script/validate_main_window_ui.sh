@@ -85,6 +85,7 @@ func actions(_ element: AXUIElement) -> [String] {
 struct Node {
     let element: AXUIElement
     let role: String
+    let identifier: String
     let title: String
     let value: String
     let description: String
@@ -101,6 +102,7 @@ func collect(_ element: AXUIElement, into nodes: inout [Node]) {
     nodes.append(Node(
         element: element,
         role: string(element, kAXRoleAttribute),
+        identifier: string(element, kAXIdentifierAttribute),
         title: string(element, kAXTitleAttribute),
         value: string(element, kAXValueAttribute),
         description: string(element, kAXDescriptionAttribute),
@@ -123,7 +125,7 @@ func snapshotNodes(_ root: AXUIElement) -> [Node] {
 let supportedMainWindowTitles: Set<String> = [
     "Agent Pet Companion",
     "宠物库", "Pet Library",
-    "AI宠物制作", "AI Pet Maker",
+    "AI宠物制作", "AI 宠物制作", "AI Pet Maker",
     "宠物配置", "Pet Configuration",
     "Agent 连接", "Agent Connections",
     "服务与诊断", "Service & Diagnostics",
@@ -169,10 +171,7 @@ var nodes: [Node] = []
 for _ in 0..<300 {
     nodes = snapshotNodes(mainWindow)
     let strings = nodes.flatMap(\.strings)
-    let libraryIsVisible = strings.contains(where: { value in
-        value == "宠物库" || value == "Pet Library"
-            || value.contains("宠物库") || value.contains("Pet Library")
-    })
+    let libraryIsVisible = nodes.contains { $0.identifier == "pet-library.page" }
     let bundledPetsAreVisible = ["星雾团子", "Bytebud 字节芽"].allSatisfy { petName in
         strings.contains { $0 == petName || $0.contains(petName) }
     }
@@ -186,9 +185,28 @@ func contains(_ text: String, in nodes: [Node]) -> Bool {
     nodes.flatMap(\.strings).contains { $0 == text || $0.contains(text) }
 }
 
-func require(_ text: String, _ context: String) {
-    if !contains(text, in: nodes) {
-        fputs("main window UI validation failed: missing \(context): \(text)\n", stderr)
+func containsAny(_ candidates: [String], in nodes: [Node]) -> Bool {
+    candidates.contains { contains($0, in: nodes) }
+}
+
+func containsIdentifier(_ identifier: String, in nodes: [Node]) -> Bool {
+    nodes.contains { $0.identifier == identifier }
+}
+
+func mainWindowTitleMatches(_ candidates: [String]) -> Bool {
+    candidates.contains(string(mainWindow, kAXTitleAttribute))
+}
+
+func requireAny(_ candidates: [String], _ context: String) {
+    if !containsAny(candidates, in: nodes) {
+        fputs("main window UI validation failed: missing \(context): \(candidates.joined(separator: " / "))\n", stderr)
+        exit(1)
+    }
+}
+
+func requireIdentifier(_ identifier: String, _ context: String) {
+    if !containsIdentifier(identifier, in: nodes) {
+        fputs("main window UI validation failed: missing \(context) identifier: \(identifier)\n", stderr)
         exit(1)
     }
 }
@@ -256,16 +274,18 @@ let diagnosticsNavigationLabel = resolveVisibleControlLabel(
     roles: [kAXButtonRole as String],
     "primary navigation"
 )
-let requiredVisibleContent: [(String, String)] = [
-    ("宠物库", "library heading"),
-    ("全部宠物", "library inventory"),
-    ("宠物详情", "library detail"),
-    ("星雾团子", "bundled pet"),
-    ("Bytebud 字节芽", "bundled pet")
+let requiredVisibleContent: [([String], String)] = [
+    (["宠物库", "Pet Library"], "library heading"),
+    (["全部宠物", "All Pets"], "library inventory"),
+    (["宠物详情", "Pet Details"], "library detail"),
+    (["星雾团子"], "bundled pet"),
+    (["Bytebud 字节芽"], "bundled pet")
 ]
 
-for (text, context) in requiredVisibleContent {
-    require(text, context)
+requireIdentifier("pet-library.page", "library page")
+requireIdentifier("pet-library.inspector", "library inspector")
+for (candidates, context) in requiredVisibleContent {
+    requireAny(candidates, context)
 }
 
 let scrollAreas = nodes.filter { $0.role == kAXScrollAreaRole as String }
@@ -349,27 +369,66 @@ func pressControl(_ label: String, roles: Set<String>) {
     }
 }
 
+func pressControl(identifier: String) {
+    let currentNodes = snapshotNodes(mainWindow)
+    guard let node = currentNodes.first(where: {
+        $0.identifier == identifier
+            && actions($0.element).contains(kAXPressAction as String)
+    }) else {
+        fputs("main window UI validation failed: actionable control identifier not found: \(identifier)\n", stderr)
+        exit(1)
+    }
+    let result = AXUIElementPerformAction(node.element, kAXPressAction as CFString)
+    if result != .success {
+        fputs("main window UI validation failed: AXPress failed for \(identifier): \(result.rawValue)\n", stderr)
+        exit(1)
+    }
+}
+
 func waitFor(_ description: String, _ predicate: ([Node]) -> Bool) {
+    var lastNodes: [Node] = []
     for _ in 0..<40 {
         let currentNodes = snapshotNodes(mainWindow)
+        lastNodes = currentNodes
         if predicate(currentNodes) {
             return
         }
         usleep(100_000)
     }
     fputs("main window UI validation failed: timed out waiting for \(description)\n", stderr)
+    fputs("current main window title: \(string(mainWindow, kAXTitleAttribute))\n", stderr)
+    let visibleIdentifiers = Array(Set(lastNodes.map(\.identifier).filter { !$0.isEmpty }))
+        .sorted()
+        .prefix(80)
+        .joined(separator: " | ")
+    if !visibleIdentifiers.isEmpty {
+        fputs("visible identifiers: \(visibleIdentifiers)\n", stderr)
+    }
+    let visibleStrings = Array(Set(lastNodes.flatMap(\.strings).filter { !$0.isEmpty }))
+        .sorted()
+        .prefix(60)
+        .joined(separator: " | ")
+    if !visibleStrings.isEmpty {
+        fputs("visible strings: \(visibleStrings)\n", stderr)
+    }
     exit(1)
 }
 
 let buttonRole = kAXButtonRole as String
 
-pressControl(makerNavigationLabel, roles: [buttonRole])
+pressControl(identifier: "sidebar.navigation.maker")
 waitFor("AI Pet Maker page") { nodes in
-    contains("新建宠物", in: nodes)
-        && contains("AI 辅助会话", in: nodes)
-        && contains("参考图", in: nodes)
-        && contains("发起 AI 辅助会话", in: nodes)
-        && !contains("宠物详情", in: nodes)
+    containsIdentifier("maker.page", in: nodes)
+        && containsIdentifier("maker.brief", in: nodes)
+        && containsIdentifier("maker.session", in: nodes)
+        && containsIdentifier("maker.brief.references.dropzone", in: nodes)
+        && containsIdentifier("maker.action.start", in: nodes)
+        && containsAny(["新宠物", "New Pet"], in: nodes)
+        && containsAny(["制作会话", "Creation Session"], in: nodes)
+        && containsAny(["参考图（可选）", "Reference Images (Optional)"], in: nodes)
+        && containsAny(["开始制作", "Create Pet"], in: nodes)
+        && !containsIdentifier("pet-library.page", in: nodes)
+        && mainWindowTitleMatches(["AI宠物制作", "AI Pet Maker"])
 }
 let makerNodes = snapshotNodes(mainWindow)
 let removedStudioTabLabels: Set<String> = ["新建", "New", "宠物库", "Pet Library"]
@@ -381,39 +440,43 @@ if makerNodes.contains(where: { node in
     exit(1)
 }
 
-pressControl(configurationNavigationLabel, roles: [buttonRole])
+pressControl(identifier: "sidebar.navigation.configuration")
 waitFor("Pet Configuration page") { nodes in
-    contains("响应来源", in: nodes)
-        && contains("响应事件", in: nodes)
-        && contains("透明区域穿透", in: nodes)
+    containsIdentifier("configuration.root", in: nodes)
+        && containsIdentifier("configuration.page.appearance", in: nodes)
+        && containsIdentifier("configuration.appearance.mouse-passthrough", in: nodes)
+        && containsAny(["透明区域穿透", "Transparent-area Click-through"], in: nodes)
+        && mainWindowTitleMatches(["宠物配置", "Pet Configuration"])
 }
 
-pressControl(connectionsNavigationLabel, roles: [buttonRole])
+pressControl(identifier: "sidebar.navigation.connections")
 waitFor("Agent Connections page") { nodes in
-    contains("连接状态", in: nodes)
-        && contains("全部检查", in: nodes)
-        && contains("连接检查", in: nodes)
-        && contains("最近事件", in: nodes)
+    containsIdentifier("connections.root", in: nodes)
+        && containsIdentifier("connections.agent-list", in: nodes)
+        && containsIdentifier("connections.detail", in: nodes)
+        && containsIdentifier("connections.action.check-all", in: nodes)
+        && mainWindowTitleMatches(["Agent 连接", "Agent Connections"])
 }
 
-pressControl(diagnosticsNavigationLabel, roles: [buttonRole])
+pressControl(identifier: "sidebar.navigation.diagnostics")
 waitFor("Service & Diagnostics page") { nodes in
-    contains("服务状态", in: nodes)
-        && contains("日志打包下载", in: nodes)
-        && contains("PetCore", in: nodes)
-        && contains("本地 RPC", in: nodes)
-        && contains("事件通道", in: nodes)
-        && contains("桌宠渲染", in: nodes)
-        && contains("打包并下载", in: nodes)
+    containsIdentifier("diagnostics.page", in: nodes)
+        && containsIdentifier("diagnostics.service-status", in: nodes)
+        && containsIdentifier("diagnostics.export", in: nodes)
+        && containsIdentifier("diagnostics.service.petCore", in: nodes)
+        && containsIdentifier("diagnostics.service.localRPC", in: nodes)
+        && containsIdentifier("diagnostics.service.eventChannel", in: nodes)
+        && mainWindowTitleMatches(["服务与诊断", "Service & Diagnostics"])
 }
 
-pressControl(libraryNavigationLabel, roles: [buttonRole])
+pressControl(identifier: "sidebar.navigation.library")
 waitFor("Pet Library page") { nodes in
-    contains("宠物库", in: nodes)
-        && contains("宠物详情", in: nodes)
+    containsIdentifier("pet-library.page", in: nodes)
+        && containsIdentifier("pet-library.inspector", in: nodes)
         && contains("星雾团子", in: nodes)
         && contains("Bytebud 字节芽", in: nodes)
         && (contains("导入", in: nodes) || contains("Import", in: nodes))
+        && mainWindowTitleMatches(["宠物库", "Pet Library"])
 }
 
 func currentMainWindows() -> [AXUIElement] {
