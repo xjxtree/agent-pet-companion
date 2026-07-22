@@ -345,7 +345,7 @@ print("Overlay AX non-mouse check ok: relation=\(relation) bubble=\(Int(bubble.f
 SWIFT
 }
 
-validate_single_short_bubble() {
+validate_single_compact_bubble() {
   APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" RUN_ID="$RUN_ID" swift - <<'SWIFT'
 import AppKit
 import ApplicationServices
@@ -470,9 +470,9 @@ if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
     exit(1)
 }
 
-if !(bubble.frame.width >= 108 && bubble.frame.width <= 220
+if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
     && bubble.frame.height >= 70 && bubble.frame.height <= 130) {
-    fputs("overlay short-bubble validation failed: short bubble did not shrink to content, frame=\(bubble.frame)\n", stderr)
+    fputs("overlay short-bubble validation failed: single-agent bubble is outside the UI Next bounds, frame=\(bubble.frame)\n", stderr)
     exit(1)
 }
 
@@ -485,7 +485,7 @@ guard let doneFrame = doneNode.frame,
     exit(1)
 }
 
-print("Overlay short-bubble non-mouse check ok: bubble=\(Int(bubble.frame.width))x\(Int(bubble.frame.height))")
+print("Overlay single-agent non-mouse check ok: bubble=\(Int(bubble.frame.width))x\(Int(bubble.frame.height))")
 SWIFT
 }
 
@@ -519,6 +519,6 @@ PY
 "$PETCORE_CLI" behavior set-json --value-json "$CODEX_ONLY_BEHAVIOR_JSON" >/dev/null
 ingest_event codex done "短消息 ${RUN_ID}" "OK"
 sleep 1.5
-validate_single_short_bubble
+validate_single_compact_bubble
 
 echo "Overlay non-mouse validation ok: $RUN_ID"

@@ -306,7 +306,8 @@ done
 if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \
   "$OVERLAY_NON_MOUSE_VALIDATOR" \
   || rg -Fq 'canonical bubble contains lower-priority agents' "$OVERLAY_NON_MOUSE_VALIDATOR" \
-  || rg -Fq 'bubble.frame.height >= 44' "$OVERLAY_NON_MOUSE_VALIDATOR"; then
+  || rg -Fq 'bubble.frame.height >= 44' "$OVERLAY_NON_MOUSE_VALIDATOR" \
+  || rg -Fq 'bubble.frame.width <= 170' "$OVERLAY_NON_MOUSE_VALIDATOR"; then
   record_failure 'overlay non-mouse validator still assumes the removed single-agent legacy bubble'
 fi
 
