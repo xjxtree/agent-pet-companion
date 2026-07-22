@@ -17,7 +17,10 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$ROOT_DIR"
-cargo test --workspace >/dev/null
+# Keep the normal success output compact without discarding the failing test
+# name and assertion diagnostics. Redirecting all stdout made wrapper-only
+# regressions indistinguishable from a later daemon/permission assertion.
+cargo test --workspace --quiet
 (APC_HOME="$TMP_DIR/home" APC_DISABLE_CODEX_APP_SERVER_AUTO=1 "$ROOT_DIR/target/debug/petcore" serve --ready-file "$TMP_DIR/ready") &
 PETCORE_PID="$!"
 for _ in {1..100}; do

@@ -80,7 +80,14 @@ fi
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
 assert_json "$SNAPSHOT" 'len(data["events"]) <= 8'
 assert_json "$SNAPSHOT" 'data["revision"] != "'"$INITIAL_REVISION"'"'
-assert_json "$SNAPSHOT" 'all(event["id"].startswith("evt_storm_") for event in data["events"])'
+# App snapshots intentionally expose domain-separated opaque identities, not
+# connector-supplied event/session IDs. Preserve the storm's uniqueness and
+# bounded-projection checks here; the explicit events.recent audit RPC below
+# continues to verify lossless ingestion of the original external IDs.
+assert_json "$SNAPSHOT" 'all(event["id"].startswith("evt-") and len(event["id"]) == 68 for event in data["events"])'
+assert_json "$SNAPSHOT" 'all(not event["id"].startswith("evt_storm_") for event in data["events"])'
+assert_json "$SNAPSHOT" 'len(set(event["id"] for event in data["events"])) == len(data["events"])'
+assert_json "$SNAPSHOT" 'all(event["session_id"].startswith("ses-") and len(event["session_id"]) == 68 for event in data["events"])'
 
 RECENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit "$EVENT_COUNT")"
 EVENT_COUNT="$EVENT_COUNT" JSON="$RECENT" python3 - <<'PY'

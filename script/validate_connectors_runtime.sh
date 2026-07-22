@@ -108,7 +108,6 @@ cargo build --workspace >/dev/null
   APC_HOME="$TMP_DIR/home" \
   APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
   APC_CONNECTOR_CLI_PATH="$ROOT_DIR/target/debug/petcore-cli" \
-  APC_CONNECTOR_RUNTIME_SMOKE=1 \
   APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
   "$ROOT_DIR/target/debug/petcore" serve --ready-file "$TMP_DIR/ready"
 ) &
@@ -130,8 +129,8 @@ assert_json_expr "$CHECK_PI" 'data["source"] == "pi"'
 CHECK_ALL="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check)"
 assert_json_expr "$CHECK_ALL" 'isinstance(data, list) and {item["source"] for item in data} == {"codex", "claude_code", "pi", "opencode"}'
 assert_json_expr "$CHECK_ALL" 'any(item["source"] == "opencode" and any(check["name"] == "OpenCode CLI" for check in item["items"]) and any(check["name"] == "OpenCode Server" for check in item["items"]) and len([check for check in item["items"] if check["name"] == "Server"]) == 0 for item in data)'
-assert_json_expr "$CHECK_ALL" 'any(item["source"] == "pi" and any(check["name"] == "Extension 运行时" and check["status"] == "ok" for check in item["items"]) for item in data)'
-assert_json_expr "$CHECK_ALL" 'any(item["source"] == "opencode" and any(check["name"] == "Plugin 运行时" and check["status"] == "ok" for check in item["items"]) for item in data)'
+assert_json_expr "$CHECK_ALL" 'any(item["source"] == "pi" and any(check["name"] == "Extension 运行时" and check["status"] == "unverified" for check in item["items"]) for item in data)'
+assert_json_expr "$CHECK_ALL" 'any(item["source"] == "opencode" and any(check["name"] == "Plugin 运行时" and check["status"] == "unverified" for check in item["items"]) for item in data)'
 if APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check --verbose >"$EXTRA_OUT" 2>"$EXTRA_ERR"; then
   cat "$EXTRA_OUT" >&2
   echo "connector runtime validation failed: unexpected connections argument was accepted" >&2
@@ -140,9 +139,9 @@ fi
 grep -q "unexpected connections check argument" "$EXTRA_ERR"
 
 CODEX_HOOKS="$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
-CODEX_START_CMD="$(json_path "$CODEX_HOOKS" 'data["hooks"]["SessionStart"][0]["hooks"][0]["command"]')"
-printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"sess_runtime_codex","cwd":"/tmp/apc-codex-project"}' \
-  | APC_HOME="$TMP_DIR/home" sh -c "$CODEX_START_CMD" >/dev/null
+CODEX_PROMPT_CMD="$(json_path "$CODEX_HOOKS" 'data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]')"
+printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"sess_runtime_codex","cwd":"/tmp/apc-codex-project","prompt":"Runtime prompt"}' \
+  | APC_HOME="$TMP_DIR/home" sh -c "$CODEX_PROMPT_CMD" >/dev/null
 assert_recent_event codex start sess_runtime_codex
 
 CLAUDE_SETTINGS="$TMP_DIR/agent-home/.claude/settings.json"
@@ -152,8 +151,9 @@ printf '%s\n' '{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"
 assert_recent_event claude_code tool sess_runtime_claude
 
 CLAUDE_HELPER="$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
-APC_HOME="$TMP_DIR/home" APC_EVENT_TYPE=waiting APC_EVENT_TITLE=等待确认 "$CLAUDE_HELPER" >/dev/null
-assert_recent_event claude_code waiting 等待确认
+printf '%s\n' '{"hook_event_name":"PermissionRequest","session_id":"sess_runtime_claude_helper","cwd":"/tmp/apc-claude-project"}' \
+  | APC_HOME="$TMP_DIR/home" "$CLAUDE_HELPER" >/dev/null
+assert_recent_event claude_code waiting sess_runtime_claude_helper
 
 if command -v node >/dev/null 2>&1; then
   PI_MODULE="$TMP_DIR/pi-connector.mjs"
@@ -228,9 +228,21 @@ const plugin = await mod.AgentPetCompanion({
   directory: '/tmp/apc-opencode-project',
   worktree: '/tmp/apc-opencode-worktree'
 });
-if (!plugin['tool.execute.before']) throw new Error('OpenCode tool.execute.before handler missing');
-if (!plugin['tool.execute.after']) throw new Error('OpenCode tool.execute.after handler missing');
-if (!plugin.event) throw new Error('OpenCode generic event handler missing');
+const expectedHookKeys = [
+  'event',
+  'dispose',
+  'chat.message',
+  'permission.ask',
+  'tool.execute.before',
+  'tool.execute.after',
+  'command.execute.before',
+  'experimental.session.compacting',
+  'experimental.text.complete',
+].sort();
+const actualHookKeys = Object.keys(plugin).sort();
+if (JSON.stringify(actualHookKeys) !== JSON.stringify(expectedHookKeys)) {
+  throw new Error('OpenCode hook set mismatch: ' + JSON.stringify(actualHookKeys));
+}
 await plugin.event({ event: { type: 'session.created', properties: { info: { id: 'sess_runtime_opencode_start' } } } });
 await plugin.event({ event: { type: 'permission.updated', properties: { sessionID: 'sess_runtime_opencode_waiting' } } });
 await plugin['tool.execute.before'](
@@ -243,13 +255,36 @@ await plugin['tool.execute.after'](
 );
 await plugin.event({ event: { type: 'session.error', properties: { sessionID: 'sess_runtime_opencode_failed', error: { message: 'secret-error' } } } });
 await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'sess_runtime_opencode_done' } } });
-await new Promise((resolve) => setTimeout(resolve, 700));
+await plugin.event({ event: { type: 'session.status', properties: { sessionID: 'sess_runtime_opencode_dedup', status: { type: 'idle' } } } });
+await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'sess_runtime_opencode_dedup' } } });
+await plugin.event({ event: { type: 'session.deleted', properties: { info: { id: 'sess_runtime_opencode_deleted' } } } });
+await plugin.event({ event: { type: 'session.next.step.started', properties: { sessionID: 'sess_runtime_opencode_hosted_step', assistantMessageID: 'hosted-step' } } });
+await plugin.event({ event: { type: 'session.next.tool.called', properties: { sessionID: 'sess_runtime_opencode_hosted_step', assistantMessageID: 'hosted-step', callID: 'hosted-call', tool: 'hosted', provider: { executed: true } } } });
+await plugin.event({ event: { type: 'session.next.step.ended', properties: { sessionID: 'sess_runtime_opencode_hosted_step', assistantMessageID: 'hosted-step', finish: 'tool-calls' } } });
+await plugin.event({ event: { type: 'session.next.step.failed', properties: { sessionID: 'sess_runtime_opencode_failed_step', error: { message: 'secret-step-error' } } } });
+await plugin['chat.message'](
+  { sessionID: 'sess_runtime_opencode_failure_barrier', messageID: 'failure-barrier-user' },
+  { parts: [{ type: 'text', text: 'Runtime failure barrier prompt' }] }
+);
+await plugin.event({ event: { type: 'session.error', properties: { sessionID: 'sess_runtime_opencode_failure_barrier', error: { message: 'secret-barrier-error' } } } });
+await plugin.event({ event: { type: 'session.status', properties: { sessionID: 'sess_runtime_opencode_failure_barrier', status: { type: 'idle' } } } });
+await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'sess_runtime_opencode_failure_barrier' } } });
+const cancelledFinal = plugin.event({ event: { type: 'session.next.step.ended', properties: { sessionID: 'sess_runtime_opencode_steered', assistantMessageID: 'step-one', finish: 'stop' } } });
+await plugin.event({ event: { type: 'session.next.step.started', properties: { sessionID: 'sess_runtime_opencode_steered', assistantMessageID: 'step-two' } } });
+await cancelledFinal;
+await plugin.dispose();
 "
   assert_recent_event opencode start sess_runtime_opencode_start
   assert_recent_event opencode waiting sess_runtime_opencode_waiting
   assert_recent_event opencode tool sess_runtime_opencode_tool
   assert_recent_event opencode failed sess_runtime_opencode_failed
   assert_recent_event opencode done sess_runtime_opencode_done
+  assert_recent_event opencode done sess_runtime_opencode_dedup
+  assert_recent_event opencode done sess_runtime_opencode_deleted
+  assert_recent_event opencode done sess_runtime_opencode_hosted_step
+  assert_recent_event opencode failed sess_runtime_opencode_failed_step
+  assert_recent_event opencode failed sess_runtime_opencode_failure_barrier
+  assert_recent_event opencode start sess_runtime_opencode_steered
   OPENCODE_EVENTS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit 80)"
   EVENTS="$OPENCODE_EVENTS" python3 - <<'PY'
 import json
@@ -263,8 +298,57 @@ matching = [
     and event.get("session_id") == "sess_runtime_opencode_start"
 ]
 assert matching and matching[0].get("session_id") == "sess_runtime_opencode_start", matching
+deleted = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("event_type") == "done"
+    and event.get("session_id") == "sess_runtime_opencode_deleted"
+    and event.get("payload_json", {}).get("source_event") == "session.deleted"
+]
+assert deleted, events
+deleted_payload = deleted[0]["payload_json"]
+assert deleted_payload.get("affects_activity") is True, deleted_payload
+assert deleted_payload.get("session_active") is False, deleted_payload
+assert deleted_payload.get("session_open") is False, deleted_payload
+deduplicated_idle = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("session_id") == "sess_runtime_opencode_dedup"
+    and event.get("event_type") == "done"
+]
+assert len(deduplicated_idle) == 1, deduplicated_idle
+assert deduplicated_idle[0]["payload_json"].get("source_event") == "session.status", deduplicated_idle
+hosted_step = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("session_id") == "sess_runtime_opencode_hosted_step"
+    and event.get("event_type") == "done"
+]
+assert len(hosted_step) == 1, hosted_step
+assert hosted_step[0]["payload_json"].get("source_event") == "session.next.step.ended", hosted_step
+assert hosted_step[0]["payload_json"].get("outcome") == "completed", hosted_step
+failed_step = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("session_id") == "sess_runtime_opencode_failed_step"
+    and event.get("event_type") == "failed"
+]
+assert len(failed_step) == 1, failed_step
+assert failed_step[0]["payload_json"].get("source_event") == "session.next.step.failed", failed_step
+failure_barrier = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("session_id") == "sess_runtime_opencode_failure_barrier"
+]
+assert [event.get("event_type") for event in reversed(failure_barrier)] == ["start", "failed"], failure_barrier
+steered = [
+    event for event in events
+    if event.get("source") == "opencode"
+    and event.get("session_id") == "sess_runtime_opencode_steered"
+]
+assert all(event.get("event_type") != "done" for event in steered), steered
 serialized = json.dumps(events, ensure_ascii=False)
-for forbidden in ["TOKEN=secret-command", "secret-output", "secret-error", "secret-call"]:
+for forbidden in ["TOKEN=secret-command", "secret-output", "secret-error", "secret-step-error", "secret-barrier-error", "secret-call"]:
     assert forbidden not in serialized, forbidden
 PY
 else

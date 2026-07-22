@@ -47,6 +47,12 @@ SOURCE_SKILL="$ROOT_DIR/skills/agent-pet-studio/SKILL.md"
 BUNDLED_PORTABLE_SKILL="$APP_RESOURCES/skills/agent-pet-maker"
 SOURCE_PORTABLE_SKILL="$ROOT_DIR/skills/agent-pet-maker"
 LOCALIZATION_BUNDLE="$APP_RESOURCES/AgentPetCompanion_AgentPetCompanion.bundle"
+BUNDLE_ICON="$APP_RESOURCES/AgentPetCompanion.icns"
+SOURCE_ICON="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
+BUNDLED_BRAND_MARK="$LOCALIZATION_BUNDLE/AgentPetCompanionMark.png"
+SOURCE_BRAND_MARK="$ROOT_DIR/logo/transparent/agent-pet-mark-transparent-1024.png"
+BUNDLED_PETS_DIR="$LOCALIZATION_BUNDLE/BuiltInPets"
+SOURCE_PETS_DIR="$ROOT_DIR/apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-bundle-validation.XXXXXX")"
 . "$ROOT_DIR/script/validation_helpers.sh"
 apc_use_isolated_home "$TMP_DIR"
@@ -97,6 +103,14 @@ trap cleanup EXIT
   echo "app bundle validation failed: missing bundled English localization" >&2
   exit 1
 }
+[[ -f "$BUNDLE_ICON" ]] || {
+  echo "app bundle validation failed: missing app icon" >&2
+  exit 1
+}
+[[ -f "$BUNDLED_BRAND_MARK" ]] || {
+  echo "app bundle validation failed: missing bundled brand mark" >&2
+  exit 1
+}
 if ! find "$LOCALIZATION_BUNDLE" -maxdepth 2 -type f \
   -ipath '*/zh-hans.lproj/Localizable.strings' -print -quit | grep -q .; then
   echo "app bundle validation failed: missing bundled Simplified Chinese localization" >&2
@@ -117,6 +131,56 @@ diff -qr -x '__pycache__' -x '*.pyc' -x '*.pyo' \
   echo "app bundle validation failed: bundled agent-pet-maker skill differs from source" >&2
   exit 1
 }
+cmp -s "$SOURCE_ICON" "$BUNDLE_ICON" || {
+  echo "app bundle validation failed: bundled app icon differs from approved transparent icon" >&2
+  exit 1
+}
+cmp -s "$SOURCE_BRAND_MARK" "$BUNDLED_BRAND_MARK" || {
+  echo "app bundle validation failed: bundled brand mark differs from approved transparent mark" >&2
+  exit 1
+}
+for petpack_name in pet_xingwutuanzi.petpack pet_bytebudcodex.petpack; do
+  [[ -f "$BUNDLED_PETS_DIR/$petpack_name" && ! -L "$BUNDLED_PETS_DIR/$petpack_name" ]] || {
+    echo "app bundle validation failed: missing bundled pet $petpack_name" >&2
+    exit 1
+  }
+  cmp -s "$SOURCE_PETS_DIR/$petpack_name" "$BUNDLED_PETS_DIR/$petpack_name" || {
+    echo "app bundle validation failed: bundled pet differs from audited source: $petpack_name" >&2
+    exit 1
+  }
+  "$PETCORE_CLI" petpack validate "$BUNDLED_PETS_DIR/$petpack_name" >/dev/null
+done
+if [[ "$(find "$BUNDLED_PETS_DIR" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" != "2" ]]; then
+  echo "app bundle validation failed: bundled pet inventory must contain exactly the two approved entries" >&2
+  exit 1
+fi
+python3 - "$BUNDLED_PETS_DIR" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+import zipfile
+
+root = pathlib.Path(sys.argv[1])
+expected = {
+    "pet_xingwutuanzi.petpack": (
+        "pet_xingwutuanzi",
+        "035033377ac607fa07cf26c03100749dad44e8cd0575558d0b4049a1339b3d12",
+    ),
+    "pet_bytebudcodex.petpack": (
+        "pet_bytebudcodex",
+        "fa1754d815d8aa544e254880183c7ca920098becb32c8e612e4b585d58ed74e0",
+    ),
+}
+for name, (pet_id, digest) in expected.items():
+    path = root / name
+    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise SystemExit(f"app bundle validation failed: bundled pet digest mismatch: {name}")
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    if manifest.get("id") != pet_id:
+        raise SystemExit(f"app bundle validation failed: bundled pet ID mismatch: {name}")
+PY
 
 python3 - "$APP_CONTENTS/Info.plist" <<'PY'
 import plistlib
@@ -129,6 +193,7 @@ with open(path, "rb") as file:
 expected = {
     "CFBundleExecutable": "AgentPetCompanion",
     "CFBundleIdentifier": "dev.agentpet.companion",
+    "CFBundleIconFile": "AgentPetCompanion.icns",
     "CFBundleName": "AgentPetCompanion",
     "CFBundlePackageType": "APPL",
     "NSPrincipalClass": "NSApplication",
@@ -252,14 +317,73 @@ if health.get("runtime_manifest") != manifest:
     raise SystemExit("app bundle validation failed: PetCore runtime manifest mismatch")
 PY
 
+# Exercise the packaged daemon, CLI and exact packaged resource directory as
+# one clean-home seed path. Static digest checks above prove provenance; this
+# closes the release gate by proving the installed summaries, active choice and
+# rollback-compatible database schema that the App's first snapshot consumes.
+BUNDLED_SEED="$(
+  APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack seed-bundled \
+    --inventory-root "$BUNDLED_PETS_DIR"
+)"
+BUNDLED_PETS="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet list)"
+BUNDLED_SEED="$BUNDLED_SEED" \
+BUNDLED_PETS="$BUNDLED_PETS" \
+BUNDLED_HOME="$TMP_DIR/home" \
+BUNDLED_DB="$TMP_DIR/home/agent-pet.sqlite" \
+python3 - <<'PY'
+import json
+import os
+import pathlib
+import sqlite3
+
+seed = json.loads(os.environ["BUNDLED_SEED"])
+pets = json.loads(os.environ["BUNDLED_PETS"])
+expected_ids = ["pet_xingwutuanzi", "pet_bytebudcodex"]
+outcomes = seed.get("outcomes")
+if seed.get("inventory") != "apc.bundled-pets.v1":
+    raise SystemExit("app bundle validation failed: bundled seed inventory mismatch")
+if not isinstance(outcomes, list) or [item.get("pet_id") for item in outcomes] != expected_ids:
+    raise SystemExit("app bundle validation failed: bundled seed outcomes mismatch")
+if any(item.get("status") != "installed" for item in outcomes):
+    raise SystemExit("app bundle validation failed: clean-home bundled seed did not install both pets")
+
+by_id = {pet.get("id"): pet for pet in pets if isinstance(pet, dict)}
+if len(pets) != 2 or set(by_id) != set(expected_ids):
+    raise SystemExit("app bundle validation failed: clean-home library does not contain exactly both bundled pets")
+managed_pets_root = pathlib.Path(os.environ["BUNDLED_HOME"]).resolve() / "pets"
+for pet_id in expected_ids:
+    pet = by_id[pet_id]
+    if pet.get("origin") != "verified_skill_source":
+        raise SystemExit(f"app bundle validation failed: bundled origin mismatch: {pet_id}")
+    if pet.get("generator") != "agent-pet-companion.release-inventory":
+        raise SystemExit(f"app bundle validation failed: bundled generator mismatch: {pet_id}")
+    if pet.get("provenance") != "apc.bundled-pets.v1":
+        raise SystemExit(f"app bundle validation failed: bundled provenance mismatch: {pet_id}")
+    package_path = pathlib.Path(pet.get("petpack_path", ""))
+    if not package_path.is_file() or managed_pets_root not in package_path.resolve().parents:
+        raise SystemExit(f"app bundle validation failed: installed bundled package is unavailable: {pet_id}")
+if by_id["pet_xingwutuanzi"].get("active") is not True:
+    raise SystemExit("app bundle validation failed: first clean-home bundled pet is not active")
+if by_id["pet_bytebudcodex"].get("active") is not False:
+    raise SystemExit("app bundle validation failed: second clean-home bundled pet unexpectedly became active")
+
+with sqlite3.connect(os.environ["BUNDLED_DB"]) as database:
+    schema_version = database.execute("PRAGMA user_version").fetchone()[0]
+if schema_version != 5:
+    raise SystemExit(
+        f"app bundle validation failed: bundled seed changed database schema to {schema_version}, expected 5"
+    )
+PY
+
 for source in codex claude_code pi opencode; do
   APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null
 done
 
 grep -qF "$PETCORE_CLI" \
   "$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
-grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.claude/settings.json"
-grep -qF "$PETCORE_CLI" "$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
+CLAUDE_HELPER="$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
+grep -qF "$CLAUDE_HELPER" "$TMP_DIR/agent-home/.claude/settings.json"
+grep -qF "$PETCORE_CLI" "$CLAUDE_HELPER"
 grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.pi/agent/extensions/agent-pet-companion.ts"
 grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js"
 
@@ -287,9 +411,25 @@ if [[ "$MODE" == "distribution" ]]; then
   spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
   echo 'Distribution app bundle validation ok: universal, signed, hardened, notarized and stapled'
 else
-  if codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
-    echo 'Development app bundle validation ok (signature present; notarization not required by this mode)'
+  SIGNATURE_PRESENT=0
+  # The linker may ad-hoc sign an individual Mach-O even for an intentionally
+  # unsigned app bundle. The outer bundle is signed only when it has a resource
+  # envelope; a partial outer signature directory is invalid as well.
+  if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then
+    SIGNATURE_PRESENT=1
+  fi
+
+  if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
+    command -v codesign >/dev/null 2>&1 || {
+      echo 'development app bundle validation failed: a signature is present but codesign is unavailable' >&2
+      exit 1
+    }
+    if ! codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"; then
+      echo 'development app bundle validation failed: a signature is present but strict verification failed' >&2
+      exit 1
+    fi
+    echo 'Development app bundle validation ok (signature present and strictly valid; notarization not required by this mode)'
   else
-    echo 'Development app bundle validation ok (unsigned development build; not distributable)'
+    echo 'Development app bundle validation ok (no signature present; not distributable)'
   fi
 fi

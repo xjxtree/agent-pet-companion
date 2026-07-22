@@ -154,14 +154,19 @@ assert_json "$FILTERED_SOURCE" 'data["inserted"] is True and data["triggered"] i
 FILTERED_EVENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" agent ingest --id evt_v1_filtered_event --source claude_code --event-type tool --title 执行工具)"
 assert_json "$FILTERED_EVENT" 'data["inserted"] is True and data["triggered"] is False'
 RECENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
-assert_json "$RECENT" 'all(event["id"] not in {"evt_v1_filtered_source", "evt_v1_filtered_event"} for event in data["events"])'
+assert_json "$RECENT" 'all(event["source"] != "codex" and event["event_type"] != "tool" for event in data["events"])'
 EVENT_HISTORY="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit 10)"
 assert_json "$EVENT_HISTORY" 'any(event["id"] == "evt_v1_filtered_source" for event in data) and any(event["id"] == "evt_v1_filtered_event" for event in data)'
 
 TRIGGERED="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" agent ingest --id evt_v1_waiting --source claude_code --event-type waiting --title 等待确认)"
 assert_json "$TRIGGERED" 'data["triggered"] is True and data["state"] == "waiting"'
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
-assert_json "$SNAPSHOT" 'any(event["id"] == "evt_v1_waiting" for event in data["events"]) and any(event["id"] == "evt_v1_waiting" for event in data["recent_events"])'
+# Both snapshot lists are App-safe projections: validate the visible event and
+# its opaque identity without requiring the connector-supplied audit ID.
+assert_json "$SNAPSHOT" 'any(event["source"] == "claude_code" and event["event_type"] == "waiting" and event["id"].startswith("evt-") and len(event["id"]) == 68 for event in data["events"]) and any(event["source"] == "claude_code" and event["event_type"] == "waiting" and event["id"].startswith("evt-") and len(event["id"]) == 68 for event in data["recent_events"])'
+assert_json "$SNAPSHOT" 'all(event["id"] != "evt_v1_waiting" for event in data["events"] + data["recent_events"])'
+WAITING_HISTORY="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit 10)"
+assert_json "$WAITING_HISTORY" 'any(event["id"] == "evt_v1_waiting" for event in data)'
 
 PORT="$(cat "$TMP_DIR/home/run/http-port")"
 TOKEN="$(cat "$TMP_DIR/home/run/update-token")"

@@ -140,7 +140,7 @@ run_step "fast/core" "M6 workspace tests, token mode, renderer budget, and Swift
 run_step "fast/core" "offline overlay geometry, scheduler, accessibility, frame-pipeline and pointer contracts" "$ROOT_DIR/script/validate_overlay_offline.sh"
 run_step "simulated integration" "V1 acceptance scenario with local Pet Studio fallback; not real end-to-end App Server/overlay acceptance" "$ROOT_DIR/script/validate_v1.sh"
 run_step "fast/core" "security boundary checks with fake sentinel secrets" "$ROOT_DIR/script/validate_security_boundaries.sh"
-run_step "simulated integration" "development app bundle packaging without launch" "$ROOT_DIR/script/build_app_bundle.sh" --configuration debug
+run_step "simulated integration" "development app bundle assembly without launch" "$ROOT_DIR/script/build_app_bundle.sh" --configuration debug
 
 if host_ui_skip_reason_value="$(host_ui_skip_reason)"; then
   log_skip "macos runtime" "real app bundle, overlay layout, scale persistence, renderer telemetry, and app recovery" "$host_ui_skip_reason_value"

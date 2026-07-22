@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_NAME="AgentPetCompanion"
 BUNDLE_ID="dev.agentpet.companion"
+APP_ICON_NAME="AgentPetCompanion.icns"
 MIN_SYSTEM_VERSION="14.0"
 CONFIGURATION="debug"
 UNIVERSAL=0
@@ -12,15 +13,17 @@ RELEASE_BUILD="${APC_RELEASE_BUILD:-1}"
 BUILD_ID="${APC_BUILD_ID:-${RELEASE_VERSION}.${RELEASE_BUILD}.$(date -u +%Y%m%d%H%M%S).$$}"
 RELEASE_CHANNEL="${APC_RELEASE_CHANNEL:-develop}"
 SIGN_DEVELOPMENT=1
+CREATE_DEVELOP_ARCHIVE=0
 
 usage() {
   cat <<'EOF'
-usage: build_app_bundle.sh [--configuration debug|release] [--universal] [--unsigned] [--output PATH]
+usage: build_app_bundle.sh [--configuration debug|release] [--universal] [--archive] [--unsigned] [--output PATH]
 
-Builds an ad-hoc signed development app bundle and verified `-develop.zip` by
-default. --unsigned disables development signing and ZIP packaging. --universal
-requires release mode and builds arm64 plus x86_64 slices. This script never
-launches the app.
+Builds an ad-hoc signed development app bundle by default. --archive also
+creates and verifies a `-develop.zip` for informal handoff. --unsigned disables
+development signing and cannot be combined with --archive. --universal requires
+release mode and builds arm64 plus x86_64 slices. This script never launches the
+app.
 EOF
 }
 
@@ -33,6 +36,10 @@ while (($# > 0)); do
       ;;
     --universal)
       UNIVERSAL=1
+      shift
+      ;;
+    --archive)
+      CREATE_DEVELOP_ARCHIVE=1
       shift
       ;;
     --unsigned)
@@ -55,6 +62,11 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if [[ "$CREATE_DEVELOP_ARCHIVE" == "1" && "$SIGN_DEVELOPMENT" != "1" ]]; then
+  echo '--archive cannot be combined with --unsigned' >&2
+  exit 2
+fi
 
 case "$CONFIGURATION" in
   debug|release) ;;
@@ -83,6 +95,7 @@ esac
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/apps/macos"
+APP_ICON_SOURCE="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="${OUTPUT_PATH:-$DIST_DIR/$APP_NAME.app}"
 case "$APP_BUNDLE" in
@@ -92,10 +105,9 @@ esac
 
 APP_PARENT="$(dirname "$APP_BUNDLE")"
 mkdir -p "$APP_PARENT"
-# Always assemble and sign outside the repository. A File Provider-managed
-# workspace can inject FinderInfo/resource-fork metadata while codesign is
-# traversing a package, which makes otherwise identical develop builds fail
-# intermittently. The verified ZIP is produced from this clean staging area.
+# Always assemble and sign outside the repository so the bundle copied into
+# dist is complete before local validation. An optional handoff archive is also
+# produced from this clean staging area.
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-app-bundle.XXXXXX")"
 STAGED_APP="$TMP_DIR/$APP_NAME.app"
 APP_CONTENTS="$STAGED_APP/Contents"
@@ -107,6 +119,65 @@ RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
 DEVELOP_ARCHIVE="${APP_BUNDLE%.app}-develop.zip"
 STAGED_DEVELOP_ARCHIVE="$TMP_DIR/$APP_NAME-develop.zip"
 ARCHIVE_VERIFY_DIR=""
+
+verify_destination_development_bundle() {
+  local attempt
+  local forbidden_xattrs
+  local diff_log="$TMP_DIR/destination-diff.log"
+  local verify_log="$TMP_DIR/destination-codesign.log"
+
+  # Require a clean, valid destination and give filesystem metadata a bounded
+  # settling window before accepting the local App bundle.
+  for attempt in 1 2 3; do
+    xattr -cr "$APP_BUNDLE"
+    if ! codesign --verify --deep --strict "$APP_BUNDLE" >"$verify_log" 2>&1; then
+      forbidden_xattrs="$(xattr -lr "$APP_BUNDLE" 2>/dev/null \
+        | grep -E 'com[.]apple[.](FinderInfo|ResourceFork):' || true)"
+      if [[ -z "$forbidden_xattrs" ]]; then
+        cat "$verify_log" >&2
+        echo 'destination app signature is invalid after clearing extended attributes' >&2
+        return 1
+      fi
+      continue
+    fi
+    sleep 0.25
+    if codesign --verify --deep --strict "$APP_BUNDLE" >"$verify_log" 2>&1; then
+      return 0
+    fi
+
+    forbidden_xattrs="$(xattr -lr "$APP_BUNDLE" 2>/dev/null \
+      | grep -E 'com[.]apple[.](FinderInfo|ResourceFork):' || true)"
+    if [[ -z "$forbidden_xattrs" ]]; then
+      cat "$verify_log" >&2
+      echo 'destination app signature changed after a clean copy for an unknown reason' >&2
+      return 1
+    fi
+  done
+
+  # A File Provider may repeatedly re-attach package metadata. Only an explicit
+  # handoff archive gives us an independently verified fallback in that case.
+  xattr -cr "$APP_BUNDLE"
+  if ! codesign --verify --deep --strict "$APP_BUNDLE" >"$verify_log" 2>&1; then
+    forbidden_xattrs="$(xattr -lr "$APP_BUNDLE" 2>/dev/null \
+      | grep -E 'com[.]apple[.](FinderInfo|ResourceFork):' || true)"
+    if [[ -z "$forbidden_xattrs" ]]; then
+      cat "$verify_log" >&2
+      echo 'destination app signature is invalid after final extended-attribute cleanup' >&2
+      return 1
+    fi
+  fi
+  if [[ "$CREATE_DEVELOP_ARCHIVE" != "1" ]]; then
+    echo 'destination app metadata did not remain stable; move the workspace out of File Provider storage or rerun with --archive' >&2
+    return 1
+  fi
+  if ! diff -qr "$ARCHIVE_VERIFY_DIR/$APP_NAME.app" "$APP_BUNDLE" >"$diff_log"; then
+    cat "$diff_log" >&2
+    echo 'destination app payload differs from the strictly verified development archive' >&2
+    return 1
+  fi
+  printf '%s\n' \
+    'warning: File Provider repeatedly attached FinderInfo to the destination .app; use the strictly verified -develop.zip as the supported handoff' >&2
+}
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -128,7 +199,7 @@ build_native() {
   local swift_args=(build --product "$APP_NAME")
   if [[ "$CONFIGURATION" == "release" ]]; then
     cargo_args+=(--release)
-    swift_args=(-c release "${swift_args[@]}")
+    swift_args=(build -c release --product "$APP_NAME")
   fi
   (cd "$ROOT_DIR" && \
     APC_BUILD_ID="$BUILD_ID" \
@@ -200,6 +271,10 @@ build_universal() {
 }
 
 mkdir -p "$APP_MACOS" "$APP_RESOURCES/bin" "$APP_RESOURCES/skills"
+[[ -f "$APP_ICON_SOURCE" ]] || {
+  echo "missing app icon source: $APP_ICON_SOURCE" >&2
+  exit 1
+}
 if [[ "$UNIVERSAL" == "1" ]]; then
   build_universal
 else
@@ -208,6 +283,7 @@ fi
 
 cp -R "$ROOT_DIR/skills/agent-pet-studio" "$APP_RESOURCES/skills/agent-pet-studio"
 cp -R "$ROOT_DIR/skills/agent-pet-maker" "$APP_RESOURCES/skills/agent-pet-maker"
+cp "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
 "$APP_RESOURCES/bin/petcore" runtime-manifest >"$RUNTIME_MANIFEST"
 find "$APP_RESOURCES/skills" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$APP_RESOURCES/skills" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
@@ -224,6 +300,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key>
+  <string>$APP_ICON_NAME</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
@@ -289,7 +367,7 @@ fi
 
 "$ROOT_DIR/script/validate_app_bundle.sh" --development "$STAGED_APP" >/dev/null
 
-if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+if [[ "$CREATE_DEVELOP_ARCHIVE" == "1" ]]; then
   # Archive the clean, signed staging bundle before anything crosses into the
   # File Provider workspace. Verify the exact archive payload independently.
   command -v ditto >/dev/null 2>&1 || {
@@ -305,15 +383,23 @@ fi
 mkdir -p "$(dirname "$APP_BUNDLE")"
 rm -rf "$APP_BUNDLE"
 mv "$STAGED_APP" "$APP_BUNDLE"
-if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+if [[ "$CREATE_DEVELOP_ARCHIVE" == "1" ]]; then
   rm -f "$DEVELOP_ARCHIVE"
   mv "$STAGED_DEVELOP_ARCHIVE" "$DEVELOP_ARCHIVE"
 
-  # The naked .app remains a convenient local build product. Clear any
-  # destination metadata immediately and verify it, while treating the ZIP
-  # verified above as the stable informal deliverable.
-  xattr -cr "$APP_BUNDLE"
-  codesign --verify --deep --strict "$APP_BUNDLE"
+  # Re-extract the final archive path and verify its payload, not only the
+  # temporary file that preceded the move into dist.
+  rm -rf "$ARCHIVE_VERIFY_DIR/$APP_NAME.app"
+  ditto -x -k "$DEVELOP_ARCHIVE" "$ARCHIVE_VERIFY_DIR"
+  codesign --verify --deep --strict "$ARCHIVE_VERIFY_DIR/$APP_NAME.app"
+
+else
+  # Do not leave a stale handoff artifact that no longer corresponds to the
+  # App produced by this successful build.
+  rm -f "$DEVELOP_ARCHIVE"
+fi
+if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+  verify_destination_development_bundle
 fi
 
 printf 'Built %s (%s%s, build %s)\n' \
@@ -321,6 +407,6 @@ printf 'Built %s (%s%s, build %s)\n' \
   "$CONFIGURATION" \
   "$([[ "$UNIVERSAL" == "1" ]] && printf ', universal' || true)" \
   "$BUILD_ID"
-if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
+if [[ "$CREATE_DEVELOP_ARCHIVE" == "1" ]]; then
   printf 'Packaged %s (ad-hoc development signature)\n' "$DEVELOP_ARCHIVE"
 fi

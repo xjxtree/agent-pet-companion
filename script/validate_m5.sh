@@ -46,11 +46,13 @@ payload = data["event"]["payload_json"]
 assert data["ok"] is True
 assert data["event"]["title"] == "开始处理"
 assert data["event"]["detail"] is None
-assert set(payload) == {"schema_version", "external_event_id", "source_event", "tool_name", "outcome", "diagnostic", "turn_id", "session_active", "message_role", "message_content", "activity_kind", "activity_content", "interaction_kind", "project_label", "session_title", "session_open", "session_surface", "terminal_app", "session_open_url"}
+assert set(payload) == {"schema_version", "external_event_id", "source_event", "contract_version", "tool_name", "outcome", "diagnostic", "affects_activity", "turn_id", "session_active", "message_role", "message_content", "activity_kind", "activity_content", "interaction_kind", "project_label", "session_title", "session_open", "session_surface", "terminal_app", "session_open_url"}
 assert payload["source_event"] == "start"
+assert payload["contract_version"] is None
 assert payload["tool_name"] is None
 assert payload["outcome"] is None
 assert payload["diagnostic"] is False
+assert payload["affects_activity"] is True
 assert payload["activity_kind"] == "thinking"
 assert payload["activity_content"] is None
 assert "must-not-be-stored" not in json.dumps(payload, ensure_ascii=False)

@@ -28,6 +28,9 @@ fi
 
 rg -q -- '--configuration release' "$ROOT_DIR/script/build_release.sh"
 rg -q -- '--universal' "$ROOT_DIR/script/build_release.sh"
+rg -Fq 'swift_args=(build -c release --product "$APP_NAME")' \
+  "$ROOT_DIR/script/build_app_bundle.sh"
+rg -q -- '--archive' "$ROOT_DIR/script/build_app_bundle.sh"
 rg -q -- '--options runtime' "$ROOT_DIR/script/sign_and_notarize.sh"
 rg -q -- '--timestamp' "$ROOT_DIR/script/sign_and_notarize.sh"
 rg -q 'notarytool submit' "$ROOT_DIR/script/sign_and_notarize.sh"

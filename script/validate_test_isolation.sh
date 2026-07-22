@@ -64,6 +64,7 @@ FAKE_SWIFT_BIN="$TMP_DIR/fake-swift-bin"
 mkdir -p \
   "$BUILD_ROOT/script" \
   "$BUILD_ROOT/apps/macos" \
+  "$BUILD_ROOT/logo/macos" \
   "$BUILD_ROOT/target/debug" \
   "$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__" \
   "$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__" \
@@ -84,6 +85,7 @@ for binary in \
 done
 printf '%s\n' 'name: agent-pet-studio' >"$BUILD_ROOT/skills/agent-pet-studio/SKILL.md"
 printf '%s\n' 'name: agent-pet-maker' >"$BUILD_ROOT/skills/agent-pet-maker/SKILL.md"
+: >"$BUILD_ROOT/logo/macos/AgentPetCompanionTransparent.icns"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__/sentinel.pyc"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__/sentinel.pyc"
 
@@ -290,11 +292,27 @@ if [[ -s "$FORBIDDEN_LOG" ]]; then
 fi
 
 OWNERSHIP_SCRIPTS=(
-  "$ROOT_DIR/script/build_and_run.sh"
   "${HOST_MUTATING_VALIDATORS[@]}"
 )
 if ownership_lines="$(rg -n '\b(pkill|killall|pgrep|launchctl|osascript)\b|(^|[[:space:];|&])(/usr/bin/)?open([[:space:]]|$)' "${OWNERSHIP_SCRIPTS[@]}" || true)" && [[ -n "$ownership_lines" ]]; then
   record_failure "UI process ownership still relies on global discovery/mutation: ${ownership_lines//$'\n'/; }"
+fi
+if run_global_mutation="$(rg -n '\b(pkill|killall|pgrep|launchctl|osascript)\b' "$ROOT_DIR/script/build_and_run.sh" || true)" \
+  && [[ -n "$run_global_mutation" ]]; then
+  record_failure "build_and_run.sh relies on global process discovery/mutation: ${run_global_mutation//$'\n'/; }"
+fi
+if ! rg -q 'NSRunningApplication' \
+  "$ROOT_DIR/apps/macos/Sources/AgentPetCompanionLifecycleClient/main.swift" \
+  || ! rg -q 'application[.]terminate[(][)]' \
+    "$ROOT_DIR/apps/macos/Sources/AgentPetCompanionLifecycleClient/main.swift" \
+  || rg -q 'application[.]forceTerminate[(]' \
+    "$ROOT_DIR/apps/macos/Sources/AgentPetCompanionLifecycleClient/main.swift"; then
+  record_failure 'development Run lifecycle client must request only normal bundle-scoped AppKit termination'
+fi
+run_open_lines="$(rg -n '(^|[[:space:];|&])(/usr/bin/)?open([[:space:]]|$)' "$ROOT_DIR/script/build_and_run.sh" || true)"
+run_open_count="$(printf '%s\n' "$run_open_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "$run_open_count" != "1" || "$run_open_lines" != *'/usr/bin/open -n "$APP_BUNDLE"'* ]]; then
+  record_failure 'build_and_run.sh must contain only the explicit --run fresh bundle launch'
 fi
 
 for validator in \
@@ -528,14 +546,32 @@ if [[ ! -x "$ROOT_DIR/script/build_app_bundle.sh" ]]; then
   record_failure 'script/build_app_bundle.sh is missing or not executable'
 else
   : >"$FORBIDDEN_LOG"
+  mkdir -p "$BUILD_ROOT/dist"
+  : >"$BUILD_ROOT/dist/AgentPetCompanion-develop.zip"
   if ! PATH="$SHIM_DIR:$PATH" \
     APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
     APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
     "$BUILD_ROOT/script/build_app_bundle.sh" >/dev/null 2>&1; then
     record_failure 'build_app_bundle.sh did not complete in the isolated fixture'
+  elif [[ -e "$BUILD_ROOT/dist/AgentPetCompanion-develop.zip" ]]; then
+    record_failure 'default app bundle build unexpectedly created a development ZIP'
   elif find "$BUILD_ROOT/dist/AgentPetCompanion.app" \
     \( -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit | grep -q .; then
     record_failure 'app bundle contains Python cache artifacts'
+  fi
+  if ! PATH="$SHIM_DIR:$PATH" \
+    APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+    APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    "$BUILD_ROOT/script/build_app_bundle.sh" --archive >/dev/null 2>&1; then
+    record_failure 'build_app_bundle.sh --archive did not complete in the isolated fixture'
+  elif [[ ! -f "$BUILD_ROOT/dist/AgentPetCompanion-develop.zip" ]]; then
+    record_failure 'explicit development archive build did not create its ZIP'
+  fi
+  if PATH="$SHIM_DIR:$PATH" \
+    APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+    APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    "$BUILD_ROOT/script/build_app_bundle.sh" --archive --unsigned >/dev/null 2>&1; then
+    record_failure 'build_app_bundle.sh accepted incompatible --archive and --unsigned options'
   fi
   if [[ -s "$FORBIDDEN_LOG" ]]; then
     record_failure "bundle build invoked forbidden host commands: $(tr '\n' ' ' <"$FORBIDDEN_LOG")"

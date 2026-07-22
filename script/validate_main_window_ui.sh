@@ -122,9 +122,11 @@ func snapshotNodes(_ root: AXUIElement) -> [Node] {
 
 let supportedMainWindowTitles: Set<String> = [
     "Agent Pet Companion",
-    "宠物 Studio", "Pet Studio",
-    "启用与行为", "Enable & Behavior",
+    "宠物库", "Pet Library",
+    "AI宠物制作", "AI Pet Maker",
+    "宠物配置", "Pet Configuration",
     "Agent 连接", "Agent Connections",
+    "服务与诊断", "Service & Diagnostics",
 ]
 var resolvedMainWindow: AXUIElement?
 for _ in 0..<40 {
@@ -164,13 +166,17 @@ if mainSize.width < 1000 {
 }
 
 var nodes: [Node] = []
-for _ in 0..<40 {
+for _ in 0..<300 {
     nodes = snapshotNodes(mainWindow)
     let strings = nodes.flatMap(\.strings)
-    if strings.contains(where: { value in
-        value == "宠物 Studio" || value == "Pet Studio"
-            || value.contains("宠物 Studio") || value.contains("Pet Studio")
-    }) {
+    let libraryIsVisible = strings.contains(where: { value in
+        value == "宠物库" || value == "Pet Library"
+            || value.contains("宠物库") || value.contains("Pet Library")
+    })
+    let bundledPetsAreVisible = ["星雾团子", "Bytebud 字节芽"].allSatisfy { petName in
+        strings.contains { $0 == petName || $0.contains(petName) }
+    }
+    if libraryIsVisible && bundledPetsAreVisible {
         break
     }
     usleep(100_000)
@@ -225,13 +231,18 @@ func resolveVisibleControlLabel(
     return label
 }
 
-let studioNavigationLabel = resolveVisibleControlLabel(
-    ["宠物 Studio", "Pet Studio"],
+let libraryNavigationLabel = resolveVisibleControlLabel(
+    ["宠物库", "Pet Library"],
     roles: [kAXButtonRole as String],
     "primary navigation"
 )
-let behaviorNavigationLabel = resolveVisibleControlLabel(
-    ["启用与行为", "Enable & Behavior"],
+let makerNavigationLabel = resolveVisibleControlLabel(
+    ["AI宠物制作", "AI Pet Maker"],
+    roles: [kAXButtonRole as String],
+    "primary navigation"
+)
+let configurationNavigationLabel = resolveVisibleControlLabel(
+    ["宠物配置", "Pet Configuration"],
     roles: [kAXButtonRole as String],
     "primary navigation"
 )
@@ -240,41 +251,17 @@ let connectionsNavigationLabel = resolveVisibleControlLabel(
     roles: [kAXButtonRole as String],
     "primary navigation"
 )
-let newTabLabel = resolveVisibleControlLabel(
-    ["新建", "New"],
-    roles: [kAXRadioButtonRole as String],
-    "Studio tab"
+let diagnosticsNavigationLabel = resolveVisibleControlLabel(
+    ["服务与诊断", "Service & Diagnostics"],
+    roles: [kAXButtonRole as String],
+    "primary navigation"
 )
-let libraryTabLabel = resolveVisibleControlLabel(
-    ["宠物库", "Pet Library"],
-    roles: [kAXRadioButtonRole as String],
-    "Studio tab"
-)
-
 let requiredVisibleContent: [(String, String)] = [
-    ("状态", "visible operation status"),
-    ("新建宠物", "new pet form"),
-    ("描述", "new pet form"),
-    ("风格预设", "new pet form"),
-    ("图像画质", "new pet form"),
-    ("参考图", "new pet form"),
-    ("写实", "style preset"),
-    ("半写实", "style preset"),
-    ("现代", "style preset"),
-    ("像素", "style preset"),
-    ("动漫", "style preset"),
-    ("不指定", "style preset"),
-    ("标清", "quality preset"),
-    ("高清", "quality preset"),
-    ("超清", "quality preset"),
-    ("原画", "quality preset"),
-    ("AI 辅助会话", "AI session panel"),
-    ("读取表单", "AI session workflow"),
-    ("补充需求", "AI session workflow"),
-    ("生成预览", "AI session workflow"),
-    ("保存入库", "AI session workflow"),
-    ("拖入图片或点击选择", "reference image picker"),
-    ("发起 AI 辅助会话", "generation action")
+    ("宠物库", "library heading"),
+    ("全部宠物", "library inventory"),
+    ("宠物详情", "library detail"),
+    ("星雾团子", "bundled pet"),
+    ("Bytebud 字节芽", "bundled pet")
 ]
 
 for (text, context) in requiredVisibleContent {
@@ -287,14 +274,8 @@ if scrollAreas.count < 2 {
     exit(1)
 }
 
-let radioButtons = nodes.filter { $0.role == kAXRadioButtonRole as String }
-if radioButtons.count < 2 {
-    fputs("main window UI validation failed: Studio segmented tabs are not exposed as radio buttons\n", stderr)
-    exit(1)
-}
-
 let actionButtons = nodes.filter { $0.role == kAXButtonRole as String }
-for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigationLabel, "清空", "发起 AI 辅助会话"] {
+for label in [libraryNavigationLabel, makerNavigationLabel, configurationNavigationLabel, connectionsNavigationLabel, diagnosticsNavigationLabel] {
     guard actionButtons.contains(where: { $0.description == label || $0.title == label || $0.value == label }) else {
         fputs("main window UI validation failed: button not exposed: \(label)\n", stderr)
         exit(1)
@@ -304,7 +285,15 @@ for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigat
 let actionableControls = nodes.filter {
     $0.role == kAXButtonRole as String || actions($0.element).contains(kAXPressAction as String)
 }
-for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigationLabel] {
+let expectedNavigationOrder = [
+    libraryNavigationLabel,
+    makerNavigationLabel,
+    configurationNavigationLabel,
+    connectionsNavigationLabel,
+    diagnosticsNavigationLabel
+]
+var resolvedNavigationNodes: [(label: String, node: Node)] = []
+for label in expectedNavigationOrder {
     let matches = actionableControls.filter {
         $0.description == label || $0.title == label || $0.value == label
     }
@@ -319,14 +308,22 @@ for label in [studioNavigationLabel, behaviorNavigationLabel, connectionsNavigat
         }
         exit(1)
     }
+    resolvedNavigationNodes.append((label, semanticMatches[0]))
 }
 
-for label in [newTabLabel, libraryTabLabel] {
-    let matches = radioButtons.filter { $0.description == label || $0.title == label || $0.value == label }
-    if matches.count != 1 {
-        fputs("main window UI validation failed: expected exactly one Studio tab \(label), found \(matches.count)\n", stderr)
-        exit(1)
-    }
+guard resolvedNavigationNodes.allSatisfy({ $0.node.frame != nil }) else {
+    fputs("main window UI validation failed: primary navigation controls have no AX frame\n", stderr)
+    exit(1)
+}
+let displayedNavigationOrder = resolvedNavigationNodes
+    .sorted { $0.node.frame!.midY < $1.node.frame!.midY }
+    .map { $0.label }
+if displayedNavigationOrder != expectedNavigationOrder {
+    fputs(
+        "main window UI validation failed: primary navigation order is \(displayedNavigationOrder.joined(separator: " → "))\n",
+        stderr
+    )
+    exit(1)
 }
 
 func controlLabelMatches(_ node: Node, _ label: String) -> Bool {
@@ -365,10 +362,27 @@ func waitFor(_ description: String, _ predicate: ([Node]) -> Bool) {
 }
 
 let buttonRole = kAXButtonRole as String
-let radioRole = kAXRadioButtonRole as String
 
-pressControl(behaviorNavigationLabel, roles: [buttonRole])
-waitFor("Enable & Behavior page") { nodes in
+pressControl(makerNavigationLabel, roles: [buttonRole])
+waitFor("AI Pet Maker page") { nodes in
+    contains("新建宠物", in: nodes)
+        && contains("AI 辅助会话", in: nodes)
+        && contains("参考图", in: nodes)
+        && contains("发起 AI 辅助会话", in: nodes)
+        && !contains("宠物详情", in: nodes)
+}
+let makerNodes = snapshotNodes(mainWindow)
+let removedStudioTabLabels: Set<String> = ["新建", "New", "宠物库", "Pet Library"]
+if makerNodes.contains(where: { node in
+    node.role == kAXRadioButtonRole as String
+        && node.strings.contains(where: removedStudioTabLabels.contains)
+}) {
+    fputs("main window UI validation failed: AI Pet Maker still exposes a removed Studio tab\n", stderr)
+    exit(1)
+}
+
+pressControl(configurationNavigationLabel, roles: [buttonRole])
+waitFor("Pet Configuration page") { nodes in
     contains("响应来源", in: nodes)
         && contains("响应事件", in: nodes)
         && contains("透明区域穿透", in: nodes)
@@ -382,25 +396,24 @@ waitFor("Agent Connections page") { nodes in
         && contains("最近事件", in: nodes)
 }
 
-pressControl(studioNavigationLabel, roles: [buttonRole])
-waitFor("Pet Studio new page") { nodes in
-    contains("新建宠物", in: nodes)
-        && contains("AI 辅助会话", in: nodes)
-        && contains("参考图", in: nodes)
+pressControl(diagnosticsNavigationLabel, roles: [buttonRole])
+waitFor("Service & Diagnostics page") { nodes in
+    contains("服务状态", in: nodes)
+        && contains("日志打包下载", in: nodes)
+        && contains("PetCore", in: nodes)
+        && contains("本地 RPC", in: nodes)
+        && contains("事件通道", in: nodes)
+        && contains("桌宠渲染", in: nodes)
+        && contains("打包并下载", in: nodes)
 }
 
-pressControl(libraryTabLabel, roles: [radioRole])
-waitFor("Pet Library tab") { nodes in
+pressControl(libraryNavigationLabel, roles: [buttonRole])
+waitFor("Pet Library page") { nodes in
     contains("宠物库", in: nodes)
         && contains("宠物详情", in: nodes)
-        && contains("当前宠物", in: nodes)
+        && contains("星雾团子", in: nodes)
+        && contains("Bytebud 字节芽", in: nodes)
         && (contains("导入", in: nodes) || contains("Import", in: nodes))
-}
-
-pressControl(newTabLabel, roles: [radioRole])
-waitFor("Pet Studio new tab restored") { nodes in
-    contains("新建宠物", in: nodes)
-        && contains("发起 AI 辅助会话", in: nodes)
 }
 
 func currentMainWindows() -> [AXUIElement] {

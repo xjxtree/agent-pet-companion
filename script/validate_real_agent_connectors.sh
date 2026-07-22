@@ -2,11 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
 
 SETTING="${APC_VALIDATE_REAL_AGENT_CONNECTORS:-0}"
-RUN_ID="real_agent_$(date -u +%Y%m%dT%H%M%SZ)_$$"
+TASK_SETTING="${APC_VALIDATE_REAL_AGENT_TASKS:-0}"
 PETCORE_CLI="${APC_REAL_AGENT_VALIDATE_CLI:-$ROOT_DIR/target/debug/petcore-cli}"
 
 is_truthy() {
@@ -49,22 +47,82 @@ petcore_health_ok() {
   "$PETCORE_CLI" health >/dev/null
 }
 
+assert_current_runtime_identity() {
+  local build_info health
+  build_info="$("$PETCORE_CLI" build-info)"
+  health="$("$PETCORE_CLI" health)"
+  BUILD_INFO="$build_info" HEALTH="$health" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+build = json.loads(os.environ["BUILD_INFO"])
+health = json.loads(os.environ["HEALTH"])
+if health.get("build_id") != build.get("build_id"):
+    raise SystemExit(
+        f"daemon build_id {health.get('build_id')!r} does not match CLI build_id {build.get('build_id')!r}"
+    )
+if health.get("runtime_manifest") != build.get("runtime_manifest"):
+    raise SystemExit("daemon runtime_manifest does not match this petcore-cli build")
+
+path_keys = [
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "PI_CODING_AGENT_DIR",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG",
+    "XDG_CONFIG_HOME",
+    "APC_CODEX_CLI_PATH",
+    "APC_CLAUDE_CLI_PATH",
+    "APC_PI_CLI_PATH",
+    "APC_OPENCODE_CLI_PATH",
+]
+
+def absolute_value(value):
+    if not value or not value.strip():
+        return None
+    value = os.path.expanduser(value.strip())
+    if not os.path.isabs(value):
+        return None
+    return os.path.normpath(value)
+
+expected = {"HOME": os.path.normpath(str(Path.home()))}
+for key in path_keys:
+    value = absolute_value(os.environ.get(key))
+    if value is not None:
+        expected[key] = value
+
+actual = health.get("connector_environment")
+if not isinstance(actual, dict):
+    raise SystemExit("daemon health is missing connector_environment")
+actual_identity = {key: value for key, value in actual.items() if key != "PATH"}
+if actual_identity != expected:
+    raise SystemExit(
+        "daemon connector roots/CLI overrides do not match this validation environment: "
+        f"actual={actual_identity!r}, expected={expected!r}"
+    )
+path = actual.get("PATH")
+if not isinstance(path, str) or not path:
+    raise SystemExit("daemon health is missing its effective executable PATH")
+relative = [entry for entry in path.split(":") if entry and not os.path.isabs(entry)]
+if relative:
+    raise SystemExit(f"daemon executable PATH contains relative entries: {relative!r}")
+PY
+}
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-json_path() {
-  local path="$1"
-  local expr="$2"
-  python3 - "$path" "$expr" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as file:
-    data = json.load(file)
-
-print(eval(sys.argv[2], {"__builtins__": {}}, {"data": data}))
-PY
+agent_command_available() {
+  local command_name="$1"
+  local override_key="$2"
+  local override="${!override_key:-}"
+  if [[ -n "$override" ]]; then
+    [[ "$override" = /* && -x "$override" ]]
+  else
+    command_exists "$command_name"
+  fi
 }
 
 assert_real_connection_items_ok() {
@@ -77,25 +135,31 @@ import sys
 required = {
     "codex": {
         "Codex CLI",
+        "Codex 版本",
         "本地事件 CLI",
         "插件源",
         "Hook",
         "Codex marketplace",
         "Codex 插件安装",
+        "Codex Hook Trust",
         "事件回传",
         "PetCore 通道自检",
     },
     "claude_code": {
         "Claude CLI",
+        "Claude Code 版本",
         "本地事件 CLI",
         "Hooks",
         "事件通道",
         "Claude settings.json",
+        "Claude Hooks Policy",
+        "Claude Hook 真实触发",
         "事件回传",
         "PetCore 通道自检",
     },
     "pi": {
         "Pi CLI",
+        "Pi Coding Agent 版本",
         "本地事件 CLI",
         "Extension",
         "Extension 运行时",
@@ -104,6 +168,7 @@ required = {
     },
     "opencode": {
         "OpenCode CLI",
+        "OpenCode 版本",
         "本地事件 CLI",
         "Plugin",
         "Plugin 运行时",
@@ -137,63 +202,150 @@ for source, names in required.items():
                 f"{source}: {name} is {item.get('status')} - {item.get('detail', '')}"
             )
 
+claude_auth = {
+    item.get("name"): item for item in by_source["claude_code"].get("items", [])
+}.get("Claude 登录状态", {})
+if claude_auth.get("status") not in {"ok", "not_required"}:
+    failures.append(
+        "claude_code: auth information must be ok/not_required; "
+        f"got {claude_auth.get('status')} - {claude_auth.get('detail', '')}"
+    )
+
 opencode_server = {
     item.get("name"): item for item in by_source["opencode"].get("items", [])
 }.get("OpenCode Server", {})
 if opencode_server.get("status") != "not_required":
     failures.append("opencode: optional Server must report not_required in the standard check")
 
-codex_trust = {
-    item.get("name"): item for item in by_source["codex"].get("items", [])
-}.get("Codex Hook Trust", {})
-if codex_trust.get("status") not in {"ok", "unverified"}:
-    failures.append("codex: Hook Trust must be verified or explicitly unverified")
+expected_contracts = {
+    "codex": "codex-hooks-2026-07-17-schema-v6",
+    "claude_code": "claude-hooks-2026-07-17-activity-v5",
+    "pi": "pi-extension-0.80.10-activity-v7",
+    "opencode": "opencode-v1.18.0-activity-v8",
+}
+expected_capability_counts = {
+    "codex": (80, 11),
+    "claude_code": (30, 27),
+    "pi": (33, 33),
+    "opencode": (112, 9),
+}
+for source, expected in expected_contracts.items():
+    entry = by_source[source]
+    verification = entry.get("verification", {})
+    capabilities = entry.get("capabilities", {})
+    expected_statuses = (
+        {"verified"}
+        if source == "codex"
+        else {"unverified", "verified"}
+    )
+    if verification.get("status") not in expected_statuses:
+        failures.append(
+            f"{source}: agent-side verification is {verification.get('status')} - "
+            f"{verification.get('detail', '')}"
+        )
+    if source != "codex":
+        last_event = verification.get("last_event")
+        if verification.get("status") == "verified" and (
+            not isinstance(last_event, str) or last_event.endswith(" (canary)")
+        ):
+            failures.append(
+                f"{source}: verified status lacks a current non-canary ordinary event"
+            )
+        if verification.get("status") == "unverified" and (
+            not isinstance(last_event, str) or not last_event.endswith(" (canary)")
+        ):
+            failures.append(
+                f"{source}: host_loaded-only status lacks the expected diagnostic canary receipt"
+            )
+    if capabilities.get("contract_version") != expected:
+        failures.append(
+            f"{source}: contract is {capabilities.get('contract_version')}, expected {expected}"
+        )
+    audited_count, subscribed_count = expected_capability_counts[source]
+    if len(capabilities.get("audited_events", [])) != audited_count:
+        failures.append(
+            f"{source}: audited event count is "
+            f"{len(capabilities.get('audited_events', []))}, expected {audited_count}"
+        )
+    if len(capabilities.get("subscribed_events", [])) != subscribed_count:
+        failures.append(
+            f"{source}: registered event count is "
+            f"{len(capabilities.get('subscribed_events', []))}, expected {subscribed_count}"
+        )
 
 if failures:
     raise SystemExit("\n".join(failures))
 PY
 }
 
-assert_recent_event() {
-  local source="$1"
-  local event_type="$2"
-  local needle="$3"
-  local events
-
-  for _ in {1..40}; do
-    events="$("$PETCORE_CLI" events recent --limit 240)"
-    if EVENTS="$events" SOURCE="$source" EVENT_TYPE="$event_type" NEEDLE="$needle" python3 - <<'PY'
+assert_current_real_agent_tasks() {
+  local receipts
+  receipts="$("$PETCORE_CLI" connections receipts)"
+  RECEIPTS="$receipts" python3 - <<'PY'
 import json
 import os
-import sys
 
-events = json.loads(os.environ["EVENTS"])
-source = os.environ["SOURCE"]
-event_type = os.environ["EVENT_TYPE"]
-needle = os.environ["NEEDLE"]
-
-def contains(value, text):
-    return text in json.dumps(value, ensure_ascii=False)
-
-for event in events:
+entries = json.loads(os.environ["RECEIPTS"])
+contracts = {
+    "codex": "codex-hooks-2026-07-17-schema-v6",
+    "claude_code": "claude-hooks-2026-07-17-activity-v5",
+    "pi": "pi-extension-0.80.10-activity-v7",
+    "opencode": "opencode-v1.18.0-activity-v8",
+}
+task_events = {
+    "codex": (
+        {"UserPromptSubmit"},
+        {"PreToolUse"},
+        {"PostToolUse", "Stop"},
+    ),
+    "claude_code": (
+        {"UserPromptSubmit"},
+        {"PreToolUse"},
+        {"PostToolUse", "PostToolUseFailure", "PermissionDenied", "Stop", "StopFailure"},
+    ),
+    "pi": (
+        {"input", "before_agent_start", "agent_start", "turn_start"},
+        {"tool_call", "tool_execution_start"},
+        {"tool_execution_end", "agent_settled"},
+    ),
+    "opencode": (
+        {"message.user", "session.next.prompt.admitted"},
+        {"tool.execute.before", "command.execute.before"},
+        {
+            "tool.execute.after", "command.execute.after", "message.assistant",
+            "session.idle", "session.status", "session.error",
+            "session.next.step.ended", "session.next.step.failed",
+        },
+    ),
+}
+failures = []
+by_source = {entry.get("source"): entry for entry in entries}
+for source, contract in contracts.items():
+    task = (by_source.get(source) or {}).get("task") or {}
+    receipt = task.get("receipt") or {}
+    start = receipt.get("start") or {}
+    activity = receipt.get("activity") or {}
+    completion = receipt.get("completion") or {}
+    allowed_start, allowed_activity, allowed_completion = task_events[source]
     if (
-        event.get("source") == source
-        and event.get("event_type") == event_type
-        and contains(event, needle)
+        task.get("current") is not True
+        or start.get("diagnostic") is not False
+        or activity.get("diagnostic") is not False
+        or completion.get("diagnostic") is not False
+        or start.get("contract_version") != contract
+        or activity.get("contract_version") != contract
+        or completion.get("contract_version") != contract
+        or start.get("source_event") not in allowed_start
+        or activity.get("source_event") not in allowed_activity
+        or completion.get("source_event") not in allowed_completion
     ):
-        raise SystemExit(0)
+        failures.append(
+            f"{source}: no same-session current task start/tool/completion evidence after all managed artifacts; got {task}"
+        )
 
-raise SystemExit(1)
+if failures:
+    raise SystemExit("\n".join(failures))
 PY
-    then
-      return 0
-    fi
-    sleep 0.15
-  done
-
-  events="$("$PETCORE_CLI" events recent --limit 80)"
-  printf 'Recent events:\n%s\n' "$events" >&2
-  fail "missing event source=$source event_type=$event_type needle=$needle"
 }
 
 if is_disabled "$SETTING"; then
@@ -214,169 +366,40 @@ fi
 require_or_skip "petcore-cli is not built at $PETCORE_CLI" test -x "$PETCORE_CLI"
 require_or_skip "current PetCore daemon is not reachable; run ./script/build_and_run.sh --verify first" \
   petcore_health_ok
+assert_current_runtime_identity
 
-for command in codex claude pi opencode node; do
-  require_or_skip "$command command is not available" command_exists "$command"
-done
+require_or_skip "codex command is not available" agent_command_available codex APC_CODEX_CLI_PATH
+require_or_skip "claude command is not available" agent_command_available claude APC_CLAUDE_CLI_PATH
+require_or_skip "pi command is not available" agent_command_available pi APC_PI_CLI_PATH
+require_or_skip "opencode command is not available" agent_command_available opencode APC_OPENCODE_CLI_PATH
 
 CODEX_HOOKS="$HOME/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
 CLAUDE_SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-PI_EXTENSION="$HOME/.pi/agent/extensions/agent-pet-companion.ts"
-OPENCODE_PLUGIN="$HOME/.config/opencode/plugins/agent-pet-companion.js"
-
-require_or_skip "Codex hook file is missing at $CODEX_HOOKS" test -f "$CODEX_HOOKS"
-require_or_skip "Claude settings file is missing at $CLAUDE_SETTINGS" test -f "$CLAUDE_SETTINGS"
-require_or_skip "Pi extension file is missing at $PI_EXTENSION" test -f "$PI_EXTENSION"
-require_or_skip "OpenCode plugin file is missing at $OPENCODE_PLUGIN" test -f "$OPENCODE_PLUGIN"
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+PI_EXTENSION="$PI_AGENT_DIR/extensions/agent-pet-companion.ts"
+if [[ -n "${OPENCODE_CONFIG_DIR:-}" ]]; then
+  OPENCODE_CONFIG_ROOT="$OPENCODE_CONFIG_DIR"
+else
+  OPENCODE_CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+fi
+OPENCODE_PLUGIN="$OPENCODE_CONFIG_ROOT/plugins/agent-pet-companion.js"
 
 printf 'Checking current app connection diagnostics...\n'
-CONNECTIONS_JSON="$("$PETCORE_CLI" connections check)"
+for source in codex claude_code pi opencode; do
+  "$PETCORE_CLI" connections repair --source "$source" --cwd "$ROOT_DIR" >/dev/null
+done
+require_or_skip "Codex hook file is missing after repair at $CODEX_HOOKS" test -f "$CODEX_HOOKS"
+require_or_skip "Claude settings file is missing after repair at $CLAUDE_SETTINGS" test -f "$CLAUDE_SETTINGS"
+require_or_skip "Pi extension file is missing after repair at $PI_EXTENSION" test -f "$PI_EXTENSION"
+require_or_skip "OpenCode plugin file is missing after repair at $OPENCODE_PLUGIN" test -f "$OPENCODE_PLUGIN"
+CONNECTIONS_JSON="$("$PETCORE_CLI" connections check --cwd "$ROOT_DIR")"
 assert_real_connection_items_ok "$CONNECTIONS_JSON"
 
-printf 'Running explicit bounded OpenCode /global/health probe...\n'
-OPENCODE_SERVER_PROBE="$("$PETCORE_CLI" connections probe-opencode-server)"
-RAW="$OPENCODE_SERVER_PROBE" python3 - <<'PY'
-import json
-import os
+if is_truthy "$TASK_SETTING"; then
+  printf 'Checking current-contract same-session task sequences emitted by real Agent tasks...\n'
+  assert_current_real_agent_tasks
+else
+  printf 'Ordinary task-event evidence not required (set APC_VALIDATE_REAL_AGENT_TASKS=1 after running one real task in every Agent).\n'
+fi
 
-probe = json.loads(os.environ["RAW"])
-assert probe.get("status") == "ok", probe
-assert "runtime_verified" in probe.get("detail", ""), probe
-PY
-
-printf 'Sending diagnostic Codex hook event through installed user hook...\n'
-CODEX_START_CMD="$(json_path "$CODEX_HOOKS" 'data["hooks"]["SessionStart"][0]["hooks"][0]["command"]')"
-printf '%s\n' "{\"hook_event_name\":\"SessionStart\",\"session\":{\"id\":\"$RUN_ID-codex\"},\"session_id\":\"$RUN_ID-codex\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
-  | sh -c "$CODEX_START_CMD" >/dev/null
-assert_recent_event codex start "$RUN_ID-codex"
-
-printf 'Sending diagnostic Claude hook event through installed settings command...\n'
-CLAUDE_TOOL_CMD="$(json_path "$CLAUDE_SETTINGS" 'data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]')"
-printf '%s\n' "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"session_id\":\"$RUN_ID-claude\",\"cwd\":\"$ROOT_DIR\",\"diagnostic\":true,\"title\":\"真实连接验收\"}" \
-  | sh -c "$CLAUDE_TOOL_CMD" >/dev/null
-assert_recent_event claude_code tool "$RUN_ID-claude"
-
-printf 'Loading real Pi extension from the user extension directory...\n'
-PI_MODULE="$TMP_DIR/pi-connector.mjs"
-cp "$PI_EXTENSION" "$PI_MODULE"
-PI_CONNECTOR_MODULE="$PI_MODULE" RUN_ID="$RUN_ID" ROOT_DIR="$ROOT_DIR" node --input-type=module <<'NODE'
-import { pathToFileURL } from 'node:url';
-
-const mod = await import(pathToFileURL(process.env.PI_CONNECTOR_MODULE).href);
-const handlers = new Map();
-mod.default({ on: (name, callback) => handlers.set(name, callback) });
-
-for (const name of ['session_start', 'before_agent_start', 'message_end', 'tool_call', 'tool_execution_end', 'agent_end', 'agent_settled', 'session_shutdown']) {
-  if (!handlers.has(name)) {
-    throw new Error(`Pi ${name} handler missing`);
-  }
-}
-
-await handlers.get('session_start')(
-  { type: 'session_start', reason: 'startup', diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-start` }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('before_agent_start')(
-  { type: 'before_agent_start', prompt: '真实 Pi 用户消息', diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-prompt`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('tool_call')(
-  { type: 'tool_call', toolName: 'bash', toolCallId: 'secret-call', input: { command: 'TOKEN=secret-command' }, diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-tool` }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('tool_execution_end')(
-  { type: 'tool_execution_end', toolName: 'bash', toolCallId: 'secret-call', result: 'secret-output', isError: true, diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-failed` }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('agent_settled')(
-  { type: 'agent_settled', diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-done` }, cwd: process.env.ROOT_DIR }
-);
-const replyContext = { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-reply`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR };
-await handlers.get('before_agent_start')(
-  { type: 'before_agent_start', prompt: '请回复真实 Pi 消息', diagnostic: true },
-  replyContext
-);
-await handlers.get('message_end')(
-  { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '真实 Pi Agent 回复' }], stopReason: 'stop' }, diagnostic: true },
-  replyContext
-);
-await handlers.get('agent_end')(
-  { type: 'agent_end', messages: [{ role: 'assistant', content: [{ type: 'text', text: '真实 Pi Agent 回复' }], stopReason: 'stop' }], diagnostic: true },
-  replyContext
-);
-await handlers.get('agent_settled')(
-  { type: 'agent_settled', diagnostic: true },
-  replyContext
-);
-await handlers.get('agent_end')(
-  { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', content: [] }], diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-agent-error`, getSessionName: () => '真实 Pi 错误会话' }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('agent_settled')(
-  { type: 'agent_settled', diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-agent-error`, getSessionName: () => '真实 Pi 错误会话' }, cwd: process.env.ROOT_DIR }
-);
-await handlers.get('session_shutdown')(
-  { type: 'session_shutdown', reason: 'quit', diagnostic: true },
-  { sessionManager: { getSessionId: () => `${process.env.RUN_ID}-pi-closed`, getSessionName: () => '真实 Pi 会话' }, cwd: process.env.ROOT_DIR }
-);
-await new Promise((resolve) => setTimeout(resolve, 800));
-NODE
-# Merely opening/resuming a Pi page is intentionally ignored: it does not
-# prove that an Agent turn is active and must not create a misleading bubble.
-assert_recent_event pi start "$RUN_ID-pi-prompt"
-assert_recent_event pi tool "$RUN_ID-pi-tool"
-assert_recent_event pi tool "$RUN_ID-pi-failed"
-assert_recent_event pi done "$RUN_ID-pi-done"
-assert_recent_event pi done "$RUN_ID-pi-reply"
-assert_recent_event pi failed "$RUN_ID-pi-agent-error"
-assert_recent_event pi done "$RUN_ID-pi-closed"
-
-printf 'Loading real OpenCode plugin from the user plugin directory...\n'
-OPENCODE_MODULE="$TMP_DIR/opencode-connector.mjs"
-cp "$OPENCODE_PLUGIN" "$OPENCODE_MODULE"
-OPENCODE_CONNECTOR_MODULE="$OPENCODE_MODULE" RUN_ID="$RUN_ID" ROOT_DIR="$ROOT_DIR" node --input-type=module <<'NODE'
-import { pathToFileURL } from 'node:url';
-
-const mod = await import(pathToFileURL(process.env.OPENCODE_CONNECTOR_MODULE).href);
-const plugin = await mod.AgentPetCompanion({
-  project: 'agent-pet-companion',
-  directory: process.env.ROOT_DIR,
-  worktree: process.env.ROOT_DIR,
-});
-
-if (!plugin.event) {
-  throw new Error('OpenCode generic event handler missing');
-}
-
-await plugin.event({
-  event: {
-    type: 'session.created',
-    properties: { info: { id: `${process.env.RUN_ID}-opencode-start`, diagnostic: true } },
-  },
-});
-await plugin.event({
-  event: {
-    type: 'permission.updated',
-    properties: { sessionID: `${process.env.RUN_ID}-opencode-waiting`, diagnostic: true },
-  },
-});
-await plugin['tool.execute.before'](
-  { tool: 'bash', sessionID: `${process.env.RUN_ID}-opencode-tool`, callID: 'secret-call', diagnostic: true },
-  { args: { command: 'TOKEN=secret-command' } },
-);
-await plugin.event({
-  event: {
-    type: 'session.idle',
-    properties: { sessionID: `${process.env.RUN_ID}-opencode-done`, diagnostic: true },
-  },
-});
-await new Promise((resolve) => setTimeout(resolve, 800));
-NODE
-assert_recent_event opencode start "$RUN_ID-opencode-start"
-assert_recent_event opencode waiting "$RUN_ID-opencode-waiting"
-assert_recent_event opencode tool "$RUN_ID-opencode-tool"
-assert_recent_event opencode done "$RUN_ID-opencode-done"
-
-printf 'Real agent connector validation ok: %s\n' "$RUN_ID"
+printf 'Real native-host connector validation ok (load canaries reached host_loaded; ordinary events and same-session prompt/tool/completion evidence remain separate gates).\n'
