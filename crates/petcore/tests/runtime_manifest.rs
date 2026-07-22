@@ -78,3 +78,12 @@ fn newer_database_schema_is_rejected_without_downgrade() {
         .expect("read schema");
     assert_eq!(persisted, future_version);
 }
+
+#[test]
+fn bundled_pet_identity_remains_schema_five_rollback_compatible() {
+    assert_eq!(DATABASE_SCHEMA_VERSION, 5);
+    assert_eq!(
+        RuntimeReleaseManifest::compiled().maximum_database_schema_version,
+        5
+    );
+}

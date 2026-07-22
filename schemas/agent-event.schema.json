@@ -52,21 +52,27 @@
         "source_event": {
           "enum": [
             "start", "tool", "waiting", "review", "done", "failed",
-            "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+            "SessionStart", "Setup", "InstructionsLoaded", "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PermissionRequest",
             "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure",
             "SessionEnd", "Notification", "Elicitation", "ElicitationResult",
             "PostToolBatch", "PermissionDenied", "PreCompact", "PostCompact",
-            "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted",
-            "session_start", "input", "before_agent_start", "agent_start", "message_end", "agent_end", "session_shutdown", "tool_call",
+            "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "TeammateIdle", "ConfigChange", "CwdChanged", "WorktreeRemove",
+            "session_start", "input", "before_agent_start", "agent_start", "turn_start", "turn_end", "message_end", "agent_end", "session_shutdown", "tool_call",
             "tool_execution_start", "tool_execution_end", "agent_settled", "session_before_compact", "session_compact",
             "session.created", "session.deleted", "session.status", "session.idle", "session.error",
             "permission.asked", "permission.updated", "permission.replied",
+            "permission.v2.asked", "permission.v2.replied",
             "question.asked", "question.replied", "question.rejected",
+            "question.v2.asked", "question.v2.replied", "question.v2.rejected",
+            "session.next.prompt.admitted", "session.next.step.ended", "session.next.step.failed",
             "message.user", "message.assistant",
-            "tool.execute.before", "tool.execute.after", "connection.test", "app_server_activity", "legacy",
+            "tool.execute.before", "tool.execute.after", "command.execute.before", "command.execute.after",
+            "session.compaction.started", "session.compaction.ended", "session.plan.updated", "connector.probe",
+            "connection.test", "app_server_activity", "legacy",
             "unclassified"
           ]
         },
+        "contract_version": { "type": ["string", "null"], "maxLength": 128 },
         "tool_name": {
           "type": ["string", "null"],
           "enum": ["shell", "filesystem", "editor", "search", "network", "agent", "other", null]
@@ -78,10 +84,12 @@
             "api_failure", "settled", "created", "idle", "busy", "retry",
             "permission_replied", "permission_replied_once", "permission_replied_always",
             "permission_replied_allow", "permission_replied_deny", "permission_replied_reject",
-            "started_without_args", "session_failure", "session_closed", "input_requested", "message", "unknown", null
+            "started_without_args", "session_failure", "session_closed", "input_requested", "observed", "auto_denied",
+            "background_active", "agent_completed", "message", "continued", "prompt_admitted", "unknown", null
           ]
         },
         "diagnostic": { "type": "boolean" },
+        "affects_activity": { "type": "boolean" },
         "turn_id": { "type": ["string", "null"], "maxLength": 256 },
         "session_active": { "type": "boolean" },
         "message_role": { "type": ["string", "null"], "enum": ["user", "assistant", null] },

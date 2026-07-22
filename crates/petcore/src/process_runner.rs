@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -45,6 +46,7 @@ pub struct ProcessSpec {
     pub max_stdout: usize,
     pub max_stderr: usize,
     env: Vec<(OsString, OsString)>,
+    current_dir: Option<PathBuf>,
 }
 
 impl ProcessSpec {
@@ -61,6 +63,7 @@ impl ProcessSpec {
             max_stdout: CONNECTOR_MAX_STDOUT,
             max_stderr: CONNECTOR_MAX_STDERR,
             env: Vec::new(),
+            current_dir: None,
         }
     }
 
@@ -85,6 +88,11 @@ impl ProcessSpec {
         V: Into<OsString>,
     {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn with_current_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.current_dir = Some(path.into());
         self
     }
 }
@@ -261,6 +269,9 @@ pub fn run_bounded(spec: ProcessSpec) -> Result<ProcessResult> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    if let Some(current_dir) = &spec.current_dir {
+        command.current_dir(current_dir);
+    }
 
     let mut child = command.spawn()?;
     let process_group = Pid::from_child(&child);

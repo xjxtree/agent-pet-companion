@@ -1,3 +1,6 @@
+use crate::agent_environment::{
+    executable_search_path, inherited_connector_path_environment, user_home,
+};
 use crate::{PetCoreError, Result};
 use serde::Serialize;
 use std::fs;
@@ -14,6 +17,8 @@ pub struct LaunchAgentConfig {
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
     pub path_environment: String,
+    pub user_home: PathBuf,
+    pub connector_path_environment: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,18 +31,30 @@ pub struct LaunchAgentStatus {
 
 impl LaunchAgentConfig {
     pub fn new(program: PathBuf, home: PathBuf) -> Self {
-        let logs = home.join("logs");
         Self {
             label: DEFAULT_LABEL.to_string(),
             program,
             home,
-            stdout_path: logs.join("petcore.launchd.out.log"),
-            stderr_path: logs.join("petcore.launchd.err.log"),
+            stdout_path: PathBuf::from("/dev/null"),
+            stderr_path: PathBuf::from("/dev/null"),
             path_environment: launch_agent_path_environment(),
+            user_home: user_home(),
+            connector_path_environment: inherited_connector_path_environment(),
         }
     }
 
     pub fn plist_xml(&self) -> String {
+        let connector_environment = self
+            .connector_path_environment
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "    <key>{}</key>\n    <string>{}</string>\n",
+                    xml_escape(key),
+                    xml_escape(value)
+                )
+            })
+            .collect::<String>();
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,11 +81,13 @@ impl LaunchAgentConfig {
   <dict>
     <key>APC_HOME</key>
     <string>{home}</string>
+    <key>HOME</key>
+    <string>{user_home}</string>
     <key>RUST_LOG</key>
     <string>info</string>
     <key>PATH</key>
     <string>{path}</string>
-  </dict>
+{connector_environment}  </dict>
 </dict>
 </plist>
 "#,
@@ -77,7 +96,9 @@ impl LaunchAgentConfig {
             home = xml_escape(&self.home.display().to_string()),
             stdout = xml_escape(&self.stdout_path.display().to_string()),
             stderr = xml_escape(&self.stderr_path.display().to_string()),
-            path = xml_escape(&self.path_environment)
+            path = xml_escape(&self.path_environment),
+            user_home = xml_escape(&self.user_home.display().to_string()),
+            connector_environment = connector_environment,
         )
     }
 }
@@ -160,44 +181,7 @@ fn launch_agents_dir() -> PathBuf {
 }
 
 fn launch_agent_path_environment() -> String {
-    let current = std::env::var("PATH").unwrap_or_default();
-    let additions = [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ];
-    let home = user_home();
-    let home_additions = [
-        home.join(".local").join("bin"),
-        home.join(".cargo").join("bin"),
-        home.join(".bun").join("bin"),
-        home.join("bin"),
-    ];
-
-    let mut parts = Vec::<String>::new();
-    for path in current
-        .split(':')
-        .filter(|path| !path.is_empty())
-        .map(ToOwned::to_owned)
-        .chain(additions.into_iter().map(ToOwned::to_owned))
-        .chain(home_additions.iter().map(|path| path.display().to_string()))
-    {
-        if !parts.iter().any(|existing| existing == &path) {
-            parts.push(path);
-        }
-    }
-    parts.join(":")
-}
-
-fn user_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    executable_search_path()
 }
 
 fn is_loaded(label: &str) -> bool {

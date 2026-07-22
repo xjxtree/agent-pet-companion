@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::paths::AppPaths;
 use crate::pet_revision::{revision_pet_root, PetRevisionTransaction, PetStoreGuard};
-use crate::reference_images::validate_reference_inputs;
+use crate::reference_images::{load_reference_snapshots, ValidatedReferenceSnapshot};
 use crate::{new_id, now_rfc3339, PetCoreError, Result};
 use image::{
     codecs::webp::{WebPDecoder, WebPEncoder},
@@ -15,11 +15,15 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use zip::write::SimpleFileOptions;
 
 pub const GENERATED_FRAMES_PER_STATE: usize = 24;
+pub const BUNDLED_PET_INVENTORY_VERSION: &str = "apc.bundled-pets.v1";
+pub const BUNDLED_PET_GENERATOR_MARKER: &str = "agent-pet-companion.release-inventory";
+pub const BUNDLED_PET_PROVENANCE_MARKER: &str = BUNDLED_PET_INVENTORY_VERSION;
 const RUNTIME_ASSETS_MARKER: &str = ".apc-runtime-assets.json";
 const RUNTIME_ASSETS_SCHEMA_VERSION: &str = "apc.runtime-assets.v1";
 const MAX_PETPACK_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -70,6 +74,67 @@ pub struct PetAssetWarning {
 pub struct PetAssetValidationOutcome {
     pub pet: PetSummary,
     pub warning: Option<PetAssetWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundledPetSeedStatus {
+    Installed,
+    PreservedExistingId,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BundledPetSeedOutcome {
+    pub pet_id: String,
+    pub status: BundledPetSeedStatus,
+    pub pet: PetSummary,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BundledPetDescriptor {
+    file_name: &'static str,
+    pet_id: &'static str,
+    sha256: &'static str,
+}
+
+// This is intentionally a closed, content-pinned inventory. The private RPC
+// accepts a directory only so the App can point at its SwiftPM resource
+// bundle; callers cannot turn an arbitrary petpack into a trusted bundled pet.
+const BUNDLED_PET_DESCRIPTORS: [BundledPetDescriptor; 2] = [
+    BundledPetDescriptor {
+        file_name: "pet_xingwutuanzi.petpack",
+        pet_id: "pet_xingwutuanzi",
+        sha256: "035033377ac607fa07cf26c03100749dad44e8cd0575558d0b4049a1339b3d12",
+    },
+    BundledPetDescriptor {
+        file_name: "pet_bytebudcodex.petpack",
+        pet_id: "pet_bytebudcodex",
+        sha256: "fa1754d815d8aa544e254880183c7ca920098becb32c8e612e4b585d58ed74e0",
+    },
+];
+
+struct ValidatedBundledPet {
+    descriptor: BundledPetDescriptor,
+    path: PathBuf,
+    expected_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImportIdentityPolicy {
+    PackageDeclared(PetOrigin),
+    BundledInventory,
+}
+
+/// Returns true only for an identity that PetCore itself can assign while
+/// installing the content-pinned release inventory. Display names are never
+/// part of this decision, and package-declared metadata alone is insufficient.
+pub fn is_bundled_pet(pet: &PetSummary) -> bool {
+    BUNDLED_PET_DESCRIPTORS
+        .iter()
+        .any(|descriptor| descriptor.pet_id == pet.id)
+        && pet.origin == PetOrigin::VerifiedSkillSource
+        && pet.generator.as_deref() == Some(BUNDLED_PET_GENERATOR_MARKER)
+        && pet.provenance.as_deref() == Some(BUNDLED_PET_PROVENANCE_MARKER)
 }
 
 pub fn validate_petpack_path(path: &Path) -> Result<PetpackValidation> {
@@ -1464,11 +1529,11 @@ fn write_generated_petpack_dir_with_identity(
     )?;
 
     let palette = Palette::from_form_and_brief(form, ai_brief);
-    let reference_copies = copy_reference_images(dir, &form.reference_images)?;
+    let (reference_copies, reference_frame_source) =
+        materialize_reference_inputs(dir, &form.reference_images, manifest.render_size)?;
     let source_form = form_with_package_references(form, &reference_copies);
     let action_plan = action_plan_for_form(form, ai_brief);
     let frame_count = frames_per_state.max(GENERATED_FRAMES_PER_STATE);
-    let reference_frame_source = reference_frame_source(form, manifest.render_size);
     let has_ai_brief = ai_brief.map(|brief| !brief.is_null()).unwrap_or(false);
     let (generator, provenance) = if let Some(identity) = source_identity {
         identity
@@ -1753,6 +1818,163 @@ fn write_petpack_zip(input_dir: &Path, output_path: &Path) -> Result<PetpackVali
     Ok(validation)
 }
 
+/// Installs the two release-bundled pets without replacing any logical pet
+/// already present under the same stable manifest ID.
+///
+/// Names are deliberately not part of conflict resolution. A user pet with
+/// the same display name and a different ID remains visible beside the
+/// bundled pet; an existing matching ID always wins and is left byte-for-byte
+/// untouched. Re-running this function is therefore deterministic and safe on
+/// first launch, upgrade, and App bootstrap against an already healthy daemon.
+pub fn seed_bundled_pet_inventory(
+    paths: &AppPaths,
+    database: &Database,
+    inventory_root: &Path,
+) -> Result<Vec<BundledPetSeedOutcome>> {
+    // The steady-state App launch must not unzip and decode both packages.
+    // While holding the same mutation lock used by imports/deletes, first
+    // establish whether both stable IDs already exist. No resource bytes are
+    // trusted or written on this fast path, so validating the bundle again
+    // would add latency without improving conflict safety.
+    {
+        let _store_guard = PetStoreGuard::acquire(paths)?;
+        let existing = BUNDLED_PET_DESCRIPTORS
+            .iter()
+            .map(|descriptor| {
+                database
+                    .get_pet(descriptor.pet_id)
+                    .map(|pet| (descriptor, pet))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if existing.iter().all(|(_, pet)| pet.is_some()) {
+            return Ok(existing
+                .into_iter()
+                .filter_map(|(descriptor, pet)| pet.map(|pet| (descriptor, pet)))
+                .map(|(descriptor, pet)| BundledPetSeedOutcome {
+                    pet_id: descriptor.pet_id.to_string(),
+                    status: BundledPetSeedStatus::PreservedExistingId,
+                    pet,
+                })
+                .collect());
+        }
+    }
+
+    let inventory = validate_bundled_pet_inventory(inventory_root)?;
+    let store_guard = PetStoreGuard::acquire(paths)?;
+    let mut outcomes = Vec::with_capacity(inventory.len());
+
+    for item in inventory {
+        if let Some(existing) = database.get_pet(item.descriptor.pet_id)? {
+            outcomes.push(BundledPetSeedOutcome {
+                pet_id: item.descriptor.pet_id.to_string(),
+                status: BundledPetSeedStatus::PreservedExistingId,
+                pet: existing,
+            });
+            continue;
+        }
+
+        let pet = import_petpack_with_origin_policy_guarded(
+            paths,
+            database,
+            &item.path,
+            ImportIdentityPolicy::BundledInventory,
+            false,
+            Some(item.expected_digest),
+            &store_guard,
+        )?;
+        outcomes.push(BundledPetSeedOutcome {
+            pet_id: item.descriptor.pet_id.to_string(),
+            status: BundledPetSeedStatus::Installed,
+            pet,
+        });
+    }
+
+    Ok(outcomes)
+}
+
+fn validate_bundled_pet_inventory(inventory_root: &Path) -> Result<Vec<ValidatedBundledPet>> {
+    if !inventory_root.is_absolute() {
+        return Err(PetCoreError::InvalidRequest(
+            "bundled pet inventory root must be absolute".to_string(),
+        ));
+    }
+    let root_metadata = fs::symlink_metadata(inventory_root).map_err(|_| {
+        PetCoreError::Validation("bundled pet inventory is unavailable".to_string())
+    })?;
+    if !root_metadata.file_type().is_dir() {
+        return Err(PetCoreError::Validation(
+            "bundled pet inventory root must be a real directory".to_string(),
+        ));
+    }
+    let canonical_root = fs::canonicalize(inventory_root).map_err(|_| {
+        PetCoreError::Validation("bundled pet inventory cannot be resolved".to_string())
+    })?;
+
+    let expected_names = BUNDLED_PET_DESCRIPTORS
+        .iter()
+        .map(|descriptor| descriptor.file_name)
+        .collect::<BTreeSet<_>>();
+    let mut actual_names = BTreeSet::new();
+    for entry in fs::read_dir(inventory_root)? {
+        let entry = entry?;
+        let Some(file_name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            return Err(PetCoreError::Validation(
+                "bundled pet inventory contains a non-UTF-8 entry".to_string(),
+            ));
+        };
+        if !expected_names.contains(file_name.as_str()) || !actual_names.insert(file_name) {
+            return Err(PetCoreError::Validation(
+                "bundled pet inventory contains an unexpected entry".to_string(),
+            ));
+        }
+    }
+    if actual_names.len() != BUNDLED_PET_DESCRIPTORS.len() {
+        return Err(PetCoreError::Validation(
+            "bundled pet inventory is incomplete".to_string(),
+        ));
+    }
+
+    let mut validated = Vec::with_capacity(BUNDLED_PET_DESCRIPTORS.len());
+    for descriptor in BUNDLED_PET_DESCRIPTORS {
+        let path = inventory_root.join(descriptor.file_name);
+        let metadata = fs::symlink_metadata(&path).map_err(|_| {
+            PetCoreError::Validation("bundled pet resource is unavailable".to_string())
+        })?;
+        if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+            return Err(PetCoreError::Validation(
+                "bundled pet resource must be a single-link regular file".to_string(),
+            ));
+        }
+        let canonical_path = fs::canonicalize(&path).map_err(|_| {
+            PetCoreError::Validation("bundled pet resource cannot be resolved".to_string())
+        })?;
+        if canonical_path.parent() != Some(canonical_root.as_path()) {
+            return Err(PetCoreError::Validation(
+                "bundled pet resource escaped its inventory root".to_string(),
+            ));
+        }
+
+        let digest = sha256_file(&path)?;
+        if hex::encode(digest) != descriptor.sha256 {
+            return Err(PetCoreError::Validation(
+                "bundled pet resource digest does not match the release inventory".to_string(),
+            ));
+        }
+        let validation = validate_petpack_path(&path)?;
+        if validation.manifest.id != descriptor.pet_id {
+            return Err(PetCoreError::Validation(
+                "bundled pet manifest ID does not match the release inventory".to_string(),
+            ));
+        }
+        validated.push(ValidatedBundledPet {
+            descriptor,
+            path,
+            expected_digest: digest,
+        });
+    }
+    Ok(validated)
+}
+
 pub fn import_petpack(
     paths: &AppPaths,
     database: &Database,
@@ -1771,8 +1993,9 @@ pub fn import_petpack_expecting_absent(
         paths,
         database,
         source_path,
-        PetOrigin::ExternalImport,
+        ImportIdentityPolicy::PackageDeclared(PetOrigin::ExternalImport),
         false,
+        None,
         &store_guard,
     )
 }
@@ -1802,8 +2025,9 @@ pub(crate) fn import_petpack_with_origin_guarded(
         paths,
         database,
         source_path,
-        origin,
+        ImportIdentityPolicy::PackageDeclared(origin),
         true,
+        None,
         store_guard,
     )
 }
@@ -1812,28 +2036,38 @@ fn import_petpack_with_origin_policy_guarded(
     paths: &AppPaths,
     database: &Database,
     source_path: &Path,
-    origin: PetOrigin,
+    identity_policy: ImportIdentityPolicy,
     allow_existing_id_revision: bool,
+    expected_source_digest: Option<[u8; 32]>,
     _store_guard: &PetStoreGuard,
 ) -> Result<PetSummary> {
-    let prepared = prepare_import_assets(paths, source_path)?;
+    let prepared = prepare_import_assets(paths, source_path, expected_source_digest)?;
     let PreparedImport {
         validation,
         target_path,
         cover_target_path: cover_path,
-        generator,
-        provenance,
+        generator: package_generator,
+        provenance: package_provenance,
         transaction,
     } = prepared;
+    let (origin, generator, provenance) = match identity_policy {
+        ImportIdentityPolicy::PackageDeclared(origin) => {
+            (origin, package_generator, package_provenance)
+        }
+        ImportIdentityPolicy::BundledInventory => (
+            PetOrigin::VerifiedSkillSource,
+            Some(BUNDLED_PET_GENERATOR_MARKER.to_string()),
+            Some(BUNDLED_PET_PROVENANCE_MARKER.to_string()),
+        ),
+    };
     let existing_pet = database.get_pet(&validation.manifest.id)?;
-    if existing_pet.is_some() && !allow_existing_id_revision {
+    if existing_pet.as_ref().is_some_and(is_bundled_pet) {
         return Err(PetCoreError::Conflict(format!(
-            "pet id already exists: {}",
+            "bundled pet id is read-only: {}",
             validation.manifest.id
         )));
     }
-    let was_active = existing_pet.as_ref().is_some_and(|pet| pet.active);
-    let pet = PetSummary {
+    let candidate = PetSummary {
         id: validation.manifest.id.clone(),
         name: validation.manifest.name.clone(),
         style: validation.manifest.style.clone(),
@@ -1844,20 +2078,62 @@ fn import_petpack_with_origin_policy_guarded(
         origin,
         generator,
         provenance,
+        revision_id: None,
+        revision_count: 0,
+        active: false,
+        created_at: validation.manifest.created_at.clone(),
+    };
+    if matches!(identity_policy, ImportIdentityPolicy::PackageDeclared(_))
+        && is_bundled_pet(&candidate)
+    {
+        return Err(PetCoreError::Validation(
+            "bundled pet identity marker is reserved for the App release inventory".to_string(),
+        ));
+    }
+    if existing_pet.is_some() && !allow_existing_id_revision {
+        return Err(PetCoreError::Conflict(format!(
+            "pet id already exists: {}",
+            validation.manifest.id
+        )));
+    }
+    let was_active = existing_pet.as_ref().is_some_and(|pet| pet.active);
+    let pet = PetSummary {
         active: was_active,
         created_at: existing_pet
             .as_ref()
             .map(|pet| pet.created_at.clone())
-            .unwrap_or_else(|| validation.manifest.created_at.clone()),
+            .unwrap_or(candidate.created_at),
+        ..candidate
     };
     transaction.commit(database, pet)
 }
 
-fn prepare_import_assets(paths: &AppPaths, source_path: &Path) -> Result<PreparedImport> {
+fn prepare_import_assets(
+    paths: &AppPaths,
+    source_path: &Path,
+    expected_source_digest: Option<[u8; 32]>,
+) -> Result<PreparedImport> {
+    if expected_source_digest.is_some() {
+        let metadata = fs::symlink_metadata(source_path).map_err(|_| {
+            PetCoreError::Validation("bundled pet resource is unavailable".to_string())
+        })?;
+        if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+            return Err(PetCoreError::Validation(
+                "bundled pet resource identity changed during import".to_string(),
+            ));
+        }
+    }
     let source_digest_before = source_path
         .is_file()
         .then(|| sha256_file(source_path))
         .transpose()?;
+    if let Some(expected) = expected_source_digest {
+        if source_digest_before != Some(expected) {
+            return Err(PetCoreError::Conflict(
+                "bundled pet resource changed during import".to_string(),
+            ));
+        }
+    }
     let validation = validate_petpack_path(source_path)?;
     if let Some(expected) = source_digest_before {
         if sha256_file(source_path)? != expected {
@@ -3074,12 +3350,46 @@ fn draw_generated_frame(
     image
 }
 
-fn reference_frame_source(form: &GenerationForm, render_size: RenderSize) -> Option<RgbaImage> {
-    form.reference_images.iter().find_map(|reference| {
-        image::open(reference)
-            .ok()
-            .map(|image| fit_reference_image(image.to_rgba8(), render_size))
-    })
+fn materialize_reference_inputs(
+    dir: &Path,
+    references: &[String],
+    render_size: RenderSize,
+) -> Result<(Vec<String>, Option<RgbaImage>)> {
+    materialize_reference_inputs_with_hook(dir, references, render_size, || Ok(()))
+}
+
+fn materialize_reference_inputs_with_hook<AfterSnapshot>(
+    dir: &Path,
+    references: &[String],
+    render_size: RenderSize,
+    after_snapshot: AfterSnapshot,
+) -> Result<(Vec<String>, Option<RgbaImage>)>
+where
+    AfterSnapshot: FnOnce() -> Result<()>,
+{
+    // The job directory is writable by the App Server. Resolve every staged
+    // path once through the reference module's O_NOFOLLOW reader, then stop
+    // consulting those paths. Package copies and rendered pixels both derive
+    // from this same immutable, metadata-bound byte snapshot.
+    let snapshots = load_reference_snapshots(references)?;
+    after_snapshot()?;
+    let copied = copy_reference_images(dir, &snapshots)?;
+    let frame_source = reference_frame_source(&snapshots, render_size)?;
+    Ok((copied, frame_source))
+}
+
+fn reference_frame_source(
+    references: &[ValidatedReferenceSnapshot],
+    render_size: RenderSize,
+) -> Result<Option<RgbaImage>> {
+    references
+        .first()
+        .map(|reference| {
+            reference
+                .decode_verified_rgba(0)
+                .map(|image| fit_reference_image(image, render_size))
+        })
+        .transpose()
 }
 
 fn fit_reference_image(source: RgbaImage, size: RenderSize) -> RgbaImage {
@@ -3305,14 +3615,16 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| lower.contains(needle))
 }
 
-fn copy_reference_images(dir: &Path, references: &[String]) -> Result<Vec<String>> {
+fn copy_reference_images(
+    dir: &Path,
+    references: &[ValidatedReferenceSnapshot],
+) -> Result<Vec<String>> {
     let reference_dir = dir.join("source").join("references");
-    fs::create_dir_all(&reference_dir)?;
-    let validated = validate_reference_inputs(references)?;
-    let mut copied = Vec::with_capacity(validated.len());
-    for (index, reference) in validated.iter().enumerate() {
-        let target = reference_dir.join(format!("reference-{index:02}.{}", reference.extension));
-        fs::copy(&reference.source, &target)?;
+    fs::create_dir_all(&reference_dir).map_err(|_| reference_materialization_failed())?;
+    let mut copied = Vec::with_capacity(references.len());
+    for (index, reference) in references.iter().enumerate() {
+        let target = reference_dir.join(format!("reference-{index:02}.{}", reference.extension()));
+        reference.write_verified_copy(index, &target)?;
         copied.push(
             target
                 .strip_prefix(dir)
@@ -3322,6 +3634,10 @@ fn copy_reference_images(dir: &Path, references: &[String]) -> Result<Vec<String
         );
     }
     Ok(copied)
+}
+
+fn reference_materialization_failed() -> PetCoreError {
+    PetCoreError::InvalidRequest("参考图物化失败，请重新选择后重试".to_string())
 }
 
 fn form_with_package_references(
@@ -3753,6 +4069,46 @@ mod asset_contract_tests {
             image::ExtendedColorType::Rgba8,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn reference_materialization_uses_one_snapshot_after_staged_path_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp.path().join("staged.png");
+        let replacement = temp.path().join("replacement.png");
+        let output = temp.path().join("petpack-source");
+        let original_color = [12, 34, 56, 255];
+        let replacement_color = [210, 190, 170, 255];
+        ImageBuffer::from_pixel(8, 8, Rgba(original_color))
+            .save_with_format(&staged, image::ImageFormat::Png)
+            .unwrap();
+        ImageBuffer::from_pixel(8, 8, Rgba(replacement_color))
+            .save_with_format(&replacement, image::ImageFormat::Png)
+            .unwrap();
+        let original_bytes = fs::read(&staged).unwrap();
+        let staged_for_swap = staged.clone();
+        let replacement_for_swap = replacement.clone();
+
+        let (copied, rendered) = materialize_reference_inputs_with_hook(
+            &output,
+            &[staged.display().to_string()],
+            RenderSize {
+                width: 8,
+                height: 8,
+            },
+            move || {
+                fs::remove_file(&staged_for_swap)?;
+                std::os::unix::fs::symlink(&replacement_for_swap, &staged_for_swap)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(output.join(&copied[0])).unwrap(), original_bytes);
+        assert_ne!(fs::read(&staged).unwrap(), original_bytes);
+        let rendered = rendered.expect("validated reference should render");
+        assert_eq!(rendered.get_pixel(4, 4).0, original_color);
+        assert_ne!(rendered.get_pixel(4, 4).0, replacement_color);
     }
 
     #[test]

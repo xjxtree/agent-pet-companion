@@ -18,6 +18,183 @@ const MAX_TURN_ID_BYTES: usize = 256;
 const MAX_PROJECT_LABEL_BYTES: usize = 128;
 const MAX_SESSION_TITLE_BYTES: usize = 160;
 const MAX_SESSION_OPEN_URL_BYTES: usize = 256;
+const MAX_CONTRACT_VERSION_BYTES: usize = 128;
+
+pub fn event_affects_activity(event: &AgentEvent) -> bool {
+    event
+        .payload_json
+        .get("affects_activity")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Returns whether a supported connector event is a production terminal edge
+/// that may close previously activated work. This closed set is deliberately
+/// source-, type-, and (where needed) outcome-aware: similarly named metadata
+/// or non-terminal events must not suppress a real active session.
+pub(crate) fn event_requires_prior_user_activation(event: &AgentEvent) -> bool {
+    let source_event = event
+        .payload_json
+        .get("source_event")
+        .and_then(Value::as_str);
+    let outcome = event.payload_json.get("outcome").and_then(Value::as_str);
+
+    match (event.source, event.event_type, source_event) {
+        (AgentSource::Codex, AgentEventType::Done, Some("Stop")) => true,
+        (AgentSource::ClaudeCode, AgentEventType::Done, Some("Stop" | "SessionEnd")) => true,
+        (AgentSource::ClaudeCode, AgentEventType::Failed, Some("StopFailure")) => true,
+        (AgentSource::ClaudeCode, AgentEventType::Done, Some("Notification")) => {
+            matches!(outcome, Some("idle" | "agent_completed"))
+        }
+        (AgentSource::Pi, AgentEventType::Done | AgentEventType::Failed, Some("agent_settled")) => {
+            true
+        }
+        (AgentSource::Pi, AgentEventType::Done, Some("session_shutdown")) => true,
+        (AgentSource::Opencode, AgentEventType::Done, Some("session.deleted" | "session.idle")) => {
+            true
+        }
+        (AgentSource::Opencode, AgentEventType::Done, Some("session.status")) => {
+            outcome == Some("idle")
+        }
+        (AgentSource::Opencode, AgentEventType::Failed, Some("session.error")) => true,
+        (
+            AgentSource::Opencode,
+            AgentEventType::Done | AgentEventType::Failed,
+            Some("session.next.step.ended"),
+        ) => true,
+        (AgentSource::Opencode, AgentEventType::Failed, Some("session.next.step.failed")) => true,
+        _ => false,
+    }
+}
+
+/// Returns whether an event proves that a new/continued active execution epoch
+/// began after a latched failure. Completion tails such as assistant messages,
+/// tool-after, compaction completion, idle, and close are intentionally absent.
+pub(crate) fn event_starts_new_activity_epoch(event: &AgentEvent) -> bool {
+    if matches!(
+        event.event_type,
+        AgentEventType::Done | AgentEventType::Failed
+    ) {
+        return false;
+    }
+    let source_event = event
+        .payload_json
+        .get("source_event")
+        .and_then(Value::as_str);
+    let outcome = event.payload_json.get("outcome").and_then(Value::as_str);
+    if event
+        .payload_json
+        .get("message_role")
+        .and_then(Value::as_str)
+        == Some("user")
+    {
+        return true;
+    }
+    if event.event_type == AgentEventType::Waiting {
+        let active = event
+            .payload_json
+            .get("session_active")
+            .and_then(Value::as_bool)
+            == Some(true);
+        if active || matches!(source_event, Some("waiting" | "legacy" | "unclassified")) {
+            return true;
+        }
+    }
+
+    match event.source {
+        AgentSource::Codex => {
+            matches!(
+                source_event,
+                Some(
+                    "UserPromptSubmit"
+                        | "PreToolUse"
+                        | "PermissionRequest"
+                        | "PreCompact"
+                        | "SubagentStart"
+                )
+            ) || (source_event == Some("app_server_activity")
+                && event
+                    .payload_json
+                    .get("session_active")
+                    .and_then(Value::as_bool)
+                    == Some(true))
+        }
+        AgentSource::ClaudeCode => {
+            matches!(
+                source_event,
+                Some(
+                    "UserPromptSubmit"
+                        | "PreToolUse"
+                        | "PermissionRequest"
+                        | "PreCompact"
+                        | "SubagentStart"
+                        | "TaskCreated"
+                        | "Elicitation"
+                )
+            ) || (source_event == Some("Stop") && outcome == Some("background_active"))
+        }
+        AgentSource::Pi => matches!(
+            source_event,
+            Some(
+                "input"
+                    | "before_agent_start"
+                    | "agent_start"
+                    | "turn_start"
+                    | "session_before_compact"
+                    | "tool_call"
+                    | "tool_execution_start"
+            )
+        ),
+        AgentSource::Opencode => {
+            matches!(
+                source_event,
+                Some(
+                    "message.user"
+                        | "session.next.prompt.admitted"
+                        | "session.compaction.started"
+                        | "tool.execute.before"
+                        | "command.execute.before"
+                        | "permission.asked"
+                        | "permission.updated"
+                        | "permission.v2.asked"
+                        | "question.asked"
+                        | "question.v2.asked"
+                )
+            ) || (source_event == Some("session.status")
+                && matches!(outcome, Some("busy" | "retry")))
+        }
+    }
+}
+
+/// Returns whether a connector event can prove that an ordinary Agent task
+/// reached PetCore. `affects_activity` is the adapter's primary semantic
+/// signal; the explicit lifecycle exclusions are a defense in depth for old
+/// or malformed connector payloads that marked a host open/close edge active.
+pub(crate) fn source_event_proves_ordinary_activity(
+    source_event: &str,
+    affects_activity: bool,
+) -> bool {
+    affects_activity
+        && !matches!(
+            source_event,
+            "SessionStart"
+                | "SessionEnd"
+                | "session_start"
+                | "session_shutdown"
+                | "session.created"
+                | "session.deleted"
+                | "session.idle"
+                | "session.status"
+                | "session.error"
+                | "session.next.step.ended"
+                | "session.next.step.failed"
+                | "connector.probe"
+                | "connection.test"
+                | "app_server_activity"
+                | "legacy"
+                | "unclassified"
+        )
+}
 const FUTURE_EVENT_GRACE_SECONDS: i64 = 60;
 
 const AGENT_EVENT_ALLOWED_FIELDS: &[&str] = &[
@@ -37,9 +214,11 @@ const EVENT_ENVELOPE_ALLOWED_FIELDS: &[&str] = &[
     "schema_version",
     "external_event_id",
     "source_event",
+    "contract_version",
     "tool_name",
     "outcome",
     "diagnostic",
+    "affects_activity",
     "turn_id",
     "session_active",
     "message_role",
@@ -127,9 +306,11 @@ pub(crate) fn minimal_legacy_payload(external_event_id: &str) -> Value {
         "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
         "external_event_id": external_event_id,
         "source_event": "legacy",
+        "contract_version": null,
         "tool_name": null,
         "outcome": null,
         "diagnostic": false,
+        "affects_activity": true,
         "turn_id": null,
         "session_active": false,
         "message_role": null,
@@ -211,7 +392,13 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
             )));
         }
     }
-    for key in ["external_event_id", "source_event", "tool_name", "outcome"] {
+    for key in [
+        "external_event_id",
+        "source_event",
+        "contract_version",
+        "tool_name",
+        "outcome",
+    ] {
         if let Some(value) = payload.get(key) {
             if !(value.is_null() || value.as_str().is_some()) {
                 return Err(invalid_event(format!(
@@ -224,6 +411,13 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
         if !value.is_boolean() {
             return Err(invalid_event(
                 "agent event payload diagnostic must be a boolean",
+            ));
+        }
+    }
+    if let Some(value) = payload.get("affects_activity") {
+        if !value.is_boolean() {
+            return Err(invalid_event(
+                "agent event payload affects_activity must be a boolean",
             ));
         }
     }
@@ -242,6 +436,7 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
         }
     }
     for (key, maximum_bytes) in [
+        ("contract_version", MAX_CONTRACT_VERSION_BYTES),
         ("turn_id", MAX_TURN_ID_BYTES),
         ("message_content", MAX_MESSAGE_CONTENT_BYTES),
         ("activity_content", MAX_ACTIVITY_CONTENT_BYTES),
@@ -367,10 +562,17 @@ fn strict_payload(
         .map(normalized_outcome)
         .map(Value::String)
         .unwrap_or(Value::Null);
+    let contract_version =
+        normalized_optional_payload_string(payload, "contract_version", MAX_CONTRACT_VERSION_BYTES);
     let diagnostic = payload
         .and_then(|payload| payload.get("diagnostic"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let affects_activity = !diagnostic
+        && payload
+            .and_then(|payload| payload.get("affects_activity"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
     let turn_id = normalized_optional_payload_string(payload, "turn_id", MAX_TURN_ID_BYTES);
     let session_active = payload
         .and_then(|payload| payload.get("session_active"))
@@ -444,9 +646,11 @@ fn strict_payload(
         "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
         "external_event_id": external_event_id,
         "source_event": source_event,
+        "contract_version": contract_version,
         "tool_name": tool_name,
         "outcome": outcome,
         "diagnostic": diagnostic,
+        "affects_activity": affects_activity,
         "turn_id": turn_id,
         "session_active": session_active,
         "message_role": message_role,
@@ -506,7 +710,7 @@ fn normalized_optional_payload_enum(
         .unwrap_or(Value::Null)
 }
 
-fn validated_warp_focus_url(value: &str) -> Option<String> {
+pub(crate) fn validated_warp_focus_url(value: &str) -> Option<String> {
     let value = value.trim();
     let uuid = value
         .strip_prefix("warp://session/")
@@ -524,7 +728,10 @@ fn normalized_source_event(value: &str) -> &'static str {
         "done" => "done",
         "failed" => "failed",
         "SessionStart" => "SessionStart",
+        "Setup" => "Setup",
+        "InstructionsLoaded" => "InstructionsLoaded",
         "UserPromptSubmit" => "UserPromptSubmit",
+        "UserPromptExpansion" => "UserPromptExpansion",
         "PreToolUse" => "PreToolUse",
         "PermissionRequest" => "PermissionRequest",
         "PostToolUse" => "PostToolUse",
@@ -543,10 +750,16 @@ fn normalized_source_event(value: &str) -> &'static str {
         "SubagentStop" => "SubagentStop",
         "TaskCreated" => "TaskCreated",
         "TaskCompleted" => "TaskCompleted",
+        "TeammateIdle" => "TeammateIdle",
+        "ConfigChange" => "ConfigChange",
+        "CwdChanged" => "CwdChanged",
+        "WorktreeRemove" => "WorktreeRemove",
         "session_start" => "session_start",
         "input" => "input",
         "before_agent_start" => "before_agent_start",
         "agent_start" => "agent_start",
+        "turn_start" => "turn_start",
+        "turn_end" => "turn_end",
         "tool_call" => "tool_call",
         "tool_execution_start" => "tool_execution_start",
         "tool_execution_end" => "tool_execution_end",
@@ -564,13 +777,27 @@ fn normalized_source_event(value: &str) -> &'static str {
         "permission.asked" => "permission.asked",
         "permission.updated" => "permission.updated",
         "permission.replied" => "permission.replied",
+        "permission.v2.asked" => "permission.v2.asked",
+        "permission.v2.replied" => "permission.v2.replied",
         "question.asked" => "question.asked",
         "question.replied" => "question.replied",
         "question.rejected" => "question.rejected",
+        "question.v2.asked" => "question.v2.asked",
+        "question.v2.replied" => "question.v2.replied",
+        "question.v2.rejected" => "question.v2.rejected",
+        "session.next.prompt.admitted" => "session.next.prompt.admitted",
+        "session.next.step.ended" => "session.next.step.ended",
+        "session.next.step.failed" => "session.next.step.failed",
         "message.user" => "message.user",
         "message.assistant" => "message.assistant",
         "tool.execute.before" => "tool.execute.before",
         "tool.execute.after" => "tool.execute.after",
+        "command.execute.before" => "command.execute.before",
+        "command.execute.after" => "command.execute.after",
+        "session.compaction.started" => "session.compaction.started",
+        "session.compaction.ended" => "session.compaction.ended",
+        "session.plan.updated" => "session.plan.updated",
+        "connector.probe" => "connector.probe",
         "connection.test" => "connection.test",
         "app_server_activity" => "app_server_activity",
         "legacy" => "legacy",
@@ -612,8 +839,14 @@ fn normalized_outcome(value: &str) -> String {
         | "permission_replied_deny"
         | "permission_replied_reject"
         | "started_without_args"
-        | "session_failure" => value.to_string(),
-        "session_closed" | "input_requested" | "message" => value.to_string(),
+        | "session_failure"
+        | "observed"
+        | "auto_denied"
+        | "background_active"
+        | "agent_completed" => value.to_string(),
+        "session_closed" | "input_requested" | "message" | "continued" | "prompt_admitted" => {
+            value.to_string()
+        }
         _ => "unknown".to_string(),
     }
 }

@@ -91,6 +91,14 @@ pub enum AppearanceTheme {
     Light,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionGroupDisplay {
+    #[default]
+    Stacked,
+    Expanded,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PetStateName {
@@ -246,6 +254,7 @@ pub struct BehaviorSettings {
     pub click_menu: bool,
     pub mouse_passthrough: bool,
     pub auto_hide: bool,
+    pub session_group_display: SessionGroupDisplay,
     pub session_message_timeout_minutes: u16,
     pub fps_profile: FpsProfileName,
     pub sources: BTreeMap<AgentSource, bool>,
@@ -266,6 +275,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             click_menu: Option<bool>,
             mouse_passthrough: Option<bool>,
             auto_hide: Option<bool>,
+            session_group_display: Option<SessionGroupDisplay>,
             session_message_timeout_minutes: Option<u16>,
             fps_profile: Option<FpsProfileName>,
             sources: Option<BTreeMap<AgentSource, bool>>,
@@ -299,6 +309,9 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
             mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
             auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
+            session_group_display: raw
+                .session_group_display
+                .unwrap_or(defaults.session_group_display),
             session_message_timeout_minutes: raw
                 .session_message_timeout_minutes
                 .unwrap_or(defaults.session_message_timeout_minutes),
@@ -341,6 +354,7 @@ impl Default for BehaviorSettings {
             click_menu: true,
             mouse_passthrough: true,
             auto_hide: false,
+            session_group_display: SessionGroupDisplay::Stacked,
             session_message_timeout_minutes: DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES,
             fps_profile: FpsProfileName::Standard,
             sources,
@@ -391,6 +405,8 @@ pub struct GenerationForm {
     pub reference_images: Vec<String>,
 }
 
+pub const MAX_GENERATION_DESCRIPTION_CHARS: usize = 8_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationJobStatus {
@@ -417,13 +433,103 @@ pub struct GenerationMessageRecord {
     pub diagnostic: Option<serde_json::Value>,
 }
 
+/// Compact, user-presentable evidence from the exact `.petpack` validation
+/// that preceded a successful generation commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationValidationSummary {
+    pub ok: bool,
+    pub state_count: usize,
+    pub frame_count: usize,
+    pub warning_count: usize,
+}
+
+/// Durable terminal result for a generation job. This is stored beside the
+/// job rather than inferred from the current pet row, because later immutable
+/// revisions must not rewrite the history of an earlier completed job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationResultSummary {
+    pub result_pet_id: String,
+    pub revision_id: String,
+    pub validation_summary: GenerationValidationSummary,
+}
+
+/// Public operation identity used by bounded library history projections.
+/// It intentionally carries no prompt, form, transcript, or provider data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationOperation {
+    Create,
+    Modify,
+}
+
+/// One structurally owned immutable revision exposed to the Pet Library.
+/// `validated` is true only after PetCore has revalidated the exact archive;
+/// only those entries may be selected as an edit baseline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PetRevisionHistoryRecord {
+    pub revision_id: String,
+    pub current: bool,
+    pub validated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_summary: Option<GenerationValidationSummary>,
+}
+
+/// Privacy-minimized job history for the Pet Library. Job workspaces, App
+/// Server session IDs, forms, prompts, and messages remain private.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationJobHistoryRecord {
+    pub job_id: String,
+    pub status: GenerationJobStatus,
+    pub operation: GenerationOperation,
+    /// Exact owned immutable revision submitted as an edit baseline. Create
+    /// jobs and legacy/current-head edits that predate explicit baselines omit
+    /// this identity. No edit-context path or instruction is projected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline_revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_summary: Option<GenerationValidationSummary>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Bounded, typed projection consumed by the native Pet Library history
+/// sheet. This is an internal RPC view and is never embedded in `.petpack`
+/// exports or package metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PetHistorySnapshot {
+    pub ok: bool,
+    pub pet_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_revision_id: Option<String>,
+    pub revisions: Vec<PetRevisionHistoryRecord>,
+    pub jobs: Vec<GenerationJobHistoryRecord>,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationSessionSnapshot {
     pub job_id: String,
     pub status: GenerationJobStatus,
     pub form: GenerationForm,
+    /// Number of original user-selected references that could not be restored
+    /// from validated private job copies and must be selected again. This is
+    /// bounded by the generation reference-image limit.
+    #[serde(default)]
+    pub reference_reselection_count: usize,
     pub session_id: Option<String>,
     pub result_pet_id: Option<String>,
+    /// Public create/modify identity for the active generation. Legacy
+    /// snapshots omit this field and decode it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<GenerationOperation>,
+    /// Exact owned immutable revision selected as the edit baseline. This is
+    /// absent for create jobs and legacy/current-head edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_revision_id: Option<String>,
     pub owner_instance_id: Option<String>,
     pub heartbeat_at: String,
     pub message_revision: String,
@@ -455,6 +561,14 @@ pub struct PetSummary {
     pub generator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
+    /// The current immutable revision when the package is owned by PetCore.
+    /// Legacy and externally referenced packages intentionally decode as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    /// Number of structurally verified immutable revisions owned by PetCore.
+    /// Zero means the package is external or revision metadata is unavailable.
+    #[serde(default)]
+    pub revision_count: u32,
     pub active: bool,
     pub created_at: String,
 }
@@ -487,11 +601,63 @@ impl CheckStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionCheckCode {
+    AgentCli,
+    EventCli,
+    ProjectDirectory,
+    AgentVersion,
+    ManagedConnector,
+    ClaudeHooksPolicy,
+    HostRuntime,
+    HostVerification,
+    EventDelivery,
+    ChannelTest,
+    AppServer,
+    HostServer,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionCheckRecoveryAction {
+    ChooseProjectDirectory,
+    ConfirmManagedRepair,
+    TestChannel,
+    #[serde(other)]
+    Recheck,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionCheckItem {
+    #[serde(default)]
+    pub code: ConnectionCheckCode,
     pub name: String,
     pub status: CheckStatus,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<ConnectionCheckRecoveryAction>,
+}
+
+impl ConnectionCheckItem {
+    pub fn new(
+        code: ConnectionCheckCode,
+        name: impl Into<String>,
+        status: CheckStatus,
+        detail: impl Into<String>,
+        recovery_action: Option<ConnectionCheckRecoveryAction>,
+    ) -> Self {
+        Self {
+            code,
+            name: name.into(),
+            status,
+            detail: detail.into(),
+            recovery_action,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -501,6 +667,67 @@ pub enum ConnectionCheckMode {
     Runtime,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentVerificationStatus {
+    Verified,
+    ActionRequired,
+    #[default]
+    Unverified,
+    NotRequired,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentVerification {
+    #[serde(default)]
+    pub status: AgentVerificationStatus,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_detail: Option<String>,
+    /// Directory used for project-scoped host trust/policy probes. A positive
+    /// result must not be extrapolated to other working directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentConnectorCapabilities {
+    #[serde(default)]
+    pub contract_version: String,
+    /// Complete host hook/event surface reviewed for this contract, including
+    /// deliberately excluded capabilities.
+    #[serde(default)]
+    pub audited_events: Vec<String>,
+    /// Handlers the connector actually registers. A generic bus handler may
+    /// safely observe several audited host events.
+    #[serde(default)]
+    pub subscribed_events: Vec<String>,
+    #[serde(default)]
+    pub mapped_information: Vec<String>,
+    #[serde(default)]
+    pub privacy_exclusions: Vec<String>,
+    /// Whether the latest check found an issue in connector-owned files or
+    /// configuration that the App can safely repair. `None` identifies a
+    /// legacy status that predates this typed management contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repairable_connector_issue: Option<bool>,
+    /// Whether a foreign, symlinked, or otherwise unsafe managed path blocks
+    /// connector mutation. `None` identifies a legacy status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_path_conflict: Option<bool>,
+    /// Whether connector-owned artifacts are present and can currently be
+    /// uninstalled without crossing a managed-path conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_uninstall_managed_connector: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConnectionStatus {
     pub source: AgentSource,
@@ -508,6 +735,173 @@ pub struct AgentConnectionStatus {
     pub install_paths: Vec<String>,
     #[serde(default)]
     pub connector_installed: bool,
+    #[serde(default)]
+    pub verification: AgentVerification,
+    #[serde(default)]
+    pub capabilities: AgentConnectorCapabilities,
     pub check_mode: ConnectionCheckMode,
     pub checked_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_pet_summary_defaults_revision_metadata() {
+        let pet: PetSummary = serde_json::from_value(serde_json::json!({
+            "id": "pet_legacy",
+            "name": "Legacy",
+            "style": "pixel",
+            "quality": "high",
+            "render_size": { "width": 384, "height": 416 },
+            "petpack_path": "/external.petpack",
+            "cover_path": "",
+            "active": false,
+            "created_at": "2026-07-21T00:00:00Z"
+        }))
+        .unwrap();
+
+        assert_eq!(pet.revision_id, None);
+        assert_eq!(pet.revision_count, 0);
+    }
+
+    #[test]
+    fn active_generation_snapshot_round_trips_operation_and_baseline_revision() {
+        let current = serde_json::json!({
+            "job_id": "job_modify",
+            "status": "running",
+            "form": {
+                "description": "Refine the ears",
+                "style": "pixel",
+                "quality": "high",
+                "reference_images": []
+            },
+            "reference_reselection_count": 0,
+            "session_id": "session_1",
+            "result_pet_id": "pet_1",
+            "operation": "modify",
+            "baseline_revision_id": "revision_1",
+            "owner_instance_id": "instance_1",
+            "heartbeat_at": "2026-07-21T00:00:00Z",
+            "message_revision": "4",
+            "messages": [],
+            "input_request": null
+        });
+
+        let snapshot: GenerationSessionSnapshot = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(snapshot.operation, Some(GenerationOperation::Modify));
+        assert_eq!(snapshot.baseline_revision_id.as_deref(), Some("revision_1"));
+        assert_eq!(snapshot.reference_reselection_count, 0);
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), current);
+    }
+
+    #[test]
+    fn legacy_active_generation_snapshot_defaults_edit_identity() {
+        let snapshot: GenerationSessionSnapshot = serde_json::from_value(serde_json::json!({
+            "job_id": "job_legacy",
+            "status": "pending",
+            "form": {
+                "description": "Create a companion",
+                "style": "pixel",
+                "quality": "standard",
+                "reference_images": []
+            },
+            "session_id": null,
+            "result_pet_id": null,
+            "owner_instance_id": null,
+            "heartbeat_at": "2026-07-21T00:00:00Z",
+            "message_revision": "0",
+            "messages": [],
+            "input_request": null
+        }))
+        .unwrap();
+
+        assert_eq!(snapshot.operation, None);
+        assert_eq!(snapshot.baseline_revision_id, None);
+        assert_eq!(snapshot.reference_reselection_count, 0);
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        assert!(encoded.get("operation").is_none());
+        assert!(encoded.get("baseline_revision_id").is_none());
+    }
+
+    #[test]
+    fn connector_management_capabilities_decode_legacy_and_current_payloads() {
+        let legacy: AgentConnectorCapabilities = serde_json::from_value(serde_json::json!({
+            "contract_version": "legacy-v1"
+        }))
+        .unwrap();
+        assert_eq!(legacy.repairable_connector_issue, None);
+        assert_eq!(legacy.managed_path_conflict, None);
+        assert_eq!(legacy.can_uninstall_managed_connector, None);
+
+        let current: AgentConnectorCapabilities = serde_json::from_value(serde_json::json!({
+            "repairable_connector_issue": true,
+            "managed_path_conflict": false,
+            "can_uninstall_managed_connector": true
+        }))
+        .unwrap();
+        assert_eq!(current.repairable_connector_issue, Some(true));
+        assert_eq!(current.managed_path_conflict, Some(false));
+        assert_eq!(current.can_uninstall_managed_connector, Some(true));
+    }
+
+    #[test]
+    fn connection_check_serialization_emits_typed_code_and_row_recovery() {
+        let item = ConnectionCheckItem::new(
+            ConnectionCheckCode::ProjectDirectory,
+            "检查目录访问",
+            CheckStatus::NeedsFix,
+            "任意中文技术信息",
+            Some(ConnectionCheckRecoveryAction::ChooseProjectDirectory),
+        );
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["code"], "project_directory");
+        assert_eq!(value["recovery_action"], "choose_project_directory");
+
+        let renamed = ConnectionCheckItem::new(
+            ConnectionCheckCode::ProjectDirectory,
+            "Project workspace access v3",
+            CheckStatus::NeedsFix,
+            "renamed backend detail",
+            Some(ConnectionCheckRecoveryAction::ChooseProjectDirectory),
+        );
+        let renamed_value = serde_json::to_value(&renamed).unwrap();
+        assert_eq!(renamed_value["code"], value["code"]);
+        assert_eq!(renamed_value["recovery_action"], value["recovery_action"]);
+
+        let claude_policy = ConnectionCheckItem::new(
+            ConnectionCheckCode::ClaudeHooksPolicy,
+            "renamed backend policy row",
+            CheckStatus::NeedsFix,
+            "backend-only policy detail",
+            Some(ConnectionCheckRecoveryAction::Recheck),
+        );
+        let claude_policy_value = serde_json::to_value(&claude_policy).unwrap();
+        assert_eq!(claude_policy_value["code"], "claude_hooks_policy");
+        assert_eq!(claude_policy_value["recovery_action"], "recheck");
+
+        let legacy: ConnectionCheckItem = serde_json::from_value(serde_json::json!({
+            "name": "旧检查项",
+            "status": "unverified",
+            "detail": "legacy"
+        }))
+        .unwrap();
+        assert_eq!(legacy.code, ConnectionCheckCode::Unknown);
+        assert_eq!(legacy.recovery_action, None);
+
+        let unknown: ConnectionCheckItem = serde_json::from_value(serde_json::json!({
+            "code": "future_policy_probe",
+            "name": "Future policy probe",
+            "status": "needs_fix",
+            "detail": "future",
+            "recovery_action": "future_privileged_mutation"
+        }))
+        .unwrap();
+        assert_eq!(unknown.code, ConnectionCheckCode::Unknown);
+        assert_eq!(
+            unknown.recovery_action,
+            Some(ConnectionCheckRecoveryAction::Recheck)
+        );
+    }
 }

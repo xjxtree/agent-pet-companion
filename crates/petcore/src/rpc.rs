@@ -1,10 +1,15 @@
+use crate::agent_environment::connector_identity_environment;
 use crate::agent_state;
 use crate::connections;
-use crate::db::{BehaviorSettingsPatch, Database, InsertEventOutcome};
-use crate::event_envelope::{NormalizedAgentEvent, MAX_RECENT_EVENTS};
+use crate::db::{
+    BehaviorSettingsPatch, Database, InsertEventOutcome, RevisionChecked, SessionMessageProjection,
+};
+use crate::diagnostics::{self, DiagnosticIngestOutcome, DiagnosticLogger, DiagnosticRejection};
+use crate::event_envelope::{event_affects_activity, NormalizedAgentEvent, MAX_RECENT_EVENTS};
 use crate::generation;
 use crate::metrics;
 use crate::paths::AppPaths;
+use crate::pet_revision;
 use crate::petpack;
 use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{app_server, enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
@@ -17,7 +22,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -36,6 +41,10 @@ const CODEX_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 30;
 const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 3;
 const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
 const CODEX_ACTIVITY_REFRESH_SECONDS: u64 = 1;
+const CONNECTION_LIGHT_STATUS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_CACHED_CONNECTION_STATUSES: usize = 4;
+const MAX_CACHED_SESSION_DISPLAY_ENTRIES: usize = 16;
+const MAX_SNAPSHOT_REVISION_RETRIES: usize = 8;
 const MAX_FALLBACK_SESSION_TITLE_CHARS: usize = 80;
 const AGENT_EVENT_ALLOWED_FIELDS: &[&str] = &[
     "id",
@@ -54,11 +63,29 @@ const AGENT_EVENT_ALLOWED_FIELDS: &[&str] = &[
 pub struct CoreState {
     pub paths: AppPaths,
     pub database: Database,
+    pub diagnostics: DiagnosticLogger,
     instance_id: String,
     codex_thread_display_cache: Arc<Mutex<CodexThreadDisplayCache>>,
     codex_activity_sync_enabled: bool,
     codex_activity_sync: Arc<Mutex<CodexActivitySyncState>>,
+    codex_recent_activity_cache: Arc<Mutex<app_server::CodexRecentThreadActivityCache>>,
+    connection_light_status_cache: Arc<ConnectionLightStatusCache>,
+    connection_evidence_projection_cache: Arc<ConnectionEvidenceProjectionCache>,
+    snapshot_sequenced_event_cache: Arc<SnapshotSequencedEventCache>,
+    snapshot_persisted_display_cache: Arc<SnapshotPersistedDisplayCache>,
+    agent_host_process_gate: Arc<Mutex<()>>,
+    connection_operation_active: Arc<AtomicBool>,
     shutdown_requested: Arc<AtomicBool>,
+}
+
+struct ConnectionOperationPermit {
+    active: Arc<AtomicBool>,
+}
+
+impl Drop for ConnectionOperationPermit {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -89,16 +116,316 @@ struct CodexActivityObservation {
     inferred_activity: Option<app_server::CodexThreadDisplayActivity>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedConnectionLightStatuses {
+    refreshed_at: Instant,
+    artifact_revision: u64,
+    statuses: Vec<AgentConnectionStatus>,
+}
+
+/// Process-local cache for the bounded, UI-safe connection status projection.
+/// The mutex intentionally remains held during a cold refresh so concurrent
+/// snapshots share one filesystem scan instead of starting duplicates.
+#[derive(Debug, Default)]
+struct ConnectionLightStatusCache {
+    entry: Mutex<Option<CachedConnectionLightStatuses>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedConnectionEvidenceProjection {
+    artifact_revision: u64,
+    base_status_json: String,
+    status: AgentConnectionStatus,
+}
+
+/// Evidence is deliberately isolated from the five-minute filesystem cache.
+/// Entries are bounded by the four supported sources and are dirtied for only
+/// the source whose event stream changed. The exact serialized base status is
+/// part of the key so a newly persisted runtime check is visible immediately.
+#[derive(Debug, Default)]
+struct ConnectionEvidenceProjectionCache {
+    entries: Mutex<BTreeMap<AgentSource, CachedConnectionEvidenceProjection>>,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotSequencedEvents {
+    state_revision: u64,
+    events: Arc<Vec<agent_state::SequencedAgentEvent>>,
+}
+
+/// Process-local cache for the normalized event projection used by snapshots.
+/// Holding the mutex through a cold refresh prevents concurrent `state.wait`
+/// timeouts from repeating the same JSON parsing and session ordering query.
+#[derive(Debug, Default)]
+struct SnapshotSequencedEventCache {
+    entry: Mutex<Option<SnapshotSequencedEvents>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SessionDisplayCacheKey {
+    source: AgentSource,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PersistedSessionDisplay {
+    latest_message: Option<agent_state::SequencedAgentEvent>,
+    latest_user_message: Option<agent_state::SequencedAgentEvent>,
+    first_user_message: Option<AgentEvent>,
+}
+
+#[derive(Debug)]
+struct SnapshotPersistedDisplay {
+    state_revision: u64,
+    sessions: BTreeMap<SessionDisplayCacheKey, PersistedSessionDisplay>,
+    recent_events: Option<Arc<Vec<AgentEvent>>>,
+}
+
+/// Process-local, single-revision cache for display-only projections loaded
+/// from persisted, typed agent events. The mutex remains held during each cold
+/// load so concurrent snapshot timeouts cannot duplicate the same DB queries.
+/// Codex App Server overlays are deliberately applied after this cache on every
+/// hydration and never enter it.
+#[derive(Debug, Default)]
+struct SnapshotPersistedDisplayCache {
+    entry: Mutex<Option<SnapshotPersistedDisplay>>,
+}
+
+impl SnapshotSequencedEventCache {
+    fn get_or_try_refresh<R, F>(
+        &self,
+        current_revision: R,
+        refresh: F,
+    ) -> Result<SnapshotSequencedEvents>
+    where
+        R: FnOnce() -> Result<u64>,
+        F: FnOnce() -> Result<SnapshotSequencedEvents>,
+    {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let revision = current_revision()?;
+        if let Some(cached) = entry
+            .as_ref()
+            .filter(|cached| cached.state_revision == revision)
+        {
+            return Ok(cached.clone());
+        }
+
+        let refreshed = refresh()?;
+        *entry = Some(refreshed.clone());
+        Ok(refreshed)
+    }
+}
+
+impl SnapshotPersistedDisplayCache {
+    fn session_display<F>(
+        &self,
+        state_revision: u64,
+        key: SessionDisplayCacheKey,
+        refresh: F,
+    ) -> Result<Option<PersistedSessionDisplay>>
+    where
+        F: FnOnce() -> Result<RevisionChecked<SessionMessageProjection>>,
+    {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache = persisted_display_revision_entry(&mut entry, state_revision);
+        if let Some(cached) = cache.sessions.get(&key) {
+            return Ok(Some(cached.clone()));
+        }
+
+        let refreshed = match refresh()? {
+            RevisionChecked::Matched {
+                state_revision: matched_revision,
+                value,
+            } if matched_revision == state_revision => PersistedSessionDisplay {
+                latest_message: value.latest_assistant,
+                latest_user_message: value.latest_user,
+                first_user_message: value.first_user,
+            },
+            RevisionChecked::Matched { .. } | RevisionChecked::Mismatch { .. } => {
+                return Ok(None);
+            }
+        };
+        if cache.sessions.len() >= MAX_CACHED_SESSION_DISPLAY_ENTRIES {
+            if let Some(oldest_key) = cache.sessions.keys().next().cloned() {
+                cache.sessions.remove(&oldest_key);
+            }
+        }
+        cache.sessions.insert(key, refreshed.clone());
+        Ok(Some(refreshed))
+    }
+
+    fn recent_events<F>(
+        &self,
+        state_revision: u64,
+        refresh: F,
+    ) -> Result<Option<Arc<Vec<AgentEvent>>>>
+    where
+        F: FnOnce() -> Result<RevisionChecked<Vec<AgentEvent>>>,
+    {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache = persisted_display_revision_entry(&mut entry, state_revision);
+        if let Some(cached) = &cache.recent_events {
+            return Ok(Some(Arc::clone(cached)));
+        }
+
+        let refreshed = match refresh()? {
+            RevisionChecked::Matched {
+                state_revision: matched_revision,
+                value,
+            } if matched_revision == state_revision => Arc::new(value),
+            RevisionChecked::Matched { .. } | RevisionChecked::Mismatch { .. } => {
+                return Ok(None);
+            }
+        };
+        cache.recent_events = Some(Arc::clone(&refreshed));
+        Ok(Some(refreshed))
+    }
+}
+
+fn persisted_display_revision_entry(
+    entry: &mut Option<SnapshotPersistedDisplay>,
+    state_revision: u64,
+) -> &mut SnapshotPersistedDisplay {
+    if entry
+        .as_ref()
+        .is_none_or(|cached| cached.state_revision != state_revision)
+    {
+        *entry = Some(SnapshotPersistedDisplay {
+            state_revision,
+            sessions: BTreeMap::new(),
+            recent_events: None,
+        });
+    }
+    entry
+        .as_mut()
+        .expect("snapshot display cache was initialized")
+}
+
+impl ConnectionLightStatusCache {
+    fn get_or_try_refresh<F>(
+        &self,
+        now: Instant,
+        ttl: Duration,
+        artifact_revision: u64,
+        refresh: F,
+    ) -> Result<Vec<AgentConnectionStatus>>
+    where
+        F: FnOnce() -> Result<Vec<AgentConnectionStatus>>,
+    {
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = entry.as_ref().filter(|cached| {
+            cached.artifact_revision == artifact_revision
+                && now.saturating_duration_since(cached.refreshed_at) < ttl
+        }) {
+            return Ok(cached.statuses.clone());
+        }
+
+        let mut statuses = refresh()?;
+        statuses.truncate(MAX_CACHED_CONNECTION_STATUSES);
+        *entry = Some(CachedConnectionLightStatuses {
+            refreshed_at: now,
+            artifact_revision,
+            statuses: statuses.clone(),
+        });
+        Ok(statuses)
+    }
+
+    fn invalidate(&self) {
+        *self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+impl ConnectionEvidenceProjectionCache {
+    fn get_or_try_refresh<F>(
+        &self,
+        artifact_revision: u64,
+        base: &AgentConnectionStatus,
+        refresh: F,
+    ) -> Result<AgentConnectionStatus>
+    where
+        F: FnOnce() -> Result<AgentConnectionStatus>,
+    {
+        let base_status_json = serde_json::to_string(base)?;
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = entries.get(&base.source).filter(|cached| {
+            cached.artifact_revision == artifact_revision
+                && cached.base_status_json == base_status_json
+        }) {
+            return Ok(cached.status.clone());
+        }
+
+        let status = refresh()?;
+        entries.insert(
+            base.source,
+            CachedConnectionEvidenceProjection {
+                artifact_revision,
+                base_status_json,
+                status: status.clone(),
+            },
+        );
+        Ok(status)
+    }
+
+    fn invalidate(&self, source: AgentSource) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&source);
+    }
+
+    fn invalidate_all(&self) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
 impl CoreState {
     pub fn new(paths: AppPaths) -> Self {
+        let diagnostics = DiagnosticLogger::new(&paths);
+        Self::new_with_diagnostics(paths, diagnostics)
+    }
+
+    pub fn new_with_diagnostics(paths: AppPaths, diagnostics: DiagnosticLogger) -> Self {
         let database = Database::new(paths.db_path.clone());
         Self {
             paths,
             database,
+            diagnostics,
             instance_id: new_id("embedded_instance"),
             codex_thread_display_cache: Arc::new(Mutex::new(CodexThreadDisplayCache::default())),
             codex_activity_sync_enabled: false,
             codex_activity_sync: Arc::new(Mutex::new(CodexActivitySyncState::default())),
+            codex_recent_activity_cache: Arc::new(Mutex::new(
+                app_server::CodexRecentThreadActivityCache::default(),
+            )),
+            connection_light_status_cache: Arc::new(ConnectionLightStatusCache::default()),
+            connection_evidence_projection_cache: Arc::new(
+                ConnectionEvidenceProjectionCache::default(),
+            ),
+            snapshot_sequenced_event_cache: Arc::new(SnapshotSequencedEventCache::default()),
+            snapshot_persisted_display_cache: Arc::new(SnapshotPersistedDisplayCache::default()),
+            agent_host_process_gate: Arc::new(Mutex::new(())),
+            connection_operation_active: Arc::new(AtomicBool::new(false)),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -125,15 +452,147 @@ impl CoreState {
         self.shutdown_requested.store(true, Ordering::Release);
     }
 
-    pub fn ensure_ready(&self) -> Result<()> {
-        self.paths.ensure()?;
-        self.database.init()?;
-        generation::recover_interrupted_jobs_for_instance(
-            &self.paths,
-            &self.database,
-            &self.instance_id,
+    fn begin_connection_operation(&self) -> Result<ConnectionOperationPermit> {
+        self.connection_operation_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| {
+                PetCoreError::Conflict(
+                    "another Agent connection operation is already running; wait for it to finish"
+                        .to_string(),
+                )
+            })?;
+        Ok(ConnectionOperationPermit {
+            active: Arc::clone(&self.connection_operation_active),
+        })
+    }
+
+    fn agent_host_process_guard(&self) -> MutexGuard<'_, ()> {
+        self.agent_host_process_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn snapshot_connection_statuses(&self) -> Result<Vec<AgentConnectionStatus>> {
+        let artifact_revision = connections::connection_light_cache_revision(&self.paths);
+        let light_statuses = self.connection_light_status_cache.get_or_try_refresh(
+            Instant::now(),
+            CONNECTION_LIGHT_STATUS_CACHE_TTL,
+            artifact_revision,
+            || Ok(connections::check_all_light(&self.paths)),
         )?;
-        Ok(())
+        // Runtime checks and their absolute `checked_at` expiry are evaluated
+        // on every snapshot. They are never kept alive by the five-minute
+        // filesystem cache above.
+        let statuses = merge_cached_connection_statuses(
+            &self.paths,
+            light_statuses,
+            self.database.connection_statuses()?,
+        );
+        statuses
+            .into_iter()
+            .map(|status| {
+                self.connection_evidence_projection_cache
+                    .get_or_try_refresh(artifact_revision, &status, || {
+                        Ok(connections::project_connection_evidence(
+                            &self.paths,
+                            &status,
+                        ))
+                    })
+            })
+            .collect()
+    }
+
+    fn invalidate_connection_light_status_cache(&self) {
+        self.connection_light_status_cache.invalidate();
+    }
+
+    fn invalidate_connection_evidence_projection(&self, source: AgentSource) {
+        self.connection_evidence_projection_cache.invalidate(source);
+    }
+
+    fn invalidate_all_connection_evidence_projections(&self) {
+        self.connection_evidence_projection_cache.invalidate_all();
+    }
+
+    fn snapshot_sequenced_events(&self) -> Result<SnapshotSequencedEvents> {
+        snapshot_sequenced_events_cached(
+            &self.database,
+            self.snapshot_sequenced_event_cache.as_ref(),
+        )
+    }
+
+    fn persisted_session_display(
+        &self,
+        state_revision: u64,
+        source: AgentSource,
+        session_id: Option<&str>,
+    ) -> Result<Option<PersistedSessionDisplay>> {
+        let key = SessionDisplayCacheKey {
+            source,
+            session_id: session_id.map(ToOwned::to_owned),
+        };
+        self.snapshot_persisted_display_cache
+            .session_display(state_revision, key, || {
+                self.database.session_message_projection_at_revision(
+                    state_revision,
+                    source,
+                    session_id,
+                )
+            })
+    }
+
+    fn snapshot_recent_events(&self, state_revision: u64) -> Result<Option<Arc<Vec<AgentEvent>>>> {
+        self.snapshot_persisted_display_cache
+            .recent_events(state_revision, || {
+                match self
+                    .database
+                    .recent_events_at_revision(state_revision, SNAPSHOT_RECENT_EVENT_LIMIT)?
+                {
+                    RevisionChecked::Matched {
+                        state_revision,
+                        value,
+                    } => Ok(RevisionChecked::Matched {
+                        state_revision,
+                        value: recent_non_diagnostic_events(&value, SNAPSHOT_RECENT_EVENT_LIMIT),
+                    }),
+                    RevisionChecked::Mismatch {
+                        expected_revision,
+                        actual_revision,
+                    } => Ok(RevisionChecked::Mismatch {
+                        expected_revision,
+                        actual_revision,
+                    }),
+                }
+            })
+    }
+
+    pub fn ensure_ready(&self) -> Result<()> {
+        self.diagnostics.core_ready_started();
+        let result = (|| {
+            if let Err(error) = self.paths.ensure() {
+                self.diagnostics.startup_failed("paths", &error);
+                return Err(error);
+            }
+            if let Err(error) = self.database.init() {
+                self.diagnostics.startup_failed("database", &error);
+                return Err(error);
+            }
+            if let Err(error) = generation::recover_interrupted_jobs_for_instance(
+                &self.paths,
+                &self.database,
+                &self.instance_id,
+            ) {
+                self.diagnostics
+                    .startup_failed("generation_recovery", &error);
+                return Err(error);
+            }
+            Ok(())
+        })();
+        match &result {
+            Ok(()) => self.diagnostics.core_ready_completed(),
+            Err(error) => self.diagnostics.core_ready_failed(error),
+        }
+        result
     }
 
     fn codex_thread_display(
@@ -151,10 +610,16 @@ impl CoreState {
         });
         if needs_refresh && cache.in_flight.insert(session_id.to_string()) {
             let shared_cache = Arc::clone(&self.codex_thread_display_cache);
+            let agent_host_process_gate = Arc::clone(&self.agent_host_process_gate);
             let session_id = session_id.to_string();
             let event_marker = event_marker.to_string();
             thread::spawn(move || {
-                let fetched = app_server::read_codex_thread_display(&session_id).ok();
+                let fetched = {
+                    let _host_guard = agent_host_process_gate
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    app_server::read_codex_thread_display(&session_id).ok()
+                };
                 let Ok(mut cache) = shared_cache.lock() else {
                     return;
                 };
@@ -219,15 +684,27 @@ impl CoreState {
 
         let database = self.database.clone();
         let shared_sync = Arc::clone(&self.codex_activity_sync);
+        let recent_activity_cache = Arc::clone(&self.codex_recent_activity_cache);
+        let snapshot_sequenced_event_cache = Arc::clone(&self.snapshot_sequenced_event_cache);
+        let agent_host_process_gate = Arc::clone(&self.agent_host_process_gate);
         let maximum_age = Duration::from_secs(
             u64::from(behavior.session_message_timeout_minutes).saturating_mul(60),
         );
         thread::spawn(move || {
-            let mut activities = app_server::read_codex_recent_thread_activities(
-                maximum_age,
-                app_server::MAX_RECENT_CODEX_ACTIVITY_THREADS,
-            )
-            .unwrap_or_default();
+            let mut activities = {
+                let _host_guard = agent_host_process_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut cache = recent_activity_cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                app_server::read_codex_recent_thread_activities_cached(
+                    maximum_age,
+                    app_server::MAX_RECENT_CODEX_ACTIVITY_THREADS,
+                    &mut cache,
+                )
+                .unwrap_or_default()
+            };
             let Ok(mut sync) = shared_sync.lock() else {
                 return;
             };
@@ -243,11 +720,15 @@ impl CoreState {
             sync.in_flight = false;
             drop(sync);
 
-            let existing = database
-                .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)
-                .unwrap_or_default();
+            let existing = snapshot_sequenced_events_cached(
+                &database,
+                snapshot_sequenced_event_cache.as_ref(),
+            )
+            .map(|snapshot| snapshot.events)
+            .unwrap_or_default();
             for activity in activities {
-                let preserve_exact_state = should_preserve_exact_codex_state(&existing, &activity);
+                let preserve_exact_state =
+                    should_preserve_exact_codex_state(existing.as_slice(), &activity);
                 for event in codex_activity_events(activity) {
                     if preserve_exact_state && event.id.starts_with("evt_codex_app_server_status_")
                     {
@@ -258,6 +739,23 @@ impl CoreState {
             }
         });
     }
+}
+
+fn snapshot_sequenced_events_cached(
+    database: &Database,
+    cache: &SnapshotSequencedEventCache,
+) -> Result<SnapshotSequencedEvents> {
+    cache.get_or_try_refresh(
+        || database.state_revision(),
+        || {
+            let (state_revision, events) = database
+                .latest_sequenced_events_by_session_with_revision(SNAPSHOT_EVENT_SCAN_LIMIT)?;
+            Ok(SnapshotSequencedEvents {
+                state_revision,
+                events: Arc::new(events),
+            })
+        },
+    )
 }
 
 fn reconcile_codex_activity_observation(
@@ -376,7 +874,9 @@ fn should_preserve_exact_codex_state(
                 != Some("app_server_activity")
             && matches!(
                 candidate.event.event_type,
-                AgentEventType::Waiting
+                AgentEventType::Start
+                    | AgentEventType::Tool
+                    | AgentEventType::Waiting
                     | AgentEventType::Review
                     | AgentEventType::Done
                     | AgentEventType::Failed
@@ -384,6 +884,13 @@ fn should_preserve_exact_codex_state(
     }) else {
         return false;
     };
+    let exact_turn = event_payload_text(&exact.event, "turn_id");
+    if exact_turn.is_some()
+        && activity.turn_id.is_some()
+        && exact_turn.as_deref() != activity.turn_id.as_deref()
+    {
+        return false;
+    }
     let Ok(exact_at) = OffsetDateTime::parse(&exact.event.created_at, &Rfc3339) else {
         return true;
     };
@@ -508,6 +1015,9 @@ pub fn handle_json_line(state: &CoreState, line: &str) -> Option<String> {
     let value = match serde_json::from_str::<Value>(line) {
         Ok(value) => value,
         Err(error) => {
+            state
+                .diagnostics
+                .rpc_rejected(None, DiagnosticRejection::InvalidJson);
             return Some(encode_rpc_value(rpc_error_value(
                 Value::Null,
                 -32700,
@@ -517,12 +1027,20 @@ pub fn handle_json_line(state: &CoreState, line: &str) -> Option<String> {
     };
 
     match value {
-        Value::Array(values) if values.is_empty() => Some(encode_rpc_value(rpc_error_value(
-            Value::Null,
-            -32600,
-            "batch must not be empty",
-        ))),
+        Value::Array(values) if values.is_empty() => {
+            state
+                .diagnostics
+                .rpc_rejected(None, DiagnosticRejection::BadRequest);
+            Some(encode_rpc_value(rpc_error_value(
+                Value::Null,
+                -32600,
+                "batch must not be empty",
+            )))
+        }
         Value::Array(values) if values.len() > MAX_RPC_BATCH_ITEMS => {
+            state
+                .diagnostics
+                .rpc_rejected(None, DiagnosticRejection::BadRequest);
             Some(encode_rpc_value(rpc_error_value(
                 Value::Null,
                 -32600,
@@ -546,6 +1064,9 @@ pub(crate) fn encoded_error_response(code: i64, message: &str) -> String {
 
 fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
     let Some(object) = value.as_object() else {
+        state
+            .diagnostics
+            .rpc_rejected(None, DiagnosticRejection::BadRequest);
         return Some(rpc_error_value(
             Value::Null,
             -32600,
@@ -553,6 +1074,9 @@ fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
         ));
     };
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        state
+            .diagnostics
+            .rpc_rejected(None, DiagnosticRejection::BadRequest);
         return Some(rpc_error_value(
             Value::Null,
             -32600,
@@ -560,6 +1084,9 @@ fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
         ));
     }
     let Some(method) = object.get("method").and_then(Value::as_str) else {
+        state
+            .diagnostics
+            .rpc_rejected(None, DiagnosticRejection::BadRequest);
         return Some(rpc_error_value(
             Value::Null,
             -32600,
@@ -571,6 +1098,9 @@ fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
     let response_id = if has_id {
         let id = object.get("id").cloned().unwrap_or(Value::Null);
         if !matches!(id, Value::Null | Value::String(_) | Value::Number(_)) {
+            state
+                .diagnostics
+                .rpc_rejected(Some(method), DiagnosticRejection::BadRequest);
             return Some(rpc_error_value(
                 Value::Null,
                 -32600,
@@ -585,12 +1115,18 @@ fn handle_rpc_value(state: &CoreState, value: Value) -> Option<Value> {
     let params = object.get("params").cloned().unwrap_or(Value::Null);
 
     let response = if !matches!(params, Value::Null | Value::Array(_) | Value::Object(_)) {
+        state
+            .diagnostics
+            .rpc_rejected(Some(method), DiagnosticRejection::BadRequest);
         rpc_error_value(
             response_id.clone().unwrap_or(Value::Null),
             -32602,
             "params must be an object or array",
         )
     } else if !known_rpc_method(method) {
+        state
+            .diagnostics
+            .rpc_rejected(Some(method), DiagnosticRejection::BadRequest);
         rpc_error_value(
             response_id.clone().unwrap_or(Value::Null),
             -32601,
@@ -635,25 +1171,31 @@ fn known_rpc_method(method: &str) -> bool {
             | "agent.ingest"
             | "events.recent"
             | "pet.list"
+            | "pet.history"
             | "pet.activate"
             | "pet.delete"
             | "petpack.validate"
             | "petpack.import"
+            | "petpack.seed_bundled"
             | "petpack.export"
             | "generation.start"
             | "generation.retry"
             | "generation.messages"
             | "generation.for_pet"
+            | "generation.latest"
             | "generation.edit"
             | "generation.messages.wait"
             | "generation.reply"
             | "generation.cancel"
             | "connections.check"
+            | "connections.receipts"
             | "connections.repair"
+            | "connections.refresh_installed"
             | "connections.uninstall"
             | "connections.test"
             | "renderer.budget"
             | "codex.app_server.probe"
+            | "diagnostics.export"
     )
 }
 
@@ -664,7 +1206,10 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         | "behavior.get"
         | "overlay.placement.get"
         | "pet.list"
-        | "codex.app_server.probe" => &[],
+        | "generation.latest"
+        | "codex.app_server.probe"
+        | "connections.receipts"
+        | "connections.refresh_installed" => &[],
         "petcore.shutdown" => &["expected_instance_id"],
         "state.wait" => &["after_revision", "timeout_ms"],
         "behavior.patch" => &["expected_revision", "changes"],
@@ -674,19 +1219,23 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
         "events.recent" => &["limit"],
         "pet.activate" | "pet.delete" => &["id"],
+        "pet.history" => &["pet_id", "limit"],
         "petpack.validate" => &["path"],
         "petpack.import" => &["path", "expect_absent"],
+        "petpack.seed_bundled" => &["inventory", "inventory_root"],
         "petpack.export" => &["id", "path"],
         "generation.start" => &["description", "style", "quality", "reference_images"],
         "generation.retry" => &["job_id", "form"],
         "generation.messages" | "generation.cancel" => &["job_id"],
         "generation.for_pet" => &["pet_id"],
-        "generation.edit" => &["pet_id", "instruction"],
+        "generation.edit" => &["pet_id", "instruction", "baseline_revision_id"],
         "generation.messages.wait" => &["job_id", "after_revision", "timeout_ms"],
         "generation.reply" => &["job_id", "content"],
-        "connections.check" => &["source"],
-        "connections.repair" | "connections.uninstall" | "connections.test" => &["source"],
+        "connections.check" => &["source", "cwd"],
+        "connections.repair" => &["source", "cwd"],
+        "connections.uninstall" | "connections.test" => &["source"],
         "renderer.budget" => &["quality", "fps_profile", "fps"],
+        "diagnostics.export" => &["app_environment"],
         _ => return Ok(()),
     };
 
@@ -775,6 +1324,14 @@ fn internal_serialization_error() -> String {
 }
 
 pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
+    let started = Instant::now();
+    let method = request.method.clone();
+    let result = handle_request_inner(state, request);
+    state.diagnostics.rpc_finished(&method, &result, started);
+    result
+}
+
+fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value> {
     if request.jsonrpc.as_deref() != Some("2.0") {
         return Err(PetCoreError::InvalidRequest(
             "jsonrpc must be 2.0".to_string(),
@@ -790,6 +1347,7 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
             "rpc_protocol": PETCORE_RPC_PROTOCOL_VERSION,
             "runtime_manifest": RuntimeReleaseManifest::compiled(),
             "codex_hooks_contract": crate::adapter_contracts::CODEX_HOOKS_CONTRACT_VERSION,
+            "connector_environment": connector_environment_snapshot(),
             "instance_id": state.instance_id,
             "socket": state.paths.socket_path,
             "home": state.paths.home,
@@ -863,7 +1421,23 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 .min(MAX_RECENT_EVENTS as u64) as usize;
             Ok(json!(state.database.recent_events(limit)?))
         }
-        "pet.list" => Ok(json!(state.database.list_pets()?)),
+        "pet.list" => Ok(json!(list_pets_with_revision_metadata(state)?)),
+        "pet.history" => {
+            let pet_id = required_string(&request.params, "pet_id")?;
+            let limit = bounded_u64_param(
+                &request.params,
+                "limit",
+                generation::DEFAULT_PET_HISTORY_LIMIT as u64,
+                1,
+                generation::MAX_PET_HISTORY_LIMIT as u64,
+            )? as usize;
+            Ok(json!(generation::pet_history(
+                &state.paths,
+                &state.database,
+                &pet_id,
+                limit,
+            )?))
+        }
         "pet.activate" => {
             let id = required_string(&request.params, "id")?;
             state.database.activate_pet(&id)?;
@@ -875,6 +1449,11 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 .database
                 .get_pet(&id)?
                 .ok_or_else(|| PetCoreError::InvalidRequest(format!("pet not found: {id}")))?;
+            if petpack::is_bundled_pet(&pet) {
+                return Err(PetCoreError::Conflict(
+                    "bundled pets are part of the App and cannot be deleted".to_string(),
+                ));
+            }
             let staged_assets = petpack::stage_imported_pet_assets_for_removal(&state.paths, &pet)?;
             let next_active_pet_id =
                 match state.database.delete_pet_and_activate_next(&id, pet.active) {
@@ -909,6 +1488,21 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 petpack::import_petpack(&state.paths, &state.database, &path)?
             };
             Ok(json!(pet))
+        }
+        "petpack.seed_bundled" => {
+            let inventory = required_string(&request.params, "inventory")?;
+            if inventory != petpack::BUNDLED_PET_INVENTORY_VERSION {
+                return Err(invalid_params("unsupported bundled pet inventory"));
+            }
+            let inventory_root = required_string(&request.params, "inventory_root")?;
+            Ok(json!({
+                "inventory": petpack::BUNDLED_PET_INVENTORY_VERSION,
+                "outcomes": petpack::seed_bundled_pet_inventory(
+                    &state.paths,
+                    &state.database,
+                    &PathBuf::from(inventory_root),
+                )?
+            }))
         }
         "petpack.export" => {
             let id = required_string(&request.params, "id")?;
@@ -945,17 +1539,22 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 form,
                 state.instance_id(),
             )?;
-            let operation = state
-                .database
-                .generation_job(&job_id)?
+            let retry_job = state.database.generation_job(&job_id)?;
+            let operation = retry_job
                 .as_ref()
                 .map(generation::generation_job_operation)
                 .unwrap_or(generation::GENERATION_OPERATION_CREATE);
+            let baseline_revision_id = retry_job
+                .as_ref()
+                .map(|job| generation::generation_job_baseline_revision_id(&state.paths, job))
+                .transpose()?
+                .flatten();
             Ok(json!({
                 "ok": true,
                 "job_id": job_id,
                 "retry_of_job_id": retry_of_job_id,
-                "operation": operation
+                "operation": operation,
+                "baseline_revision_id": baseline_revision_id
             }))
         }
         "generation.messages" => {
@@ -976,42 +1575,43 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
                     "messages": []
                 }));
             };
-            let form: Value = serde_json::from_str(&job.form_json)?;
-            let operation = generation::generation_job_operation(&job);
-            Ok(json!({
-                "ok": true,
-                "found": true,
-                "pet_id": pet_id,
-                "job_id": job.id,
-                "status": enum_name(job.status),
-                "session_id": job.session_id,
-                "result_pet_id": job.result_pet_id,
-                "retry_of_job_id": job.retry_of_job_id,
-                "operation": operation,
-                "created_at": job.created_at,
-                "updated_at": job.updated_at,
-                "form": form,
-                "messages": generation::read_messages_with_database(
-                    &state.paths,
-                    &state.database,
-                    &job.id
-                )?
-            }))
+            generation_session_recovery_snapshot(state, &job, Some(&pet_id))
+        }
+        "generation.latest" => {
+            let Some(job) = state.database.latest_generation_job()? else {
+                return Ok(json!({
+                    "ok": true,
+                    "found": false,
+                    "messages": []
+                }));
+            };
+            generation_session_recovery_snapshot(state, &job, None)
         }
         "generation.edit" => {
             let pet_id = required_string(&request.params, "pet_id")?;
             let instruction = required_string(&request.params, "instruction")?;
-            let job_id = generation::start_pet_edit_for_instance(
+            let baseline_revision_id =
+                optional_string_param(&request.params, "baseline_revision_id")?;
+            let job_id = generation::start_pet_edit_from_revision_for_instance(
                 &state.paths,
                 &state.database,
                 &pet_id,
                 &instruction,
+                baseline_revision_id,
                 state.instance_id(),
             )?;
+            let created_job = state.database.generation_job(&job_id)?.ok_or_else(|| {
+                PetCoreError::Validation(
+                    "created pet edit job could not be loaded for its receipt".to_string(),
+                )
+            })?;
+            let baseline_revision_id =
+                generation::generation_job_baseline_revision_id(&state.paths, &created_job)?;
             Ok(json!({
                 "ok": true,
                 "job_id": job_id,
                 "pet_id": pet_id,
+                "baseline_revision_id": baseline_revision_id,
                 "operation": generation::GENERATION_OPERATION_MODIFY
             }))
         }
@@ -1047,30 +1647,151 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
             )?))
         }
         "connections.check" => {
-            if let Some(source) = optional_source(&request.params)? {
-                let status = connections::check_source(&state.paths, source);
-                state.database.upsert_connection_status(&status)?;
+            let probe_cwd = optional_probe_cwd(&request.params)?;
+            let source = optional_source(&request.params)?;
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            if let Some(source) = source {
+                let status = match probe_cwd.as_deref() {
+                    Some(cwd) => connections::check_source_at(&state.paths, source, cwd),
+                    None => connections::check_source(&state.paths, source),
+                };
+                state.invalidate_connection_light_status_cache();
+                state.invalidate_connection_evidence_projection(source);
+                let persisted = state.database.upsert_connection_status(&status);
+                state.invalidate_connection_light_status_cache();
+                state.invalidate_connection_evidence_projection(source);
+                persisted?;
                 Ok(json!(status))
             } else {
-                let statuses = connections::check_all(&state.paths);
-                state.database.upsert_connection_statuses(&statuses)?;
+                let statuses = match probe_cwd.as_deref() {
+                    Some(cwd) => connections::check_all_at(&state.paths, cwd),
+                    None => connections::check_all(&state.paths),
+                };
+                state.invalidate_connection_light_status_cache();
+                state.invalidate_all_connection_evidence_projections();
+                let persisted = state.database.upsert_connection_statuses(&statuses);
+                state.invalidate_connection_light_status_cache();
+                state.invalidate_all_connection_evidence_projections();
+                persisted?;
                 Ok(json!(statuses))
             }
         }
+        "connections.receipts" => {
+            let receipts = [
+                AgentSource::Codex,
+                AgentSource::ClaudeCode,
+                AgentSource::Pi,
+                AgentSource::Opencode,
+            ]
+            .into_iter()
+            .map(|source| {
+                let contract_version = connections::contract_version_for_source(source);
+                let ordinary = state
+                    .database
+                    .latest_connector_ordinary_receipt_for_contract(source, contract_version)?
+                    .map(|receipt| connector_receipt_status(&state.paths, source, receipt));
+                let diagnostic = state
+                    .database
+                    .latest_connector_event_receipt_for_contract(source, true, contract_version)?
+                    .map(|receipt| connector_receipt_status(&state.paths, source, receipt));
+                let (task_starts, task_activities, task_completions) =
+                    connections::task_evidence_events(source);
+                let task = state
+                    .database
+                    .latest_connector_task_receipt_for_contract(
+                        source,
+                        contract_version,
+                        task_starts,
+                        task_activities,
+                        task_completions,
+                    )?
+                    .map(|receipt| connector_task_receipt_status(&state.paths, source, receipt));
+                let latest_observed_ordinary = state
+                    .database
+                    .latest_connector_event_receipt(source, false)?;
+                let latest_observed_diagnostic = state
+                    .database
+                    .latest_connector_event_receipt(source, true)?;
+                Ok(json!({
+                    "source": source,
+                    "ordinary": ordinary,
+                    "diagnostic": diagnostic,
+                    "task": task,
+                    "latest_observed": {
+                        "ordinary": latest_observed_ordinary,
+                        "diagnostic": latest_observed_diagnostic,
+                    },
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+            Ok(json!(receipts))
+        }
         "connections.repair" => {
             let source = required_source(&request.params)?;
-            let status = connections::repair_source(&state.paths, source)?;
-            state.database.upsert_connection_status(&status)?;
+            let probe_cwd = optional_probe_cwd(&request.params)?;
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            let status = match probe_cwd.as_deref() {
+                Some(cwd) => connections::repair_source_at(&state.paths, source, cwd),
+                None => connections::repair_source(&state.paths, source),
+            };
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            let status = status?;
+            let persisted = state.database.upsert_connection_status(&status);
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            persisted?;
             Ok(json!(status))
+        }
+        "connections.refresh_installed" => {
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_all_connection_evidence_projections();
+            let refreshed = [
+                AgentSource::Codex,
+                AgentSource::ClaudeCode,
+                AgentSource::Pi,
+                AgentSource::Opencode,
+            ]
+            .into_iter()
+            .map(|source| {
+                let result = connections::refresh_installed_source(&state.paths, source);
+                json!({
+                    "source": source,
+                    "refreshed": result.as_ref().copied().unwrap_or(false),
+                    "ok": result.is_ok(),
+                    "error": result.err().map(|error| error.to_string()),
+                })
+            })
+            .collect::<Vec<_>>();
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_all_connection_evidence_projections();
+            Ok(json!({ "results": refreshed }))
         }
         "connections.uninstall" => {
             let source = required_source(&request.params)?;
-            let status = connections::uninstall_source(&state.paths, source)?;
-            state.database.upsert_connection_status(&status)?;
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            let status = connections::uninstall_source(&state.paths, source);
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            let status = status?;
+            let persisted = state.database.upsert_connection_status(&status);
+            state.invalidate_connection_light_status_cache();
+            state.invalidate_connection_evidence_projection(source);
+            persisted?;
             Ok(json!(status))
         }
         "connections.test" => {
             let source = required_source(&request.params)?;
+            let _operation = state.begin_connection_operation()?;
             let event = AgentEvent {
                 id: new_id("evt_connection_test"),
                 source,
@@ -1096,24 +1817,87 @@ pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
             let fps_profile = required_fps_profile(&request.params)?;
             Ok(json!(metrics::renderer_budget(quality, fps_profile)))
         }
-        "codex.app_server.probe" => Ok(json!(app_server::probe_codex_app_server())),
+        "codex.app_server.probe" => {
+            let _host_guard = state.agent_host_process_guard();
+            Ok(json!(app_server::probe_codex_app_server()))
+        }
+        "diagnostics.export" => {
+            let app_environment = request
+                .params
+                .get("app_environment")
+                .ok_or_else(|| invalid_params("missing app_environment"))?;
+            Ok(json!(diagnostics::export_diagnostics(
+                &state.paths,
+                &state.diagnostics,
+                app_environment,
+            )?))
+        }
         other => Err(PetCoreError::InvalidRequest(format!(
             "unknown method {other}"
         ))),
     }
 }
 
+fn connector_environment_snapshot() -> BTreeMap<String, String> {
+    connector_identity_environment()
+}
+
+fn connector_receipt_status(
+    paths: &AppPaths,
+    source: AgentSource,
+    receipt: crate::db::ConnectorEventReceipt,
+) -> Value {
+    json!({
+        "current": connections::connector_receipt_is_current(paths, source, &receipt),
+        "receipt": receipt,
+    })
+}
+
+fn connector_task_receipt_status(
+    paths: &AppPaths,
+    source: AgentSource,
+    receipt: crate::db::ConnectorTaskReceipt,
+) -> Value {
+    let current = connections::connector_receipt_is_current(paths, source, &receipt.start)
+        && connections::connector_receipt_is_current(paths, source, &receipt.activity)
+        && connections::connector_receipt_is_current(paths, source, &receipt.completion);
+    json!({
+        "current": current,
+        "receipt": receipt,
+    })
+}
+
 fn ingest_event(state: &CoreState, event: AgentEvent) -> Result<Value> {
-    let inserted = state.database.insert_event(&event)? == InsertEventOutcome::Inserted;
+    let insert_outcome = state.database.insert_event(&event)?;
+    let inserted = insert_outcome == InsertEventOutcome::Inserted;
+    let suppressed = insert_outcome == InsertEventOutcome::Suppressed;
+    if inserted {
+        // Receipts, ordinary activity, and complete task evidence are all
+        // derived from this source's event stream. Refresh only that evidence
+        // projection; the static filesystem scan remains reusable.
+        state.invalidate_connection_evidence_projection(event.source);
+    }
     let behavior = state.database.behavior()?;
     let triggered = inserted && event_drives_overlay(&behavior, &event);
+    let diagnostic_outcome = match insert_outcome {
+        InsertEventOutcome::Inserted => DiagnosticIngestOutcome::Inserted,
+        InsertEventOutcome::Duplicate => DiagnosticIngestOutcome::Duplicate,
+        InsertEventOutcome::Suppressed => DiagnosticIngestOutcome::Suppressed,
+    };
+    state.diagnostics.agent_activity(
+        event.source,
+        event.event_type,
+        diagnostic_outcome,
+        triggered,
+    );
     let active_agent_state = canonical_agent_state(state, &behavior)?;
     Ok(json!({
         "ok": true,
         "inserted": inserted,
+        "suppressed": suppressed,
         "triggered": triggered,
         "state": event.event_type.pet_state(),
-        "event": event,
+        "event": (!suppressed).then_some(event),
         "active_agent_state": active_agent_state,
     }))
 }
@@ -1122,19 +1906,35 @@ fn canonical_agent_state(
     state: &CoreState,
     behavior: &BehaviorSettings,
 ) -> Result<Option<agent_state::ActiveAgentState>> {
-    let events = state
-        .database
-        .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)?;
-    let mut active =
-        agent_state::select_active_agent_state(behavior, &events, OffsetDateTime::now_utc());
-    if let Some(active) = &mut active {
-        hydrate_agent_session_display(state, active)?;
+    let mut latest_consistent_event_state = None;
+    for _ in 0..MAX_SNAPSHOT_REVISION_RETRIES {
+        let snapshot = state.snapshot_sequenced_events()?;
+        let state_revision = snapshot.state_revision;
+        let events = snapshot.events;
+        let mut active = agent_state::select_active_agent_state(
+            behavior,
+            events.as_slice(),
+            OffsetDateTime::now_utc(),
+        );
+        latest_consistent_event_state = active.clone();
+        if let Some(active) = &mut active {
+            if !hydrate_agent_session_display(state, state_revision, active)? {
+                thread::yield_now();
+                continue;
+            }
+        }
+        return Ok(active);
     }
-    Ok(active)
+    // Event ingestion already committed successfully. Under a write burst,
+    // returning the latest event-only state is honest and keeps Hook delivery
+    // successful; a later state snapshot hydrates messages once the revision
+    // is stable. Never turn a committed Agent event into an RPC failure merely
+    // because optional display enrichment raced another event.
+    Ok(latest_consistent_event_state)
 }
 
 fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
-    let mut pets = state.database.list_pets()?;
+    let mut pets = list_pets_with_revision_metadata(state)?;
     let mut pet_asset_warnings = Vec::new();
     for pet in &mut pets {
         let outcome = petpack::ensure_runtime_assets_cached(&state.paths, &state.database, pet)?;
@@ -1146,91 +1946,121 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
     let versioned_behavior = state.database.behavior_with_revision()?;
     let behavior = versioned_behavior.behavior;
     state.refresh_codex_activity(&behavior);
-    let sequenced_events = state
-        .database
-        .latest_sequenced_events_by_session(SNAPSHOT_EVENT_SCAN_LIMIT)?;
-    let scanned_events = sequenced_events
-        .iter()
-        .map(|candidate| candidate.event.clone())
-        .collect::<Vec<_>>();
-    let recent_events = recent_non_diagnostic_events(
-        &state.database.recent_events(SNAPSHOT_RECENT_EVENT_LIMIT)?,
-        SNAPSHOT_RECENT_EVENT_LIMIT,
-    );
-    let events = current_overlay_events(&behavior, &scanned_events);
-    let mut active_agent_state = agent_state::select_active_agent_state(
-        &behavior,
-        &sequenced_events,
-        OffsetDateTime::now_utc(),
-    );
-    if let Some(active) = &mut active_agent_state {
-        hydrate_agent_session_display(state, active)?;
+    for _ in 0..MAX_SNAPSHOT_REVISION_RETRIES {
+        let sequenced_event_snapshot = state.snapshot_sequenced_events()?;
+        let snapshot_state_revision = sequenced_event_snapshot.state_revision;
+        let sequenced_events = sequenced_event_snapshot.events;
+        let scanned_events = sequenced_events
+            .iter()
+            .map(|candidate| candidate.event.clone())
+            .collect::<Vec<_>>();
+        let Some(recent_events) = state.snapshot_recent_events(snapshot_state_revision)? else {
+            thread::yield_now();
+            continue;
+        };
+        let events = current_overlay_events(&behavior, &scanned_events)
+            .iter()
+            .map(agent_state::overlay_event_projection)
+            .collect::<Vec<_>>();
+        let recent_event_projections = recent_events
+            .iter()
+            .map(agent_state::overlay_event_projection)
+            .collect::<Vec<_>>();
+        let mut active_agent_state = agent_state::select_active_agent_state(
+            &behavior,
+            sequenced_events.as_slice(),
+            OffsetDateTime::now_utc(),
+        );
+        if let Some(active) = &mut active_agent_state {
+            if !hydrate_agent_session_display(state, snapshot_state_revision, active)? {
+                thread::yield_now();
+                continue;
+            }
+        }
+        let display_agent_states = agent_state::select_display_agent_states(
+            &behavior,
+            sequenced_events.as_slice(),
+            OffsetDateTime::now_utc(),
+        );
+        let active_agent_sessions_omitted_count = display_agent_states.omitted_count;
+        let mut active_agent_sessions = display_agent_states.states;
+        let mut display_revision_changed = false;
+        for session in &mut active_agent_sessions {
+            if !hydrate_agent_session_display(state, snapshot_state_revision, session)? {
+                display_revision_changed = true;
+                break;
+            }
+        }
+        if display_revision_changed {
+            thread::yield_now();
+            continue;
+        }
+        let overlay_visibility = agent_state::overlay_visibility_for_sessions(
+            &behavior,
+            !active_agent_sessions.is_empty(),
+            active_agent_state.is_some(),
+        );
+        let connections = state.snapshot_connection_statuses()?;
+        let active_generation = active_generation_snapshot(state)?;
+        return Ok(json!({
+            // Use the revision that atomically identifies the event projection.
+            // If a new event commits while the rest of this snapshot is assembled,
+            // the client's next state.wait observes that later revision immediately.
+            "revision": snapshot_state_revision.to_string(),
+            "changed": changed,
+            "behavior": behavior,
+            "behavior_revision": versioned_behavior.revision,
+            "overlay_placement": state.database.overlay_placement()?,
+            "pets": pets,
+            "pet_asset_warnings": pet_asset_warnings,
+            "events": events,
+            "active_agent_state": active_agent_state,
+            "active_agent_sessions": active_agent_sessions,
+            "active_agent_sessions_omitted_count": active_agent_sessions_omitted_count,
+            "overlay_visibility": overlay_visibility,
+            "recent_events": recent_event_projections,
+            "connections": connections,
+            "active_generation": active_generation,
+        }));
     }
-    let mut active_agent_sessions = agent_state::select_display_agent_states(
-        &behavior,
-        &sequenced_events,
-        OffsetDateTime::now_utc(),
-    );
-    for session in &mut active_agent_sessions {
-        hydrate_agent_session_display(state, session)?;
-    }
-    let overlay_visibility = agent_state::overlay_visibility_for_sessions(
-        &behavior,
-        !active_agent_sessions.is_empty(),
-        active_agent_state.is_some(),
-    );
-    let connections = merge_cached_connection_statuses(
-        connections::check_all_light(&state.paths),
-        state.database.connection_statuses()?,
-    );
-    let active_generation = active_generation_snapshot(state)?;
-    Ok(json!({
-        "revision": state.database.state_revision()?.to_string(),
-        "changed": changed,
-        "behavior": behavior,
-        "behavior_revision": versioned_behavior.revision,
-        "overlay_placement": state.database.overlay_placement()?,
-        "pets": pets,
-        "pet_asset_warnings": pet_asset_warnings,
-        "events": events,
-        "active_agent_state": active_agent_state,
-        "active_agent_sessions": active_agent_sessions,
-        "overlay_visibility": overlay_visibility,
-        "recent_events": recent_events,
-        "connections": connections,
-        "active_generation": active_generation,
-    }))
+    Err(PetCoreError::Conflict(
+        "state changed while hydrating session displays; retry the snapshot".to_string(),
+    ))
+}
+
+fn list_pets_with_revision_metadata(state: &CoreState) -> Result<Vec<petcore_types::PetSummary>> {
+    let mut pets = state.database.list_pets()?;
+    pet_revision::enrich_pet_revision_metadata(&state.paths, &mut pets)?;
+    Ok(pets)
 }
 
 fn hydrate_agent_session_display(
     state: &CoreState,
+    state_revision: u64,
     active: &mut agent_state::ActiveAgentState,
-) -> Result<()> {
-    active.latest_message = state.database.latest_session_message_for_role(
+) -> Result<bool> {
+    let Some(persisted) = state.persisted_session_display(
+        state_revision,
         active.source,
         active.session_id.as_deref(),
-        Some("assistant"),
-    )?;
-    active.latest_user_message = state.database.latest_session_message_for_role(
-        active.source,
-        active.session_id.as_deref(),
-        Some("user"),
-    )?;
-    let first_user_message = state.database.first_session_message_for_role(
-        active.source,
-        active.session_id.as_deref(),
-        Some("user"),
-    )?;
-    let response_cutoff = active
-        .latest_user_message
-        .as_ref()
-        .map(|event| event.created_at.as_str())
-        .or(active.session_activated_at.as_deref());
-    if active.latest_message.as_ref().is_some_and(|message| {
-        response_cutoff.is_some_and(|cutoff| !event_happened_after(&message.created_at, cutoff))
-    }) {
-        active.latest_message = None;
-    }
+    )?
+    else {
+        return Ok(false);
+    };
+    let latest_message = persisted.latest_message;
+    let latest_user_message = persisted.latest_user_message;
+    let first_user_message = persisted.first_user_message;
+    let latest_message = latest_message.filter(|message| {
+        if let Some(user) = latest_user_message.as_ref() {
+            sequenced_event_happened_after(message, user)
+        } else if let Some(cutoff) = active.session_activated_at.as_deref() {
+            event_happened_after(&message.event.created_at, cutoff)
+        } else {
+            true
+        }
+    });
+    active.latest_message = latest_message.map(|sequenced| sequenced.event);
+    active.latest_user_message = latest_user_message.map(|sequenced| sequenced.event);
     active.session_title = event_payload_text(&active.event, "session_title")
         .or_else(|| {
             active
@@ -1259,13 +2089,13 @@ fn hydrate_agent_session_display(
         .as_ref()
         .and_then(event_display_message);
     if event_payload_text(&active.event, "source_event").as_deref() == Some("app_server_activity") {
-        return Ok(());
+        return Ok(true);
     }
     if active.source != AgentSource::Codex {
-        return Ok(());
+        return Ok(true);
     }
     let Some(session_id) = active.session_id.as_deref() else {
-        return Ok(());
+        return Ok(true);
     };
     let event_marker = active
         .session_activated_at
@@ -1281,8 +2111,15 @@ fn hydrate_agent_session_display(
     };
     let Some(display) = state.codex_thread_display(session_id, &event_marker, refresh_seconds)
     else {
-        return Ok(());
+        return Ok(true);
     };
+    if event_payload_text(&active.event, "session_surface").as_deref() == Some("chatgpt_app") {
+        // A successful explicit thread/read is the confirmation that a hook
+        // alone cannot provide. Expose it only in the hydrated snapshot; the
+        // persisted hook event remains an honest `session_open = null` record.
+        active.event.payload_json["session_open"] = Value::Bool(true);
+        active.overlay_display.navigation.session_open = Some(true);
+    }
     if display.title.is_some() {
         active.session_title = display.title;
     }
@@ -1310,13 +2147,23 @@ fn hydrate_agent_session_display(
                     && matches!(current.kind.as_str(), "thinking" | "plan")
             });
         if active.session_activity.is_none() || fills_missing_public_summary {
+            if matches!(
+                active.event.event_type,
+                AgentEventType::Start | AgentEventType::Tool
+            ) {
+                if let Some(summary_kind) =
+                    agent_state::overlay_activity_summary_kind(&activity.kind)
+                {
+                    active.overlay_display.summary_kind = summary_kind;
+                }
+            }
             active.session_activity = Some(agent_state::SessionActivity {
                 kind: activity.kind,
                 content: activity.content,
             });
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn event_payload_text(event: &AgentEvent, key: &str) -> Option<String> {
@@ -1365,12 +2212,28 @@ fn event_happened_after(candidate: &str, cutoff: &str) -> bool {
     matches!((candidate, cutoff), (Ok(candidate), Ok(cutoff)) if candidate > cutoff)
 }
 
+fn sequenced_event_happened_after(
+    candidate: &agent_state::SequencedAgentEvent,
+    cutoff: &agent_state::SequencedAgentEvent,
+) -> bool {
+    let candidate_at = OffsetDateTime::parse(&candidate.event.created_at, &Rfc3339);
+    let cutoff_at = OffsetDateTime::parse(&cutoff.event.created_at, &Rfc3339);
+    matches!(
+        (candidate_at, cutoff_at),
+        (Ok(candidate_at), Ok(cutoff_at))
+            if candidate_at > cutoff_at
+                || (candidate_at == cutoff_at
+                    && candidate.source_session_sequence > cutoff.source_session_sequence)
+    )
+}
+
 fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
     let Some(job) = state.database.active_generation_job()? else {
         return Ok(None);
     };
-    let form: GenerationForm = serde_json::from_str(&job.form_json)?;
+    let recovery_form = generation::generation_recovery_form(&state.paths, &job)?;
     let operation = generation::generation_job_operation(&job);
+    let baseline_revision_id = generation::generation_job_baseline_revision_id(&state.paths, &job)?;
     let messages = generation::read_messages_with_database(&state.paths, &state.database, &job.id)?;
     let input_request = messages
         .iter()
@@ -1380,10 +2243,12 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
     Ok(Some(json!({
         "job_id": job.id,
         "status": enum_name(job.status),
-        "form": form,
+        "form": recovery_form.form,
+        "reference_reselection_count": recovery_form.reference_reselection_count,
         "session_id": job.session_id,
         "result_pet_id": job.result_pet_id,
         "operation": operation,
+        "baseline_revision_id": baseline_revision_id,
         "owner_instance_id": job.owner_instance_id,
         "heartbeat_at": job.heartbeat_at,
         "message_revision": state.database.generation_message_revision(&job.id)?.to_string(),
@@ -1392,7 +2257,43 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
     })))
 }
 
+fn generation_session_recovery_snapshot(
+    state: &CoreState,
+    job: &crate::db::GenerationJobRecord,
+    requested_pet_id: Option<&str>,
+) -> Result<Value> {
+    let recovery_form = generation::generation_recovery_form(&state.paths, job)?;
+    let operation = generation::generation_job_operation(job);
+    let baseline_revision_id = generation::generation_job_baseline_revision_id(&state.paths, job)?;
+    let result = generation::read_generation_result(&state.paths, &state.database, &job.id)?;
+    Ok(json!({
+        "ok": true,
+        "found": true,
+        "pet_id": requested_pet_id,
+        "job_id": job.id,
+        "status": enum_name(job.status),
+        "session_id": job.session_id,
+        "result_pet_id": job.result_pet_id,
+        "retry_of_job_id": job.retry_of_job_id,
+        "operation": operation,
+        "baseline_revision_id": baseline_revision_id,
+        "revision_id": result.as_ref().map(|result| &result.revision_id),
+        "validation_summary": result.as_ref().map(|result| &result.validation_summary),
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "form": recovery_form.form,
+        "reference_reselection_count": recovery_form.reference_reselection_count,
+        "message_revision": state.database.generation_message_revision(&job.id)?.to_string(),
+        "messages": generation::read_messages_with_database(
+            &state.paths,
+            &state.database,
+            &job.id
+        )?
+    }))
+}
+
 fn merge_cached_connection_statuses(
+    paths: &AppPaths,
     light_statuses: Vec<AgentConnectionStatus>,
     cached_statuses: Vec<AgentConnectionStatus>,
 ) -> Vec<AgentConnectionStatus> {
@@ -1401,10 +2302,12 @@ fn merge_cached_connection_statuses(
         .map(|light| {
             let light_found_no_issues = light.items.iter().all(|item| !item.status.is_blocking());
             if light_found_no_issues {
-                if let Some(cached) = cached_statuses
-                    .iter()
-                    .find(|cached| cached.source == light.source)
-                {
+                if let Some(cached) = cached_statuses.iter().find(|cached| {
+                    cached.source == light.source
+                        && connections::cached_connection_status_is_current_for_light_projection(
+                            paths, cached,
+                        )
+                }) {
                     return cached.clone();
                 }
             }
@@ -1512,6 +2415,21 @@ fn optional_string_param<'a>(params: &'a Value, key: &str) -> Result<Option<&'a 
     }
 }
 
+fn optional_probe_cwd(params: &Value) -> Result<Option<PathBuf>> {
+    let Some(value) = optional_string_param(params, "cwd")? else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(invalid_params("cwd must be an absolute directory"));
+    }
+    // Existence, directory type, physical-path resolution and TCC access are
+    // intentionally checked by the bounded PetCore child preflight. Doing any
+    // of those filesystem calls in this RPC thread can itself block before the
+    // user-facing "检查目录访问" result can be produced.
+    Ok(Some(path))
+}
+
 fn optional_u64_param(params: &Value, key: &str) -> Result<Option<u64>> {
     match params.get(key) {
         Some(Value::Number(value)) => value
@@ -1558,6 +2476,7 @@ fn validate_overlay_placement(placement: &OverlayPlacement) -> Result<()> {
 fn should_trigger_event(behavior: &BehaviorSettings, event: &AgentEvent) -> bool {
     behavior.enabled
         && !event_is_diagnostic(event)
+        && event_affects_activity(event)
         && behavior
             .sources
             .get(&event.source)
@@ -1591,7 +2510,7 @@ fn current_overlay_events(behavior: &BehaviorSettings, events: &[AgentEvent]) ->
     let mut seen_groups = BTreeSet::new();
     let mut current_events = Vec::new();
     for event in events {
-        if event_is_diagnostic(event) {
+        if event_is_diagnostic(event) || !event_affects_activity(event) {
             continue;
         }
 
@@ -1682,6 +2601,515 @@ fn read_http_port(paths: &AppPaths) -> Option<u16> {
 mod tests {
     use super::*;
 
+    fn empty_sequenced_event_snapshot(state_revision: u64) -> SnapshotSequencedEvents {
+        SnapshotSequencedEvents {
+            state_revision,
+            events: Arc::new(Vec::new()),
+        }
+    }
+
+    fn empty_session_projection(state_revision: u64) -> RevisionChecked<SessionMessageProjection> {
+        RevisionChecked::Matched {
+            state_revision,
+            value: SessionMessageProjection::default(),
+        }
+    }
+
+    fn empty_recent_projection(state_revision: u64) -> RevisionChecked<Vec<AgentEvent>> {
+        RevisionChecked::Matched {
+            state_revision,
+            value: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn snapshot_event_cache_queries_once_per_state_revision() {
+        let cache = SnapshotSequencedEventCache::default();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+
+        let first = cache
+            .get_or_try_refresh(
+                || Ok(7),
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(empty_sequenced_event_snapshot(7))
+                },
+            )
+            .unwrap();
+        let same_revision = cache
+            .get_or_try_refresh(
+                || Ok(7),
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(empty_sequenced_event_snapshot(7))
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first.events, &same_revision.events));
+
+        let next_revision = cache
+            .get_or_try_refresh(
+                || Ok(8),
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(empty_sequenced_event_snapshot(8))
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(next_revision.state_revision, 8);
+        assert!(!Arc::ptr_eq(&first.events, &next_revision.events));
+    }
+
+    #[test]
+    fn core_state_event_snapshot_cache_refreshes_after_persisted_event_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let first = state.snapshot_sequenced_events().unwrap();
+        let reused = state.snapshot_sequenced_events().unwrap();
+        assert!(Arc::ptr_eq(&first.events, &reused.events));
+
+        let event = exact_codex_state(AgentEventType::Start, &now_rfc3339()).event;
+        assert_eq!(
+            state.database.insert_event(&event).unwrap(),
+            InsertEventOutcome::Inserted
+        );
+        let refreshed = state.snapshot_sequenced_events().unwrap();
+        assert!(refreshed.state_revision > first.state_revision);
+        assert!(!Arc::ptr_eq(&first.events, &refreshed.events));
+        assert_eq!(refreshed.events[0].event.id, event.id);
+    }
+
+    #[test]
+    fn snapshot_event_cache_deduplicates_concurrent_cold_queries() {
+        let cache = Arc::new(SnapshotSequencedEventCache::default());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                let calls = Arc::clone(&calls);
+                thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .get_or_try_refresh(
+                            || Ok(11),
+                            || {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                thread::sleep(Duration::from_millis(25));
+                                Ok(empty_sequenced_event_snapshot(11))
+                            },
+                        )
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let snapshots = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(snapshots
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0].events, &pair[1].events)));
+    }
+
+    #[test]
+    fn persisted_display_cache_reuses_session_and_recent_events_per_revision() {
+        let cache = SnapshotPersistedDisplayCache::default();
+        let session_calls = std::sync::atomic::AtomicUsize::new(0);
+        let recent_calls = std::sync::atomic::AtomicUsize::new(0);
+        let key = SessionDisplayCacheKey {
+            source: AgentSource::Opencode,
+            session_id: Some("session-1".to_string()),
+        };
+
+        cache
+            .session_display(7, key.clone(), || {
+                session_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(empty_session_projection(7))
+            })
+            .unwrap();
+        cache
+            .session_display(7, key, || {
+                session_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(empty_session_projection(7))
+            })
+            .unwrap();
+
+        let first_recent = cache
+            .recent_events(7, || {
+                recent_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(empty_recent_projection(7))
+            })
+            .unwrap()
+            .unwrap();
+        let reused_recent = cache
+            .recent_events(7, || {
+                recent_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(empty_recent_projection(7))
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(session_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recent_calls.load(Ordering::SeqCst), 1);
+        assert!(Arc::ptr_eq(&first_recent, &reused_recent));
+    }
+
+    #[test]
+    fn persisted_display_cache_refreshes_after_state_revision_changes() {
+        let cache = SnapshotPersistedDisplayCache::default();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let key = SessionDisplayCacheKey {
+            source: AgentSource::Codex,
+            session_id: Some("session-1".to_string()),
+        };
+
+        for revision in [7, 8] {
+            cache
+                .session_display(revision, key.clone(), || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(empty_session_projection(revision))
+                })
+                .unwrap();
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn persisted_display_cache_deduplicates_concurrent_cold_session_queries() {
+        let cache = Arc::new(SnapshotPersistedDisplayCache::default());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                let calls = Arc::clone(&calls);
+                thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .session_display(
+                            11,
+                            SessionDisplayCacheKey {
+                                source: AgentSource::Pi,
+                                session_id: Some("session-1".to_string()),
+                            },
+                            || {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                thread::sleep(Duration::from_millis(25));
+                                Ok(empty_session_projection(11))
+                            },
+                        )
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn persisted_display_cache_never_stores_a_revision_mismatch() {
+        let cache = SnapshotPersistedDisplayCache::default();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let key = SessionDisplayCacheKey {
+            source: AgentSource::ClaudeCode,
+            session_id: Some("session-1".to_string()),
+        };
+
+        let mismatched = cache
+            .session_display(7, key.clone(), || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(RevisionChecked::Mismatch {
+                    expected_revision: 7,
+                    actual_revision: 8,
+                })
+            })
+            .unwrap();
+        assert!(mismatched.is_none());
+
+        let matched = cache
+            .session_display(7, key, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(empty_session_projection(7))
+            })
+            .unwrap();
+        assert!(matched.is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn connection_light_status_cache_reuses_until_expiry_and_invalidation() {
+        let cache = ConnectionLightStatusCache::default();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let started_at = Instant::now();
+        let refresh = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        };
+
+        assert!(cache
+            .get_or_try_refresh(started_at, CONNECTION_LIGHT_STATUS_CACHE_TTL, 7, refresh)
+            .unwrap()
+            .is_empty());
+        assert!(cache
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(299),
+                CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                7,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Vec::new())
+                },
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        cache
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(299),
+                CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                8,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Vec::new())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        cache
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(599),
+                CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                8,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Vec::new())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        cache.invalidate();
+        cache
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(600),
+                CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                8,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Vec::new())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn connection_light_status_cache_deduplicates_concurrent_cold_refreshes() {
+        let cache = Arc::new(ConnectionLightStatusCache::default());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started_at = Instant::now();
+        let workers = (0..8)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                let calls = Arc::clone(&calls);
+                thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .get_or_try_refresh(
+                            started_at,
+                            CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                            1,
+                            || {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                thread::sleep(Duration::from_millis(25));
+                                Ok(Vec::new())
+                            },
+                        )
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            assert!(worker.join().unwrap().is_empty());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn inserted_evidence_dirties_only_its_source_projection_not_static_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let status = AgentConnectionStatus {
+            source: AgentSource::Pi,
+            items: Vec::new(),
+            install_paths: Vec::new(),
+            connector_installed: false,
+            verification: petcore_types::AgentVerification::default(),
+            capabilities: petcore_types::AgentConnectorCapabilities::default(),
+            check_mode: petcore_types::ConnectionCheckMode::Light,
+            checked_at: now_rfc3339(),
+        };
+        let static_calls = std::sync::atomic::AtomicUsize::new(0);
+        let evidence_calls = std::sync::atomic::AtomicUsize::new(0);
+        let started_at = Instant::now();
+
+        state
+            .connection_light_status_cache
+            .get_or_try_refresh(started_at, CONNECTION_LIGHT_STATUS_CACHE_TTL, 7, || {
+                static_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![status.clone()])
+            })
+            .unwrap();
+        state
+            .connection_evidence_projection_cache
+            .get_or_try_refresh(7, &status, || {
+                evidence_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(status.clone())
+            })
+            .unwrap();
+
+        let event = AgentEvent {
+            id: "evt_pi_evidence_cache_dirty".to_string(),
+            source: AgentSource::Pi,
+            project_path: None,
+            session_id: Some("pi-evidence-cache".to_string()),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "source_event": "input",
+                "contract_version": connections::contract_version_for_source(AgentSource::Pi),
+                "diagnostic": false,
+                "affects_activity": true,
+                "session_active": true
+            }),
+            created_at: now_rfc3339(),
+        };
+        ingest_event(&state, event).unwrap();
+
+        state
+            .connection_light_status_cache
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(1),
+                CONNECTION_LIGHT_STATUS_CACHE_TTL,
+                7,
+                || {
+                    static_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![status.clone()])
+                },
+            )
+            .unwrap();
+        state
+            .connection_evidence_projection_cache
+            .get_or_try_refresh(7, &status, || {
+                evidence_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(status.clone())
+            })
+            .unwrap();
+
+        assert_eq!(static_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(evidence_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn cold_evidence_projection_performs_one_strict_freshness_load_after_fast_merge() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let light = AgentConnectionStatus {
+            source: AgentSource::Pi,
+            items: Vec::new(),
+            install_paths: Vec::new(),
+            connector_installed: false,
+            verification: petcore_types::AgentVerification::default(),
+            capabilities: petcore_types::AgentConnectorCapabilities::default(),
+            check_mode: petcore_types::ConnectionCheckMode::Light,
+            checked_at: now_rfc3339(),
+        };
+
+        connections::reset_connector_receipt_freshness_load_count();
+        let mut merged = merge_cached_connection_statuses(&state.paths, vec![light], Vec::new());
+        assert_eq!(merged.len(), 1);
+        let status = merged.pop().unwrap();
+        assert_eq!(connections::connector_receipt_freshness_load_count(), 0);
+
+        let _projected = connections::project_connection_evidence(&state.paths, &status);
+        assert_eq!(
+            connections::connector_receipt_freshness_load_count(),
+            1,
+            "a dirty/cold evidence projection must perform exactly one strict artifact load after metadata-gated merge"
+        );
+    }
+
+    #[test]
+    fn connection_operations_and_host_processes_share_cross_clone_gates() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        let clone = state.clone();
+
+        let operation = state.begin_connection_operation().unwrap();
+        assert!(clone.begin_connection_operation().is_err());
+        drop(operation);
+        let next_operation = clone.begin_connection_operation().unwrap();
+        drop(next_operation);
+
+        let host = state.agent_host_process_guard();
+        assert!(clone.agent_host_process_gate.try_lock().is_err());
+        drop(host);
+        assert!(clone.agent_host_process_gate.try_lock().is_ok());
+    }
+
+    #[test]
+    fn connection_test_uses_the_same_serial_operation_gate() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let active = state.begin_connection_operation().unwrap();
+        let error = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("connection-test-gate")),
+                method: "connections.test".to_string(),
+                params: json!({ "source": "codex" }),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, PetCoreError::Conflict(_)));
+
+        drop(active);
+        assert!(handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("connection-test-after-gate")),
+                method: "connections.test".to_string(),
+                params: json!({ "source": "codex" }),
+            },
+        )
+        .is_ok());
+    }
+
     fn exact_codex_state(
         event_type: AgentEventType,
         created_at: &str,
@@ -1703,6 +3131,8 @@ mod tests {
             },
             source_session_sequence: 1,
             session_activated_at: None,
+            session_first_seen_at: None,
+            latest_terminal_navigation_payload: None,
         }
     }
 
@@ -1742,6 +3172,21 @@ mod tests {
             &[older_waiting],
             &activity
         ));
+    }
+
+    #[test]
+    fn lossy_thinking_does_not_replace_current_pre_tool_command() {
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.event_type = AgentEventType::Start;
+        activity.latest_activity = Some(generic_codex_activity("thinking"));
+        let mut command = exact_codex_state(AgentEventType::Tool, "2025-07-13T12:27:00Z");
+        command.event.payload_json = json!({
+            "source_event": "PreToolUse",
+            "turn_id": "turn-1",
+            "activity_kind": "command",
+            "session_active": true
+        });
+        assert!(should_preserve_exact_codex_state(&[command], &activity));
     }
 
     #[test]

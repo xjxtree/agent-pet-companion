@@ -7,6 +7,7 @@ use petcore::event_envelope::NormalizedAgentEvent;
 use petcore::launch_agent::{self, LaunchAgentConfig};
 use petcore::paths::AppPaths;
 use petcore::petpack;
+use petcore::runtime_manifest::{RuntimeReleaseManifest, PETCORE_BUILD_ID};
 use petcore::{enum_from_name, enum_name, now_rfc3339, PetCoreError, Result};
 use petcore_types::{AgentEventType, AgentSource, FpsProfileName, GenerationForm, QualityLevel};
 use serde_json::{json, Value};
@@ -15,6 +16,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
+
+const MAX_HOOK_STDIN_BYTES: usize = 1024 * 1024;
 
 fn main() {
     if let Err(error) = run() {
@@ -32,6 +35,10 @@ fn run() -> Result<()> {
 
     let command = args.remove(0);
     match command.as_str() {
+        "build-info" => print_json(json!({
+            "build_id": PETCORE_BUILD_ID,
+            "runtime_manifest": RuntimeReleaseManifest::compiled(),
+        })),
         "health" => print_json(daemon::request(
             &AppPaths::from_env()?,
             "petcore.health",
@@ -184,14 +191,29 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
             // but their arbitrary text is never forwarded or persisted.
             let _title_arg = flag_optional(&mut args, "--title");
             let _detail_arg = flag_optional(&mut args, "--detail");
-            let mut stdin = String::new();
-            io::stdin().read_to_string(&mut stdin)?;
-            let payload = hook_payload_from_stdin(&stdin);
-            let Some(contract) =
+            let Some(stdin) = read_bounded_hook_input(io::stdin().lock())? else {
+                return print_json(json!({
+                    "ok": true,
+                    "ignored": true,
+                    "reason": "hook payload exceeds local size limit"
+                }));
+            };
+            let mut payload = hook_payload_from_stdin(&stdin);
+            if connector_diagnostic_requested() {
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("diagnostic".to_string(), Value::Bool(true));
+                }
+            }
+            let reported_contract_version = reported_connector_contract_version(&payload);
+            let Some(mut contract) =
                 contract_event_for_hook(&source, event_type_arg.as_deref(), &payload)?
             else {
                 return print_json(json!({ "ok": true, "ignored": true }));
             };
+            contract.contract_version = validated_reported_contract_version(
+                contract.contract_version.as_deref(),
+                reported_contract_version.as_deref(),
+            );
             let request = normalized_contract_request(&contract)?;
             let result = daemon::request(&AppPaths::from_env()?, "agent.ingest", request)?;
             print_json(result)
@@ -200,6 +222,14 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
             "unknown agent subcommand {other}"
         ))),
     }
+}
+
+fn read_bounded_hook_input(reader: impl Read) -> io::Result<Option<String>> {
+    let mut stdin = String::new();
+    reader
+        .take((MAX_HOOK_STDIN_BYTES + 1) as u64)
+        .read_to_string(&mut stdin)?;
+    Ok((stdin.len() <= MAX_HOOK_STDIN_BYTES).then_some(stdin))
 }
 
 fn normalized_agent_request(source: &str, value: Value) -> Result<Value> {
@@ -214,7 +244,7 @@ fn normalized_contract_request(contract: &ContractEvent) -> Result<Value> {
     normalized_agent_request(
         &source,
         json!({
-            "id": null,
+            "id": contract.external_event_id,
             "source": contract.source,
             "event_type": event_type,
             "title": contract.kind.zh_label(),
@@ -223,9 +253,11 @@ fn normalized_contract_request(contract: &ContractEvent) -> Result<Value> {
             "session_id": contract.session_id,
             "payload": {
                 "source_event": contract.source_event,
+                "contract_version": contract.contract_version,
                 "tool_name": contract.tool_name,
                 "outcome": contract.outcome,
                 "diagnostic": contract.diagnostic,
+                "affects_activity": contract.affects_activity,
                 "turn_id": contract.turn_id,
                 "session_active": contract.session_active,
                 "message_role": contract.message_role,
@@ -242,6 +274,36 @@ fn normalized_contract_request(contract: &ContractEvent) -> Result<Value> {
             }
         }),
     )
+}
+
+fn connector_diagnostic_requested() -> bool {
+    ["APC_CONNECTOR_DIAGNOSTIC", "APC_CONNECTOR_PROBE"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+}
+
+fn reported_connector_contract_version(payload: &Value) -> Option<String> {
+    std::env::var("APC_CONNECTOR_CONTRACT_VERSION")
+        .ok()
+        .or_else(|| {
+            payload
+                .get("contract_version")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+}
+
+fn validated_reported_contract_version(
+    expected: Option<&str>,
+    reported: Option<&str>,
+) -> Option<String> {
+    match (expected, reported) {
+        (Some(expected), Some(reported)) if expected == reported => Some(reported.to_string()),
+        _ => None,
+    }
 }
 
 fn run_behavior(mut args: Vec<String>) -> Result<()> {
@@ -384,6 +446,18 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
             let output = PathBuf::from(flag(&mut args, "--output")?);
             let validation = petpack::build_petpack(&input, &output)?;
             print_json(json!({ "ok": true, "output": output, "validation": validation }))
+        }
+        "seed-bundled" => {
+            let inventory_root = PathBuf::from(flag(&mut args, "--inventory-root")?);
+            reject_extra_args(&args, "petpack seed-bundled")?;
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                "petpack.seed_bundled",
+                json!({
+                    "inventory": petpack::BUNDLED_PET_INVENTORY_VERSION,
+                    "inventory_root": inventory_root.display().to_string(),
+                }),
+            )?)
         }
         "import" => {
             let offline = flag_present(&mut args, "--offline");
@@ -861,23 +935,45 @@ fn run_connections(mut args: Vec<String>) -> Result<()> {
     let subcommand = pop(&mut args, "connections subcommand")?;
     match subcommand.as_str() {
         "check" => {
-            let params = connection_source_arg(&mut args, "check", false)?
+            let cwd = flag_optional(&mut args, "--cwd");
+            let mut params = connection_source_arg(&mut args, "check", false)?
                 .map(|source| json!({ "source": source }))
                 .unwrap_or_else(|| json!({}));
+            if let Some(cwd) = cwd {
+                params["cwd"] = Value::String(cwd);
+            }
             print_json(daemon::request(
                 &AppPaths::from_env()?,
                 "connections.check",
                 params,
             )?)
         }
+        "receipts" => {
+            if !args.is_empty() {
+                return Err(PetCoreError::InvalidRequest(format!(
+                    "unexpected connections receipts argument: {}",
+                    args.join(" ")
+                )));
+            }
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                "connections.receipts",
+                json!({}),
+            )?)
+        }
         "repair" => {
+            let cwd = flag_optional(&mut args, "--cwd");
             let source = connection_source_arg(&mut args, "repair", true)?.ok_or_else(|| {
                 PetCoreError::InvalidRequest("missing connection source".to_string())
             })?;
+            let mut params = json!({ "source": source });
+            if let Some(cwd) = cwd {
+                params["cwd"] = Value::String(cwd);
+            }
             print_json(daemon::request(
                 &AppPaths::from_env()?,
                 "connections.repair",
-                json!({ "source": source }),
+                params,
             )?)
         }
         "refresh-installed" => {
@@ -888,6 +984,13 @@ fn run_connections(mut args: Vec<String>) -> Result<()> {
                 )));
             }
             let paths = AppPaths::from_env()?;
+            if paths.socket_path.exists() {
+                return print_json(daemon::request(
+                    &paths,
+                    "connections.refresh_installed",
+                    json!({}),
+                )?);
+            }
             let refreshed = [
                 AgentSource::Codex,
                 AgentSource::ClaudeCode,
@@ -1256,15 +1359,18 @@ fn contract_event_for_hook(
         let kind = infer_event_type(explicit, payload, None, None)?;
         ContractEvent {
             source,
+            external_event_id: None,
             session_id: string_at_any_path(payload, SESSION_PATHS),
             kind,
             tool_name: string_at_any_path(payload, TOOL_NAME_PATHS),
             outcome: None,
             source_event: enum_name(kind).to_string(),
+            contract_version: None,
             diagnostic: payload
                 .get("diagnostic")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            affects_activity: true,
             session_active: !matches!(kind, AgentEventType::Done | AgentEventType::Failed),
             turn_id: None,
             message_role: None,
@@ -1360,7 +1466,7 @@ fn normalized_terminal_app(term_program: &str) -> Option<String> {
 
 fn usage() {
     eprintln!(
-        "usage: petcore-cli health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] | connections repair|uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
+        "usage: petcore-cli build-info | health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] [--cwd PATH] | connections receipts | connections repair --source SOURCE [--cwd PATH] | connections uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
     );
 }
 
@@ -1687,6 +1793,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hook_input_reader_rejects_oversize_payloads_without_unbounded_allocation() {
+        let accepted =
+            read_bounded_hook_input(std::io::Cursor::new(vec![b'a'; MAX_HOOK_STDIN_BYTES]))
+                .unwrap();
+        assert_eq!(
+            accepted.as_deref().map(str::len),
+            Some(MAX_HOOK_STDIN_BYTES)
+        );
+
+        let rejected =
+            read_bounded_hook_input(std::io::Cursor::new(vec![b'a'; MAX_HOOK_STDIN_BYTES + 1]))
+                .unwrap();
+        assert!(rejected.is_none());
+    }
+
+    #[test]
     fn warp_runtime_navigation_preserves_only_exact_session_focus_urls() {
         let navigation = runtime_navigation_from_values(
             AgentSource::ClaudeCode,
@@ -1893,10 +2015,30 @@ mod tests {
         assert_eq!(contract.kind, AgentEventType::Tool);
         assert_eq!(contract.activity_kind.as_deref(), Some("command"));
         assert_eq!(contract.activity_content, None);
+        assert!(contract
+            .external_event_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("evt_hook_")));
         let forwarded = serde_json::to_string(&contract).unwrap();
         assert!(!forwarded.contains("secret"));
         assert!(!forwarded.contains("args"));
         assert!(!forwarded.contains("callID"));
+    }
+
+    #[test]
+    fn connector_contract_version_requires_an_exact_artifact_report() {
+        assert_eq!(
+            validated_reported_contract_version(Some("current-v2"), Some("current-v2")),
+            Some("current-v2".to_string())
+        );
+        assert_eq!(
+            validated_reported_contract_version(Some("current-v2"), Some("stale-v1")),
+            None
+        );
+        assert_eq!(
+            validated_reported_contract_version(Some("current-v2"), None),
+            None
+        );
     }
 
     #[test]
@@ -1943,6 +2085,10 @@ mod tests {
         .unwrap();
 
         let request = normalized_contract_request(&contract).unwrap();
+        assert_eq!(
+            request["id"].as_str(),
+            contract.external_event_id.as_deref()
+        );
         assert_eq!(request["title"], AgentEventType::Tool.zh_label());
         assert_eq!(request["detail"], Value::Null);
         assert_eq!(
@@ -1955,6 +2101,43 @@ mod tests {
         let encoded = serde_json::to_string(&request).unwrap();
         assert!(!encoded.contains("RAW_CALL_ID_MUST_NOT_CROSS"));
         assert!(!encoded.contains("RAW_COMMAND_MUST_NOT_CROSS"));
+    }
+
+    #[test]
+    fn distinct_tool_invocations_get_distinct_ingest_ids_while_retries_remain_stable() {
+        let request_for = |call_id: &str| {
+            let contract = contract_event_for_hook(
+                "codex",
+                Some("auto"),
+                &json!({
+                    "hook_event_name": "PreToolUse",
+                    "session_id": "same-session",
+                    "turn_id": "same-turn",
+                    "tool_name": "Bash",
+                    "tool_use_id": call_id,
+                    "tool_input": { "command": "RAW_COMMAND_MUST_NOT_CROSS" }
+                }),
+            )
+            .unwrap()
+            .unwrap();
+            normalized_contract_request(&contract).unwrap()
+        };
+
+        let first = request_for("RAW_CALL_ONE_MUST_NOT_CROSS");
+        let first_retry = request_for("RAW_CALL_ONE_MUST_NOT_CROSS");
+        let second = request_for("RAW_CALL_TWO_MUST_NOT_CROSS");
+        assert_eq!(first["id"], first_retry["id"]);
+        assert_ne!(first["id"], second["id"]);
+        assert_eq!(first["payload_json"]["external_event_id"], first["id"]);
+
+        let encoded = serde_json::to_string(&[first, first_retry, second]).unwrap();
+        for forbidden in [
+            "RAW_CALL_ONE_MUST_NOT_CROSS",
+            "RAW_CALL_TWO_MUST_NOT_CROSS",
+            "RAW_COMMAND_MUST_NOT_CROSS",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
     }
 
     #[test]

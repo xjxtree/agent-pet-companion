@@ -1,25 +1,32 @@
+use crate::agent_session_filters::{
+    is_codex_internal_suggestions_prompt, suppressed_agent_session_reason,
+    CODEX_INTERNAL_SUGGESTIONS_REASON,
+};
 use crate::agent_state::SequencedAgentEvent;
 use crate::event_envelope::{
     minimal_legacy_payload, normalized_session_id, normalized_session_key, persisted_payload,
-    MAX_RECENT_EVENTS,
+    source_event_proves_ordinary_activity, MAX_RECENT_EVENTS,
 };
 use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
     BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    OverlayPlacement, PetOrigin, PetSummary, QualityLevel, RenderSize, MAX_BUBBLE_TRANSPARENCY,
-    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
+    OverlayPlacement, PetOrigin, PetSummary, QualityLevel, RenderSize, SessionGroupDisplay,
+    MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
     MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_GENERATION_HISTORY_QUERY_LIMIT: usize = 33;
 
 #[derive(Debug, Clone)]
 pub struct GenerationJobRecord {
@@ -36,6 +43,75 @@ pub struct GenerationJobRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectorEventReceipt {
+    #[serde(skip_serializing)]
+    pub sequence: i64,
+    pub source_event: String,
+    pub contract_version: Option<String>,
+    pub created_at: String,
+    pub diagnostic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectorTaskReceipt {
+    pub start: ConnectorEventReceipt,
+    pub activity: ConnectorEventReceipt,
+    pub completion: ConnectorEventReceipt,
+}
+
+/// Database-backed verification evidence for one connector contract.
+///
+/// All fields are projected by [`Database::connector_evidence_summary`] from
+/// one descending scan of the source's event rows. Keeping this projection
+/// together is important: connection checks run after every accepted event,
+/// and independently rebuilding each receipt would repeatedly deserialize the
+/// same bounded event history.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectorEvidenceSummary {
+    pub observed_receipt: Option<ConnectorEventReceipt>,
+    pub ordinary_receipt: Option<ConnectorEventReceipt>,
+    pub diagnostic_receipt: Option<ConnectorEventReceipt>,
+    pub real_start_receipt: Option<ConnectorEventReceipt>,
+    pub task_receipt: Option<ConnectorTaskReceipt>,
+    pub newer_stale_receipt: Option<ConnectorEventReceipt>,
+}
+
+fn task_evidence_event_matches(
+    source: AgentSource,
+    candidates: &[&str],
+    source_event: &str,
+    payload: &Value,
+    event_type: &str,
+) -> bool {
+    if !candidates.contains(&source_event) {
+        return false;
+    }
+    if source != AgentSource::Opencode {
+        return true;
+    }
+    let inactive = payload.get("session_active").and_then(Value::as_bool) == Some(false);
+    match source_event {
+        "session.status" => {
+            event_type == "done"
+                && inactive
+                && payload.get("outcome").and_then(Value::as_str) == Some("idle")
+        }
+        "session.next.step.ended" => match payload.get("outcome").and_then(Value::as_str) {
+            Some("completed") => event_type == "done" && inactive,
+            Some("session_failure") => event_type == "failed" && inactive,
+            _ => false,
+        },
+        "session.next.step.failed" => {
+            event_type == "failed"
+                && inactive
+                && payload.get("outcome").and_then(Value::as_str) == Some("session_failure")
+        }
+        "session.error" => event_type == "failed" && inactive,
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BehaviorSettingsPatch {
@@ -46,6 +122,7 @@ pub struct BehaviorSettingsPatch {
     pub click_menu: Option<bool>,
     pub mouse_passthrough: Option<bool>,
     pub auto_hide: Option<bool>,
+    pub session_group_display: Option<SessionGroupDisplay>,
     pub session_message_timeout_minutes: Option<u16>,
     pub fps_profile: Option<FpsProfileName>,
     pub sources: Option<BTreeMap<AgentSource, bool>>,
@@ -61,6 +138,7 @@ impl BehaviorSettingsPatch {
             && self.click_menu.is_none()
             && self.mouse_passthrough.is_none()
             && self.auto_hide.is_none()
+            && self.session_group_display.is_none()
             && self.session_message_timeout_minutes.is_none()
             && self.fps_profile.is_none()
             && self.sources.as_ref().is_none_or(BTreeMap::is_empty)
@@ -88,6 +166,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.auto_hide {
             behavior.auto_hide = value;
+        }
+        if let Some(value) = self.session_group_display {
+            behavior.session_group_display = value;
         }
         if let Some(value) = self.session_message_timeout_minutes {
             behavior.session_message_timeout_minutes = value;
@@ -135,12 +216,36 @@ pub struct PetAssetValidationRecord {
 pub enum InsertEventOutcome {
     Inserted,
     Duplicate,
+    Suppressed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventRetentionPolicy {
     pub max_rows: u64,
     pub max_age_days: u32,
+}
+
+/// Result of a projection read that must correspond to a caller-provided
+/// `state_revision`. A revision mismatch is expected control flow, not a
+/// database failure: callers can discard their in-progress snapshot and retry
+/// from the newer revision without ever combining rows from two revisions.
+#[derive(Debug, Clone)]
+pub(crate) enum RevisionChecked<T> {
+    Matched {
+        state_revision: u64,
+        value: T,
+    },
+    Mismatch {
+        expected_revision: u64,
+        actual_revision: u64,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionMessageProjection {
+    pub(crate) latest_assistant: Option<SequencedAgentEvent>,
+    pub(crate) latest_user: Option<SequencedAgentEvent>,
+    pub(crate) first_user: Option<AgentEvent>,
 }
 
 impl Default for EventRetentionPolicy {
@@ -152,8 +257,13 @@ impl Default for EventRetentionPolicy {
     }
 }
 
-pub const DATABASE_SCHEMA_VERSION: u32 = 4;
+// Keep bundled-pet identity inside schema-5-compatible PetSummary fields so a
+// candidate daemon cannot make the database unreadable to the last-known-good
+// schema-5 runtime before the candidate is committed healthy.
+pub const DATABASE_SCHEMA_VERSION: u32 = 5;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
+const SUPPRESSED_AGENT_SESSION_RETENTION_DAYS: u32 = 30;
+const MAX_SUPPRESSED_AGENT_SESSIONS: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -170,7 +280,9 @@ impl Database {
     }
 
     fn open(&self) -> Result<Connection> {
-        Ok(Connection::open(&self.path)?)
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
+        Ok(connection)
     }
 
     pub fn init(&self) -> Result<()> {
@@ -313,6 +425,14 @@ impl Database {
               PRIMARY KEY(event_day, source, event_type)
             );
 
+            CREATE TABLE IF NOT EXISTS suppressed_agent_sessions (
+              source TEXT NOT NULL,
+              session_key TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              suppressed_at TEXT NOT NULL,
+              PRIMARY KEY(source, session_key)
+            );
+
             CREATE TABLE IF NOT EXISTS privacy_migrations (
               migration_key TEXT PRIMARY KEY,
               phase TEXT NOT NULL,
@@ -346,6 +466,7 @@ impl Database {
         self.ensure_generation_job_columns(&connection)?;
         self.ensure_settings_columns(&connection)?;
         self.ensure_state_revision_triggers(&connection)?;
+        self.migrate_internal_codex_suggestion_sessions(&mut connection)?;
         self.scrub_legacy_connector_diagnostics(&mut connection)?;
         self.normalize_legacy_pi_tool_failures(&mut connection)?;
         if previous_schema_version < DATABASE_SCHEMA_VERSION {
@@ -552,6 +673,61 @@ impl Database {
         Ok(())
     }
 
+    fn migrate_internal_codex_suggestion_sessions(
+        &self,
+        connection: &mut Connection,
+    ) -> Result<()> {
+        let suppressed_session_keys = {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT session_key, payload_json
+                FROM agent_events
+                WHERE source = 'codex'
+                "#,
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .filter_map(|(session_key, payload_json)| {
+                    let payload = serde_json::from_str::<Value>(&payload_json).ok()?;
+                    (payload.get("source_event").and_then(Value::as_str)
+                        == Some("UserPromptSubmit")
+                        && payload.get("message_role").and_then(Value::as_str) == Some("user")
+                        && payload
+                            .get("message_content")
+                            .and_then(Value::as_str)
+                            .is_some_and(is_codex_internal_suggestions_prompt))
+                    .then_some(session_key)
+                })
+                .collect::<BTreeSet<_>>()
+        };
+
+        let transaction = connection.transaction()?;
+        for session_key in &suppressed_session_keys {
+            suppress_agent_session_in_connection(
+                &transaction,
+                AgentSource::Codex,
+                session_key,
+                CODEX_INTERNAL_SUGGESTIONS_REASON,
+            )?;
+        }
+        prune_suppressed_agent_sessions(&transaction)?;
+        if !suppressed_session_keys.is_empty() {
+            transaction.execute(
+                r#"
+                INSERT OR REPLACE INTO privacy_migrations (migration_key, phase, updated_at)
+                VALUES (?1, 'pending_secure_vacuum', ?2)
+                "#,
+                params![EVENT_PRIVACY_MIGRATION_KEY, now_rfc3339()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn scrub_legacy_connector_diagnostics(&self, connection: &mut Connection) -> Result<()> {
         let rows = {
             let mut statement = connection.prepare(
@@ -655,6 +831,7 @@ impl Database {
             "generation_jobs",
             "generation_messages",
             "agent_events",
+            "suppressed_agent_sessions",
             "pet_asset_validation",
             "settings",
         ] {
@@ -833,39 +1010,96 @@ impl Database {
     }
 
     pub fn upsert_connection_status(&self, status: &AgentConnectionStatus) -> Result<()> {
-        let mut statuses = self.connection_statuses()?;
-        statuses.retain(|existing| existing.source != status.source);
-        statuses.push(status.clone());
-        statuses.sort_by_key(|status| source_sort_key(status.source));
-        self.set_setting("connection_statuses", &statuses)
+        self.upsert_connection_statuses(std::slice::from_ref(status))
     }
 
     pub fn upsert_connection_statuses(&self, incoming: &[AgentConnectionStatus]) -> Result<()> {
-        let mut statuses = self.connection_statuses()?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let raw = transaction
+            .query_row(
+                "SELECT value_json FROM settings WHERE key = 'connection_statuses'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let mut statuses: Vec<AgentConnectionStatus> = raw
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default();
         for status in incoming {
             statuses.retain(|existing| existing.source != status.source);
             statuses.push(status.clone());
         }
         statuses.sort_by_key(|status| source_sort_key(status.source));
-        self.set_setting("connection_statuses", &statuses)
+        transaction.execute(
+            r#"
+            INSERT INTO settings (key, value_json, updated_at, revision)
+            VALUES ('connection_statuses', ?1, ?2, 1)
+            ON CONFLICT(key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at = excluded.updated_at,
+              revision = settings.revision + 1
+            "#,
+            params![serde_json::to_string_pretty(&statuses)?, now_rfc3339()],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn state_revision(&self) -> Result<u64> {
         let connection = self.open()?;
-        let revision = connection.query_row(
-            "SELECT revision FROM state_revision WHERE singleton = 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )?;
-        u64::try_from(revision).map_err(|_| {
-            PetCoreError::Validation("state revision must be a non-negative integer".to_string())
+        state_revision_in_connection(&connection)
+    }
+
+    fn read_projection_at_revision<T, F>(
+        &self,
+        expected_state_revision: u64,
+        read: F,
+    ) -> Result<RevisionChecked<T>>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let actual_revision = state_revision_in_connection(&transaction)?;
+        if actual_revision != expected_state_revision {
+            transaction.commit()?;
+            return Ok(RevisionChecked::Mismatch {
+                expected_revision: expected_state_revision,
+                actual_revision,
+            });
+        }
+
+        let value = read(&transaction)?;
+        transaction.commit()?;
+        Ok(RevisionChecked::Matched {
+            state_revision: actual_revision,
+            value,
         })
     }
 
     pub fn insert_event(&self, event: &AgentEvent) -> Result<InsertEventOutcome> {
         let mut connection = self.open()?;
-        let transaction = connection.transaction()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let session_id = normalized_session_id(event.session_id.as_deref());
+        let session_key = normalized_session_key(session_id.as_deref());
+        if let (Some(reason), Some(_)) = (
+            suppressed_agent_session_reason(event),
+            session_id.as_deref(),
+        ) {
+            suppress_agent_session_in_connection(&transaction, event.source, &session_key, reason)?;
+            prune_suppressed_agent_sessions(&transaction)?;
+            transaction.commit()?;
+            return Ok(InsertEventOutcome::Suppressed);
+        }
+        if agent_session_is_suppressed(&transaction, event.source, &session_key)? {
+            return Ok(InsertEventOutcome::Suppressed);
+        }
+        if event_arrived_after_turn_terminal(&transaction, event, &session_key)? {
+            transaction.commit()?;
+            return Ok(InsertEventOutcome::Suppressed);
+        }
         let changed = transaction.execute(
             r#"
             INSERT OR IGNORE INTO agent_events
@@ -878,7 +1112,7 @@ impl Database {
                 enum_name(event.source),
                 event.project_path,
                 session_id,
-                normalized_session_key(session_id.as_deref()),
+                session_key,
                 enum_name(event.event_type),
                 event.event_type.zh_label(),
                 Option::<&str>::None,
@@ -913,9 +1147,12 @@ impl Database {
             ));
         }
         let mut connection = self.open()?;
-        let transaction = connection.transaction()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let session_id = normalized_session_id(event.session_id.as_deref());
         let session_key = normalized_session_key(session_id.as_deref());
+        if agent_session_is_suppressed(&transaction, event.source, &session_key)? {
+            return Ok(false);
+        }
         let payload_json = serde_json::to_string(&persisted_payload(event))?;
         let changed = transaction.execute(
             r#"
@@ -962,35 +1199,555 @@ impl Database {
             return Ok(Vec::new());
         }
         let connection = self.open()?;
+        recent_events_in_connection(&connection, limit)
+    }
+
+    /// Reads recent typed events only when the database snapshot still matches
+    /// `expected_state_revision`. The revision check and event query share one
+    /// deferred SQLite transaction, so a concurrent writer can produce either
+    /// a clean mismatch or a self-consistent old snapshot, never mixed rows.
+    pub(crate) fn recent_events_at_revision(
+        &self,
+        expected_state_revision: u64,
+        limit: usize,
+    ) -> Result<RevisionChecked<Vec<AgentEvent>>> {
+        self.read_projection_at_revision(expected_state_revision, |connection| {
+            recent_events_in_connection(connection, limit.min(MAX_RECENT_EVENTS))
+        })
+    }
+
+    /// Projects all database-backed connector verification evidence in one
+    /// source-filtered scan. PetCore's own channel test and Codex App Server
+    /// fallback are excluded: neither proves that a connector ran.
+    pub fn connector_evidence_summary(
+        &self,
+        source: AgentSource,
+        expected_contract_version: &str,
+        start_events: &[&str],
+        activity_events: &[&str],
+        completion_events: &[&str],
+    ) -> Result<ConnectorEvidenceSummary> {
+        let connection = self.open()?;
         let mut statement = connection.prepare(
             r#"
-            SELECT external_event_id, source, project_path, session_id, event_type,
-                   title, detail, payload_json, created_at
+            SELECT row_id, session_key, event_type, payload_json, created_at
             FROM agent_events
-            ORDER BY created_at DESC, row_id DESC
-            LIMIT ?1
+            WHERE source = ?1
+            ORDER BY row_id DESC
             "#,
         )?;
-
-        let rows = statement.query_map(params![limit as i64], |row| {
-            let source: String = row.get(1)?;
-            let event_type: String = row.get(4)?;
-            let payload_json: String = row.get(7)?;
-            Ok(AgentEvent {
-                id: row.get(0)?,
-                source: enum_from_name(&source).map_err(to_sql_error)?,
-                project_path: row.get(2)?,
-                session_id: row.get(3)?,
-                event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
-                title: row.get(5)?,
-                detail: row.get(6)?,
-                payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
-                created_at: row.get(8)?,
-            })
+        let rows = statement.query_map(params![enum_name(source)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
         })?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let mut summary = ConnectorEvidenceSummary::default();
+        let mut newest_stale_receipt = None;
+        let mut latest_start_receipts = HashMap::<String, ConnectorEventReceipt>::new();
+        let mut completions = HashMap::<String, ConnectorEventReceipt>::new();
+        let mut task_tails =
+            HashMap::<String, (ConnectorEventReceipt, ConnectorEventReceipt)>::new();
+
+        for row in rows {
+            let (sequence, session_key, event_type, payload_json, created_at) = row?;
+            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            let diagnostic = payload
+                .get("diagnostic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let Some(raw_source_event) = payload.get("source_event").and_then(Value::as_str) else {
+                continue;
+            };
+            let source_event = raw_source_event.trim();
+            if source_event.is_empty() {
+                continue;
+            }
+            let contract_version = payload
+                .get("contract_version")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let current_contract = contract_version.as_deref() == Some(expected_contract_version);
+            let connector_receipt_eligible = !matches!(
+                source_event,
+                "connection.test" | "app_server_activity" | "legacy" | "unclassified"
+            ) && (diagnostic || source_event != "connector.probe");
+            let receipt = || ConnectorEventReceipt {
+                sequence,
+                source_event: source_event.to_string(),
+                contract_version: contract_version.clone(),
+                created_at: created_at.clone(),
+                diagnostic,
+            };
+
+            if connector_receipt_eligible {
+                if !diagnostic
+                    && task_evidence_event_matches(
+                        source,
+                        start_events,
+                        source_event,
+                        &payload,
+                        &event_type,
+                    )
+                {
+                    // Preserve the previous two-stage lookup exactly: for
+                    // each start name, the newest receipt wins before its
+                    // contract is checked. A newer stale start therefore
+                    // shadows an older current-contract start of that name.
+                    latest_start_receipts
+                        .entry(source_event.to_string())
+                        .or_insert_with(&receipt);
+                }
+                if current_contract {
+                    let slot = if diagnostic {
+                        &mut summary.diagnostic_receipt
+                    } else {
+                        &mut summary.observed_receipt
+                    };
+                    if slot.is_none() {
+                        *slot = Some(receipt());
+                    }
+                } else if newest_stale_receipt.is_none() {
+                    // Rows are descending by sequence, so the first eligible
+                    // non-current receipt is the newest stale contract across
+                    // both diagnostic and ordinary connector traffic.
+                    newest_stale_receipt = Some(receipt());
+                }
+            }
+
+            if current_contract && !diagnostic {
+                let affects_activity = payload
+                    .get("affects_activity")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if summary.ordinary_receipt.is_none()
+                    && source_event_proves_ordinary_activity(source_event, affects_activity)
+                {
+                    summary.ordinary_receipt = Some(receipt());
+                }
+            }
+
+            // Preserve the task receipt's existing exact event-name and
+            // session semantics. Unlike the general receipt projection, task
+            // evidence is defined exclusively by the caller-provided closed
+            // event sets, so source event whitespace is not normalized here.
+            if summary.task_receipt.is_some()
+                || diagnostic
+                || !current_contract
+                || session_key == "0:"
+            {
+                continue;
+            }
+            let task_receipt = || ConnectorEventReceipt {
+                sequence,
+                source_event: raw_source_event.to_string(),
+                contract_version: Some(expected_contract_version.to_string()),
+                created_at: created_at.clone(),
+                diagnostic: false,
+            };
+            if task_evidence_event_matches(
+                source,
+                completion_events,
+                raw_source_event,
+                &payload,
+                &event_type,
+            ) {
+                completions.entry(session_key).or_insert_with(task_receipt);
+                continue;
+            }
+            if task_evidence_event_matches(
+                source,
+                activity_events,
+                raw_source_event,
+                &payload,
+                &event_type,
+            ) {
+                if let Some(completion) = completions.remove(&session_key) {
+                    task_tails
+                        .entry(session_key)
+                        .or_insert_with(|| (task_receipt(), completion));
+                }
+                continue;
+            }
+            if task_evidence_event_matches(
+                source,
+                start_events,
+                raw_source_event,
+                &payload,
+                &event_type,
+            ) {
+                if let Some((activity, completion)) = task_tails.remove(&session_key) {
+                    summary.task_receipt = Some(ConnectorTaskReceipt {
+                        start: task_receipt(),
+                        activity,
+                        completion,
+                    });
+                }
+            }
+        }
+
+        let latest_current_sequence = [
+            summary.observed_receipt.as_ref(),
+            summary.diagnostic_receipt.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|receipt| receipt.sequence)
+        .max();
+        summary.newer_stale_receipt = newest_stale_receipt.filter(|receipt| {
+            latest_current_sequence.is_none_or(|current| receipt.sequence > current)
+        });
+        summary.real_start_receipt = latest_start_receipts
+            .into_values()
+            .filter(|receipt| {
+                receipt.contract_version.as_deref() == Some(expected_contract_version)
+            })
+            .max_by_key(|receipt| receipt.sequence);
+        Ok(summary)
+    }
+
+    /// Returns the latest event that actually crossed an Agent connector.
+    /// PetCore's own channel test and Codex App Server fallback are excluded:
+    /// neither proves that an Agent hook, extension, or plugin ran.
+    pub fn latest_connector_event_receipt(
+        &self,
+        source: AgentSource,
+        diagnostic: bool,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        self.latest_connector_event_receipt_matching(source, diagnostic, None, None)
+    }
+
+    pub fn latest_connector_event_receipt_for_source_event(
+        &self,
+        source: AgentSource,
+        diagnostic: bool,
+        expected_source_event: &str,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        self.latest_connector_event_receipt_matching(
+            source,
+            diagnostic,
+            Some(expected_source_event),
+            None,
+        )
+    }
+
+    pub fn latest_connector_event_receipt_for_contract(
+        &self,
+        source: AgentSource,
+        diagnostic: bool,
+        expected_contract_version: &str,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        self.latest_connector_event_receipt_matching(
+            source,
+            diagnostic,
+            None,
+            Some(expected_contract_version),
+        )
+    }
+
+    /// Returns the latest current-contract, non-diagnostic event that proves
+    /// ordinary task activity. Passive metadata and host lifecycle edges stay
+    /// queryable through `latest_connector_event_receipt*`, but never satisfy
+    /// the `ordinary_event_seen` verification layer.
+    pub fn latest_connector_ordinary_receipt_for_contract(
+        &self,
+        source: AgentSource,
+        expected_contract_version: &str,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT row_id, payload_json, created_at
+            FROM agent_events
+            WHERE source = ?1
+            ORDER BY row_id DESC
+            "#,
+        )?;
+        let rows = statement.query_map(params![enum_name(source)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (sequence, payload_json, created_at) = row?;
+            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            if payload
+                .get("diagnostic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || payload.get("contract_version").and_then(Value::as_str)
+                    != Some(expected_contract_version)
+            {
+                continue;
+            }
+            let Some(source_event) = payload
+                .get("source_event")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let affects_activity = payload
+                .get("affects_activity")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !source_event_proves_ordinary_activity(source_event, affects_activity) {
+                continue;
+            }
+            return Ok(Some(ConnectorEventReceipt {
+                sequence,
+                source_event: source_event.to_string(),
+                contract_version: Some(expected_contract_version.to_string()),
+                created_at,
+                diagnostic: false,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn latest_connector_probe_receipt_for_contract(
+        &self,
+        source: AgentSource,
+        expected_contract_version: &str,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        self.latest_connector_event_receipt_matching(
+            source,
+            true,
+            Some("connector.probe"),
+            Some(expected_contract_version),
+        )
+    }
+
+    /// Finds a non-diagnostic task sequence in one real Agent session. A
+    /// passive lifecycle event cannot satisfy this query: a task-bearing start
+    /// must precede a tool/command activity event and then a completion or
+    /// terminal event under the same current adapter contract.
+    pub fn latest_connector_task_receipt_for_contract(
+        &self,
+        source: AgentSource,
+        expected_contract_version: &str,
+        start_events: &[&str],
+        activity_events: &[&str],
+        completion_events: &[&str],
+    ) -> Result<Option<ConnectorTaskReceipt>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT row_id, session_key, event_type, payload_json, created_at
+            FROM agent_events
+            WHERE source = ?1
+            ORDER BY row_id DESC
+            "#,
+        )?;
+        let rows = statement.query_map(params![enum_name(source)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut completions = HashMap::<String, ConnectorEventReceipt>::new();
+        let mut task_tails =
+            HashMap::<String, (ConnectorEventReceipt, ConnectorEventReceipt)>::new();
+        for row in rows {
+            let (sequence, session_key, event_type, payload_json, created_at) = row?;
+            if session_key == "0:" {
+                continue;
+            }
+            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            if payload
+                .get("diagnostic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || payload.get("contract_version").and_then(Value::as_str)
+                    != Some(expected_contract_version)
+            {
+                continue;
+            }
+            let Some(source_event) = payload.get("source_event").and_then(Value::as_str) else {
+                continue;
+            };
+            let receipt = ConnectorEventReceipt {
+                sequence,
+                source_event: source_event.to_string(),
+                contract_version: Some(expected_contract_version.to_string()),
+                created_at,
+                diagnostic: false,
+            };
+            if task_evidence_event_matches(
+                source,
+                completion_events,
+                source_event,
+                &payload,
+                &event_type,
+            ) {
+                completions.entry(session_key).or_insert(receipt);
+                continue;
+            }
+            if task_evidence_event_matches(
+                source,
+                activity_events,
+                source_event,
+                &payload,
+                &event_type,
+            ) {
+                if let Some(completion) = completions.remove(&session_key) {
+                    task_tails
+                        .entry(session_key)
+                        .or_insert((receipt, completion));
+                }
+                continue;
+            }
+            if task_evidence_event_matches(
+                source,
+                start_events,
+                source_event,
+                &payload,
+                &event_type,
+            ) {
+                if let Some((activity, completion)) = task_tails.remove(&session_key) {
+                    return Ok(Some(ConnectorTaskReceipt {
+                        start: receipt,
+                        activity,
+                        completion,
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn latest_connector_event_receipt_matching(
+        &self,
+        source: AgentSource,
+        diagnostic: bool,
+        expected_source_event: Option<&str>,
+        expected_contract_version: Option<&str>,
+    ) -> Result<Option<ConnectorEventReceipt>> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT row_id, payload_json, created_at
+            FROM agent_events
+            WHERE source = ?1
+            ORDER BY row_id DESC
+            "#,
+        )?;
+        let rows = statement.query_map(params![enum_name(source)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (sequence, payload_json, created_at) = row?;
+            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+                continue;
+            };
+            let event_diagnostic = payload
+                .get("diagnostic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if event_diagnostic != diagnostic {
+                continue;
+            }
+            let Some(source_event) = payload
+                .get("source_event")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| {
+                    !value.is_empty()
+                        && !matches!(
+                            *value,
+                            "connection.test" | "app_server_activity" | "legacy" | "unclassified"
+                        )
+                })
+            else {
+                continue;
+            };
+            if source_event == "connector.probe" && !diagnostic {
+                continue;
+            }
+            if expected_source_event.is_some_and(|expected| source_event != expected) {
+                continue;
+            }
+            let contract_version = payload
+                .get("contract_version")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            if expected_contract_version
+                .is_some_and(|expected| contract_version.as_deref() != Some(expected))
+            {
+                continue;
+            }
+            return Ok(Some(ConnectorEventReceipt {
+                sequence,
+                source_event: source_event.to_string(),
+                contract_version,
+                created_at,
+                diagnostic: event_diagnostic,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn connector_event_was_received(
+        &self,
+        source: AgentSource,
+        session_id: &str,
+        source_event: &str,
+        diagnostic: bool,
+        expected_contract_version: &str,
+    ) -> Result<bool> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT payload_json
+            FROM agent_events
+            WHERE source = ?1 AND session_key = ?2
+            ORDER BY row_id DESC
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![
+                enum_name(source),
+                normalized_session_key(normalized_session_id(Some(session_id)).as_deref())
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        for row in rows {
+            let Ok(payload) = serde_json::from_str::<Value>(&row?) else {
+                continue;
+            };
+            if payload.get("source_event").and_then(Value::as_str) == Some(source_event)
+                && payload
+                    .get("diagnostic")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    == diagnostic
+                && payload.get("contract_version").and_then(Value::as_str)
+                    == Some(expected_contract_version)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn recent_sequenced_events(&self, limit: usize) -> Result<Vec<SequencedAgentEvent>> {
@@ -1022,6 +1779,8 @@ impl Database {
                     )
                 })?,
                 session_activated_at: None,
+                session_first_seen_at: None,
+                latest_terminal_navigation_payload: None,
                 event: AgentEvent {
                     id: row.get(1)?,
                     source: enum_from_name(&source).map_err(to_sql_error)?,
@@ -1043,62 +1802,297 @@ impl Database {
         &self,
         limit: usize,
     ) -> Result<Vec<SequencedAgentEvent>> {
-        let limit = limit.min(MAX_RECENT_EVENTS);
-        if limit == 0 {
+        if limit.min(MAX_RECENT_EVENTS) == 0 {
             return Ok(Vec::new());
         }
-        let connection = self.open()?;
-        let mut statement = connection.prepare(
-            r#"
-            WITH ranked AS (
+        self.latest_sequenced_events_by_session_with_revision(limit)
+            .map(|(_, events)| events)
+    }
+
+    pub(crate) fn latest_sequenced_events_by_session_with_revision(
+        &self,
+        limit: usize,
+    ) -> Result<(u64, Vec<SequencedAgentEvent>)> {
+        let limit = limit.min(MAX_RECENT_EVENTS);
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let revision = state_revision_in_connection(&transaction)?;
+        if limit == 0 {
+            transaction.commit()?;
+            return Ok((revision, Vec::new()));
+        }
+        let events = {
+            let mut statement = transaction.prepare(
+                r#"
+            WITH eligible AS (
+              SELECT row_id, external_event_id, source, project_path, session_id,
+                     session_key, event_type, title, detail, payload_json, created_at
+              FROM agent_events
+              WHERE COALESCE(json_extract(payload_json, '$.diagnostic'), 0) != 1
+                AND (
+                  COALESCE(json_extract(payload_json, '$.affects_activity'), 1) != 0
+                  OR (
+                    source = 'codex'
+                    AND event_type = 'done'
+                    AND json_extract(payload_json, '$.source_event') = 'Stop'
+                  )
+                  OR (
+                    source = 'claude_code'
+                    AND (
+                      (
+                        event_type = 'done'
+                        AND json_extract(payload_json, '$.source_event') IN ('Stop', 'SessionEnd')
+                      )
+                      OR (
+                        event_type = 'failed'
+                        AND json_extract(payload_json, '$.source_event') = 'StopFailure'
+                      )
+                      OR (
+                        event_type = 'done'
+                        AND json_extract(payload_json, '$.source_event') = 'Notification'
+                        AND json_extract(payload_json, '$.outcome') IN ('idle', 'agent_completed')
+                      )
+                    )
+                  )
+                  OR (
+                    source = 'pi'
+                    AND (
+                      (
+                        event_type IN ('done', 'failed')
+                        AND json_extract(payload_json, '$.source_event') = 'agent_settled'
+                      )
+                      OR (
+                        event_type = 'done'
+                        AND json_extract(payload_json, '$.source_event') = 'session_shutdown'
+                      )
+                    )
+                  )
+                  OR (
+                    source = 'opencode'
+                    AND (
+                      (
+                        event_type = 'done'
+                        AND json_extract(payload_json, '$.source_event') IN (
+                          'session.deleted',
+                          'session.idle'
+                        )
+                      )
+                      OR (
+                        event_type = 'done'
+                        AND json_extract(payload_json, '$.source_event') = 'session.status'
+                        AND json_extract(payload_json, '$.outcome') = 'idle'
+                      )
+                      OR (
+                        event_type = 'failed'
+                        AND json_extract(payload_json, '$.source_event') = 'session.error'
+                      )
+                      OR (
+                        event_type IN ('done', 'failed')
+                        AND json_extract(payload_json, '$.source_event') = 'session.next.step.ended'
+                      )
+                      OR (
+                        event_type = 'failed'
+                        AND json_extract(payload_json, '$.source_event') = 'session.next.step.failed'
+                      )
+                    )
+                  )
+                )
+            ),
+            sequenced AS (
               SELECT row_id, external_event_id, source, project_path, session_id,
                      session_key, event_type, title, detail, payload_json, created_at,
-                     MAX(CASE WHEN event_type = 'start' THEN created_at END) OVER (
+                     MAX(CASE
+                       WHEN event_type = 'start'
+                        AND (
+                          json_extract(payload_json, '$.message_role') = 'user'
+                          OR json_extract(payload_json, '$.source_event') IN (
+                            'UserPromptSubmit',
+                            'input',
+                            'before_agent_start',
+                            'message.user',
+                            'session.next.prompt.admitted'
+                          )
+                        )
+                       THEN created_at
+                     END) OVER (PARTITION BY source, session_key) AS session_activated_at,
+                     MIN(created_at) OVER (
                        PARTITION BY source, session_key
-                     ) AS session_activated_at,
+                     ) AS session_first_seen_at,
+                     SUM(CASE
+                       WHEN event_type NOT IN ('done', 'failed')
+                        AND (
+                          json_extract(payload_json, '$.message_role') = 'user'
+                          OR (
+                            event_type = 'waiting'
+                            AND (
+                              json_extract(payload_json, '$.session_active') = 1
+                              OR json_extract(payload_json, '$.source_event') IN (
+                                'waiting',
+                                'legacy',
+                                'unclassified'
+                              )
+                            )
+                          )
+                          OR (
+                            source = 'codex'
+                            AND (
+                              json_extract(payload_json, '$.source_event') IN (
+                                'UserPromptSubmit',
+                                'PreToolUse',
+                                'PermissionRequest',
+                                'PreCompact',
+                                'SubagentStart'
+                              )
+                              OR (
+                                json_extract(payload_json, '$.source_event') = 'app_server_activity'
+                                AND json_extract(payload_json, '$.session_active') = 1
+                              )
+                            )
+                          )
+                          OR (
+                            source = 'claude_code'
+                            AND (
+                              json_extract(payload_json, '$.source_event') IN (
+                                'UserPromptSubmit',
+                                'PreToolUse',
+                                'PermissionRequest',
+                                'PreCompact',
+                                'SubagentStart',
+                                'TaskCreated',
+                                'Elicitation'
+                              )
+                              OR (
+                                json_extract(payload_json, '$.source_event') = 'Stop'
+                                AND json_extract(payload_json, '$.outcome') = 'background_active'
+                              )
+                            )
+                          )
+                          OR (
+                            source = 'pi'
+                            AND json_extract(payload_json, '$.source_event') IN (
+                              'input',
+                              'before_agent_start',
+                              'agent_start',
+                              'turn_start',
+                              'session_before_compact',
+                              'tool_call',
+                              'tool_execution_start'
+                            )
+                          )
+                          OR (
+                            source = 'opencode'
+                            AND (
+                              json_extract(payload_json, '$.source_event') IN (
+                                'message.user',
+                                'session.next.prompt.admitted',
+                                'session.compaction.started',
+                                'tool.execute.before',
+                                'command.execute.before',
+                                'permission.asked',
+                                'permission.updated',
+                                'permission.v2.asked',
+                                'question.asked',
+                                'question.v2.asked'
+                              )
+                              OR (
+                                json_extract(payload_json, '$.source_event') = 'session.status'
+                                AND json_extract(payload_json, '$.outcome') IN ('busy', 'retry')
+                              )
+                            )
+                          )
+                        )
+                       THEN 1
+                       ELSE 0
+                     END) OVER (
+                       PARTITION BY source, session_key
+                       ORDER BY created_at ASC, row_id ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                     ) AS activity_epoch
+              FROM eligible
+            ),
+            ranked AS (
+              SELECT row_id, external_event_id, source, project_path, session_id,
+                     session_key, event_type, title, detail, payload_json, created_at,
+                     session_activated_at, session_first_seen_at,
                      ROW_NUMBER() OVER (
                        PARTITION BY source, session_key
-                       ORDER BY created_at DESC, row_id DESC
+                       ORDER BY activity_epoch DESC,
+                                CASE event_type
+                                  WHEN 'failed' THEN 2
+                                  WHEN 'done' THEN 1
+                                  ELSE 0
+                                END DESC,
+                                created_at DESC,
+                                row_id DESC
                      ) AS session_rank
-              FROM agent_events
+              FROM sequenced
             )
             SELECT row_id, external_event_id, source, project_path, session_id, event_type,
-                   title, detail, payload_json, created_at, session_activated_at
-            FROM ranked
+                   title, detail, payload_json, created_at, session_activated_at,
+                   session_first_seen_at,
+                   (
+                     SELECT navigation.payload_json
+                     FROM eligible AS navigation
+                     WHERE navigation.source = selected.source
+                       AND navigation.session_key = selected.session_key
+                       AND navigation.event_type IN ('done', 'failed')
+                       AND (
+                         navigation.created_at > selected.created_at
+                         OR (
+                           navigation.created_at = selected.created_at
+                           AND navigation.row_id >= selected.row_id
+                         )
+                       )
+                       AND (
+                         json_type(navigation.payload_json, '$.session_open') IS NOT NULL
+                         OR json_type(navigation.payload_json, '$.terminal_app') IS NOT NULL
+                         OR json_type(navigation.payload_json, '$.session_open_url') IS NOT NULL
+                       )
+                     ORDER BY navigation.created_at DESC, navigation.row_id DESC
+                     LIMIT 1
+                   ) AS latest_terminal_navigation_payload
+            FROM ranked AS selected
             WHERE session_rank = 1
-            ORDER BY created_at DESC, row_id DESC
+            ORDER BY selected.created_at DESC, selected.row_id DESC
             LIMIT ?1
             "#,
-        )?;
-        let rows = statement.query_map(params![limit as i64], |row| {
-            let row_id = row.get::<_, i64>(0)?;
-            let source: String = row.get(2)?;
-            let event_type: String = row.get(5)?;
-            let payload_json: String = row.get(8)?;
-            Ok(SequencedAgentEvent {
-                source_session_sequence: u64::try_from(row_id).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Integer,
-                        Box::new(error),
-                    )
-                })?,
-                session_activated_at: row.get(10)?,
-                event: AgentEvent {
-                    id: row.get(1)?,
-                    source: enum_from_name(&source).map_err(to_sql_error)?,
-                    project_path: row.get(3)?,
-                    session_id: row.get(4)?,
-                    event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
-                    title: row.get(6)?,
-                    detail: row.get(7)?,
-                    payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
-                    created_at: row.get(9)?,
-                },
-            })
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            )?;
+            let rows = statement.query_map(params![limit as i64], |row| {
+                let row_id = row.get::<_, i64>(0)?;
+                let source: String = row.get(2)?;
+                let event_type: String = row.get(5)?;
+                let payload_json: String = row.get(8)?;
+                Ok(SequencedAgentEvent {
+                    source_session_sequence: u64::try_from(row_id).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })?,
+                    session_activated_at: row.get(10)?,
+                    session_first_seen_at: row.get(11)?,
+                    latest_terminal_navigation_payload: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|payload| serde_json::from_str(&payload).map_err(to_sql_error))
+                        .transpose()?,
+                    event: AgentEvent {
+                        id: row.get(1)?,
+                        source: enum_from_name(&source).map_err(to_sql_error)?,
+                        project_path: row.get(3)?,
+                        session_id: row.get(4)?,
+                        event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
+                        title: row.get(6)?,
+                        detail: row.get(7)?,
+                        payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
+                        created_at: row.get(9)?,
+                    },
+                })
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        transaction.commit()?;
+        Ok((revision, events))
     }
 
     pub fn latest_session_message(
@@ -1115,7 +2109,24 @@ impl Database {
         session_id: Option<&str>,
         role: Option<&str>,
     ) -> Result<Option<AgentEvent>> {
-        self.session_message_for_role(source, session_id, role, true)
+        Ok(self
+            .session_message_for_role(source, session_id, role, true)?
+            .map(|sequenced| sequenced.event))
+    }
+
+    /// Atomically projects the three persisted messages needed to hydrate a
+    /// session bubble. A single ordered scan supplies the latest assistant,
+    /// latest user, and first user records when (and only when) the caller's
+    /// event revision is still current.
+    pub(crate) fn session_message_projection_at_revision(
+        &self,
+        expected_state_revision: u64,
+        source: AgentSource,
+        session_id: Option<&str>,
+    ) -> Result<RevisionChecked<SessionMessageProjection>> {
+        self.read_projection_at_revision(expected_state_revision, |connection| {
+            session_message_projection_in_connection(connection, source, session_id)
+        })
     }
 
     pub fn first_session_message_for_role(
@@ -1124,7 +2135,9 @@ impl Database {
         session_id: Option<&str>,
         role: Option<&str>,
     ) -> Result<Option<AgentEvent>> {
-        self.session_message_for_role(source, session_id, role, false)
+        Ok(self
+            .session_message_for_role(source, session_id, role, false)?
+            .map(|sequenced| sequenced.event))
     }
 
     fn session_message_for_role(
@@ -1133,66 +2146,9 @@ impl Database {
         session_id: Option<&str>,
         role: Option<&str>,
         newest_first: bool,
-    ) -> Result<Option<AgentEvent>> {
+    ) -> Result<Option<SequencedAgentEvent>> {
         let connection = self.open()?;
-        let session_id = normalized_session_id(session_id);
-        let query = if newest_first {
-            r#"
-            SELECT external_event_id, source, project_path, session_id, event_type,
-                   title, detail, payload_json, created_at
-            FROM agent_events
-            WHERE source = ?1 AND session_key = ?2
-            ORDER BY created_at DESC, row_id DESC
-            "#
-        } else {
-            r#"
-            SELECT external_event_id, source, project_path, session_id, event_type,
-                   title, detail, payload_json, created_at
-            FROM agent_events
-            WHERE source = ?1 AND session_key = ?2
-            ORDER BY created_at ASC, row_id ASC
-            "#
-        };
-        let mut statement = connection.prepare(query)?;
-        let rows = statement.query_map(
-            params![
-                enum_name(source),
-                normalized_session_key(session_id.as_deref())
-            ],
-            |row| {
-                let source: String = row.get(1)?;
-                let event_type: String = row.get(4)?;
-                let payload_json: String = row.get(7)?;
-                Ok(AgentEvent {
-                    id: row.get(0)?,
-                    source: enum_from_name(&source).map_err(to_sql_error)?,
-                    project_path: row.get(2)?,
-                    session_id: row.get(3)?,
-                    event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
-                    title: row.get(5)?,
-                    detail: row.get(6)?,
-                    payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
-                    created_at: row.get(8)?,
-                })
-            },
-        )?;
-        for row in rows {
-            let event = row?;
-            let payload_role = event
-                .payload_json
-                .get("message_role")
-                .and_then(serde_json::Value::as_str);
-            if role.is_none_or(|role| payload_role == Some(role))
-                && event
-                    .payload_json
-                    .get("message_content")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|message| !message.trim().is_empty())
-            {
-                return Ok(Some(event));
-            }
-        }
-        Ok(None)
+        session_message_for_role_in_connection(&connection, source, session_id, role, newest_first)
     }
 
     pub fn prune_events(&self, policy: EventRetentionPolicy) -> Result<usize> {
@@ -1509,6 +2465,58 @@ impl Database {
                 generation_job_from_row,
             )
             .optional()
+            .map_err(Into::into)
+    }
+
+    /// Returns the most recently updated generation job regardless of whether
+    /// it already produced a pet. Failed and canceled create jobs intentionally
+    /// have no `result_pet_id`, so they cannot be recovered through
+    /// `generation_job_for_pet` after the desktop App restarts.
+    pub fn latest_generation_job(&self) -> Result<Option<GenerationJobRecord>> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                r#"
+                SELECT id, status, form_json, session_id, job_dir, result_pet_id,
+                       retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                FROM generation_jobs
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                "#,
+                [],
+                generation_job_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Returns a newest-first, bounded job projection for one logical pet.
+    /// Callers commonly request one extra row to derive a `truncated` flag.
+    pub fn generation_jobs_for_pet(
+        &self,
+        pet_id: &str,
+        limit: usize,
+    ) -> Result<Vec<GenerationJobRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = limit.min(MAX_GENERATION_HISTORY_QUERY_LIMIT);
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, status, form_json, session_id, job_dir, result_pet_id,
+                   retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+            FROM generation_jobs
+            WHERE result_pet_id = ?1
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?2
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![pet_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+            generation_job_from_row,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
@@ -1878,6 +2886,8 @@ impl Database {
                     .map_err(to_sql_error)?,
                 generator: row.get(9)?,
                 provenance: row.get(10)?,
+                revision_id: None,
+                revision_count: 0,
                 active: row.get::<_, i64>(11)? == 1,
                 created_at: row.get(12)?,
             })
@@ -1913,6 +2923,8 @@ impl Database {
                             .map_err(to_sql_error)?,
                         generator: row.get(9)?,
                         provenance: row.get(10)?,
+                        revision_id: None,
+                        revision_count: 0,
                         active: row.get::<_, i64>(11)? == 1,
                         created_at: row.get(12)?,
                     })
@@ -2050,6 +3062,244 @@ impl Database {
     }
 }
 
+fn state_revision_in_connection(connection: &Connection) -> Result<u64> {
+    let revision = connection.query_row(
+        "SELECT revision FROM state_revision WHERE singleton = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    u64::try_from(revision).map_err(|_| {
+        PetCoreError::Validation("state revision must be a non-negative integer".to_string())
+    })
+}
+
+fn recent_events_in_connection(connection: &Connection, limit: usize) -> Result<Vec<AgentEvent>> {
+    let limit = limit.min(MAX_RECENT_EVENTS);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(
+        r#"
+        SELECT external_event_id, source, project_path, session_id, event_type,
+               title, detail, payload_json, created_at
+        FROM agent_events
+        ORDER BY created_at DESC, row_id DESC
+        LIMIT ?1
+        "#,
+    )?;
+    let rows = statement.query_map(params![limit as i64], |row| agent_event_from_row(row, 0))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn session_message_projection_in_connection(
+    connection: &Connection,
+    source: AgentSource,
+    session_id: Option<&str>,
+) -> Result<SessionMessageProjection> {
+    let session_id = normalized_session_id(session_id);
+    let mut statement = connection.prepare(
+        r#"
+        SELECT row_id, external_event_id, source, project_path, session_id, event_type,
+               title, detail, payload_json, created_at
+        FROM agent_events
+        WHERE source = ?1 AND session_key = ?2
+        ORDER BY created_at DESC, row_id DESC
+        "#,
+    )?;
+    let rows = statement.query_map(
+        params![
+            enum_name(source),
+            normalized_session_key(session_id.as_deref())
+        ],
+        sequenced_session_event_from_row,
+    )?;
+    let mut projection = SessionMessageProjection::default();
+    for row in rows {
+        let sequenced = row?;
+        if !event_has_nonempty_message_content(&sequenced.event) {
+            continue;
+        }
+        match sequenced
+            .event
+            .payload_json
+            .get("message_role")
+            .and_then(Value::as_str)
+        {
+            Some("assistant") if projection.latest_assistant.is_none() => {
+                projection.latest_assistant = Some(sequenced);
+            }
+            Some("user") => {
+                if projection.latest_user.is_none() {
+                    projection.latest_user = Some(sequenced.clone());
+                }
+                // Rows are newest-first, so the final matching user row is the
+                // first user message under the existing `(created_at, row_id)`
+                // ordering contract.
+                projection.first_user = Some(sequenced.event);
+            }
+            _ => {}
+        }
+    }
+    Ok(projection)
+}
+
+fn session_message_for_role_in_connection(
+    connection: &Connection,
+    source: AgentSource,
+    session_id: Option<&str>,
+    role: Option<&str>,
+    newest_first: bool,
+) -> Result<Option<SequencedAgentEvent>> {
+    let session_id = normalized_session_id(session_id);
+    let query = if newest_first {
+        r#"
+        SELECT row_id, external_event_id, source, project_path, session_id, event_type,
+               title, detail, payload_json, created_at
+        FROM agent_events
+        WHERE source = ?1 AND session_key = ?2
+        ORDER BY created_at DESC, row_id DESC
+        "#
+    } else {
+        r#"
+        SELECT row_id, external_event_id, source, project_path, session_id, event_type,
+               title, detail, payload_json, created_at
+        FROM agent_events
+        WHERE source = ?1 AND session_key = ?2
+        ORDER BY created_at ASC, row_id ASC
+        "#
+    };
+    let mut statement = connection.prepare(query)?;
+    let rows = statement.query_map(
+        params![
+            enum_name(source),
+            normalized_session_key(session_id.as_deref())
+        ],
+        sequenced_session_event_from_row,
+    )?;
+    for row in rows {
+        let sequenced = row?;
+        let payload_role = sequenced
+            .event
+            .payload_json
+            .get("message_role")
+            .and_then(Value::as_str);
+        if role.is_none_or(|role| payload_role == Some(role))
+            && event_has_nonempty_message_content(&sequenced.event)
+        {
+            return Ok(Some(sequenced));
+        }
+    }
+    Ok(None)
+}
+
+fn sequenced_session_event_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SequencedAgentEvent> {
+    let row_id = row.get::<_, i64>(0)?;
+    Ok(SequencedAgentEvent {
+        source_session_sequence: u64::try_from(row_id).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?,
+        session_activated_at: None,
+        session_first_seen_at: None,
+        latest_terminal_navigation_payload: None,
+        event: agent_event_from_row(row, 1)?,
+    })
+}
+
+fn agent_event_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<AgentEvent> {
+    let source: String = row.get(offset + 1)?;
+    let event_type: String = row.get(offset + 4)?;
+    let payload_json: String = row.get(offset + 7)?;
+    Ok(AgentEvent {
+        id: row.get(offset)?,
+        source: enum_from_name(&source).map_err(to_sql_error)?,
+        project_path: row.get(offset + 2)?,
+        session_id: row.get(offset + 3)?,
+        event_type: enum_from_name(&event_type).map_err(to_sql_error)?,
+        title: row.get(offset + 5)?,
+        detail: row.get(offset + 6)?,
+        payload_json: serde_json::from_str(&payload_json).map_err(to_sql_error)?,
+        created_at: row.get(offset + 8)?,
+    })
+}
+
+fn event_has_nonempty_message_content(event: &AgentEvent) -> bool {
+    event
+        .payload_json
+        .get("message_content")
+        .and_then(Value::as_str)
+        .is_some_and(|message| !message.trim().is_empty())
+}
+
+fn event_arrived_after_turn_terminal(
+    connection: &Connection,
+    event: &AgentEvent,
+    session_key: &str,
+) -> Result<bool> {
+    if matches!(
+        event.event_type,
+        AgentEventType::Done | AgentEventType::Failed
+    ) || event
+        .payload_json
+        .get("diagnostic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || event
+            .payload_json
+            .get("affects_activity")
+            .and_then(Value::as_bool)
+            == Some(false)
+    {
+        return Ok(false);
+    }
+    let Some(turn_id) = event
+        .payload_json
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+
+    let mut statement = connection.prepare(
+        r#"
+        SELECT event_type, payload_json
+        FROM agent_events
+        WHERE source = ?1 AND session_key = ?2
+        ORDER BY row_id DESC
+        "#,
+    )?;
+    let rows = statement.query_map(params![enum_name(event.source), session_key], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (event_type, payload_json) = row?;
+        if !matches!(event_type.as_str(), "done" | "failed") {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        if matches!(
+            payload.get("source_event").and_then(Value::as_str),
+            Some("app_server_activity" | "connection.test")
+        ) {
+            continue;
+        }
+        if payload.get("turn_id").and_then(Value::as_str) == Some(turn_id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn prune_events_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
     policy: EventRetentionPolicy,
@@ -2118,6 +3368,72 @@ fn prune_events_in_transaction(
         )?;
     }
     Ok(rows.len())
+}
+
+fn suppress_agent_session_in_connection(
+    connection: &Connection,
+    source: AgentSource,
+    session_key: &str,
+    reason: &str,
+) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO suppressed_agent_sessions (source, session_key, reason, suppressed_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(source, session_key) DO UPDATE SET
+          reason = excluded.reason,
+          suppressed_at = excluded.suppressed_at
+        "#,
+        params![enum_name(source), session_key, reason, now_rfc3339()],
+    )?;
+    connection.execute(
+        "DELETE FROM agent_events WHERE source = ?1 AND session_key = ?2",
+        params![enum_name(source), session_key],
+    )?;
+    Ok(())
+}
+
+fn agent_session_is_suppressed(
+    connection: &Connection,
+    source: AgentSource,
+    session_key: &str,
+) -> Result<bool> {
+    connection
+        .query_row(
+            r#"
+            SELECT 1
+            FROM suppressed_agent_sessions
+            WHERE source = ?1 AND session_key = ?2
+            "#,
+            params![enum_name(source), session_key],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(Into::into)
+}
+
+fn prune_suppressed_agent_sessions(connection: &Connection) -> Result<()> {
+    connection.execute(
+        r#"
+        DELETE FROM suppressed_agent_sessions
+        WHERE julianday(suppressed_at) < julianday('now', ?1)
+        "#,
+        params![format!("-{} days", SUPPRESSED_AGENT_SESSION_RETENTION_DAYS)],
+    )?;
+    connection.execute(
+        r#"
+        DELETE FROM suppressed_agent_sessions
+        WHERE rowid IN (
+          SELECT rowid
+          FROM suppressed_agent_sessions
+          ORDER BY suppressed_at DESC, rowid DESC
+          LIMIT -1 OFFSET ?1
+        )
+        "#,
+        params![i64::try_from(MAX_SUPPRESSED_AGENT_SESSIONS).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
 }
 
 fn read_behavior_row(connection: &Connection) -> Result<(BehaviorSettings, u64)> {
@@ -2335,4 +3651,532 @@ fn backup_if_exists(source: &Path, destination: &Path) -> Result<()> {
 
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(format!("{}-{suffix}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn message_event(id: &str, role: &str, content: &str, created_at: &str) -> AgentEvent {
+        AgentEvent {
+            id: id.to_string(),
+            source: AgentSource::Opencode,
+            project_path: Some("/tmp/project".to_string()),
+            session_id: Some("session-atomic-display".to_string()),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": id,
+                "source_event": if role == "user" { "message.user" } else { "message.updated" },
+                "message_role": role,
+                "message_content": content,
+                "diagnostic": false,
+                "affects_activity": true
+            }),
+            created_at: created_at.to_string(),
+        }
+    }
+
+    fn connector_event(
+        id: &str,
+        session_id: Option<&str>,
+        source_event: &str,
+        contract_version: Option<&str>,
+        diagnostic: bool,
+        affects_activity: bool,
+    ) -> AgentEvent {
+        AgentEvent {
+            id: id.to_string(),
+            source: AgentSource::Pi,
+            project_path: Some("/tmp/project".to_string()),
+            session_id: session_id.map(ToOwned::to_owned),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": id,
+                "source_event": source_event,
+                "contract_version": contract_version,
+                "diagnostic": diagnostic,
+                "affects_activity": affects_activity
+            }),
+            created_at: "2026-07-20T00:00:00Z".to_string(),
+        }
+    }
+
+    fn matched_projection(
+        result: RevisionChecked<SessionMessageProjection>,
+    ) -> SessionMessageProjection {
+        match result {
+            RevisionChecked::Matched { value, .. } => value,
+            RevisionChecked::Mismatch {
+                expected_revision,
+                actual_revision,
+            } => panic!(
+                "expected matched projection, got revision {actual_revision} instead of {expected_revision}"
+            ),
+        }
+    }
+
+    #[test]
+    fn revision_checked_display_projections_match_one_database_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        for event in [
+            message_event("user-first", "user", "first prompt", "2026-07-20T00:00:00Z"),
+            message_event(
+                "assistant-first",
+                "assistant",
+                "first answer",
+                "2026-07-20T00:00:01Z",
+            ),
+            message_event("user-latest", "user", "next prompt", "2026-07-20T00:00:02Z"),
+            message_event(
+                "assistant-empty",
+                "assistant",
+                "   ",
+                "2026-07-20T00:00:03Z",
+            ),
+            message_event(
+                "assistant-latest",
+                "assistant",
+                "latest answer",
+                "2026-07-20T00:00:04Z",
+            ),
+        ] {
+            assert_eq!(
+                database.insert_event(&event).unwrap(),
+                InsertEventOutcome::Inserted
+            );
+        }
+
+        let revision = database.state_revision().unwrap();
+        let projection = matched_projection(
+            database
+                .session_message_projection_at_revision(
+                    revision,
+                    AgentSource::Opencode,
+                    Some("session-atomic-display"),
+                )
+                .unwrap(),
+        );
+        assert_eq!(
+            projection.latest_assistant.unwrap().event.id,
+            "assistant-latest"
+        );
+        assert_eq!(projection.latest_user.unwrap().event.id, "user-latest");
+        assert_eq!(projection.first_user.unwrap().id, "user-first");
+
+        match database.recent_events_at_revision(revision, 3).unwrap() {
+            RevisionChecked::Matched {
+                state_revision,
+                value,
+            } => {
+                assert_eq!(state_revision, revision);
+                assert_eq!(
+                    value
+                        .iter()
+                        .map(|event| event.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["assistant-latest", "assistant-empty", "user-latest"]
+                );
+            }
+            RevisionChecked::Mismatch { .. } => panic!("revision unexpectedly changed"),
+        }
+    }
+
+    #[test]
+    fn revision_checked_display_projections_return_mismatch_after_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        database
+            .insert_event(&message_event(
+                "before",
+                "user",
+                "before",
+                "2026-07-20T00:00:00Z",
+            ))
+            .unwrap();
+        let old_revision = database.state_revision().unwrap();
+        // Deliberately bypass typed ingestion and add an unreadable payload.
+        // A stale expected revision must short-circuit before either projection
+        // attempts to deserialize this newer row.
+        Connection::open(database.path())
+            .unwrap()
+            .execute(
+                r#"
+                INSERT INTO agent_events
+                  (external_event_id, source, project_path, session_id, session_key,
+                   event_type, title, detail, payload_json, created_at)
+                VALUES (?1, ?2, NULL, ?3, ?3, ?4, ?5, NULL, ?6, ?7)
+                "#,
+                params![
+                    "unreadable-after",
+                    enum_name(AgentSource::Opencode),
+                    "session-atomic-display",
+                    enum_name(AgentEventType::Start),
+                    AgentEventType::Start.zh_label(),
+                    "{not-json",
+                    "2026-07-20T00:00:01Z",
+                ],
+            )
+            .unwrap();
+        let current_revision = database.state_revision().unwrap();
+        assert!(current_revision > old_revision);
+
+        let session_mismatch = database
+            .session_message_projection_at_revision(
+                old_revision,
+                AgentSource::Opencode,
+                Some("session-atomic-display"),
+            )
+            .unwrap();
+        let recent_mismatch = database.recent_events_at_revision(old_revision, 8).unwrap();
+        let assert_mismatch = |expected_revision, actual_revision| {
+            assert_eq!(expected_revision, old_revision);
+            assert_eq!(actual_revision, current_revision);
+        };
+        match session_mismatch {
+            RevisionChecked::Mismatch {
+                expected_revision,
+                actual_revision,
+            } => assert_mismatch(expected_revision, actual_revision),
+            RevisionChecked::Matched { .. } => panic!("stale revision unexpectedly matched"),
+        }
+        match recent_mismatch {
+            RevisionChecked::Mismatch {
+                expected_revision,
+                actual_revision,
+            } => assert_mismatch(expected_revision, actual_revision),
+            RevisionChecked::Matched { .. } => panic!("stale revision unexpectedly matched"),
+        }
+    }
+
+    #[test]
+    fn deferred_projection_transaction_keeps_old_rows_during_concurrent_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        database
+            .insert_event(&message_event(
+                "before",
+                "user",
+                "before",
+                "2026-07-20T00:00:00Z",
+            ))
+            .unwrap();
+
+        let mut connection = database.open().unwrap();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .unwrap();
+        let snapshot_revision = state_revision_in_connection(&transaction).unwrap();
+
+        let writer_database = database.clone();
+        std::thread::spawn(move || {
+            writer_database
+                .insert_event(&message_event(
+                    "concurrent",
+                    "assistant",
+                    "concurrent answer",
+                    "2026-07-20T00:00:01Z",
+                ))
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+
+        let projection = session_message_projection_in_connection(
+            &transaction,
+            AgentSource::Opencode,
+            Some("session-atomic-display"),
+        )
+        .unwrap();
+        assert!(projection.latest_assistant.is_none());
+        assert_eq!(projection.latest_user.unwrap().event.id, "before");
+        assert_eq!(
+            state_revision_in_connection(&transaction).unwrap(),
+            snapshot_revision
+        );
+        transaction.commit().unwrap();
+
+        match database
+            .session_message_projection_at_revision(
+                snapshot_revision,
+                AgentSource::Opencode,
+                Some("session-atomic-display"),
+            )
+            .unwrap()
+        {
+            RevisionChecked::Mismatch {
+                expected_revision,
+                actual_revision,
+            } => {
+                assert_eq!(expected_revision, snapshot_revision);
+                assert!(actual_revision > snapshot_revision);
+            }
+            RevisionChecked::Matched { .. } => panic!("concurrent write was not detected"),
+        }
+    }
+
+    #[test]
+    fn opencode_task_evidence_accepts_only_semantic_terminal_outcomes() {
+        const COMPLETIONS: &[&str] = &[
+            "session.status",
+            "session.error",
+            "session.next.step.ended",
+            "session.next.step.failed",
+        ];
+        let matches = |source_event: &str, event_type: &str, outcome: &str, active: bool| {
+            task_evidence_event_matches(
+                AgentSource::Opencode,
+                COMPLETIONS,
+                source_event,
+                &json!({ "outcome": outcome, "session_active": active }),
+                event_type,
+            )
+        };
+
+        assert!(matches("session.status", "done", "idle", false));
+        assert!(!matches("session.status", "start", "idle", false));
+        assert!(!matches("session.status", "done", "busy", false));
+        assert!(!matches("session.status", "done", "idle", true));
+        assert!(matches(
+            "session.next.step.ended",
+            "done",
+            "completed",
+            false
+        ));
+        assert!(matches(
+            "session.next.step.ended",
+            "failed",
+            "session_failure",
+            false
+        ));
+        assert!(!matches(
+            "session.next.step.ended",
+            "start",
+            "continued",
+            true
+        ));
+        assert!(matches(
+            "session.next.step.failed",
+            "failed",
+            "session_failure",
+            false
+        ));
+        assert!(matches("session.error", "failed", "session_failure", false));
+    }
+
+    #[test]
+    fn connector_evidence_summary_matches_independent_receipt_queries_in_one_projection() {
+        const CURRENT_CONTRACT: &str = "apc.pi-extension.v-test";
+        const STALE_CONTRACT: &str = "apc.pi-extension.v-old";
+        const STARTS: &[&str] = &["input", "agent_start"];
+        const ACTIVITIES: &[&str] = &["tool_call", "tool_execution_start"];
+        const COMPLETIONS: &[&str] = &["tool_execution_end", "agent_settled"];
+
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        for event in [
+            connector_event(
+                "task-start",
+                Some("task-session"),
+                "input",
+                Some(CURRENT_CONTRACT),
+                false,
+                true,
+            ),
+            connector_event(
+                "task-activity",
+                Some("task-session"),
+                "tool_call",
+                Some(CURRENT_CONTRACT),
+                false,
+                true,
+            ),
+            connector_event(
+                "task-completion",
+                Some("task-session"),
+                "tool_execution_end",
+                Some(CURRENT_CONTRACT),
+                false,
+                true,
+            ),
+            connector_event(
+                "current-probe",
+                Some("probe-session"),
+                "connector.probe",
+                Some(CURRENT_CONTRACT),
+                true,
+                false,
+            ),
+            connector_event(
+                "passive-current",
+                Some("passive-session"),
+                "session_start",
+                Some(CURRENT_CONTRACT),
+                false,
+                false,
+            ),
+            connector_event(
+                "newer-stale",
+                Some("stale-session"),
+                "turn_end",
+                Some(STALE_CONTRACT),
+                false,
+                true,
+            ),
+            connector_event(
+                "excluded-newest",
+                Some("diagnostic-session"),
+                "connection.test",
+                Some(STALE_CONTRACT),
+                false,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                database.insert_event(&event).unwrap(),
+                InsertEventOutcome::Inserted
+            );
+        }
+
+        let expected_observed = database
+            .latest_connector_event_receipt_for_contract(AgentSource::Pi, false, CURRENT_CONTRACT)
+            .unwrap();
+        let expected_ordinary = database
+            .latest_connector_ordinary_receipt_for_contract(AgentSource::Pi, CURRENT_CONTRACT)
+            .unwrap();
+        let expected_diagnostic = database
+            .latest_connector_event_receipt_for_contract(AgentSource::Pi, true, CURRENT_CONTRACT)
+            .unwrap();
+        let expected_real_start = STARTS
+            .iter()
+            .filter_map(|source_event| {
+                database
+                    .latest_connector_event_receipt_for_source_event(
+                        AgentSource::Pi,
+                        false,
+                        source_event,
+                    )
+                    .unwrap()
+                    .filter(|receipt| receipt.contract_version.as_deref() == Some(CURRENT_CONTRACT))
+            })
+            .max_by_key(|receipt| receipt.sequence);
+        let expected_task = database
+            .latest_connector_task_receipt_for_contract(
+                AgentSource::Pi,
+                CURRENT_CONTRACT,
+                STARTS,
+                ACTIVITIES,
+                COMPLETIONS,
+            )
+            .unwrap();
+        let latest_current_sequence = [expected_observed.as_ref(), expected_diagnostic.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|receipt| receipt.sequence)
+            .max();
+        let expected_newer_stale = [false, true]
+            .into_iter()
+            .filter_map(|diagnostic| {
+                database
+                    .latest_connector_event_receipt(AgentSource::Pi, diagnostic)
+                    .unwrap()
+                    .filter(|receipt| receipt.contract_version.as_deref() != Some(CURRENT_CONTRACT))
+                    .filter(|receipt| {
+                        latest_current_sequence.is_none_or(|current| receipt.sequence > current)
+                    })
+            })
+            .max_by_key(|receipt| receipt.sequence);
+
+        let summary = database
+            .connector_evidence_summary(
+                AgentSource::Pi,
+                CURRENT_CONTRACT,
+                STARTS,
+                ACTIVITIES,
+                COMPLETIONS,
+            )
+            .unwrap();
+        assert_eq!(summary.observed_receipt, expected_observed);
+        assert_eq!(summary.ordinary_receipt, expected_ordinary);
+        assert_eq!(summary.diagnostic_receipt, expected_diagnostic);
+        assert_eq!(summary.real_start_receipt, expected_real_start);
+        assert_eq!(summary.task_receipt, expected_task);
+        assert_eq!(summary.newer_stale_receipt, expected_newer_stale);
+        assert_eq!(
+            summary
+                .ordinary_receipt
+                .as_ref()
+                .map(|receipt| receipt.source_event.as_str()),
+            Some("tool_execution_end")
+        );
+        assert_eq!(
+            summary
+                .observed_receipt
+                .as_ref()
+                .map(|receipt| receipt.source_event.as_str()),
+            Some("session_start")
+        );
+        assert_eq!(
+            summary
+                .newer_stale_receipt
+                .as_ref()
+                .map(|receipt| receipt.source_event.as_str()),
+            Some("turn_end")
+        );
+
+        database
+            .insert_event(&connector_event(
+                "stale-start-shadows-current",
+                Some("stale-session"),
+                "input",
+                Some(STALE_CONTRACT),
+                false,
+                true,
+            ))
+            .unwrap();
+        assert!(database
+            .connector_evidence_summary(
+                AgentSource::Pi,
+                CURRENT_CONTRACT,
+                STARTS,
+                ACTIVITIES,
+                COMPLETIONS,
+            )
+            .unwrap()
+            .real_start_receipt
+            .is_none());
+
+        database
+            .insert_event(&connector_event(
+                "newest-current",
+                Some("passive-session"),
+                "session_shutdown",
+                Some(CURRENT_CONTRACT),
+                false,
+                false,
+            ))
+            .unwrap();
+        assert!(database
+            .connector_evidence_summary(
+                AgentSource::Pi,
+                CURRENT_CONTRACT,
+                STARTS,
+                ACTIVITIES,
+                COMPLETIONS,
+            )
+            .unwrap()
+            .newer_stale_receipt
+            .is_none());
+    }
 }

@@ -1,4 +1,7 @@
 use image::{ImageBuffer, Rgba};
+use petcore::adapter_contracts::{
+    CLAUDE_HOOKS_CONTRACT_VERSION, OPENCODE_CONTRACT_VERSION, PI_EXTENSION_CONTRACT_VERSION,
+};
 use petcore::connections;
 use petcore::daemon;
 use petcore::db::Database;
@@ -9,9 +12,12 @@ use petcore::petpack::{build_petpack, validate_petpack_path, write_sample_petpac
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{
     AgentEvent, AgentEventType, AgentSource, BehaviorSettings, CheckStatus, FpsProfileName,
-    GenerationForm, GenerationJobStatus, PetSummary, QualityLevel,
+    GenerationForm, GenerationJobStatus, PetSummary, QualityLevel, SessionGroupDisplay,
 };
+use rustix::io::Errno;
+use rustix::process::{getpgrp, test_kill_process_group, Pid};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -60,6 +66,57 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn projected_event_id(value: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"agent-pet-companion/overlay-identity/v1\0");
+    digest.update(b"event\0");
+    digest.update(value.as_bytes());
+    format!("evt-{}", hex::encode(digest.finalize()))
+}
+
+fn wait_for_fixture_process_group(path: &Path) -> Pid {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            if let Some(process_group) = raw
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<i32>().ok())
+                .and_then(Pid::from_raw)
+            {
+                return process_group;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fake App Server did not publish its private process group"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_generation_worker_cleanup(session_path: &Path, process_group: Pid) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let process_group_gone = match test_kill_process_group(process_group) {
+            Err(Errno::SRCH) => true,
+            // Match the production cleanup's fail-closed rule: Darwin can
+            // briefly report EPERM while the group leader is being reaped.
+            // Only ESRCH proves that the complete private group is gone.
+            Ok(()) | Err(_) => false,
+        };
+        if session_path.is_file() && process_group_gone {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "generation worker cleanup did not finish; session_written={}, process_group_gone={process_group_gone}",
+            session_path.is_file()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn assert_matches_petpack_metadata_schema(schema_name: &str, instance: &serde_json::Value) {
     let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../schemas")
@@ -88,6 +145,11 @@ fn write_fake_app_server_script(path: &Path, thread_id: &str) {
     writeln!(
         file,
         r#"#!/bin/sh
+if [ -n "${{APC_FAKE_APP_SERVER_PROCESS_FILE:-}}" ]; then
+  app_server_pgid="$(ps -o pgid= -p "$$")"
+  set -- $app_server_pgid
+  printf '%s %s\n' "$$" "$1" > "$APC_FAKE_APP_SERVER_PROCESS_FILE"
+fi
 while IFS= read -r request; do
   case "$request" in
     *initialize*)
@@ -658,7 +720,65 @@ fn rpc_ingest_deduplicates_and_filters_events() {
     let overlay_events = diagnostic_snapshot["events"].as_array().unwrap();
     assert!(overlay_events
         .iter()
-        .all(|event| event["id"] != "evt_test_diagnostic"));
+        .all(|event| event["id"] != projected_event_id("evt_test_diagnostic")));
+
+    let activity = handle_request(
+        &state,
+        request(json!({
+            "id": "evt_activity_before_metadata",
+            "source": "claude_code",
+            "session_id": "metadata-overlay-session",
+            "event_type": "tool",
+            "title": "执行工具",
+            "payload": {
+                "source_event": "PreToolUse",
+                "affects_activity": true,
+                "session_active": true
+            }
+        })),
+    )
+    .unwrap();
+    assert_eq!(activity["triggered"], true);
+
+    let metadata = handle_request(
+        &state,
+        request(json!({
+            "id": "evt_metadata_after_activity",
+            "source": "claude_code",
+            "session_id": "metadata-overlay-session",
+            "event_type": "start",
+            "title": "配置已变化",
+            "payload": {
+                "source_event": "ConfigChange",
+                "affects_activity": false,
+                "session_active": true
+            }
+        })),
+    )
+    .unwrap();
+    assert_eq!(metadata["inserted"], true);
+    assert_eq!(metadata["triggered"], false);
+
+    let metadata_snapshot = handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("test")),
+            method: "state.snapshot".to_string(),
+            params: json!({}),
+        },
+    )
+    .unwrap();
+    assert_eq!(metadata_snapshot["active_agent_state"]["state"], "tool");
+    assert_eq!(
+        metadata_snapshot["active_agent_state"]["event"]["id"],
+        projected_event_id("evt_activity_before_metadata")
+    );
+    assert!(metadata_snapshot["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["id"] != projected_event_id("evt_metadata_after_activity")));
 
     let recent_with_diagnostic = handle_request(
         &state,
@@ -671,10 +791,398 @@ fn rpc_ingest_deduplicates_and_filters_events() {
     )
     .unwrap();
     let history = recent_with_diagnostic.as_array().unwrap();
-    assert_eq!(history.len(), 4);
+    assert_eq!(history.len(), 6);
     assert!(history
         .iter()
         .any(|event| event["id"] == "evt_test_diagnostic"));
+}
+
+#[test]
+fn connector_receipts_are_source_scoped_and_probe_lookup_survives_later_diagnostics() {
+    let _env_lock = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let agent_home = temp.path().join("agent-home");
+    let fake_cli = temp.path().join("petcore-cli");
+    write_fake_cli(&fake_cli);
+    let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+    let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &fake_cli);
+    let _pi_cli = EnvVarGuard::set("APC_PI_CLI_PATH", temp.path().join("missing-pi"));
+    let paths = AppPaths::new(temp.path().join("app-home"));
+    paths.ensure().unwrap();
+    connections::repair_source_at(&paths, AgentSource::Pi, temp.path()).unwrap();
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+
+    let ingest = |id: &str, source_event: &str, diagnostic: bool, contract_version: &str| {
+        handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!(id)),
+                method: "agent.ingest".to_string(),
+                params: json!({
+                    "id": id,
+                    "source": "pi",
+                    "session_id": "pi-receipt-session",
+                    "event_type": "start",
+                    "title": "连接事件",
+                    "payload": {
+                        "source_event": source_event,
+                        "contract_version": contract_version,
+                        "diagnostic": diagnostic,
+                        "affects_activity": !diagnostic
+                    }
+                }),
+            },
+        )
+        .unwrap();
+    };
+
+    ingest(
+        "evt_pi_ordinary",
+        "turn_start",
+        false,
+        PI_EXTENSION_CONTRACT_VERSION,
+    );
+    ingest(
+        "evt_pi_probe",
+        "connector.probe",
+        true,
+        PI_EXTENSION_CONTRACT_VERSION,
+    );
+    ingest(
+        "evt_pi_later_diagnostic",
+        "session_shutdown",
+        true,
+        PI_EXTENSION_CONTRACT_VERSION,
+    );
+    ingest(
+        "evt_pi_stale_ordinary",
+        "turn_end",
+        false,
+        "pi-extension-stale",
+    );
+    ingest(
+        "evt_pi_stale_probe",
+        "connector.probe",
+        true,
+        "pi-extension-stale",
+    );
+    handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("other-session-followup")),
+            method: "agent.ingest".to_string(),
+            params: json!({
+                "id": "evt_pi_other_session_followup",
+                "source": "pi",
+                "session_id": "pi-other-session",
+                "event_type": "done",
+                "title": "连接事件",
+                "payload": {
+                    "source_event": "agent_settled",
+                    "contract_version": PI_EXTENSION_CONTRACT_VERSION,
+                    "diagnostic": false
+                }
+            }),
+        },
+    )
+    .unwrap();
+
+    let probe = state
+        .database
+        .latest_connector_probe_receipt_for_contract(AgentSource::Pi, PI_EXTENSION_CONTRACT_VERSION)
+        .unwrap()
+        .unwrap();
+    assert_eq!(probe.source_event, "connector.probe");
+    assert_eq!(
+        probe.contract_version.as_deref(),
+        Some(PI_EXTENSION_CONTRACT_VERSION)
+    );
+    assert!(state
+        .database
+        .connector_event_was_received(
+            AgentSource::Pi,
+            "pi-receipt-session",
+            "connector.probe",
+            true,
+            PI_EXTENSION_CONTRACT_VERSION,
+        )
+        .unwrap());
+    assert!(!state
+        .database
+        .connector_event_was_received(
+            AgentSource::Pi,
+            "different-concurrent-probe",
+            "connector.probe",
+            true,
+            PI_EXTENSION_CONTRACT_VERSION,
+        )
+        .unwrap());
+
+    let receipts = handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("receipts")),
+            method: "connections.receipts".to_string(),
+            params: json!({}),
+        },
+    )
+    .unwrap();
+    let pi = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["source"] == "pi")
+        .unwrap();
+    assert_eq!(pi["ordinary"]["current"], true);
+    assert_eq!(
+        pi["ordinary"]["receipt"]["contract_version"],
+        PI_EXTENSION_CONTRACT_VERSION
+    );
+    assert_eq!(pi["ordinary"]["receipt"]["diagnostic"], false);
+    assert_eq!(
+        pi["latest_observed"]["ordinary"]["contract_version"],
+        PI_EXTENSION_CONTRACT_VERSION
+    );
+    assert_eq!(
+        pi["latest_observed"]["diagnostic"]["contract_version"],
+        "pi-extension-stale"
+    );
+    assert_eq!(
+        pi["diagnostic"]["receipt"]["source_event"],
+        "session_shutdown"
+    );
+    assert!(
+        pi["task"].is_null(),
+        "a task start and an unrelated-session terminal must not pass"
+    );
+
+    ingest(
+        "evt_pi_task_activity",
+        "tool_execution_start",
+        false,
+        PI_EXTENSION_CONTRACT_VERSION,
+    );
+
+    ingest(
+        "evt_pi_task_completion",
+        "agent_settled",
+        false,
+        PI_EXTENSION_CONTRACT_VERSION,
+    );
+    let receipts = handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("task-receipts")),
+            method: "connections.receipts".to_string(),
+            params: json!({}),
+        },
+    )
+    .unwrap();
+    let pi = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["source"] == "pi")
+        .unwrap();
+    assert_eq!(pi["task"]["current"], true);
+    assert_eq!(pi["task"]["receipt"]["start"]["source_event"], "turn_start");
+    assert_eq!(
+        pi["task"]["receipt"]["activity"]["source_event"],
+        "tool_execution_start"
+    );
+    assert_eq!(
+        pi["task"]["receipt"]["completion"]["source_event"],
+        "agent_settled"
+    );
+}
+
+#[test]
+fn passive_connector_events_do_not_satisfy_ordinary_event_seen() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+
+    let insert = |id: &str,
+                  source: AgentSource,
+                  session_id: &str,
+                  event_type: AgentEventType,
+                  source_event: &str,
+                  contract_version: &str,
+                  diagnostic: bool,
+                  affects_activity: bool| {
+        database
+            .insert_event(&AgentEvent {
+                id: id.to_string(),
+                source,
+                project_path: None,
+                session_id: Some(session_id.to_string()),
+                event_type,
+                title: event_type.zh_label().to_string(),
+                detail: None,
+                payload_json: json!({
+                    "source_event": source_event,
+                    "contract_version": contract_version,
+                    "diagnostic": diagnostic,
+                    "affects_activity": affects_activity,
+                    "session_active": matches!(
+                        event_type,
+                        AgentEventType::Start
+                            | AgentEventType::Tool
+                            | AgentEventType::Waiting
+                            | AgentEventType::Review
+                    )
+                }),
+                created_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
+            })
+            .unwrap();
+    };
+
+    insert(
+        "evt_claude_passive_start",
+        AgentSource::ClaudeCode,
+        "claude-passive-start",
+        AgentEventType::Start,
+        "SessionStart",
+        CLAUDE_HOOKS_CONTRACT_VERSION,
+        false,
+        false,
+    );
+    // Defense in depth: even an old/malformed payload that marks a pure close
+    // edge active cannot become ordinary task evidence.
+    insert(
+        "evt_claude_passive_end",
+        AgentSource::ClaudeCode,
+        "claude-passive-end",
+        AgentEventType::Done,
+        "SessionEnd",
+        CLAUDE_HOOKS_CONTRACT_VERSION,
+        false,
+        true,
+    );
+    assert!(database
+        .latest_connector_ordinary_receipt_for_contract(
+            AgentSource::ClaudeCode,
+            CLAUDE_HOOKS_CONTRACT_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+    insert(
+        "evt_opencode_passive_created",
+        AgentSource::Opencode,
+        "opencode-passive-created",
+        AgentEventType::Start,
+        "session.created",
+        OPENCODE_CONTRACT_VERSION,
+        false,
+        false,
+    );
+    insert(
+        "evt_opencode_passive_deleted",
+        AgentSource::Opencode,
+        "opencode-passive-deleted",
+        AgentEventType::Done,
+        "session.deleted",
+        OPENCODE_CONTRACT_VERSION,
+        false,
+        true,
+    );
+    for (id, event_type, source_event) in [
+        (
+            "evt_opencode_close_only_idle",
+            AgentEventType::Done,
+            "session.idle",
+        ),
+        (
+            "evt_opencode_close_only_status",
+            AgentEventType::Done,
+            "session.status",
+        ),
+        (
+            "evt_opencode_close_only_error",
+            AgentEventType::Failed,
+            "session.error",
+        ),
+    ] {
+        insert(
+            id,
+            AgentSource::Opencode,
+            id,
+            event_type,
+            source_event,
+            OPENCODE_CONTRACT_VERSION,
+            false,
+            true,
+        );
+    }
+    assert!(database
+        .latest_connector_ordinary_receipt_for_contract(
+            AgentSource::Opencode,
+            OPENCODE_CONTRACT_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+    insert(
+        "evt_pi_passive_shutdown",
+        AgentSource::Pi,
+        "pi-passive-shutdown",
+        AgentEventType::Done,
+        "session_shutdown",
+        PI_EXTENSION_CONTRACT_VERSION,
+        false,
+        true,
+    );
+    assert!(database
+        .latest_connector_ordinary_receipt_for_contract(
+            AgentSource::Pi,
+            PI_EXTENSION_CONTRACT_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+    insert(
+        "evt_opencode_diagnostic_message",
+        AgentSource::Opencode,
+        "opencode-diagnostic-message",
+        AgentEventType::Start,
+        "message.user",
+        OPENCODE_CONTRACT_VERSION,
+        true,
+        true,
+    );
+    assert!(database
+        .latest_connector_ordinary_receipt_for_contract(
+            AgentSource::Opencode,
+            OPENCODE_CONTRACT_VERSION,
+        )
+        .unwrap()
+        .is_none());
+
+    insert(
+        "evt_opencode_ordinary_message",
+        AgentSource::Opencode,
+        "opencode-ordinary-message",
+        AgentEventType::Start,
+        "message.user",
+        OPENCODE_CONTRACT_VERSION,
+        false,
+        true,
+    );
+    let ordinary = database
+        .latest_connector_ordinary_receipt_for_contract(
+            AgentSource::Opencode,
+            OPENCODE_CONTRACT_VERSION,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ordinary.source_event, "message.user");
+    assert!(!ordinary.diagnostic);
 }
 
 #[test]
@@ -827,6 +1335,16 @@ fn agent_event_ingest_accepts_payload_json_alias() {
 }
 
 #[test]
+fn behavior_settings_default_serializes_stacked_session_group_display() {
+    let behavior = BehaviorSettings::default();
+    assert_eq!(behavior.session_group_display, SessionGroupDisplay::Stacked);
+    assert_eq!(
+        serde_json::to_value(behavior).unwrap()["session_group_display"],
+        "stacked"
+    );
+}
+
+#[test]
 fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     let legacy = json!({
         "enabled": true,
@@ -847,6 +1365,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     assert!(decoded.click_menu);
     assert!(decoded.mouse_passthrough);
     assert!(!decoded.auto_hide);
+    assert_eq!(decoded.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(decoded.fps_profile, FpsProfileName::Standard);
     assert_eq!(decoded.sources.get(&AgentSource::Codex), Some(&false));
     assert_eq!(decoded.sources.get(&AgentSource::ClaudeCode), Some(&true));
@@ -866,6 +1385,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
         petcore_types::AppearanceTheme::System
     );
     assert!(stored.mouse_passthrough);
+    assert_eq!(stored.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(stored.sources.get(&AgentSource::Codex), Some(&false));
     assert_eq!(stored.sources.get(&AgentSource::ClaudeCode), Some(&true));
     assert_eq!(stored.events.get(&AgentEventType::Tool), Some(&false));
@@ -1082,10 +1602,10 @@ fn snapshot_separates_overlay_events_from_recent_agent_history() {
     let recent_events = snapshot["recent_events"].as_array().unwrap();
     assert!(recent_events
         .iter()
-        .any(|event| event["id"] == "evt_recent_history_real"));
+        .any(|event| event["id"] == projected_event_id("evt_recent_history_real")));
     assert!(!recent_events
         .iter()
-        .any(|event| event["id"] == "evt_recent_history_diagnostic"));
+        .any(|event| event["id"] == projected_event_id("evt_recent_history_diagnostic")));
 }
 
 #[test]
@@ -1148,7 +1668,7 @@ fn state_wait_returns_snapshot_when_revision_changes() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|event| event["id"] == "evt_state_wait"));
+        .any(|event| event["id"] == projected_event_id("evt_state_wait")));
 }
 
 #[test]
@@ -1289,7 +1809,10 @@ fn snapshot_expires_old_overlay_events_without_deleting_history() {
     assert_eq!(waiting["triggered"], true);
 
     let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
-    assert_eq!(snapshot["events"][0]["id"], "evt_current_waiting");
+    assert_eq!(
+        snapshot["events"][0]["id"],
+        projected_event_id("evt_current_waiting")
+    );
 
     let done = handle_request(
         &state,
@@ -1307,7 +1830,10 @@ fn snapshot_expires_old_overlay_events_without_deleting_history() {
     assert_eq!(done["triggered"], true);
 
     let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
-    assert_eq!(snapshot["events"][0]["id"], "evt_current_done");
+    assert_eq!(
+        snapshot["events"][0]["id"],
+        projected_event_id("evt_current_done")
+    );
 }
 
 #[test]
@@ -1382,11 +1908,11 @@ fn snapshot_overlay_events_keep_only_latest_message_per_agent() {
     let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
     let events = snapshot["events"].as_array().unwrap();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0]["id"], "evt_codex_new_session");
-    assert_eq!(events[1]["id"], "evt_claude_current");
+    assert_eq!(events[0]["id"], projected_event_id("evt_codex_new_session"));
+    assert_eq!(events[1]["id"], projected_event_id("evt_claude_current"));
     assert!(events
         .iter()
-        .all(|event| event["id"] != "evt_codex_old_session"));
+        .all(|event| event["id"] != projected_event_id("evt_codex_old_session")));
 }
 
 #[test]
@@ -1445,7 +1971,7 @@ fn snapshot_does_not_restore_old_work_event_after_terminal_expires() {
     assert!(
         events
             .iter()
-            .all(|event| event["id"] != "evt_session_waiting_before_done"),
+            .all(|event| { event["id"] != projected_event_id("evt_session_waiting_before_done") }),
         "expired terminal event should close the session instead of restoring old work: {events:?}"
     );
 }
@@ -1503,15 +2029,16 @@ fn snapshot_overlay_events_survive_diagnostic_noise() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|event| event["id"] == "evt_real_survives_diagnostics"));
+        .any(|event| event["id"] == projected_event_id("evt_real_survives_diagnostics")));
     assert!(snapshot["recent_events"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|event| !event["id"]
-            .as_str()
-            .unwrap_or("")
-            .starts_with("evt_diagnostic_noise_")));
+        .all(|event| {
+            (0..64).all(|index| {
+                event["id"] != projected_event_id(&format!("evt_diagnostic_noise_{index}"))
+            })
+        }));
 }
 
 #[test]
@@ -2060,7 +2587,10 @@ fn http_agent_events_require_capability_token() {
     assert_eq!(recent[0]["source"], "codex");
     assert_eq!(recent[0]["event_type"], "tool");
     let snapshot = daemon::request(&paths, "state.snapshot", json!({})).unwrap();
-    assert_eq!(snapshot["events"][0]["id"], "evt_http_token");
+    assert_eq!(
+        snapshot["events"][0]["id"],
+        projected_event_id("evt_http_token")
+    );
 
     std::fs::remove_file(&paths.token_path).unwrap();
     let (stale_status, stale_body) = http_post_agent_event(port, Some(&token), &event);
@@ -2134,8 +2664,16 @@ fn launch_agent_plist_can_be_installed_and_uninstalled_without_loading() {
     let launch_agents_dir = temp.path().join("LaunchAgents");
     let program = temp.path().join("bin/petcore");
     let home = temp.path().join("home");
+    let user_home = temp.path().join("user-home");
+    let pi_config = temp.path().join("pi-agent");
+    let claude_cli = temp.path().join("bin/claude");
     let _launch_dir = EnvVarGuard::set("APC_LAUNCH_AGENT_DIR", &launch_agents_dir);
     let _skip_launchctl = EnvVarGuard::set("APC_SKIP_LAUNCHCTL", "1");
+    let _user_home = EnvVarGuard::set("HOME", &user_home);
+    let _pi_config = EnvVarGuard::set("PI_CODING_AGENT_DIR", &pi_config);
+    let _claude_cli = EnvVarGuard::set("APC_CLAUDE_CLI_PATH", &claude_cli);
+    let _relative_pi_cli = EnvVarGuard::set("APC_PI_CLI_PATH", "relative/pi");
+    let _relative_opencode = EnvVarGuard::set("OPENCODE_CONFIG_DIR", "relative/opencode");
 
     let config = LaunchAgentConfig::new(program.clone(), home.clone());
     let plist = config.plist_xml();
@@ -2145,6 +2683,16 @@ fn launch_agent_plist_can_be_installed_and_uninstalled_without_loading() {
     assert!(plist.contains("<key>KeepAlive</key>"));
     assert!(plist.contains(&format!("<string>{}</string>", program.display())));
     assert!(plist.contains(&format!("<string>{}</string>", home.display())));
+    assert!(plist.contains("<key>HOME</key>"));
+    assert!(plist.contains(&format!("<string>{}</string>", user_home.display())));
+    assert!(plist.contains("<key>PI_CODING_AGENT_DIR</key>"));
+    assert!(plist.contains(&format!("<string>{}</string>", pi_config.display())));
+    assert!(plist.contains("<key>APC_CLAUDE_CLI_PATH</key>"));
+    assert!(plist.contains(&format!("<string>{}</string>", claude_cli.display())));
+    assert!(plist.contains(&user_home.join(".opencode/bin").display().to_string()));
+    assert!(plist.contains(&user_home.join(".volta/bin").display().to_string()));
+    assert!(!plist.contains("relative/opencode"));
+    assert!(!plist.contains("relative/pi"));
 
     let installed = launch_agent::install(&config, false).unwrap();
     assert_eq!(installed.label, launch_agent::DEFAULT_LABEL);
@@ -2629,12 +3177,21 @@ fn generation_fails_when_all_reference_images_are_unusable() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
+    let app_server_process_file = temp.path().join("app-server-must-not-start");
     write_fake_app_server_script(&fake_app_server, "thread_fake_unusable_reference");
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
+    let _process_file = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_PROCESS_FILE",
+        app_server_process_file.as_os_str(),
+    );
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
-    let missing_reference = temp.path().join("missing-reference.png");
+    let missing_reference = temp
+        .path()
+        .join("TOP_SECRET_REFERENCE_TOKEN")
+        .join("private-customer-name.png");
+    let missing_reference_path = missing_reference.display().to_string();
 
     let start = handle_request(
         &state,
@@ -2646,7 +3203,7 @@ fn generation_fails_when_all_reference_images_are_unusable() {
                 "description": "需要参考图的宠物。",
                 "style": "半写实",
                 "quality": "high",
-                "reference_images": [missing_reference.display().to_string()]
+                "reference_images": [missing_reference_path.clone()]
             }),
         },
     )
@@ -2654,7 +3211,7 @@ fn generation_fails_when_all_reference_images_are_unusable() {
     let job_id = start["job_id"].as_str().unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    let failure_content = loop {
         let messages = handle_request(
             &state,
             RpcRequest {
@@ -2665,27 +3222,47 @@ fn generation_fails_when_all_reference_images_are_unusable() {
             },
         )
         .unwrap();
-        let failed = messages.as_array().unwrap().iter().any(|message| {
-            message["content"]
-                .as_str()
-                .unwrap_or("")
-                .contains("参考图不可用")
-        });
-        if failed {
-            break;
+        if let Some(content) = messages.as_array().unwrap().iter().find_map(|message| {
+            (message["kind"].as_str() == Some("generation_failed"))
+                .then(|| message["content"].as_str().unwrap_or_default().to_string())
+        }) {
+            break content;
         }
         assert!(
             Instant::now() < deadline,
             "generation did not report unusable reference image"
         );
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
 
     assert_eq!(
         state.database.generation_job_status(job_id).unwrap(),
         Some(GenerationJobStatus::Failed)
     );
     assert!(state.database.list_pets().unwrap().is_empty());
+    assert!(failure_content.contains("参考图 #1"), "{failure_content}");
+    assert!(
+        !failure_content.contains("TOP_SECRET_REFERENCE_TOKEN"),
+        "{failure_content}"
+    );
+    assert!(
+        !failure_content.contains("private-customer-name"),
+        "{failure_content}"
+    );
+    assert!(
+        !failure_content.contains(&missing_reference_path),
+        "{failure_content}"
+    );
+    assert!(
+        !app_server_process_file.exists(),
+        "App Server started before reference-image staging failed"
+    );
+    assert!(!state
+        .paths
+        .jobs_dir
+        .join(job_id)
+        .join("app_server_session.json")
+        .exists());
 }
 
 #[test]
@@ -2799,9 +3376,12 @@ fn generation_reply_is_rejected_while_job_is_running() {
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-app-server-complete");
+    let process_file = temp.path().join("fake-app-server-process");
     write_fake_app_server_script(&fake_app_server, "thread_fake_running_reply");
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
     let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
+    let _process_file =
+        EnvVarGuard::set("APC_FAKE_APP_SERVER_PROCESS_FILE", process_file.as_os_str());
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
@@ -2884,6 +3464,17 @@ fn generation_reply_is_rejected_while_job_is_running() {
             .contains("这条运行中回复不能静默记录")
     }));
 
+    let process_group = wait_for_fixture_process_group(&process_file);
+    assert_ne!(
+        process_group,
+        getpgrp(),
+        "fake App Server must not share the test runner's process group"
+    );
+    assert!(
+        test_kill_process_group(process_group).is_ok(),
+        "fake App Server process group exited before cancellation"
+    );
+
     handle_request(
         &state,
         RpcRequest {
@@ -2894,7 +3485,16 @@ fn generation_reply_is_rejected_while_job_is_running() {
         },
     )
     .unwrap();
-    std::fs::write(&wait_file, "ok").unwrap();
+
+    let app_server_session = state
+        .paths
+        .jobs_dir
+        .join(job_id)
+        .join("app_server_session.json");
+    wait_for_generation_worker_cleanup(&app_server_session, process_group);
+    let session: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(app_server_session).unwrap()).unwrap();
+    assert_eq!(session["error"], "generation canceled");
 }
 
 #[test]
@@ -3824,7 +4424,8 @@ fn repair_generates_real_pi_and_opencode_connectors() {
     let claude_status = connections::repair_source(&paths, AgentSource::ClaudeCode).unwrap();
     let claude_settings = fake_agent_home.join(".claude").join("settings.json");
     let claude_settings_content = std::fs::read_to_string(&claude_settings).unwrap();
-    assert!(claude_settings_content.contains("agent hook --source claude_code"));
+    assert!(claude_settings_content.contains("agent-pet-companion-hook.sh"));
+    assert!(!claude_settings_content.contains("agent hook --source claude_code"));
     assert!(claude_status
         .items
         .iter()
@@ -3846,20 +4447,34 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .connectors_dir
         .join("claude-code")
         .join("agent-pet-companion-hook.sh");
-    let claude_hook_output = Command::new(&claude_hook_script)
+    let claude_helper_content = std::fs::read_to_string(&claude_hook_script).unwrap();
+    assert!(claude_helper_content.contains("agent hook --source claude_code"));
+    assert!(claude_helper_content.contains("claude-hooks-2026-07-17-activity-v5"));
+    let mut claude_hook_child = Command::new(&claude_hook_script)
         .env("APC_FAKE_CLI_CAPTURE", &capture_path)
-        .env("APC_EVENT_TYPE", "waiting")
-        .env("APC_EVENT_TITLE", "等待确认")
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    claude_hook_child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"sess_claude_helper_v5"}"#,
+        )
+        .unwrap();
+    let claude_hook_output = claude_hook_child.wait_with_output().unwrap();
     assert!(
         claude_hook_output.status.success(),
         "Claude hook helper failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&claude_hook_output.stdout),
         String::from_utf8_lossy(&claude_hook_output.stderr)
     );
-    let claude_helper_capture = wait_for_capture(&capture_path, "--event-type waiting");
+    let claude_helper_capture = wait_for_capture(&capture_path, "sess_claude_helper_v5");
     assert!(claude_helper_capture.contains("--source claude_code"));
+    assert!(claude_helper_capture.contains("--event-type auto"));
 
     let pi_status = connections::repair_source(&paths, AgentSource::Pi).unwrap();
     let pi_extension = fake_agent_home
@@ -3875,7 +4490,7 @@ fn repair_generates_real_pi_and_opencode_connectors() {
     assert!(pi_script.contains("pi.on(\"message_end\""));
     assert!(pi_script.contains("pi.on(\"agent_end\""));
     assert!(pi_script.contains("pi.on(\"session_shutdown\""));
-    assert!(pi_script.contains("session_title: sessionTitle(ctx)"));
+    assert!(pi_script.contains("session_title: sessionTitle(ctx, event)"));
     assert!(pi_script.contains("message_content: message?.content"));
     assert!(pi_script.contains("agent_error: agentError"));
     assert!(pi_script.contains("assistant?.stopReason === \"error\""));
@@ -3974,7 +4589,10 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_script.contains("event: async ({ event })"));
     assert!(opencode_script.contains("\"tool.execute.before\""));
     assert!(opencode_script.contains("\"--event-type\", \"auto\""));
-    assert!(opencode_script.contains("output?.args"));
+    assert!(!opencode_script.contains("output?.args"));
+    assert!(opencode_script.contains("\"permission.ask\""));
+    assert!(opencode_script.contains("\"command.execute.before\""));
+    assert!(opencode_script.contains("type: \"connector.probe\""));
     assert!(!opencode_script.contains("session.done"));
     assert!(!opencode_script.contains("tool.execute.failed"));
     assert!(opencode_status
@@ -4022,8 +4640,20 @@ await plugin.event({{ event: {{
   properties: {{ part: {{ id: 'opencode-part', messageID: 'opencode-message', sessionID: 'sess_opencode_runtime', type: 'text', text: 'OpenCode runtime assistant response' }} }}
 }} }});
 await plugin.event({{ event: {{
+  type: 'session.status',
+  properties: {{ sessionID: 'sess_opencode_runtime', status: {{ type: 'idle' }} }}
+}} }});
+await plugin.event({{ event: {{
   type: 'session.idle',
   properties: {{ sessionID: 'sess_opencode_runtime' }}
+}} }});
+await plugin.event({{ event: {{
+  type: 'session.idle',
+  properties: {{ sessionID: 'sess_opencode_idle_fallback_runtime' }}
+}} }});
+await plugin.event({{ event: {{
+  type: 'session.deleted',
+  properties: {{ info: {{ id: 'sess_opencode_deleted_runtime' }} }}
 }} }});
 await plugin['tool.execute.before'](
   {{ tool: 'bash', sessionID: 'sess_opencode_runtime', callID: 'secret-call-id' }},
@@ -4043,7 +4673,22 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_capture.contains("OpenCode runtime prompt"));
     assert!(opencode_capture.contains("\"type\":\"message.assistant\""));
     assert!(opencode_capture.contains("OpenCode runtime assistant response"));
-    assert!(opencode_capture.contains("\"type\":\"session.idle\""));
+    assert_eq!(
+        opencode_capture
+            .matches("\"type\":\"session.status\"")
+            .count(),
+        1
+    );
+    assert_eq!(
+        opencode_capture
+            .matches("\"type\":\"session.idle\"")
+            .count(),
+        1,
+        "status(idle) + session.idle must be one edge while idle-only hosts still work"
+    );
+    assert!(opencode_capture.contains("sess_opencode_idle_fallback_runtime"));
+    assert!(opencode_capture.contains("\"type\":\"session.deleted\""));
+    assert!(opencode_capture.contains("\"sessionID\":\"sess_opencode_deleted_runtime\""));
     assert!(!opencode_capture.contains("secret-command"));
 
     let codex_uninstall = connections::uninstall_source(&paths, AgentSource::Codex).unwrap();
@@ -4131,9 +4776,10 @@ fn codex_repair_rejects_symlinked_maker_parents_and_targets() {
             let maker_status = codex_status
                 .items
                 .iter()
-                .find(|item| item.name == "Agent Pet Maker Skill")
+                .find(|item| item.name.starts_with("Agent Pet Maker Skill"))
                 .unwrap();
             assert_eq!(maker_status.status, CheckStatus::NeedsFix);
+            assert!(maker_status.name.ends_with("冲突"));
         }
 
         let error = connections::repair_source(&paths, AgentSource::Codex).unwrap_err();
@@ -4247,7 +4893,7 @@ fn connection_check_reports_event_channel_when_socket_is_reachable() {
 }
 
 #[test]
-fn snapshot_connection_status_does_not_spawn_codex_app_server_probe() {
+fn snapshot_and_inexact_manual_check_do_not_spawn_codex_app_server_probe() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_home = temp.path().join("user-home");
@@ -4341,7 +4987,7 @@ printf '%s\n' '{{"installed":[]}}'
     assert!(app_server_item["detail"]
         .as_str()
         .unwrap()
-        .contains("点击检查验证"));
+        .contains("未启动 Agent 宿主"));
 
     let checked = handle_request(
         &state,
@@ -4354,8 +5000,8 @@ printf '%s\n' '{{"installed":[]}}'
     )
     .unwrap();
     assert!(
-        app_server_marker.exists(),
-        "manual connection check did not probe App Server"
+        !app_server_marker.exists(),
+        "manual connection check loaded App Server before the static connector was exact"
     );
     assert!(
         codex_marker.exists(),
@@ -4363,11 +5009,11 @@ printf '%s\n' '{{"installed":[]}}'
     );
     assert!(checked["items"].as_array().unwrap().iter().any(|item| {
         item["name"] == "Codex App Server"
-            && item["status"] == "ok"
+            && item["status"] == "unverified"
             && item["detail"]
                 .as_str()
                 .unwrap_or("")
-                .contains("stdio 初始化成功")
+                .contains("未启动 Agent 宿主")
     }));
 
     let cached_snapshot = handle_request(
@@ -4462,6 +5108,29 @@ fn snapshot_preserves_cached_runtime_connection_status_when_light_check_is_clean
                 .unwrap_or("")
                 .contains("跳过自动写入自检")
     }));
+
+    let extension = fake_agent_home.join(".pi/agent/extensions/agent-pet-companion.ts");
+    let mut changed = std::fs::read_to_string(&extension).unwrap();
+    changed.push_str("\n// connector changed after the cached runtime check\n");
+    std::fs::write(&extension, changed).unwrap();
+    let stale_snapshot = handle_request(
+        &state,
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("test")),
+            method: "state.snapshot".to_string(),
+            params: json!({}),
+        },
+    )
+    .unwrap();
+    let stale_pi_status = stale_snapshot["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|status| status["source"] == "pi")
+        .unwrap();
+    assert_eq!(stale_pi_status["check_mode"], "light");
+    assert_eq!(stale_pi_status["verification"]["status"], "action_required");
 }
 
 #[test]
@@ -4573,7 +5242,9 @@ done
                 "payload": {
                     "schema_version": "apc.agent-event.v1",
                     "source_event": "PreToolUse",
-                    "session_active": true
+                    "session_active": true,
+                    "session_open": null,
+                    "session_surface": "chatgpt_app"
                 }
             }),
         ),
@@ -4584,12 +5255,19 @@ done
     loop {
         let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
         let active = &snapshot["active_agent_state"];
-        if active["session_title"] == "Current Codex task" {
-            assert_eq!(active["session_message"]["role"], "assistant");
+        if active["overlay_display"]["navigation"]["session_open"] == true {
+            assert!(active["session_id"].as_str().unwrap().starts_with("ses-"));
             assert_eq!(
-                active["session_message"]["content"],
-                "Latest agent response"
+                active["overlay_display"]["navigation"]["surface"],
+                "chatgpt_app"
             );
+            assert_eq!(
+                active["overlay_display"]["navigation"]["routable_session_id"],
+                "019f5a6f-0c52-75e1-b652-004d4487c4ae"
+            );
+            let overlay_json = serde_json::to_string(active).unwrap();
+            assert!(!overlay_json.contains("Current Codex task"));
+            assert!(!overlay_json.contains("Latest agent response"));
             break;
         }
         assert!(

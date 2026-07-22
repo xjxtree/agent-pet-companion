@@ -125,6 +125,61 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
 }
 
 #[test]
+fn opencode_v2_activity_events_are_first_class_allowlisted_lifecycle_names() {
+    for (index, source_event) in [
+        "permission.v2.asked",
+        "permission.v2.replied",
+        "question.v2.asked",
+        "question.v2.replied",
+        "question.v2.rejected",
+        "session.next.prompt.admitted",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let event = NormalizedAgentEvent::from_external(
+            AgentSource::Opencode,
+            json!({
+                "id": format!("opencode-v2-source-event-{index}"),
+                "session_id": "opencode-v2-source-event-session",
+                "event_type": if source_event.ends_with("asked") { "waiting" } else { "start" },
+                "payload": {
+                    "source_event": source_event,
+                    "session_active": true,
+                    "diagnostic": false
+                }
+            }),
+            RECEIVED_AT,
+        )
+        .unwrap();
+
+        assert_eq!(event.payload_json["source_event"], source_event);
+    }
+}
+
+#[test]
+fn opencode_prompt_admitted_outcome_survives_the_envelope_vocabularies() {
+    let event = NormalizedAgentEvent::from_external(
+        AgentSource::Opencode,
+        json!({
+            "id": "opencode-prompt-admitted-outcome",
+            "session_id": "opencode-prompt-admitted-session",
+            "event_type": "start",
+            "payload": {
+                "source_event": "session.next.prompt.admitted",
+                "outcome": "prompt_admitted",
+                "session_active": true,
+                "diagnostic": false
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap();
+
+    assert_eq!(event.payload_json["outcome"], "prompt_admitted");
+}
+
+#[test]
 fn payload_json_alias_is_normalized_through_the_same_closed_vocabularies() {
     let event = NormalizedAgentEvent::from_external(
         AgentSource::ClaudeCode,
@@ -156,6 +211,32 @@ fn payload_json_alias_is_normalized_through_the_same_closed_vocabularies() {
     let record = serde_json::to_string(&event).unwrap();
     assert!(!record.contains("RAW_TITLE_ALIAS_SENTINEL"));
     assert!(!record.contains("RAW_DETAIL_ALIAS_SENTINEL"));
+}
+
+#[test]
+fn diagnostic_events_always_normalize_to_non_activity_metadata() {
+    for supplied in [None, Some(true), Some(false)] {
+        let mut payload = json!({
+            "source_event": "connection.test",
+            "diagnostic": true
+        });
+        if let Some(value) = supplied {
+            payload["affects_activity"] = json!(value);
+        }
+        let event = NormalizedAgentEvent::from_external(
+            AgentSource::Codex,
+            json!({
+                "id": format!("diagnostic-{supplied:?}"),
+                "event_type": "tool",
+                "payload": payload
+            }),
+            RECEIVED_AT,
+        )
+        .unwrap();
+
+        assert_eq!(event.payload_json["diagnostic"], true);
+        assert_eq!(event.payload_json["affects_activity"], false);
+    }
 }
 
 #[test]
@@ -383,6 +464,129 @@ fn null_and_empty_sessions_share_a_stable_deduplication_namespace() {
         database.insert_event(&empty).unwrap(),
         InsertEventOutcome::Duplicate
     );
+}
+
+#[test]
+fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    let session_id = "019f6ed7-de50-7623-8462-6a857e367a96";
+
+    let session_start = AgentEvent {
+        id: "internal-session-start".to_string(),
+        source: AgentSource::Codex,
+        project_path: None,
+        session_id: Some(session_id.to_string()),
+        event_type: AgentEventType::Start,
+        title: AgentEventType::Start.zh_label().to_string(),
+        detail: None,
+        payload_json: json!({
+            "source_event": "SessionStart",
+            "session_active": false,
+            "diagnostic": false
+        }),
+        created_at: RECEIVED_AT.to_string(),
+    };
+    assert_eq!(
+        database.insert_event(&session_start).unwrap(),
+        InsertEventOutcome::Inserted
+    );
+
+    let internal_prompt = AgentEvent {
+        id: "internal-user-prompt".to_string(),
+        source: AgentSource::Codex,
+        project_path: None,
+        session_id: Some(session_id.to_string()),
+        event_type: AgentEventType::Start,
+        title: AgentEventType::Start.zh_label().to_string(),
+        detail: None,
+        payload_json: json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "message_role": "user",
+            "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+            "diagnostic": false
+        }),
+        created_at: RECEIVED_AT.to_string(),
+    };
+    assert_eq!(
+        database.insert_event(&internal_prompt).unwrap(),
+        InsertEventOutcome::Suppressed
+    );
+    assert!(database.recent_events(10).unwrap().is_empty());
+
+    let later_tool = strict_event(
+        "internal-later-tool",
+        AgentSource::Codex,
+        Some(session_id),
+        RECEIVED_AT,
+    );
+    assert_eq!(
+        database.insert_event(&later_tool).unwrap(),
+        InsertEventOutcome::Suppressed
+    );
+    let marker_count: i64 = Connection::open(database.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM suppressed_agent_sessions WHERE source = 'codex' AND session_key = ?1",
+            params![format!("1:{session_id}")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker_count, 1);
+}
+
+#[test]
+fn schema_upgrade_scrubs_historical_internal_codex_suggestion_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    let session_id = "019f6ed2-390b-7fd2-b6a7-d9ffaa5acc23";
+    {
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_events
+                  (external_event_id, source, project_path, session_id, session_key,
+                   event_type, title, detail, payload_json, created_at)
+                VALUES (?1, 'codex', NULL, ?2, ?2, 'start', '开始处理', NULL, ?3, ?4)
+                "#,
+                params![
+                    "historical-internal-prompt",
+                    session_id,
+                    serde_json::to_string(&json!({
+                        "source_event": "UserPromptSubmit",
+                        "session_active": true,
+                        "message_role": "user",
+                        "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+                        "diagnostic": false
+                    }))
+                    .unwrap(),
+                    RECEIVED_AT
+                ],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 4).unwrap();
+    }
+
+    database.init().unwrap();
+
+    assert!(database.recent_events(10).unwrap().is_empty());
+    let connection = Connection::open(database.path()).unwrap();
+    let marker_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM suppressed_agent_sessions WHERE source = 'codex' AND session_key = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker_count, 1);
+    let schema_version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(schema_version, petcore::db::DATABASE_SCHEMA_VERSION);
 }
 
 #[test]
@@ -661,6 +865,8 @@ fn state_revision_changes_for_every_client_visible_pet_field() {
         origin: PetOrigin::ExternalImport,
         generator: None,
         provenance: None,
+        revision_id: None,
+        revision_count: 0,
         active: false,
         created_at: "2026-07-01T00:00:00Z".to_string(),
     };

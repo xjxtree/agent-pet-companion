@@ -1,9 +1,19 @@
+use crate::agent_environment::{
+    absolute_env_path, command_search_dirs as shared_command_search_dirs, find_executable,
+    is_executable_file,
+};
+use crate::agent_session_filters::is_codex_internal_suggestions_prompt;
 use crate::event_envelope::{MAX_EVENT_TITLE_BYTES, MAX_MESSAGE_CONTENT_BYTES};
 use crate::paths::AppPaths;
 use crate::{now_rfc3339, PetCoreError, Result};
 use petcore_types::{AgentEventType, GenerationForm, PetStateName, REQUIRED_STATES};
+use rustix::io::Errno;
+use rustix::process::{kill_process_group, test_kill_process_group, Pid, Signal};
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -13,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // A probe still needs to stay bounded, but 1.2 seconds is too brittle while
 // PetCore is decoding high-quality pet assets on a busy development machine.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const HOOKS_LIST_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const THREAD_LIST_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_READ_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_START_TIMEOUT: Duration = Duration::from_millis(8000);
@@ -23,10 +34,52 @@ const TURN_START_TIMEOUT: Duration = Duration::from_millis(12_000);
 const TURN_RUN_TIMEOUT: Duration = Duration::from_millis(1_200_000);
 const EXTERNAL_HELPER_TURN_TIMEOUT: Duration = Duration::from_millis(600_000);
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const STDIO_PROCESS_TERM_GRACE: Duration = Duration::from_millis(150);
+const STDIO_PROCESS_KILL_GRACE: Duration = Duration::from_millis(150);
+const STDIO_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const PET_STUDIO_EXTERNAL_FORM_NAME: &str = "apc_skill_form.json";
 const CODEX_ACTIVITY_THREAD_LIST_LIMIT: usize = 24;
 pub const MAX_RECENT_CODEX_ACTIVITY_THREADS: usize = 8;
 const FUTURE_THREAD_TIMESTAMP_GRACE_SECONDS: u64 = 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexHookTrustStatus {
+    Trusted,
+    Managed,
+    Modified,
+    Untrusted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexAgentPetHookSummary {
+    pub event_name: String,
+    pub enabled: bool,
+    pub trust_status: CodexHookTrustStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexHookProbeNotice {
+    pub code: Option<String>,
+    pub summary: String,
+}
+
+/// Safe summary of the current Codex host's `hooks/list` result for the
+/// Agent Pet Companion plugin. Commands, source paths, hook keys, hashes, and
+/// arbitrary server diagnostics are intentionally never retained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CodexAgentPetHooksProbe {
+    pub app_server_available: bool,
+    pub completed: bool,
+    pub host_source: Option<String>,
+    pub discovered: bool,
+    pub all_enabled: bool,
+    pub all_trusted: bool,
+    pub hook_count: usize,
+    pub hooks: Vec<CodexAgentPetHookSummary>,
+    pub warnings: Vec<CodexHookProbeNotice>,
+    pub errors: Vec<CodexHookProbeNotice>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PetStudioSessionUpdate {
@@ -89,6 +142,31 @@ struct CodexThreadListCandidate {
     updated_at_unix: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexThreadListRevision {
+    updated_at_unix: i64,
+    title: Option<String>,
+    preview: Option<String>,
+    session_surface: String,
+    status_kind: String,
+    interaction_kind: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedCodexThreadActivity {
+    revision: CodexThreadListRevision,
+    activity: CodexThreadActivity,
+}
+
+/// Process-local cache for the safe, already-filtered display projection of
+/// recent Codex tasks. The raw `thread/list` response is never retained or
+/// persisted. Callers must reuse one instance across polling rounds for
+/// unchanged candidates to avoid another bounded `thread/read`.
+#[derive(Debug, Default)]
+pub struct CodexRecentThreadActivityCache {
+    entries: BTreeMap<String, CachedCodexThreadActivity>,
+}
+
 /// Reads a bounded set of recent interactive Codex tasks through the official
 /// App Server protocol. `thread/list` is constrained to the state database and
 /// only recent candidates are followed by `thread/read`; paths, tool inputs,
@@ -96,6 +174,19 @@ struct CodexThreadListCandidate {
 pub fn read_codex_recent_thread_activities(
     max_age: Duration,
     limit: usize,
+) -> Result<Vec<CodexThreadActivity>> {
+    let mut cache = CodexRecentThreadActivityCache::default();
+    read_codex_recent_thread_activities_cached(max_age, limit, &mut cache)
+}
+
+/// Reads recent Codex activity while reusing safe projections whose relevant
+/// `thread/list` revision is unchanged. Every round still performs
+/// `thread/list`, then reapplies the current age, limit, and internal-session
+/// filters before any cached activity can be returned.
+pub fn read_codex_recent_thread_activities_cached(
+    max_age: Duration,
+    limit: usize,
+    cache: &mut CodexRecentThreadActivityCache,
 ) -> Result<Vec<CodexThreadActivity>> {
     let limit = limit.clamp(1, MAX_RECENT_CODEX_ACTIVITY_THREADS);
     let (command, _) = codex_app_server_command()
@@ -172,9 +263,39 @@ pub fn read_codex_recent_thread_activities(
         .take(limit)
         .collect::<Vec<_>>();
 
-    let mut activities = Vec::with_capacity(candidates.len());
+    // Entries that disappeared, aged out, became an explicitly internal Pet
+    // Studio task, or fell outside this call's limit cannot survive through
+    // the cache. Only the bounded candidate set selected above is eligible.
+    let retained_thread_ids = candidates
+        .iter()
+        .map(|candidate| candidate.thread_id.clone())
+        .collect::<BTreeSet<_>>();
+    cache
+        .entries
+        .retain(|thread_id, _| retained_thread_ids.contains(thread_id));
+
+    let mut resolved = vec![None; candidates.len()];
+    let mut refresh_indices = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
-        let request_id = 3 + i64::try_from(index).unwrap_or(0);
+        let revision = codex_thread_list_revision(candidate);
+        if let Some(cached) = cache
+            .entries
+            .get(&candidate.thread_id)
+            .filter(|cached| cached.revision == revision)
+        {
+            resolved[index] = Some(cached.activity.clone());
+        } else {
+            // Never return a previous projection after a relevant list field
+            // changed. A failed refresh therefore omits this candidate instead
+            // of reviving stale status or display text.
+            cache.entries.remove(&candidate.thread_id);
+            refresh_indices.push(index);
+        }
+    }
+
+    for (read_index, candidate_index) in refresh_indices.into_iter().enumerate() {
+        let candidate = &candidates[candidate_index];
+        let request_id = 3 + i64::try_from(read_index).unwrap_or(0);
         session.send(&json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -192,11 +313,34 @@ pub fn read_codex_recent_thread_activities(
             continue;
         }
         if let Ok(activity) = parse_codex_thread_activity(candidate, &response) {
-            activities.push(activity);
+            resolved[candidate_index] = Some(activity.clone());
+            cache.entries.insert(
+                candidate.thread_id.clone(),
+                CachedCodexThreadActivity {
+                    revision: codex_thread_list_revision(candidate),
+                    activity,
+                },
+            );
         }
     }
     session.terminate();
-    Ok(activities)
+    Ok(resolved.into_iter().flatten().collect())
+}
+
+fn codex_thread_list_revision(candidate: &CodexThreadListCandidate) -> CodexThreadListRevision {
+    CodexThreadListRevision {
+        updated_at_unix: candidate.updated_at_unix,
+        title: candidate.title.clone(),
+        preview: candidate.preview.clone(),
+        session_surface: codex_activity_session_surface(&candidate.source).to_string(),
+        status_kind: match candidate.status.get("type").and_then(Value::as_str) {
+            Some("active") => "active",
+            Some("systemError") => "system_error",
+            _ => "inactive",
+        }
+        .to_string(),
+        interaction_kind: codex_activity_interaction_kind(&candidate.status).map(ToOwned::to_owned),
+    }
 }
 
 fn parse_codex_thread_list_candidate(thread: &Value) -> Option<CodexThreadListCandidate> {
@@ -249,6 +393,13 @@ fn parse_codex_thread_activity(
         ));
     }
     let display = parse_codex_thread_display(response)?;
+    if display.latest_user_message.as_ref().is_some_and(|message| {
+        message.role == "user" && is_codex_internal_suggestions_prompt(&message.content)
+    }) {
+        return Err(PetCoreError::Validation(
+            "Codex internal suggestions task is not an Agent conversation".to_string(),
+        ));
+    }
     let latest_turn = thread
         .get("turns")
         .and_then(Value::as_array)
@@ -678,6 +829,31 @@ mod codex_display_tests {
             Some("第二段思考".to_string())
         );
     }
+
+    #[test]
+    fn internal_suggestions_thread_is_not_exposed_as_recent_agent_activity() {
+        let candidate = CodexThreadListCandidate {
+            thread_id: "019f6ed7-de50-7623-8462-6a857e367a96".to_string(),
+            title: None,
+            preview: None,
+            source: json!("appServer"),
+            status: json!({"type": "idle"}),
+            updated_at_unix: 1_752_000_000,
+        };
+        let response = thread_response(vec![json!({
+            "id": "message-user",
+            "type": "userMessage",
+            "content": [{
+                "type": "text",
+                "text": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project"
+            }]
+        })]);
+
+        let error = parse_codex_thread_activity(&candidate, &response).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("internal suggestions task is not an Agent conversation"));
+    }
 }
 
 fn sanitized_activity_summary(value: &str) -> Option<String> {
@@ -770,6 +946,491 @@ fn is_codex_thread_id(value: &str) -> bool {
             8 | 13 | 18 | 23 => byte == b'-',
             _ => byte.is_ascii_hexdigit(),
         })
+}
+
+/// Queries the selected Codex App Server host for its effective hooks in one
+/// working directory. The probe is read-only, uses the official `hooks/list`
+/// RPC, and is bounded across initialization and listing. Its return value is
+/// deliberately safe to show in connection diagnostics: hook commands,
+/// filesystem paths, keys, hashes, and arbitrary host messages are discarded.
+pub fn probe_codex_agent_pet_hooks(cwd: &Path) -> CodexAgentPetHooksProbe {
+    let Some((command, command_source)) = codex_app_server_command() else {
+        return codex_hook_probe_failure(
+            false,
+            None,
+            "app_server_unavailable",
+            "Codex App Server is not available for hook verification.",
+        );
+    };
+    let host_source = Some(safe_codex_hook_host_source(command_source).to_string());
+
+    match hooks_list_stdio_command(&command, cwd) {
+        Ok(response) => parse_codex_agent_pet_hooks_response(&response, host_source.clone())
+            .unwrap_or_else(|| {
+                codex_hook_probe_failure(
+                    true,
+                    host_source,
+                    "invalid_response",
+                    "Codex App Server returned an unsupported hooks/list response.",
+                )
+            }),
+        Err(error) => {
+            let notice = safe_codex_hook_transport_notice(&error);
+            CodexAgentPetHooksProbe {
+                app_server_available: true,
+                completed: false,
+                host_source,
+                discovered: false,
+                all_enabled: false,
+                all_trusted: false,
+                hook_count: 0,
+                hooks: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![notice],
+            }
+        }
+    }
+}
+
+fn hooks_list_stdio_command(command: &str, cwd: &Path) -> Result<Value> {
+    let mut session = StdioSession::spawn(command)?;
+    let deadline = Instant::now() + HOOKS_LIST_PROBE_TIMEOUT;
+    let outcome = (|| {
+        session.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "AgentPetCompanion",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "capabilities": {}
+            }
+        }))?;
+        let initialize_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(PROBE_TIMEOUT);
+        let initialize = session.read_response(1, "initialize", initialize_timeout)?;
+        if initialize.get("error").is_some() {
+            return Err(response_error(
+                "initialize",
+                "initialize",
+                1,
+                &initialize,
+                &session,
+            ));
+        }
+        session.send(&json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }))?;
+        session.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "hooks/list",
+            "params": {
+                "cwds": [cwd.display().to_string()]
+            }
+        }))?;
+        let list_timeout = deadline.saturating_duration_since(Instant::now());
+        let response = session.read_response(2, "hooks/list", list_timeout)?;
+        if response.get("error").is_some() {
+            return Err(response_error(
+                "hooks_list",
+                "hooks/list",
+                2,
+                &response,
+                &session,
+            ));
+        }
+        Ok(response)
+    })();
+    session.terminate();
+    outcome
+}
+
+fn parse_codex_agent_pet_hooks_response(
+    response: &Value,
+    host_source: Option<String>,
+) -> Option<CodexAgentPetHooksProbe> {
+    let result = response.get("result")?;
+    let mut scopes = Vec::new();
+    let nested_data = if let Some(data) = result.get("data") {
+        match data {
+            Value::Array(values) => scopes.extend(values),
+            Value::Object(_) => scopes.push(data),
+            _ => return None,
+        }
+        true
+    } else if result.get("hooks").is_some() {
+        scopes.push(result);
+        false
+    } else if let Some(values) = result.as_array() {
+        scopes.extend(values);
+        false
+    } else {
+        return None;
+    };
+
+    let mut hooks = Vec::new();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    if nested_data {
+        append_safe_codex_hook_notices(
+            result,
+            "warnings",
+            "Codex reported a hook warning.",
+            &mut warnings,
+        );
+        append_safe_codex_hook_notices(
+            result,
+            "errors",
+            "Codex reported a hook error.",
+            &mut errors,
+        );
+    }
+    for scope in scopes {
+        append_safe_codex_hook_notices(
+            scope,
+            "warnings",
+            "Codex reported a hook warning.",
+            &mut warnings,
+        );
+        append_safe_codex_hook_notices(
+            scope,
+            "errors",
+            "Codex reported a hook error.",
+            &mut errors,
+        );
+        let Some(scope_hooks) = scope.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        hooks.extend(scope_hooks.iter().filter_map(parse_codex_agent_pet_hook));
+    }
+
+    let discovered = !hooks.is_empty();
+    // Unknown host warnings are not proof of a safe/usable hook set. Keep the
+    // notice payload bounded, but require a notice-free authoritative result
+    // before declaring trust. Future known-benign codes can be allowlisted
+    // explicitly after their semantics are audited.
+    let no_reported_notices = warnings.is_empty() && errors.is_empty();
+    let all_enabled = discovered && no_reported_notices && hooks.iter().all(|hook| hook.enabled);
+    let all_trusted = discovered
+        && no_reported_notices
+        && hooks.iter().all(|hook| {
+            matches!(
+                hook.trust_status,
+                CodexHookTrustStatus::Trusted | CodexHookTrustStatus::Managed
+            )
+        });
+    Some(CodexAgentPetHooksProbe {
+        app_server_available: true,
+        completed: true,
+        host_source,
+        discovered,
+        all_enabled,
+        all_trusted,
+        hook_count: hooks.len(),
+        hooks,
+        warnings,
+        errors,
+    })
+}
+
+fn parse_codex_agent_pet_hook(hook: &Value) -> Option<CodexAgentPetHookSummary> {
+    let plugin_id = json_string_alias(hook, &["pluginId", "plugin_id"]);
+    let key = hook.get("key").and_then(Value::as_str);
+    if !plugin_id.is_some_and(is_agent_pet_companion_hook_id)
+        && !key.is_some_and(is_agent_pet_companion_hook_key)
+    {
+        return None;
+    }
+
+    let event_name = json_string_alias(hook, &["eventName", "event_name"])
+        .and_then(|value| safe_codex_hook_identifier(value, 80))
+        .unwrap_or_else(|| "unknown".to_string());
+    let enabled = hook.get("enabled").and_then(Value::as_bool) == Some(true);
+    let is_managed = hook
+        .get("isManaged")
+        .or_else(|| hook.get("is_managed"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let raw_trust =
+        json_string_alias(hook, &["trustStatus", "trust_status"]).unwrap_or("untrusted");
+    let trust_status = normalize_codex_hook_trust_status(raw_trust, is_managed);
+    Some(CodexAgentPetHookSummary {
+        event_name,
+        enabled,
+        trust_status,
+    })
+}
+
+fn normalize_codex_hook_trust_status(value: &str, is_managed: bool) -> CodexHookTrustStatus {
+    if is_managed {
+        return CodexHookTrustStatus::Managed;
+    }
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    match normalized.as_str() {
+        "trusted" => CodexHookTrustStatus::Trusted,
+        "managed" => CodexHookTrustStatus::Managed,
+        "modified" => CodexHookTrustStatus::Modified,
+        _ => CodexHookTrustStatus::Untrusted,
+    }
+}
+
+fn is_agent_pet_companion_hook_id(value: &str) -> bool {
+    value == "agent-pet-companion" || value.starts_with("agent-pet-companion@")
+}
+
+fn is_agent_pet_companion_hook_key(value: &str) -> bool {
+    value.starts_with("agent-pet-companion@") || value.starts_with("agent-pet-companion:")
+}
+
+fn json_string_alias<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+}
+
+fn append_safe_codex_hook_notices(
+    container: &Value,
+    key: &str,
+    summary: &str,
+    target: &mut Vec<CodexHookProbeNotice>,
+) {
+    let Some(value) = container.get(key) else {
+        return;
+    };
+    match value {
+        Value::Array(values) => target.extend(
+            values
+                .iter()
+                .map(|value| safe_codex_hook_notice(value, summary)),
+        ),
+        Value::Null => {}
+        other => target.push(safe_codex_hook_notice(other, summary)),
+    }
+}
+
+fn safe_codex_hook_notice(value: &Value, summary: &str) -> CodexHookProbeNotice {
+    let code = value
+        .get("code")
+        .or_else(|| value.get("kind"))
+        .and_then(Value::as_str)
+        .or_else(|| value.as_str())
+        .and_then(|value| safe_codex_hook_identifier(value, 64));
+    CodexHookProbeNotice {
+        code,
+        summary: summary.to_string(),
+    }
+}
+
+fn safe_codex_hook_identifier(value: &str, maximum_bytes: usize) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()
+        && value.len() <= maximum_bytes
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':')
+        }))
+    .then(|| value.to_string())
+}
+
+fn safe_codex_hook_host_source(value: &str) -> &'static str {
+    match value {
+        "env" | "environment_override" => "configured",
+        "chatgpt_bundle" => "chatgpt_desktop",
+        "codex_bundle" => "codex_desktop",
+        "path" => "codex_cli",
+        _ => "unknown",
+    }
+}
+
+fn safe_codex_hook_transport_notice(error: &PetCoreError) -> CodexHookProbeNotice {
+    let error_info = error_info_from_error(error);
+    match error_info.get("kind").and_then(Value::as_str) {
+        Some("timeout") => CodexHookProbeNotice {
+            code: Some("timeout".to_string()),
+            summary: "Codex App Server hooks/list probe timed out.".to_string(),
+        },
+        Some("server_error") => CodexHookProbeNotice {
+            code: Some("server_error".to_string()),
+            summary: "Codex App Server rejected the hooks/list probe.".to_string(),
+        },
+        Some("invalid_json") => CodexHookProbeNotice {
+            code: Some("invalid_response".to_string()),
+            summary: "Codex App Server returned an invalid hooks/list response.".to_string(),
+        },
+        Some("stdout_eof") => CodexHookProbeNotice {
+            code: Some("host_closed".to_string()),
+            summary: "Codex App Server closed before hook verification completed.".to_string(),
+        },
+        _ => CodexHookProbeNotice {
+            code: Some("probe_failed".to_string()),
+            summary: "Codex App Server hook verification failed.".to_string(),
+        },
+    }
+}
+
+fn codex_hook_probe_failure(
+    app_server_available: bool,
+    host_source: Option<String>,
+    code: &str,
+    summary: &str,
+) -> CodexAgentPetHooksProbe {
+    CodexAgentPetHooksProbe {
+        app_server_available,
+        completed: false,
+        host_source,
+        discovered: false,
+        all_enabled: false,
+        all_trusted: false,
+        hook_count: 0,
+        hooks: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![CodexHookProbeNotice {
+            code: Some(code.to_string()),
+            summary: summary.to_string(),
+        }],
+    }
+}
+
+#[cfg(test)]
+mod codex_hook_probe_tests {
+    use super::*;
+
+    #[test]
+    fn parses_current_hooks_list_shape_without_exposing_commands_or_paths() {
+        let response = json!({
+            "id": 2,
+            "result": {
+                "data": [{
+                    "cwd": "/Users/example/private-project",
+                    "hooks": [
+                        {
+                            "key": "agent-pet-companion@personal:hooks/hooks.json:pre_tool_use:0:0",
+                            "eventName": "preToolUse",
+                            "command": "'/Users/example/runtime/petcore-cli' agent hook --secret value",
+                            "sourcePath": "/Users/example/.codex/plugins/hooks.json",
+                            "pluginId": "agent-pet-companion@personal",
+                            "enabled": true,
+                            "isManaged": false,
+                            "trustStatus": "trusted"
+                        },
+                        {
+                            "key": "agent-pet-companion@personal:hooks/hooks.json:stop:0:0",
+                            "eventName": "stop",
+                            "pluginId": "agent-pet-companion@personal",
+                            "enabled": true,
+                            "isManaged": true,
+                            "trustStatus": "modified"
+                        },
+                        {
+                            "key": "unrelated@personal:hooks/hooks.json:stop:0:0",
+                            "eventName": "stop",
+                            "pluginId": "unrelated@personal",
+                            "enabled": true,
+                            "trustStatus": "trusted"
+                        }
+                    ],
+                    "warnings": ["configuration at /Users/example/.codex needs attention"],
+                    "errors": []
+                }]
+            }
+        });
+
+        let probe =
+            parse_codex_agent_pet_hooks_response(&response, Some("chatgpt_desktop".to_string()))
+                .expect("current response shape");
+        assert!(probe.completed);
+        assert!(probe.discovered);
+        assert!(
+            !probe.all_enabled,
+            "host warnings must prevent positive verification"
+        );
+        assert!(
+            !probe.all_trusted,
+            "host warnings must prevent positive verification"
+        );
+        assert_eq!(probe.hook_count, 2);
+        assert_eq!(probe.hooks[0].event_name, "preToolUse");
+        assert_eq!(probe.hooks[0].trust_status, CodexHookTrustStatus::Trusted);
+        assert_eq!(probe.hooks[1].trust_status, CodexHookTrustStatus::Managed);
+        assert_eq!(probe.warnings.len(), 1);
+        assert_eq!(probe.warnings[0].code, None);
+
+        let serialized = serde_json::to_string(&probe).expect("serialize safe probe");
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains("petcore-cli"));
+        assert!(!serialized.contains("--secret"));
+        assert!(!serialized.contains("sourcePath"));
+    }
+
+    #[test]
+    fn parses_flat_and_snake_case_shape_conservatively() {
+        let response = json!({
+            "result": {
+                "hooks": [
+                    {
+                        "plugin_id": "agent-pet-companion@personal",
+                        "event_name": "postToolUse",
+                        "enabled": false,
+                        "is_managed": false,
+                        "trust_status": "modified"
+                    },
+                    {
+                        "key": "agent-pet-companion:session_start:0",
+                        "event_name": "sessionStart",
+                        "enabled": true,
+                        "trust_status": "new-host-status"
+                    }
+                ],
+                "warnings": [{"code": "hook_changed", "message": "ignored raw detail"}],
+                "errors": []
+            }
+        });
+
+        let probe = parse_codex_agent_pet_hooks_response(&response, None).expect("flat response");
+        assert_eq!(probe.hook_count, 2);
+        assert!(!probe.all_enabled);
+        assert!(!probe.all_trusted);
+        assert_eq!(probe.hooks[0].trust_status, CodexHookTrustStatus::Modified);
+        assert_eq!(probe.hooks[1].trust_status, CodexHookTrustStatus::Untrusted);
+        assert_eq!(probe.warnings[0].code.as_deref(), Some("hook_changed"));
+    }
+
+    #[test]
+    fn reported_errors_prevent_a_positive_verification_result() {
+        let response = json!({
+            "result": {
+                "data": [{
+                    "hooks": [{
+                        "pluginId": "agent-pet-companion@personal",
+                        "eventName": "stop",
+                        "enabled": true,
+                        "trustStatus": "trusted"
+                    }],
+                    "errors": [{
+                        "code": "hook_load_failed",
+                        "message": "command /Users/example/private failed"
+                    }]
+                }]
+            }
+        });
+
+        let probe = parse_codex_agent_pet_hooks_response(&response, None).expect("error response");
+        assert!(probe.discovered);
+        assert!(!probe.all_enabled);
+        assert!(!probe.all_trusted);
+        assert_eq!(probe.errors[0].code.as_deref(), Some("hook_load_failed"));
+        let serialized = serde_json::to_string(&probe).expect("serialize safe probe");
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains("command"));
+    }
 }
 
 pub fn probe_codex_app_server() -> Value {
@@ -2037,6 +2698,7 @@ fn codex_error_summary(error: &Value) -> Option<String> {
 fn method_stage(method: &str) -> &'static str {
     match method {
         "initialize" => "initialize",
+        "hooks/list" => "hooks_list",
         "thread/start" => "thread_start",
         "thread/resume" => "thread_resume",
         "thread/read" => "thread_read",
@@ -2048,9 +2710,11 @@ fn method_stage(method: &str) -> &'static str {
 
 struct StdioSession {
     child: Child,
+    process_group: Pid,
     stdin: Option<ChildStdin>,
     rx: Receiver<StdoutItem>,
     stderr_tail: Arc<Mutex<Vec<String>>>,
+    terminated: bool,
 }
 
 enum StdoutItem {
@@ -2070,8 +2734,15 @@ impl StdioSession {
             .env("PATH", app_server_child_path_environment(&cli_path))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // `sh -lc` can retain the configured command as a child shell.
+            // Give every App Server session a private ownership boundary so
+            // timeout/cancellation cleanup reaches the complete process tree
+            // without signaling PetCore or another independently launched
+            // process.
+            .process_group(0);
         let mut child = child_command.spawn()?;
+        let process_group = Pid::from_child(&child);
 
         let stdin = child.stdin.take().ok_or_else(|| {
             PetCoreError::Validation("Codex App Server stdin unavailable".to_string())
@@ -2134,9 +2805,11 @@ impl StdioSession {
 
         Ok(Self {
             child,
+            process_group,
             stdin: Some(stdin),
             rx,
             stderr_tail,
+            terminated: false,
         })
     }
 
@@ -2334,9 +3007,50 @@ impl StdioSession {
     }
 
     fn terminate(&mut self) {
+        if self.terminated {
+            return;
+        }
+        self.terminated = true;
+
+        // Closing stdin gives a cooperative stdio server its normal shutdown
+        // signal. TERM/KILL target only the private process group created in
+        // `spawn`, which also covers an inner script retained by `sh -lc`.
         let _ = self.stdin.take();
+        let _ = kill_process_group(self.process_group, Signal::TERM);
+        if self.wait_for_process_group_exit(STDIO_PROCESS_TERM_GRACE) {
+            return;
+        }
+
+        let _ = kill_process_group(self.process_group, Signal::KILL);
+        // Exact-child KILL is a defensive fallback if the command moved the
+        // leader out of its original group. It cannot affect an unrelated PID
+        // because `Child` still owns this unreaped process identity.
         let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.wait_for_process_group_exit(STDIO_PROCESS_KILL_GRACE);
+    }
+
+    fn wait_for_process_group_exit(&mut self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let child_reaped = matches!(self.child.try_wait(), Ok(Some(_)) | Err(_));
+            if child_reaped && !process_group_is_alive(self.process_group) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(STDIO_PROCESS_POLL_INTERVAL);
+        }
+    }
+}
+
+fn process_group_is_alive(process_group: Pid) -> bool {
+    match test_kill_process_group(process_group) {
+        Ok(()) => true,
+        Err(Errno::SRCH) => false,
+        // Fail closed during cleanup: an unexpected probe error must not make
+        // us silently skip the final signal for a group we created.
+        Err(_) => true,
     }
 }
 
@@ -2913,6 +3627,18 @@ fn default_motion_for_state(state: PetStateName) -> &'static str {
 }
 
 fn default_codex_app_server_command() -> Option<(String, &'static str)> {
+    if let Some(path) = absolute_env_path("APC_CODEX_CLI_PATH") {
+        if !is_executable_file(&path) {
+            return None;
+        }
+        return Some((
+            format!(
+                "{} app-server --stdio",
+                shell_quote(&path.display().to_string())
+            ),
+            "environment_override",
+        ));
+    }
     for (path, source) in [
         (
             PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
@@ -2923,7 +3649,7 @@ fn default_codex_app_server_command() -> Option<(String, &'static str)> {
             "codex_bundle",
         ),
     ] {
-        if path.is_file() {
+        if is_executable_file(&path) {
             return Some((
                 format!(
                     "{} app-server --stdio",
@@ -2982,39 +3708,11 @@ fn app_server_child_path_environment(cli_path: &Path) -> String {
 }
 
 fn command_path(name: &str) -> Option<PathBuf> {
-    command_search_dirs()
-        .into_iter()
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    find_executable(name)
 }
 
 fn command_search_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
-
-    let mut add = |path: PathBuf| {
-        if !dirs.iter().any(|existing| existing == &path) {
-            dirs.push(path);
-        }
-    };
-
-    add(PathBuf::from("/opt/homebrew/bin"));
-    add(PathBuf::from("/opt/homebrew/sbin"));
-    add(PathBuf::from("/usr/local/bin"));
-    add(PathBuf::from("/usr/local/sbin"));
-    add(PathBuf::from("/usr/bin"));
-    add(PathBuf::from("/bin"));
-    add(PathBuf::from("/usr/sbin"));
-    add(PathBuf::from("/sbin"));
-
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        add(home.join(".local").join("bin"));
-        add(home.join(".cargo").join("bin"));
-        add(home.join(".bun").join("bin"));
-        add(home.join("bin"));
-    }
-    dirs
+    shared_command_search_dirs()
 }
 
 fn shell_quote(value: &str) -> String {

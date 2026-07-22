@@ -1,7 +1,10 @@
 use petcore::paths::AppPaths;
 use petcore::petpack::{build_petpack, write_sample_petpack_dir};
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
-use petcore_types::{GenerationForm, GenerationJobStatus, QualityLevel};
+use petcore_types::{
+    GenerationForm, GenerationJobStatus, PetOrigin, PetSummary, QualityLevel,
+    MAX_GENERATION_DESCRIPTION_CHARS,
+};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::io::Write;
@@ -101,6 +104,228 @@ fn generation_history_for_unknown_pet_has_a_stable_empty_shape() {
     assert_eq!(history["messages"], json!([]));
 }
 
+#[test]
+fn pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let fake_app_server = temp.path().join("fake_app_server.sh");
+    write_fake_app_server_script(&fake_app_server, "thread_edit_scalar_boundary");
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+
+    let source = temp.path().join("edit-boundary-source");
+    let manifest =
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "边界宠物", "半写实", 2).unwrap();
+    let package = temp.path().join("edit-boundary.petpack");
+    build_petpack(&source, &package).unwrap();
+    handle_request(
+        &state,
+        request(
+            "petpack.import",
+            json!({ "path": package.display().to_string() }),
+        ),
+    )
+    .unwrap();
+
+    let oversized = "宠".repeat(MAX_GENERATION_DESCRIPTION_CHARS + 1);
+    let error = handle_request(
+        &state,
+        request(
+            "generation.edit",
+            json!({ "pet_id": manifest.id, "instruction": oversized }),
+        ),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("must not exceed"));
+    assert!(state
+        .database
+        .generation_job_for_pet(&manifest.id)
+        .unwrap()
+        .is_none());
+
+    let boundary = "宠".repeat(MAX_GENERATION_DESCRIPTION_CHARS);
+    let edit = handle_request(
+        &state,
+        request(
+            "generation.edit",
+            json!({ "pet_id": manifest.id, "instruction": boundary }),
+        ),
+    )
+    .unwrap();
+    let job_id = edit["job_id"].as_str().unwrap();
+    let job = state.database.generation_job(job_id).unwrap().unwrap();
+    let form: GenerationForm = serde_json::from_str(&job.form_json).unwrap();
+    assert_eq!(
+        form.description.chars().count(),
+        MAX_GENERATION_DESCRIPTION_CHARS
+    );
+    assert_eq!(form.description, boundary);
+
+    let _ = handle_request(
+        &state,
+        request("generation.cancel", json!({ "job_id": job_id })),
+    );
+}
+
+#[test]
+fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "/usr/bin/false");
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths.clone());
+    state.ensure_ready().unwrap();
+
+    // Model a legacy/external record whose package has no PetCore-owned
+    // immutable revision. Its stable database path can still be overwritten
+    // in place by the external owner.
+    let source = temp.path().join("legacy-external-source");
+    let manifest =
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "外部基线宠物", "半写实", 2)
+            .unwrap();
+    let package = temp.path().join("legacy-external.petpack");
+    build_petpack(&source, &package).unwrap();
+    let original_package_bytes = std::fs::read(&package).unwrap();
+    state
+        .database
+        .upsert_pet(&PetSummary {
+            id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            style: manifest.style.clone(),
+            quality: manifest.quality,
+            render_size: manifest.render_size,
+            petpack_path: package.display().to_string(),
+            cover_path: source
+                .join("assets/preview/cover.png")
+                .display()
+                .to_string(),
+            origin: PetOrigin::ExternalImport,
+            generator: None,
+            provenance: None,
+            revision_id: None,
+            revision_count: 0,
+            active: true,
+            created_at: manifest.created_at.clone(),
+        })
+        .unwrap();
+
+    let original = handle_request(
+        &state,
+        request(
+            "generation.edit",
+            json!({
+                "pet_id": manifest.id,
+                "instruction": "让 waiting 状态更醒目"
+            }),
+        ),
+    )
+    .unwrap();
+    assert!(original["baseline_revision_id"].is_null());
+    let original_job_id = original["job_id"].as_str().unwrap();
+    wait_for_terminal_message(&state, original_job_id, "generation_failed");
+    let original_snapshot = paths
+        .jobs_dir
+        .join(original_job_id)
+        .join("baseline-input.petpack");
+    assert_eq!(
+        std::fs::read(&original_snapshot).unwrap(),
+        original_package_bytes
+    );
+    let original_context: Value = serde_json::from_slice(
+        &std::fs::read(
+            paths
+                .jobs_dir
+                .join(original_job_id)
+                .join("edit-context.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // An unchanged retry is expanded from the original private snapshot, not
+    // from a second unpinned interpretation of the current database head.
+    let retry = handle_request(
+        &state,
+        request("generation.retry", json!({ "job_id": original_job_id })),
+    )
+    .unwrap();
+    assert!(retry["baseline_revision_id"].is_null());
+    let retry_job_id = retry["job_id"].as_str().unwrap();
+    let retry_snapshot = paths
+        .jobs_dir
+        .join(retry_job_id)
+        .join("baseline-input.petpack");
+    assert_eq!(
+        std::fs::read(&retry_snapshot).unwrap(),
+        original_package_bytes
+    );
+    let retry_context: Value = serde_json::from_slice(
+        &std::fs::read(paths.jobs_dir.join(retry_job_id).join("edit-context.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        retry_context["base_petpack_sha256"],
+        original_context["base_petpack_sha256"]
+    );
+    wait_for_terminal_message(&state, retry_job_id, "generation_failed");
+
+    // Keep the same pet ID and database path but replace the external package
+    // bytes. Retrying the original job must now fail as a conflict instead of
+    // silently treating this new head as the old nil-revision baseline.
+    let replacement_source = temp.path().join("legacy-external-replacement");
+    let mut replacement_manifest = write_sample_petpack_dir(
+        &replacement_source,
+        QualityLevel::Standard,
+        "被外部替换的新版本",
+        "半写实",
+        2,
+    )
+    .unwrap();
+    replacement_manifest.id = manifest.id.clone();
+    std::fs::write(
+        replacement_source.join("manifest.json"),
+        serde_json::to_vec_pretty(&replacement_manifest).unwrap(),
+    )
+    .unwrap();
+    let replacement_package = temp.path().join("replacement.petpack");
+    build_petpack(&replacement_source, &replacement_package).unwrap();
+    std::fs::copy(&replacement_package, &package).unwrap();
+    assert_eq!(
+        state
+            .database
+            .get_pet(&manifest.id)
+            .unwrap()
+            .unwrap()
+            .petpack_path,
+        package.display().to_string()
+    );
+
+    let jobs_before = state
+        .database
+        .generation_jobs_for_pet(&manifest.id, 16)
+        .unwrap()
+        .len();
+    let error = handle_request(
+        &state,
+        request("generation.retry", json!({ "job_id": original_job_id })),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("original edit baseline changed"),
+        "{error}"
+    );
+    assert_eq!(
+        state
+            .database
+            .generation_jobs_for_pet(&manifest.id, 16)
+            .unwrap()
+            .len(),
+        jobs_before
+    );
+}
+
 fn start_generation(state: &CoreState, description: &str) -> String {
     let value = handle_request(
         state,
@@ -127,6 +352,21 @@ fn generation_messages(state: &CoreState, job_id: &str) -> Vec<Value> {
     .as_array()
     .unwrap()
     .clone()
+}
+
+fn generation_terminal_snapshot(state: &CoreState, job_id: &str) -> Value {
+    handle_request(
+        state,
+        request(
+            "generation.messages.wait",
+            json!({
+                "job_id": job_id,
+                "after_revision": "",
+                "timeout_ms": 250
+            }),
+        ),
+    )
+    .unwrap()
 }
 
 fn wait_for_message(state: &CoreState, job_id: &str, needle: &str) {
@@ -196,6 +436,16 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
 
     let job_id = start_generation(&state, "取消中的生命周期桌宠。");
     wait_for_message(&state, &job_id, "Pet Studio brief turn 已启动");
+    let progress = generation_messages(&state, &job_id)
+        .into_iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Pet Studio brief turn 已启动")
+        })
+        .expect("runtime progress message");
+    assert_eq!(progress["kind"], "generation_progress");
 
     handle_request(
         &state,
@@ -243,6 +493,32 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
         Some(GenerationJobStatus::Completed)
     );
     assert_eq!(state.database.list_pets().unwrap().len(), 1);
+
+    let terminal = generation_terminal_snapshot(&state, &job_id);
+    let result_pet_id = terminal["result_pet_id"].as_str().unwrap();
+    assert!(result_pet_id.starts_with("pet_"));
+    let result_pet = state.database.get_pet(result_pet_id).unwrap().unwrap();
+    let committed_revision = Path::new(&result_pet.petpack_path)
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert_eq!(terminal["revision_id"], committed_revision);
+    assert_eq!(terminal["validation_summary"]["ok"], true);
+    assert_eq!(terminal["validation_summary"]["state_count"], 7);
+    assert_eq!(terminal["validation_summary"]["frame_count"], 168);
+
+    let history = handle_request(
+        &state,
+        request("generation.for_pet", json!({ "pet_id": result_pet_id })),
+    )
+    .unwrap();
+    assert_eq!(history["result_pet_id"], result_pet_id);
+    assert_eq!(history["revision_id"], terminal["revision_id"]);
+    assert_eq!(
+        history["validation_summary"],
+        terminal["validation_summary"]
+    );
 
     std::fs::remove_file(&wait_file).unwrap();
     let reply_messages = handle_request(
@@ -313,6 +589,20 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
     .unwrap();
     assert_eq!(imported["id"], manifest.id);
     let original_path = imported["petpack_path"].as_str().unwrap().to_string();
+    let original_revision = Path::new(&original_path)
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_string();
+    let imported_history = handle_request(
+        &state,
+        request("pet.history", json!({ "pet_id": manifest.id, "limit": 16 })),
+    )
+    .unwrap();
+    assert!(imported_history["jobs"].as_array().unwrap().is_empty());
+    assert_eq!(imported_history["revisions"].as_array().unwrap().len(), 1);
+    assert_eq!(imported_history["current_revision_id"], original_revision);
 
     let edit = handle_request(
         &state,
@@ -348,6 +638,160 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
             .as_deref(),
         Some(manifest.id.as_str())
     );
+    let terminal = generation_terminal_snapshot(&state, job_id);
+    assert_eq!(terminal["result_pet_id"], manifest.id);
+    let committed_revision = Path::new(&pets[0].petpack_path)
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert_eq!(terminal["revision_id"], committed_revision);
+    assert_eq!(terminal["validation_summary"]["ok"], true);
+    assert_eq!(terminal["validation_summary"]["state_count"], 7);
+
+    let history = handle_request(
+        &state,
+        request("generation.for_pet", json!({ "pet_id": manifest.id })),
+    )
+    .unwrap();
+    assert_eq!(history["revision_id"], terminal["revision_id"]);
+    assert_eq!(
+        history["validation_summary"],
+        terminal["validation_summary"]
+    );
+
+    let library_history = handle_request(
+        &state,
+        request("pet.history", json!({ "pet_id": manifest.id, "limit": 16 })),
+    )
+    .unwrap();
+    assert_eq!(library_history["current_revision_id"], committed_revision);
+    assert_eq!(library_history["revisions"].as_array().unwrap().len(), 2);
+    assert_eq!(library_history["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(library_history["revisions"][0]["current"], true);
+    assert_eq!(library_history["revisions"][0]["validated"], true);
+    assert!(library_history["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|revision| {
+            revision["revision_id"] == original_revision && revision["validated"] == true
+        }));
+    let minimized = serde_json::to_string(&library_history).unwrap();
+    for forbidden in [
+        "session_id",
+        "messages",
+        "form",
+        "job_dir",
+        "instruction",
+        "retry_of_job_id",
+        "owner_instance_id",
+    ] {
+        assert!(
+            !minimized.contains(&format!("\"{forbidden}\"")),
+            "library history leaked private field {forbidden}: {minimized}"
+        );
+    }
+
+    // Select the original immutable revision after a newer head already
+    // exists. The edit context must pin that old archive as the creative
+    // baseline while separately pinning the current head for stale-write
+    // protection; a valid old -> new-head edit must therefore commit.
+    let first_edit_path = pets[0].petpack_path.clone();
+    let historical_edit = handle_request(
+        &state,
+        request(
+            "generation.edit",
+            json!({
+                "pet_id": manifest.id,
+                "baseline_revision_id": original_revision,
+                "instruction": "从最初导入版本出发，让 review 状态更醒目"
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(historical_edit["baseline_revision_id"], original_revision);
+    let historical_job_id = historical_edit["job_id"].as_str().unwrap();
+    let active_snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+    assert_eq!(
+        active_snapshot["active_generation"]["baseline_revision_id"],
+        original_revision
+    );
+    let historical_context: Value = serde_json::from_slice(
+        &std::fs::read(
+            paths
+                .jobs_dir
+                .join(historical_job_id)
+                .join("edit-context.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        historical_context["schema_version"],
+        "apc.pet-edit-context.v2"
+    );
+    assert_eq!(
+        historical_context["baseline_revision_id"],
+        original_revision
+    );
+    assert_eq!(historical_context["base_manifest"]["name"], "外部导入宠物");
+    assert_eq!(
+        historical_context["expected_current_petpack_path"],
+        first_edit_path
+    );
+
+    wait_for_terminal_message(&state, historical_job_id, "generation_completed");
+    let current = state.database.get_pet(&manifest.id).unwrap().unwrap();
+    assert_ne!(current.petpack_path, first_edit_path);
+    assert_ne!(current.petpack_path, original_path);
+    let latest_history = handle_request(
+        &state,
+        request("pet.history", json!({ "pet_id": manifest.id, "limit": 16 })),
+    )
+    .unwrap();
+    assert_eq!(latest_history["jobs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        latest_history["jobs"][0]["baseline_revision_id"],
+        original_revision
+    );
+    assert_eq!(latest_history["revisions"].as_array().unwrap().len(), 3);
+    assert_eq!(latest_history["revisions"][0]["current"], true);
+
+    let latest_job = handle_request(
+        &state,
+        request("generation.for_pet", json!({ "pet_id": manifest.id })),
+    )
+    .unwrap();
+    assert_eq!(latest_job["baseline_revision_id"], original_revision);
+
+    let limited_history = handle_request(
+        &state,
+        request("pet.history", json!({ "pet_id": manifest.id, "limit": 1 })),
+    )
+    .unwrap();
+    assert_eq!(limited_history["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(limited_history["revisions"].as_array().unwrap().len(), 1);
+    assert_eq!(limited_history["truncated"], true);
+
+    drop(state);
+    let restarted = CoreState::new(paths);
+    restarted.ensure_ready().unwrap();
+    let restarted_latest = handle_request(
+        &restarted,
+        request("generation.for_pet", json!({ "pet_id": manifest.id })),
+    )
+    .unwrap();
+    assert_eq!(restarted_latest["baseline_revision_id"], original_revision);
+    let restarted_history = handle_request(
+        &restarted,
+        request("pet.history", json!({ "pet_id": manifest.id, "limit": 16 })),
+    )
+    .unwrap();
+    assert_eq!(
+        restarted_history["jobs"][0]["baseline_revision_id"],
+        original_revision
+    );
 }
 
 #[test]
@@ -368,7 +812,7 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
         write_sample_petpack_dir(&source, QualityLevel::Standard, "冲突基线", "半写实", 2).unwrap();
     let package = temp.path().join("base.petpack");
     build_petpack(&source, &package).unwrap();
-    handle_request(
+    let imported = handle_request(
         &state,
         request(
             "petpack.import",
@@ -376,15 +820,26 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
         ),
     )
     .unwrap();
+    let original_revision = Path::new(imported["petpack_path"].as_str().unwrap())
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_string();
 
     let edit = handle_request(
         &state,
         request(
             "generation.edit",
-            json!({ "pet_id": manifest.id, "instruction": "修改 tool 状态" }),
+            json!({
+                "pet_id": manifest.id,
+                "baseline_revision_id": original_revision,
+                "instruction": "修改 tool 状态"
+            }),
         ),
     )
     .unwrap();
+    assert_eq!(edit["baseline_revision_id"], original_revision);
     let job_id = edit["job_id"].as_str().unwrap();
     wait_for_message(&state, job_id, "Pet Studio brief turn 已启动");
 
@@ -438,6 +893,7 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
     )
     .unwrap();
     assert_eq!(retry["operation"], "modify");
+    assert_eq!(retry["baseline_revision_id"], original_revision);
     let retry_id = retry["job_id"].as_str().unwrap();
     let retry_job = state.database.generation_job(retry_id).unwrap().unwrap();
     assert_eq!(
@@ -458,7 +914,8 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
     )
     .unwrap();
     assert_eq!(retry_context["pet_id"], manifest.id);
-    assert_eq!(retry_context["base_manifest"]["name"], "用户刚导入的新版本");
+    assert_eq!(retry_context["baseline_revision_id"], original_revision);
+    assert_eq!(retry_context["base_manifest"]["name"], "冲突基线");
     assert_eq!(retry_context["instruction"], "修改 tool 状态");
 
     wait_for_terminal_message(&state, retry_id, "generation_completed");
@@ -472,6 +929,7 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
     .unwrap();
     assert_eq!(history["job_id"], retry_id);
     assert_eq!(history["operation"], "modify");
+    assert_eq!(history["baseline_revision_id"], original_revision);
 }
 
 #[test]

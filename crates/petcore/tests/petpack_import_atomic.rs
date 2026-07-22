@@ -5,7 +5,9 @@ use petcore::petpack::{
     ensure_runtime_assets, import_petpack, import_petpack_expecting_absent,
     write_sample_petpack_dir,
 };
+use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{PetManifest, PetOrigin, QualityLevel, REQUIRED_STATES};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
 
@@ -17,6 +19,15 @@ fn ready_state(home: &std::path::Path) -> (AppPaths, Database) {
     let database = Database::new(paths.db_path.clone());
     database.init().unwrap();
     (paths, database)
+}
+
+fn rpc_request(method: &str) -> RpcRequest {
+    RpcRequest {
+        jsonrpc: Some("2.0".to_string()),
+        id: Some(json!(1)),
+        method: method.to_string(),
+        params: json!({}),
+    }
 }
 
 fn read_manifest(source: &std::path::Path) -> PetManifest {
@@ -261,6 +272,78 @@ fn petpack_import_publishes_immutable_revision_and_atomic_pointer() {
         database.get_pet(&first.id).unwrap().unwrap().name,
         "Revision Two"
     );
+}
+
+#[test]
+fn pet_list_and_snapshot_report_current_owned_revision_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = CoreState::new(AppPaths::new(temp.path().join("home")));
+    state.ensure_ready().unwrap();
+
+    let source = temp.path().join("rpc-revision-v1");
+    write_sample_petpack_dir(&source, QualityLevel::High, "RPC Revision One", "半写实", 2).unwrap();
+    let first = import_petpack(&state.paths, &state.database, &source).unwrap();
+
+    let replacement = temp.path().join("rpc-revision-v2");
+    copy_dir_all(&source, &replacement);
+    rename_petpack_source(&replacement, "RPC Revision Two");
+    let current = import_petpack(&state.paths, &state.database, &replacement).unwrap();
+    let expected_revision_id = std::path::Path::new(&current.petpack_path)
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap();
+
+    let listed = handle_request(&state, rpc_request("pet.list")).unwrap();
+    let listed_pet = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pet| pet["id"] == current.id)
+        .unwrap();
+    assert_eq!(listed_pet["revision_id"], expected_revision_id);
+    assert_eq!(listed_pet["revision_count"], 2);
+
+    let snapshot = handle_request(&state, rpc_request("state.snapshot")).unwrap();
+    let snapshot_pet = snapshot["pets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pet| pet["id"] == current.id)
+        .unwrap();
+    assert_eq!(snapshot_pet["revision_id"], expected_revision_id);
+    assert_eq!(snapshot_pet["revision_count"], 2);
+    assert_ne!(first.petpack_path, current.petpack_path);
+}
+
+#[test]
+fn pet_list_keeps_external_nonowned_revision_metadata_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = CoreState::new(AppPaths::new(temp.path().join("home")));
+    state.ensure_ready().unwrap();
+
+    let source = temp.path().join("external-source");
+    write_sample_petpack_dir(&source, QualityLevel::High, "External Source", "半写实", 2).unwrap();
+    let imported = import_petpack(&state.paths, &state.database, &source).unwrap();
+    let external_package = temp.path().join("external.petpack");
+    fs::copy(&imported.petpack_path, &external_package).unwrap();
+    let mut external = imported;
+    external.id = "pet_externallegacy".to_string();
+    external.name = "External Legacy".to_string();
+    external.petpack_path = external_package.display().to_string();
+    external.revision_id = Some("untrusted".to_string());
+    external.revision_count = 99;
+    state.database.upsert_pet(&external).unwrap();
+
+    let listed = handle_request(&state, rpc_request("pet.list")).unwrap();
+    let listed_pet = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pet| pet["id"] == external.id)
+        .unwrap();
+    assert!(listed_pet.get("revision_id").is_none());
+    assert_eq!(listed_pet["revision_count"], 0);
 }
 
 #[test]

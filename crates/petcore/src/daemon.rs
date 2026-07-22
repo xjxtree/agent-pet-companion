@@ -2,6 +2,7 @@
 pub mod instance_lock;
 
 use self::instance_lock::{atomic_write_private, InstanceGuard};
+use crate::diagnostics::{DiagnosticLogger, DiagnosticRejection, DiagnosticTransport};
 use crate::paths::AppPaths;
 use crate::rpc::{
     encoded_error_response, handle_json_line, handle_request, normalize_event, CoreState,
@@ -31,53 +32,129 @@ const HTTP_WRITE_DEADLINE: Duration = Duration::from_secs(5);
 // receive a larger client-side response wait below.
 const UDS_IO_DEADLINE: Duration = Duration::from_secs(5);
 const UDS_PETPACK_RESPONSE_DEADLINE: Duration = Duration::from_secs(120);
+// A full four-host check intentionally serializes every native Agent/App
+// Server launch. Its strict worst-case process deadlines exceed 90 seconds
+// when several hosts are broken at once, so the transport budget must cover
+// the complete bounded sequence instead of timing out while PetCore continues.
+const UDS_CONNECTIONS_RESPONSE_DEADLINE: Duration = Duration::from_secs(180);
+const UDS_DIAGNOSTICS_RESPONSE_DEADLINE: Duration = Duration::from_secs(120);
 const UDS_MAX_FRAME_BYTES: usize = 256 * 1024;
 const UDS_MAX_CONCURRENT_CLIENTS: usize = 32;
 
 pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
-    crate::runtime_manifest::validate_expected_manifest_from_env()?;
+    // Acquire the process-wide instance lock before opening the shared log.
+    // This prevents a losing second daemon from rotating a file still held by
+    // the winning daemon under a different inode.
+    let instance_guard = InstanceGuard::acquire(&paths)?;
+    let diagnostics = DiagnosticLogger::new(&paths);
+    diagnostics.daemon_phase("starting");
+    let result = serve_with_diagnostics(paths, ready_file, diagnostics.clone(), instance_guard);
+    match &result {
+        Ok(()) => diagnostics.daemon_phase("stopped"),
+        Err(error) => diagnostics.daemon_failed(error),
+    }
+    diagnostics.sync();
+    result
+}
+
+fn serve_with_diagnostics(
+    paths: AppPaths,
+    ready_file: Option<&Path>,
+    diagnostics: DiagnosticLogger,
+    instance_guard: InstanceGuard,
+) -> Result<()> {
+    startup_step(
+        &diagnostics,
+        "manifest",
+        crate::runtime_manifest::validate_expected_manifest_from_env(),
+    )?;
     if let Ok(expected_build_id) = std::env::var("APC_EXPECTED_BUILD_ID") {
         if !expected_build_id.is_empty() && expected_build_id != crate::rpc::PETCORE_BUILD_ID {
-            return Err(PetCoreError::InvalidRequest(format!(
+            let error = PetCoreError::InvalidRequest(format!(
                 "petcore build {} does not match the App-required build {expected_build_id}",
                 crate::rpc::PETCORE_BUILD_ID
-            )));
+            ));
+            diagnostics.startup_failed("build_identity", &error);
+            return Err(error);
         }
     }
-    let instance_guard = InstanceGuard::acquire(&paths)?;
-    let state = CoreState::new(paths)
+    let state = CoreState::new_with_diagnostics(paths, diagnostics.clone())
         .with_instance_id(instance_guard.instance_id())
         .with_codex_activity_sync(true);
     state.ensure_ready()?;
-    write_capability_token(&state.paths)?;
+    startup_step(
+        &diagnostics,
+        "capability_token",
+        write_capability_token(&state.paths),
+    )?;
     if state.paths.socket_path.exists() {
         if UnixStream::connect(&state.paths.socket_path).is_ok() {
-            return Err(PetCoreError::InvalidRequest(format!(
+            let error = PetCoreError::InvalidRequest(format!(
                 "petcore socket is already active at {}",
                 state.paths.socket_path.display()
-            )));
+            ));
+            diagnostics.startup_failed("socket_bind", &error);
+            return Err(error);
         }
-        fs::remove_file(&state.paths.socket_path)?;
+        startup_step(
+            &diagnostics,
+            "socket_bind",
+            fs::remove_file(&state.paths.socket_path).map_err(PetCoreError::from),
+        )?;
     }
 
-    let listener = UnixListener::bind(&state.paths.socket_path)?;
-    fs::set_permissions(&state.paths.socket_path, fs::Permissions::from_mode(0o600))?;
-    let http_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let http_port = http_listener.local_addr()?.port();
-    instance_guard.publish_runtime(http_port)?;
+    let listener = startup_step(
+        &diagnostics,
+        "socket_bind",
+        UnixListener::bind(&state.paths.socket_path).map_err(PetCoreError::from),
+    )?;
+    startup_step(
+        &diagnostics,
+        "socket_bind",
+        fs::set_permissions(&state.paths.socket_path, fs::Permissions::from_mode(0o600))
+            .map_err(PetCoreError::from),
+    )?;
+    startup_step(
+        &diagnostics,
+        "socket_bind",
+        listener.set_nonblocking(true).map_err(PetCoreError::from),
+    )?;
+    let http_listener = startup_step(
+        &diagnostics,
+        "http_bind",
+        TcpListener::bind(("127.0.0.1", 0)).map_err(PetCoreError::from),
+    )?;
+    let http_port = startup_step(
+        &diagnostics,
+        "http_bind",
+        http_listener
+            .local_addr()
+            .map(|address| address.port())
+            .map_err(PetCoreError::from),
+    )?;
+    startup_step(
+        &diagnostics,
+        "runtime_publish",
+        instance_guard.publish_runtime(http_port),
+    )?;
 
     let http_state = state.clone();
+    let http_diagnostics = state.diagnostics.clone();
     thread::spawn(move || {
         if let Err(error) = serve_http(http_state, http_listener) {
-            eprintln!("petcore http endpoint stopped: {error}");
+            http_diagnostics.transport_failed(DiagnosticTransport::Http, &error);
         }
     });
 
     if let Some(path) = ready_file {
-        fs::write(path, "ready\n")?;
+        startup_step(
+            &diagnostics,
+            "runtime_publish",
+            fs::write(path, "ready\n").map_err(PetCoreError::from),
+        )?;
     }
+    state.diagnostics.daemon_phase("ready");
 
-    listener.set_nonblocking(true)?;
     let active_clients = Arc::new(AtomicUsize::new(0));
     while !state.shutdown_requested() {
         match listener.accept() {
@@ -86,24 +163,43 @@ pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
                     Arc::clone(&active_clients),
                     UDS_MAX_CONCURRENT_CLIENTS,
                 ) else {
-                    reject_busy_client(stream);
+                    reject_busy_client(&state, stream);
                     continue;
                 };
                 let state = state.clone();
                 thread::spawn(move || {
                     let _permit = permit;
                     if let Err(error) = handle_unix_stream(&state, stream) {
-                        eprintln!("petcore unix client error: {error}");
+                        state
+                            .diagnostics
+                            .transport_failed(DiagnosticTransport::Unix, &error);
                     }
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(20));
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                let error = PetCoreError::Io(error);
+                state
+                    .diagnostics
+                    .transport_failed(DiagnosticTransport::Unix, &error);
+                return Err(error);
+            }
         }
     }
+    state.diagnostics.daemon_phase("shutdown_requested");
     Ok(())
+}
+
+fn startup_step<T>(
+    diagnostics: &DiagnosticLogger,
+    stage: &'static str,
+    result: Result<T>,
+) -> Result<T> {
+    result.inspect_err(|error| {
+        diagnostics.startup_failed(stage, error);
+    })
 }
 
 pub fn write_capability_token(paths: &AppPaths) -> Result<String> {
@@ -147,6 +243,10 @@ fn handle_unix_stream(state: &CoreState, mut stream: UnixStream) -> Result<()> {
         Ok(Some(frame)) => frame,
         Ok(None) => return Ok(()),
         Err(UnixFrameReadError::TooLarge) => {
+            state.diagnostics.transport_rejected(
+                DiagnosticTransport::Unix,
+                DiagnosticRejection::FrameTooLarge,
+            );
             return write_unix_response(
                 &mut stream,
                 &encoded_error_response(
@@ -156,6 +256,9 @@ fn handle_unix_stream(state: &CoreState, mut stream: UnixStream) -> Result<()> {
             );
         }
         Err(UnixFrameReadError::Timeout) => {
+            state
+                .diagnostics
+                .transport_rejected(DiagnosticTransport::Unix, DiagnosticRejection::ReadTimeout);
             return write_unix_response(
                 &mut stream,
                 &encoded_error_response(-32000, "request read timed out"),
@@ -166,6 +269,9 @@ fn handle_unix_stream(state: &CoreState, mut stream: UnixStream) -> Result<()> {
     let line = match std::str::from_utf8(&frame) {
         Ok(line) => line,
         Err(_) => {
+            state
+                .diagnostics
+                .transport_rejected(DiagnosticTransport::Unix, DiagnosticRejection::InvalidUtf8);
             return write_unix_response(
                 &mut stream,
                 &encoded_error_response(-32700, "request is not valid UTF-8 JSON"),
@@ -264,7 +370,10 @@ fn write_unix_response(stream: &mut UnixStream, response: &str) -> Result<()> {
     write_unix_with_deadline(stream, &frame, Instant::now() + UDS_IO_DEADLINE)
 }
 
-fn reject_busy_client(mut stream: UnixStream) {
+fn reject_busy_client(state: &CoreState, mut stream: UnixStream) {
+    state
+        .diagnostics
+        .transport_rejected(DiagnosticTransport::Unix, DiagnosticRejection::Busy);
     let response = encoded_error_response(
         -32000,
         &format!("server busy: maximum {UDS_MAX_CONCURRENT_CLIENTS} concurrent clients"),
@@ -302,14 +411,16 @@ fn serve_http(state: CoreState, listener: TcpListener) -> Result<()> {
                     Arc::clone(&active_clients),
                     HTTP_MAX_CONCURRENT_CLIENTS,
                 ) else {
-                    reject_busy_http_client(stream);
+                    reject_busy_http_client(&state, stream);
                     continue;
                 };
                 let state = state.clone();
                 thread::spawn(move || {
                     let _permit = permit;
                     if let Err(error) = handle_http_stream(&state, stream) {
-                        eprintln!("petcore http client error: {error}");
+                        state
+                            .diagnostics
+                            .transport_failed(DiagnosticTransport::Http, &error);
                     }
                 });
             }
@@ -319,7 +430,10 @@ fn serve_http(state: CoreState, listener: TcpListener) -> Result<()> {
     Ok(())
 }
 
-fn reject_busy_http_client(mut stream: TcpStream) {
+fn reject_busy_http_client(state: &CoreState, mut stream: TcpStream) {
+    state
+        .diagnostics
+        .transport_rejected(DiagnosticTransport::Http, DiagnosticRejection::Busy);
     let _ = write_http(&mut stream, 503, json!({ "error": "server busy" }));
 }
 
@@ -327,6 +441,9 @@ fn handle_http_stream(state: &CoreState, mut stream: TcpStream) -> Result<()> {
     let (headers, body) = match read_http_request(&mut stream) {
         Ok(request) => request,
         Err(error) => {
+            state
+                .diagnostics
+                .transport_rejected(DiagnosticTransport::Http, error.diagnostic_rejection());
             return write_http(
                 &mut stream,
                 error.status(),
@@ -337,6 +454,9 @@ fn handle_http_stream(state: &CoreState, mut stream: TcpStream) -> Result<()> {
     let mut lines = headers.lines();
     let request_line = lines.next().unwrap_or_default();
     if !request_line.starts_with("POST /agent-events ") {
+        state
+            .diagnostics
+            .transport_rejected(DiagnosticTransport::Http, DiagnosticRejection::NotFound);
         return write_http(&mut stream, 404, json!({ "error": "not found" }));
     }
 
@@ -357,6 +477,9 @@ fn handle_http_stream(state: &CoreState, mut stream: TcpStream) -> Result<()> {
     }
 
     if !authorized {
+        state
+            .diagnostics
+            .transport_rejected(DiagnosticTransport::Http, DiagnosticRejection::Unauthorized);
         return write_http(
             &mut stream,
             401,
@@ -366,11 +489,19 @@ fn handle_http_stream(state: &CoreState, mut stream: TcpStream) -> Result<()> {
 
     let params: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(params) => params,
-        Err(_) => return write_http(&mut stream, 400, json!({ "error": "invalid json" })),
+        Err(_) => {
+            state
+                .diagnostics
+                .transport_rejected(DiagnosticTransport::Http, DiagnosticRejection::InvalidJson);
+            return write_http(&mut stream, 400, json!({ "error": "invalid json" }));
+        }
     };
     let event = match normalize_event(&params) {
         Ok(event) => event,
         Err(error) => {
+            state
+                .diagnostics
+                .transport_rejected(DiagnosticTransport::Http, DiagnosticRejection::BadRequest);
             return write_http(&mut stream, 400, json!({ "error": error.to_string() }));
         }
     };
@@ -420,6 +551,14 @@ impl HttpReadError {
             Self::BodyTooLarge => "request body too large",
             Self::Timeout => "request timed out",
             Self::Io => "invalid http request",
+        }
+    }
+
+    fn diagnostic_rejection(&self) -> DiagnosticRejection {
+        match self {
+            Self::HeaderTooLarge | Self::BodyTooLarge => DiagnosticRejection::FrameTooLarge,
+            Self::Timeout => DiagnosticRejection::ReadTimeout,
+            Self::BadRequest(_) | Self::Io => DiagnosticRejection::BadRequest,
         }
     }
 }
@@ -656,7 +795,14 @@ pub fn request(
 
 fn client_response_timeout(method: &str) -> Duration {
     match method {
-        "petpack.import" | "petpack.export" => UDS_PETPACK_RESPONSE_DEADLINE,
+        "pet.history" | "petpack.import" | "petpack.seed_bundled" | "petpack.export" => {
+            UDS_PETPACK_RESPONSE_DEADLINE
+        }
+        "connections.check"
+        | "connections.repair"
+        | "connections.refresh_installed"
+        | "connections.uninstall" => UDS_CONNECTIONS_RESPONSE_DEADLINE,
+        "diagnostics.export" => UDS_DIAGNOSTICS_RESPONSE_DEADLINE,
         _ => UDS_IO_DEADLINE,
     }
 }
@@ -815,20 +961,53 @@ fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{client_response_timeout, UDS_IO_DEADLINE, UDS_PETPACK_RESPONSE_DEADLINE};
+    use super::{
+        client_response_timeout, UDS_CONNECTIONS_RESPONSE_DEADLINE,
+        UDS_DIAGNOSTICS_RESPONSE_DEADLINE, UDS_IO_DEADLINE, UDS_PETPACK_RESPONSE_DEADLINE,
+    };
     use std::time::Duration;
 
     #[test]
-    fn client_response_timeout_only_extends_long_petpack_operations() {
+    fn client_response_timeout_extends_only_bounded_long_operations() {
         assert_eq!(UDS_IO_DEADLINE, Duration::from_secs(5));
         assert_eq!(UDS_PETPACK_RESPONSE_DEADLINE, Duration::from_secs(120));
+        assert_eq!(UDS_CONNECTIONS_RESPONSE_DEADLINE, Duration::from_secs(180));
+        assert_eq!(UDS_DIAGNOSTICS_RESPONSE_DEADLINE, Duration::from_secs(120));
         assert_eq!(
             client_response_timeout("petpack.import"),
             UDS_PETPACK_RESPONSE_DEADLINE
         );
         assert_eq!(
+            client_response_timeout("petpack.seed_bundled"),
+            UDS_PETPACK_RESPONSE_DEADLINE
+        );
+        assert_eq!(
             client_response_timeout("petpack.export"),
             UDS_PETPACK_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("pet.history"),
+            UDS_PETPACK_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("connections.check"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("connections.repair"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("connections.uninstall"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("connections.refresh_installed"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("diagnostics.export"),
+            UDS_DIAGNOSTICS_RESPONSE_DEADLINE
         );
 
         for method in [
@@ -836,6 +1015,7 @@ mod tests {
             "pet.list",
             "state.snapshot",
             "petpack.import.preview",
+            "connections.test",
             "Petpack.import",
         ] {
             assert_eq!(

@@ -1,9 +1,12 @@
 pub mod adapter_contracts;
+mod agent_environment;
+pub mod agent_session_filters;
 pub mod agent_state;
 pub mod app_server;
 pub mod connections;
 pub mod daemon;
 pub mod db;
+pub mod diagnostics;
 pub mod event_envelope;
 pub mod generation;
 pub mod launch_agent;

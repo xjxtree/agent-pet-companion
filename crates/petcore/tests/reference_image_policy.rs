@@ -1,5 +1,6 @@
 use image::{ImageBuffer, ImageFormat, Rgba};
 use petcore::reference_images::{validate_reference_inputs, MAX_REFERENCE_IMAGES};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 fn write_image(path: &Path, format: ImageFormat) {
@@ -73,4 +74,38 @@ fn reference_policy_rejects_more_than_the_maximum_count() {
         .unwrap_err()
         .to_string();
     assert!(error.contains(&MAX_REFERENCE_IMAGES.to_string()), "{error}");
+}
+
+#[test]
+fn reference_policy_does_not_reflect_secret_source_paths_in_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let secret_directory = temp.path().join("TOP_SECRET_REFERENCE_TOKEN");
+    let missing = secret_directory.join("private-customer-name.png");
+    let secret_path = missing.display().to_string();
+
+    let error = validate_reference_inputs(std::slice::from_ref(&secret_path))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("#1"), "{error}");
+    assert!(!error.contains("TOP_SECRET_REFERENCE_TOKEN"), "{error}");
+    assert!(!error.contains("private-customer-name"), "{error}");
+    assert!(!error.contains(&secret_path), "{error}");
+}
+
+#[test]
+fn reference_policy_rejects_a_leaf_symlink_to_a_valid_image() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("valid.png");
+    let link = temp.path().join("selected.png");
+    write_image(&target, ImageFormat::Png);
+    symlink(&target, &link).unwrap();
+
+    let error = validate_reference_inputs(&strings(std::slice::from_ref(&link)))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("符号链接"), "{error}");
+    assert!(!error.contains(&link.display().to_string()), "{error}");
+    assert!(!error.contains(&target.display().to_string()), "{error}");
 }
