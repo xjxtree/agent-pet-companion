@@ -291,6 +291,25 @@ if ! rg -Fq 'kAXIdentifierAttribute' "$MAIN_UI_VALIDATOR"; then
   record_failure 'main window validator does not read semantic AX identifiers'
 fi
 
+OVERLAY_NON_MOUSE_VALIDATOR="$ROOT_DIR/script/validate_overlay_non_mouse.sh"
+for current_contract in \
+  'requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"]' \
+  'actionable privacy-normalized waiting session' \
+  'actionable normalized done session' \
+  'RUN_ID="$RUN_ID"' \
+  'bubble.frame.width >= 108' \
+  'bubble.frame.height >= 70'; do
+  if ! rg -Fq "$current_contract" "$OVERLAY_NON_MOUSE_VALIDATOR"; then
+    record_failure "overlay non-mouse validator is missing UI Next contract: $current_contract"
+  fi
+done
+if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \
+  "$OVERLAY_NON_MOUSE_VALIDATOR" \
+  || rg -Fq 'canonical bubble contains lower-priority agents' "$OVERLAY_NON_MOUSE_VALIDATOR" \
+  || rg -Fq 'bubble.frame.height >= 44' "$OVERLAY_NON_MOUSE_VALIDATOR"; then
+  record_failure 'overlay non-mouse validator still assumes the removed single-agent legacy bubble'
+fi
+
 for validator in "${HOST_MUTATING_VALIDATORS[@]}"; do
   if ! rg -q 'apc_require_host_ui_opt_in' "$validator"; then
     record_failure "host-mutating validator lacks an independent APC_VALIDATE_HOST_UI gate: $validator"

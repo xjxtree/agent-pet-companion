@@ -150,7 +150,7 @@ ingest_event opencode review "待查看" "OpenCode 有内容待查看 ${RUN_ID}"
 
 validate_overlay_ax() {
   local expected_vertical_relation="$1"
-  APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" EXPECTED_VERTICAL_RELATION="$expected_vertical_relation" swift - <<'SWIFT'
+  APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" RUN_ID="$RUN_ID" EXPECTED_VERTICAL_RELATION="$expected_vertical_relation" swift - <<'SWIFT'
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -158,6 +158,7 @@ import Foundation
 
 let appName = ProcessInfo.processInfo.environment["APP_NAME"] ?? "AgentPetCompanion"
 let appPID = Int32(ProcessInfo.processInfo.environment["APP_PID"] ?? "") ?? -1
+let runID = ProcessInfo.processInfo.environment["RUN_ID"] ?? ""
 let relation = ProcessInfo.processInfo.environment["EXPECTED_VERTICAL_RELATION"] ?? "above"
 
 guard let app = NSRunningApplication(processIdentifier: appPID),
@@ -191,22 +192,33 @@ func size(_ element: AXUIElement, _ attr: String) -> CGSize? {
     return size
 }
 
-struct TextNode {
+struct AXNode {
+    let role: String
+    let identifier: String
+    let title: String
     let value: String
-    let frame: CGRect
+    let description: String
+    let frame: CGRect?
+
+    var strings: [String] {
+        [title, value, description].filter { !$0.isEmpty }
+    }
 }
 
-func collectTexts(_ element: AXUIElement, into texts: inout [TextNode]) {
-    let role = string(element, kAXRoleAttribute)
-    let value = string(element, kAXValueAttribute)
-    if role == kAXStaticTextRole as String, !value.isEmpty,
-       let position = point(element, kAXPositionAttribute),
-       let nodeSize = size(element, kAXSizeAttribute) {
-        texts.append(TextNode(value: value, frame: CGRect(origin: position, size: nodeSize)))
-    }
+func collectNodes(_ element: AXUIElement, into nodes: inout [AXNode]) {
+    let position = point(element, kAXPositionAttribute)
+    let nodeSize = size(element, kAXSizeAttribute)
+    nodes.append(AXNode(
+        role: string(element, kAXRoleAttribute),
+        identifier: string(element, kAXIdentifierAttribute),
+        title: string(element, kAXTitleAttribute),
+        value: string(element, kAXValueAttribute),
+        description: string(element, kAXDescriptionAttribute),
+        frame: position.flatMap { origin in nodeSize.map { CGRect(origin: origin, size: $0) } }
+    ))
     if let children = copy(element, kAXChildrenAttribute) as? [AXUIElement] {
         for child in children {
-            collectTexts(child, into: &texts)
+            collectNodes(child, into: &nodes)
         }
     }
 }
@@ -216,7 +228,7 @@ guard let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] else {
     exit(1)
 }
 
-var bubbleWindow: (element: AXUIElement, frame: CGRect, texts: [TextNode])?
+var bubbleWindow: (element: AXUIElement, frame: CGRect, nodes: [AXNode])?
 var emptyWindows: [(AXUIElement, CGRect)] = []
 
 for window in windows {
@@ -227,16 +239,33 @@ for window in windows {
     if title.isEmpty {
         emptyWindows.append((window, frame))
     }
-    var texts: [TextNode] = []
-    collectTexts(window, into: &texts)
-    let values = Set(texts.map(\.value))
-    if values.contains("Claude") && values.contains("等待确认") {
-        bubbleWindow = (window, frame, texts)
+    var nodes: [AXNode] = []
+    collectNodes(window, into: &nodes)
+    let values = nodes.flatMap(\.strings)
+    let containsWaitingSession = values.contains { value in
+        (value.contains("Claude 会话") || value.contains("Claude session"))
+            && (value.contains("需要输入") || value.contains("Needs input"))
+    }
+    if values.contains("Claude Code") && containsWaitingSession {
+        bubbleWindow = (window, frame, nodes)
     }
 }
 
 guard let bubble = bubbleWindow else {
     fputs("overlay non-mouse validation failed: canonical Claude waiting bubble was not found\n", stderr)
+    for (index, window) in windows.enumerated() {
+        var diagnosticNodes: [AXNode] = []
+        collectNodes(window, into: &diagnosticNodes)
+        let summary = diagnosticNodes.prefix(80).map { node in
+            [node.role, node.identifier, node.title, node.value, node.description]
+                .filter { !$0.isEmpty }
+                .joined(separator: ":")
+        }.filter { !$0.isEmpty }.joined(separator: " | ")
+        let windowFrame = point(window, kAXPositionAttribute).flatMap { origin in
+            size(window, kAXSizeAttribute).map { CGRect(origin: origin, size: $0) }
+        } ?? .zero
+        fputs("AX window \(index) title=\(string(window, kAXTitleAttribute)) frame=\(windowFrame) nodes=\(summary)\n", stderr)
+    }
     exit(1)
 }
 
@@ -258,25 +287,47 @@ guard let pet = sortedPetCandidates.first else {
     exit(1)
 }
 
-let values = Set(bubble.texts.map(\.value))
-let forbiddenAgents = ["Codex", "Pi", "OpenCode"].filter(values.contains)
-if !forbiddenAgents.isEmpty {
-    fputs("overlay non-mouse validation failed: canonical bubble contains lower-priority agents \(forbiddenAgents)\n", stderr)
+let values = bubble.nodes.flatMap(\.strings)
+let requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"]
+let missingAgentHeaders = requiredAgentHeaders.filter { !values.contains($0) }
+if !missingAgentHeaders.isEmpty {
+    fputs("overlay non-mouse validation failed: grouped bubble is missing agent headers \(missingAgentHeaders)\n", stderr)
     exit(1)
 }
 
-guard let messageText = bubble.texts.first(where: { $0.value == "等待确认" }) else {
-    fputs("overlay non-mouse validation failed: privacy-normalized waiting message is missing\n", stderr)
+guard let waitingNode = bubble.nodes.first(where: { node in
+    node.role == kAXButtonRole as String
+        && node.strings.contains(where: { value in
+            (value.contains("Claude 会话") || value.contains("Claude session"))
+                && (value.contains("需要输入") || value.contains("Needs input"))
+                && (
+                    value.contains("请回到 Agent 完成确认、回答或决策。")
+                        || value.contains("Return to the agent to approve, answer, or decide.")
+                )
+        })
+}) else {
+    fputs("overlay non-mouse validation failed: actionable privacy-normalized waiting session is missing\n", stderr)
     exit(1)
 }
 
-if !(bubble.frame.width >= 112 && bubble.frame.width <= 190 && bubble.frame.height >= 44 && bubble.frame.height <= 70) {
-    fputs("overlay non-mouse validation failed: unexpected canonical bubble frame \(bubble.frame)\n", stderr)
+if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
+    || values.contains(where: { $0 == "等待确认" }) {
+    fputs("overlay non-mouse validation failed: raw event copy leaked into the grouped bubble\n", stderr)
     exit(1)
 }
 
-if messageText.frame.height > 20 || messageText.frame.width > 80 {
-    fputs("overlay non-mouse validation failed: normalized message metrics unexpected, frame=\(messageText.frame)\n", stderr)
+if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
+    && bubble.frame.height >= 70 && bubble.frame.height <= 680) {
+    fputs("overlay non-mouse validation failed: grouped bubble frame is outside the UI Next bounds \(bubble.frame)\n", stderr)
+    exit(1)
+}
+
+guard let waitingFrame = waitingNode.frame,
+      waitingFrame.width >= 80,
+      waitingFrame.height >= 28,
+      waitingFrame.width <= bubble.frame.width,
+      waitingFrame.height <= 100 else {
+    fputs("overlay non-mouse validation failed: waiting session has unexpected AX frame \(String(describing: waitingNode.frame))\n", stderr)
     exit(1)
 }
 
@@ -295,7 +346,7 @@ SWIFT
 }
 
 validate_single_short_bubble() {
-  APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'
+  APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" RUN_ID="$RUN_ID" swift - <<'SWIFT'
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -303,6 +354,7 @@ import Foundation
 
 let appName = ProcessInfo.processInfo.environment["APP_NAME"] ?? "AgentPetCompanion"
 let appPID = Int32(ProcessInfo.processInfo.environment["APP_PID"] ?? "") ?? -1
+let runID = ProcessInfo.processInfo.environment["RUN_ID"] ?? ""
 
 guard let app = NSRunningApplication(processIdentifier: appPID),
       (app.executableURL?.lastPathComponent == appName || app.localizedName == appName) else {
@@ -335,22 +387,31 @@ func size(_ element: AXUIElement, _ attr: String) -> CGSize? {
     return size
 }
 
-struct TextNode {
+struct AXNode {
+    let role: String
+    let title: String
     let value: String
-    let frame: CGRect
+    let description: String
+    let frame: CGRect?
+
+    var strings: [String] {
+        [title, value, description].filter { !$0.isEmpty }
+    }
 }
 
-func collectTexts(_ element: AXUIElement, into texts: inout [TextNode]) {
-    let role = string(element, kAXRoleAttribute)
-    let value = string(element, kAXValueAttribute)
-    if role == kAXStaticTextRole as String, !value.isEmpty,
-       let position = point(element, kAXPositionAttribute),
-       let nodeSize = size(element, kAXSizeAttribute) {
-        texts.append(TextNode(value: value, frame: CGRect(origin: position, size: nodeSize)))
-    }
+func collectNodes(_ element: AXUIElement, into nodes: inout [AXNode]) {
+    let position = point(element, kAXPositionAttribute)
+    let nodeSize = size(element, kAXSizeAttribute)
+    nodes.append(AXNode(
+        role: string(element, kAXRoleAttribute),
+        title: string(element, kAXTitleAttribute),
+        value: string(element, kAXValueAttribute),
+        description: string(element, kAXDescriptionAttribute),
+        frame: position.flatMap { origin in nodeSize.map { CGRect(origin: origin, size: $0) } }
+    ))
     if let children = copy(element, kAXChildrenAttribute) as? [AXUIElement] {
         for child in children {
-            collectTexts(child, into: &texts)
+            collectNodes(child, into: &nodes)
         }
     }
 }
@@ -360,15 +421,19 @@ guard let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] else {
     exit(1)
 }
 
-var candidates: [(frame: CGRect, texts: [TextNode])] = []
+var candidates: [(frame: CGRect, nodes: [AXNode])] = []
 for window in windows where string(window, kAXTitleAttribute).isEmpty {
     guard let position = point(window, kAXPositionAttribute),
           let windowSize = size(window, kAXSizeAttribute) else { continue }
-    var texts: [TextNode] = []
-    collectTexts(window, into: &texts)
-    let values = Set(texts.map(\.value))
-    if values.contains("Codex") && values.contains("完成") {
-        candidates.append((CGRect(origin: position, size: windowSize), texts))
+    var nodes: [AXNode] = []
+    collectNodes(window, into: &nodes)
+    let values = nodes.flatMap(\.strings)
+    let containsDoneSession = values.contains { value in
+        (value.contains("Codex 会话") || value.contains("Codex session"))
+            && (value.contains("已完成") || value.contains("Completed"))
+    }
+    if values.contains("Codex") && containsDoneSession {
+        candidates.append((CGRect(origin: position, size: windowSize), nodes))
     }
 }
 
@@ -377,25 +442,46 @@ guard let bubble = candidates.sorted(by: { $0.frame.width < $1.frame.width }).fi
     exit(1)
 }
 
-let values = Set(bubble.texts.map(\.value))
-let forbidden = ["Claude", "Pi", "OpenCode"].filter(values.contains)
+let values = bubble.nodes.flatMap(\.strings)
+let forbidden = ["Claude Code", "Pi Coding Agent", "OpenCode"].filter(values.contains)
 if !forbidden.isEmpty {
     fputs("overlay short-bubble validation failed: single-agent bubble contains extra agents \(forbidden)\n", stderr)
     exit(1)
 }
 
-guard let doneText = bubble.texts.first(where: { $0.value == "完成" }) else {
-    fputs("overlay short-bubble validation failed: normalized done text missing\n", stderr)
+guard let doneNode = bubble.nodes.first(where: { node in
+    node.role == kAXButtonRole as String
+        && node.strings.contains(where: { value in
+            (value.contains("Codex 会话") || value.contains("Codex session"))
+                && (value.contains("已完成") || value.contains("Completed"))
+                && (
+                    value.contains("Agent 已完成任务。")
+                        || value.contains("The agent finished the task.")
+                )
+        })
+}) else {
+    fputs("overlay short-bubble validation failed: actionable normalized done session is missing\n", stderr)
     exit(1)
 }
 
-if !(bubble.frame.width >= 112 && bubble.frame.width <= 170 && bubble.frame.height >= 44 && bubble.frame.height <= 66) {
+if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
+    || values.contains(where: { $0.hasPrefix("短消息 ") }) {
+    fputs("overlay short-bubble validation failed: raw completion copy leaked into the bubble\n", stderr)
+    exit(1)
+}
+
+if !(bubble.frame.width >= 108 && bubble.frame.width <= 220
+    && bubble.frame.height >= 70 && bubble.frame.height <= 130) {
     fputs("overlay short-bubble validation failed: short bubble did not shrink to content, frame=\(bubble.frame)\n", stderr)
     exit(1)
 }
 
-if doneText.frame.height > 18 || doneText.frame.width > 36 {
-    fputs("overlay short-bubble validation failed: done text metrics unexpected, frame=\(doneText.frame)\n", stderr)
+guard let doneFrame = doneNode.frame,
+      doneFrame.width >= 80,
+      doneFrame.height >= 28,
+      doneFrame.width <= bubble.frame.width,
+      doneFrame.height <= 100 else {
+    fputs("overlay short-bubble validation failed: done session metrics unexpected, frame=\(String(describing: doneNode.frame))\n", stderr)
     exit(1)
 }
 
