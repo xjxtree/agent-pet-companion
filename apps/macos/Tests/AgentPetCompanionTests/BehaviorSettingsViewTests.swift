@@ -10,7 +10,13 @@ struct BehaviorSettingsViewTests {
     @Test
     func configurationHasExactlyTwoStableSubpages() {
         #expect(BehaviorSettingsSection.allCases == [.appearance, .messages])
-        #expect(BehaviorSettingsSection.allCases.map(\.title) == ["外观与桌宠", "消息与来源"])
+        #expect(
+            BehaviorSettingsSection.allCases.map(\.title)
+                == [
+                    APCLocalization.text(.configSectionAppearance),
+                    APCLocalization.text(.configSectionMessages),
+                ]
+        )
     }
 
     @Test

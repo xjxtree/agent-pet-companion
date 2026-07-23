@@ -315,7 +315,11 @@ struct AgentConnectionsTests {
     func lightCheckPresentationNeverClaimsRuntimeVerification() {
         let located = item(.ok)
         #expect(
-            AgentConnectionsPresentation.itemTitle(for: located, checkMode: .light)
+            AgentConnectionsPresentation.itemTitle(
+                for: located,
+                checkMode: .light,
+                locale: "zh-Hans"
+            )
                 == "已定位"
         )
         #expect(
@@ -323,8 +327,12 @@ struct AgentConnectionsTests {
                 == .neutral
         )
         #expect(
-            AgentConnectionsPresentation.itemTitle(for: located, checkMode: .runtime)
-                == CheckStatus.ok.title
+            AgentConnectionsPresentation.itemTitle(
+                for: located,
+                checkMode: .runtime,
+                locale: "zh-Hans"
+            )
+                == APCLocalizedPresentation.checkStatusTitle(.ok, locale: "zh-Hans")
         )
     }
 

@@ -195,23 +195,33 @@ struct UIModelTests {
 
     @Test
     func editHistoryCopyExplainsSelectableOwnedBaselinesAndSafeFallbacks() {
-        let checking = PetEditHistoryPresentation(state: .checking)
+        let checking = PetEditHistoryPresentation(
+            state: .checking,
+            localeIdentifier: "zh-Hans"
+        )
         #expect(checking.detail.contains("只读修改基线"))
 
         let available = PetEditHistoryPresentation(
-            state: .available(operation: .create, status: "completed")
+            state: .available(operation: .create, status: "completed"),
+            localeIdentifier: "zh-Hans"
         )
         #expect(available.title == "已找到最近一次 App 内记录")
         #expect(available.detail.contains("只读基线"))
         #expect(available.detail.contains("新 revision"))
 
-        let unavailable = PetEditHistoryPresentation(state: .unavailable)
+        let unavailable = PetEditHistoryPresentation(
+            state: .unavailable,
+            localeIdentifier: "zh-Hans"
+        )
         #expect(unavailable.title == "没有 App 内制作记录")
         #expect(unavailable.detail.contains("外部导入"))
         #expect(unavailable.detail.contains("安全回退"))
         #expect(unavailable.detail.contains("当前已校验 revision"))
 
-        let lookupFailed = PetEditHistoryPresentation(state: .lookupFailed)
+        let lookupFailed = PetEditHistoryPresentation(
+            state: .lookupFailed,
+            localeIdentifier: "zh-Hans"
+        )
         #expect(lookupFailed.detail.contains("当前已校验 revision"))
         #expect(lookupFailed.detail.contains("绝不会借用当前封面"))
     }
@@ -322,7 +332,7 @@ struct UIModelTests {
             #expect(label.contains(source.title))
         }
         for (event, label) in zip(AgentEventKind.allCases, eventLabels) {
-            #expect(label.contains(event.title))
+            #expect(label.contains(APCLocalizedPresentation.eventTitle(event)))
         }
         #expect(UIControlSemantics.toggleValue(isOn: true) != UIControlSemantics.toggleValue(isOn: false))
     }
@@ -456,8 +466,16 @@ struct UIModelTests {
             fingerprint: "sha256:test",
             message: "idle frame is corrupt"
         )
-        let invalid = PetLibraryPresentation(pet: pet, assetWarning: warning)
-        let imported = PetLibraryPresentation(pet: pet, assetWarning: nil)
+        let invalid = PetLibraryPresentation(
+            pet: pet,
+            assetWarning: warning,
+            localeIdentifier: "zh-Hans"
+        )
+        let imported = PetLibraryPresentation(
+            pet: pet,
+            assetWarning: nil,
+            localeIdentifier: "zh-Hans"
+        )
 
         #expect(invalid.validationStatus == .invalid)
         #expect(invalid.validationDetail.contains("idle frame is corrupt"))
@@ -471,7 +489,11 @@ struct UIModelTests {
         verifiedPet.origin = .verifiedSkillSource
         verifiedPet.generator = "codex-app-server-skill"
         verifiedPet.provenance = "skill-full-source"
-        let verified = PetLibraryPresentation(pet: verifiedPet, assetWarning: nil)
+        let verified = PetLibraryPresentation(
+            pet: verifiedPet,
+            assetWarning: nil,
+            localeIdentifier: "zh-Hans"
+        )
         #expect(verified.validationStatus == .verified)
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
@@ -564,15 +586,20 @@ struct UIModelTests {
         )
         let inactive = PetLibraryPresentation(
             pet: makePet(id: "pet_inactive", active: false),
-            assetWarning: nil
+            assetWarning: nil,
+            localeIdentifier: "zh-Hans"
         )
         let active = PetLibraryPresentation(
             pet: makePet(id: "pet_active", active: true),
-            assetWarning: nil
+            assetWarning: nil,
+            localeIdentifier: "zh-Hans"
         )
 
         #expect(inactive.currentStateTitle(activeEvent: event) == nil)
-        #expect(active.currentStateTitle(activeEvent: event) == event.eventType.title)
+        #expect(
+            active.currentStateTitle(activeEvent: event)
+                == APCLocalizedPresentation.eventTitle(event.eventType, locale: "zh-Hans")
+        )
     }
 
     @Test
@@ -1154,12 +1181,12 @@ struct UIModelTests {
             )).statusText
         }
 
-        #expect(status(.start) == "思考中")
-        #expect(status(.tool) == "执行工具")
-        #expect(status(.waiting) == "需要输入")
-        #expect(status(.review) == "待查看")
-        #expect(status(.done) == "已完成")
-        #expect(status(.failed) == "已阻塞")
+        #expect(status(.start) == APCLocalization.text(.overlayStatusRunning))
+        #expect(status(.tool) == APCLocalization.text(.overlayStatusTool))
+        #expect(status(.waiting) == APCLocalization.text(.overlayStatusNeedsInput))
+        #expect(status(.review) == APCLocalization.text(.overlayStatusReview))
+        #expect(status(.done) == APCLocalization.text(.overlayStatusDone))
+        #expect(status(.failed) == APCLocalization.text(.overlayStatusBlocked))
         #expect(status(.review) != status(.done))
     }
 

@@ -19,7 +19,10 @@ struct ServiceDiagnosticsTests {
     @Test
     func exportStateDoesNotInferStatusFromLocalizedGlobalText() {
         #expect(DiagnosticsExportState.idle.message == nil)
-        #expect(DiagnosticsExportState.exporting.message == "正在打包诊断日志")
+        #expect(
+            DiagnosticsExportState.exporting.message
+                == APCLocalization.text(.diagnosticsExportingMessage)
+        )
         #expect(DiagnosticsExportState.succeeded("archive.zip").message == "archive.zip")
         #expect(DiagnosticsExportState.failed("retry").message == "retry")
     }

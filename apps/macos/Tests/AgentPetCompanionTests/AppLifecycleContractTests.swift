@@ -132,7 +132,10 @@ struct AppLifecycleContractTests {
         ))
         #expect(!runtimeSource.contains("AppInstalledBuildMonitor"))
         #expect(!appSource.contains("installedBuildMonitor"))
-        #expect(APCLocalization.text(.appActionOpenControlCenter) == "打开控制中心")
+        #expect(
+            APCLocalization.text(.appActionOpenControlCenter, locale: "zh-Hans")
+                == "打开控制中心"
+        )
     }
 
     @Test
@@ -236,7 +239,10 @@ struct AppLifecycleContractTests {
             #"Button\s*\(\s*APCLocalization\.text\(\.appActionQuit\)\s*\)\s*\{[\s\S]*?NSApplication\.shared\.terminate\(nil\)"#,
             in: appSource
         ))
-        #expect(APCLocalization.text(.appActionQuit) == "退出 Agent Pet")
+        #expect(
+            APCLocalization.text(.appActionQuit, locale: "zh-Hans")
+                == "退出 Agent Pet"
+        )
         #expect(appSource.contains("NSApp.setActivationPolicy(.regular)"))
         #expect(!appSource.contains("func applicationShouldTerminate("))
         #expect(!appSource.contains("CommandGroup(replacing: .appTermination)"))
