@@ -7,13 +7,13 @@ Thanks for helping improve Agent Pet Companion. The project is a local-first mac
 ## Prerequisites / 开发环境
 
 - macOS 14 or newer / macOS 14 或更高版本
-- Xcode 16 or newer with Swift 6 / Xcode 16 或更高版本，包含 Swift 6
+- Apple Command Line Tools with Swift 6 and a macOS SDK; full Xcode is optional / 包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools；完整 Xcode 可选
 - Rust 1.96.0 with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
 - Python 3 for validation helpers
 
-The primary V1 performance target is Apple silicon. Release builds must also compile and validate an `x86_64` slice before they are described as universal.
+The primary V1 performance target is Apple silicon. GitHub Releases publish separate thin `arm64` and `x86_64` app archives; each archive must be built and validated for its declared architecture.
 
-V1 的主要性能目标是 Apple Silicon。发布构建只有在同时编译并验证 `x86_64` slice 后，才能称为 universal。
+V1 的主要性能目标是 Apple Silicon。GitHub Release 分别发布 thin `arm64` 与 `x86_64` App 归档；每个归档都必须按其声明架构完成构建与校验。
 
 ## Before changing behavior / 修改行为前
 

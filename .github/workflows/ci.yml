@@ -25,13 +25,13 @@ jobs:
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Verify Xcode and Swift baseline
+      - name: Verify Apple Command Line Tools and Swift baseline
         run: |
-          xcodebuild -version
           swift --version
-          test "$(xcodebuild -version | awk '/Xcode/{print int($2)}')" -ge 16
+          xcrun --show-sdk-path
+          test "$(swift --version | awk '/Apple Swift version/{split($4, v, "."); print v[1]}')" -ge 6
 
       - name: Install pinned Rust toolchain
         run: rustup show
@@ -44,7 +44,7 @@ jobs:
           rg --version
 
       - name: Cache Rust and Swift build products
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

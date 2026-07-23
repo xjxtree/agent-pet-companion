@@ -30,20 +30,19 @@ App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断
 
 ### 从 GitHub Release 安装
 
-存在已签名发布包时：
+存在发布包时：
 
 1. 打开 [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases)。
-2. 下载所需版本已签名、公证的 `AgentPetCompanion-macos-universal.zip` 及其 SHA-256 文件。
-3. 在下载目录运行 `shasum -a 256 -c AgentPetCompanion-macos-universal.zip.sha256`。
+2. 按 Mac 架构下载 ZIP：Apple 芯片选择 `macos-arm64`，Intel Mac 选择 `macos-x86_64`；同时下载该版本的 `SHA256SUMS.txt`。
+3. 在下载目录校验所选 ZIP，例如：`grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -`。
 4. 解压归档，并将 `AgentPetCompanion.app` 移到 `/Applications`。
 5. 打开 App，在 **Agent 连接**中完成所需集成检查。
 
-只有发布在 GitHub Releases、经过 Developer ID 签名与 Apple 公证的包才属于受支持的公开版本；开发 ZIP 仅用于非正式交接。
-如果 Releases 页面尚无已签名包，请使用下方源码构建流程。
+不要在 Apple 芯片 Mac 上运行 `x86_64` 归档：它依赖 Rosetta，并可能触发 Apple 的 Intel App 支持终止提示。`arm64` 归档及其包内全部可执行文件均为 Apple 芯片原生版本，不使用 Rosetta。Release ZIP 使用 ad-hoc 签名校验包完整性，不进行 Apple 公证。若 macOS 首次启动时阻止打开，请按住 Control 点击 App，选择**打开**并确认一次。对应 GitHub Release 会记录校验和与验收范围。
 
 ### 从源码构建
 
-需要 macOS 14+、包含 Swift 6 的 Xcode 16+、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。
+需要 macOS 14+、包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。本 SwiftPM 项目不强制安装完整 Xcode。
 
 ```bash
 git clone https://github.com/xjxtree/agent-pet-companion.git

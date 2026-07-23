@@ -105,6 +105,6 @@ logo/                       Approved reusable brand assets
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
 - Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
-- A public artifact is not a release until the exact universal App is signed, notarized, accepted, and recorded in the root changelog.
+- A GitHub Release publishes the App, PetCore, and CLI as one runtime identity in separate thin `arm64` and `x86_64` archives. Each exact archive must pass architecture, ad-hoc signature-integrity, package, checksum, and changelog/version checks; packaged functionality runs on the build host's matching native architecture.
 
 When changing one of these invariants, update the owning implementation, tests, runtime/schema version where required, and the corresponding document in the same change.

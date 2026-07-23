@@ -69,6 +69,7 @@ mkdir -p \
   "$BUILD_ROOT/apps/macos" \
   "$BUILD_ROOT/logo/macos" \
   "$BUILD_ROOT/target/debug" \
+  "$BUILD_ROOT/target/aarch64-apple-darwin/debug" \
   "$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__" \
   "$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__" \
   "$FAKE_SWIFT_BIN"
@@ -83,6 +84,8 @@ write_executable "$BUILD_ROOT/script/validate_app_bundle.sh" \
 for binary in \
   "$BUILD_ROOT/target/debug/petcore" \
   "$BUILD_ROOT/target/debug/petcore-cli" \
+  "$BUILD_ROOT/target/aarch64-apple-darwin/debug/petcore" \
+  "$BUILD_ROOT/target/aarch64-apple-darwin/debug/petcore-cli" \
   "$FAKE_SWIFT_BIN/AgentPetCompanion"; do
   write_executable "$binary" '#!/usr/bin/env bash' 'exit 0'
 done
@@ -654,6 +657,29 @@ else
     APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
     "$BUILD_ROOT/script/build_app_bundle.sh" --archive --unsigned >/dev/null 2>&1; then
     record_failure 'build_app_bundle.sh accepted incompatible --archive and --unsigned options'
+  fi
+  if ! PATH="$SHIM_DIR:$PATH" \
+    APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+    APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    "$BUILD_ROOT/script/build_app_bundle.sh" \
+      --arch arm64 \
+      --output "$BUILD_ROOT/dist/AgentPetCompanion-arm64.app" >/dev/null 2>&1; then
+    record_failure 'build_app_bundle.sh --arch arm64 did not complete in the isolated fixture'
+  elif [[ ! -d "$BUILD_ROOT/dist/AgentPetCompanion-arm64.app" ]]; then
+    record_failure 'architecture-specific app bundle build did not create its App'
+  fi
+  if PATH="$SHIM_DIR:$PATH" \
+    APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+    APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    "$BUILD_ROOT/script/build_app_bundle.sh" --arch mips >/dev/null 2>&1; then
+    record_failure 'build_app_bundle.sh accepted an unsupported architecture'
+  fi
+  if PATH="$SHIM_DIR:$PATH" \
+    APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+    APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    "$BUILD_ROOT/script/build_app_bundle.sh" \
+      --universal --arch arm64 --configuration release >/dev/null 2>&1; then
+    record_failure 'build_app_bundle.sh accepted --universal together with --arch'
   fi
   if [[ -s "$FORBIDDEN_LOG" ]]; then
     record_failure "bundle build invoked forbidden host commands: $(tr '\n' ' ' <"$FORBIDDEN_LOG")"

@@ -10,6 +10,8 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-23
+
 ### Added / 新增
 
 - Added bundled `星雾团子` and `Bytebud 字节芽` pets to the first-launch library. / 首次打开即可在宠物库中看到内置的 `星雾团子` 与 `Bytebud 字节芽`。
@@ -18,6 +20,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Changed / 变更
 
+- GitHub Releases now provide separate ad-hoc-signed `arm64` and `x86_64` App archives with a shared SHA-256 checksum file; Developer ID signing, Apple notarization, stapling, Gatekeeper assessment, universal binaries, full Xcode, and separate physical-device acceptance are no longer development-stage release gates. / GitHub Release 现在分别提供采用 ad-hoc 签名的 `arm64` 与 `x86_64` App 归档，并附共享的 SHA-256 校验和文件；Developer ID 签名、Apple 公证、staple、Gatekeeper 评估、universal 二进制、完整 Xcode 与不同物理设备验收不再是当前开发阶段的发布门槛。
 - Replaced the ambiguous 12/20 FPS playback contract with authored 10/20 FPS tiers and fixed one- or two-second action durations: the creation brief can select the authored timing, high-rate pets can render at either tier without changing action speed, low-rate pets cannot be promoted at runtime, and AI edits create a new immutable revision when timing changes. Bundled pets now exercise both native tiers, while package details and configuration show each pet's supported playback and fixed durations. / 将含糊的 12/20 FPS 播放契约改为制作阶段固定的 10/20 FPS 两档与一秒或两秒动作时长：创作需求可选择制作时序；高帧率宠物可在不改变动作速度的前提下选择两档渲染，低帧率宠物不能在运行时升档，AI 修改时序会生成新的不可变 revision；两只内置宠物分别覆盖两档原生帧率，宠物详情与配置也会显示其可用播放档位和固定动作时长。
 - Moved the enlarged Agent Pet Companion brand into the fixed control-center toolbar without a shared glass background, widened and increased the row height of the primary navigation, and unified nested navigation and pet-preview backgrounds with the surrounding App surfaces. / 将放大后的 Agent Pet Companion 品牌移至控制中心的固定工具栏并去除共享玻璃背景，加宽主导航并增大选项行高，同时将嵌套导航与宠物预览背景统一为 App 周边界面样式。
 - Development builds now produce only the ad-hoc-signed local App by default; the verified handoff ZIP is available through explicit `--archive`. / 开发构建默认仅生成 ad-hoc 签名的本机 App；已校验的交接 ZIP 改为通过显式 `--archive` 生成。

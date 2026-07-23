@@ -3,10 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="development"
+EXPECTED_ARCH=""
 APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
 
 usage() {
-  echo 'usage: validate_app_bundle.sh [--development|--distribution] [APP_BUNDLE]'
+  echo 'usage: validate_app_bundle.sh [--development|--release] [--architecture arm64|x86_64] [APP_BUNDLE]'
+  echo '       --architecture is required with --release'
 }
 
 while (($# > 0)); do
@@ -15,8 +17,17 @@ while (($# > 0)); do
       MODE="development"
       shift
       ;;
-    --distribution)
-      MODE="distribution"
+    --release)
+      MODE="release"
+      shift
+      ;;
+    --architecture)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      EXPECTED_ARCH="$2"
+      shift 2
+      ;;
+    --architecture=*)
+      EXPECTED_ARCH="${1#--architecture=}"
       shift
       ;;
     -h|--help)
@@ -35,6 +46,38 @@ while (($# > 0)); do
       ;;
   esac
 done
+case "$EXPECTED_ARCH" in
+  "")
+    ;;
+  arm64|aarch64)
+    EXPECTED_ARCH="arm64"
+    ;;
+  x86_64|x64|amd64|intel)
+    EXPECTED_ARCH="x86_64"
+    ;;
+  *)
+    printf 'unsupported expected architecture: %s\n' "$EXPECTED_ARCH" >&2
+    exit 2
+    ;;
+esac
+if [[ "$MODE" == "release" && -z "$EXPECTED_ARCH" ]]; then
+  echo '--release requires --architecture arm64 or --architecture x86_64' >&2
+  exit 2
+fi
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  aarch64) HOST_ARCH="arm64" ;;
+  amd64) HOST_ARCH="x86_64" ;;
+esac
+RUN_PACKAGED_RUNTIME=1
+RUNTIME_VALIDATION_SCOPE="packaged functionality"
+if [[ -n "$EXPECTED_ARCH" && "$EXPECTED_ARCH" != "$HOST_ARCH" ]]; then
+  # Launching an Intel App on Apple silicon invokes Rosetta and now presents a
+  # system compatibility warning. Cross-architecture release validation stays
+  # static; the matching native archive exercises the shared runtime behavior.
+  RUN_PACKAGED_RUNTIME=0
+  RUNTIME_VALIDATION_SCOPE="static package validation; cross-architecture runtime not launched"
+fi
 APP_NAME="AgentPetCompanion"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_BINARY="$APP_CONTENTS/MacOS/$APP_NAME"
@@ -83,6 +126,20 @@ trap cleanup EXIT
   echo "app bundle validation failed: missing bundled petcore-cli $PETCORE_CLI" >&2
   exit 1
 }
+if [[ -n "$EXPECTED_ARCH" ]]; then
+  command -v lipo >/dev/null 2>&1 || {
+    echo 'architecture validation requires lipo from Apple Command Line Tools' >&2
+    exit 1
+  }
+  for binary in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI"; do
+    architectures="$(lipo -archs "$binary")"
+    [[ "$architectures" == "$EXPECTED_ARCH" ]] || {
+      printf 'app bundle validation failed: %s architecture is %s, expected thin %s\n' \
+        "$binary" "$architectures" "$EXPECTED_ARCH" >&2
+      exit 1
+    }
+  done
+fi
 [[ -f "$RUNTIME_MANIFEST" ]] || {
   echo "app bundle validation failed: missing runtime manifest $RUNTIME_MANIFEST" >&2
   exit 1
@@ -148,7 +205,9 @@ for petpack_name in pet_xingwutuanzi.petpack pet_bytebudcodex.petpack; do
     echo "app bundle validation failed: bundled pet differs from audited source: $petpack_name" >&2
     exit 1
   }
-  "$PETCORE_CLI" petpack validate "$BUNDLED_PETS_DIR/$petpack_name" >/dev/null
+  if [[ "$RUN_PACKAGED_RUNTIME" == "1" ]]; then
+    "$PETCORE_CLI" petpack validate "$BUNDLED_PETS_DIR/$petpack_name" >/dev/null
+  fi
 done
 if [[ "$(find "$BUNDLED_PETS_DIR" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" != "2" ]]; then
   echo "app bundle validation failed: bundled pet inventory must contain exactly the two approved entries" >&2
@@ -252,6 +311,33 @@ if mime != "application/vnd.agentpet.petpack+zip":
     )
 PY
 
+python3 - "$APP_CONTENTS/Info.plist" "$RUNTIME_MANIFEST" <<'PY'
+import json
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    info = plistlib.load(file)
+with open(sys.argv[2], "r", encoding="utf-8") as file:
+    manifest = json.load(file)
+
+expected = {
+    "schema_version": "apc.runtime-manifest.v1",
+    "release_channel": info["APCReleaseChannel"],
+    "app_version": info["CFBundleShortVersionString"],
+    "app_build": info["CFBundleVersion"],
+    "build_id": info["APCBuildID"],
+    "petcore_build_id": info["APCBuildID"],
+    "petcore_cli_build_id": info["APCBuildID"],
+}
+for key, value in expected.items():
+    if manifest.get(key) != value:
+        raise SystemExit(
+            f"app bundle validation failed: runtime manifest {key}="
+            f"{manifest.get(key)!r}, expected {value!r}"
+        )
+PY
+
 grep -q '^name: agent-pet-studio$' "$BUNDLED_SKILL"
 grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL"
 grep -q 'Do not read agent auth' "$BUNDLED_SKILL"
@@ -259,41 +345,42 @@ grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
 grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
 [[ -x "$BUNDLED_PORTABLE_SKILL/scripts/petpack_workspace.py" ]]
 
-# Run the exact packaged Swift/AppKit executable through its prohibited-
-# activation validation mode. This exercises packaged optimization, resources,
-# overlay geometry, keyboard accessibility, and frame-pipeline wiring without
-# opening windows or taking user input.
-UI_VALIDATION_OUTPUT="$(
-  APC_HOME="$TMP_DIR/ui-validation-home" \
-  APC_DISABLE_LAUNCH_AGENT=1 \
-  APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
-  "$APP_BINARY" --run-ui-validation
-)"
-grep -q '^AgentPetCompanionUIValidation ok: [0-9][0-9]*/[0-9][0-9]* checks passed$' \
-  <<<"$UI_VALIDATION_OUTPUT" || {
-  echo 'app bundle validation failed: packaged UI validation did not complete' >&2
-  printf '%s\n' "$UI_VALIDATION_OUTPUT" >&2
-  exit 1
-}
-printf '%s\n' "$UI_VALIDATION_OUTPUT"
+if [[ "$RUN_PACKAGED_RUNTIME" == "1" ]]; then
+  # Run the exact native packaged Swift/AppKit executable through its
+  # prohibited-activation validation mode. This exercises packaged
+  # optimization, resources, overlay geometry, keyboard accessibility, and
+  # frame-pipeline wiring without opening windows or taking user input.
+  UI_VALIDATION_OUTPUT="$(
+    APC_HOME="$TMP_DIR/ui-validation-home" \
+    APC_DISABLE_LAUNCH_AGENT=1 \
+    APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
+    "$APP_BINARY" --run-ui-validation
+  )"
+  grep -q '^AgentPetCompanionUIValidation ok: [0-9][0-9]*/[0-9][0-9]* checks passed$' \
+    <<<"$UI_VALIDATION_OUTPUT" || {
+    echo 'app bundle validation failed: packaged UI validation did not complete' >&2
+    printf '%s\n' "$UI_VALIDATION_OUTPUT" >&2
+    exit 1
+  }
+  printf '%s\n' "$UI_VALIDATION_OUTPUT"
 
-APC_HOME="$TMP_DIR/home" "$PETCORE" preflight \
-  --home "$TMP_DIR/home" \
-  --manifest "$RUNTIME_MANIFEST" >/dev/null
+  APC_HOME="$TMP_DIR/home" "$PETCORE" preflight \
+    --home "$TMP_DIR/home" \
+    --manifest "$RUNTIME_MANIFEST" >/dev/null
 
-APC_HOME="$TMP_DIR/home" "$PETCORE" init
+  APC_HOME="$TMP_DIR/home" "$PETCORE" init
 
-BUNDLE_BUILD_ID="$(python3 - "$APP_CONTENTS/Info.plist" <<'PY'
+  BUNDLE_BUILD_ID="$(python3 - "$APP_CONTENTS/Info.plist" <<'PY'
 import plistlib
 import sys
 
 with open(sys.argv[1], "rb") as file:
     print(plistlib.load(file)["APCBuildID"])
 PY
-)"
+  )"
 
-BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
-JSON="$BUDGET" python3 - <<'PY'
+  BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
+  JSON="$BUDGET" python3 - <<'PY'
 import json
 import os
 
@@ -303,23 +390,23 @@ assert data["fps"] == 10, data
 assert data["renderer_budget_mb"] == 180, data
 PY
 
-(
-  APC_HOME="$TMP_DIR/home" \
-  APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
-  APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
-  APC_EXPECTED_BUILD_ID="$BUNDLE_BUILD_ID" \
-  APC_EXPECTED_RUNTIME_MANIFEST="$RUNTIME_MANIFEST" \
-  "$PETCORE" serve --ready-file "$TMP_DIR/ready"
-) &
-PETCORE_PID="$!"
-for _ in {1..100}; do
-  [[ -f "$TMP_DIR/ready" ]] && break
-  sleep 0.05
-done
-[[ -f "$TMP_DIR/ready" ]]
+  (
+    APC_HOME="$TMP_DIR/home" \
+    APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
+    APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
+    APC_EXPECTED_BUILD_ID="$BUNDLE_BUILD_ID" \
+    APC_EXPECTED_RUNTIME_MANIFEST="$RUNTIME_MANIFEST" \
+    "$PETCORE" serve --ready-file "$TMP_DIR/ready"
+  ) &
+  PETCORE_PID="$!"
+  for _ in {1..100}; do
+    [[ -f "$TMP_DIR/ready" ]] && break
+    sleep 0.05
+  done
+  [[ -f "$TMP_DIR/ready" ]]
 
-HEALTH="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" health)"
-HEALTH="$HEALTH" BUNDLE_BUILD_ID="$BUNDLE_BUILD_ID" RUNTIME_MANIFEST="$RUNTIME_MANIFEST" python3 - <<'PY'
+  HEALTH="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" health)"
+  HEALTH="$HEALTH" BUNDLE_BUILD_ID="$BUNDLE_BUILD_ID" RUNTIME_MANIFEST="$RUNTIME_MANIFEST" python3 - <<'PY'
 import json
 import os
 
@@ -335,20 +422,20 @@ if health.get("runtime_manifest") != manifest:
     raise SystemExit("app bundle validation failed: PetCore runtime manifest mismatch")
 PY
 
-# Exercise the packaged daemon, CLI and exact packaged resource directory as
-# one clean-home seed path. Static digest checks above prove provenance; this
-# closes the release gate by proving the installed summaries, active choice and
-# rollback-compatible database schema that the App's first snapshot consumes.
-BUNDLED_SEED="$(
-  APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack seed-bundled \
-    --inventory-root "$BUNDLED_PETS_DIR"
-)"
-BUNDLED_PETS="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet list)"
-BUNDLED_SEED="$BUNDLED_SEED" \
-BUNDLED_PETS="$BUNDLED_PETS" \
-BUNDLED_HOME="$TMP_DIR/home" \
-BUNDLED_DB="$TMP_DIR/home/agent-pet.sqlite" \
-python3 - <<'PY'
+  # Exercise the packaged daemon, CLI and exact packaged resource directory as
+  # one clean-home seed path. Static digest checks above prove provenance; this
+  # closes the release gate by proving the installed summaries, active choice
+  # and database schema that the App's first snapshot consumes.
+  BUNDLED_SEED="$(
+    APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack seed-bundled \
+      --inventory-root "$BUNDLED_PETS_DIR"
+  )"
+  BUNDLED_PETS="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet list)"
+  BUNDLED_SEED="$BUNDLED_SEED" \
+  BUNDLED_PETS="$BUNDLED_PETS" \
+  BUNDLED_HOME="$TMP_DIR/home" \
+  BUNDLED_DB="$TMP_DIR/home/agent-pet.sqlite" \
+  python3 - <<'PY'
 import json
 import os
 import pathlib
@@ -393,61 +480,69 @@ if schema_version != 5:
     )
 PY
 
-for source in codex claude_code pi opencode; do
-  APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null
-done
+  for source in codex claude_code pi opencode; do
+    APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null
+  done
 
-grep -qF "$PETCORE_CLI" \
-  "$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
-CLAUDE_HELPER="$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
-grep -qF "$CLAUDE_HELPER" "$TMP_DIR/agent-home/.claude/settings.json"
-grep -qF "$PETCORE_CLI" "$CLAUDE_HELPER"
-grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.pi/agent/extensions/agent-pet-companion.ts"
-grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js"
+  grep -qF "$PETCORE_CLI" \
+    "$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
+  CLAUDE_HELPER="$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
+  grep -qF "$CLAUDE_HELPER" "$TMP_DIR/agent-home/.claude/settings.json"
+  grep -qF "$PETCORE_CLI" "$CLAUDE_HELPER"
+  grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.pi/agent/extensions/agent-pet-companion.ts"
+  grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js"
+fi
 
-if [[ "$MODE" == "distribution" ]]; then
-  [[ "$(uname -s)" == "Darwin" ]] || {
-    echo 'distribution validation requires Darwin' >&2
+SIGNATURE_PRESENT=0
+# The linker may ad-hoc sign an individual Mach-O even for an intentionally
+# unsigned app bundle. The outer bundle is signed only when it has a resource
+# envelope; a partial outer signature directory is invalid as well.
+if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then
+  SIGNATURE_PRESENT=1
+fi
+
+if [[ "$MODE" == "release" && "$SIGNATURE_PRESENT" != "1" ]]; then
+  echo 'release app bundle validation failed: the outer app requires an ad-hoc signature' >&2
+  exit 1
+fi
+
+if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
+  command -v codesign >/dev/null 2>&1 || {
+    echo 'app bundle validation failed: a signature is present but codesign is unavailable' >&2
     exit 1
   }
-  for dependency in codesign lipo spctl xcrun; do
-    command -v "$dependency" >/dev/null 2>&1 || {
-      printf 'distribution validation requires %s\n' "$dependency" >&2
-      exit 1
-    }
-  done
-  for binary in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI"; do
-    architectures="$(lipo -archs "$binary")"
-    [[ " $architectures " == *' arm64 '* && " $architectures " == *' x86_64 '* ]] || {
-      printf 'distribution validation failed: %s is not universal (%s)\n' "$binary" "$architectures" >&2
-      exit 1
-    }
-  done
-  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
-  codesign -d --verbose=4 "$APP_BUNDLE" 2>&1 | grep -q 'Runtime Version'
-  xcrun stapler validate "$APP_BUNDLE"
-  spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
-  echo 'Distribution app bundle validation ok: universal, signed, hardened, notarized and stapled'
-else
-  SIGNATURE_PRESENT=0
-  # The linker may ad-hoc sign an individual Mach-O even for an intentionally
-  # unsigned app bundle. The outer bundle is signed only when it has a resource
-  # envelope; a partial outer signature directory is invalid as well.
-  if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then
-    SIGNATURE_PRESENT=1
+  if ! codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"; then
+    echo 'app bundle validation failed: strict signature verification failed' >&2
+    exit 1
   fi
+fi
 
-  if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
-    command -v codesign >/dev/null 2>&1 || {
-      echo 'development app bundle validation failed: a signature is present but codesign is unavailable' >&2
+if [[ "$MODE" == "release" ]]; then
+  for signed_item in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI" "$APP_BUNDLE"; do
+    # Avoid grep -q here: with pipefail it may close the pipe before codesign
+    # finishes writing verbose metadata, turning a valid result into SIGPIPE.
+    codesign -d --verbose=4 "$signed_item" 2>&1 \
+      | grep -Fx 'Signature=adhoc' >/dev/null || {
+      printf 'release app bundle validation failed: expected ad-hoc signature: %s\n' \
+        "$signed_item" >&2
       exit 1
     }
-    if ! codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"; then
-      echo 'development app bundle validation failed: a signature is present but strict verification failed' >&2
-      exit 1
-    fi
-    echo 'Development app bundle validation ok (signature present and strictly valid; notarization not required by this mode)'
-  else
-    echo 'Development app bundle validation ok (no signature present; not distributable)'
-  fi
+  done
+  python3 - "$APP_CONTENTS/Info.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    info = plistlib.load(file)
+if info.get("APCReleaseChannel") != "release":
+    raise SystemExit(
+        "release app bundle validation failed: APCReleaseChannel must be 'release'"
+    )
+PY
+  printf 'Release app bundle validation ok (%s, ad-hoc signature, %s)\n' \
+    "${EXPECTED_ARCH:-host architecture}" "$RUNTIME_VALIDATION_SCOPE"
+elif [[ "$SIGNATURE_PRESENT" == "1" ]]; then
+  echo 'Development app bundle validation ok (signature present and strictly valid)'
+else
+  echo 'Development app bundle validation ok (no outer signature present)'
 fi

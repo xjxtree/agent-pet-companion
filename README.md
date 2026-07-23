@@ -30,20 +30,19 @@ The app is local-first: pets, settings, normalized agent events, and diagnostics
 
 ### GitHub Release
 
-When a signed release is available:
+When a release is available:
 
 1. Open [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases).
-2. Download the signed, notarized `AgentPetCompanion-macos-universal.zip` and its SHA-256 file for the version you want.
-3. In the download directory, run `shasum -a 256 -c AgentPetCompanion-macos-universal.zip.sha256`.
+2. Download the ZIP matching your Mac—`macos-arm64` for Apple silicon or `macos-x86_64` for Intel—plus the versioned `SHA256SUMS.txt`.
+3. In the download directory, verify the selected ZIP, for example: `grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -`.
 4. Extract the archive and move `AgentPetCompanion.app` to `/Applications`.
 5. Open the app and complete the checks under **Agent Connections**.
 
-Only a Developer ID-signed, Apple-notarized package published on GitHub Releases is a supported public release. A development ZIP is for informal handoff only.
-If the Releases page has no signed package, use the source-build workflow below.
+Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger Apple's Intel-app support warning. The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. Release ZIPs are ad-hoc signed for bundle-integrity verification and are not Apple-notarized. If macOS blocks the first launch, Control-click the app, choose **Open**, and confirm once. The matching GitHub Release records the checksums and validation scope.
 
 ### Build from source
 
-Requirements: macOS 14+, Xcode 16+ with Swift 6, the Rust toolchain pinned by `rust-toolchain.toml`, and Python 3.
+Requirements: macOS 14+, Apple Command Line Tools with Swift 6 and a macOS SDK, the Rust toolchain pinned by `rust-toolchain.toml`, and Python 3. Full Xcode is optional for this SwiftPM project.
 
 ```bash
 git clone https://github.com/xjxtree/agent-pet-companion.git

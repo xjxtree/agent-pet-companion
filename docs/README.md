@@ -25,7 +25,7 @@ When sources disagree, use this order:
 | Integrations | [Agent connectors](integrations/agent-connectors.md) | Codex, Claude Code, Pi, and OpenCode event boundaries / 四类 Agent 的连接与事件边界 |
 | Specifications | [`.petpack` V1](specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet package and producer contract / 可移植宠物包与生产者契约 |
 | Development | [Validation profiles](development/validation.md) | What each gate proves and when it may run / 各门禁的证明范围与运行条件 |
-| Release | [macOS release procedure](release/macos-release.md) | Versioning, changelog, signing, notarization, and artifact acceptance / 版本、变更记录、签名、公证与产物验收 |
+| Release | [macOS release procedure](release/macos-release.md) | Versioning, architecture-specific packaging, checksums, and functional acceptance / 版本、分架构打包、校验和与功能验收 |
 | Repository root | [CHANGELOG](../CHANGELOG.md) | One versioned user-visible change record per GitHub Release / 每个 GitHub Release 对应的版本变更记录 |
 
 ## Maintenance rules / 维护规则
@@ -34,7 +34,7 @@ When sources disagree, use this order:
 - Document current behavior and invariants. Do not store roadmaps, rolling status, dated audits, screenshots used as evidence, implementation diaries, pending-work lists, or test logs here.
 - Put planned work in issues. Put commit/build evidence in CI artifacts and the matching GitHub Release notes.
 - Record every user-visible change under `[Unreleased]` in the root [CHANGELOG](../CHANGELOG.md); each published release converts it into one version section.
-- Never commit exported diagnostics, user data, credentials, private notarization logs, generated build output, or temporary pet assets as documentation.
+- Never commit exported diagnostics, user data, credentials, generated release output, build caches, or temporary pet assets as documentation.
 
 - 每个主题只保留一份长期文档，优先链接源码，不复制大段实现或 schema。
 - 只描述当前行为与不变量；不保存路线图、滚动状态、按日期审计、证据截图、实现过程、待办列表或测试日志。
