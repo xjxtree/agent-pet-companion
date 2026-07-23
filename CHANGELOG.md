@@ -10,6 +10,10 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- Aligned release and validation documentation with the dual-architecture development flow: removed stale notarization and release-channel references, documented explicit runtime-gate values and native-versus-cross-architecture validation scope, and linked Apple's Rosetta guidance. / 将发布与验证文档同步到双架构开发流程：移除残留的公证与 release-channel 表述，明确真实运行门禁取值及本机/跨架构验收范围，并补充 Apple Rosetta 官方说明链接。
+
 ## [0.1.0] - 2026-07-23
 
 ### Added / 新增

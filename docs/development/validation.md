@@ -30,8 +30,8 @@ The default/simulated gate must use isolated homes and must not launch the GUI, 
 ## Explicit runtime gates / 显式真实运行时门禁
 
 - `APC_VALIDATE_HOST_UI=0|1` controls packaged macOS runtime validation. Live UI verification must use Computer Use first; any fallback that can launch or activate an App, move input, or steal focus requires explicit user approval immediately before use.
-- `APC_VALIDATE_REAL_AGENT_CONNECTORS=0|1|auto` controls access to current user connector files and installed Agent CLIs. It never authorizes reading credential stores.
-- `APC_VALIDATE_REAL_APP_SERVER=0|1|auto` controls a real App Server session. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` is the strict release path; setting it to `0` explicitly downgrades the proof.
+- `APC_VALIDATE_REAL_AGENT_CONNECTORS=0|1` controls access to current user connector files and installed Agent CLIs. Only `1` opts into the real check; it never authorizes reading credential stores.
+- `APC_VALIDATE_REAL_APP_SERVER=0|1` controls a real App Server session. Only `1` opts into the real check. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` is the strict release path; setting it to `0` explicitly downgrades the proof.
 - `APC_VALIDATE_OVERLAY_INTERACTION=1` enables the direct-input technical gate but is not user authorization to take over input.
 - `APC_EVENT_STORM_COUNT` changes the bounded stress size; the default is `180`.
 

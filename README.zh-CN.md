@@ -38,7 +38,7 @@ App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断
 4. 解压归档，并将 `AgentPetCompanion.app` 移到 `/Applications`。
 5. 打开 App，在 **Agent 连接**中完成所需集成检查。
 
-不要在 Apple 芯片 Mac 上运行 `x86_64` 归档：它依赖 Rosetta，并可能触发 Apple 的 Intel App 支持终止提示。`arm64` 归档及其包内全部可执行文件均为 Apple 芯片原生版本，不使用 Rosetta。Release ZIP 使用 ad-hoc 签名校验包完整性，不进行 Apple 公证。若 macOS 首次启动时阻止打开，请按住 Control 点击 App，选择**打开**并确认一次。对应 GitHub Release 会记录校验和与验收范围。
+不要在 Apple 芯片 Mac 上运行 `x86_64` 归档：它依赖 Rosetta，并可能触发 [Apple 官方说明](https://support.apple.com/zh-cn/102527)中的 Intel App 支持终止提示。`arm64` 归档及其包内全部可执行文件均为 Apple 芯片原生版本，不使用 Rosetta。Release ZIP 使用 ad-hoc 签名校验包完整性，不进行 Apple 公证。若 macOS 首次启动时阻止打开，请按住 Control 点击 App，选择**打开**并确认一次。对应 GitHub Release 会记录校验和与验收范围。
 
 ### 从源码构建
 

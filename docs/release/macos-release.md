@@ -70,7 +70,6 @@ Build both architecture-specific archives from the exact release commit:
 ```bash
 export APC_RELEASE_VERSION='X.Y.Z'
 export APC_RELEASE_BUILD='1'
-export APC_RELEASE_CHANNEL='release'
 ./script/build_release.sh
 ```
 
@@ -89,9 +88,9 @@ Each archive is extracted into a clean temporary directory and validated again. 
 - headless App UI validation plus packaged PetCore and CLI operations;
 - bundled-pet seeding, package validation, and connector-contract checks.
 
-On a build host whose architecture matches the archive, the validator executes the packaged App, PetCore, and CLI. A cross-architecture archive receives the same static package, manifest, resource, architecture, and signature validation but is not launched: running an Intel App on Apple silicon invokes Rosetta and can present Apple's Intel-app support warning. The native archive supplies the shared runtime functional proof; separate physical-device acceptance is not required at this stage.
+On a build host whose architecture matches the archive, the validator executes the packaged App, PetCore, and CLI. A cross-architecture archive receives the same static package, manifest, resource, architecture, and signature validation but is not launched: running an Intel App on Apple silicon invokes Rosetta and can present Apple's Intel-app support warning described in [Apple's Rosetta guidance](https://support.apple.com/102527). The native archive supplies the shared runtime functional proof; separate physical-device acceptance is not required at this stage.
 
-每个 ZIP 都会解压到新的临时目录再次校验。与构建机架构相同的归档会执行包内 App、PetCore 与 CLI；跨架构归档继续校验包内容、runtime manifest、资源、准确切片与签名，但不会启动，以免在 Apple 芯片机器上调用 Rosetta 并触发 Intel App 支持终止提示。原生架构包提供共享运行时的功能证据，当前阶段不要求另一架构实机验收。任一架构失败都必须停止发布。
+每个 ZIP 都会解压到新的临时目录再次校验。与构建机架构相同的归档会执行包内 App、PetCore 与 CLI；跨架构归档继续校验包内容、runtime manifest、资源、准确切片与签名，但不会启动，以免在 Apple 芯片机器上调用 Rosetta 并触发 [Apple 官方说明](https://support.apple.com/zh-cn/102527)中的 Intel App 支持终止提示。原生架构包提供共享运行时的功能证据，当前阶段不要求另一架构实机验收。任一架构失败都必须停止发布。
 
 ## 5. Functional acceptance / 功能验收
 

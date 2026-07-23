@@ -38,7 +38,7 @@ When a release is available:
 4. Extract the archive and move `AgentPetCompanion.app` to `/Applications`.
 5. Open the app and complete the checks under **Agent Connections**.
 
-Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger Apple's Intel-app support warning. The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. Release ZIPs are ad-hoc signed for bundle-integrity verification and are not Apple-notarized. If macOS blocks the first launch, Control-click the app, choose **Open**, and confirm once. The matching GitHub Release records the checksums and validation scope.
+Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger the Intel-app support warning described in [Apple's Rosetta guidance](https://support.apple.com/102527). The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. Release ZIPs are ad-hoc signed for bundle-integrity verification and are not Apple-notarized. If macOS blocks the first launch, Control-click the app, choose **Open**, and confirm once. The matching GitHub Release records the checksums and validation scope.
 
 ### Build from source
 

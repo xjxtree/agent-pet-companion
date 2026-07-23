@@ -40,4 +40,4 @@ When sources disagree, use this order:
 - 只描述当前行为与不变量；不保存路线图、滚动状态、按日期审计、证据截图、实现过程、待办列表或测试日志。
 - 计划进入 issue；某次提交或构建的证据进入 CI artifact 与对应 GitHub Release notes。
 - 所有用户可见变化先写入根目录 [CHANGELOG](../CHANGELOG.md) 的 `[Unreleased]`，发布时转换为唯一版本段。
-- 不得提交用户诊断包、用户数据、凭据、公证私有日志、构建产物或临时宠物素材。
+- 不得将导出的诊断包、用户数据、凭据、生成的发布产物、构建缓存或临时宠物素材作为文档提交。

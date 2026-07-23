@@ -11,9 +11,9 @@ Thanks for helping improve Agent Pet Companion. The project is a local-first mac
 - Rust 1.96.0 with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
 - Python 3 for validation helpers
 
-The primary V1 performance target is Apple silicon. GitHub Releases publish separate thin `arm64` and `x86_64` app archives; each archive must be built and validated for its declared architecture.
+The primary V1 performance target is Apple silicon. GitHub Releases publish separate thin `arm64` and `x86_64` app archives. Each exact archive must pass architecture, package, ad-hoc signature, and checksum validation. Packaged runtime functionality is executed only for the build host's matching native architecture; a cross-architecture archive receives static validation and does not require a second physical Mac.
 
-V1 的主要性能目标是 Apple Silicon。GitHub Release 分别发布 thin `arm64` 与 `x86_64` App 归档；每个归档都必须按其声明架构完成构建与校验。
+V1 的主要性能目标是 Apple Silicon。GitHub Release 分别发布 thin `arm64` 与 `x86_64` App 归档；每个最终归档都必须通过架构、包内容、ad-hoc 签名与校验和验证。包内运行时功能只在与构建机匹配的原生架构上执行；跨架构归档进行静态验证，不要求另一台物理 Mac。
 
 ## Before changing behavior / 修改行为前
 
