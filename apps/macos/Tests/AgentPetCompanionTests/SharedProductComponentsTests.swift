@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import SwiftUI
 import Testing
 @testable import AgentPetCompanion
@@ -174,6 +175,107 @@ struct SharedProductComponentsTests {
         )
     }
 
+    @Test
+    func overlayUsesTheSingleProductionSessionBubbleRow() throws {
+        let sharedSource = try String(
+            contentsOf: sharedComponentsURL,
+            encoding: .utf8
+        )
+        let overlaySource = try String(
+            contentsOf: overlayRootViewURL,
+            encoding: .utf8
+        )
+
+        #expect(occurrences(
+            of: "struct SessionBubbleRow: View",
+            in: sharedSource
+        ) == 1)
+        #expect(!sharedSource.contains("ControlCenterSessionBubbleRow"))
+        #expect(!sharedSource.contains("SharedProductComponents.SessionBubbleRow"))
+        #expect(!overlaySource.contains("struct SessionBubbleRow: View"))
+        #expect(overlaySource.contains("SessionBubbleRow(\n                    session: session,"))
+
+        #expect(sharedSource.contains("if session.canOpen {"))
+        #expect(sharedSource.contains(".accessibilityIdentifier(\"overlay.session.\\(session.id)\")"))
+        #expect(sharedSource.contains(".accessibilityLabel(session.accessibilityLabel)"))
+        #expect(sharedSource.contains(
+            "openLabel: session.canOpen ? session.actionLabel : nil"
+        ))
+    }
+
+    @MainActor
+    @Test
+    func productionSessionRowBuildsExactHostAndUnavailableAccessibilityStates() {
+        func session(
+            id: String,
+            navigation: AgentSessionNavigation
+        ) -> OverlaySessionContent {
+            OverlaySessionContent(
+                id: id,
+                source: .codex,
+                sessionID: id,
+                eventType: .waiting,
+                sessionTitle: "Session \(id)",
+                messageText: "Needs a response",
+                statusText: "Needs You",
+                navigation: navigation
+            )
+        }
+
+        let exact = session(
+            id: "exact",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "cli_terminal",
+                terminalApp: "warp",
+                openURL: "warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+            )
+        )
+        let host = session(
+            id: "host",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
+        )
+        let unavailable = session(
+            id: "unavailable",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "chatgpt_app",
+                routableSessionID: "malformed"
+            )
+        )
+
+        #expect(exact.navigationCapability == .exactSession)
+        #expect(exact.canOpen)
+        #expect(host.navigationCapability == .agentHost)
+        #expect(host.canOpen)
+        #expect(unavailable.navigationCapability == .unavailable)
+        #expect(!unavailable.canOpen)
+
+        for item in [exact, host, unavailable] {
+            #expect(item.accessibilityLabel
+                == item.accessibilityReadingOrder.joined(separator: ", "))
+            #expect(item.accessibilityReadingOrder.first == "Codex")
+            #expect(item.accessibilityReadingOrder.last == item.actionLabel)
+
+            let hostingView = NSHostingView(
+                rootView: SessionBubbleRow(
+                    session: item,
+                    action: {},
+                    dismissAction: nil
+                )
+                .frame(width: 320)
+            )
+            #expect(hostingView.fittingSize.width <= 320.5)
+            #expect(hostingView.fittingSize.height > 0)
+        }
+    }
+
     @MainActor
     @Test(arguments: SharedProductCopyFixture.all)
     func completeComponentSetBuildsAtMinimumWidth(
@@ -244,6 +346,29 @@ struct SharedProductComponentsTests {
             }
         }
         return false
+    }
+
+    private func occurrences(of needle: String, in source: String) -> Int {
+        source.components(separatedBy: needle).count - 1
+    }
+
+    private var sharedComponentsURL: URL {
+        packageRootURL.appendingPathComponent(
+            "Sources/AgentPetCompanion/Views/SharedProductComponents.swift"
+        )
+    }
+
+    private var overlayRootViewURL: URL {
+        packageRootURL.appendingPathComponent(
+            "Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
+        )
+    }
+
+    private var packageRootURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }
 
@@ -390,22 +515,23 @@ private struct SharedProductComponentFixture: View {
                 )
             }
 
-            SharedProductComponents.SessionBubbleRow(
-                identity: ProductComponentIdentity(
-                    scope: "fixture",
-                    instance: "session-alpha"
+            SessionBubbleRow(
+                session: OverlaySessionContent(
+                    id: "fixture-session-alpha",
+                    source: .codex,
+                    sessionID: "fixture-session-alpha",
+                    eventType: .tool,
+                    sessionTitle: copy.pageTitle,
+                    messageText: copy.detail,
+                    statusText: copy.status,
+                    navigation: AgentSessionNavigation(
+                        capability: .agentHost,
+                        sessionOpen: true,
+                        surface: "chatgpt_app"
+                    )
                 ),
-                agentTitle: "Codex",
-                sessionTitle: copy.pageTitle,
-                lifecycle: .tool,
-                statusTitle: copy.status,
-                message: copy.detail,
-                navigationAction: ProductActionPresentation(
-                    action: NavigationCapability.agentHost,
-                    title: copy.primaryAction,
-                    systemImage: "arrow.up.forward.app"
-                ),
-                onNavigationAction: { _ in }
+                action: {},
+                dismissAction: nil
             )
 
             AttentionPresetPicker(

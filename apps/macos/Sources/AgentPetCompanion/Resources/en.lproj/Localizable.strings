@@ -620,6 +620,7 @@
 "library.activate.accessibility" = "Enable Pet";
 "library.inspector.title" = "Pet Details";
 "library.pet.active" = "Enabled";
+"library.pet.enabling" = "Enabling this pet";
 "library.pet.enable" = "Enable This Pet";
 "library.current_info" = "Technical Information";
 "library.technical_information.summary" = "IDs, revisions, authored timing, frame counts, provenance, package format, and validation";

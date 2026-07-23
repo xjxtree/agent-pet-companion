@@ -685,6 +685,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryActivateAccessibility = "library.activate.accessibility"
     case libraryInspectorTitle = "library.inspector.title"
     case libraryPetActive = "library.pet.active"
+    case libraryPetEnabling = "library.pet.enabling"
     case libraryEnablePet = "library.pet.enable"
     case libraryCurrentInfo = "library.current_info"
     case libraryTechnicalInformationSummary = "library.technical_information.summary"

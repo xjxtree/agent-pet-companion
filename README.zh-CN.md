@@ -28,19 +28,20 @@ App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断
 
 ## 安装
 
-### 从受支持的 GitHub Release 安装
+### 从正式 GitHub Release 安装
 
-当某个 Release 明确发布为受支持公开版本时：
+安装已发布版本：
 
 1. 打开 [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases)。
 2. 按 Mac 架构下载 ZIP：Apple 芯片选择 `macos-arm64`，Intel Mac 选择 `macos-x86_64`；同时下载该版本的 `SHA256SUMS.txt`。
 3. 在下载目录校验所选 ZIP，例如：`grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -`。
 4. 解压归档，并将 `AgentPetCompanion.app` 移到 `/Applications`。
-5. 打开 App，按三幕首次设置选择内置桌宠、连接需要使用的 Agent，并观看明确标注的本地演示。
+5. 首次启动时，在 Finder 中按住 Control 点击或右键点击 App，选择**打开**，再确认**打开**。也可以先尝试普通打开，然后前往**系统设置 → 隐私与安全性 → 仍要打开**并确认。
+6. 按三幕首次设置选择内置桌宠、连接需要使用的 Agent，并观看明确标注的本地演示。
 
-受支持归档使用 Developer ID 签名、Apple 公证与 staple，并通过 Gatekeeper 验证；发布的校验和对应可下载的最终 ZIP。受支持安装路径不需要源码工具链，也不要求绕过 quarantine。Apple 芯片 Mac 应直接使用 `arm64`，不要通过 Rosetta 运行 `x86_64` 包。
+正式归档采用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证，默认不会受到 Gatekeeper 信任，因此首次打开需要上述用户授权。发布的校验和对应实际下载的 ZIP；安装不需要源码工具链，也不需要运行 `xattr`、关闭 Gatekeeper 或使用其他命令行绕过。
 
-文件名以 `-preview.zip` 结尾的归档属于采用 ad-hoc 签名的**开发预览版**，不是经过公证的受支持公开包，只用于明确了解限制的开发交接；对应 Release notes 必须说明较窄的验证范围。
+这是通过 GitHub Releases 进行的直接分发，不是发布到 Mac App Store。Apple 芯片 Mac 应直接使用 `arm64`，不要通过 Rosetta 运行 `x86_64` 包。
 
 ### 从源码构建
 

@@ -10,23 +10,19 @@ REQUIRE_NATIVE_ARCHITECTURE=""
 
 usage() {
   cat <<'EOF'
-usage: validate_public_release_artifacts.sh \
+usage: validate_github_release_artifacts.sh \
   --directory PATH \
   --version X.Y.Z \
   --build POSITIVE_INTEGER \
   --commit FULL_LOWERCASE_GIT_COMMIT \
   [--require-native-architecture arm64|x86_64]
 
-Validates the exact five-file public set: two final ZIPs, their two distribution
-evidence sidecars, and one checksum inventory covering exactly the four data
-assets. Every ZIP receives a bounded safety preflight before extraction.
+Validates the exact three-file GitHub Release set: two ad-hoc-signed thin App
+ZIPs and one checksum inventory covering exactly those ZIPs. Every ZIP receives
+a bounded safety preflight before extraction.
 
-The required version, build, and commit are bound to evidence, Info.plist,
-runtime-manifest.json, and the shared two-architecture build identity.
-
-Required environment:
-  APC_CODESIGN_IDENTITY    Exact Developer ID Application identity
-  APC_DEVELOPER_TEAM_ID    Ten-character Apple Developer Team ID
+The required version, build, and full commit are bound to Info.plist,
+runtime-manifest.json, and the shared App/PetCore/CLI build identity.
 EOF
 }
 
@@ -70,7 +66,7 @@ while (($# > 0)); do
 done
 
 [[ -d "$ARTIFACT_DIR" && ! -L "$ARTIFACT_DIR" ]] || {
-  echo 'public release validation requires a regular artifact directory' >&2
+  echo 'GitHub Release validation requires a regular artifact directory' >&2
   exit 2
 }
 [[ "$VERSION" =~ ^[0-9]+([.][0-9]+){2}$ ]] || {
@@ -93,7 +89,7 @@ esac
 
 for dependency in ditto python3 shasum; do
   command -v "$dependency" >/dev/null 2>&1 || {
-    printf 'public release artifact validation requires %s\n' "$dependency" >&2
+    printf 'GitHub Release artifact validation requires %s\n' "$dependency" >&2
     exit 1
   }
 done
@@ -115,7 +111,7 @@ fi
   --directory "$ARTIFACT_DIR" \
   --version "$VERSION"
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-public-artifact-validation.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-github-release-validation.XXXXXX")"
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -123,11 +119,8 @@ trap cleanup EXIT
 
 for architecture in arm64 x86_64; do
   archive_name="AgentPetCompanion-$VERSION-macos-$architecture.zip"
-  evidence_name="AgentPetCompanion-$VERSION-macos-$architecture-distribution.json"
   archive="$ARTIFACT_DIR/$archive_name"
-  evidence="$ARTIFACT_DIR/$evidence_name"
   extract_dir="$TMP_DIR/$architecture"
-  archive_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
 
   # This must remain before every extraction of downloaded release content.
   "$ROOT_DIR/script/validate_release_zip.py" --archive "$archive"
@@ -135,26 +128,21 @@ for architecture in arm64 x86_64; do
   ditto -x -k "$archive" "$extract_dir"
   extracted_app="$extract_dir/AgentPetCompanion.app"
   [[ -d "$extracted_app" && ! -L "$extracted_app" ]] || {
-    echo 'public release ZIP did not extract the expected regular App bundle' >&2
+    echo 'GitHub Release ZIP did not extract the expected regular App bundle' >&2
     exit 1
   }
 
   "$ROOT_DIR/script/validate_release_identity.py" \
     --app "$extracted_app" \
-    --evidence "$evidence" \
     --architecture "$architecture" \
     --version "$VERSION" \
     --build "$BUILD" \
-    --commit "$COMMIT" \
-    --archive-name "$archive_name" \
-    --archive-sha256 "$archive_sha256"
+    --commit "$COMMIT"
 
-  APC_CODESIGN_IDENTITY="${APC_CODESIGN_IDENTITY:-}" \
-  APC_DEVELOPER_TEAM_ID="${APC_DEVELOPER_TEAM_ID:-}" \
-    "$ROOT_DIR/script/validate_app_bundle.sh" \
-      --public \
-      --architecture "$architecture" \
-      "$extracted_app"
+  "$ROOT_DIR/script/validate_app_bundle.sh" \
+    --github-release \
+    --architecture "$architecture" \
+    "$extracted_app"
 done
 
-echo 'Supported public release artifacts validated for both architectures and one identity'
+echo 'GitHub Release artifacts validated for both architectures and one exact identity'

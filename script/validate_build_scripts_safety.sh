@@ -18,144 +18,152 @@ fi
 RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/build_release.sh"
   "$ROOT_DIR/script/build_app_bundle.sh"
-  "$ROOT_DIR/script/public_distribution_pipeline.sh"
-  "$ROOT_DIR/script/validate_distribution_signature.sh"
+  "$ROOT_DIR/script/validate_app_bundle.sh"
   "$ROOT_DIR/script/validate_macho_architectures.sh"
   "$ROOT_DIR/script/validate_release_zip.py"
   "$ROOT_DIR/script/validate_release_identity.py"
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"
-  "$ROOT_DIR/script/validate_public_release_artifacts.sh"
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
 )
+WORKFLOW="$ROOT_DIR/.github/workflows/release.yml"
+
+for obsolete_path in \
+  "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements" \
+  "$ROOT_DIR/script/public_distribution_pipeline.sh" \
+  "$ROOT_DIR/script/validate_distribution_signature.sh" \
+  "$ROOT_DIR/script/validate_public_release_artifacts.sh" \
+  "$ROOT_DIR/script/tests/test_public_distribution_pipeline.sh"; do
+  if [[ -e "$obsolete_path" || -L "$obsolete_path" ]]; then
+    printf 'obsolete Developer ID distribution path still exists: %s\n' \
+      "$obsolete_path" >&2
+    exit 1
+  fi
+done
 
 if unsafe="$(rg -n \
-  '(^|[[:space:]])source[[:space:]]+.*[.]env|(^|[[:space:]])[.][[:space:]]+.*[.]env|set[[:space:]]+-x|APPLE_ID|APP_SPECIFIC_PASSWORD|NOTARY_PASSWORD|PRIVATE_KEY' \
-  "${RELEASE_SCRIPTS[@]}" "$ROOT_DIR/.github/workflows/release.yml" 2>/dev/null || true)" \
+  '(^|[[:space:]])source[[:space:]]+.*[.]env|(^|[[:space:]])[.][[:space:]]+.*[.]env|set[[:space:]]+-x|APPLE_ID|APP_SPECIFIC_PASSWORD|NOTARY_PASSWORD|PRIVATE_KEY|APC_CODESIGN_IDENTITY|APC_DEVELOPER_TEAM_ID|APC_NOTARY_|P12_BASE64' \
+  "${RELEASE_SCRIPTS[@]}" "$WORKFLOW" 2>/dev/null || true)" \
   && [[ -n "$unsafe" ]]; then
-  printf 'release tooling contains credential discovery, credential material, or command tracing:\n%s\n' \
+  printf 'GitHub Release tooling contains credential discovery, credential material, or command tracing:\n%s\n' \
     "$unsafe" >&2
   exit 1
 fi
-if rg -n 'security[[:space:]]+find-identity' "${RELEASE_SCRIPTS[@]}" >/dev/null; then
-  echo 'release scripts must consume an explicit signing identity instead of discovering one' >&2
+
+if forbidden_workflow="$(rg -n \
+  '^[[:space:]]*environment:|[$][{][{][[:space:]]*(vars|secrets)[.]|Developer ID Application|notarytool|stapler|spctl|security[[:space:]]+(create-keychain|delete-keychain|find-identity)' \
+  "$WORKFLOW" || true)" \
+  && [[ -n "$forbidden_workflow" ]]; then
+  printf 'GitHub Release workflow must not use signing environments, credentials, or Apple trust tooling:\n%s\n' \
+    "$forbidden_workflow" >&2
   exit 1
 fi
 
-# Development App assembly remains explicitly ad-hoc. Supported public
-# distribution starts from --unsigned output and never mutates this local path.
-rg -q 'codesign --force --sign - --timestamp=none' \
+if legacy_mode="$(rg -n -- '--(preview|public|public-signed)([=[:space:]]|$)' \
+  "$ROOT_DIR/script/build_release.sh" "$ROOT_DIR/script/validate_app_bundle.sh" || true)" \
+  && [[ -n "$legacy_mode" ]]; then
+  printf 'removed release modes remain in active tooling:\n%s\n' "$legacy_mode" >&2
+  exit 1
+fi
+
+# Local and GitHub Release Apps are ad-hoc signed. The official path is
+# explicit, dual-architecture, immutable-source-bound, and three-file-only.
+rg -Fq 'codesign --force --sign - --timestamp=none' \
   "$ROOT_DIR/script/build_app_bundle.sh"
-rg -q -- '--unsigned' "$ROOT_DIR/script/build_release.sh"
-rg -q -- '--preview' "$ROOT_DIR/script/build_release.sh"
-rg -q -- '--public' "$ROOT_DIR/script/build_release.sh"
+rg -q -- '--github-release' "$ROOT_DIR/script/build_release.sh"
 rg -Fq 'ARCHITECTURES=(arm64 x86_64)' "$ROOT_DIR/script/build_release.sh"
-rg -q 'supported public distribution requires --arch all' "$ROOT_DIR/script/build_release.sh"
-rg -q -- '--preview and --public cannot be combined' "$ROOT_DIR/script/build_release.sh"
+rg -q 'official release builds require the explicit --github-release mode' \
+  "$ROOT_DIR/script/build_release.sh"
+rg -q 'GitHub Release distribution requires --arch all' \
+  "$ROOT_DIR/script/build_release.sh"
 rg -q 'release builds require a clean worktree' "$ROOT_DIR/script/build_release.sh"
 rg -q 'CHANGELOG.md must contain a frozen' "$ROOT_DIR/script/build_release.sh"
-rg -q 'supported public distribution requires tag' "$ROOT_DIR/script/build_release.sh"
-rg -q 'APC_BUILD_ID cannot override the commit-derived' "$ROOT_DIR/script/build_release.sh"
+rg -q 'GitHub Release distribution requires tag' "$ROOT_DIR/script/build_release.sh"
+rg -q 'full-commit-derived release build identity' "$ROOT_DIR/script/build_release.sh"
+rg -Fq 'BUILD_ID="${RELEASE_VERSION}.${RELEASE_BUILD}.${RELEASE_COMMIT}"' \
+  "$ROOT_DIR/script/build_release.sh"
 rg -q 'SHA256SUMS' "$ROOT_DIR/script/build_release.sh"
 rg -q -- '--configuration release' "$ROOT_DIR/script/build_release.sh"
 rg -Fq -- '--arch "$architecture"' "$ROOT_DIR/script/build_release.sh"
-rg -Fq 'STAGED_ARTIFACT_DIR="$TMP_DIR/artifacts"' "$ROOT_DIR/script/build_release.sh"
-
-# The public helper must use only externally named identity/profile values,
-# hardened runtime and timestamping, inside-out signing, synchronous accepted
-# notarization, stapling, Gatekeeper, and a newly created final ZIP.
-rg -q 'APC_CODESIGN_IDENTITY' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'APC_DEVELOPER_TEAM_ID' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'APC_NOTARY_PROFILE' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'APC_NOTARY_KEYCHAIN' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q -- '--options runtime' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q -- '--timestamp' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'notarytool submit' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q -- '--keychain-profile' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q -- '--wait' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'stapler staple' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'stapler validate' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'spctl --assess --type execute' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'submission_archive_sha256' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'published_artifact' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'validate_release_zip.py' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-rg -q 'validate_macho_architectures.sh' "$ROOT_DIR/script/public_distribution_pipeline.sh"
-if rg -n 'codesign .*--deep.*--sign|codesign .*--sign.*--deep' \
-  "$ROOT_DIR/script/public_distribution_pipeline.sh" >/dev/null; then
-  echo 'public distribution must sign explicit inner code instead of using codesign --deep' >&2
+rg -Fq 'STAGED_ARTIFACT_DIR="$TMP_DIR/artifacts"' \
+  "$ROOT_DIR/script/build_release.sh"
+rg -q 'validate_github_release_artifacts.sh' "$ROOT_DIR/script/build_release.sh"
+if rg -q -- '--unsigned' "$ROOT_DIR/script/build_release.sh"; then
+  echo 'GitHub Release build must not stage an unsigned App' >&2
   exit 1
 fi
 
-python3 - "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements" <<'PY'
-import pathlib
-import plistlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-with path.open("rb") as file:
-    entitlements = plistlib.load(file)
-if entitlements != {}:
-    raise SystemExit("public distribution entitlements must remain the explicit empty allowlist")
-PY
-
-rg -q -- '--public-signed' "$ROOT_DIR/script/validate_app_bundle.sh"
-rg -q -- '--public' "$ROOT_DIR/script/validate_app_bundle.sh"
-rg -q 'validate_distribution_signature.sh' "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q -- '--github-release' "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q 'validate_github_release_signature_before_runtime' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -Fq "grep -Fx 'Signature=adhoc'" "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -q 'validate_macho_architectures.sh' "$ROOT_DIR/script/validate_app_bundle.sh"
-rg -q 'stapler validate' "$ROOT_DIR/script/validate_app_bundle.sh"
-rg -q 'spctl --assess --type execute' "$ROOT_DIR/script/validate_app_bundle.sh"
-if rg -q -- '--release' "$ROOT_DIR/script/validate_app_bundle.sh"; then
+if rg -q -- '--release([=[:space:]]|$)' "$ROOT_DIR/script/validate_app_bundle.sh"; then
   echo 'validate_app_bundle.sh must not retain the ambiguous --release alias' >&2
   exit 1
 fi
 
-rg -q 'push:' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'tags:' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'workflow_dispatch:' "$ROOT_DIR/.github/workflows/release.yml"
-if rg -q 'self-hosted' "$ROOT_DIR/.github/workflows/release.yml"; then
+rg -q 'artifact inventory must contain exactly three files' \
+  "$ROOT_DIR/script/validate_release_artifact_metadata.py"
+rg -q 'checksum inventory must contain exactly two archive lines' \
+  "$ROOT_DIR/script/validate_release_artifact_metadata.py"
+rg -Fq 'expected_build_id = f"{version}.{build}.{commit}"' \
+  "$ROOT_DIR/script/validate_release_identity.py"
+rg -q -- '--commit must be a full lowercase Git commit' \
+  "$ROOT_DIR/script/validate_release_identity.py"
+rg -q -- '--commit must be a full lowercase Git commit' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+rg -q 'for architecture in arm64 x86_64' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+rg -q 'validate_release_zip.py' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+rg -q 'validate_release_identity.py' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+rg -q 'validate_app_bundle.sh' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+rg -q -- '--github-release' \
+  "$ROOT_DIR/script/validate_github_release_artifacts.sh"
+
+for digest_option in \
+  --arm64-zip-sha256 \
+  --x86_64-zip-sha256 \
+  --checksum-sha256; do
+  rg -q -- "$digest_option" "$ROOT_DIR/script/verify_release_candidate_digests.sh"
+done
+if rg -q -- '--(arm64|x86_64)-evidence-sha256' \
+  "$ROOT_DIR/script/verify_release_candidate_digests.sh"; then
+  echo 'trusted digest contract must not retain notarization evidence files' >&2
+  exit 1
+fi
+
+rg -q 'push:' "$WORKFLOW"
+rg -q 'tags:' "$WORKFLOW"
+rg -q 'workflow_dispatch:' "$WORKFLOW"
+if rg -q 'self-hosted' "$WORKFLOW"; then
   echo 'release workflow must use fresh GitHub-hosted native macOS runners' >&2
   exit 1
 fi
-rg -q 'APC_CODESIGN_IDENTITY.*vars[.]APC_CODESIGN_IDENTITY' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'APC_NOTARY_PROFILE: agent-pet-companion-ci' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-for secret in \
-  APC_DEVELOPER_ID_P12_BASE64 \
-  APC_DEVELOPER_ID_P12_PASSWORD \
-  APC_NOTARY_API_KEY_P8_BASE64 \
-  APC_NOTARY_API_KEY_ID \
-  APC_NOTARY_API_ISSUER_ID; do
-  rg -Fq '${{ secrets.'"$secret"' }}' "$ROOT_DIR/.github/workflows/release.yml"
-done
-rg -q 'security create-keychain' "$ROOT_DIR/.github/workflows/release.yml"
-rg -Fq 'security find-identity -v -p codesigning "$keychain_path"' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'notarytool store-credentials' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'APC_NOTARY_KEYCHAIN=' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'security delete-keychain' "$ROOT_DIR/.github/workflows/release.yml"
-rg -Fq 'if: ${{ always() }}' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'validate_public_release_artifacts.sh' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'gh release download' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'persist-credentials: false' "$ROOT_DIR/.github/workflows/release.yml"
+rg -Fq 'run: ./script/build_release.sh --github-release --arch all' "$WORKFLOW"
+rg -q 'validate_github_release_artifacts.sh' "$WORKFLOW"
+rg -q 'gh release download' "$WORKFLOW"
+rg -q 'persist-credentials: false' "$WORKFLOW"
 rg -q 'git merge-base --is-ancestor "\$commit" refs/remotes/origin/main' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'needs: \[build, validate_arm64, validate_x86_64\]' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'runs-on: macos-15$' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'runs-on: macos-15-intel$' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'verify_release_candidate_digests.sh' \
-  "$ROOT_DIR/.github/workflows/release.yml"
-if rg -n 'uses:[[:space:]]+[^#[:space:]]+@v[0-9]' \
-  "$ROOT_DIR/.github/workflows/release.yml" >/dev/null; then
+  "$WORKFLOW"
+rg -q 'needs: \[build, validate_arm64, validate_x86_64\]' "$WORKFLOW"
+rg -q 'runs-on: macos-15$' "$WORKFLOW"
+rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
+rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
+rg -q 'Control-click' "$WORKFLOW"
+rg -q 'Open Anyway' "$WORKFLOW"
+rg -q 'ad-hoc signed' "$WORKFLOW"
+if rg -n 'uses:[[:space:]]+[^#[:space:]]+@v[0-9]' "$WORKFLOW" >/dev/null; then
   echo 'release workflow actions must be pinned to full commit SHAs' >&2
   exit 1
 fi
 
-python3 - "$ROOT_DIR/.github/workflows/release.yml" <<'PY'
+python3 - "$WORKFLOW" <<'PY'
 import pathlib
+import re
 import sys
 
 source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
@@ -165,68 +173,70 @@ x86_end = source.index("\n  publish:")
 build = source[:build_end]
 arm = source[build_end:arm_end]
 x86 = source[arm_end:x86_end]
+publish = source[x86_end:]
 
-for secret in (
-    "APC_DEVELOPER_ID_P12_BASE64",
-    "APC_DEVELOPER_ID_P12_PASSWORD",
-    "APC_NOTARY_API_KEY_P8_BASE64",
-    "APC_NOTARY_API_KEY_ID",
-    "APC_NOTARY_API_ISSUER_ID",
-):
-    reference = f"${{{{ secrets.{secret} }}}}"
-    if build.count(reference) != 1 or reference in source[build_end:]:
-        raise SystemExit(f"{secret} must be scoped only to the signing build job")
+if source.count("contents: write") != 1 or "contents: write" not in publish:
+    raise SystemExit("only the publish job may have contents: write")
+if any("contents: write" in job for job in (build, arm, x86)):
+    raise SystemExit("build and validation jobs must remain read-only")
+if source.count("ref: ${{ needs.build.outputs.commit }}") != 3:
+    raise SystemExit("every downstream job must check out the proven commit")
+if source.count("./script/verify_remote_release_tag.sh") < 3:
+    raise SystemExit("remote tag identity must be rechecked before and after publication")
 
 source_gate = build.index("run: ./script/test_all.sh")
-provision = build.index("Provision ephemeral Developer ID and notarization credentials")
-raw_cleanup = build.index('rm -f "$certificate_path" "$api_key_path"')
-keychain_export = build.index('echo "APC_NOTARY_KEYCHAIN=$keychain_path"')
-public_build = build.index("run: ./script/build_release.sh --public --arch all")
-keychain_cleanup = build.index("Remove ephemeral signing material")
-revalidation = build.index("Revalidate final local artifact set")
+official_build = build.index(
+    "run: ./script/build_release.sh --github-release --arch all"
+)
+local_revalidation = build.index("Revalidate final local artifact set")
+digest_emission = build.index("Emit trusted digest for every candidate file")
 upload = build.index("Upload immutable release candidate")
-if not (
-    source_gate
-    < provision
-    < raw_cleanup
-    < keychain_export
-    < public_build
-    < keychain_cleanup
-    < revalidation
-    < upload
-):
-    raise SystemExit("release credentials are not provisioned and removed at bounded steps")
-if "if: ${{ always() }}" not in build[keychain_cleanup:revalidation]:
-    raise SystemExit("ephemeral signing material cleanup must run after failure")
-cleanup_block = build[keychain_cleanup:revalidation]
-if "${APC_NOTARY_KEYCHAIN" in cleanup_block:
-    raise SystemExit("credential cleanup must not trust a mutable environment path")
-if 'keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"' not in cleanup_block:
-    raise SystemExit("credential cleanup must target the fixed runner-temporary Keychain")
+if not source_gate < official_build < local_revalidation < digest_emission < upload:
+    raise SystemExit("release build, revalidation, digest, and upload order is unsafe")
+
 if 'run: test "$(uname -m)" = "arm64"' not in arm:
     raise SystemExit("arm64 validation job does not prove its native architecture")
 if 'run: test "$(uname -m)" = "x86_64"' not in x86:
     raise SystemExit("x86_64 validation job does not prove its native architecture")
+
+download = publish.index('gh release download "$RELEASE_TAG"')
+digest_recheck = publish.index(
+    "./script/verify_release_candidate_digests.sh", download
+)
+package_recheck = publish.index(
+    "./script/validate_github_release_artifacts.sh", digest_recheck
+)
+tag_recheck = publish.index(
+    "./script/verify_remote_release_tag.sh", package_recheck
+)
+go_live = publish.index(
+    'gh release edit "$RELEASE_TAG" --draft=false', tag_recheck
+)
+if not download < digest_recheck < package_recheck < tag_recheck < go_live:
+    raise SystemExit("downloaded GitHub Release candidate is not revalidated before publish")
+
+uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
+if not uses or any(
+    re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) is None for action in uses
+):
+    raise SystemExit("every workflow action must be pinned to a full commit SHA")
 PY
 
 "$ROOT_DIR/script/build_app_bundle.sh" --help >/dev/null
 "$ROOT_DIR/script/build_release.sh" --help >/dev/null
-"$ROOT_DIR/script/public_distribution_pipeline.sh" --help >/dev/null
-"$ROOT_DIR/script/validate_distribution_signature.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_app_bundle.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_macho_architectures.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_release_zip.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_identity.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_artifact_metadata.py" --help >/dev/null
 "$ROOT_DIR/script/verify_release_candidate_digests.sh" --help >/dev/null
-"$ROOT_DIR/script/validate_public_release_artifacts.sh" --help >/dev/null
-"$ROOT_DIR/script/validate_app_bundle.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_github_release_artifacts.sh" --help >/dev/null
 
 if [[ "$STATIC_ONLY" == "0" ]]; then
   PYTHONDONTWRITEBYTECODE=1 \
     python3 "$ROOT_DIR/script/tests/test_release_distribution_contracts.py"
   "$ROOT_DIR/script/tests/test_release_shell_contracts.sh"
-  "$ROOT_DIR/script/tests/test_public_distribution_pipeline.sh"
   "$ROOT_DIR/script/validate_test_isolation.sh"
 fi
 
-echo 'Build and distribution script safety ok'
+echo 'Build and GitHub Release script safety ok'

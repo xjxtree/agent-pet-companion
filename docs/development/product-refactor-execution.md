@@ -49,7 +49,7 @@ flowchart TD
     R10 --> R13
     R11 --> R13
     R12 --> R13
-    R13 --> R14["R14 Supported public distribution"]
+    R13 --> R14["R14 GitHub Release distribution"]
 ```
 
 Tasks whose prerequisites are satisfied may be developed in separate focused branches, but merge order must preserve this dependency graph.
@@ -229,7 +229,7 @@ InlineRecoveryBanner
 Rules:
 
 - one contextual page heading;
-- one prominent primary action;
+- at most one prominent primary action when the current state has a meaningful action;
 - common normal/attention/error/checking semantics;
 - grouped technical disclosures;
 - native controls and materials;
@@ -295,7 +295,8 @@ Make the pet—not package metadata—the visual subject.
 
 ### Required work
 
-- Lead with the active/selected pet's large motion preview, name, style/source summary, and one primary Use action.
+- Lead with the active/selected pet's large motion preview, name, and style/source summary.
+- Show at most one meaningful primary Use action: only an inactive, valid pet can use it; activation in progress shows bounded progress feedback, while active or unavailable pets do not repeat a disabled action.
 - Keep the pet collection visually scannable.
 - Make search conditional on collection density rather than permanently occupying the page for the two bundled pets.
 - Move stable ID, revision ID/count, exact timing, frame counts, provenance, package version, and validation details into Technical Information.
@@ -531,23 +532,39 @@ Then run only explicitly authorized environment-dependent gates described in [Va
 
 The exact candidate commit satisfies the product contract without regression in architecture identity, privacy, accessibility, interaction, or resource budgets.
 
-## R14 — Implement supported public distribution
+## R14 — Implement GitHub Release distribution
 
 ### Purpose
 
-Turn a validated development build into a directly installable supported macOS product.
+Turn a validated development build into the exact ad-hoc-signed macOS archives
+published through GitHub Releases.
+
+GitHub Releases are the only official V1 distribution channel. V1 does not use
+Developer ID signing, Apple notarization, stapling, App Store submission, or
+claim default Gatekeeper trust. Users explicitly allow the App on first launch
+through Finder or Privacy & Security.
 
 ### Required work
 
-- Preserve the two architecture-specific artifacts unless a separately approved universal-distribution decision changes that contract.
-- Add explicit Developer ID Application signing for PetCore, `petcore-cli`, helper executables, the App, and any other nested code in inside-out order.
-- Verify designated requirements, hardened runtime, entitlements, and exact architecture.
-- Submit the final archive to Apple's notary service using an approved keychain/notary profile without storing credentials in the repository.
-- Staple the accepted ticket to the App and validate it.
-- Run Gatekeeper assessment against the stapled artifact.
-- Re-extract and revalidate the exact published ZIP.
-- Publish versioned checksums, matching tag, changelog section, and GitHub Release.
-- Keep ad-hoc builds available only as development artifacts; do not label them as the supported public package.
+- Publish exactly three final assets through GitHub Releases: one thin `arm64`
+  ZIP, one thin `x86_64` ZIP, and one `SHA256SUMS.txt` with exactly two entries.
+- Apply and verify strict ad-hoc signatures for every executable and the outer
+  App; do not add Apple signing or notarization credentials.
+- Verify every Mach-O's exact thin architecture, App/PetCore/CLI runtime
+  identity, shared build ID, bundled resources, and package behavior.
+- Reject unsafe ZIP structure before extraction.
+- Preserve exact tag, source version, changelog version, commit, build, runtime
+  manifest, and archive identity across both architectures; the shared build
+  ID must embed the complete 40-character commit.
+- Run packaged-functional validation on matching native `arm64` and `x86_64`
+  GitHub-hosted macOS runners.
+- Re-download all three draft assets, verify their trusted SHA-256 digests, and
+  repeat the complete artifact validation before publication.
+- Document both supported first-open approval paths and state plainly that the
+  archives are ad-hoc signed and are not Developer ID signed or notarized.
+- Keep development Apps and handoff archives on the separate
+  `build_app_bundle.sh [--archive]` path; they cannot be substituted for the
+  tag-bound official asset set.
 
 ### Primary areas
 
@@ -555,26 +572,35 @@ Turn a validated development build into a directly installable supported macOS p
 - `script/validate_app_bundle.sh`
 - `script/validate_build_scripts_safety.sh`
 - release CI workflow
-- entitlements/signing configuration
 - [macOS release procedure](../release/macos-release.md)
 - public READMEs
 
 ### Required proof
 
-- Nested and outer signatures verify with the expected Developer ID identity.
-- Notarization succeeds for the exact artifact.
-- Stapling validation succeeds.
-- Gatekeeper accepts the extracted App on a clean supported macOS environment.
-- App, PetCore, CLI, runtime manifest, architecture, version, build, and shared build ID match.
-- Packaged functional acceptance passes on the compatible native architecture.
-- Published checksum matches the downloaded artifact.
+- Nested executables and the outer App have valid ad-hoc signature integrity.
+- Both archives contain only the expected exact thin architecture.
+- App, PetCore, CLI, runtime manifest, version, build, commit, and shared build
+  ID match.
+- ZIP-safety and exact three-file/two-checksum-entry inventory checks pass.
+- Packaged-functional acceptance passes on each compatible native architecture.
+- The downloaded GitHub Release assets match trusted build digests and pass the
+  complete artifact gates again.
+- English and Chinese installation instructions disclose the first-open
+  approval requirement without claiming default Gatekeeper acceptance.
 
 ### Acceptance
 
-A user can download the documented architecture-specific ZIP, verify it, move the App to `/Applications`, and launch it through normal macOS trust behavior without source toolchains or a quarantine workaround.
+A user can download the documented architecture-specific ZIP, verify it, move
+the App to `/Applications`, and explicitly allow its first launch through
+Finder's Control-click/right-click **Open** action or **System Settings →
+Privacy & Security → Open Anyway**, without a source toolchain or command-line
+quarantine bypass.
 
 ## 3. Completion rule / 完成规则
 
-The product refactor is complete only when every task's acceptance contract is satisfied by the same integrated implementation and R14's exact published artifact passes its distribution gates.
+The product refactor is complete only when every task's acceptance contract is
+satisfied by the same integrated implementation and R14's exact three
+downloaded GitHub Release assets pass their identity, safety, checksum,
+ad-hoc-signature, and native dual-architecture gates.
 
 Do not replace this document with a progress ledger. When the entire refactor is implemented and the product contract becomes ordinary current behavior, fold stable implementation facts into their owning documents and remove obsolete task instructions in one explicit documentation cleanup change.

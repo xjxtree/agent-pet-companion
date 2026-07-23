@@ -10,9 +10,11 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-23
+
 ### Changed / 变更
 
-- Split distribution into explicit fail-closed preview and public paths: preview ZIPs remain clearly labeled ad-hoc development artifacts; public publication uses an ephemeral protected-environment signing Keychain and GitHub-hosted native `arm64`/`x86_64` gates, then requires signed, notarized, stapled thin archives, exact downloaded-asset revalidation, immutable-commit downstream checkouts, and repeated remote-tag identity checks. / 将分发拆分为明确且 fail-closed 的预览与公开路径：预览 ZIP 始终清楚标注为采用 ad-hoc 签名的开发产物；正式公开发布使用受保护 environment 的临时签名 Keychain 与 GitHub 托管原生 `arm64`/`x86_64` 门禁，并要求提供已签名、公证且 staple 的 thin 归档、重新校验实际下载文件、按不可变 commit 执行下游任务及重复验证远端 tag 身份。
+- Made GitHub Releases the only official V1 distribution channel, with exactly two ad-hoc-signed thin `arm64`/`x86_64` ZIPs and a two-entry checksum file. The release is bound to the full commit and validated on native GitHub-hosted architectures before its three downloaded assets are revalidated; installation now clearly explains the required macOS first-open approval and does not require Apple signing credentials. / GitHub Releases 现在是 V1 唯一正式分发渠道，固定提供两个采用 ad-hoc 签名的 `arm64`/`x86_64` thin ZIP 与一份两行校验和文件。发布身份绑定完整 commit，并在 GitHub 托管原生双架构上验收后重新校验三个实际下载资产；安装说明会明确 macOS 首次打开授权，且不需要 Apple 签名凭据。
 - Desktop bubbles now preserve a bounded session title or latest user context plus the current-turn Agent message, use stable content-free labels for anonymous concurrent sessions, and distinguish exact-session return from host-only or unavailable navigation. / 桌宠气泡现在保留有界会话标题或最近用户上下文及当前轮 Agent 消息，为匿名并发会话使用稳定且不含内容的标签，并准确区分返回具体会话、仅打开 Agent 宿主与不可导航。
 - Refocused the five management pages around one job and one contextual action: Pet Library centers the selected pet, AI Pet Maker follows describe/create/use, healthy service details stay disclosed on demand, and the toolbar remains quiet while the service is healthy. / 五个管理页面均收敛为一个核心任务与一个上下文操作：宠物库以所选宠物为中心，AI 宠物制作遵循描述、创建、使用流程，健康服务详情按需展开，服务正常时工具栏保持安静。
 - Kept first-run Agent detection in the background so a slow host check never blocks the local desktop-pet demo, and bounded the demo and Library stages so large motion assets remain fully visible. / 首次体验中的 Agent 检测改为后台进行，缓慢的宿主检查不再阻塞本地桌宠演示；演示与宠物库舞台也限制在稳定高度内，确保大尺寸动作素材完整可见。

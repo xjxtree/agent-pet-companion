@@ -67,6 +67,7 @@ FAKE_SWIFT_BIN="$TMP_DIR/fake-swift-bin"
 mkdir -p \
   "$BUILD_ROOT/script" \
   "$BUILD_ROOT/apps/macos" \
+  "$BUILD_ROOT/crates/petcore" \
   "$BUILD_ROOT/logo/macos" \
   "$BUILD_ROOT/target/debug" \
   "$BUILD_ROOT/target/aarch64-apple-darwin/debug" \
@@ -91,6 +92,8 @@ for binary in \
 done
 printf '%s\n' 'name: agent-pet-studio' >"$BUILD_ROOT/skills/agent-pet-studio/SKILL.md"
 printf '%s\n' 'name: agent-pet-maker' >"$BUILD_ROOT/skills/agent-pet-maker/SKILL.md"
+printf '%s\n' '[package]' 'version = "0.1.0"' \
+  >"$BUILD_ROOT/crates/petcore/Cargo.toml"
 : >"$BUILD_ROOT/logo/macos/AgentPetCompanionTransparent.icns"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__/sentinel.pyc"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__/sentinel.pyc"
@@ -338,12 +341,15 @@ if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \
   record_failure 'overlay non-mouse validator still assumes the removed single-agent legacy bubble'
 fi
 
-OVERLAY_ROOT_SOURCE="$ROOT_DIR/apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
+OVERLAY_COMPONENT_SOURCES=(
+  "$ROOT_DIR/apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
+  "$ROOT_DIR/apps/macos/Sources/AgentPetCompanion/Views/SharedProductComponents.swift"
+)
 for accessibility_identifier in \
   '.accessibilityIdentifier("overlay.group.\(content.id)")' \
   '.accessibilityIdentifier("overlay.session.\(session.id)")'; do
-  if ! rg -Fq "$accessibility_identifier" "$OVERLAY_ROOT_SOURCE"; then
-    record_failure "overlay source is missing semantic AX identifier: $accessibility_identifier"
+  if ! rg -Fq "$accessibility_identifier" "${OVERLAY_COMPONENT_SOURCES[@]}"; then
+    record_failure "overlay component sources are missing semantic AX identifier: $accessibility_identifier"
   fi
 done
 

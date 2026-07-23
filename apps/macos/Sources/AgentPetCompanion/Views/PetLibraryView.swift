@@ -925,6 +925,12 @@ private struct PetLibraryHero: View {
     }
 
     private var status: ProductStatusPresentation? {
+        if isBusy {
+            return ProductStatusPresentation(
+                appearance: .checking,
+                title: APCLocalization.text(.libraryPetEnabling)
+            )
+        }
         guard pet.active else { return nil }
         return ProductStatusPresentation(
             appearance: .normal,
@@ -933,14 +939,17 @@ private struct PetLibraryHero: View {
         )
     }
 
-    private var primaryAction: ProductActionPresentation<PetLibraryPrimaryAction> {
-        ProductActionPresentation(
+    private var primaryAction: ProductActionPresentation<PetLibraryPrimaryAction>? {
+        guard productPresentation.presentsHeroUseAction else {
+            return nil
+        }
+        return ProductActionPresentation(
             action: productPresentation.primaryAction,
             title: APCLocalizedPresentation.primaryActionTitle(
                 productPresentation.primaryAction
             ) ?? APCLocalization.text(.productActionUsePet),
-            systemImage: pet.active ? "checkmark.circle.fill" : "checkmark.circle",
-            isEnabled: productPresentation.primaryActionIsEnabled
+            systemImage: "checkmark.circle",
+            isEnabled: true
         )
     }
 
@@ -974,17 +983,6 @@ private struct PetLibraryHero: View {
                         assetWarning: assetWarning
                     )
                     .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 360)
-                }
-
-                HStack(alignment: .center, spacing: 10) {
-                    PetLibrarySourceBadge(
-                        accessibilityIdentifier: "pet-library.hero.source",
-                        badge: presentation.sourceBadge
-                    )
-                    Text(presentation.styleTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
                 }
 
                 secondaryActions

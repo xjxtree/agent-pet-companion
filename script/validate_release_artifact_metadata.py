@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the exact five-file public release inventory before extraction."""
+"""Validate the exact three-file GitHub Release inventory before extraction."""
 
 from __future__ import annotations
 
@@ -22,20 +22,16 @@ def sha256(path: pathlib.Path) -> str:
 
 
 def expected_names(version: str) -> tuple[list[str], str]:
-    data_names: list[str] = []
-    for architecture in ARCHITECTURES:
-        data_names.extend(
-            (
-                f"AgentPetCompanion-{version}-macos-{architecture}.zip",
-                f"AgentPetCompanion-{version}-macos-{architecture}-distribution.json",
-            )
-        )
-    return data_names, f"AgentPetCompanion-{version}-SHA256SUMS.txt"
+    archive_names = [
+        f"AgentPetCompanion-{version}-macos-{architecture}.zip"
+        for architecture in ARCHITECTURES
+    ]
+    return archive_names, f"AgentPetCompanion-{version}-SHA256SUMS.txt"
 
 
 def validate(directory: pathlib.Path, version: str) -> None:
-    data_names, checksum_name = expected_names(version)
-    expected = set(data_names) | {checksum_name}
+    archive_names, checksum_name = expected_names(version)
+    expected = set(archive_names) | {checksum_name}
     actual: set[str] = set()
     for item in directory.iterdir():
         if item.is_symlink() or not item.is_file():
@@ -45,18 +41,15 @@ def validate(directory: pathlib.Path, version: str) -> None:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         raise ValueError(
-            f"artifact inventory must contain exactly five files; missing={missing}, extra={extra}"
+            f"artifact inventory must contain exactly three files; missing={missing}, extra={extra}"
         )
 
     checksum_path = directory / checksum_name
     if checksum_path.stat().st_size > 16 * 1024:
         raise ValueError("checksum file exceeds its size bound")
-    for name in data_names:
-        if name.endswith("-distribution.json") and (directory / name).stat().st_size > 128 * 1024:
-            raise ValueError(f"distribution evidence exceeds its size bound: {name}")
     lines = checksum_path.read_text(encoding="ascii").splitlines()
-    if len(lines) != 4 or any(not line for line in lines):
-        raise ValueError("checksum inventory must contain exactly four data-asset lines")
+    if len(lines) != 2 or any(not line for line in lines):
+        raise ValueError("checksum inventory must contain exactly two archive lines")
     parsed: dict[str, str] = {}
     pattern = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$")
     for line in lines:
@@ -67,11 +60,9 @@ def validate(directory: pathlib.Path, version: str) -> None:
         if name in parsed:
             raise ValueError("checksum inventory contains a duplicate filename")
         parsed[name] = digest
-    if set(parsed) != set(data_names):
-        raise ValueError(
-            "checksum inventory must cover only the two ZIPs and two evidence files"
-        )
-    for name in data_names:
+    if set(parsed) != set(archive_names):
+        raise ValueError("checksum inventory must cover only the two App ZIPs")
+    for name in archive_names:
         if sha256(directory / name) != parsed[name]:
             raise ValueError(f"checksum mismatch: {name}")
 
@@ -88,9 +79,9 @@ def main() -> int:
     try:
         validate(arguments.directory, arguments.version)
     except (OSError, UnicodeError, ValueError) as error:
-        print(f"public release metadata validation failed: {error}", file=sys.stderr)
+        print(f"GitHub Release metadata validation failed: {error}", file=sys.stderr)
         return 1
-    print("Public release five-file inventory and four-entry checksum metadata ok")
+    print("GitHub Release three-file inventory and two-entry checksum metadata ok")
     return 0
 
 

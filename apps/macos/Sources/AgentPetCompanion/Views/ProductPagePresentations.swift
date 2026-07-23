@@ -5,6 +5,10 @@ struct PetLibraryProductPresentation: Equatable {
     let primaryAction: PetLibraryPrimaryAction
     let primaryActionIsEnabled: Bool
 
+    var presentsHeroUseAction: Bool {
+        primaryAction == .usePet && primaryActionIsEnabled
+    }
+
     init(
         pets: [PetSummary],
         selectedPet: PetSummary?,

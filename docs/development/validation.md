@@ -12,7 +12,7 @@ This document defines what each validation layer can prove. A listed command is 
 | `real agent connectors` | `validate_real_agent_connectors.sh` | Current managed connector commands can emit diagnostic events through the running local runtime without reading credentials. / 当前真实连接器本地事件链路。 | Provider authentication, real model execution, or a complete user task. / 不代表认证、模型执行或完整任务。 |
 | `real app server` | `validate_real_app_server.sh` | A real Codex App Server session through PetCore, including strict full-source generation, validation, build, import, and activation when required. / 真实 App Server 制作链路。 | Visible packaged-App interaction and rendering of the same artifact; those remain macOS runtime acceptance. / 不代表同一产物的可见 UI 与渲染验收。 |
 | `perf/nightly` | `validate_event_storm.sh`, renderer budget assertions, external profiling | Bounded event-storm and budget regressions; expanded runs may add Instruments. / 事件风暴与预算回归。 | Full CPU/GPU conclusions unless the matching profiler evidence was actually captured. / 未实际采集时不代表完整 CPU/GPU 结论。 |
-| `public distribution` | `build_release.sh --public --arch all`, `validate_public_release_artifacts.sh --directory … --version … --build … --commit …` | Exact five-file inventory, four-entry checksum inventory, pre-extraction ZIP safety, expected commit/build identity across both archives, every Mach-O's exact thin architecture, Developer ID authority and Team ID, hardened runtime, designated requirements, minimal entitlements, accepted notarization, stapling, Gatekeeper, packaged runtime identity, and download equality for the artifacts actually processed. / 实际处理产物的五文件清单、四项校验和、解压前 ZIP 安全、双架构 commit/build 身份、所有 Mach-O 精确 thin 架构、Developer ID、Hardened Runtime、公证、staple、Gatekeeper、运行时身份与下载摘要一致性。 | A release that was not downloaded and checked, a skipped Apple service, missing native arm64 or x86_64 packaged-functional evidence, a different commit/artifact, or visible behavior on an untested physical Mac. / 不代表未下载复验、跳过 Apple 服务、缺失原生双架构功能证据、其他 commit/产物或未验收物理 Mac 上的可见行为。 |
+| `GitHub Release distribution` | `build_release.sh --github-release --arch all`, `validate_github_release_artifacts.sh --directory … --version … --build … --commit …` | Exact three-file inventory, two-entry checksum inventory, pre-extraction ZIP safety, full commit/build/runtime identity across both archives, strict ad-hoc signature integrity, every Mach-O's exact thin architecture, native packaged-functional validation, and download equality for the assets actually processed. / 实际处理产物的三文件清单、两项校验和、解压前 ZIP 安全、双归档完整 commit/build/runtime 身份、严格 ad-hoc 签名完整性、所有 Mach-O 精确 thin 架构、原生包内功能验收与下载摘要一致性。 | Developer identity, Apple notarization, stapling, default Gatekeeper acceptance, a release that was not downloaded and checked, a different commit/artifact, or visible behavior on an untested physical Mac. / 不代表开发者身份、Apple 公证、stapling、默认 Gatekeeper 接受、未下载复验的 Release、其他 commit/产物或未验收物理 Mac 上的可见行为。 |
 
 ## Default host-safe gate / 默认宿主安全门禁
 
@@ -46,43 +46,44 @@ APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
 
 Run only the gates whose environment and authorization are present. Report skipped gates as skipped, never as passed.
 
-Supported public distribution is fail-closed and requires an externally
-provisioned Developer ID identity, Team ID, and `notarytool` keychain profile.
-Without them, `build_release.sh --public` exits unavailable and never emits a
-preview under a public filename. Use `build_release.sh --preview` explicitly
-for an ad-hoc development artifact. The offline fake-command test in
-`validate_build_scripts_safety.sh` proves command ordering and failure closure;
-malicious-ZIP, identity-mismatch, extra-Mach-O, exact-inventory, and mode tests
-prove those static boundaries. None of these offline tests proves a real Apple
-signature, notarization, Gatekeeper result, or native packaged execution.
+In this document, GitHub Release distribution means the architecture-specific
+ZIP downloads published as Agent Pet Companion V1's only official channel.
+Official archives are ad-hoc signed. No Apple account, Developer ID identity,
+notarization profile, protected release environment, release Variable, or
+release Secret is part of this gate. The validation therefore proves code
+integrity, identity, architecture, and packaging—not publisher identity,
+notarization, stapling, or default Gatekeeper acceptance.
 
-受支持公开分发采用失败闭锁，要求外部配置 Developer ID identity、Team ID 与
-`notarytool` Keychain profile。缺少配置时 `--public` 会明确以 unavailable 退出，
-不会用公开文件名生成预览包；ad-hoc 开发产物必须显式使用 `--preview`。构建安全
-校验中的离线假命令、恶意 ZIP、身份错配、额外 Mach-O、精确清单与模式冲突测试
-只证明静态边界，不代表真实 Apple 签名、公证、Gatekeeper 或原生包内执行。
+本文所说的 GitHub Release 分发，是 Agent Pet Companion V1 唯一正式渠道中的分架构
+ZIP。正式归档采用 ad-hoc 签名；门禁不需要 Apple 账户、Developer ID identity、
+公证 profile、受保护 release environment、Variables 或 Secrets。因此它证明的是
+代码完整性、发布身份、架构与打包契约，不证明发布者身份、Apple 公证、stapling 或
+默认 Gatekeeper 接受。
 
-Public mode accepts only `--arch all`; `--preview` and `--public` are mutually
-exclusive, and the former `--release` validation alias is unsupported. Public
-App validation verifies Developer ID, hardened runtime, staple, and Gatekeeper
-before invoking the packaged App, PetCore, or CLI.
+Official mode is explicit and fail-closed:
+`build_release.sh --github-release --arch all` is the only supported release
+invocation. Development Apps and handoff archives use
+`build_app_bundle.sh [--archive]`; they cannot be renamed into official
+artifacts. Offline malicious-ZIP, full-commit identity, unexpected-Mach-O,
+exact-inventory, checksum, and mode tests prove those static boundaries. They
+do not replace native packaged execution or downloaded-asset validation.
 
-Release CI imports signing and notarization credentials from the protected
-`public-release` environment into an ephemeral Keychain only after the
-host-safe source gate, then deletes the Keychain and temporary credential files
-with an `always()` cleanup. Separate private-key-free GitHub-hosted
-`macos-15` arm64 and `macos-15-intel` x86_64 jobs assert their native
-architecture and run packaged-functional acceptance; a clean hosted job
-downloads and publishes only after both pass. Every download compares five
-signing-job digests before ZIP inspection or extraction. An unavailable or
-mismatched native job leaves publication incomplete rather than converting an
-unrun gate into a pass.
+正式模式必须显式运行 `build_release.sh --github-release --arch all`，且只接受
+双架构一起构建。开发 App 与交接归档由 `build_app_bundle.sh [--archive]` 生成，
+不能通过改名替代正式产物。恶意 ZIP、完整 commit 身份、额外 Mach-O、精确清单、
+校验和与模式测试证明静态边界，但不能替代原生包内运行和 Release 下载后复验。
 
-发布 CI 只在 host-safe 源码门禁通过后，才从受保护的 `public-release`
-environment 将签名与公证凭据导入临时 Keychain，并通过 `always()` 清理 Keychain
-与临时凭据文件。之后由不接触私钥的 GitHub 托管 `macos-15` arm64 与
-`macos-15-intel` x86_64 任务断言原生架构并执行包内功能验收；两者都通过后，干净的
-托管任务才可下载并发布。任一原生任务不可用或架构不匹配，都保持发布未完成。
+Release CI uses GitHub-hosted `macos-15` arm64 and `macos-15-intel` x86_64
+jobs to assert native architecture and run packaged-functional acceptance. A
+clean publish job downloads the exact three assets only after both pass. Every
+download compares three trusted build-job digests before ZIP inspection or
+extraction, then revalidates the complete three-file/two-checksum-entry set. An
+unavailable or mismatched native job leaves publication incomplete.
+
+发布 CI 使用 GitHub 托管 `macos-15` arm64 与 `macos-15-intel` x86_64 任务断言
+原生架构并执行包内功能验收。两者通过后，干净的发布任务才会下载恰好三个资产；
+每次下载都先比对构建任务记录的三个可信摘要，再检查 ZIP 并完整复验三文件、两行
+校验和清单。任一原生任务不可用或架构不匹配，发布保持未完成。
 
 ## Product-refactor acceptance / 产品重构验收
 
@@ -96,6 +97,6 @@ The [product refactor execution](product-refactor-execution.md) defines task-lev
 | Library, Maker, Configuration, Connections, Diagnostics | Focused Swift/Rust tests plus `fast/core` | Packaged main-window acceptance; real App Server only when explicitly enabled |
 | First-run demo | Fresh isolated home and negative proof that demo data never enters PetCore events/diagnostics | Packaged visible UI with Computer Use first |
 | Performance and event pressure | Renderer budget and event-storm gates | Instruments or external profiling only when actually captured |
-| Supported public distribution | Offline pipeline-order/failure tests plus exact final archive/signature/package/checksum validation | Externally provisioned Developer ID signing, accepted notarization, staple validation, Gatekeeper, GitHub Release download revalidation, and clean-machine launch |
+| GitHub Release distribution | Exact three-file/two-checksum-entry inventory, ZIP safety, full runtime identity, ad-hoc signature, architecture, and package validation | Native arm64/x86_64 packaged-functional gates, GitHub Release download revalidation, and accurate first-open consent instructions |
 
 Do not paste results into the task document or this file. Attach exact evidence to the matching commit, pull request, CI artifact, or GitHub Release.

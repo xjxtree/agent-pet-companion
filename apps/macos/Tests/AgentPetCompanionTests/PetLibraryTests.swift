@@ -551,6 +551,23 @@ struct PetLibraryTests {
         #expect(source.contains("PetLibrarySourceBadge("))
         #expect(!source.contains("apcFloatingControlGlass"))
 
+        let heroStart = try #require(source.range(of: "private struct PetLibraryHero"))
+        let heroEnd = try #require(source.range(
+            of: "struct PetCard: View",
+            range: heroStart.upperBound ..< source.endIndex
+        ))
+        let heroSource = String(source[heroStart.lowerBound ..< heroEnd.lowerBound])
+        #expect(heroSource.contains(
+            "private var primaryAction: ProductActionPresentation<PetLibraryPrimaryAction>?"
+        ))
+        #expect(heroSource.contains("guard productPresentation.presentsHeroUseAction else"))
+        #expect(heroSource.contains("if isBusy {"))
+        #expect(heroSource.contains("appearance: .checking"))
+        #expect(heroSource.contains(".libraryPetEnabling"))
+        #expect(heroSource.contains("primaryAction: primaryAction"))
+        #expect(occurrences(of: "PetLibrarySourceBadge(", in: heroSource) == 0)
+        #expect(occurrences(of: "presentation.styleTitle", in: heroSource) == 0)
+
         let importStart = try #require(appStoreSource.range(of: "    func importPetpacks()"))
         let dismissImportStart = try #require(appStoreSource.range(
             of: "    func dismissPetLibraryNotice()",
@@ -900,6 +917,10 @@ struct PetLibraryTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/AgentPetCompanion/App/AppStore.swift")
+    }
+
+    private func occurrences(of needle: String, in source: String) -> Int {
+        source.components(separatedBy: needle).count - 1
     }
 
     @MainActor

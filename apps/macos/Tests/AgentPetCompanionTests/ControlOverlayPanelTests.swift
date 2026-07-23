@@ -73,21 +73,27 @@ struct ControlOverlayPanelTests {
 
     @Test
     func overlayGroupsAndSessionsExposeStableAXIdentifiersAndActions() throws {
-        let source = try String(
+        let overlaySource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "Overlay/OverlayRootView.swift"
             ),
             encoding: .utf8
         )
+        let sharedSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Views/SharedProductComponents.swift"
+            ),
+            encoding: .utf8
+        )
 
-        #expect(source.contains(
+        #expect(overlaySource.contains(
             #".accessibilityIdentifier("overlay.group.\(content.id)")"#
         ))
-        #expect(source.contains(
+        #expect(sharedSource.contains(
             #".accessibilityIdentifier("overlay.session.\(session.id)")"#
         ))
-        #expect(source.contains("SessionBubbleAccessibilityActions("))
-        #expect(source.contains("ConversationBubbleAccessibilityActions("))
+        #expect(sharedSource.contains("SessionBubbleAccessibilityActions("))
+        #expect(overlaySource.contains("ConversationBubbleAccessibilityActions("))
     }
 
     private func makePanel() -> ControlOverlayPanel {

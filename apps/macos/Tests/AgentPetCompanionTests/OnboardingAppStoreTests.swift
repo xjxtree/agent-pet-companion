@@ -147,6 +147,40 @@ struct OnboardingAppStoreTests {
 
     @MainActor
     @Test
+    func closeIsLaunchLocalAndARebuiltStoreResumesTheSameSceneAndBundledInventory() async throws {
+        let pet = bundledPet(active: true)
+        let probe = OnboardingRPCProbe(
+            stage: .connectAgents,
+            revision: 6,
+            pets: [pet]
+        )
+        let store = try await makeOnlineStore(probe: probe)
+        let expectedBundledIDs = store.onboardingBundledPets.map(\.id)
+        #expect(expectedBundledIDs == [pet.id])
+        probe.methods.removeAll()
+
+        store.dismissOnboardingForCurrentLaunch()
+
+        #expect(probe.methods.isEmpty)
+        #expect(!store.shouldPresentOnboarding)
+        #expect(store.onboarding?.progress.stage == .connectAgents)
+        #expect(store.onboarding?.revision == "6")
+        #expect(store.onboardingBundledPets.map(\.id) == expectedBundledIDs)
+        #expect(store.activePet?.id == pet.id)
+        #expect(probe.stage == .connectAgents)
+        #expect(probe.revision == 6)
+
+        let rebuilt = try await makeOnlineStore(probe: probe)
+
+        #expect(rebuilt.shouldPresentOnboarding)
+        #expect(rebuilt.onboarding?.progress.stage == .connectAgents)
+        #expect(rebuilt.onboarding?.revision == "6")
+        #expect(rebuilt.onboardingBundledPets.map(\.id) == expectedBundledIDs)
+        #expect(rebuilt.activePet?.id == pet.id)
+    }
+
+    @MainActor
+    @Test
     func completionPublishesOnlyWithTheSnapshotThatLeavesThePetVisible() async throws {
         let pet = bundledPet(active: true)
         let probe = OnboardingRPCProbe(

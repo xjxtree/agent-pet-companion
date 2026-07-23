@@ -48,19 +48,38 @@ PATH="$SHIM_DIR:$PATH" APC_FAKE_EXTRA_ARCH=arm64 \
     --architecture arm64 \
     >"$TMP_DIR/macho.log"
 
-if "$ROOT_DIR/script/build_release.sh" --preview --public \
-  >"$TMP_DIR/mode.log" 2>&1; then
-  echo 'conflicting preview/public modes unexpectedly passed' >&2
+if "$ROOT_DIR/script/build_release.sh" >"$TMP_DIR/mode.log" 2>&1; then
+  echo 'implicit GitHub Release mode unexpectedly passed' >&2
   exit 1
 fi
-grep -F -- '--preview and --public cannot be combined' "$TMP_DIR/mode.log" >/dev/null
+grep -F 'official release builds require the explicit --github-release mode' \
+  "$TMP_DIR/mode.log" >/dev/null
 
-if "$ROOT_DIR/script/build_release.sh" --public --arch arm64 \
+if "$ROOT_DIR/script/build_release.sh" --github-release --arch arm64 \
   >"$TMP_DIR/arch.log" 2>&1; then
-  echo 'single-architecture public mode unexpectedly passed' >&2
+  echo 'single-architecture GitHub Release mode unexpectedly passed' >&2
   exit 1
 fi
-grep -F 'supported public distribution requires --arch all' "$TMP_DIR/arch.log" >/dev/null
+grep -F 'GitHub Release distribution requires --arch all' \
+  "$TMP_DIR/arch.log" >/dev/null
+
+for legacy_mode in --preview --public --public-signed; do
+  if "$ROOT_DIR/script/build_release.sh" "$legacy_mode" \
+    >"$TMP_DIR/build-legacy.log" 2>&1; then
+    printf 'removed build mode %s unexpectedly passed\n' "$legacy_mode" >&2
+    exit 1
+  fi
+  grep -F "unknown argument: $legacy_mode" \
+    "$TMP_DIR/build-legacy.log" >/dev/null
+
+  if "$ROOT_DIR/script/validate_app_bundle.sh" "$legacy_mode" \
+    >"$TMP_DIR/validate-legacy.log" 2>&1; then
+    printf 'removed validation mode %s unexpectedly passed\n' "$legacy_mode" >&2
+    exit 1
+  fi
+  grep -F "unknown argument: $legacy_mode" \
+    "$TMP_DIR/validate-legacy.log" >/dev/null
+done
 
 if "$ROOT_DIR/script/validate_app_bundle.sh" --release \
   >"$TMP_DIR/alias.log" 2>&1; then

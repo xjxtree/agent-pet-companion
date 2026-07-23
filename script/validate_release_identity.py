@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind one extracted public App and its evidence to one release identity."""
+"""Bind one extracted App to one exact GitHub Release source identity."""
 
 from __future__ import annotations
 
@@ -29,19 +29,15 @@ def load_json_object(path: pathlib.Path) -> dict:
 
 def validate(
     app: pathlib.Path,
-    evidence_path: pathlib.Path,
     architecture: str,
     version: str,
     build: str,
     commit: str,
-    archive_name: str,
-    archive_sha256: str,
 ) -> str:
-    expected_build_id = f"{version}.{build}.{commit[:12]}"
+    expected_build_id = f"{version}.{build}.{commit}"
     with (app / "Contents/Info.plist").open("rb") as source:
         info = plistlib.load(source)
     manifest = load_json_object(app / "Contents/Resources/runtime-manifest.json")
-    evidence = load_json_object(evidence_path)
 
     expected_info = {
         "CFBundleShortVersionString": version,
@@ -71,80 +67,18 @@ def validate(
                 f"runtime manifest {key}={manifest.get(key)!r}, expected {expected!r}"
             )
 
-    expected_evidence = {
-        "schema_version": "apc.public-distribution-evidence.v1",
-        "architecture": architecture,
-        "version": version,
-        "build": build,
-        "commit": commit,
-        "build_id": expected_build_id,
-    }
-    for key, expected in expected_evidence.items():
-        if evidence.get(key) != expected:
-            raise ValueError(
-                f"distribution evidence {key}={evidence.get(key)!r}, expected {expected!r}"
-            )
-
-    if set(evidence) != {
-        "schema_version",
-        "architecture",
-        "version",
-        "build",
-        "commit",
-        "build_id",
-        "notarization",
-        "published_artifact",
-    }:
-        raise ValueError("distribution evidence has missing or unknown top-level fields")
-    notarization = evidence.get("notarization")
-    published = evidence.get("published_artifact")
-    if not isinstance(notarization, dict) or set(notarization) != {
-        "submission_id",
-        "status",
-        "submission_archive_sha256",
-    }:
-        raise ValueError("distribution evidence notarization object is invalid")
-    if notarization.get("status") != "Accepted":
-        raise ValueError("distribution evidence does not record accepted notarization")
-    if not isinstance(notarization.get("submission_id"), str) or not notarization[
-        "submission_id"
-    ]:
-        raise ValueError("distribution evidence has no notarization submission ID")
-    submission_sha256 = notarization.get("submission_archive_sha256")
-    if not isinstance(submission_sha256, str) or not re.fullmatch(
-        r"[0-9a-f]{64}", submission_sha256
-    ):
-        raise ValueError("distribution evidence has an invalid submission digest")
-    if not isinstance(published, dict) or set(published) != {
-        "filename",
-        "sha256",
-        "stapled",
-        "gatekeeper_accepted",
-    }:
-        raise ValueError("distribution evidence published-artifact object is invalid")
-    if published.get("filename") != archive_name:
-        raise ValueError("distribution evidence archive filename mismatch")
-    if published.get("sha256") != archive_sha256:
-        raise ValueError("distribution evidence final archive digest mismatch")
-    if published.get("stapled") is not True:
-        raise ValueError("distribution evidence does not record stapling")
-    if published.get("gatekeeper_accepted") is not True:
-        raise ValueError("distribution evidence does not record Gatekeeper acceptance")
-    if submission_sha256 == archive_sha256:
-        raise ValueError("submission and final archive digests must be distinct")
+    if architecture not in ("arm64", "x86_64"):
+        raise ValueError(f"unsupported architecture {architecture!r}")
     return expected_build_id
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=pathlib.Path)
-    parser.add_argument("--evidence", required=True, type=pathlib.Path)
     parser.add_argument("--architecture", required=True, choices=("arm64", "x86_64"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--build", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--archive-name", required=True)
-    parser.add_argument("--archive-sha256", required=True)
     arguments = parser.parse_args()
     if not re.fullmatch(r"[0-9]+(?:[.][0-9]+){2}", arguments.version):
         parser.error("--version must be a three-component semantic version")
@@ -152,18 +86,15 @@ def main() -> int:
         parser.error("--build must be a positive integer")
     if not re.fullmatch(r"[0-9a-f]{40}", arguments.commit):
         parser.error("--commit must be a full lowercase Git commit")
-    if not re.fullmatch(r"[0-9a-f]{64}", arguments.archive_sha256):
-        parser.error("--archive-sha256 must be a lowercase SHA-256 digest")
+    if not arguments.app.is_dir() or arguments.app.is_symlink():
+        parser.error("--app must be a regular App bundle directory")
     try:
         build_id = validate(
             arguments.app,
-            arguments.evidence,
             arguments.architecture,
             arguments.version,
             arguments.build,
             arguments.commit,
-            arguments.archive_name,
-            arguments.archive_sha256,
         )
     except (OSError, ValueError, json.JSONDecodeError, plistlib.InvalidFileException) as error:
         print(f"release identity validation failed: {error}", file=sys.stderr)

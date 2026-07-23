@@ -123,6 +123,55 @@ struct MakerExperiencePresentationTests {
     }
 
     @Test
+    func submittedBriefShowsOneCollapsedMotionSummaryAndOnlyTwoExpandedDetails() throws {
+        let studio = try source("PetStudioView.swift")
+        let summaryStart = try #require(studio.range(
+            of: "struct SubmittedFormSummary"
+        ))
+        let summaryEnd = try #require(studio.range(
+            of: "struct GenerationTimelineRow",
+            range: summaryStart.upperBound ..< studio.endIndex
+        ))
+        let summary = String(
+            studio[summaryStart.lowerBound ..< summaryEnd.lowerBound]
+        )
+        let disclosureStart = try #require(summary.range(
+            of: "AdvancedDetailsDisclosure("
+        ))
+        let disclosureContentStart = try #require(summary.range(
+            of: ") {",
+            range: disclosureStart.upperBound ..< summary.endIndex
+        ))
+        let disclosureEnd = try #require(summary.range(
+            of: "\n                }\n            }\n            .font",
+            range: disclosureContentStart.upperBound ..< summary.endIndex
+        ))
+
+        let ordinarySummary = String(summary[..<disclosureStart.lowerBound])
+        let disclosureHeader = String(
+            summary[disclosureStart.lowerBound ..< disclosureContentStart.lowerBound]
+        )
+        let expandedDetails = String(
+            summary[disclosureContentStart.upperBound ..< disclosureEnd.lowerBound]
+        )
+
+        #expect(occurrences(of: "LabeledContent(", in: ordinarySummary) == 3)
+        #expect(!ordinarySummary.contains(".studioTimingHeading"))
+        #expect(!ordinarySummary.contains("presentation.motionTitle"))
+
+        #expect(occurrences(of: ".studioTimingHeading", in: disclosureHeader) == 1)
+        #expect(occurrences(of: "presentation.motionTitle", in: disclosureHeader) == 1)
+
+        #expect(occurrences(of: "LabeledContent(", in: expandedDetails) == 2)
+        #expect(occurrences(of: ".studioTimingNativeFPS", in: expandedDetails) == 1)
+        #expect(occurrences(of: ".studioTimingActionDurations", in: expandedDetails) == 1)
+        #expect(!expandedDetails.contains(".studioFieldStyle"))
+        #expect(!expandedDetails.contains(".studioFieldQuality"))
+        #expect(!expandedDetails.contains(".studioFieldReferences"))
+        #expect(!expandedDetails.contains("presentation.motionTitle"))
+    }
+
+    @Test
     func submittedDescriptionUsesUnicodeScalarBoundWithoutChangingTheForm() {
         let original = String(repeating: "星", count: 190)
         let input = form(description: original)
@@ -229,5 +278,9 @@ struct MakerExperiencePresentationTests {
                 ),
             encoding: .utf8
         )
+    }
+
+    private func occurrences(of needle: String, in source: String) -> Int {
+        source.components(separatedBy: needle).count - 1
     }
 }

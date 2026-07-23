@@ -958,10 +958,6 @@ struct SubmittedFormSummary: View {
                     value: presentation.qualityTitle
                 )
                 LabeledContent(
-                    APCLocalization.text(.studioTimingHeading),
-                    value: presentation.motionTitle
-                )
-                LabeledContent(
                     APCLocalization.text(.studioFieldReferences),
                     value: APCLocalization.format(
                         .commonImagesFormat,

@@ -10,23 +10,33 @@ struct ProductPagePresentationsTests {
         let active = pet(id: "active", active: true)
         let inactive = pet(id: "inactive", active: false)
 
-        #expect(PetLibraryProductPresentation(
+        let empty = PetLibraryProductPresentation(
             pets: [],
             selectedPet: nil
-        ).primaryAction == .createPet)
-        #expect(PetLibraryProductPresentation(
+        )
+        let validInactive = PetLibraryProductPresentation(
             pets: [active, inactive],
             selectedPet: inactive
-        ).primaryAction == .usePet)
-        #expect(!PetLibraryProductPresentation(
+        )
+        let unavailableInactive = PetLibraryProductPresentation(
             pets: [active, inactive],
             selectedPet: inactive,
             selectedPetCanBeUsed: false
-        ).primaryActionIsEnabled)
-        #expect(PetLibraryProductPresentation(
+        )
+        let activeSelection = PetLibraryProductPresentation(
             pets: [active, inactive],
             selectedPet: active
-        ).primaryAction == .unavailable)
+        )
+
+        #expect(empty.primaryAction == .createPet)
+        #expect(!empty.presentsHeroUseAction)
+        #expect(validInactive.primaryAction == .usePet)
+        #expect(validInactive.primaryActionIsEnabled)
+        #expect(validInactive.presentsHeroUseAction)
+        #expect(!unavailableInactive.primaryActionIsEnabled)
+        #expect(!unavailableInactive.presentsHeroUseAction)
+        #expect(activeSelection.primaryAction == .unavailable)
+        #expect(!activeSelection.presentsHeroUseAction)
     }
 
     @Test

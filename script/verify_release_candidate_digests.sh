@@ -5,8 +5,6 @@ DIRECTORY=""
 VERSION=""
 ARM64_ZIP_SHA256=""
 X86_64_ZIP_SHA256=""
-ARM64_EVIDENCE_SHA256=""
-X86_64_EVIDENCE_SHA256=""
 CHECKSUM_SHA256=""
 
 usage() {
@@ -15,12 +13,10 @@ usage: verify_release_candidate_digests.sh \
   --directory PATH --version X.Y.Z \
   --arm64-zip-sha256 DIGEST \
   --x86_64-zip-sha256 DIGEST \
-  --arm64-evidence-sha256 DIGEST \
-  --x86_64-evidence-sha256 DIGEST \
   --checksum-sha256 DIGEST
 
-Compares every downloaded candidate file with digests emitted by the trusted
-signing job. It performs no archive extraction.
+Compares every downloaded GitHub Release candidate file with digests emitted
+by the trusted build job. It performs no archive extraction.
 EOF
 }
 
@@ -30,8 +26,6 @@ while (($# > 0)); do
     --version) VERSION="${2:-}"; shift 2 ;;
     --arm64-zip-sha256) ARM64_ZIP_SHA256="${2:-}"; shift 2 ;;
     --x86_64-zip-sha256) X86_64_ZIP_SHA256="${2:-}"; shift 2 ;;
-    --arm64-evidence-sha256) ARM64_EVIDENCE_SHA256="${2:-}"; shift 2 ;;
-    --x86_64-evidence-sha256) X86_64_EVIDENCE_SHA256="${2:-}"; shift 2 ;;
     --checksum-sha256) CHECKSUM_SHA256="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -49,8 +43,6 @@ done
 for digest in \
   "$ARM64_ZIP_SHA256" \
   "$X86_64_ZIP_SHA256" \
-  "$ARM64_EVIDENCE_SHA256" \
-  "$X86_64_EVIDENCE_SHA256" \
   "$CHECKSUM_SHA256"; do
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || {
     echo 'every trusted candidate digest must be a lowercase SHA-256 value' >&2
@@ -61,15 +53,11 @@ done
 names=(
   "AgentPetCompanion-$VERSION-macos-arm64.zip"
   "AgentPetCompanion-$VERSION-macos-x86_64.zip"
-  "AgentPetCompanion-$VERSION-macos-arm64-distribution.json"
-  "AgentPetCompanion-$VERSION-macos-x86_64-distribution.json"
   "AgentPetCompanion-$VERSION-SHA256SUMS.txt"
 )
 expected=(
   "$ARM64_ZIP_SHA256"
   "$X86_64_ZIP_SHA256"
-  "$ARM64_EVIDENCE_SHA256"
-  "$X86_64_EVIDENCE_SHA256"
   "$CHECKSUM_SHA256"
 )
 
@@ -85,4 +73,4 @@ for index in "${!names[@]}"; do
     exit 1
   }
 done
-echo 'Downloaded release candidate matches all five trusted build-job digests'
+echo 'Downloaded release candidate matches all three trusted build-job digests'

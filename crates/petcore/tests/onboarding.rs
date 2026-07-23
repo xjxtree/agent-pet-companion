@@ -1,9 +1,12 @@
 use petcore::db::{BehaviorSettingsPatch, DATABASE_SCHEMA_VERSION};
+use petcore::diagnostics::export_diagnostics;
 use petcore::paths::AppPaths;
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{OnboardingProgress, OnboardingStage, ONBOARDING_PROGRESS_SCHEMA_VERSION};
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use std::fs::{self, File};
+use std::io::Read;
 use std::sync::{Arc, Barrier};
 
 fn ready() -> (tempfile::TempDir, CoreState) {
@@ -27,6 +30,82 @@ fn progress(stage: OnboardingStage) -> OnboardingProgress {
         schema_version: ONBOARDING_PROGRESS_SCHEMA_VERSION.to_string(),
         stage,
     }
+}
+
+fn diagnostic_environment() -> Value {
+    json!({
+        "schema_version": "apc.app-environment.v1",
+        "captured_at": "2026-07-23T00:00:00Z",
+        "app": {
+            "version": "0.1.0",
+            "build": "1",
+            "build_id": "test-build",
+            "channel": "release",
+            "bundle_id": "dev.agentpet.companion"
+        },
+        "device": {
+            "operating_system": "macOS",
+            "operating_system_version": "15.5",
+            "operating_system_build": "24F74",
+            "architecture": "arm64",
+            "translated": false,
+            "processor_count": 1,
+            "physical_memory_bytes": 1,
+            "screens": [],
+            "locale": "en_US",
+            "timezone": "UTC",
+            "accessibility": {
+                "reduce_motion": false,
+                "reduce_transparency": false,
+                "voice_over_enabled": false
+            }
+        },
+        "behavior": {
+            "enabled": true,
+            "status_bubble": true,
+            "appearance_theme": "system",
+            "bubble_transparency": 0.5,
+            "click_menu": true,
+            "mouse_passthrough": false,
+            "auto_hide": true,
+            "session_message_timeout_minutes": 15,
+            "session_group_display": "stacked",
+            "fps_profile": "standard",
+            "sources": {
+                "codex": true,
+                "claude_code": true,
+                "pi": true,
+                "opencode": true
+            },
+            "events": {
+                "start": true,
+                "tool": true,
+                "waiting": true,
+                "review": true,
+                "done": true,
+                "failed": true
+            }
+        },
+        "runtime": {
+            "pet_core_phase": "running",
+            "pet_core_version": "0.1.0",
+            "pet_core_app_build": "1",
+            "pet_core_build_id": "test-build",
+            "pet_core_rpc_protocol": "apc.petcore-rpc.v2",
+            "release_channel": "release",
+            "database_schema_range": "20",
+            "active_pet_present": false,
+            "pet_count": 0,
+            "active_agent_source": null,
+            "active_agent_state": null,
+            "active_session_count": 0,
+            "recent_event_count": 0,
+            "generation_state": "idle",
+            "overlay_visible": false,
+            "last_service_failure_code": "none"
+        },
+        "connections": []
+    })
 }
 
 fn update(state: &CoreState, expected_revision: &str, stage: OnboardingStage) -> Value {
@@ -279,6 +358,17 @@ fn onboarding_persistence_never_creates_agent_or_session_records() {
     assert_eq!(snapshot["active_agent_state"], Value::Null);
     assert_eq!(snapshot["active_agent_sessions"], json!([]));
 
+    let receipts = handle_request(&state, request("connections.receipts", json!({}))).unwrap();
+    let receipts = receipts.as_array().unwrap();
+    assert_eq!(receipts.len(), 4);
+    for receipt in receipts {
+        assert!(receipt["ordinary"].is_null());
+        assert!(receipt["diagnostic"].is_null());
+        assert!(receipt["task"].is_null());
+        assert!(receipt["latest_observed"]["ordinary"].is_null());
+        assert!(receipt["latest_observed"]["diagnostic"].is_null());
+    }
+
     let connection = Connection::open(state.database.path()).unwrap();
     for table in [
         "agent_events",
@@ -292,5 +382,63 @@ fn onboarding_persistence_never_creates_agent_or_session_records() {
             })
             .unwrap();
         assert_eq!(count, 0, "{table} must remain untouched by onboarding");
+    }
+}
+
+#[test]
+fn demo_transition_diagnostics_record_only_the_safe_rpc_name_and_export_no_demo_content() {
+    let (_temp, state) = ready();
+    update(&state, "0", OnboardingStage::ConnectAgents);
+    update(&state, "1", OnboardingStage::Demo);
+    state.diagnostics.sync();
+
+    let log = fs::read_to_string(state.paths.logs_dir.join("petcore.jsonl")).unwrap();
+    let update_records = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| record["metadata"]["method"] == "onboarding.update")
+        .collect::<Vec<_>>();
+    assert_eq!(update_records.len(), 2);
+    for record in update_records {
+        let metadata = record["metadata"].as_object().unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert!(metadata.contains_key("method"));
+        assert!(metadata.contains_key("outcome"));
+        assert!(metadata.contains_key("duration_ms"));
+    }
+
+    let exported =
+        export_diagnostics(&state.paths, &state.diagnostics, &diagnostic_environment()).unwrap();
+    let mut archive = zip::ZipArchive::new(File::open(exported.path).unwrap()).unwrap();
+    let mut exported_text = String::new();
+    for index in 0..archive.len() {
+        archive
+            .by_index(index)
+            .unwrap()
+            .read_to_string(&mut exported_text)
+            .unwrap();
+    }
+    assert!(exported_text.contains("onboarding.update"));
+
+    for forbidden in [
+        "\"demo\"",
+        "\"thinking\"",
+        "\"working\"",
+        "\"needs_attention\"",
+        "onboarding-local-demo",
+        "pet_xingwutuanzi",
+        "pet_bytebudcodex",
+        "demo-session",
+        "\"pet_id\"",
+        "\"session_id\"",
+    ] {
+        assert!(
+            !log.contains(forbidden),
+            "PetCore log leaked local demo content: {forbidden}"
+        );
+        assert!(
+            !exported_text.contains(forbidden),
+            "diagnostic export leaked local demo content: {forbidden}"
+        );
     }
 }

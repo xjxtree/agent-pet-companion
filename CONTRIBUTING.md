@@ -11,9 +11,20 @@ Thanks for helping improve Agent Pet Companion. The project is a local-first mac
 - Rust 1.96.0 with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
 - Python 3 for validation helpers
 
-The primary V1 performance target is Apple silicon. Release tooling has explicit preview and public modes. `--preview` produces clearly labeled, ad-hoc-signed thin `arm64` and `x86_64` archives. `--public --arch all` fails closed and requires externally provisioned signing identity, Team ID, and notary profile. Publication additionally requires native validation on both architectures and exact downloaded-asset revalidation. Missing credentials or runners means unavailable or incomplete, never passed. See the [release procedure](docs/release/macos-release.md) and [validation profiles](docs/development/validation.md).
+The primary V1 performance target is Apple silicon. Official distribution uses
+the explicit, fail-closed `build_release.sh --github-release --arch all` path
+to produce two ad-hoc-signed thin archives and a two-entry checksum file. It
+requires native validation on both architectures and exact downloaded-asset
+revalidation, but no Apple signing or notarization credentials. Missing native
+runners means incomplete, never passed. See the
+[release procedure](docs/release/macos-release.md) and
+[validation profiles](docs/development/validation.md).
 
-V1 的主要性能目标是 Apple Silicon。发布工具明确区分 preview 与 public 两种模式：`--preview` 生成清楚标注、采用 ad-hoc 签名的 thin `arm64` 与 `x86_64` 归档；`--public --arch all` 采用 fail-closed 设计，要求外部配置签名身份、Team ID 与公证 profile。正式发布还必须在两种原生架构上完成验证，并重新校验实际下载的发布文件。缺少凭据或 runner 只能记为 unavailable 或 incomplete，不能记为通过。具体见[发布流程](docs/release/macos-release.md)与[验证层级](docs/development/validation.md)。
+V1 的主要性能目标是 Apple Silicon。正式分发显式使用 fail-closed 的
+`build_release.sh --github-release --arch all`，生成两个采用 ad-hoc 签名的 thin
+归档与一份两行校验和文件；发布前必须完成双原生架构验收和实际下载资产复验，但不
+需要 Apple 签名或公证凭据。缺少原生 runner 只能记为 incomplete，不能记为通过。
+具体见[发布流程](docs/release/macos-release.md)与[验证层级](docs/development/validation.md)。
 
 ## Before changing behavior / 修改行为前
 

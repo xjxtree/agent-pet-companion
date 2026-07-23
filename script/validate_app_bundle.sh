@@ -9,14 +9,13 @@ APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
 usage() {
   cat <<'EOF'
 usage: validate_app_bundle.sh \
-  [--development|--preview|--public-signed|--public] \
+  [--development|--github-release] \
   [--architecture arm64|x86_64] \
   [APP_BUNDLE]
 
 --development validates a local App with an optional ad-hoc signature.
---preview requires the ad-hoc signature used only by development previews.
---public-signed requires a Developer ID signature and hardened runtime.
---public additionally requires a stapled ticket and Gatekeeper acceptance.
+--github-release requires the official ad-hoc signature and release identity.
+It does not claim Developer ID identity, Apple notarization, or Gatekeeper trust.
 Architecture is required for every non-development mode.
 EOF
 }
@@ -27,16 +26,8 @@ while (($# > 0)); do
       MODE="development"
       shift
       ;;
-    --preview)
-      MODE="preview"
-      shift
-      ;;
-    --public-signed)
-      MODE="public-signed"
-      shift
-      ;;
-    --public)
-      MODE="public"
+    --github-release)
+      MODE="github-release"
       shift
       ;;
     --architecture)
@@ -176,26 +167,23 @@ if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
   fi
 fi
 
-# Public trust is a pre-execution gate. Keep this call before every invocation
-# of the packaged App, PetCore, or petcore-cli.
-validate_public_trust_before_runtime() {
-  APC_CODESIGN_IDENTITY="${APC_CODESIGN_IDENTITY:-}" \
-  APC_DEVELOPER_TEAM_ID="${APC_DEVELOPER_TEAM_ID:-}" \
-    "$ROOT_DIR/script/validate_distribution_signature.sh" \
-      --app "$APP_BUNDLE" \
-      --entitlements "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements"
-  if [[ "$MODE" == "public" ]]; then
-    command -v xcrun >/dev/null 2>&1 || {
-      echo 'supported public App validation requires xcrun' >&2
+validate_github_release_signature_before_runtime() {
+  local signed_item
+  local signature_metadata
+
+  for signed_item in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI" "$APP_BUNDLE"; do
+    if ! signature_metadata="$(codesign -d --verbose=4 "$signed_item" 2>&1)"; then
+      printf 'GitHub Release validation failed: cannot inspect signature: %s\n' \
+        "$signed_item" >&2
       exit 1
-    }
-    command -v spctl >/dev/null 2>&1 || {
-      echo 'supported public App validation requires spctl' >&2
+    fi
+    if ! grep -Fx 'Signature=adhoc' <<<"$signature_metadata" >/dev/null; then
+      printf 'GitHub Release validation failed: expected ad-hoc signature: %s\n' \
+        "$signed_item" >&2
       exit 1
-    }
-    xcrun stapler validate "$APP_BUNDLE"
-    spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
-  fi
+    fi
+  done
+
   python3 - "$APP_CONTENTS/Info.plist" <<'PY'
 import plistlib
 import sys
@@ -204,12 +192,13 @@ with open(sys.argv[1], "rb") as file:
     info = plistlib.load(file)
 if info.get("APCReleaseChannel") != "release":
     raise SystemExit(
-        "supported public App validation failed: APCReleaseChannel must be 'release'"
+        "GitHub Release validation failed: APCReleaseChannel must be 'release'"
     )
 PY
 }
-if [[ "$MODE" == "public-signed" || "$MODE" == "public" ]]; then
-  validate_public_trust_before_runtime
+if [[ "$MODE" == "github-release" ]]; then
+  # Keep this before every invocation of packaged App, PetCore, or CLI code.
+  validate_github_release_signature_before_runtime
 fi
 
 [[ -f "$RUNTIME_MANIFEST" ]] || {
@@ -565,38 +554,9 @@ PY
   grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js"
 fi
 
-if [[ "$MODE" == "preview" ]]; then
-  for signed_item in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI" "$APP_BUNDLE"; do
-    # Avoid grep -q here: with pipefail it may close the pipe before codesign
-    # finishes writing verbose metadata, turning a valid result into SIGPIPE.
-    codesign -d --verbose=4 "$signed_item" 2>&1 \
-      | grep -Fx 'Signature=adhoc' >/dev/null || {
-      printf 'development preview validation failed: expected ad-hoc signature: %s\n' \
-        "$signed_item" >&2
-      exit 1
-    }
-  done
-  python3 - "$APP_CONTENTS/Info.plist" <<'PY'
-import plistlib
-import sys
-
-with open(sys.argv[1], "rb") as file:
-    info = plistlib.load(file)
-if info.get("APCReleaseChannel") != "release":
-    raise SystemExit(
-        "development preview validation failed: APCReleaseChannel must be 'release'"
-    )
-PY
-  printf 'Development preview app bundle validation ok (%s, ad-hoc signature, %s)\n' \
-    "${EXPECTED_ARCH:-host architecture}" "$RUNTIME_VALIDATION_SCOPE"
-elif [[ "$MODE" == "public-signed" || "$MODE" == "public" ]]; then
-  if [[ "$MODE" == "public" ]]; then
-    printf 'Supported public App bundle validation ok (%s, stapled and Gatekeeper accepted, %s)\n' \
-      "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
-  else
-    printf 'Pre-notarization Developer ID App bundle validation ok (%s, %s)\n' \
-      "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
-  fi
+if [[ "$MODE" == "github-release" ]]; then
+  printf 'GitHub Release App bundle validation ok (%s, ad-hoc signature, %s)\n' \
+    "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
 elif [[ "$SIGNATURE_PRESENT" == "1" ]]; then
   echo 'Development app bundle validation ok (signature present and strictly valid)'
 else

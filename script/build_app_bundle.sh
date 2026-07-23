@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="AgentPetCompanion"
 BUNDLE_ID="dev.agentpet.companion"
 APP_ICON_NAME="AgentPetCompanion.icns"
@@ -9,7 +10,10 @@ CONFIGURATION="debug"
 UNIVERSAL=0
 TARGET_ARCH=""
 OUTPUT_PATH=""
-RELEASE_VERSION="${APC_RELEASE_VERSION:-0.1.0}"
+SOURCE_VERSION="$(
+  awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/petcore/Cargo.toml"
+)"
+RELEASE_VERSION="${APC_RELEASE_VERSION:-$SOURCE_VERSION}"
 RELEASE_BUILD="${APC_RELEASE_BUILD:-1}"
 BUILD_ID="${APC_BUILD_ID:-${RELEASE_VERSION}.${RELEASE_BUILD}.$(date -u +%Y%m%d%H%M%S).$$}"
 RELEASE_CHANNEL="${APC_RELEASE_CHANNEL:-develop}"
@@ -124,7 +128,6 @@ case "$RELEASE_CHANNEL" in
   *) echo 'APC_RELEASE_CHANNEL must be develop or release' >&2; exit 2 ;;
 esac
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/apps/macos"
 APP_ICON_SOURCE="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
 DIST_DIR="$ROOT_DIR/dist"

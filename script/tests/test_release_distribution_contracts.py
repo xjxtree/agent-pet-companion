@@ -6,6 +6,7 @@ import importlib.util
 import json
 import pathlib
 import plistlib
+import re
 import stat
 import tempfile
 import unittest
@@ -155,7 +156,7 @@ class ReleaseMetadataAndIdentityTests(unittest.TestCase):
     VERSION = "1.2.3"
     BUILD = "45"
     COMMIT = "a" * 40
-    BUILD_ID = "1.2.3.45." + "a" * 12
+    BUILD_ID = f"{VERSION}.{BUILD}.{COMMIT}"
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -189,98 +190,69 @@ class ReleaseMetadataAndIdentityTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def create_evidence(
-        self, architecture: str, archive_name: str, archive_sha256: str
-    ) -> pathlib.Path:
-        path = self.root / f"{architecture}.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "schema_version": "apc.public-distribution-evidence.v1",
-                    "architecture": architecture,
-                    "version": self.VERSION,
-                    "build": self.BUILD,
-                    "commit": self.COMMIT,
-                    "build_id": self.BUILD_ID,
-                    "notarization": {
-                        "submission_id": "submission",
-                        "status": "Accepted",
-                        "submission_archive_sha256": "b" * 64,
-                    },
-                    "published_artifact": {
-                        "filename": archive_name,
-                        "sha256": archive_sha256,
-                        "stapled": True,
-                        "gatekeeper_accepted": True,
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-    def test_identity_binds_expected_commit_build_and_both_architectures(self) -> None:
+    def test_identity_binds_full_commit_build_and_both_architectures(self) -> None:
         for architecture in ("arm64", "x86_64"):
-            archive_name = (
-                f"AgentPetCompanion-{self.VERSION}-macos-{architecture}.zip"
-            )
-            archive_sha256 = ("c" if architecture == "arm64" else "d") * 64
-            evidence = self.create_evidence(
-                architecture, archive_name, archive_sha256
-            )
-            value = release_identity.validate(
-                self.app,
-                evidence,
-                architecture,
-                self.VERSION,
-                self.BUILD,
-                self.COMMIT,
-                archive_name,
-                archive_sha256,
-            )
-            self.assertEqual(value, self.BUILD_ID)
+            with self.subTest(architecture=architecture):
+                value = release_identity.validate(
+                    self.app,
+                    architecture,
+                    self.VERSION,
+                    self.BUILD,
+                    self.COMMIT,
+                )
+                self.assertEqual(value, self.BUILD_ID)
+                self.assertTrue(value.endswith(self.COMMIT))
 
-    def test_identity_mismatch_fails_closed(self) -> None:
-        archive_name = f"AgentPetCompanion-{self.VERSION}-macos-arm64.zip"
-        evidence = self.create_evidence("arm64", archive_name, "c" * 64)
+    def test_identity_mismatch_and_truncated_commit_build_id_fail_closed(self) -> None:
         with self.assertRaises(ValueError):
             release_identity.validate(
                 self.app,
-                evidence,
                 "arm64",
                 self.VERSION,
                 "46",
                 self.COMMIT,
-                archive_name,
-                "c" * 64,
             )
         with self.assertRaises(ValueError):
             release_identity.validate(
                 self.app,
-                evidence,
                 "arm64",
                 self.VERSION,
                 self.BUILD,
                 "e" * 40,
-                archive_name,
-                "c" * 64,
+            )
+
+        info_path = self.app / "Contents/Info.plist"
+        with info_path.open("rb") as source:
+            info = plistlib.load(source)
+        info["APCBuildID"] = f"{self.VERSION}.{self.BUILD}.{self.COMMIT[:12]}"
+        with info_path.open("wb") as output:
+            plistlib.dump(info, output)
+        with self.assertRaises(ValueError):
+            release_identity.validate(
+                self.app,
+                "arm64",
+                self.VERSION,
+                self.BUILD,
+                self.COMMIT,
             )
 
     def create_artifact_set(self) -> tuple[list[str], str]:
-        data_names, checksum_name = artifact_metadata.expected_names(self.VERSION)
+        archive_names, checksum_name = artifact_metadata.expected_names(self.VERSION)
         lines = []
-        for index, name in enumerate(data_names):
+        for index, name in enumerate(archive_names):
             data = f"asset-{index}".encode()
             (self.artifact_dir / name).write_bytes(data)
             lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}")
         (self.artifact_dir / checksum_name).write_text(
             "\n".join(lines) + "\n", encoding="ascii"
         )
-        return data_names, checksum_name
+        return archive_names, checksum_name
 
-    def test_exact_five_files_and_four_checksum_entries_are_required(self) -> None:
-        data_names, checksum_name = self.create_artifact_set()
+    def test_exact_three_files_and_two_checksum_entries_are_required(self) -> None:
+        archive_names, checksum_name = self.create_artifact_set()
+        self.assertEqual(len(archive_names), 2)
         artifact_metadata.validate(self.artifact_dir, self.VERSION)
+
         (self.artifact_dir / "extra.txt").write_text("unexpected", encoding="utf-8")
         with self.assertRaises(ValueError):
             artifact_metadata.validate(self.artifact_dir, self.VERSION)
@@ -297,25 +269,36 @@ class ReleaseMetadataAndIdentityTests(unittest.TestCase):
 
 
 class ValidationOrderTests(unittest.TestCase):
-    def test_public_trust_gate_precedes_packaged_code_execution(self) -> None:
+    def test_adhoc_signature_gate_precedes_packaged_code_execution(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
-        gate_call = source.index("  validate_public_trust_before_runtime\n")
-        packaged_executions = (
-            source.index('"$PETCORE_CLI" petpack validate'),
-            source.index('"$APP_BINARY" --run-ui-validation'),
-            source.index('"$PETCORE" preflight'),
-            source.index('"$PETCORE_CLI" renderer budget'),
+        self.assertIn("grep -Fx 'Signature=adhoc'", source)
+        gate_call = source.index(
+            "  validate_github_release_signature_before_runtime\n"
         )
-        self.assertTrue(all(gate_call < execution for execution in packaged_executions))
+        packaged_executions = (
+            '"$PETCORE_CLI" petpack validate',
+            '"$APP_BINARY" --run-ui-validation',
+            '"$PETCORE" preflight',
+            '"$PETCORE" init',
+            '"$PETCORE_CLI" renderer budget',
+            '"$PETCORE" serve',
+            '"$PETCORE_CLI" health',
+            '"$PETCORE_CLI" petpack seed-bundled',
+            '"$PETCORE_CLI" pet list',
+            '"$PETCORE_CLI" connections repair',
+        )
+        for invocation in packaged_executions:
+            with self.subTest(invocation=invocation):
+                self.assertLess(gate_call, source.index(invocation))
 
     def test_every_release_extraction_has_a_preceding_zip_preflight(self) -> None:
         for relative_path in (
             "script/build_release.sh",
-            "script/public_distribution_pipeline.sh",
-            "script/validate_public_release_artifacts.sh",
+            "script/validate_github_release_artifacts.sh",
         ):
             source = (ROOT / relative_path).read_text(encoding="utf-8")
             cursor = 0
+            extraction_count = 0
             while True:
                 extraction = source.find("ditto -x -k", cursor)
                 if extraction == -1:
@@ -326,87 +309,123 @@ class ValidationOrderTests(unittest.TestCase):
                     -1,
                     f"{relative_path} extracts a ZIP without a preceding safety preflight",
                 )
+                extraction_count += 1
                 cursor = extraction + 1
+            self.assertGreater(extraction_count, 0)
 
 
-class ReleaseWorkflowIdentityTests(unittest.TestCase):
+class ReleaseWorkflowContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = (ROOT / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        build_end = self.source.index("\n  validate_arm64:")
+        arm_end = self.source.index("\n  validate_x86_64:")
+        x86_end = self.source.index("\n  publish:")
+        self.build = self.source[:build_end]
+        self.arm = self.source[build_end:arm_end]
+        self.x86 = self.source[arm_end:x86_end]
+        self.publish = self.source[x86_end:]
+
+    def test_workflow_has_no_signing_environment_or_apple_trust_pipeline(self) -> None:
+        self.assertNotRegex(self.source, r"(?m)^\s*environment:")
+        self.assertNotIn("${{ vars.", self.source)
+        self.assertNotIn("${{ secrets.", self.source)
+        for forbidden in (
+            "Developer ID Application",
+            "APC_CODESIGN_IDENTITY",
+            "APC_NOTARY",
+            "notarytool",
+            "stapler",
+            "spctl",
+            "create-keychain",
+            "delete-keychain",
+            "find-identity",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.source)
+
+    def test_release_notes_disclose_adhoc_signing_and_both_first_open_paths(self) -> None:
+        self.assertIn("ad-hoc signed", self.publish)
+        self.assertIn("not Developer ID signed", self.publish)
+        self.assertIn("没有 Developer ID 签名", self.publish)
+        self.assertIn("Control-click", self.publish)
+        self.assertIn("System Settings → Privacy & Security → Open Anyway", self.publish)
+        self.assertIn("按住 Control 点按", self.publish)
+        self.assertIn("系统设置 → 隐私与安全性 → 仍要打开", self.publish)
+
+    def test_official_build_and_exact_three_file_candidate_are_explicit(self) -> None:
+        self.assertIn(
+            "run: ./script/build_release.sh --github-release --arch all",
+            self.build,
+        )
+        self.assertIn("validate_github_release_artifacts.sh", self.source)
+        upload_start = self.build.index("- name: Upload immutable release candidate")
+        upload_block = self.build[upload_start:]
+        expected_assets = (
+            "macos-arm64.zip",
+            "macos-x86_64.zip",
+            "SHA256SUMS.txt",
+        )
+        for suffix in expected_assets:
+            self.assertEqual(upload_block.count(suffix), 1)
+        self.assertEqual(self.publish.count('"release-assets/AgentPetCompanion-'), 3)
+
+    def test_only_publish_job_can_write_repository_contents(self) -> None:
+        self.assertEqual(self.source.count("contents: write"), 1)
+        self.assertNotIn("contents: write", self.build)
+        self.assertNotIn("contents: write", self.arm)
+        self.assertNotIn("contents: write", self.x86)
+        self.assertIn("contents: write", self.publish)
+
     def test_downstream_jobs_use_proven_commit_and_recheck_remote_tag(self) -> None:
-        source = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertNotIn("ref: ${{ needs.build.outputs.tag }}", source)
+        self.assertNotIn("ref: ${{ needs.build.outputs.tag }}", self.source)
         self.assertEqual(
-            source.count("ref: ${{ needs.build.outputs.commit }}"),
+            self.source.count("ref: ${{ needs.build.outputs.commit }}"),
             3,
         )
         self.assertGreaterEqual(
-            source.count("./script/verify_remote_release_tag.sh"),
+            self.source.count("./script/verify_remote_release_tag.sh"),
             3,
         )
-
-    def test_release_uses_hosted_native_runners_and_ephemeral_signing_material(self) -> None:
-        source = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-        self.assertNotIn("self-hosted", source)
-        self.assertIn("runs-on: macos-15\n", source)
-        self.assertIn("runs-on: macos-15-intel\n", source)
-        self.assertIn("environment: public-release", source)
-
-        build_job_end = source.index("\n  validate_arm64:")
-        build_job = source[:build_job_end]
-        arm_job_end = source.index("\n  validate_x86_64:")
-        arm_job = source[build_job_end:arm_job_end]
-        x86_job_end = source.index("\n  publish:")
-        x86_job = source[arm_job_end:x86_job_end]
-        self.assertIn('test "$(uname -m)" = "arm64"', build_job)
-        self.assertIn('run: test "$(uname -m)" = "arm64"', arm_job)
-        self.assertNotIn('run: test "$(uname -m)" = "x86_64"', arm_job)
-        self.assertIn('run: test "$(uname -m)" = "x86_64"', x86_job)
-        self.assertNotIn('= "arm64"', x86_job)
-
-        for secret in (
-            "APC_DEVELOPER_ID_P12_BASE64",
-            "APC_DEVELOPER_ID_P12_PASSWORD",
-            "APC_NOTARY_API_KEY_P8_BASE64",
-            "APC_NOTARY_API_KEY_ID",
-            "APC_NOTARY_API_ISSUER_ID",
-        ):
-            self.assertIn(f"${{{{ secrets.{secret} }}}}", source)
-
-        source_gate = source.index("run: ./script/test_all.sh")
-        credential_provisioning = source.index(
-            "Provision ephemeral Developer ID and notarization credentials"
-        )
-        public_build = source.index("run: ./script/build_release.sh --public --arch all")
-        credential_cleanup = source.index("Remove ephemeral signing material")
-        local_revalidation = source.index("Revalidate final local artifact set")
-        artifact_upload = source.index("Upload immutable release candidate")
-        self.assertLess(
-            source_gate,
-            credential_provisioning,
-        )
-        self.assertLess(credential_provisioning, public_build)
-        self.assertLess(public_build, credential_cleanup)
-        self.assertLess(credential_cleanup, local_revalidation)
-        self.assertLess(local_revalidation, artifact_upload)
-        raw_file_cleanup = source.index(
-            'rm -f "$certificate_path" "$api_key_path"'
-        )
-        keychain_export = source.index(
-            'echo "APC_NOTARY_KEYCHAIN=$keychain_path"'
-        )
-        self.assertLess(credential_provisioning, raw_file_cleanup)
-        self.assertLess(raw_file_cleanup, keychain_export)
-        self.assertIn("APC_NOTARY_KEYCHAIN=$keychain_path", source)
         self.assertIn(
-            'security find-identity -v -p codesigning "$keychain_path"',
-            source,
+            'git merge-base --is-ancestor "$commit" refs/remotes/origin/main',
+            self.build,
         )
-        cleanup_block = source[credential_cleanup:local_revalidation]
-        self.assertNotIn("${APC_NOTARY_KEYCHAIN", cleanup_block)
-        self.assertIn(
-            'keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"',
-            cleanup_block,
+
+    def test_native_architecture_jobs_and_download_revalidation_are_mandatory(self) -> None:
+        self.assertNotIn("self-hosted", self.source)
+        self.assertIn("runs-on: macos-15\n", self.arm)
+        self.assertIn("runs-on: macos-15-intel\n", self.x86)
+        self.assertIn('run: test "$(uname -m)" = "arm64"', self.arm)
+        self.assertNotIn('= "x86_64"', self.arm)
+        self.assertIn('run: test "$(uname -m)" = "x86_64"', self.x86)
+        self.assertNotIn('= "arm64"', self.x86)
+
+        release_download = self.publish.index('gh release download "$RELEASE_TAG"')
+        digest_recheck = self.publish.index(
+            "./script/verify_release_candidate_digests.sh", release_download
         )
-        self.assertIn("security delete-keychain", source)
-        self.assertIn("if: ${{ always() }}", source)
+        package_recheck = self.publish.index(
+            "./script/validate_github_release_artifacts.sh", digest_recheck
+        )
+        tag_recheck = self.publish.index(
+            "./script/verify_remote_release_tag.sh", package_recheck
+        )
+        publish_release = self.publish.index(
+            'gh release edit "$RELEASE_TAG" --draft=false', tag_recheck
+        )
+        self.assertLess(release_download, digest_recheck)
+        self.assertLess(digest_recheck, package_recheck)
+        self.assertLess(package_recheck, tag_recheck)
+        self.assertLess(tag_recheck, publish_release)
+
+    def test_every_action_is_pinned_to_a_full_commit(self) -> None:
+        uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", self.source)
+        self.assertTrue(uses)
+        for action in uses:
+            with self.subTest(action=action):
+                self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":

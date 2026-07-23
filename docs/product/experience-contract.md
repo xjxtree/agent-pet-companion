@@ -144,7 +144,8 @@ Completion leaves the desktop pet visible and makes the control center optional 
 Default presentation:
 
 - the active pet is the visual hero;
-- the selected pet has a large animated preview, name, style, source summary, and one primary `Use This Pet` action;
+- the selected pet has a large animated preview, name, style, and source summary;
+- an inactive, valid pet has one primary `Use This Pet` action; the active pet and unavailable pets do not repeat an unusable action, while activation in progress shows bounded progress feedback;
 - other pets appear as visual cards;
 - import and create are secondary actions;
 - search appears only when the collection needs it;
@@ -291,7 +292,7 @@ The ordinary UI uses human labels. Exact FPS, frame counts, durations, and revis
 Every page follows these rules:
 
 - one page title and one concise explanation;
-- one primary action for the current state;
+- at most one primary action when the current state has a meaningful action;
 - one visual center;
 - no more than three simultaneous columns including the main navigation;
 - no permanent empty detail panel;
@@ -333,19 +334,39 @@ Status semantics are shared across pages:
 
 ## 11. Distribution experience / 分发体验
 
-A supported public package is part of the product experience. It must be directly installable without source toolchains or a quarantine workaround.
+A GitHub Release package is part of the product experience. It must be
+installable without a source toolchain, and its first-open requirement must be
+explained honestly.
 
-The supported public-distribution target requires:
+The only official V1 distribution channel is an architecture-specific ZIP
+published through GitHub Releases. Official archives use ad-hoc code signing;
+V1 does not use Developer ID signing, Apple notarization, stapling, or claim
+default Gatekeeper trust. On first launch, the user explicitly allows the App
+through Finder's Control-click/right-click **Open** action or macOS
+**System Settings → Privacy & Security → Open Anyway**.
 
-- the exact App/PetCore/CLI runtime identity;
-- Developer ID signing of nested executables and the outer App;
-- Apple notarization and stapling;
-- Gatekeeper assessment of the stapled artifact;
-- architecture and package validation;
-- published checksums;
-- one tag, changelog version, and GitHub Release per version.
+GitHub Release 是 V1 唯一的正式分发渠道，按架构提供 ZIP。正式归档使用 ad-hoc
+代码签名；V1 不使用 Developer ID 签名、Apple 公证或 stapling，也不声称下载的
+App 默认受到 Gatekeeper 信任。首次启动时，用户需要在 Finder 中按住 Control
+点击或右键选择**打开**，也可前往 macOS **系统设置 → 隐私与安全性 → 仍要打开**
+进行明确授权；不需要源码工具链或命令行 quarantine 绕过。
 
-Ad-hoc-signed archives remain development previews. A release is a supported public distribution only when the public pipeline completes Developer ID signing, notarization, stapling, Gatekeeper assessment, architecture and package validation, native packaged-functional validation, checksums, and exact downloaded-artifact validation for that release.
+Each official release requires:
+
+- exactly one thin `arm64` ZIP, one thin `x86_64` ZIP, and one
+  `SHA256SUMS.txt` containing exactly those two archive entries;
+- exact tag, source version, changelog version, commit, App/PetCore/CLI
+  runtime identity, and shared `version.build.<40-character-commit>` build ID
+  agreement;
+- strict ad-hoc signature integrity, architecture, package, bundled-resource,
+  and pre-extraction ZIP-safety validation;
+- packaged-functional validation on native `arm64` and `x86_64` CI hosts;
+- SHA-256 verification and complete revalidation of the assets downloaded from
+  the GitHub Release.
+
+The tag, changelog version, and GitHub Release remain one-to-one. Development
+Apps or handoff archives produced by `build_app_bundle.sh` cannot be
+substituted for the tag-bound three-file official asset set.
 
 ## 12. Product acceptance / 产品验收
 
@@ -357,7 +378,9 @@ The refactor is complete only when:
 - every displayed session remains distinguishable without display-order numbering;
 - bounded current-turn context remains useful without exposing full transcripts or project paths;
 - action copy accurately distinguishes exact-session navigation from host activation;
-- each main page has one clear job and one contextual primary action;
+- each main page has one clear job and at most one contextual primary action when meaningful;
 - healthy technical state is quiet;
 - authored animation timing remains immutable at runtime;
-- accessibility, renderer budgets, real connector behavior, packaged-App behavior, signing, and distribution gates pass for the exact release artifact.
+- accessibility, renderer budgets, real connector behavior, packaged-App
+  behavior, ad-hoc signature integrity, native dual-architecture validation,
+  and downloaded GitHub Release artifact gates pass for the exact release.

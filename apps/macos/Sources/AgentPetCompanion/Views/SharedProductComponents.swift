@@ -11,7 +11,6 @@ enum SharedProductComponentKind: String, CaseIterable {
     case primaryExperienceCard = "primary-experience-card"
     case petPreviewStage = "pet-preview-stage"
     case agentHealthRow = "agent-health-row"
-    case sessionBubbleRow = "session-bubble-row"
     case attentionPresetPicker = "attention-preset-picker"
     case advancedDetailsDisclosure = "advanced-details-disclosure"
     case emptyStateAction = "empty-state-action"
@@ -472,112 +471,159 @@ struct AgentHealthRow: View {
     }
 }
 
-/// The overlay already owns a private `SessionBubbleRow`. Keeping the shared
-/// control-center variant under a narrow namespace makes the intended call
-/// site explicit and avoids leaking overlay implementation names into pages.
-enum SharedProductComponents {
-    typealias SessionBubbleRow = ControlCenterSessionBubbleRow
-}
-
-struct ControlCenterSessionBubbleRow: View {
-    let identity: ProductComponentIdentity
-    let agentTitle: String
-    let sessionTitle: String
-    let lifecycle: ProductLifecycleState
-    let statusTitle: String
-    let message: String?
-    let navigationAction: ProductActionPresentation<NavigationCapability>?
-    let onNavigationAction: (NavigationCapability) -> Void
-
-    init(
-        identity: ProductComponentIdentity,
-        agentTitle: String,
-        sessionTitle: String,
-        lifecycle: ProductLifecycleState,
-        statusTitle: String,
-        message: String? = nil,
-        navigationAction: ProductActionPresentation<NavigationCapability>? = nil,
-        onNavigationAction: @escaping (NavigationCapability) -> Void
-    ) {
-        self.identity = identity
-        self.agentTitle = agentTitle
-        self.sessionTitle = sessionTitle
-        self.lifecycle = lifecycle
-        self.statusTitle = statusTitle
-        self.message = message
-        self.navigationAction = navigationAction
-        self.onNavigationAction = onNavigationAction
-    }
+/// The single production session row used by the desktop conversation bubble.
+///
+/// Navigation authority and accessibility copy come from the same validated
+/// `OverlaySessionContent`, so exact-session, Agent-host, and unavailable
+/// destinations cannot drift into separate visual and assistive behaviors.
+struct SessionBubbleRow: View {
+    var session: OverlaySessionContent
+    var action: () -> Void
+    var dismissAction: (() -> Void)?
+    @State private var hovered = false
 
     var body: some View {
-        ProductCardSurface(padding: SharedProductComponentLayout.compactPadding) {
-            VStack(alignment: .leading, spacing: SharedProductComponentLayout.rowSpacing) {
-                Text(agentTitle)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        sessionHeading
-                        Spacer(minLength: 8)
-                        navigationButton
-                    }
-
-                    VStack(alignment: .leading, spacing: SharedProductComponentLayout.rowSpacing) {
-                        sessionHeading
-                        navigationButton
-                    }
+        Group {
+            if session.canOpen {
+                Button(action: action) {
+                    rowContent
                 }
-
-                if let visibleMessage {
-                    Text(visibleMessage)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                .buttonStyle(.plain)
+            } else {
+                rowContent
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(
-            identity.accessibilityIdentifier(for: .sessionBubbleRow)
+        .onHover { hovered = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("overlay.session.\(session.id)")
+        .accessibilityLabel(session.accessibilityLabel)
+        .modifier(SessionBubbleAccessibilityActions(
+            openLabel: session.canOpen ? session.actionLabel : nil,
+            closeLabel: dismissAction == nil
+                ? nil
+                : APCLocalization.text(.overlayDismissSession),
+            onOpen: action,
+            onClose: dismissAction
+        ))
+        .help(helpText)
+    }
+
+    private var rowContent: some View {
+        VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(session.sessionTitle)
+                    .font(.system(
+                        size: OverlayGeometry.bubbleSessionTitleFontSize,
+                        weight: .semibold
+                    ))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                if !session.statusText.isEmpty {
+                    Text(session.statusText)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(statusColor.opacity(0.24))
+                        )
+                        .overlay {
+                            Capsule()
+                                .stroke(statusColor.opacity(0.62), lineWidth: 0.75)
+                                .allowsHitTesting(false)
+                        }
+                }
+            }
+
+            Text(session.messageText)
+                .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
+                .foregroundStyle(Color.primary)
+                .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 4) {
+                Text(session.actionLabel)
+                    .font(.system(
+                        size: OverlayGeometry.bubbleSessionActionFontSize,
+                        weight: .semibold
+                    ))
+                    .foregroundStyle(
+                        session.canOpen
+                            ? Color.primary
+                            : Color.primary.opacity(0.62)
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if session.canOpen {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(Color.primary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.top, OverlayGeometry.bubbleSessionActionSpacing
+                - OverlayGeometry.bubbleSessionTitleSpacing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+        .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovered && session.canOpen ? Color.primary.opacity(0.05) : .clear)
         )
     }
 
-    private var sessionHeading: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(sessionTitle)
-                .font(.headline)
-                .fixedSize(horizontal: false, vertical: true)
-            ProductStatusIndicator(
-                presentation: ProductStatusPresentation(
-                    lifecycle: lifecycle,
-                    title: statusTitle
-                )
+    private var helpText: String {
+        if session.dismissesAfterActivation {
+            return APCLocalization.text(
+                session.canOpen ? .overlayHelpOpenAndDismiss : .overlayHelpDismiss
             )
         }
-    }
-
-    private var visibleMessage: String? {
-        SharedProductComponentText.distinctDetail(
-            message,
-            comparedTo: [sessionTitle, statusTitle]
+        return APCLocalization.text(
+            session.canOpen ? .overlayHelpOpen : .overlayHelpUnavailable
         )
     }
 
+    private var statusColor: Color {
+        switch session.eventType {
+        case .waiting: .orange
+        case .failed: .red
+        case .done, .review: .green
+        case .start, .tool: .blue
+        case nil: .secondary
+        }
+    }
+}
+
+private struct SessionBubbleAccessibilityActions: ViewModifier {
+    var openLabel: String?
+    var closeLabel: String?
+    var onOpen: () -> Void
+    var onClose: (() -> Void)?
+
     @ViewBuilder
-    private var navigationButton: some View {
-        if let navigationAction,
-           navigationAction.action != .unavailable
-        {
-            ProductPrimaryActionButton(
-                presentation: navigationAction,
-                accessibilityIdentifier: identity.accessibilityIdentifier(
-                    for: .sessionBubbleRow,
-                    suffix: "navigation-action"
-                ),
-                perform: onNavigationAction
-            )
+    func body(content: Content) -> some View {
+        if let openLabel, let closeLabel, let onClose {
+            content
+                .accessibilityAction(named: openLabel) { onOpen() }
+                .accessibilityAction(named: closeLabel) { onClose() }
+        } else if let openLabel {
+            content.accessibilityAction(named: openLabel) { onOpen() }
+        } else if let closeLabel, let onClose {
+            content.accessibilityAction(named: closeLabel) { onClose() }
+        } else {
+            content
         }
     }
 }

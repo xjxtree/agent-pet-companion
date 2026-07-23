@@ -1,4 +1,4 @@
-name: Supported public macOS release
+name: GitHub Release for macOS
 
 on:
   push:
@@ -20,14 +20,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: github-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Sign, notarize, staple, and package
+    name: Build ad-hoc-signed thin archives
     runs-on: macos-15
-    environment: public-release
     timeout-minutes: 90
     permissions:
       contents: read
@@ -36,17 +35,10 @@ jobs:
       version: ${{ steps.release_identity.outputs.version }}
       build: ${{ steps.release_identity.outputs.build }}
       commit: ${{ steps.release_identity.outputs.commit }}
-      signing_identity: ${{ steps.signing_metadata.outputs.identity }}
-      team_id: ${{ steps.signing_metadata.outputs.team_id }}
       arm64_zip_sha256: ${{ steps.candidate_digests.outputs.arm64_zip_sha256 }}
       x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
-      arm64_evidence_sha256: ${{ steps.candidate_digests.outputs.arm64_evidence_sha256 }}
-      x86_64_evidence_sha256: ${{ steps.candidate_digests.outputs.x86_64_evidence_sha256 }}
       checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
     env:
-      APC_CODESIGN_IDENTITY: ${{ vars.APC_CODESIGN_IDENTITY }}
-      APC_DEVELOPER_TEAM_ID: ${{ vars.APC_DEVELOPER_TEAM_ID }}
-      APC_NOTARY_PROFILE: agent-pet-companion-ci
       APC_VALIDATE_HOST_UI: "0"
       APC_VALIDATE_OVERLAY_RUNTIME: "0"
       APC_VALIDATE_OVERLAY_INTERACTION: "0"
@@ -95,20 +87,10 @@ jobs:
             echo "commit=$commit"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Validate externally provisioned release environment
+      - name: Prepare native build host and cross targets
         run: |
           test "$(uname -m)" = "arm64"
-          [[ "$APC_CODESIGN_IDENTITY" =~ ^Developer[[:space:]]ID[[:space:]]Application:[[:space:]].+ ]]
-          [[ "$APC_CODESIGN_IDENTITY" != *$'\n'* ]]
-          [[ "$APC_CODESIGN_IDENTITY" != *$'\r'* ]]
-          [[ ${#APC_CODESIGN_IDENTITY} -le 256 ]]
-          [[ "$APC_DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
-          [[ "$APC_CODESIGN_IDENTITY" == *" ($APC_DEVELOPER_TEAM_ID)" ]]
-          [[ -n "$APC_NOTARY_PROFILE" && "$APC_NOTARY_PROFILE" != *$'\n'* ]]
-          [[ "$APC_NOTARY_PROFILE" != *$'\r'* ]]
-          [[ ${#APC_NOTARY_PROFILE} -le 128 ]]
           swift --version
-          xcrun --show-sdk-path
           test "$(
             swift --version \
               | awk '/Apple Swift version/{split($4, version, "."); print version[1]}'
@@ -118,96 +100,19 @@ jobs:
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
           fi
-          rg --version
-          command -v base64
           command -v codesign
-          command -v openssl
-          command -v security
-          command -v xcrun
-          command -v spctl
           command -v ditto
           command -v lipo
           command -v shasum
 
-      - name: Expose non-secret signature metadata to verification jobs
-        id: signing_metadata
-        run: |
-          {
-            echo "identity=$APC_CODESIGN_IDENTITY"
-            echo "team_id=$APC_DEVELOPER_TEAM_ID"
-          } >>"$GITHUB_OUTPUT"
-
       - name: Run host-safe source and integration gates
         run: ./script/test_all.sh
 
-      - name: Provision ephemeral Developer ID and notarization credentials
-        env:
-          APC_DEVELOPER_ID_P12_BASE64: ${{ secrets.APC_DEVELOPER_ID_P12_BASE64 }}
-          APC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APC_DEVELOPER_ID_P12_PASSWORD }}
-          APC_NOTARY_API_KEY_P8_BASE64: ${{ secrets.APC_NOTARY_API_KEY_P8_BASE64 }}
-          APC_NOTARY_API_KEY_ID: ${{ secrets.APC_NOTARY_API_KEY_ID }}
-          APC_NOTARY_API_ISSUER_ID: ${{ secrets.APC_NOTARY_API_ISSUER_ID }}
-        run: |
-          [[ -n "$APC_DEVELOPER_ID_P12_BASE64" ]]
-          [[ -n "$APC_DEVELOPER_ID_P12_PASSWORD" ]]
-          [[ -n "$APC_NOTARY_API_KEY_P8_BASE64" ]]
-          [[ "$APC_NOTARY_API_KEY_ID" =~ ^[A-Za-z0-9]{10,64}$ ]]
-          [[ "$APC_NOTARY_API_ISSUER_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
-
-          umask 077
-          certificate_path="$RUNNER_TEMP/apc-developer-id.p12"
-          api_key_path="$RUNNER_TEMP/apc-notary-api-key.p8"
-          keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 32)"
-          rm -f "$certificate_path" "$api_key_path" "$keychain_path"
-
-          printf '%s' "$APC_DEVELOPER_ID_P12_BASE64" \
-            | base64 --decode >"$certificate_path"
-          printf '%s' "$APC_NOTARY_API_KEY_P8_BASE64" \
-            | base64 --decode >"$api_key_path"
-          [[ -s "$certificate_path" && -s "$api_key_path" ]]
-
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" \
-            -P "$APC_DEVELOPER_ID_P12_PASSWORD" \
-            -T /usr/bin/codesign \
-            -f pkcs12 \
-            -k "$keychain_path"
-          security set-key-partition-list \
-            -S apple-tool:,apple: \
-            -k "$keychain_password" \
-            "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-          security find-identity -v -p codesigning "$keychain_path" \
-            | grep -F -- "\"$APC_CODESIGN_IDENTITY\"" >/dev/null
-
-          xcrun notarytool store-credentials "$APC_NOTARY_PROFILE" \
-            --key "$api_key_path" \
-            --key-id "$APC_NOTARY_API_KEY_ID" \
-            --issuer "$APC_NOTARY_API_ISSUER_ID" \
-            --keychain "$keychain_path" \
-            --validate
-
-          rm -f "$certificate_path" "$api_key_path"
-          echo "APC_NOTARY_KEYCHAIN=$keychain_path" >>"$GITHUB_ENV"
-
-      - name: Build both supported public archives
+      - name: Build both official GitHub Release archives
         env:
           APC_RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
           APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
-        run: ./script/build_release.sh --public --arch all
-
-      - name: Remove ephemeral signing material
-        if: ${{ always() }}
-        run: |
-          keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"
-          security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
-          rm -f \
-            "$RUNNER_TEMP/apc-developer-id.p12" \
-            "$RUNNER_TEMP/apc-notary-api-key.p8" \
-            "$keychain_path"
+        run: ./script/build_release.sh --github-release --arch all
 
       - name: Revalidate final local artifact set
         env:
@@ -215,7 +120,7 @@ jobs:
           RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
           RELEASE_COMMIT: ${{ steps.release_identity.outputs.commit }}
         run: |
-          ./script/validate_public_release_artifacts.sh \
+          ./script/validate_github_release_artifacts.sh \
             --directory dist \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \
@@ -232,22 +137,18 @@ jobs:
           {
             echo "arm64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip")"
             echo "x86_64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip")"
-            echo "arm64_evidence_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-arm64-distribution.json")"
-            echo "x86_64_evidence_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64-distribution.json")"
             echo "checksum_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
           } >>"$GITHUB_OUTPUT"
 
       - name: Upload immutable release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: AgentPetCompanion-${{ steps.release_identity.outputs.version }}-public-release
+          name: AgentPetCompanion-${{ steps.release_identity.outputs.version }}-github-release
           if-no-files-found: error
           retention-days: 14
           path: |
             dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64.zip
             dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64.zip
-            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64-distribution.json
-            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64-distribution.json
             dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-SHA256SUMS.txt
 
   validate_arm64:
@@ -258,8 +159,6 @@ jobs:
     permissions:
       contents: read
     env:
-      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
-      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
       RELEASE_VERSION: ${{ needs.build.outputs.version }}
       RELEASE_BUILD: ${{ needs.build.outputs.build }}
       RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
@@ -275,7 +174,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
           path: release-assets
 
       - name: Compare trusted digests before archive inspection
@@ -285,13 +184,11 @@ jobs:
             --version "$RELEASE_VERSION" \
             --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
             --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
-            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
             --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
 
       - name: Run native arm64 packaged functional validation
         run: |
-          ./script/validate_public_release_artifacts.sh \
+          ./script/validate_github_release_artifacts.sh \
             --directory release-assets \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \
@@ -306,8 +203,6 @@ jobs:
     permissions:
       contents: read
     env:
-      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
-      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
       RELEASE_VERSION: ${{ needs.build.outputs.version }}
       RELEASE_BUILD: ${{ needs.build.outputs.build }}
       RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
@@ -323,7 +218,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
           path: release-assets
 
       - name: Compare trusted digests before archive inspection
@@ -333,13 +228,11 @@ jobs:
             --version "$RELEASE_VERSION" \
             --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
             --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
-            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
             --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
 
       - name: Run native x86_64 packaged functional validation
         run: |
-          ./script/validate_public_release_artifacts.sh \
+          ./script/validate_github_release_artifacts.sh \
             --directory release-assets \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \
@@ -347,7 +240,7 @@ jobs:
             --require-native-architecture x86_64
 
   publish:
-    name: Download-verify and publish GitHub Release
+    name: Download, verify, and publish GitHub Release
     needs: [build, validate_arm64, validate_x86_64]
     runs-on: macos-15
     timeout-minutes: 30
@@ -355,8 +248,6 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
-      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
       RELEASE_TAG: ${{ needs.build.outputs.tag }}
       RELEASE_VERSION: ${{ needs.build.outputs.version }}
       RELEASE_BUILD: ${{ needs.build.outputs.build }}
@@ -370,7 +261,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
           path: release-assets
 
       - name: Compare trusted build digests before archive inspection
@@ -380,13 +271,11 @@ jobs:
             --version "$RELEASE_VERSION" \
             --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
             --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
-            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
             --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
 
       - name: Revalidate clean downloaded candidate
         run: |
-          ./script/validate_public_release_artifacts.sh \
+          ./script/validate_github_release_artifacts.sh \
             --directory release-assets \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \
@@ -405,18 +294,25 @@ jobs:
             exit 1
           fi
 
+          notes_file="$RUNNER_TEMP/apc-release-notes.md"
+          {
+            printf '# Agent Pet Companion %s\n\n' "$RELEASE_VERSION"
+            printf 'Download the archive matching your Mac: `arm64` for Apple silicon or `x86_64` for Intel.\n\n'
+            printf '**First launch:** these Apps are ad-hoc signed, are not Developer ID signed, and are not Apple-notarized. If macOS blocks the App, Control-click it in Finder and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**. Only continue if you downloaded it from this GitHub Release and its SHA-256 matches the published checksum.\n\n'
+            printf '请选择与 Mac 匹配的归档：Apple 芯片使用 `arm64`，Intel 使用 `x86_64`。\n\n'
+            printf '**首次打开：** 当前 App 使用 ad-hoc 签名，没有 Developer ID 签名，也未经过 Apple 公证。如果 macOS 阻止打开，请在 Finder 中按住 Control 点按 App 并选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。仅在文件来自本 GitHub Release 且 SHA-256 与校验和一致时继续。\n'
+          } >"$notes_file"
+
           assets=(
             "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip"
             "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip"
-            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64-distribution.json"
-            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64-distribution.json"
             "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
           )
           gh release create "$RELEASE_TAG" "${assets[@]}" \
             --verify-tag \
             --draft \
             --title "Agent Pet Companion $RELEASE_VERSION" \
-            --generate-notes
+            --notes-file "$notes_file"
 
           draft_created=1
           cleanup_draft() {
@@ -436,10 +332,8 @@ jobs:
             --version "$RELEASE_VERSION" \
             --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
             --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
-            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
             --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
-          ./script/validate_public_release_artifacts.sh \
+          ./script/validate_github_release_artifacts.sh \
             --directory "$download_dir" \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \

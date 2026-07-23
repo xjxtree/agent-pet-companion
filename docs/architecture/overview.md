@@ -114,6 +114,13 @@ logo/                       Approved reusable brand assets
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
 - Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
-- Release tooling exposes explicit `--preview` and fail-closed `--public --arch all` modes. Preview archives are ad-hoc development artifacts. Public mode creates the signed, notarized, stapled five-file candidate set only after package-level gates; publication additionally requires native `arm64` and `x86_64` packaged validation and exact downloaded-asset revalidation. Tooling availability alone is not release acceptance evidence.
+- Official V1 distribution uses explicit, fail-closed
+  `build_release.sh --github-release --arch all` GitHub Release tooling. It
+  emits exactly two ad-hoc-signed thin archives plus a two-entry checksum file,
+  all bound to the same full commit and runtime identity. Publication requires
+  ZIP-safety validation, native `arm64` and `x86_64` packaged validation, and
+  exact downloaded-asset revalidation. V1 does not use Apple signing or
+  notarization credentials and does not claim default Gatekeeper trust;
+  official installation documents the required first-open user consent.
 
 When changing one of these invariants, update the owning implementation, tests, runtime/schema version where required, and the corresponding document in the same change.

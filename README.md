@@ -28,19 +28,20 @@ The app is local-first: pets, settings, normalized agent events, and diagnostics
 
 ## Installation
 
-### Supported GitHub Release
+### Official GitHub Release
 
-When a Release is explicitly published as a supported public version:
+For a published version:
 
 1. Open [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases).
 2. Download the ZIP matching your Mac—`macos-arm64` for Apple silicon or `macos-x86_64` for Intel—plus that version's `SHA256SUMS.txt`.
 3. In the download directory, verify the selected ZIP, for example: `grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -`.
 4. Extract the archive and move `AgentPetCompanion.app` to `/Applications`.
-5. Open the app and follow the three-scene setup: choose an included companion, connect the Agents you use, and watch the clearly labeled local demo.
+5. On first launch, Control-click or right-click the App in Finder, choose **Open**, then confirm **Open**. Alternatively, after macOS blocks a normal launch, use **System Settings → Privacy & Security → Open Anyway**.
+6. Follow the three-scene setup: choose an included companion, connect the Agents you use, and watch the clearly labeled local demo.
 
-Supported archives use Developer ID signing, Apple notarization and stapling, and Gatekeeper validation. The published checksum covers the exact downloadable ZIP. No source toolchain or quarantine workaround is part of the supported installation path. Do not run the `x86_64` archive on an Apple silicon Mac: use `arm64` instead, without Rosetta.
+Official archives are ad-hoc signed. They are not Developer ID signed or Apple-notarized and are not trusted by Gatekeeper by default, so the explicit first-open approval above is expected. The published checksum covers the exact downloadable ZIP. Installation needs no source toolchain and does not require `xattr`, disabling Gatekeeper, or another command-line bypass.
 
-Files ending in `-preview.zip` are explicitly ad-hoc-signed **Development Previews**. They are not notarized supported packages and are intended only for informed development handoff; their Release notes must state the narrower validation scope.
+This is direct distribution through GitHub Releases, not Mac App Store publication. Apple silicon Macs should use the `arm64` archive rather than running the `x86_64` build through Rosetta.
 
 ### Build from source
 
