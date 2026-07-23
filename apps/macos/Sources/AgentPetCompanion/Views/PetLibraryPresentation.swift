@@ -25,6 +25,36 @@ enum PetLibraryContentState: Equatable {
     }
 }
 
+enum PetLibraryDensityPolicy {
+    /// Up to eight pets remain directly scannable in the supported grid.
+    /// Search appears when a ninth pet enters the collection.
+    static let searchThreshold = 9
+
+    static func showsSearch(petCount: Int) -> Bool {
+        petCount >= searchThreshold
+    }
+}
+
+enum PetLibraryHistoryBounds {
+    static let maximumRevisions = 16
+    static let maximumJobs = 16
+    static let requestLimit = max(maximumRevisions, maximumJobs)
+
+    static func revisions(in history: PetHistorySnapshot) -> [PetRevisionHistoryRecord] {
+        Array(history.revisions.prefix(maximumRevisions))
+    }
+
+    static func jobs(in history: PetHistorySnapshot) -> [GenerationJobHistoryRecord] {
+        Array(history.jobs.prefix(maximumJobs))
+    }
+
+    static func isTruncated(_ history: PetHistorySnapshot) -> Bool {
+        history.truncated
+            || history.revisions.count > maximumRevisions
+            || history.jobs.count > maximumJobs
+    }
+}
+
 struct PetLibraryCapabilities: Equatable {
     let isBundled: Bool
     let canModify: Bool
@@ -203,6 +233,25 @@ enum PetLibrarySelectionPolicy {
             return preferredID
         }
         return pets.first?.id
+    }
+}
+
+enum PetLibraryCardIdentityPolicy {
+    /// Same-name pets coexist by stable manifest identity. A content-free
+    /// variant ordinal is derived from stable IDs, not the current grid order,
+    /// so the visible and accessibility labels remain distinguishable without
+    /// exposing the IDs themselves.
+    static func variantOrdinal(for pet: PetSummary, in pets: [PetSummary]) -> Int? {
+        let matchingIDs = pets
+            .filter { $0.name.localizedCaseInsensitiveCompare(pet.name) == .orderedSame }
+            .map(\.id)
+            .sorted()
+        guard matchingIDs.count > 1,
+              let index = matchingIDs.firstIndex(of: pet.id)
+        else {
+            return nil
+        }
+        return index + 1
     }
 }
 
@@ -467,6 +516,10 @@ struct PetLibraryPresentation: Equatable {
     var canModify: Bool { pet.libraryCapabilities.canModify }
     var canDelete: Bool { pet.libraryCapabilities.canDelete }
     var canCustomizeAsCopy: Bool { pet.libraryCapabilities.canCustomizeAsCopy }
+    var styleTitle: String {
+        let style = StylePreset(rawValue: pet.style) ?? .unspecified
+        return APCLocalizedPresentation.styleTitle(style, locale: localeIdentifier)
+    }
     var sourceTitle: String {
         PetLibrarySourcePresentation(pet: pet, localeIdentifier: localeIdentifier).title
     }
@@ -502,6 +555,89 @@ struct PetLibraryPresentation: Equatable {
                 tone: .external
             )
         }
+    }
+
+    var heroSummary: String {
+        "\(styleTitle) · \(sourceTitle)"
+    }
+
+    var provenanceSummary: String {
+        [
+            pet.origin.rawValue,
+            pet.generator,
+            pet.provenance,
+        ]
+        .compactMap { value in
+            value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: " · ")
+    }
+
+    var technicalInformation: [PetLibraryTechnicalItem] {
+        [
+            PetLibraryTechnicalItem(
+                field: .stableID,
+                title: APCLocalization.text(.libraryFieldStableID, locale: localeIdentifier),
+                value: pet.id
+            ),
+            PetLibraryTechnicalItem(
+                field: .revisionID,
+                title: APCLocalization.text(.libraryFieldRevisionID, locale: localeIdentifier),
+                value: revisionIDSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .revisionCount,
+                title: APCLocalization.text(
+                    .libraryFieldImmutableRevisions,
+                    locale: localeIdentifier
+                ),
+                value: revisionCountSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .packageVersion,
+                title: APCLocalization.text(
+                    .libraryFieldPackageVersion,
+                    locale: localeIdentifier
+                ),
+                value: packageVersionSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .nativeRate,
+                title: APCLocalization.text(.libraryFieldFPS, locale: localeIdentifier),
+                value: fpsSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .durations,
+                title: APCLocalization.text(.libraryFieldDuration, locale: localeIdentifier),
+                value: durationSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .frameCounts,
+                title: APCLocalization.text(.libraryFieldFrameCounts, locale: localeIdentifier),
+                value: frameCountSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .states,
+                title: APCLocalization.text(.libraryFieldStates, locale: localeIdentifier),
+                value: stateSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .renderSize,
+                title: APCLocalization.text(.libraryFieldRenderSize, locale: localeIdentifier),
+                value: "\(pet.renderSize.width)×\(pet.renderSize.height)"
+            ),
+            PetLibraryTechnicalItem(
+                field: .provenance,
+                title: APCLocalization.text(.libraryFieldProvenance, locale: localeIdentifier),
+                value: provenanceSummary
+            ),
+            PetLibraryTechnicalItem(
+                field: .validation,
+                title: APCLocalization.text(.libraryFieldValidation, locale: localeIdentifier),
+                value: validationSummary
+            ),
+        ]
     }
 
     var validationStatus: ValidationStatus {
@@ -602,6 +738,19 @@ struct PetLibraryPresentation: Equatable {
         }.joined(separator: "   ")
     }
 
+    var frameCountSummary: String {
+        Self.stateNames.map { stateName in
+            let durationMS = pet.durationMS(for: stateName)
+            let frameCount = pet.nativeFPS * durationMS / 1_000
+            return APCLocalization.format(
+                .libraryFrameCountStateFormat,
+                locale: localeIdentifier,
+                stateName,
+                frameCount
+            )
+        }.joined(separator: " · ")
+    }
+
     var stateSummary: String {
         Self.stateNames.joined(separator: " · ")
     }
@@ -628,6 +777,7 @@ struct PetLibraryPresentation: Equatable {
         return [
             pet.name,
             pet.id,
+            styleTitle,
             sourceTitle,
             sourceDetail
         ].contains { value in
@@ -649,4 +799,26 @@ struct PetLibraryPresentation: Equatable {
             ).matchesSearch(query)
         }
     }
+}
+
+struct PetLibraryTechnicalItem: Identifiable, Equatable {
+    enum Field: String, CaseIterable {
+        case stableID
+        case revisionID
+        case revisionCount
+        case packageVersion
+        case nativeRate
+        case durations
+        case frameCounts
+        case states
+        case renderSize
+        case provenance
+        case validation
+    }
+
+    let field: Field
+    let title: String
+    let value: String
+
+    var id: Field { field }
 }

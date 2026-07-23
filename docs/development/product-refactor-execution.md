@@ -467,6 +467,7 @@ Deliver the product promise before asking the user to learn the control center.
 - Add a versioned, resumable onboarding state owned through the normal PetCore settings/client-settings boundary; do not create a second App-local durable authority.
 - Present the three required scenes: choose pet, connect Agents, see a local demo.
 - Reuse real Library activation and Connection actions rather than duplicating mutation logic.
+- Keep Agent detection nonblocking: a slow host check must not prevent entry to the local demo.
 - Use a separate App-local demo projection that cannot enter PetCore events, receipts, diagnostics, or session suppression.
 - Allow safe resume after App/service interruption.
 - Provide explicit skip/close behavior without disabling the bundled-pet seed or later access to Connections.
@@ -482,6 +483,7 @@ Deliver the product promise before asking the user to learn the control center.
 ### Required proof
 
 - Fresh-home tests cover each scene, resume, skip, service failure, no detected Agent, repairable Agent, and completion.
+- Tests prove checking and unavailable Agent states can continue to the local demo.
 - Tests prove demo events never appear in event history, active sessions, receipts, retention counts, or diagnostics.
 - Packaged visible acceptance uses Computer Use first.
 

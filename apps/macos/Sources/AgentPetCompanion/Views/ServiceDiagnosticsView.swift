@@ -1,3 +1,4 @@
+import AgentPetCompanionCore
 import SwiftUI
 
 enum ServiceDiagnosticKind: String, CaseIterable, Identifiable {
@@ -435,32 +436,119 @@ struct ServiceDiagnosticsPresentation: Equatable {
     }
 }
 
-enum ServiceDiagnosticsPrimaryAction: Equatable {
-    case refresh
-    case recover
-
+extension ServiceDiagnosticsPrimaryAction {
     static func resolve(for state: PetCoreOperationalState) -> Self {
+        ServiceDiagnosticsProductPresentation(
+            operationalState: state
+        ).primaryAction
+    }
+}
+
+struct ServiceDiagnosticsAggregatePresentation: Equatable {
+    let health: ServiceDiagnosticsHealthState
+    let status: ProductStatusPresentation
+    let summary: String
+    let primaryAction: ProductActionPresentation<ServiceDiagnosticsPrimaryAction>?
+
+    init(
+        operationalState: PetCoreOperationalState,
+        actionIsBusy: Bool = false,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) {
+        let product = ServiceDiagnosticsProductPresentation(
+            operationalState: operationalState
+        )
+        health = product.health
+
+        let toolbar = ServiceDiagnosticsPresentation.toolbar(
+            operationalState: operationalState,
+            runtimeInfo: .initial(manifest: nil),
+            localeIdentifier: localeIdentifier
+        )
+        status = ProductStatusPresentation(
+            appearance: Self.appearance(for: product.health),
+            title: toolbar.title
+        )
+        summary = APCLocalization.text(
+            Self.summaryKey(for: operationalState),
+            locale: localeIdentifier
+        )
+
+        guard let title = APCLocalizedPresentation.primaryActionTitle(
+            product.primaryAction,
+            locale: localeIdentifier
+        ) else {
+            primaryAction = nil
+            return
+        }
+        primaryAction = ProductActionPresentation(
+            action: product.primaryAction,
+            title: title,
+            systemImage: Self.systemImage(for: product.primaryAction),
+            isEnabled: !actionIsBusy
+        )
+    }
+
+    private static func appearance(
+        for health: ServiceDiagnosticsHealthState
+    ) -> ProductStatusAppearance {
+        switch health {
+        case .checking:
+            .checking
+        case .healthy:
+            .normal
+        case .needsRecovery:
+            .attention
+        case .unavailable:
+            .error
+        }
+    }
+
+    private static func summaryKey(
+        for state: PetCoreOperationalState
+    ) -> APCLocalizationKey {
         switch state {
-        case .online, .checking:
-            .refresh
-        case .recovering, .offline, .runtimeMismatch, .error:
-            .recover
+        case .online:
+            .diagnosticsSummaryHealthy
+        case .checking:
+            .diagnosticsSummaryChecking
+        case .recovering:
+            .diagnosticsSummaryRecovering
+        case .offline:
+            .diagnosticsSummaryOffline
+        case .runtimeMismatch:
+            .diagnosticsSummaryRuntimeMismatch
+        case .error:
+            .diagnosticsSummaryFailure
+        }
+    }
+
+    private static func systemImage(
+        for action: ServiceDiagnosticsPrimaryAction
+    ) -> String? {
+        switch action {
+        case .refresh:
+            "arrow.clockwise"
+        case .recover:
+            "wrench.and.screwdriver"
+        case .retry:
+            "arrow.clockwise"
+        case .unavailable:
+            nil
         }
     }
 }
 
 struct ServiceDiagnosticsView: View {
     @EnvironmentObject private var store: AppStore
-    @Environment(\.controlCenterShellMode) private var shellMode
     @State private var isRefreshing = false
+    @State private var isTechnicalDetailsExpanded = false
 
     private var presentation: ServiceDiagnosticsPresentation {
         ServiceDiagnosticsPresentation(
             operationalState: store.petCoreOperationalState,
             runtimeInfo: store.petCoreRuntimeInfo,
-            recentEventSummary: store.recentEvents.first.map {
-                "\($0.source.shortTitle) · \(APCLocalizedPresentation.eventTitle($0.eventType))"
-            },
+            recentEventSummary: nil,
             desktopPetEnabled: store.behavior.enabled,
             desktopPetVisible: store.overlayVisible,
             activePetName: store.activePet?.name,
@@ -478,87 +566,72 @@ struct ServiceDiagnosticsView: View {
             || store.petCoreOperationalState == .recovering
     }
 
+    private var aggregatePresentation: ServiceDiagnosticsAggregatePresentation {
+        ServiceDiagnosticsAggregatePresentation(
+            operationalState: store.petCoreOperationalState,
+            actionIsBusy: serviceActionIsBusy
+        )
+    }
+
     var body: some View {
         PageScroll {
-            if shellMode == .singleContent {
-                VStack(alignment: .leading, spacing: 18) {
-                    serviceStatusRegion
-                    diagnosticPackageRegion
-                }
-                .accessibilityIdentifier("diagnostics.layout.single-column")
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 18) {
-                        serviceStatusRegion
-                            .frame(minWidth: 320, maxWidth: .infinity, alignment: .topLeading)
-                        diagnosticPackageRegion
-                            .frame(minWidth: 320, maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    .accessibilityIdentifier("diagnostics.layout.two-column")
-
-                    VStack(alignment: .leading, spacing: 18) {
-                        serviceStatusRegion
-                        diagnosticPackageRegion
-                    }
-                    .accessibilityIdentifier("diagnostics.layout.fitted-single-column")
-                }
+            VStack(alignment: .leading, spacing: 18) {
+                overallHealthRegion
+                diagnosticPackageRegion
+                technicalDetailsRegion
             }
-        }
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Button {
-                    performServiceAction()
-                } label: {
-                    if serviceActionIsBusy {
-                        Label(
-                            APCLocalization.text(
-                                primaryAction == .refresh
-                                    ? .diagnosticsRefreshing
-                                    : .diagnosticsRecovering
-                            ),
-                            systemImage: "arrow.triangle.2.circlepath"
-                        )
-                        .labelStyle(.iconOnly)
-                    } else {
-                        Label(
-                            APCLocalization.text(
-                                primaryAction == .refresh
-                                    ? .diagnosticsRefresh
-                                    : .diagnosticsRecover
-                            ),
-                            systemImage: "arrow.clockwise"
-                        )
-                        .labelStyle(.iconOnly)
-                    }
-                }
-                .help(APCLocalization.text(
-                    primaryAction == .refresh
-                        ? .diagnosticsRefresh
-                        : .diagnosticsRecover
-                ))
-                .disabled(serviceActionIsBusy)
-                .accessibilityIdentifier("diagnostics.refresh")
-            }
+            .frame(maxWidth: 860, alignment: .topLeading)
+            .accessibilityIdentifier("diagnostics.layout.single-column")
         }
         .accessibilityIdentifier("diagnostics.page")
     }
 
-    private var serviceStatusRegion: some View {
-        Surface {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(APCLocalization.text(.diagnosticsServiceStatus))
-                    .font(.title3.weight(.semibold))
-                    .padding(.bottom, 12)
+    private var overallHealthRegion: some View {
+        PrimaryExperienceCard(
+            identity: ProductComponentIdentity(
+                scope: "diagnostics",
+                instance: "service"
+            ),
+            title: APCLocalization.text(.diagnosticsServiceStatus),
+            summary: aggregatePresentation.summary,
+            status: aggregatePresentation.status,
+            primaryAction: aggregatePresentation.primaryAction
+        ) { _ in
+            performServiceAction()
+        } content: {
+            EmptyView()
+        }
+        .accessibilityIdentifier("diagnostics.service-summary")
+    }
 
+    private var technicalDetailsRegion: some View {
+        AdvancedDetailsDisclosure(
+            identity: ProductComponentIdentity(
+                scope: "diagnostics",
+                instance: "technical"
+            ),
+            title: APCLocalization.text(.diagnosticsTechnicalTitle),
+            summary: APCLocalization.text(.diagnosticsTechnicalSummary),
+            isExpanded: $isTechnicalDetailsExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(presentation.rows) { row in
                     ServiceDiagnosticRow(presentation: row)
                     if row.id != presentation.rows.last?.id {
                         Divider()
                     }
                 }
+
+                Divider()
+                    .padding(.vertical, 10)
+
+                Text(diagnosticPackageSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .accessibilityIdentifier("diagnostics.service-status")
+        .accessibilityIdentifier("diagnostics.technical-details")
     }
 
     private var diagnosticPackageRegion: some View {
@@ -570,7 +643,7 @@ struct ServiceDiagnosticsView: View {
                 )
                     .font(.title3.weight(.semibold))
 
-                Text(diagnosticPackageSummary)
+                Text(APCLocalization.text(.diagnosticsPrivacy))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -652,14 +725,16 @@ struct ServiceDiagnosticsView: View {
     }
 
     private func performServiceAction() {
-        guard !isRefreshing else { return }
+        guard !isRefreshing, primaryAction != .unavailable else { return }
         isRefreshing = true
         Task { @MainActor in
             switch primaryAction {
-            case .refresh:
+            case .refresh, .retry:
                 _ = await store.refresh()
             case .recover:
                 _ = await store.recoverServiceConnection()
+            case .unavailable:
+                break
             }
             isRefreshing = false
         }

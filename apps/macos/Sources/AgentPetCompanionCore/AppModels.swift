@@ -53,6 +53,8 @@ public enum StylePreset: String, CaseIterable, Identifiable, Codable, Sendable {
 
 public enum AIPetMakerDefaults {
     public static let descriptionText = ""
+    public static let style = StylePreset.semiRealistic
+    public static let quality = QualityLevel.high
     public static let maximumDescriptionCharacters = 8_000
 }
 
@@ -623,7 +625,7 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
             ?? 1_000
     }
 
-    /// Mirrors PetCore's schema-5-compatible, closed bundled identity. A
+    /// Mirrors PetCore's closed bundled identity. A
     /// display name or package-declared marker alone never grants this status.
     public var isBundled: Bool {
         Self.bundledPetIDs.contains(id)
@@ -774,6 +776,7 @@ public struct AgentEventPayload: Codable, Hashable, Sendable {
 }
 
 public struct AgentSessionNavigation: Codable, Hashable, Sendable {
+    public var capability: NavigationCapability
     public var sessionOpen: Bool?
     public var surface: String?
     public var terminalApp: String?
@@ -781,12 +784,14 @@ public struct AgentSessionNavigation: Codable, Hashable, Sendable {
     public var routableSessionID: String?
 
     public init(
+        capability: NavigationCapability = .unavailable,
         sessionOpen: Bool? = nil,
         surface: String? = nil,
         terminalApp: String? = nil,
         openURL: String? = nil,
         routableSessionID: String? = nil
     ) {
+        self.capability = capability
         self.sessionOpen = sessionOpen
         self.surface = surface
         self.terminalApp = terminalApp
@@ -797,11 +802,28 @@ public struct AgentSessionNavigation: Codable, Hashable, Sendable {
     public var explicitlyClosed: Bool { sessionOpen == false }
 
     enum CodingKeys: String, CodingKey {
+        case capability
         case sessionOpen = "session_open"
         case surface
         case terminalApp = "terminal_app"
         case openURL = "open_url"
         case routableSessionID = "routable_session_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        capability = try container.decodeIfPresent(
+            NavigationCapability.self,
+            forKey: .capability
+        ) ?? .unavailable
+        sessionOpen = try container.decodeIfPresent(Bool.self, forKey: .sessionOpen)
+        surface = try container.decodeIfPresent(String.self, forKey: .surface)
+        terminalApp = try container.decodeIfPresent(String.self, forKey: .terminalApp)
+        openURL = try container.decodeIfPresent(String.self, forKey: .openURL)
+        routableSessionID = try container.decodeIfPresent(
+            String.self,
+            forKey: .routableSessionID
+        )
     }
 }
 
@@ -862,6 +884,7 @@ public struct AgentEvent: Codable, Identifiable, Hashable, Sendable {
 
     public var sessionNavigation: AgentSessionNavigation {
         AgentSessionNavigation(
+            capability: .unavailable,
             sessionOpen: payloadJSON?.sessionOpen,
             surface: payloadJSON?.sessionSurface,
             terminalApp: payloadJSON?.terminalApp,
@@ -916,6 +939,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
     public var latestMessage: AgentEvent?
     public var latestUserMessage: AgentEvent?
     public var sessionTitle: String?
+    public var anonymousSessionAlias: String?
     public var sessionMessage: AgentSessionDisplayMessage?
     public var sessionUserMessage: AgentSessionDisplayMessage?
     public var sessionActivity: AgentSessionActivity?
@@ -936,6 +960,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
         case latestMessage = "latest_message"
         case latestUserMessage = "latest_user_message"
         case sessionTitle = "session_title"
+        case anonymousSessionAlias = "anonymous_session_alias"
         case sessionMessage = "session_message"
         case sessionUserMessage = "session_user_message"
         case sessionActivity = "session_activity"

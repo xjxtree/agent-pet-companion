@@ -27,6 +27,12 @@ public enum AgentPetCompanionUIValidationContract {
         try validateActiveSessionBubbleContent()
         passed.append("bubble.active-session-content-retention")
 
+        try validateLifecyclePresentationMatrix()
+        passed.append("bubble.lifecycle-idle-through-failed")
+
+        try validateNavigationCapabilityMatrix()
+        passed.append("bubble.truthful-navigation-and-accessibility-order")
+
         try validateBubbleActionRouting()
         passed.append("bubble.session-group-close-hit-regions-and-deeplink")
 
@@ -283,6 +289,7 @@ public enum AgentPetCompanionUIValidationContract {
           "overlay_display": {
             "summary_kind": "thinking",
             "navigation": {
+              "capability": "agent_host",
               "session_open": true,
               "surface": "chatgpt_app",
               "terminal_app": null,
@@ -317,10 +324,6 @@ public enum AgentPetCompanionUIValidationContract {
         )
         try require(!session.statusText.isEmpty, "active bubble omitted its run status")
         try require(!session.actionLabel.isEmpty, "active bubble omitted its interaction action")
-        try require(
-            !(OverlayBubbleContent.idle.sessions.first?.messageText ?? "").contains("等待 Agent 事件"),
-            "idle copy regressed to the misleading wait-for-event message"
-        )
 
         let secondStateJSON = stateJSON
             .replacingOccurrences(of: "session_validation", with: "session_validation_2")
@@ -379,7 +382,11 @@ public enum AgentPetCompanionUIValidationContract {
                 sessionTitle: "Validation \(index)",
                 messageText: "Running",
                 statusText: "Running",
-                actionLabel: "Open"
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "chatgpt_app"
+                )
             )
         }
         let content = OverlayBubbleContent(
@@ -436,6 +443,132 @@ public enum AgentPetCompanionUIValidationContract {
         try require(
             AgentSessionDeepLink.url(source: .claudeCode, sessionID: "session") == nil,
             "unsupported agent source produced a Codex deep link"
+        )
+    }
+
+    private static func validateLifecyclePresentationMatrix() throws {
+        try require(
+            OverlayBubbleProjection.contents(
+                states: [],
+                omittedCount: 0,
+                dismissedSessionIDs: [],
+                isExpanded: { _ in true }
+            ).isEmpty,
+            "idle state emitted a placeholder session bubble"
+        )
+
+        for eventType in AgentEventKind.allCases {
+            let content = OverlaySessionContent(event: AgentEvent(
+                id: "validation-\(eventType.rawValue)",
+                source: .codex,
+                sessionID: "validation-session",
+                eventType: eventType,
+                title: "arbitrary transport title",
+                createdAt: "2026-07-23T00:00:00Z"
+            ))
+            try require(
+                content.statusText == APCLocalizedPresentation.lifecycleTitle(
+                    ProductLifecycleState(eventKind: eventType)
+                ),
+                "bubble status did not use the closed product lifecycle mapping for \(eventType)"
+            )
+            let fallbackIsRedundant = eventType == .start
+                && content.statusText
+                    == APCLocalization.text(.overlayDetailRunning)
+            try require(
+                !content.messageText.isEmpty || fallbackIsRedundant,
+                "bubble omitted the typed nonredundant fallback detail for \(eventType)"
+            )
+            try require(
+                content.sessionTitle != content.statusText
+                    && (
+                        content.messageText.isEmpty
+                            || (
+                                content.messageText != content.statusText
+                                    && content.messageText != content.sessionTitle
+                            )
+                    ),
+                "bubble repeated title, status, or detail for \(eventType)"
+            )
+        }
+    }
+
+    private static func validateNavigationCapabilityMatrix() throws {
+        func session(
+            id: String,
+            navigation: AgentSessionNavigation
+        ) -> OverlaySessionContent {
+            OverlaySessionContent(
+                id: id,
+                source: .codex,
+                sessionID: id,
+                eventType: .waiting,
+                sessionTitle: "Session \(id)",
+                messageText: "A response is required",
+                statusText: APCLocalizedPresentation.lifecycleTitle(.waiting),
+                navigation: navigation
+            )
+        }
+
+        let exact = session(
+            id: "exact",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "cli_terminal",
+                terminalApp: "warp",
+                openURL: "warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+            )
+        )
+        let host = session(
+            id: "host",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
+        )
+        let malformed = session(
+            id: "malformed",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "chatgpt_app",
+                routableSessionID: "unsafe/raw/session"
+            )
+        )
+        let closed = session(
+            id: "closed",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: false,
+                surface: "chatgpt_app"
+            )
+        )
+
+        try require(exact.navigationCapability == .exactSession, "exact route was not retained")
+        try require(host.navigationCapability == .agentHost, "host route was not retained")
+        try require(
+            malformed.navigationCapability == .unavailable && !malformed.canOpen,
+            "malformed exact target remained actionable"
+        )
+        try require(
+            closed.navigationCapability == .unavailable && !closed.canOpen,
+            "closed session remained actionable"
+        )
+        try require(
+            exact.actionLabel != host.actionLabel,
+            "exact-session and host-level routes used the same action copy"
+        )
+        try require(
+            exact.accessibilityReadingOrder == [
+                "Codex",
+                "Session exact",
+                APCLocalizedPresentation.lifecycleTitle(.waiting),
+                "A response is required",
+                exact.actionLabel,
+            ],
+            "VoiceOver order was not Agent, session, status, message, action"
         )
     }
 

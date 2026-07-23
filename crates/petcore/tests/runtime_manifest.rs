@@ -80,10 +80,10 @@ fn newer_database_schema_is_rejected_without_downgrade() {
 }
 
 #[test]
-fn bundled_pet_identity_remains_schema_five_rollback_compatible() {
-    assert_eq!(DATABASE_SCHEMA_VERSION, 5);
+fn runtime_manifest_advertises_the_session_alias_schema() {
+    assert_eq!(DATABASE_SCHEMA_VERSION, 6);
     assert_eq!(
         RuntimeReleaseManifest::compiled().maximum_database_schema_version,
-        5
+        DATABASE_SCHEMA_VERSION
     );
 }

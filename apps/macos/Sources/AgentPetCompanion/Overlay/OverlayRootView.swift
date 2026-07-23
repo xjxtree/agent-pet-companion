@@ -401,6 +401,7 @@ private struct ConversationBubble: View {
             .animation(bubbleAnimation, value: content.visibleSessions.map(\.id))
             .animation(bubbleAnimation, value: content.isStacked)
         }
+        .accessibilityIdentifier("overlay.group.\(content.id)")
     }
 
     private var bubbleSurface: some View {
@@ -511,66 +512,22 @@ private struct SessionBubbleRow: View {
     @State private var hovered = false
 
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(session.sessionTitle)
-                        .font(.system(
-                            size: OverlayGeometry.bubbleSessionTitleFontSize,
-                            weight: .semibold
-                        ))
-                        .foregroundStyle(BubbleForegroundStyle.text)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    Spacer(minLength: 8)
-
-                    if !session.statusText.isEmpty {
-                        Text(session.statusText)
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(BubbleForegroundStyle.text)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(
-                                Capsule()
-                                    .fill(statusColor.opacity(0.24))
-                            )
-                            .overlay {
-                                Capsule()
-                                    .stroke(statusColor.opacity(0.62), lineWidth: 0.75)
-                                    .allowsHitTesting(false)
-                            }
-                    }
+        Group {
+            if session.canOpen {
+                Button(action: action) {
+                    rowContent
                 }
-
-                Text(session.messageText)
-                    .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
-                    .foregroundStyle(BubbleForegroundStyle.text)
-                    .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
+            } else {
+                rowContent
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
-            .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(hovered ? Color.primary.opacity(0.05) : .clear)
-            )
         }
-        .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .accessibilityLabel(APCLocalization.format(
-            .overlaySessionAccessibilityFormat,
-            session.sessionTitle,
-            session.statusText,
-            session.messageText
-        ))
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("overlay.session.\(session.id)")
+        .accessibilityLabel(accessibilityLabel)
         .modifier(SessionBubbleAccessibilityActions(
-            openLabel: session.actionLabel,
+            openLabel: session.canOpen ? session.actionLabel : nil,
             closeLabel: dismissAction == nil
                 ? nil
                 : APCLocalization.text(.overlayDismissSession),
@@ -578,6 +535,86 @@ private struct SessionBubbleRow: View {
             onClose: dismissAction
         ))
         .help(helpText)
+    }
+
+    private var rowContent: some View {
+        VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(session.sessionTitle)
+                    .font(.system(
+                        size: OverlayGeometry.bubbleSessionTitleFontSize,
+                        weight: .semibold
+                    ))
+                    .foregroundStyle(BubbleForegroundStyle.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                if !session.statusText.isEmpty {
+                    Text(session.statusText)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(BubbleForegroundStyle.text)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(statusColor.opacity(0.24))
+                        )
+                        .overlay {
+                            Capsule()
+                                .stroke(statusColor.opacity(0.62), lineWidth: 0.75)
+                                .allowsHitTesting(false)
+                        }
+                }
+            }
+
+            Text(session.messageText)
+                .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
+                .foregroundStyle(BubbleForegroundStyle.text)
+                .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 4) {
+                Text(session.actionLabel)
+                    .font(.system(
+                        size: OverlayGeometry.bubbleSessionActionFontSize,
+                        weight: .semibold
+                    ))
+                    .foregroundStyle(
+                        session.canOpen
+                            ? BubbleForegroundStyle.text
+                            : BubbleForegroundStyle.text.opacity(0.62)
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if session.canOpen {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(BubbleForegroundStyle.text)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.top, OverlayGeometry.bubbleSessionActionSpacing
+                - OverlayGeometry.bubbleSessionTitleSpacing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+        .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovered && session.canOpen ? Color.primary.opacity(0.05) : .clear)
+        )
+    }
+
+    private var accessibilityLabel: String {
+        session.accessibilityLabel
     }
 
     private var helpText: String {
@@ -603,19 +640,23 @@ private struct SessionBubbleRow: View {
 }
 
 private struct SessionBubbleAccessibilityActions: ViewModifier {
-    var openLabel: String
+    var openLabel: String?
     var closeLabel: String?
     var onOpen: () -> Void
     var onClose: (() -> Void)?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let closeLabel, let onClose {
+        if let openLabel, let closeLabel, let onClose {
             content
                 .accessibilityAction(named: openLabel) { onOpen() }
                 .accessibilityAction(named: closeLabel) { onClose() }
-        } else {
+        } else if let openLabel {
             content.accessibilityAction(named: openLabel) { onOpen() }
+        } else if let closeLabel, let onClose {
+            content.accessibilityAction(named: closeLabel) { onClose() }
+        } else {
+            content
         }
     }
 }

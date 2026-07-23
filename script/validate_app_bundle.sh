@@ -7,8 +7,18 @@ EXPECTED_ARCH=""
 APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
 
 usage() {
-  echo 'usage: validate_app_bundle.sh [--development|--release] [--architecture arm64|x86_64] [APP_BUNDLE]'
-  echo '       --architecture is required with --release'
+  cat <<'EOF'
+usage: validate_app_bundle.sh \
+  [--development|--preview|--public-signed|--public] \
+  [--architecture arm64|x86_64] \
+  [APP_BUNDLE]
+
+--development validates a local App with an optional ad-hoc signature.
+--preview requires the ad-hoc signature used only by development previews.
+--public-signed requires a Developer ID signature and hardened runtime.
+--public additionally requires a stapled ticket and Gatekeeper acceptance.
+Architecture is required for every non-development mode.
+EOF
 }
 
 while (($# > 0)); do
@@ -17,8 +27,16 @@ while (($# > 0)); do
       MODE="development"
       shift
       ;;
-    --release)
-      MODE="release"
+    --preview)
+      MODE="preview"
+      shift
+      ;;
+    --public-signed)
+      MODE="public-signed"
+      shift
+      ;;
+    --public)
+      MODE="public"
       shift
       ;;
     --architecture)
@@ -60,8 +78,8 @@ case "$EXPECTED_ARCH" in
     exit 2
     ;;
 esac
-if [[ "$MODE" == "release" && -z "$EXPECTED_ARCH" ]]; then
-  echo '--release requires --architecture arm64 or --architecture x86_64' >&2
+if [[ "$MODE" != "development" && -z "$EXPECTED_ARCH" ]]; then
+  echo 'non-development validation requires --architecture arm64 or --architecture x86_64' >&2
   exit 2
 fi
 HOST_ARCH="$(uname -m)"
@@ -127,19 +145,66 @@ trap cleanup EXIT
   exit 1
 }
 if [[ -n "$EXPECTED_ARCH" ]]; then
-  command -v lipo >/dev/null 2>&1 || {
-    echo 'architecture validation requires lipo from Apple Command Line Tools' >&2
+  "$ROOT_DIR/script/validate_macho_architectures.sh" \
+    --app "$APP_BUNDLE" \
+    --architecture "$EXPECTED_ARCH"
+fi
+
+SIGNATURE_PRESENT=0
+if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then
+  SIGNATURE_PRESENT=1
+fi
+if [[ "$MODE" != "development" && "$SIGNATURE_PRESENT" != "1" ]]; then
+  echo 'packaged app bundle validation failed: the outer App requires a signature' >&2
+  exit 1
+fi
+if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
+  command -v codesign >/dev/null 2>&1 || {
+    echo 'app bundle validation failed: a signature is present but codesign is unavailable' >&2
     exit 1
   }
-  for binary in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI"; do
-    architectures="$(lipo -archs "$binary")"
-    [[ "$architectures" == "$EXPECTED_ARCH" ]] || {
-      printf 'app bundle validation failed: %s architecture is %s, expected thin %s\n' \
-        "$binary" "$architectures" "$EXPECTED_ARCH" >&2
+  if ! codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"; then
+    echo 'app bundle validation failed: strict signature verification failed' >&2
+    exit 1
+  fi
+fi
+
+# Public trust is a pre-execution gate. Keep this call before every invocation
+# of the packaged App, PetCore, or petcore-cli.
+validate_public_trust_before_runtime() {
+  APC_CODESIGN_IDENTITY="${APC_CODESIGN_IDENTITY:-}" \
+  APC_DEVELOPER_TEAM_ID="${APC_DEVELOPER_TEAM_ID:-}" \
+    "$ROOT_DIR/script/validate_distribution_signature.sh" \
+      --app "$APP_BUNDLE" \
+      --entitlements "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements"
+  if [[ "$MODE" == "public" ]]; then
+    command -v xcrun >/dev/null 2>&1 || {
+      echo 'supported public App validation requires xcrun' >&2
       exit 1
     }
-  done
+    command -v spctl >/dev/null 2>&1 || {
+      echo 'supported public App validation requires spctl' >&2
+      exit 1
+    }
+    xcrun stapler validate "$APP_BUNDLE"
+    spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
+  fi
+  python3 - "$APP_CONTENTS/Info.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as file:
+    info = plistlib.load(file)
+if info.get("APCReleaseChannel") != "release":
+    raise SystemExit(
+        "supported public App validation failed: APCReleaseChannel must be 'release'"
+    )
+PY
+}
+if [[ "$MODE" == "public-signed" || "$MODE" == "public" ]]; then
+  validate_public_trust_before_runtime
 fi
+
 [[ -f "$RUNTIME_MANIFEST" ]] || {
   echo "app bundle validation failed: missing runtime manifest $RUNTIME_MANIFEST" >&2
   exit 1
@@ -474,9 +539,9 @@ if by_id["pet_bytebudcodex"].get("active") is not False:
 
 with sqlite3.connect(os.environ["BUNDLED_DB"]) as database:
     schema_version = database.execute("PRAGMA user_version").fetchone()[0]
-if schema_version != 5:
+if schema_version != 6:
     raise SystemExit(
-        f"app bundle validation failed: bundled seed changed database schema to {schema_version}, expected 5"
+        f"app bundle validation failed: bundled seed changed database schema to {schema_version}, expected 6"
     )
 PY
 
@@ -493,37 +558,13 @@ PY
   grep -qF "$PETCORE_CLI" "$TMP_DIR/agent-home/.config/opencode/plugins/agent-pet-companion.js"
 fi
 
-SIGNATURE_PRESENT=0
-# The linker may ad-hoc sign an individual Mach-O even for an intentionally
-# unsigned app bundle. The outer bundle is signed only when it has a resource
-# envelope; a partial outer signature directory is invalid as well.
-if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then
-  SIGNATURE_PRESENT=1
-fi
-
-if [[ "$MODE" == "release" && "$SIGNATURE_PRESENT" != "1" ]]; then
-  echo 'release app bundle validation failed: the outer app requires an ad-hoc signature' >&2
-  exit 1
-fi
-
-if [[ "$SIGNATURE_PRESENT" == "1" ]]; then
-  command -v codesign >/dev/null 2>&1 || {
-    echo 'app bundle validation failed: a signature is present but codesign is unavailable' >&2
-    exit 1
-  }
-  if ! codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"; then
-    echo 'app bundle validation failed: strict signature verification failed' >&2
-    exit 1
-  fi
-fi
-
-if [[ "$MODE" == "release" ]]; then
+if [[ "$MODE" == "preview" ]]; then
   for signed_item in "$APP_BINARY" "$PETCORE" "$PETCORE_CLI" "$APP_BUNDLE"; do
     # Avoid grep -q here: with pipefail it may close the pipe before codesign
     # finishes writing verbose metadata, turning a valid result into SIGPIPE.
     codesign -d --verbose=4 "$signed_item" 2>&1 \
       | grep -Fx 'Signature=adhoc' >/dev/null || {
-      printf 'release app bundle validation failed: expected ad-hoc signature: %s\n' \
+      printf 'development preview validation failed: expected ad-hoc signature: %s\n' \
         "$signed_item" >&2
       exit 1
     }
@@ -536,11 +577,19 @@ with open(sys.argv[1], "rb") as file:
     info = plistlib.load(file)
 if info.get("APCReleaseChannel") != "release":
     raise SystemExit(
-        "release app bundle validation failed: APCReleaseChannel must be 'release'"
+        "development preview validation failed: APCReleaseChannel must be 'release'"
     )
 PY
-  printf 'Release app bundle validation ok (%s, ad-hoc signature, %s)\n' \
+  printf 'Development preview app bundle validation ok (%s, ad-hoc signature, %s)\n' \
     "${EXPECTED_ARCH:-host architecture}" "$RUNTIME_VALIDATION_SCOPE"
+elif [[ "$MODE" == "public-signed" || "$MODE" == "public" ]]; then
+  if [[ "$MODE" == "public" ]]; then
+    printf 'Supported public App bundle validation ok (%s, stapled and Gatekeeper accepted, %s)\n' \
+      "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
+  else
+    printf 'Pre-notarization Developer ID App bundle validation ok (%s, %s)\n' \
+      "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
+  fi
 elif [[ "$SIGNATURE_PRESENT" == "1" ]]; then
   echo 'Development app bundle validation ok (signature present and strictly valid)'
 else

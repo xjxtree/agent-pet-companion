@@ -1,3 +1,4 @@
+import AgentPetCompanionCore
 import Foundation
 import Testing
 @testable import AgentPetCompanion
@@ -109,11 +110,54 @@ struct ServiceDiagnosticsTests {
     }
 
     @Test
-    func healthyStatusRefreshesWhileFailuresOfferRecovery() {
+    func aggregateStatusOffersOneTruthfulContextualAction() {
         #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .online) == .refresh)
-        #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .checking) == .refresh)
+        #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .checking) == .unavailable)
+        #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .recovering) == .unavailable)
         #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .offline) == .recover)
         #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .runtimeMismatch) == .recover)
-        #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .error) == .recover)
+        #expect(ServiceDiagnosticsPrimaryAction.resolve(for: .error) == .retry)
+    }
+
+    @Test(arguments: [
+        (PetCoreOperationalState.online, ServiceDiagnosticsHealthState.healthy, "Service healthy", "The desktop pet can receive Agent updates normally.", ServiceDiagnosticsPrimaryAction.refresh),
+        (PetCoreOperationalState.checking, ServiceDiagnosticsHealthState.checking, "Checking service", "Checking the services needed by the desktop pet.", ServiceDiagnosticsPrimaryAction.unavailable),
+        (PetCoreOperationalState.recovering, ServiceDiagnosticsHealthState.checking, "Recovering service", "Restoring the services needed by the desktop pet.", ServiceDiagnosticsPrimaryAction.unavailable),
+        (PetCoreOperationalState.offline, ServiceDiagnosticsHealthState.needsRecovery, "Service offline", "The desktop pet cannot receive Agent updates. Recover the service to continue.", ServiceDiagnosticsPrimaryAction.recover),
+        (PetCoreOperationalState.runtimeMismatch, ServiceDiagnosticsHealthState.needsRecovery, "Compatibility issue", "The App and its local service need compatible versions before Agent updates can resume.", ServiceDiagnosticsPrimaryAction.recover),
+        (PetCoreOperationalState.error, ServiceDiagnosticsHealthState.unavailable, "Service issue", "The local service could not be reached. Retry the connection.", ServiceDiagnosticsPrimaryAction.retry),
+    ])
+    func aggregatePresentationCoversEveryOperationalState(
+        state: PetCoreOperationalState,
+        health: ServiceDiagnosticsHealthState,
+        title: String,
+        summary: String,
+        action: ServiceDiagnosticsPrimaryAction
+    ) {
+        let presentation = ServiceDiagnosticsAggregatePresentation(
+            operationalState: state,
+            localeIdentifier: "en"
+        )
+
+        #expect(presentation.health == health)
+        #expect(presentation.status.title == title)
+        #expect(presentation.summary == summary)
+        #expect(presentation.primaryAction?.action ?? .unavailable == action)
+    }
+
+    @Test
+    func exportStateRemainsIndependentFromServiceRecoveryState() {
+        let service = ServiceDiagnosticsAggregatePresentation(
+            operationalState: .offline,
+            localeIdentifier: "en"
+        )
+        let archive = PreparedDiagnosticsArchive(
+            stagedURL: URL(fileURLWithPath: "/private/tmp/diagnostics.zip"),
+            suggestedFileName: "AgentPetCompanion-Diagnostics.zip"
+        )
+
+        #expect(service.primaryAction?.action == .recover)
+        #expect(DiagnosticsExportState.ready(archive).primaryAction == .save)
+        #expect(DiagnosticsExportState.failed("retry").primaryAction == .prepare)
     }
 }

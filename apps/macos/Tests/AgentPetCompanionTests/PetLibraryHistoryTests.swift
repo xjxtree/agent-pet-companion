@@ -67,6 +67,49 @@ struct PetLibraryHistoryTests {
     }
 
     @Test
+    func historyPresentationAppliesExplicitIndependentBounds() {
+        let revisions = (0 ..< 20).map { index in
+            PetRevisionHistoryRecord(
+                revisionID: "rev_\(index)",
+                current: index == 0,
+                validated: true
+            )
+        }
+        let jobs = (0 ..< 20).map { index in
+            GenerationJobHistoryRecord(
+                jobID: "job_\(index)",
+                status: .completed,
+                operation: .modify,
+                revisionID: "rev_\(index)",
+                createdAt: "2026-07-21T00:00:00Z",
+                updatedAt: "2026-07-21T00:01:00Z"
+            )
+        }
+        let history = PetHistorySnapshot(
+            petID: "pet_bounded",
+            currentRevisionID: revisions.first?.revisionID,
+            revisions: revisions,
+            jobs: jobs,
+            truncated: false
+        )
+
+        #expect(PetLibraryHistoryBounds.maximumRevisions == 16)
+        #expect(PetLibraryHistoryBounds.maximumJobs == 16)
+        #expect(PetLibraryHistoryBounds.revisions(in: history).map(\.revisionID)
+            == revisions.prefix(16).map(\.revisionID))
+        #expect(PetLibraryHistoryBounds.jobs(in: history).map(\.jobID)
+            == jobs.prefix(16).map(\.jobID))
+        #expect(PetLibraryHistoryBounds.isTruncated(history))
+        #expect(!PetLibraryHistoryBounds.isTruncated(
+            PetHistorySnapshot(
+                petID: "pet_small",
+                revisions: Array(revisions.prefix(2)),
+                jobs: Array(jobs.prefix(2))
+            )
+        ))
+    }
+
+    @Test
     func emptyInspectorHistoryUsesTheRequiredBilingualCopy() {
         #expect(APCLocalization.text(.libraryHistoryNoRecords, locale: "zh-Hans") == "暂无制作记录")
         #expect(APCLocalization.text(.libraryHistoryNoRecords, locale: "en") == "No creation history")
@@ -164,6 +207,9 @@ struct PetLibraryHistoryTests {
         #expect(source.contains("PetLibraryHistoryPresentation.localizedTimestamp(job.updatedAt)"))
         #expect(!source.contains("Text(job.updatedAt)"))
         #expect(source.contains("PetHistoryBaselineState.resolve("))
+        #expect(source.contains("limit: PetLibraryHistoryBounds.requestLimit"))
+        #expect(source.contains("PetLibraryHistoryBounds.revisions(in: loaded)"))
+        #expect(source.contains("PetLibraryHistoryBounds.isTruncated(history)"))
         #expect(source.contains("pet-library.history.retry"))
         #expect(source.contains("Task { await loadHistory() }"))
 

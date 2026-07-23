@@ -1,0 +1,367 @@
+name: Supported public macOS release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to publish
+        required: true
+        type: string
+      build:
+        description: Positive CFBundleVersion
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Sign, notarize, staple, and package
+    runs-on: [self-hosted, macOS, apc-public-release]
+    environment: public-release
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release_identity.outputs.tag }}
+      version: ${{ steps.release_identity.outputs.version }}
+      build: ${{ steps.release_identity.outputs.build }}
+      commit: ${{ steps.release_identity.outputs.commit }}
+      signing_identity: ${{ steps.signing_metadata.outputs.identity }}
+      team_id: ${{ steps.signing_metadata.outputs.team_id }}
+      arm64_zip_sha256: ${{ steps.candidate_digests.outputs.arm64_zip_sha256 }}
+      x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
+      arm64_evidence_sha256: ${{ steps.candidate_digests.outputs.arm64_evidence_sha256 }}
+      x86_64_evidence_sha256: ${{ steps.candidate_digests.outputs.x86_64_evidence_sha256 }}
+      checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
+    env:
+      APC_CODESIGN_IDENTITY: ${{ vars.APC_CODESIGN_IDENTITY }}
+      APC_DEVELOPER_TEAM_ID: ${{ vars.APC_DEVELOPER_TEAM_ID }}
+      APC_NOTARY_PROFILE: ${{ vars.APC_NOTARY_PROFILE }}
+      APC_VALIDATE_HOST_UI: "0"
+      APC_VALIDATE_OVERLAY_RUNTIME: "0"
+      APC_VALIDATE_OVERLAY_INTERACTION: "0"
+      APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
+      APC_VALIDATE_REAL_APP_SERVER: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve immutable release identity
+        id: release_identity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          DISPATCH_BUILD: ${{ inputs.build }}
+          PUSH_TAG: ${{ github.ref_name }}
+          PUSH_BUILD: ${{ github.run_number }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$DISPATCH_TAG"
+            build="$DISPATCH_BUILD"
+          else
+            tag="$PUSH_TAG"
+            build="$PUSH_BUILD"
+          fi
+          [[ "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          [[ "$build" =~ ^[1-9][0-9]*$ ]]
+          version="${tag#v}"
+          commit="$(git rev-parse HEAD)"
+          test "$(git rev-list -n 1 "$tag")" = "$commit"
+          git rev-parse --verify refs/remotes/origin/main >/dev/null
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          source_version="$(
+            awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml
+          )"
+          test "$version" = "$source_version"
+          grep -q "^## \\[$version\\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" CHANGELOG.md
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "build=$build"
+            echo "commit=$commit"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Validate externally provisioned release environment
+        run: |
+          [[ "$APC_CODESIGN_IDENTITY" =~ ^Developer[[:space:]]ID[[:space:]]Application:[[:space:]].+ ]]
+          [[ "$APC_CODESIGN_IDENTITY" != *$'\n'* ]]
+          [[ ${#APC_CODESIGN_IDENTITY} -le 256 ]]
+          [[ "$APC_DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
+          [[ -n "$APC_NOTARY_PROFILE" && "$APC_NOTARY_PROFILE" != *$'\n'* ]]
+          [[ ${#APC_NOTARY_PROFILE} -le 128 ]]
+          command -v codesign
+          command -v xcrun
+          command -v spctl
+          command -v ditto
+          command -v lipo
+          command -v shasum
+
+      - name: Expose non-secret signature metadata to verification jobs
+        id: signing_metadata
+        run: |
+          {
+            echo "identity=$APC_CODESIGN_IDENTITY"
+            echo "team_id=$APC_DEVELOPER_TEAM_ID"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Run host-safe source and integration gates
+        run: ./script/test_all.sh
+
+      - name: Build both supported public archives
+        env:
+          APC_RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
+          APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
+        run: ./script/build_release.sh --public --arch all
+
+      - name: Revalidate final local artifact set
+        env:
+          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
+          RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
+          RELEASE_COMMIT: ${{ steps.release_identity.outputs.commit }}
+        run: |
+          ./script/validate_public_release_artifacts.sh \
+            --directory dist \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --commit "$RELEASE_COMMIT"
+
+      - name: Emit trusted digest for every candidate file
+        id: candidate_digests
+        env:
+          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
+        run: |
+          digest() {
+            shasum -a 256 "$1" | awk '{print $1}'
+          }
+          {
+            echo "arm64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip")"
+            echo "x86_64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip")"
+            echo "arm64_evidence_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-arm64-distribution.json")"
+            echo "x86_64_evidence_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64-distribution.json")"
+            echo "checksum_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Upload immutable release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AgentPetCompanion-${{ steps.release_identity.outputs.version }}-public-release
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64.zip
+            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64.zip
+            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64-distribution.json
+            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64-distribution.json
+            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-SHA256SUMS.txt
+
+  validate_arm64:
+    name: Validate packaged arm64 App on native Apple silicon
+    needs: build
+    runs-on: [self-hosted, macOS, ARM64, apc-public-validation]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
+      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_BUILD: ${{ needs.build.outputs.build }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          path: release-assets
+
+      - name: Compare trusted digests before archive inspection
+        run: |
+          ./script/verify_release_candidate_digests.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
+            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
+            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
+            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+
+      - name: Run native arm64 packaged functional validation
+        run: |
+          ./script/validate_public_release_artifacts.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --commit "$RELEASE_COMMIT" \
+            --require-native-architecture arm64
+
+  validate_x86_64:
+    name: Validate packaged x86_64 App on native Intel
+    needs: build
+    runs-on: [self-hosted, macOS, X64, apc-public-validation]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
+      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_BUILD: ${{ needs.build.outputs.build }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          path: release-assets
+
+      - name: Compare trusted digests before archive inspection
+        run: |
+          ./script/verify_release_candidate_digests.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
+            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
+            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
+            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+
+      - name: Run native x86_64 packaged functional validation
+        run: |
+          ./script/validate_public_release_artifacts.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --commit "$RELEASE_COMMIT" \
+            --require-native-architecture x86_64
+
+  publish:
+    name: Download-verify and publish GitHub Release
+    needs: [build, validate_arm64, validate_x86_64]
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APC_CODESIGN_IDENTITY: ${{ needs.build.outputs.signing_identity }}
+      APC_DEVELOPER_TEAM_ID: ${{ needs.build.outputs.team_id }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_BUILD: ${{ needs.build.outputs.build }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AgentPetCompanion-${{ needs.build.outputs.version }}-public-release
+          path: release-assets
+
+      - name: Compare trusted build digests before archive inspection
+        run: |
+          ./script/verify_release_candidate_digests.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
+            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
+            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
+            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+
+      - name: Revalidate clean downloaded candidate
+        run: |
+          ./script/validate_public_release_artifacts.sh \
+            --directory release-assets \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --commit "$RELEASE_COMMIT"
+
+      - name: Prove remote release tag still targets the candidate
+        run: |
+          ./script/verify_remote_release_tag.sh \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+
+      - name: Create draft, download exact assets, and publish
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release already exists for $RELEASE_TAG; refusing mutable replacement" >&2
+            exit 1
+          fi
+
+          assets=(
+            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip"
+            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip"
+            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64-distribution.json"
+            "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64-distribution.json"
+            "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
+          )
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --verify-tag \
+            --draft \
+            --title "Agent Pet Companion $RELEASE_VERSION" \
+            --generate-notes
+
+          draft_created=1
+          cleanup_draft() {
+            if [[ "$draft_created" == "1" ]]; then
+              gh release delete "$RELEASE_TAG" --yes >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_draft EXIT
+
+          download_dir="$RUNNER_TEMP/apc-release-download"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+          gh release download "$RELEASE_TAG" --dir "$download_dir"
+
+          ./script/verify_release_candidate_digests.sh \
+            --directory "$download_dir" \
+            --version "$RELEASE_VERSION" \
+            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
+            --arm64-evidence-sha256 "${{ needs.build.outputs.arm64_evidence_sha256 }}" \
+            --x86_64-evidence-sha256 "${{ needs.build.outputs.x86_64_evidence_sha256 }}" \
+            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+          ./script/validate_public_release_artifacts.sh \
+            --directory "$download_dir" \
+            --version "$RELEASE_VERSION" \
+            --build "$RELEASE_BUILD" \
+            --commit "$RELEASE_COMMIT"
+
+          ./script/verify_remote_release_tag.sh \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+          gh release edit "$RELEASE_TAG" --draft=false
+          ./script/verify_remote_release_tag.sh \
+            --tag "$RELEASE_TAG" \
+            --commit "$RELEASE_COMMIT"
+          draft_created=0

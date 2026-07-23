@@ -242,11 +242,15 @@ for window in windows {
     var nodes: [AXNode] = []
     collectNodes(window, into: &nodes)
     let values = nodes.flatMap(\.strings)
-    let containsWaitingSession = values.contains { value in
-        (value.contains("Claude 会话") || value.contains("Claude session"))
-            && (value.contains("需要输入") || value.contains("Needs input"))
+    let containsClaudeGroup = nodes.contains {
+        $0.identifier == "overlay.group.agent-claude_code"
+    } || values.contains("Claude Code")
+    let containsWaitingSession = nodes.contains {
+        $0.identifier.hasPrefix(
+            "overlay.session.session-claude_code-"
+        )
     }
-    if values.contains("Claude Code") && containsWaitingSession {
+    if containsClaudeGroup && containsWaitingSession {
         bubbleWindow = (window, frame, nodes)
     }
 }
@@ -295,23 +299,60 @@ if !missingAgentHeaders.isEmpty {
     exit(1)
 }
 
-guard let waitingNode = bubble.nodes.first(where: { node in
-    node.role == kAXButtonRole as String
-        && node.strings.contains(where: { value in
-            (value.contains("Claude 会话") || value.contains("Claude session"))
-                && (value.contains("需要输入") || value.contains("Needs input"))
-                && (
-                    value.contains("请回到 Agent 完成确认、回答或决策。")
-                        || value.contains("Return to the agent to approve, answer, or decide.")
-                )
-        })
+guard let waitingNode = bubble.nodes.first(where: {
+    $0.identifier.hasPrefix("overlay.session.session-claude_code-")
 }) else {
-    fputs("overlay non-mouse validation failed: actionable privacy-normalized waiting session is missing\n", stderr)
+    fputs("overlay non-mouse validation failed: semantic Claude waiting session is missing\n", stderr)
     exit(1)
 }
 
-if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
-    || values.contains(where: { $0 == "等待确认" }) {
+func containsInOrder(
+    _ text: String,
+    candidateGroups: [[String]]
+) -> Bool {
+    let value = text as NSString
+    var cursor = 0
+    for candidates in candidateGroups {
+        let remaining = NSRange(
+            location: cursor,
+            length: max(0, value.length - cursor)
+        )
+        let matches = candidates.map {
+            value.range(of: $0, options: [], range: remaining)
+        }.filter { $0.location != NSNotFound }
+        guard let match = matches.min(by: { $0.location < $1.location }) else {
+            return false
+        }
+        cursor = match.location + match.length
+    }
+    return true
+}
+
+let waitingReadingOrder: [[String]] = [
+    ["Claude Code"],
+    ["Claude 会话", "Claude session", "Claude Code 会话", "Claude Code session"],
+    ["等你处理", "Needs You"],
+    [
+        "请回到 Agent 完成确认、回答或决策。",
+        "Return to the agent to approve, answer, or decide.",
+    ],
+    [
+        "返回会话", "Return to Session",
+        "打开 Claude Code", "Open Claude Code",
+        "没有安全可用的跳转目标", "No safe destination is available",
+    ],
+]
+guard waitingNode.strings.contains(where: {
+    containsInOrder($0, candidateGroups: waitingReadingOrder)
+}) else {
+    fputs(
+        "overlay non-mouse validation failed: VoiceOver order is not Agent → session → status → message → action for Claude waiting\n",
+        stderr
+    )
+    exit(1)
+}
+
+if !runID.isEmpty && values.contains(where: { $0.contains(runID) }) {
     fputs("overlay non-mouse validation failed: raw event copy leaked into the grouped bubble\n", stderr)
     exit(1)
 }
@@ -389,6 +430,7 @@ func size(_ element: AXUIElement, _ attr: String) -> CGSize? {
 
 struct AXNode {
     let role: String
+    let identifier: String
     let title: String
     let value: String
     let description: String
@@ -404,6 +446,7 @@ func collectNodes(_ element: AXUIElement, into nodes: inout [AXNode]) {
     let nodeSize = size(element, kAXSizeAttribute)
     nodes.append(AXNode(
         role: string(element, kAXRoleAttribute),
+        identifier: string(element, kAXIdentifierAttribute),
         title: string(element, kAXTitleAttribute),
         value: string(element, kAXValueAttribute),
         description: string(element, kAXDescriptionAttribute),
@@ -428,11 +471,13 @@ for window in windows where string(window, kAXTitleAttribute).isEmpty {
     var nodes: [AXNode] = []
     collectNodes(window, into: &nodes)
     let values = nodes.flatMap(\.strings)
-    let containsDoneSession = values.contains { value in
-        (value.contains("Codex 会话") || value.contains("Codex session"))
-            && (value.contains("已完成") || value.contains("Completed"))
+    let containsCodexGroup = nodes.contains {
+        $0.identifier == "overlay.group.agent-codex"
+    } || values.contains("Codex")
+    let containsDoneSession = nodes.contains {
+        $0.identifier.hasPrefix("overlay.session.session-codex-")
     }
-    if values.contains("Codex") && containsDoneSession {
+    if containsCodexGroup && containsDoneSession {
         candidates.append((CGRect(origin: position, size: windowSize), nodes))
     }
 }
@@ -449,23 +494,57 @@ if !forbidden.isEmpty {
     exit(1)
 }
 
-guard let doneNode = bubble.nodes.first(where: { node in
-    node.role == kAXButtonRole as String
-        && node.strings.contains(where: { value in
-            (value.contains("Codex 会话") || value.contains("Codex session"))
-                && (value.contains("已完成") || value.contains("Completed"))
-                && (
-                    value.contains("Agent 已完成任务。")
-                        || value.contains("The agent finished the task.")
-                )
-        })
+guard let doneNode = bubble.nodes.first(where: {
+    $0.identifier.hasPrefix("overlay.session.session-codex-")
 }) else {
-    fputs("overlay short-bubble validation failed: actionable normalized done session is missing\n", stderr)
+    fputs("overlay short-bubble validation failed: semantic Codex done session is missing\n", stderr)
     exit(1)
 }
 
-if (!runID.isEmpty && values.contains(where: { $0.contains(runID) }))
-    || values.contains(where: { $0.hasPrefix("短消息 ") }) {
+func containsInOrder(
+    _ text: String,
+    candidateGroups: [[String]]
+) -> Bool {
+    let value = text as NSString
+    var cursor = 0
+    for candidates in candidateGroups {
+        let remaining = NSRange(
+            location: cursor,
+            length: max(0, value.length - cursor)
+        )
+        let matches = candidates.map {
+            value.range(of: $0, options: [], range: remaining)
+        }.filter { $0.location != NSNotFound }
+        guard let match = matches.min(by: { $0.location < $1.location }) else {
+            return false
+        }
+        cursor = match.location + match.length
+    }
+    return true
+}
+
+let doneReadingOrder: [[String]] = [
+    ["Codex"],
+    ["Codex 会话", "Codex session"],
+    ["已完成", "Completed"],
+    ["Agent 已完成任务。", "The agent finished the task."],
+    [
+        "返回会话", "Return to Session",
+        "打开 Codex", "Open Codex",
+        "没有安全可用的跳转目标", "No safe destination is available",
+    ],
+]
+guard doneNode.strings.contains(where: {
+    containsInOrder($0, candidateGroups: doneReadingOrder)
+}) else {
+    fputs(
+        "overlay short-bubble validation failed: VoiceOver order is not Agent → session → status → message → action for Codex done\n",
+        stderr
+    )
+    exit(1)
+}
+
+if !runID.isEmpty && values.contains(where: { $0.contains(runID) }) {
     fputs("overlay short-bubble validation failed: raw completion copy leaked into the bubble\n", stderr)
     exit(1)
 }
@@ -517,7 +596,7 @@ print(json.dumps(behavior, ensure_ascii=False))
 PY
 )"
 "$PETCORE_CLI" behavior set-json --value-json "$CODEX_ONLY_BEHAVIOR_JSON" >/dev/null
-ingest_event codex done "短消息 ${RUN_ID}" "OK"
+ingest_event codex done "完成" "私密完成负载 ${RUN_ID}"
 sleep 1.5
 validate_single_compact_bubble
 

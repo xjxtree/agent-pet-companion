@@ -12,6 +12,42 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case navigationPetConfiguration = "nav.pet_configuration"
     case navigationConnections = "nav.connections"
     case navigationDiagnostics = "nav.diagnostics"
+    case onboardingTitle = "onboarding.title"
+    case onboardingProgressFormat = "onboarding.progress.format"
+    case onboardingClose = "onboarding.close"
+    case onboardingSkip = "onboarding.skip"
+    case onboardingChooseTitle = "onboarding.choose.title"
+    case onboardingChooseDetail = "onboarding.choose.detail"
+    case onboardingChooseConfirm = "onboarding.choose.confirm"
+    case onboardingPetsUnavailableTitle = "onboarding.pets_unavailable.title"
+    case onboardingPetsUnavailableDetail = "onboarding.pets_unavailable.detail"
+    case onboardingConnectTitle = "onboarding.connect.title"
+    case onboardingConnectDetail = "onboarding.connect.detail"
+    case onboardingConnectChecking = "onboarding.connect.checking"
+    case onboardingConnectContinue = "onboarding.connect.continue"
+    case onboardingNoAgentsTitle = "onboarding.no_agents.title"
+    case onboardingNoAgentsDetail = "onboarding.no_agents.detail"
+    case onboardingDemoTitle = "onboarding.demo.title"
+    case onboardingDemoDetail = "onboarding.demo.detail"
+    case onboardingDemoLocalLabel = "onboarding.demo.local_label"
+    case onboardingDemoThinking = "onboarding.demo.thinking"
+    case onboardingDemoThinkingDetail = "onboarding.demo.thinking_detail"
+    case onboardingDemoWorking = "onboarding.demo.working"
+    case onboardingDemoWorkingDetail = "onboarding.demo.working_detail"
+    case onboardingDemoNeedsAttention = "onboarding.demo.needs_attention"
+    case onboardingDemoNeedsAttentionDetail = "onboarding.demo.needs_attention_detail"
+    case onboardingDemoDone = "onboarding.demo.done"
+    case onboardingDemoDoneDetail = "onboarding.demo.done_detail"
+    case onboardingDemoReplay = "onboarding.demo.replay"
+    case onboardingDemoInvitation = "onboarding.demo.invitation"
+    case onboardingFinish = "onboarding.finish"
+    case onboardingServiceUnavailableTitle = "onboarding.service_unavailable.title"
+    case onboardingServiceUnavailableDetail = "onboarding.service_unavailable.detail"
+    case onboardingFailureService = "onboarding.failure.service"
+    case onboardingFailurePetActivation = "onboarding.failure.pet_activation"
+    case onboardingFailureRevisionConflict = "onboarding.failure.revision_conflict"
+    case onboardingFailureRequest = "onboarding.failure.request"
+    case onboardingRepairConfirmationDetail = "onboarding.repair_confirmation.detail"
     case libraryLoadingTitle = "library.loading.title"
     case libraryLoadingDetail = "library.loading.detail"
     case libraryEmptyTitle = "library.empty.title"
@@ -84,13 +120,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case appActionAbout = "app.action.about"
     case appMenuCurrentPet = "app.menu.current_pet"
     case appMenuRecentAgent = "app.menu.recent_agent"
-    case appMenuPetCore = "app.menu.petcore"
     case appStateNoPetEnabled = "app.state.no_pet_enabled"
     case appStateNoPet = "app.state.no_pet"
     case appStateNoRecentActivity = "app.state.no_recent_activity"
-    case appStatePetCoreChecking = "app.state.petcore_checking"
-    case appStatePetCoreRunning = "app.state.petcore_running"
-    case appStatePetCoreFailed = "app.state.petcore_failed"
     case appHelpShowPet = "app.help.show_pet"
     case appHelpHidePet = "app.help.hide_pet"
     case appHelpMore = "app.help.more"
@@ -111,6 +143,30 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case eventReview = "event.review"
     case eventDone = "event.done"
     case eventFailed = "event.failed"
+    case productLifecycleIdle = "product.lifecycle.idle"
+    case productLifecycleStart = "product.lifecycle.start"
+    case productLifecycleTool = "product.lifecycle.tool"
+    case productLifecycleWaiting = "product.lifecycle.waiting"
+    case productLifecycleReview = "product.lifecycle.review"
+    case productLifecycleDone = "product.lifecycle.done"
+    case productLifecycleFailed = "product.lifecycle.failed"
+    case productNavigationExactSession = "product.navigation.exact_session"
+    case productNavigationAgentHostFormat = "product.navigation.agent_host_format"
+    case productNavigationUnavailable = "product.navigation.unavailable"
+    case productAttentionOnlyWhenNeeded = "product.attention.only_when_needed"
+    case productAttentionStandard = "product.attention.standard"
+    case productAttentionAllActivity = "product.attention.all_activity"
+    case productAttentionCustom = "product.attention.custom"
+    case productMotionStandard = "product.motion.standard"
+    case productMotionSmooth = "product.motion.smooth"
+    case productConnectionChecking = "product.connection.checking"
+    case productConnectionConnected = "product.connection.connected"
+    case productConnectionNeedsRepair = "product.connection.needs_repair"
+    case productConnectionUnavailable = "product.connection.unavailable"
+    case productActionUsePet = "product.action.use_pet"
+    case productActionContinueEditing = "product.action.continue_editing"
+    case productActionConnect = "product.action.connect"
+    case productActionVerify = "product.action.verify"
     case styleRealistic = "style.realistic"
     case styleSemiRealistic = "style.semi_realistic"
     case styleModern = "style.modern"
@@ -267,6 +323,12 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configSubtitleAppearance = "config.subtitle.appearance"
     case configSubtitleMessages = "config.subtitle.messages"
     case configPagePicker = "config.page_picker"
+    case configAttentionPreset = "config.attention_preset"
+    case configAttentionPresetCustomDetail = "config.attention_preset.custom_detail"
+    case configAdvancedAppearance = "config.advanced.appearance"
+    case configAdvancedAppearanceDetail = "config.advanced.appearance.detail"
+    case configAdvancedMessages = "config.advanced.messages"
+    case configAdvancedMessagesDetail = "config.advanced.messages.detail"
     case configShowPet = "config.show_pet"
     case configShowPetDetail = "config.show_pet.detail"
     case configDisplayAppearance = "config.display_appearance"
@@ -369,6 +431,22 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsUninstall = "connections.action.uninstall"
     case connectionsPageTitle = "connections.page.title"
     case connectionsPageSubtitle = "connections.page.subtitle"
+    case connectionsSummaryChecking = "connections.summary.checking"
+    case connectionsSummaryConnected = "connections.summary.connected"
+    case connectionsSummaryNeedsRepair = "connections.summary.needs_repair"
+    case connectionsSummaryUnavailable = "connections.summary.unavailable"
+    case connectionsPrimaryAccessibilityFormat = "connections.primary.accessibility_format"
+    case connectionsPrimaryConnectHint = "connections.primary.connect_hint"
+    case connectionsPrimaryRepairHint = "connections.primary.repair_hint"
+    case connectionsPrimaryVerifyHint = "connections.primary.verify_hint"
+    case connectionsPrimaryRetryHint = "connections.primary.retry_hint"
+    case connectionsTechnicalTitle = "connections.technical.title"
+    case connectionsTechnicalSummary = "connections.technical.summary"
+    case connectionsValidationBoundary = "connections.validation.boundary"
+    case connectionsLocalChannelTitle = "connections.local_channel.title"
+    case connectionsLocalChannelDetail = "connections.local_channel.detail"
+    case connectionsManagedArtifactsTitle = "connections.managed_artifacts.title"
+    case connectionsManagedArtifactsCountFormat = "connections.managed_artifacts.count_format"
     case connectionsCheckAll = "connections.action.check_all"
     case connectionsBusyHint = "connections.hint.busy"
     case connectionsCheckAllHint = "connections.hint.check_all"
@@ -531,6 +609,14 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case diagnosticsRecover = "diagnostics.action.recover"
     case diagnosticsRecovering = "diagnostics.action.recovering"
     case diagnosticsServiceStatus = "diagnostics.section.service_status"
+    case diagnosticsSummaryHealthy = "diagnostics.summary.healthy"
+    case diagnosticsSummaryChecking = "diagnostics.summary.checking"
+    case diagnosticsSummaryRecovering = "diagnostics.summary.recovering"
+    case diagnosticsSummaryOffline = "diagnostics.summary.offline"
+    case diagnosticsSummaryRuntimeMismatch = "diagnostics.summary.runtime_mismatch"
+    case diagnosticsSummaryFailure = "diagnostics.summary.failure"
+    case diagnosticsTechnicalTitle = "diagnostics.technical.title"
+    case diagnosticsTechnicalSummary = "diagnostics.technical.summary"
     case diagnosticsLogDownload = "diagnostics.section.log_download"
     case diagnosticsPackageTitle = "diagnostics.package.title"
     case diagnosticsPackageDetail = "diagnostics.package.detail"
@@ -544,6 +630,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case diagnosticsPrivacy = "diagnostics.privacy"
     case diagnosticsRowAccessibilityFormat = "diagnostics.row.accessibility_format"
     case overlaySessionTitleFormat = "overlay.session.title_format"
+    case overlaySessionAliasTitleFormat = "overlay.session.alias_title_format"
     case overlayMoreSessionsTitle = "overlay.sessions.more_title"
     case overlayMoreSessionsDetailFormat = "overlay.sessions.more_detail_format"
     case overlayHelpOpenAndDismiss = "overlay.help.open_and_dismiss"
@@ -584,18 +671,23 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryFieldStates = "library.field.states"
     case libraryFieldFPS = "library.field.fps"
     case libraryFieldDuration = "library.field.duration"
+    case libraryFieldFrameCounts = "library.field.frame_counts"
+    case libraryFieldRenderSize = "library.field.render_size"
+    case libraryFieldProvenance = "library.field.provenance"
     case libraryFieldValidation = "library.field.validation"
     case libraryEditInstruction = "library.edit.instruction"
     case libraryEditInstructionAccessibility = "library.edit.instruction_accessibility"
     case libraryEditActiveWarning = "library.edit.active_warning"
     case libraryEditStart = "library.edit.start"
-    // Arguments: display name, localized source title, stable manifest pet ID.
+    // Arguments: display name, localized style title, localized source title.
     case libraryCardAccessibilityFormat = "library.card.accessibility_format"
+    case libraryCardVariantFormat = "library.card.variant_format"
     case libraryActivateAccessibility = "library.activate.accessibility"
     case libraryInspectorTitle = "library.inspector.title"
     case libraryPetActive = "library.pet.active"
     case libraryEnablePet = "library.pet.enable"
     case libraryCurrentInfo = "library.current_info"
+    case libraryTechnicalInformationSummary = "library.technical_information.summary"
     case libraryFieldCurrentState = "library.field.current_state"
     case libraryFieldSource = "library.field.source"
     case libraryFieldPackageVersion = "library.field.package_version"
@@ -666,6 +758,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryFPSSummary = "library.fps.summary"
     case libraryFPSStandardSummary = "library.fps.standard_summary"
     case libraryDurationGroupFormat = "library.duration.group_format"
+    case libraryFrameCountStateFormat = "library.frame_count.state_format"
     case librarySourceBundledTitle = "library.source.bundled_title"
     case librarySourceBundledDetail = "library.source.bundled_detail"
     case librarySourceVerifiedTitle = "library.source.verified_title"
@@ -858,6 +951,140 @@ enum UIControlSemantics {
 }
 
 enum APCLocalizedPresentation {
+    static func lifecycleTitle(
+        _ state: ProductLifecycleState,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch state {
+        case .idle: .productLifecycleIdle
+        case .start: .productLifecycleStart
+        case .tool: .productLifecycleTool
+        case .waiting: .productLifecycleWaiting
+        case .review: .productLifecycleReview
+        case .done: .productLifecycleDone
+        case .failed: .productLifecycleFailed
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func navigationActionTitle(
+        _ capability: NavigationCapability,
+        source: AgentSource,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        switch capability {
+        case .exactSession:
+            APCLocalization.text(.productNavigationExactSession, locale: locale)
+        case .agentHost:
+            APCLocalization.format(
+                .productNavigationAgentHostFormat,
+                locale: locale,
+                source.title
+            )
+        case .unavailable:
+            nil
+        }
+    }
+
+    static func navigationUnavailableTitle(
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.text(.productNavigationUnavailable, locale: locale)
+    }
+
+    static func attentionPresetTitle(
+        _ preset: AttentionPreset,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch preset {
+        case .onlyWhenNeeded: .productAttentionOnlyWhenNeeded
+        case .standard: .productAttentionStandard
+        case .allActivity: .productAttentionAllActivity
+        case .custom: .productAttentionCustom
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func playbackProfileTitle(
+        _ profile: FpsProfile,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.text(
+            profile == .smooth ? .productMotionSmooth : .productMotionStandard,
+            locale: locale
+        )
+    }
+
+    static func connectionHealthTitle(
+        _ health: AgentConnectionHealthState,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch health {
+        case .checking: .productConnectionChecking
+        case .connected: .productConnectionConnected
+        case .needsRepair: .productConnectionNeedsRepair
+        case .unavailable: .productConnectionUnavailable
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func primaryActionTitle(
+        _ action: PetLibraryPrimaryAction,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        let key: APCLocalizationKey? = switch action {
+        case .usePet: .productActionUsePet
+        case .createPet: .libraryEmptyAction
+        case .importPet: .libraryImportAction
+        case .unavailable: nil
+        }
+        return key.map { APCLocalization.text($0, locale: locale) }
+    }
+
+    static func primaryActionTitle(
+        _ action: PetMakerPrimaryAction,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        let key: APCLocalizationKey? = switch action {
+        case .createPet: .studioActionStart
+        case .sendReply: .studioReplySend
+        case .cancel: .studioActionCancelTask
+        case .retry: .commonRetry
+        case .reselectReferences: .studioReferencesPanelTitle
+        case .usePet: .productActionUsePet
+        case .continueEditing: .productActionContinueEditing
+        case .unavailable: nil
+        }
+        return key.map { APCLocalization.text($0, locale: locale) }
+    }
+
+    static func primaryActionTitle(
+        _ action: AgentConnectionPrimaryAction,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        let key: APCLocalizationKey? = switch action {
+        case .connect: .productActionConnect
+        case .repair: .connectionsInstallRepair
+        case .verify: .productActionVerify
+        case .retry: .commonRetry
+        case .unavailable: nil
+        }
+        return key.map { APCLocalization.text($0, locale: locale) }
+    }
+
+    static func primaryActionTitle(
+        _ action: ServiceDiagnosticsPrimaryAction,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        let key: APCLocalizationKey? = switch action {
+        case .refresh: .diagnosticsRefresh
+        case .recover: .diagnosticsRecover
+        case .retry: .commonRetry
+        case .unavailable: nil
+        }
+        return key.map { APCLocalization.text($0, locale: locale) }
+    }
+
     static func eventTitle(
         _ event: AgentEventKind,
         locale: String = APCLocalization.interfaceLocaleIdentifier

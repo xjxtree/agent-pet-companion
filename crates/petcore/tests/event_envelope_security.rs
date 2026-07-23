@@ -666,6 +666,109 @@ fn event_retention_prunes_oldest_rows() {
 }
 
 #[test]
+fn session_alias_authority_survives_restart_migration_and_tracks_event_retention() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.sqlite");
+    let database = Database::new(path.clone());
+    database.init().unwrap();
+    for (id, session_id, created_at) in [
+        ("alias-a-first", "raw-session-a", "2026-07-20T00:00:00Z"),
+        ("alias-b-first", "raw-session-b", "2026-07-20T00:00:01Z"),
+    ] {
+        database
+            .insert_event(&strict_event(
+                id,
+                AgentSource::ClaudeCode,
+                Some(session_id),
+                created_at,
+            ))
+            .unwrap();
+    }
+
+    let read_aliases = || {
+        let connection = Connection::open(&path).unwrap();
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT session_key, alias_sequence
+                FROM agent_session_aliases
+                WHERE source = 'claude_code'
+                ORDER BY alias_sequence
+                "#,
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let initial = read_aliases();
+    assert_eq!(
+        initial,
+        vec![
+            ("1:raw-session-a".to_string(), 1),
+            ("1:raw-session-b".to_string(), 2)
+        ]
+    );
+
+    // A normal daemon restart preserves the assigned authority exactly.
+    Database::new(path.clone()).init().unwrap();
+    assert_eq!(read_aliases(), initial);
+
+    // Simulate a schema-5 database that already has retained events. Schema 6
+    // deterministically backfills by first-seen event order.
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"
+            DROP TABLE agent_session_aliases;
+            PRAGMA user_version = 5;
+            "#,
+        )
+        .unwrap();
+    Database::new(path.clone()).init().unwrap();
+    assert_eq!(read_aliases(), initial);
+
+    // New activity changes display recency but never reallocates the alias.
+    database
+        .insert_event(&strict_event(
+            "alias-a-newest",
+            AgentSource::ClaudeCode,
+            Some("raw-session-a"),
+            "2026-07-20T00:00:02Z",
+        ))
+        .unwrap();
+    assert_eq!(read_aliases(), initial);
+
+    database
+        .prune_events(EventRetentionPolicy {
+            max_rows: 1,
+            max_age_days: 36_500,
+        })
+        .unwrap();
+    assert_eq!(read_aliases(), vec![("1:raw-session-a".to_string(), 1)]);
+    database
+        .insert_event(&strict_event(
+            "alias-c-after-retention",
+            AgentSource::ClaudeCode,
+            Some("raw-session-c"),
+            "2026-07-20T00:00:03Z",
+        ))
+        .unwrap();
+    assert_eq!(
+        read_aliases(),
+        vec![
+            ("1:raw-session-a".to_string(), 1),
+            ("1:raw-session-c".to_string(), 3)
+        ],
+        "pruned alias sequences must never be reused for a new session"
+    );
+}
+
+#[test]
 fn legacy_payload_migration_removes_plaintext_and_rebuilds_rows() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("legacy.sqlite");

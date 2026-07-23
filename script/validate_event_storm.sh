@@ -27,7 +27,15 @@ import sys
 
 data = json.loads(os.environ["JSON"])
 expr = sys.argv[1]
-allowed = {"__builtins__": {}, "data": data, "any": any, "all": all, "len": len, "set": set}
+allowed = {
+    "__builtins__": {},
+    "data": data,
+    "any": any,
+    "all": all,
+    "len": len,
+    "set": set,
+    "json": json,
+}
 if not eval(expr, allowed, {}):
     raise SystemExit(f"assertion failed: {expr}\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 PY
@@ -79,6 +87,8 @@ fi
 
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
 assert_json "$SNAPSHOT" 'len(data["events"]) <= 8'
+assert_json "$SNAPSHOT" 'len(data["active_agent_sessions"]) <= 8'
+assert_json "$SNAPSHOT" 'data["active_agent_sessions_omitted_count"] >= 0'
 assert_json "$SNAPSHOT" 'data["revision"] != "'"$INITIAL_REVISION"'"'
 # App snapshots intentionally expose domain-separated opaque identities, not
 # connector-supplied event/session IDs. Preserve the storm's uniqueness and
@@ -88,6 +98,7 @@ assert_json "$SNAPSHOT" 'all(event["id"].startswith("evt-") and len(event["id"])
 assert_json "$SNAPSHOT" 'all(not event["id"].startswith("evt_storm_") for event in data["events"])'
 assert_json "$SNAPSHOT" 'len(set(event["id"] for event in data["events"])) == len(data["events"])'
 assert_json "$SNAPSHOT" 'all(event["session_id"].startswith("ses-") and len(event["session_id"]) == 68 for event in data["events"])'
+assert_json "$SNAPSHOT" '"/tmp/apc-storm/" not in json.dumps(data)'
 
 RECENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit "$EVENT_COUNT")"
 EVENT_COUNT="$EVENT_COUNT" JSON="$RECENT" python3 - <<'PY'
@@ -101,6 +112,13 @@ assert len(events) == expected, len(events)
 assert len(ids) == expected, len(ids)
 assert "evt_storm_0" in ids, ids
 assert f"evt_storm_{expected - 1}" in ids, ids
+if expected >= 12:
+    assert {event["source"] for event in events} == {
+        "codex", "claude_code", "pi", "opencode"
+    }
+    assert {event["event_type"] for event in events} == {
+        "start", "tool", "waiting", "review", "done", "failed"
+    }
 PY
 
 WAITED="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" state wait --after-revision "$INITIAL_REVISION" --timeout-ms 1000)"

@@ -389,6 +389,7 @@ enum OverlayPresentedAgentState {
             return OverlaySessionContent.stableID(
                 source: state.source,
                 sessionID: state.sessionID ?? state.event.sessionID,
+                anonymousSessionAlias: state.anonymousSessionAlias,
                 fallbackEventID: state.event.id
             )
         })
@@ -401,6 +402,7 @@ enum OverlayPresentedAgentState {
         dismissedSessionIDs.contains(OverlaySessionContent.stableID(
             source: state.source,
             sessionID: state.sessionID ?? state.event.sessionID,
+            anonymousSessionAlias: state.anonymousSessionAlias,
             fallbackEventID: state.event.id
         ))
     }
@@ -428,6 +430,8 @@ enum OverlayGeometry {
     static let bubbleSessionVerticalPadding: CGFloat = 5
     static let bubbleSessionTitleFontSize: CGFloat = 11.4
     static let bubbleSessionTitleSpacing: CGFloat = 2
+    static let bubbleSessionActionSpacing: CGFloat = 3
+    static let bubbleSessionActionFontSize: CGFloat = 10
     static let bubbleDetailLineLimit = 2
     static let bubbleSessionDividerHeight: CGFloat = 1
     static let bubbleHeaderAvatarWidth: CGFloat = 14
@@ -464,7 +468,7 @@ enum OverlayGeometry {
 
     static func resolvedBubbleSize(
         in size: CGSize,
-        content: OverlayBubbleContent = .idle
+        content: OverlayBubbleContent = .measurementPlaceholder
     ) -> CGSize {
         let availableWidth = max(96, size.width - 32)
         let maximumWidth = min(bubbleWidth, availableWidth)
@@ -1203,7 +1207,7 @@ enum OverlayGeometry {
         scale: CGFloat,
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
-        content: OverlayBubbleContent = .idle,
+        content: OverlayBubbleContent = .measurementPlaceholder,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         bubblePanelScreenFrame(
@@ -1242,7 +1246,7 @@ enum OverlayGeometry {
         bubbleVisible: Bool,
         clickMenuEnabled: Bool,
         visibleFrame: CGRect,
-        bubbleContent: OverlayBubbleContent = .idle
+        bubbleContent: OverlayBubbleContent = .measurementPlaceholder
     ) -> CGRect {
         let bubbleSize = resolvedBubbleSize(in: visibleFrame.size, content: bubbleContent)
         var rects = [
@@ -1282,7 +1286,7 @@ enum OverlayGeometry {
         screenFrame: CGRect,
         includeBubble: Bool,
         includeResize: Bool = true,
-        bubbleContent: OverlayBubbleContent = .idle
+        bubbleContent: OverlayBubbleContent = .measurementPlaceholder
     ) -> [CGRect] {
         let displayPetCenter = petCenter
         let menuCenter = menuCenter(petCenter: displayPetCenter, scale: scale)
@@ -1325,7 +1329,7 @@ enum OverlayGeometry {
         screenFrame: CGRect,
         includeBubble: Bool,
         includeResize: Bool = true,
-        bubbleContent: OverlayBubbleContent = .idle,
+        bubbleContent: OverlayBubbleContent = .measurementPlaceholder,
         mousePassthroughEnabled: Bool = true,
         petFrameHitTest: OverlayPetFrameHitTest? = nil
     ) -> Bool {
@@ -1396,11 +1400,16 @@ enum OverlayGeometry {
         // between one and two lines; allowing that to resize an NSPanel on
         // every hook makes the whole bubble stack visibly jump.
         let detailHeight = detailLineHeight * CGFloat(bubbleDetailLineLimit)
+        let actionHeight = lineHeight(
+            for: .systemFont(ofSize: bubbleSessionActionFontSize, weight: .semibold)
+        )
         return ceil(
             bubbleSessionVerticalPadding * 2
                 + titleHeight
                 + bubbleSessionTitleSpacing
                 + detailHeight
+                + bubbleSessionActionSpacing
+                + actionHeight
         )
     }
 
@@ -1467,6 +1476,37 @@ enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
     }
 }
 
+enum OverlayBubbleProjection {
+    static func contents(
+        states: [ActiveAgentState],
+        omittedCount: Int,
+        dismissedSessionIDs: Set<String>,
+        isExpanded: (AgentSource) -> Bool
+    ) -> [OverlayBubbleContent] {
+        let visibleStates = states.filter {
+            !dismissedSessionIDs.contains(OverlaySessionContent.stableID(
+                source: $0.source,
+                sessionID: $0.sessionID ?? $0.event.sessionID,
+                anonymousSessionAlias: $0.anonymousSessionAlias,
+                fallbackEventID: $0.event.id
+            ))
+        }
+        var grouped = AgentSource.allCases.compactMap { source -> OverlayBubbleContent? in
+            let sourceStates = visibleStates.filter { $0.source == source }
+            return sourceStates.isEmpty ? nil : OverlayBubbleContent(
+                source: source,
+                states: sourceStates,
+                isExpanded: isExpanded(source)
+            )
+        }
+        if omittedCount > 0 {
+            grouped.append(.omittedSummary(count: omittedCount))
+        }
+        // The pet itself communicates idle. No session means no bubble.
+        return grouped
+    }
+}
+
 struct OverlaySessionContent: Equatable, Identifiable {
     var id: String
     var eventID: String
@@ -1476,10 +1516,40 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var sessionTitle: String
     var messageText: String
     var statusText: String
-    var actionLabel: String
     var navigation: AgentSessionNavigation
 
-    var canOpen: Bool { !navigation.explicitlyClosed }
+    var navigationCapability: NavigationCapability {
+        AgentSessionRouter.validatedCapability(
+            source: source,
+            sessionID: sessionID,
+            navigation: navigation
+        )
+    }
+    var canOpen: Bool {
+        source == nil || navigationCapability != .unavailable
+    }
+    var actionLabel: String {
+        guard let source else {
+            return APCLocalization.text(.overlayActionOpen)
+        }
+        return APCLocalizedPresentation.navigationActionTitle(
+            navigationCapability,
+            source: source
+        ) ?? APCLocalizedPresentation.navigationUnavailableTitle()
+    }
+    var accessibilityReadingOrder: [String] {
+        [
+            source?.title,
+            sessionTitle,
+            statusText,
+            messageText,
+            actionLabel,
+        ]
+        .compactMap(Self.compactMessage)
+    }
+    var accessibilityLabel: String {
+        accessibilityReadingOrder.joined(separator: ", ")
+    }
     var dismissesAfterActivation: Bool {
         switch eventType {
         case .review, .done: true
@@ -1487,16 +1557,17 @@ struct OverlaySessionContent: Equatable, Identifiable {
         }
     }
 
-    static let idle = OverlaySessionContent(
-        id: "idle",
-        eventID: "idle",
+    /// Geometry-only fixture for callers that do not have live bubble
+    /// content. AppStore never publishes this as a user-visible session.
+    static let measurementPlaceholder = OverlaySessionContent(
+        id: "measurement-placeholder",
+        eventID: "measurement-placeholder",
         source: nil,
         sessionID: nil,
         eventType: nil,
         sessionTitle: "Agent Pet Companion",
-        messageText: APCLocalization.text(.overlayIdleDetail),
+        messageText: "",
         statusText: "",
-        actionLabel: APCLocalization.text(.overlayActionOpen),
         navigation: AgentSessionNavigation()
     )
 
@@ -1510,7 +1581,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
             sessionTitle: APCLocalization.text(.overlayMoreSessionsTitle),
             messageText: APCLocalization.format(.overlayMoreSessionsDetailFormat, count),
             statusText: "",
-            actionLabel: APCLocalization.text(.overlayActionOpen),
             navigation: AgentSessionNavigation()
         )
     }
@@ -1524,7 +1594,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionTitle: String,
         messageText: String,
         statusText: String,
-        actionLabel: String,
         navigation: AgentSessionNavigation = AgentSessionNavigation()
     ) {
         self.id = id
@@ -1535,7 +1604,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
         self.sessionTitle = sessionTitle
         self.messageText = messageText
         self.statusText = statusText
-        self.actionLabel = actionLabel
         self.navigation = navigation
     }
 
@@ -1545,17 +1613,25 @@ struct OverlaySessionContent: Equatable, Identifiable {
         id = Self.stableID(
             source: event.source,
             sessionID: resolvedSessionID,
+            anonymousSessionAlias: state.anonymousSessionAlias,
             fallbackEventID: event.id
         )
         eventID = event.id
         source = event.source
         sessionID = resolvedSessionID
         eventType = event.eventType
-        sessionTitle = Self.sessionTitle(for: state)
         statusText = Self.displayStatus(for: event.eventType)
-        actionLabel = Self.actionLabel(for: event.eventType)
+        let proposedTitle = Self.sessionTitle(for: state)
+        sessionTitle = Self.normalizedText(proposedTitle) == Self.normalizedText(statusText)
+            ? Self.genericSessionTitle(for: state)
+            : proposedTitle
         navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
-        messageText = Self.displayMessage(for: state)
+        messageText = Self.nonredundantMessage(
+            Self.displayMessage(for: state),
+            title: sessionTitle,
+            status: statusText,
+            eventType: event.eventType
+        )
     }
 
     init(event: AgentEvent) {
@@ -1570,18 +1646,26 @@ struct OverlaySessionContent: Equatable, Identifiable {
         eventType = event.eventType
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
         statusText = Self.displayStatus(for: event.eventType)
-        actionLabel = Self.actionLabel(for: event.eventType)
         navigation = event.sessionNavigation
-        messageText = Self.fallbackDetail(for: event.eventType)
+        messageText = Self.nonredundantMessage(
+            Self.fallbackDetail(for: event.eventType),
+            title: sessionTitle,
+            status: statusText,
+            eventType: event.eventType
+        )
     }
 
     static func stableID(
         source: AgentSource,
         sessionID: String?,
+        anonymousSessionAlias: String? = nil,
         fallbackEventID _: String
     ) -> String {
         let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let sessionID, !sessionID.isEmpty else {
+            if let anonymousSessionAlias = validatedAnonymousAlias(anonymousSessionAlias) {
+                return "session-\(source.rawValue)-\(anonymousSessionAlias)"
+            }
             // PetCore groups unattributed events into one source-scoped session.
             // Match that identity here so hook revisions update the existing row
             // instead of removing/reinserting it and clearing manual dismissal.
@@ -1594,6 +1678,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         let stableID = stableID(
             source: state.source,
             sessionID: state.sessionID ?? state.event.sessionID,
+            anonymousSessionAlias: state.anonymousSessionAlias,
             fallbackEventID: state.event.id
         )
         switch state.event.eventType {
@@ -1613,7 +1698,50 @@ struct OverlaySessionContent: Equatable, Identifiable {
         {
             return title
         }
+        return genericSessionTitle(for: state)
+    }
+
+    private static func genericSessionTitle(for state: ActiveAgentState) -> String {
+        if let label = anonymousAliasLabel(state.anonymousSessionAlias) {
+            return APCLocalization.format(
+                .overlaySessionAliasTitleFormat,
+                state.source.shortTitle,
+                label
+            )
+        }
         return APCLocalization.format(.overlaySessionTitleFormat, state.source.shortTitle)
+    }
+
+    static func anonymousAliasLabel(_ value: String?) -> String? {
+        guard let value = validatedAnonymousAlias(value),
+              value.hasPrefix("anon-"),
+              let sequence = UInt64(value.dropFirst(5), radix: 36),
+              sequence > 0
+        else {
+            return nil
+        }
+
+        var index = sequence
+        var characters: [Character] = []
+        while index > 0 {
+            index -= 1
+            let scalar = UnicodeScalar(65 + Int(index % 26))!
+            characters.append(Character(scalar))
+            index /= 26
+        }
+        return String(characters.reversed())
+    }
+
+    private static func validatedAnonymousAlias(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.range(
+                  of: "^anon-[0-9a-z]{1,13}$",
+                  options: .regularExpression
+              ) != nil
+        else {
+            return nil
+        }
+        return value
     }
 
     static func displayMessage(
@@ -1644,6 +1772,31 @@ struct OverlaySessionContent: Equatable, Identifiable {
     private static func compactMessage(_ value: String?) -> String? {
         let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    private static func normalizedText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .replacingOccurrences(
+                of: "[\\s\\p{P}]+",
+                with: "",
+                options: .regularExpression
+            )
+    }
+
+    private static func nonredundantMessage(
+        _ proposed: String,
+        title: String,
+        status: String,
+        eventType: AgentEventKind
+    ) -> String {
+        let occupied = Set([title, status].map(normalizedText))
+        if !occupied.contains(normalizedText(proposed)) {
+            return proposed
+        }
+        let fallback = fallbackDetail(for: eventType)
+        return occupied.contains(normalizedText(fallback)) ? "" : fallback
     }
 
     private static func fallbackSummaryKind(
@@ -1682,14 +1835,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     static func displayStatus(for eventType: AgentEventKind) -> String {
-        switch eventType {
-        case .start: APCLocalization.text(.overlayStatusRunning)
-        case .tool: APCLocalization.text(.overlayStatusTool)
-        case .waiting: APCLocalization.text(.overlayStatusNeedsInput)
-        case .review: APCLocalization.text(.overlayStatusReview)
-        case .done: APCLocalization.text(.overlayStatusDone)
-        case .failed: APCLocalization.text(.overlayStatusBlocked)
-        }
+        APCLocalizedPresentation.lifecycleTitle(
+            ProductLifecycleState(eventKind: eventType)
+        )
     }
 
     private static func fallbackDetail(for eventType: AgentEventKind) -> String {
@@ -1700,10 +1848,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
         case .done: APCLocalization.text(.overlayDetailCompleted)
         case .failed: APCLocalization.text(.overlayDetailBlocked)
         }
-    }
-
-    private static func actionLabel(for eventType: AgentEventKind) -> String {
-        APCLocalization.text(.overlayActionOpen)
     }
 }
 
@@ -1727,11 +1871,7 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     }
     var sessionCount: Int { sessions.count }
     var representedSessionCount: Int {
-        // Idle is a visual placeholder, not an Agent session. Keeping it out
-        // of the count prevents the session toggle from appearing when no
-        // real session content exists.
-        if id == "idle" { return 0 }
-        return omittedSessionCount > 0 ? omittedSessionCount : sessionCount
+        omittedSessionCount > 0 ? omittedSessionCount : sessionCount
     }
     var isOmittedSummary: Bool { omittedSessionCount > 0 }
     var canDismiss: Bool { !isOmittedSummary }
@@ -1744,11 +1884,13 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         OverlaySessionGroupTone.aggregate(sessions)
     }
 
-    static let idle = OverlayBubbleContent(
-        id: "idle",
+    /// Geometry-only fixture; idle product state intentionally emits no
+    /// bubble from AppStore.
+    static let measurementPlaceholder = OverlayBubbleContent(
+        id: "measurement-placeholder",
         source: nil,
-        agentName: "Agent",
-        sessions: [.idle],
+        agentName: "Agent Pet Companion",
+        sessions: [.measurementPlaceholder],
         isExpanded: true,
         omittedSessionCount: 0
     )
@@ -1801,7 +1943,7 @@ struct OverlayBubbleContent: Equatable, Identifiable {
 
     init(event: AgentEvent?) {
         guard let event else {
-            self = .idle
+            self = .measurementPlaceholder
             return
         }
         id = "agent-\(event.source.rawValue)"
@@ -1830,15 +1972,23 @@ struct OverlayBubbleContent: Equatable, Identifiable {
 }
 
 struct OverlayBubbleAccessibilityModel: Equatable {
-    var sessionActionLabels: [String]
+    var sessionActionLabels: [String?]
     var sessionCloseActionLabels: [String?]
     var closeActionLabel: String?
     var closeActionHint: String?
     var groupActionLabel: String?
 
     init(content: OverlayBubbleContent, locale: String? = nil) {
-        sessionActionLabels = content.visibleSessions.map { _ in
-            Self.text(.overlayActionOpen, locale: locale)
+        sessionActionLabels = content.visibleSessions.map { session in
+            guard session.canOpen else { return nil }
+            guard let source = session.source else {
+                return Self.text(.overlayActionOpen, locale: locale)
+            }
+            return APCLocalizedPresentation.navigationActionTitle(
+                session.navigationCapability,
+                source: source,
+                locale: locale ?? APCLocalization.interfaceLocaleIdentifier
+            )
         }
         sessionCloseActionLabels = content.visibleSessions.map { _ in
             content.canDismiss

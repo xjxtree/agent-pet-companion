@@ -2,6 +2,7 @@ use petcore::paths::AppPaths;
 use petcore::rpc::{handle_json_line, handle_request, CoreState, RpcRequest};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Barrier};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
@@ -1260,6 +1261,10 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
         "warp://session/0123456789abcdef0123456789abcdef"
     );
     assert_eq!(
+        tool["overlay_display"]["navigation"]["capability"],
+        "exact_session"
+    );
+    assert_eq!(
         tool["overlay_display"]["navigation"]["routable_session_id"],
         Value::Null
     );
@@ -1316,11 +1321,118 @@ fn overlay_projection_exposes_only_a_strict_codex_uuid_for_session_routing() {
         })
         .collect::<Vec<_>>();
     assert_eq!(routable, vec![codex_uuid]);
+    let capability_for = |source: &str, raw_session_id: &str| {
+        sessions
+            .iter()
+            .find(|session| {
+                session["source"] == source
+                    && session["session_id"] == projected_session_id(raw_session_id)
+            })
+            .unwrap()["overlay_display"]["navigation"]["capability"]
+            .as_str()
+            .unwrap()
+    };
+    assert_eq!(capability_for("codex", codex_uuid), "exact_session");
+    assert_eq!(
+        capability_for("codex", "019f5b0f_88ff_7413_8953_29de4ed0951c"),
+        "agent_host"
+    );
+    assert_eq!(capability_for("claude_code", codex_uuid), "unavailable");
     assert!(sessions.iter().all(|session| {
         session["session_id"]
             .as_str()
             .is_some_and(|id| id.starts_with("ses-"))
     }));
+}
+
+#[test]
+fn anonymous_session_aliases_survive_reordering_and_restart_without_exposing_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths.clone());
+    state.ensure_ready().unwrap();
+    let session_a = "raw-anonymous-session-a";
+    let session_b = "raw-anonymous-session-b";
+    for (id, session_id, seconds_ago) in [
+        ("anonymous-a-first", session_a, 3),
+        ("anonymous-b-first", session_b, 2),
+    ] {
+        ingest_source_payload(
+            &state,
+            "pi",
+            id,
+            session_id,
+            "start",
+            &timestamp(seconds_ago),
+            json!({
+                "source_event": "before_agent_start",
+                "session_active": true,
+                "diagnostic": false
+            }),
+        );
+    }
+
+    let aliases = |value: &Value| {
+        value["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| {
+                (
+                    session["session_id"].as_str().unwrap().to_string(),
+                    session["anonymous_session_alias"]
+                        .as_str()
+                        .expect("ambiguous anonymous session alias")
+                        .to_string(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let first = snapshot(&state);
+    let first_order = first["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["session_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    let first_aliases = aliases(&first);
+    assert_eq!(first_aliases.len(), 2);
+    assert_ne!(
+        first_aliases[&projected_session_id(session_a)],
+        first_aliases[&projected_session_id(session_b)]
+    );
+
+    ingest_source_payload(
+        &state,
+        "pi",
+        "anonymous-a-new-turn",
+        session_a,
+        "start",
+        &timestamp(1),
+        json!({
+            "source_event": "before_agent_start",
+            "session_active": true,
+            "diagnostic": false
+        }),
+    );
+    let reordered = snapshot(&state);
+    let reordered_order = reordered["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["session_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_ne!(reordered_order, first_order);
+    assert_eq!(aliases(&reordered), first_aliases);
+
+    drop(state);
+    let restarted = CoreState::new(paths);
+    restarted.ensure_ready().unwrap();
+    let reconstructed = snapshot(&restarted);
+    assert_eq!(aliases(&reconstructed), first_aliases);
+    let serialized = serde_json::to_string(&reconstructed).unwrap();
+    assert!(!serialized.contains(session_a));
+    assert!(!serialized.contains(session_b));
 }
 
 #[test]
@@ -2397,6 +2509,14 @@ fn latched_failure_keeps_status_but_merges_later_terminal_navigation() {
         assert_eq!(
             session["overlay_display"]["navigation"]["session_open"],
             expected_open
+        );
+        assert_eq!(
+            session["overlay_display"]["navigation"]["capability"],
+            if expected_open {
+                "agent_host"
+            } else {
+                "unavailable"
+            }
         );
         assert_eq!(session["overlay_display"]["summary_kind"], "failed");
     }

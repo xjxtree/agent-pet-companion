@@ -13,22 +13,31 @@ struct ControlCenterContentDensityTests {
 
         #expect(library.contains(".searchable("))
         #expect(library.contains("ToolbarItemGroup(placement: .secondaryAction)"))
-        #expect(!library.contains("libraryPageSubtitle"))
+        #expect(library.contains("ProductPageHeader("))
+        #expect(library.contains("summary: APCLocalization.text(.libraryPageSubtitle)"))
 
         #expect(maker.contains("ToolbarItemGroup(placement: .secondaryAction)"))
         #expect(!maker.contains("studioSubtitleIdle"))
         #expect(!maker.contains("studioWelcomeTitle"))
         #expect(!maker.contains("studioOutputContractTitle"))
 
-        #expect(connections.contains("ToolbarItemGroup(placement: .secondaryAction)"))
-        #expect(!connections.contains("connectionsPageSubtitle"))
+        #expect(!connections.contains("ToolbarItemGroup(placement: .secondaryAction)"))
+        #expect(connections.contains("ProductPageHeader("))
+        #expect(connections.contains("summary: APCLocalization.text(.connectionsPageSubtitle)"))
+        #expect(connections.contains("AgentHealthRow("))
+        #expect(connections.contains("AdvancedDetailsDisclosure("))
         #expect(!connections.contains("Text(APCLocalization.text(.connectionsListTitle))"))
-        #expect(connections.contains("case .allColumns, .sidebarAndContent: .split"))
+        #expect(!connections.contains("AgentConnectionsLayout"))
+        #expect(!connections.contains("ConnectionActionBar"))
         #expect(!connections.contains("ConnectionEnvironmentInspector"))
         #expect(!connections.contains("connections.inspector"))
 
-        #expect(diagnostics.contains("ToolbarItem(placement: .secondaryAction)"))
+        #expect(!diagnostics.contains("ToolbarItem(placement: .secondaryAction)"))
         #expect(!diagnostics.contains("Text(APCLocalization.text(.diagnosticsPageTitle))"))
+        #expect(diagnostics.contains("PrimaryExperienceCard("))
+        #expect(diagnostics.contains("AdvancedDetailsDisclosure("))
+        #expect(diagnostics.contains("recentEventSummary: nil"))
+        #expect(!diagnostics.contains("store.recentEvents"))
         #expect(occurrences(
             of: "Text(APCLocalization.text(.diagnosticsLogDownload))",
             in: diagnostics
@@ -44,25 +53,23 @@ struct ControlCenterContentDensityTests {
         let configuration = try viewSource("BehaviorSettingsView.swift")
         let connections = try viewSource("AgentConnectionsView.swift")
         let diagnostics = try viewSource("ServiceDiagnosticsView.swift")
-        let inspectorStart = try #require(library.range(
-            of: "private struct PetLibraryInspector"
+        let heroStart = try #require(library.range(
+            of: "private struct PetLibraryHero"
         ))
-        let inspectorEnd = try #require(library.range(
-            of: "struct PetCoverImage",
-            range: inspectorStart.upperBound ..< library.endIndex
+        let heroEnd = try #require(library.range(
+            of: "struct PetCard",
+            range: heroStart.upperBound ..< library.endIndex
         ))
-        let libraryInspector = String(
-            library[inspectorStart.lowerBound ..< inspectorEnd.lowerBound]
+        let libraryHero = String(
+            library[heroStart.lowerBound ..< heroEnd.lowerBound]
         )
 
-        #expect(!libraryInspector.contains("Text(APCLocalization.text(.libraryInspectorTitle))"))
-        #expect(!libraryInspector.contains("pet-library.inspector.history-summary"))
-        #expect(!libraryInspector.contains("InfoRow(title: APCLocalization.text(.libraryFieldPackageVersion)"))
-        #expect(!libraryInspector.contains("InfoRow(title: APCLocalization.text(.libraryFieldStates)"))
-        #expect(!libraryInspector.contains("InfoRow(title: APCLocalization.text(.libraryFieldFPS)"))
-        #expect(!libraryInspector.contains("libraryFieldCurrentState"))
-        #expect(!libraryInspector.contains("libraryFieldSource"))
-        #expect(libraryInspector.contains("DisclosureGroup"))
+        #expect(libraryHero.contains("PrimaryExperienceCard("))
+        #expect(libraryHero.contains("PetPreviewStage("))
+        #expect(libraryHero.contains("AdvancedDetailsDisclosure("))
+        #expect(libraryHero.contains("presentation.technicalInformation"))
+        #expect(!libraryHero.contains("pet-library.inspector.history-summary"))
+        #expect(!libraryHero.contains("libraryFieldCurrentState"))
 
         #expect(occurrences(of: "SubmittedFormSummary(form: form)", in: maker) == 1)
         #expect(!maker.contains("Text(APCLocalization.text(.studioDescriptionRequired))"))

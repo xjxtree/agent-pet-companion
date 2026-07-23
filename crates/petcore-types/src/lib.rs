@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v1";
+pub const ONBOARDING_PROGRESS_SCHEMA_VERSION: &str = "apc.onboarding-progress.v1";
 pub const STANDARD_FPS: u32 = 10;
 pub const SMOOTH_FPS: u32 = 20;
 pub const DEFAULT_NATIVE_FPS: u32 = STANDARD_FPS;
@@ -396,6 +397,56 @@ impl Default for BehaviorSettings {
             fps_profile: FpsProfileName::Standard,
             sources,
             events,
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OnboardingStage {
+    #[default]
+    ChoosePet,
+    ConnectAgents,
+    Demo,
+    Completed,
+    Skipped,
+}
+
+impl OnboardingStage {
+    pub fn can_advance_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::ChoosePet, Self::ConnectAgents | Self::Skipped)
+                | (Self::ConnectAgents, Self::Demo | Self::Skipped)
+                | (Self::Demo, Self::Completed | Self::Skipped)
+        )
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Skipped)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnboardingProgress {
+    pub schema_version: String,
+    pub stage: OnboardingStage,
+}
+
+impl OnboardingProgress {
+    pub fn is_supported(&self) -> bool {
+        self.schema_version == ONBOARDING_PROGRESS_SCHEMA_VERSION
+    }
+}
+
+impl Default for OnboardingProgress {
+    fn default() -> Self {
+        Self {
+            schema_version: ONBOARDING_PROGRESS_SCHEMA_VERSION.to_string(),
+            stage: OnboardingStage::ChoosePet,
         }
     }
 }
@@ -800,6 +851,21 @@ mod tests {
         for frame_count in [0, 69, 71, 150, 168, 281] {
             assert!(!is_valid_total_frame_count(frame_count));
         }
+    }
+
+    #[test]
+    fn onboarding_progress_is_versioned_and_has_only_forward_terminal_transitions() {
+        let progress = OnboardingProgress::default();
+        assert_eq!(progress.schema_version, ONBOARDING_PROGRESS_SCHEMA_VERSION);
+        assert_eq!(progress.stage, OnboardingStage::ChoosePet);
+        assert!(OnboardingStage::ChoosePet.can_advance_to(OnboardingStage::ConnectAgents));
+        assert!(OnboardingStage::ConnectAgents.can_advance_to(OnboardingStage::Demo));
+        assert!(OnboardingStage::Demo.can_advance_to(OnboardingStage::Completed));
+        assert!(OnboardingStage::Demo.can_advance_to(OnboardingStage::Skipped));
+        assert!(!OnboardingStage::Demo.can_advance_to(OnboardingStage::ChoosePet));
+        assert!(!OnboardingStage::Completed.can_advance_to(OnboardingStage::Demo));
+        assert!(OnboardingStage::Completed.is_terminal());
+        assert!(OnboardingStage::Skipped.is_terminal());
     }
 
     #[test]

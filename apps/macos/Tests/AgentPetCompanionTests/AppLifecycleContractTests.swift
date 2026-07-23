@@ -111,7 +111,12 @@ struct AppLifecycleContractTests {
         ))
         #expect(!LifecycleSource.matches(#"WindowGroup\s*\("#, in: appSource))
         #expect(appSource.contains(".defaultSize(width: 1120, height: 720)"))
-        #expect(appSource.contains(".frame(minWidth: 760, minHeight: 520)"))
+        #expect(appSource.contains(
+            "minWidth: ControlCenterShellPolicy.supportedMinimumWindowWidth"
+        ))
+        #expect(appSource.contains(
+            "minHeight: ControlCenterShellPolicy.supportedMinimumWindowHeight"
+        ))
         #expect(appSource.contains(".windowToolbarStyle(.unified)"))
         #expect(LifecycleSource.matches(
             #"applicationShouldHandleReopen[\s\S]*?activatePrimaryInstance\(\)[\s\S]*?return false"#,
@@ -178,6 +183,13 @@ struct AppLifecycleContractTests {
         #expect(contentSource.contains("Text(APCLocalization.text(.appName))"))
         #expect(contentSource.contains(".sharedBackgroundVisibility(.hidden)"))
         #expect(contentSource.contains(".accessibilityIdentifier(\"toolbar.brand\")"))
+        #expect(contentSource.contains(".accessibilityIdentifier(\"toolbar.toggle-pet\")"))
+        #expect(contentSource.contains("if let serviceAttention"))
+        #expect(!contentSource.contains("toolbar.service-status"))
+        #expect(!contentSource.contains("toolbar.more"))
+        #expect(!contentSource.contains(
+            "Button(APCLocalization.text(.navigationConnections))"
+        ))
         #expect(!contentSource.contains(".navigationTitle(store.selection.localizedTitle)"))
         #expect(!contentSource.contains("ControlCenterWindowTitleUpdater"))
         #expect(!shellSource.contains("window?.title = title"))

@@ -52,6 +52,44 @@ struct ControlOverlayPanelTests {
         #expect(!panel.canBecomeMain)
     }
 
+    @Test
+    func bubblePanelRestoresPassiveFocusStateWhenKeyboardNavigationEnds() {
+        let panel = BubbleOverlayPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        var focusTransitions: [Bool] = []
+        panel.onKeyboardNavigationChanged = {
+            focusTransitions.append($0)
+        }
+
+        panel.becomeKey()
+        panel.resignKey()
+
+        #expect(focusTransitions == [true, false])
+    }
+
+    @Test
+    func overlayGroupsAndSessionsExposeStableAXIdentifiersAndActions() throws {
+        let source = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/OverlayRootView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(
+            #".accessibilityIdentifier("overlay.group.\(content.id)")"#
+        ))
+        #expect(source.contains(
+            #".accessibilityIdentifier("overlay.session.\(session.id)")"#
+        ))
+        #expect(source.contains("SessionBubbleAccessibilityActions("))
+        #expect(source.contains("ConversationBubbleAccessibilityActions("))
+    }
+
     private func makePanel() -> ControlOverlayPanel {
         let frame = NSRect(origin: .zero, size: OverlayGeometry.menuHitSize)
         let panel = ControlOverlayPanel(
@@ -76,5 +114,13 @@ struct ControlOverlayPanelTests {
             clickCount: 1,
             pressure: 1
         ))
+    }
+
+    private var sourceDirectory: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AgentPetCompanion", isDirectory: true)
     }
 }

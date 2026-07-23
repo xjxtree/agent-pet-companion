@@ -32,6 +32,32 @@ struct PetLibraryTests {
     }
 
     @Test
+    func twoBundledPetsRemainScannableWithoutSearchAndPreferTheActivePet() {
+        var first = makeBundledPet()
+        first.active = false
+        var second = makeBundledPet()
+        second.id = "pet_bytebudcodex"
+        second.name = "Bytebud 字节芽"
+        second.active = true
+        let pets = [first, second]
+
+        #expect(pets.allSatisfy { $0.isBundled })
+        #expect(!PetLibraryDensityPolicy.showsSearch(petCount: pets.count))
+        #expect(!PetLibraryDensityPolicy.showsSearch(
+            petCount: PetLibraryDensityPolicy.searchThreshold - 1
+        ))
+        #expect(PetLibraryDensityPolicy.showsSearch(
+            petCount: PetLibraryDensityPolicy.searchThreshold
+        ))
+        #expect(PetLibrarySelectionPolicy.reconciledSelection(
+            currentID: nil,
+            pets: pets,
+            preferredID: second.id,
+            allowsDefaultSelection: true
+        ) == second.id)
+    }
+
+    @Test
     func presentationExposesCapabilitiesAndImmutableRevisionContract() {
         let bundled = PetLibraryPresentation(
             pet: makeBundledPet(),
@@ -54,6 +80,15 @@ struct PetLibraryTests {
             bundled.durationSummary
                 == "1 秒：start · done   2 秒：idle · tool · waiting · review · failed"
         )
+        #expect(bundled.heroSummary == "半写实 · App 内置")
+        #expect(bundled.provenanceSummary.contains("verified_skill_source"))
+        #expect(bundled.provenanceSummary.contains("apc.bundled-pets.v1"))
+        #expect(bundled.frameCountSummary.contains("idle：40 帧"))
+        #expect(bundled.frameCountSummary.contains("start：20 帧"))
+        #expect(Set(bundled.technicalInformation.map(\.field))
+            == Set(PetLibraryTechnicalItem.Field.allCases))
+        #expect(bundled.technicalInformation.first?.field == .stableID)
+        #expect(bundled.technicalInformation.last?.field == .validation)
 
         let imported = PetLibraryPresentation(
             pet: makePet(
@@ -149,7 +184,7 @@ struct PetLibraryTests {
     }
 
     @Test
-    func cardAccessibilityLabelsKeepMeaningAndDisambiguateStableManifestIDs() {
+    func sameNameCardsUseStableContentFreeVariantsWithoutSpeakingManifestIDs() {
         let firstPet = makePet(
             id: "pet_same_name_alpha",
             name: "Same Name",
@@ -162,89 +197,73 @@ struct PetLibraryTests {
         )
 
         for localeIdentifier in ["en", "zh-Hans"] {
-            let firstSource = PetLibraryPresentation(
+            let firstPresentation = PetLibraryPresentation(
                 pet: firstPet,
                 assetWarning: nil,
                 localeIdentifier: localeIdentifier
-            ).sourceTitle
-            let secondSource = PetLibraryPresentation(
+            )
+            let secondPresentation = PetLibraryPresentation(
                 pet: secondPet,
                 assetWarning: nil,
                 localeIdentifier: localeIdentifier
-            ).sourceTitle
-            #expect(firstSource == secondSource)
+            )
+            #expect(firstPresentation.sourceTitle == secondPresentation.sourceTitle)
+            #expect(PetLibraryCardIdentityPolicy.variantOrdinal(
+                for: firstPet,
+                in: [secondPet, firstPet]
+            ) == 1)
+            #expect(PetLibraryCardIdentityPolicy.variantOrdinal(
+                for: secondPet,
+                in: [firstPet, secondPet]
+            ) == 2)
 
             let first = PetCardAccessibilityPresentation(
                 name: firstPet.name,
-                sourceTitle: firstSource,
-                stableID: firstPet.id,
-                isActive: false,
+                styleTitle: firstPresentation.styleTitle,
+                sourceTitle: firstPresentation.sourceTitle,
+                variantOrdinal: 1,
                 localeIdentifier: localeIdentifier
             )
             let second = PetCardAccessibilityPresentation(
                 name: secondPet.name,
-                sourceTitle: secondSource,
-                stableID: secondPet.id,
-                isActive: false,
+                styleTitle: secondPresentation.styleTitle,
+                sourceTitle: secondPresentation.sourceTitle,
+                variantOrdinal: 2,
                 localeIdentifier: localeIdentifier
             )
 
             #expect(first.label != second.label)
             #expect(first.label.contains(firstPet.name))
-            #expect(first.label.contains(firstSource))
-            #expect(first.label.contains(firstPet.id))
+            #expect(first.label.contains(firstPresentation.sourceTitle))
+            #expect(first.label.contains(firstPresentation.styleTitle))
+            #expect(!first.label.contains(firstPet.id))
             #expect(!first.label.contains(secondPet.id))
             #expect(second.label.contains(secondPet.name))
-            #expect(second.label.contains(secondSource))
-            #expect(second.label.contains(secondPet.id))
+            #expect(second.label.contains(secondPresentation.sourceTitle))
+            #expect(!second.label.contains(secondPet.id))
             #expect(!second.label.contains(firstPet.id))
         }
 
         let english = PetCardAccessibilityPresentation(
             name: firstPet.name,
+            styleTitle: "Semi-realistic",
             sourceTitle: "Imported",
-            stableID: firstPet.id,
-            isActive: false,
+            variantOrdinal: nil,
             localeIdentifier: "en"
         )
         let chinese = PetCardAccessibilityPresentation(
             name: firstPet.name,
+            styleTitle: "半写实",
             sourceTitle: "外部导入",
-            stableID: firstPet.id,
-            isActive: false,
+            variantOrdinal: nil,
             localeIdentifier: "zh-Hans"
         )
         #expect(english.label.hasPrefix("Select pet "))
-        #expect(english.label.contains("Stable pet ID: \(firstPet.id)"))
+        #expect(english.label.contains("Style Semi-realistic"))
+        #expect(!english.label.contains(firstPet.id))
         #expect(chinese.label.hasPrefix("选择宠物 "))
-        #expect(chinese.label.contains("稳定宠物 ID：\(firstPet.id)"))
-    }
-
-    @Test
-    func cardAccessibilityOnlyOffersActivationForInactivePets() {
-        for localeIdentifier in ["en", "zh-Hans"] {
-            let inactive = PetCardAccessibilityPresentation(
-                name: "Same Name",
-                sourceTitle: "Imported",
-                stableID: "pet_same_name_alpha",
-                isActive: false,
-                localeIdentifier: localeIdentifier
-            )
-            let active = PetCardAccessibilityPresentation(
-                name: "Same Name",
-                sourceTitle: "Imported",
-                stableID: "pet_same_name_alpha",
-                isActive: true,
-                localeIdentifier: localeIdentifier
-            )
-
-            #expect(inactive.activateActionName == APCLocalization.text(
-                .libraryActivateAccessibility,
-                locale: localeIdentifier
-            ))
-            #expect(active.activateActionName == nil)
-            #expect(active.label == inactive.label)
-        }
+        #expect(chinese.label.contains("风格：半写实"))
+        #expect(!chinese.label.contains(firstPet.id))
     }
 
     @MainActor
@@ -343,6 +362,41 @@ struct PetLibraryTests {
 
         #expect(presentation.validationStatus == .invalid)
         #expect(presentation.validationSummary.contains("idle frame is corrupt"))
+        #expect(!PetLibraryPreviewPolicy.canOpenAssets(assetWarning: warning))
+        #expect(!PetLibraryPreviewPolicy.canRender(assetWarning: warning))
+
+        var loadCount = 0
+        let blocked: String? = PetLibraryPreviewPolicy.loadIfValidated(
+            assetWarning: warning
+        ) {
+            loadCount += 1
+            return "must-not-open"
+        }
+        #expect(blocked == nil)
+        #expect(loadCount == 0)
+
+        let loaded: String? = PetLibraryPreviewPolicy.loadIfValidated(
+            assetWarning: nil
+        ) {
+            loadCount += 1
+            return "validated"
+        }
+        #expect(loaded == "validated")
+        #expect(loadCount == 1)
+    }
+
+    @Test
+    func motionPreviewUsesTheAuthoredNativeRateWithoutRetiming() {
+        var standard = makePet(id: "pet_standard", name: "Standard", origin: .externalImport)
+        standard.nativeFPS = 10
+        var smooth = standard
+        smooth.id = "pet_smooth"
+        smooth.nativeFPS = 20
+
+        #expect(PetLibraryPreviewPolicy.playbackProfile(for: standard) == .standard)
+        #expect(PetLibraryPreviewPolicy.playbackProfile(for: smooth) == .smooth)
+        #expect(PetLibraryPreviewPolicy.canRender(assetWarning: nil))
+        #expect(standard.durationMS(for: "idle") == smooth.durationMS(for: "idle"))
     }
 
     @Test
@@ -394,6 +448,11 @@ struct PetLibraryTests {
             query: "Imported",
             localeIdentifier: "en"
         ).map(\.id) == ["pet_same_external"])
+        #expect(PetLibraryPresentation.filtered(
+            pets,
+            query: "Semi-realistic",
+            localeIdentifier: "en"
+        ).map(\.id) == pets.map(\.id))
         #expect(PetLibraryPresentation.filtered(
             pets,
             query: "Created in App",
@@ -458,33 +517,37 @@ struct PetLibraryTests {
     }
 
     @Test
-    func sourceContractKeepsCardsActionFreeAndUsesNativeInspectorSurfaces() throws {
+    func sourceContractCentersTheMotionHeroAndKeepsCardsSelectionOnly() throws {
         let source = try String(contentsOf: petLibraryViewURL, encoding: .utf8)
         let animationSource = try String(contentsOf: animationPreviewURL, encoding: .utf8)
         let appStoreSource = try String(contentsOf: appStoreURL, encoding: .utf8)
 
-        #expect(!source.contains("PageActionHeader("))
+        #expect(source.contains("ProductPageHeader("))
+        #expect(source.contains("PrimaryExperienceCard("))
+        #expect(source.contains("PetPreviewStage("))
+        #expect(source.contains("AdvancedDetailsDisclosure("))
+        #expect(source.contains("private struct PetLibraryHero"))
+        #expect(source.contains("minimumHeight: 280"))
+        #expect(source.contains("minHeight: 280, maxHeight: 360"))
         #expect(source.contains(".searchable("))
+        #expect(source.contains("if showsSearch {"))
         #expect(source.contains("ToolbarItemGroup(placement: .secondaryAction)"))
-        #expect(source.contains("pet-library.search"))
         #expect(source.contains("pet-library.import"))
         #expect(source.contains("pet-library.make"))
         #expect(source.contains("pet-library.notice.retry"))
         #expect(source.contains("onRetry: { store.importPetpacks() }"))
         #expect(source.contains(".disabled(retrying)"))
         #expect(source.contains("LazyVGrid("))
-        #expect(source.contains(".inspector(isPresented:"))
-        #expect(source.contains("private var responsiveLibrarySurface"))
-        #expect(source.contains("HStack(spacing: 0)"))
-        #expect(source.contains(".frame(width: Self.wideInspectorWidth)"))
-        #expect(source.contains("TapGesture(count: 2)"))
-        #expect(source.contains(".onKeyPress(.return)"))
-        #expect(source.contains("pet-library.inspector.activate"))
-        #expect(source.contains("pet-library.inspector.customize-copy"))
-        #expect(source.contains("title: APCLocalization.text(.libraryFieldRevisionID)"))
-        #expect(source.contains("title: APCLocalization.text(.libraryFieldImmutableRevisions)"))
-        #expect(!source.contains("InfoRow(title: APCLocalization.text(.libraryFieldPackageVersion)"))
-        #expect(!source.contains("Text(APCLocalization.text(.libraryInspectorTitle))"))
+        #expect(!source.contains(".inspector(isPresented:"))
+        #expect(!source.contains("PetLibraryInspector"))
+        #expect(!source.contains("TapGesture(count: 2)"))
+        #expect(!source.contains("onActivate: { store.activatePet(pet) }"))
+        #expect(source.contains("pet-library.hero.customize-copy"))
+        #expect(source.contains("pet-library.hero.modify"))
+        #expect(source.contains("pet-library.hero.history"))
+        #expect(source.contains("pet-library.hero.export"))
+        #expect(source.contains("pet-library.hero.more"))
+        #expect(source.contains("presentation.technicalInformation"))
         #expect(source.contains("PetLibrarySourceBadge("))
         #expect(!source.contains("apcFloatingControlGlass"))
 
@@ -500,37 +563,29 @@ struct PetLibraryTests {
         #expect(importSource.contains("failures.append(.file(at: url))"))
 
         let cardStart = try #require(source.range(of: "struct PetCard: View"))
-        let inspectorStart = try #require(source.range(of: "private struct PetLibraryInspector"))
-        let cardSource = source[cardStart.lowerBound ..< inspectorStart.lowerBound]
+        let coverStart = try #require(source.range(
+            of: "struct PetCoverImage",
+            range: cardStart.upperBound ..< source.endIndex
+        ))
+        let cardSource = source[cardStart.lowerBound ..< coverStart.lowerBound]
         #expect(!cardSource.contains("AI 修改"))
         #expect(!cardSource.contains("删除"))
         #expect(!cardSource.contains("导出"))
         #expect(!cardSource.contains("管理"))
         #expect(!cardSource.contains("PetLibraryAnimationPreview"))
+        #expect(!cardSource.contains("onActivate"))
+        #expect(!cardSource.contains("accessibilityAction"))
+        #expect(cardSource.contains("assetWarning: PetAssetWarning?"))
+        #expect(cardSource.contains("assetWarning: assetWarning"))
 
-        let inspectorSource = source[inspectorStart.lowerBound...]
-        #expect(inspectorSource.contains("PetLibraryAnimationPreview(pet: pet)"))
-        #expect(inspectorSource.contains("pet-library.inspector.more"))
-        let deleteCapabilityStart = try #require(
-            inspectorSource.range(of: "if presentation.canDelete {")
-        )
-        let deleteActionIdentifier = try #require(
-            inspectorSource.range(
-                of: "pet-library.inspector.delete",
-                range: deleteCapabilityStart.upperBound ..< inspectorSource.endIndex
-            )
-        )
-        let deleteMenuPrefix = inspectorSource[
-            deleteCapabilityStart.lowerBound ..< deleteActionIdentifier.lowerBound
-        ]
-        let menuPosition = try #require(deleteMenuPrefix.range(of: "Menu {"))
-        let deleteButtonPosition = try #require(
-            deleteMenuPrefix.range(of: "APCLocalization.text(.libraryDeleteAction)")
-        )
-        #expect(menuPosition.lowerBound < deleteButtonPosition.lowerBound)
-        #expect(animationSource.contains("PetCoverImage(pet: pet"))
+        #expect(animationSource.contains("PetCoverImage("))
+        #expect(animationSource.contains("pet: pet"))
+        #expect(animationSource.contains("assetWarning: assetWarning"))
+        #expect(animationSource.contains("loadIfValidated"))
         #expect(animationSource.contains("PetMetalFrameRenderer()"))
         #expect(animationSource.contains("stateName: \"idle\""))
+        #expect(animationSource.contains("PetLibraryPreviewPolicy.playbackProfile(for: pet)"))
+        #expect(animationSource.contains("PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning)"))
         #expect(animationSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(animationSource.contains("reduceMotion: reduceMotion"))
         #expect(animationSource.contains("static func dismantleNSView"))

@@ -1,6 +1,6 @@
 # Runtime and IPC
 
-This document defines the current process lifecycle, compatibility contract, transport boundaries, and diagnostics behavior. Exact method and field allowlists remain in source. Product-level visibility and copy are governed by the [Product Experience Contract](../product/experience-contract.md); planned presentation changes do not alter the runtime contract until their ordered task is implemented.
+This document defines the current process lifecycle, compatibility contract, transport boundaries, and diagnostics behavior. Exact method and field allowlists remain in source. Product-level visibility and copy are governed by the [Product Experience Contract](../product/experience-contract.md).
 
 ## Process topology
 
@@ -15,7 +15,7 @@ The App uses `run/app-instance.lock`; a second instance sends an activation requ
 
 Closing the control-center window does not terminate the UI host because the menu-bar and overlay surfaces remain active. Reopen requests resolve the registered control-center window identifier, so an already-open About window cannot intercept them. Standard **Quit** terminates the App and overlay. The normal LaunchAgent-hosted PetCore remains available; a direct child fallback is tied to the App process.
 
-The runtime topology does not make PetCore health a permanent product headline. The current UI may render typed service status in the control center and toolbar; task `R06` removes the healthy toolbar indicator while preserving an actionable failure/recovery affordance, and task `R11` moves healthy technical detail behind disclosure. PetCore operational states and recovery authority remain unchanged.
+The runtime topology does not make PetCore health a permanent product headline. The toolbar is quiet while the service is healthy and exposes only typed attention or recovery states. Service & Diagnostics leads with one aggregate state and one contextual action; PetCore, RPC, event-channel, renderer, retention, and archive details remain available behind disclosure. Presentation never changes PetCore operational states or recovery authority.
 
 ## Startup and runtime replacement
 
@@ -32,7 +32,9 @@ flowchart TD
     Exact -->|"fail"| Rollback["Restore last-known-good runtime when compatible"]
     Commit --> Appearance["behavior.get and apply persisted appearance"]
     Appearance --> Seed["Seed bundled pets"]
-    Seed --> Snapshot["state.snapshot, then state.wait"]
+    Seed --> Snapshot["state.snapshot"]
+    Snapshot --> FirstRun["Resume first-run scene or show control center"]
+    FirstRun --> Wait["state.wait"]
 ```
 
 The packaged `runtime-manifest.json` uses `apc.runtime-manifest.v1` and binds:
@@ -46,11 +48,11 @@ The packaged `runtime-manifest.json` uses `apc.runtime-manifest.v1` and binds:
 
 The App accepts health only when the runtime protocol, build IDs, manifest, and service connector environment match. A database newer than the candidate supports is rejected before replacement. Candidate failure restores the last-known-good runtime when its manifest and database range remain compatible.
 
-At bootstrap, the App applies the persisted `behavior` projection before presenting its windows. An independent 500 ms fallback reveals system appearance if startup stalls. The first complete `state.snapshot` is the final authority for behavior, pets, placement, connections, and active sessions; the desktop overlay is not presented before that snapshot.
+At bootstrap, the App applies the persisted `behavior` projection before presenting its windows. An independent 500 ms fallback reveals system appearance if startup stalls. The first complete `state.snapshot` is the final authority for behavior, onboarding progress, pets, placement, connections, and active sessions; the desktop overlay is not presented before that snapshot. A nonterminal onboarding projection presents the three first-run scenes at the content root, outside the five-entry navigation. Explicit close is launch-local and resumes the same durable scene later; explicit skip is a terminal PetCore write.
 
 Initial startup, automatic retry, and explicit recovery coalesce onto one behavior → seed → snapshot → overlay pipeline so partial bootstrap work cannot race.
 
-The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. The current Service & Diagnostics page, toolbar, local RPC row, and event-channel row render this typed state, while desktop-pet rendering remains an independent App-side status. Presentation refactoring may quiet healthy state, but it must continue to consume these typed values and must never infer recovery from localized text.
+The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. Service & Diagnostics projects one aggregate state from these values, the toolbar appears only for attention or recovery, and the local RPC and event-channel rows stay in Technical Details. Desktop-pet rendering remains an independent App-side status. No presentation infers recovery authority from localized text.
 
 There is no periodic two-second disk or bundle updater. Bundle identity is re-evaluated only on lifecycle events such as activation, opening the control center, or a second-instance request. If a different valid bundle is explicitly opened, the current App can perform a normal handoff. This mechanism is not a background update service.
 
@@ -68,7 +70,7 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 |---|---|
 | Runtime | health, instance-bound shutdown |
 | Projection | snapshot, revision-based long-poll wait |
-| Configuration | behavior, overlay placement, client settings |
+| Configuration | behavior, versioned onboarding progress, overlay placement, client settings |
 | Events | normalized ingest, bounded recent events |
 | Pet library | list with validated native FPS, fixed state durations, and derived current revision metadata; bounded typed revision/job history; activate, delete, validate/import/seed/export `.petpack` |
 | Generation | create, edit from a validated current or older owned revision, retry, messages/wait/reply, cancel, latest private Maker-session recovery globally and by pet |
@@ -77,11 +79,17 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 
 `state_revision` is serialized as a decimal string. A client reads a consistent snapshot, then calls `state.wait(after_revision, timeout_ms)`. Timeouts are bounded long-polls and do not indicate a state change or a disk-version poll.
 
+`onboarding.get` returns the closed `apc.onboarding-progress.v1` progress object plus its decimal-string revision. `onboarding.update(expected_revision, progress)` performs a compare-and-swap and accepts only the ordered next scene or explicit skip. Swift decodes the schema, fields, stage, and revision as a closed contract; malformed or future values fail closed. The choose scene awaits the existing `pet.activate` path before advancing, and connection actions consume the same typed aggregate presentation and AppStore operations as Agent Connections. Agent detection may continue in the background and never blocks the local demo; connection mutations retain their typed capability and explicit-confirmation requirements. Completing onboarding is published only with the authoritative snapshot that shows the desktop pet enabled.
+
 `pet.history(pet_id, limit)` accepts 1–32 records (16 by default), revalidates bounded `.petpack` archives, and uses the 120-second package-operation deadline. It is a privacy-minimized library projection, separate from private Maker recovery: `generation.for_pet` returns the newest job for a result pet, while `generation.latest` also covers terminal create jobs without a result pet.
 
 Maker recovery returns only validated reference copies under the matching private job directory. Missing or unsafe staging becomes an empty reference list plus bounded `reference_reselection_count`; it does not expose the original selected paths. An edit-start receipt exposes the accepted baseline revision ID plus that baseline's native FPS and fixed state durations so the App can immediately reconcile a historical selection; recovery responses carry the same timing in the bounded form projection. Neither path exposes private context paths or instructions. The App resolves the revision ID through `pet.history` and does not substitute the current cover for an unavailable revision preview.
 
-Within `state.snapshot`, `events`, `recent_events`, `active_agent_state`, and `active_agent_sessions` are typed App projections rather than event-history records. Active rows deliberately include the bounded `session_title`, latest user `session_user_message`, and current-turn Agent `session_message` so desktop bubbles show the conversation context users need; these display fields are first-class local UI data. External title/detail aliases, arbitrary raw payloads, activity detail, and separate structured command/file fields are not copied into the projection. Stable domain-separated opaque IDs preserve UI grouping; allowlisted navigation preserves validated terminal URLs plus a canonical 36-character Codex UUID in the dedicated `routable_session_id`. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
+Within `state.snapshot`, `onboarding` is the versioned durable first-run projection. `events`, `recent_events`, `active_agent_state`, and `active_agent_sessions` are typed App projections rather than event-history records. Active rows deliberately include the bounded `session_title`, latest user `session_user_message`, and current-turn Agent `session_message` so desktop bubbles show the conversation context users need; these display fields are first-class local UI data. External title/detail aliases, arbitrary raw payloads, activity detail, and separate structured command/file fields are not copied into the projection. Stable domain-separated opaque IDs preserve UI grouping. Ambiguous same-Agent sessions may carry a PetCore-owned content-free `anonymous_session_alias`; it is stable across activity reordering and restart while the session is retained.
+
+The local onboarding demo is not an RPC or event source. Its thinking, working, needs-attention, and done phases live in a View-local reducer and select only pet animation assets. They cannot call Agent ingest or write event history, receipts, aliases, suppression, retention counts, or diagnostics.
+
+Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
 
 ### Capability-token loopback ingress
 
@@ -97,7 +105,7 @@ App and PetCore diagnostics use the `apc.diagnostic-log.v1` JSONL format. Each c
 
 The ZIP is allowlist-only. It contains a manifest, bounded environment summary, explanatory README, and sanitized/truncated logs. It excludes SQLite, pet assets, generation workspaces, connector configuration, runtime tokens, prompts, full messages, commands, tool input/output, credentials, raw identifiers, and user paths.
 
-Diagnostic export and service recovery remain independent even when the target UI reduces healthy detail. Collapsing PetCore/RPC/event/renderer rows is a presentation change only; it does not remove the typed status or reduce the support archive contract.
+Diagnostic export and service recovery remain independent. PetCore, RPC, event-channel, and renderer rows are collapsed by default; this presentation does not remove their typed status or reduce the support archive contract.
 
 Primary sources: [App diagnostics](../../apps/macos/Sources/AgentPetCompanion/App/Diagnostics.swift) and [PetCore diagnostics](../../crates/petcore/src/diagnostics.rs).
 

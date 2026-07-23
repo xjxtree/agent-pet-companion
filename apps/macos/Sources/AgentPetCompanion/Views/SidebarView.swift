@@ -6,29 +6,29 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $store.selection) {
-            ForEach(NavigationSection.allCases) { section in
+            ForEach(ControlCenterNavigationPresentation.items(selection: store.selection)) { item in
                 Label {
-                    Text(section.localizedTitle)
+                    Text(item.title)
                         .lineLimit(1)
                 } icon: {
-                    Image(systemName: section.systemImage)
+                    Image(systemName: item.systemImage)
                         .foregroundStyle(.secondary)
                         .frame(width: 16)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 5)
                 .contentShape(Rectangle())
-                .tag(section)
-                .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
+                .tag(item.section)
+                .accessibilityIdentifier("sidebar.navigation.\(item.section.rawValue)")
                 .accessibilityRepresentation {
-                    Button(section.localizedTitle) {
-                        store.selection = section
+                    Button(item.title) {
+                        store.selection = item.section
                     }
-                    .accessibilityIdentifier("sidebar.navigation.\(section.rawValue)")
+                    .accessibilityIdentifier("sidebar.navigation.\(item.section.rawValue)")
                     .accessibilityValue(
-                        UIControlSemantics.selectionValue(isSelected: section == store.selection)
+                        UIControlSemantics.selectionValue(isSelected: item.isSelected)
                     )
-                    .accessibilityAddTraits(section == store.selection ? .isSelected : [])
+                    .accessibilityAddTraits(item.isSelected ? .isSelected : [])
                 }
             }
         }
@@ -38,7 +38,6 @@ struct SidebarView: View {
                 .environmentObject(store)
         }
     }
-
 }
 
 private struct SidebarCurrentPetView: View {

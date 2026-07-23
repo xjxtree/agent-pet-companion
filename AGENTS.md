@@ -71,6 +71,7 @@ docs/
 ## Product Constraints
 
 - Main navigation has five entries in this order: Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, Service & Diagnostics.
+- First run is a resumable three-scene root presentation, not a sixth navigation entry. PetCore settings own only the versioned scene progress; pet choice and Agent actions reuse ordinary product operations, while demo phases remain View-local and never enter Agent events or diagnostics.
 - AI Pet Maker contains only new/edit briefs and their AI creation sessions. Pet Library and Service & Diagnostics remain separate top-level pages.
 - Agent Connections and desktop bubbles use `Agent → session` across all projects. Project directories and paths are not connection settings, display filters, or user-facing session identities.
 - Every projected session may show its bounded explicit title or latest user context plus its bounded current-turn Agent message. Anonymous-session fallback identity must be stable and content-free, never synthetic display-order numbering or project data.

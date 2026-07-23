@@ -28,7 +28,7 @@ When sources disagree, use this order:
 | Specifications | [`.petpack` V1](specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet package and producer contract / 可移植宠物包与生产者契约 |
 | Development | [Product refactor execution](development/product-refactor-execution.md) | Dependency-ordered implementation tasks and acceptance contracts, without schedule or status / 无排期、无状态的依赖顺序实施任务与验收合同 |
 | Development | [Validation profiles](development/validation.md) | What each gate proves and when it may run / 各门禁的证明范围与运行条件 |
-| Release | [macOS release procedure](release/macos-release.md) | Versioning, architecture-specific packaging, checksums, and functional acceptance / 版本、分架构打包、校验和与功能验收 |
+| Release | [macOS release procedure](release/macos-release.md) | Versioning, preview/public modes, Developer ID signing, notarization, stapling, native dual-architecture validation, checksums, and GitHub Release publication / 版本、预览与公开模式、Developer ID 签名、公证、staple、双原生架构验证、校验和与 GitHub Release 发布 |
 | Repository root | [CHANGELOG](../CHANGELOG.md) | One versioned user-visible change record per GitHub Release / 每个 GitHub Release 对应的版本变更记录 |
 
 ## Maintenance rules / 维护规则

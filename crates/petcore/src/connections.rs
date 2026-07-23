@@ -79,7 +79,7 @@ const MAX_MANAGED_CONNECTOR_SCRIPT_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 struct ProbeCwdAccess {
-    item: ConnectionCheckItem,
+    accessible: bool,
     resolved_cwd: Option<PathBuf>,
 }
 
@@ -585,23 +585,16 @@ fn check_source_with_runtime_smoke(
             .unwrap_or_else(|| check_probe_cwd_access(probe_cwd))
     } else {
         ProbeCwdAccess {
-            item: ConnectionCheckItem::new(
-                CheckCode::ProjectDirectory,
-                "检查目录访问",
-                CheckStatus::Unverified,
-                "完整检查会从 App/PetCore 责任链验证所选目录的真实访问权限",
-                Some(RecoveryAction::ChooseProjectDirectory),
-            ),
+            accessible: false,
             resolved_cwd: None,
         }
     };
-    let cwd_access_ok = cwd_access.item.status == CheckStatus::Ok;
+    let cwd_access_ok = cwd_access.accessible;
     let runtime_processes_allowed = run_runtime_smoke && cwd_access_ok;
     let runtime_probe_cwd = cwd_access
         .resolved_cwd
         .clone()
         .unwrap_or_else(|| probe_cwd.to_path_buf());
-    items.push(cwd_access.item.clone());
     items.push(check_agent_cli_version(
         source,
         agent_cli.as_deref(),
@@ -886,13 +879,7 @@ fn check_source_with_runtime_smoke(
 fn check_probe_cwd_access(probe_cwd: &Path) -> ProbeCwdAccess {
     if !probe_cwd.is_absolute() {
         return ProbeCwdAccess {
-            item: ConnectionCheckItem::new(
-                CheckCode::ProjectDirectory,
-                "检查目录访问",
-                CheckStatus::NeedsFix,
-                "检查目录必须是绝对路径；未启动任何 Agent 宿主探针，也不会改用其他目录",
-                Some(RecoveryAction::ChooseProjectDirectory),
-            ),
+            accessible: false,
             resolved_cwd: None,
         };
     }
@@ -915,37 +902,8 @@ fn check_probe_cwd_access(probe_cwd: &Path) -> ProbeCwdAccess {
             .then(|| physical_cwd_from_pwd_output(&output.stdout))
             .flatten()
     });
-    let status = if resolved.is_some() {
-        CheckStatus::Ok
-    } else {
-        CheckStatus::NeedsFix
-    };
-    let detail = if status == CheckStatus::Ok {
-        format!(
-            "PetCore 后台服务派生进程可解析检查目录：{}",
-            resolved.as_deref().unwrap_or(probe_cwd).display()
-        )
-    } else if result.as_ref().is_ok_and(|output| output.timed_out) {
-        format!(
-            "PetCore 后台服务派生进程在 {} 秒内无法解析检查目录；若目录位于“桌面/文稿/下载”，请在“系统设置 → 隐私与安全性 → 文件与文件夹”中允许 AgentPetCompanion（以及系统单列时的后台 helper）访问对应文件夹，或选择已授权目录；改选目录不会代表原项目已验证",
-            PROBE_CWD_ACCESS_TIMEOUT.as_secs()
-        )
-    } else if let Ok(output) = result.as_ref() {
-        format!(
-            "PetCore 后台服务派生进程无法进入或精确解析检查目录（exit={:?}）；请检查目录权限，或在 macOS 文件与文件夹隐私设置中授权 AgentPetCompanion/系统单列的后台 helper",
-            output.status.code()
-        )
-    } else {
-        "无法启动检查目录访问预检；请确认 /bin/pwd 可执行并检查 macOS 文件与文件夹权限".to_string()
-    };
     ProbeCwdAccess {
-        item: ConnectionCheckItem::new(
-            CheckCode::ProjectDirectory,
-            "检查目录访问",
-            status,
-            detail,
-            Some(RecoveryAction::ChooseProjectDirectory),
-        ),
+        accessible: resolved.is_some(),
         resolved_cwd: resolved,
     }
 }
@@ -971,7 +929,7 @@ fn skipped_native_host_check(
         code,
         name,
         CheckStatus::Unverified,
-        "检查目录访问未通过，因此未启动 Agent 宿主；不会改用其他目录冒充当前项目已验证",
+        "宿主进程工作目录预检未通过，因此未启动 Agent 宿主",
         Some(recovery_action),
     )
 }
@@ -985,7 +943,7 @@ fn skipped_external_process_check(
         code,
         name,
         CheckStatus::Unverified,
-        "检查目录访问未通过，因此未启动任何 Agent CLI、App Server 或事件 CLI 子进程；不会改用 HOME 或其他目录冒充当前项目已验证",
+        "宿主进程工作目录预检未通过，因此未启动任何 Agent CLI、App Server 或事件 CLI 子进程",
         Some(recovery_action),
     )
 }
@@ -1390,10 +1348,13 @@ pub(crate) fn project_connection_evidence(
         .filter(|path| path.is_absolute())
         .unwrap_or_else(user_home);
     let mut projected = status.clone();
+    projected
+        .items
+        .retain(|item| item.code != CheckCode::ProjectDirectory);
     projected.verification = verification_for_source_with_freshness(
         paths,
         status.source,
-        &status.items,
+        &projected.items,
         status.check_mode == ConnectionCheckMode::Runtime,
         &probe_cwd,
         &freshness,
@@ -1423,10 +1384,12 @@ fn verification_requires_item(source: AgentSource, item: &ConnectionCheckItem) -
     match item.code {
         CheckCode::AgentCli
         | CheckCode::EventCli
-        | CheckCode::ProjectDirectory
         | CheckCode::AgentVersion
         | CheckCode::EventDelivery
         | CheckCode::ChannelTest => true,
+        // Decode-only compatibility: current checks never emit this legacy
+        // product-inappropriate project-scoped row.
+        CheckCode::ProjectDirectory => false,
         CheckCode::ManagedConnector | CheckCode::ClaudeHooksPolicy => true,
         CheckCode::HostRuntime => matches!(source, AgentSource::Pi | AgentSource::Opencode),
         CheckCode::HostVerification => {
@@ -3701,7 +3664,7 @@ fn check_opencode_plugin_runtime(
             "OpenCode 宿主报告了 Plugin 路径，但未收到 connector.probe；请重启 OpenCode".to_string()
         } else if output.as_ref().is_ok_and(|output| output.timed_out) {
             format!(
-                "OpenCode 宿主在 {} 秒内未完成 Plugin 发现；请先确认“检查目录访问”，再重试",
+                "OpenCode 宿主在 {} 秒内未完成 Plugin 发现；请修复宿主进程启动条件后重试",
                 OPENCODE_NATIVE_PROBE_TIMEOUT.as_secs()
             )
         } else if let Ok(output) = output.as_ref() {
@@ -4453,7 +4416,7 @@ fn check_claude_hook_runtime(paths: &AppPaths, probe_cwd: &Path) -> ConnectionCh
                 .to_string()
         } else if output.as_ref().is_ok_and(|output| output.timed_out) {
             format!(
-                "Claude --init-only 在 {} 秒内未退出；请先确认“检查目录访问”，再检查 /status、/hooks 与 policy",
+                "Claude --init-only 在 {} 秒内未退出；请检查 /status、/hooks 与 policy",
                 CLAUDE_NATIVE_PROBE_TIMEOUT.as_secs()
             )
         } else if let Ok(output) = output.as_ref() {
@@ -6060,12 +6023,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let check = check_probe_cwd_access(temp.path());
 
-        assert_eq!(check.item.name, "检查目录访问");
-        assert_eq!(check.item.status, CheckStatus::Ok);
+        assert!(check.accessible);
         let resolved = check.resolved_cwd.as_deref().expect("physical cwd");
         assert!(resolved.is_absolute());
         assert_eq!(resolved.file_name(), temp.path().file_name());
-        assert!(check.item.detail.contains(&resolved.display().to_string()));
     }
 
     #[test]
@@ -6074,9 +6035,8 @@ mod tests {
         let missing = temp.path().join("missing-project");
         let check = check_probe_cwd_access(&missing);
 
-        assert_eq!(check.item.status, CheckStatus::NeedsFix);
+        assert!(!check.accessible);
         assert_eq!(check.resolved_cwd, None);
-        assert!(!check.item.detail.contains("HOME"));
     }
 
     #[test]
@@ -6092,7 +6052,7 @@ mod tests {
             .expect("physical directory resolves");
         let check = check_probe_cwd_access(&selected);
 
-        assert_eq!(check.item.status, CheckStatus::Ok);
+        assert!(check.accessible);
         assert_eq!(check.resolved_cwd.as_deref(), Some(expected.as_path()));
     }
 
@@ -6118,7 +6078,8 @@ mod tests {
 
         assert!(!called.get());
         assert_eq!(skipped.status, CheckStatus::Unverified);
-        assert!(skipped.detail.contains("不会改用其他目录"));
+        assert!(skipped.detail.contains("未启动 Agent 宿主"));
+        assert!(!skipped.detail.contains("项目"));
     }
 
     #[test]
@@ -6440,7 +6401,13 @@ mod tests {
                     .find(|item| item.name == name)
                     .unwrap_or_else(|| panic!("missing {name} for {source:?}"))
             };
-            assert_eq!(item("检查目录访问").status, CheckStatus::NeedsFix);
+            assert!(status
+                .items
+                .iter()
+                .all(|item| item.code != CheckCode::ProjectDirectory));
+            assert!(status.items.iter().all(|item| {
+                item.recovery_action != Some(RecoveryAction::ChooseProjectDirectory)
+            }));
             assert_eq!(item(native_item).status, CheckStatus::Unverified);
             assert_eq!(
                 item(&format!("{} 版本", source.display_name())).status,
@@ -7040,6 +7007,39 @@ mod tests {
             Some("input"),
             "the authoritative projection must recover current ordinary evidence even though this minimal fixture omits the required runtime check items"
         );
+    }
+
+    #[test]
+    fn legacy_project_directory_checks_are_decode_only_and_never_reprojected() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        Database::new(&paths.db_path).init().unwrap();
+        let status = AgentConnectionStatus {
+            source: AgentSource::Codex,
+            items: vec![ConnectionCheckItem::new(
+                CheckCode::ProjectDirectory,
+                "legacy project directory",
+                CheckStatus::NeedsFix,
+                "/private/project",
+                Some(RecoveryAction::ChooseProjectDirectory),
+            )],
+            install_paths: vec![],
+            connector_installed: false,
+            verification: AgentVerification::default(),
+            capabilities: capabilities_for_source(AgentSource::Codex),
+            check_mode: ConnectionCheckMode::Light,
+            checked_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        };
+
+        let projected = super::project_connection_evidence(&paths, &status);
+        assert!(projected.items.is_empty());
+        let serialized = serde_json::to_string(&projected).unwrap();
+        assert!(!serialized.contains("project_directory"));
+        assert!(!serialized.contains("choose_project_directory"));
+        assert!(!serialized.contains("/private/project"));
     }
 
     #[test]

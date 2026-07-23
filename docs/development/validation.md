@@ -12,6 +12,7 @@ This document defines what each validation layer can prove. A listed command is 
 | `real agent connectors` | `validate_real_agent_connectors.sh` | Current managed connector commands can emit diagnostic events through the running local runtime without reading credentials. / 当前真实连接器本地事件链路。 | Provider authentication, real model execution, or a complete user task. / 不代表认证、模型执行或完整任务。 |
 | `real app server` | `validate_real_app_server.sh` | A real Codex App Server session through PetCore, including strict full-source generation, validation, build, import, and activation when required. / 真实 App Server 制作链路。 | Visible packaged-App interaction and rendering of the same artifact; those remain macOS runtime acceptance. / 不代表同一产物的可见 UI 与渲染验收。 |
 | `perf/nightly` | `validate_event_storm.sh`, renderer budget assertions, external profiling | Bounded event-storm and budget regressions; expanded runs may add Instruments. / 事件风暴与预算回归。 | Full CPU/GPU conclusions unless the matching profiler evidence was actually captured. / 未实际采集时不代表完整 CPU/GPU 结论。 |
+| `public distribution` | `build_release.sh --public --arch all`, `validate_public_release_artifacts.sh --directory … --version … --build … --commit …` | Exact five-file inventory, four-entry checksum inventory, pre-extraction ZIP safety, expected commit/build identity across both archives, every Mach-O's exact thin architecture, Developer ID authority and Team ID, hardened runtime, designated requirements, minimal entitlements, accepted notarization, stapling, Gatekeeper, packaged runtime identity, and download equality for the artifacts actually processed. / 实际处理产物的五文件清单、四项校验和、解压前 ZIP 安全、双架构 commit/build 身份、所有 Mach-O 精确 thin 架构、Developer ID、Hardened Runtime、公证、staple、Gatekeeper、运行时身份与下载摘要一致性。 | A release that was not downloaded and checked, a skipped Apple service, missing native arm64 or x86_64 packaged-functional evidence, a different commit/artifact, or visible behavior on an untested physical Mac. / 不代表未下载复验、跳过 Apple 服务、缺失原生双架构功能证据、其他 commit/产物或未验收物理 Mac 上的可见行为。 |
 
 ## Default host-safe gate / 默认宿主安全门禁
 
@@ -45,6 +46,34 @@ APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
 
 Run only the gates whose environment and authorization are present. Report skipped gates as skipped, never as passed.
 
+Supported public distribution is fail-closed and requires an externally
+provisioned Developer ID identity, Team ID, and `notarytool` keychain profile.
+Without them, `build_release.sh --public` exits unavailable and never emits a
+preview under a public filename. Use `build_release.sh --preview` explicitly
+for an ad-hoc development artifact. The offline fake-command test in
+`validate_build_scripts_safety.sh` proves command ordering and failure closure;
+malicious-ZIP, identity-mismatch, extra-Mach-O, exact-inventory, and mode tests
+prove those static boundaries. None of these offline tests proves a real Apple
+signature, notarization, Gatekeeper result, or native packaged execution.
+
+受支持公开分发采用失败闭锁，要求外部配置 Developer ID identity、Team ID 与
+`notarytool` Keychain profile。缺少配置时 `--public` 会明确以 unavailable 退出，
+不会用公开文件名生成预览包；ad-hoc 开发产物必须显式使用 `--preview`。构建安全
+校验中的离线假命令、恶意 ZIP、身份错配、额外 Mach-O、精确清单与模式冲突测试
+只证明静态边界，不代表真实 Apple 签名、公证、Gatekeeper 或原生包内执行。
+
+Public mode accepts only `--arch all`; `--preview` and `--public` are mutually
+exclusive, and the former `--release` validation alias is unsupported. Public
+App validation verifies Developer ID, hardened runtime, staple, and Gatekeeper
+before invoking the packaged App, PetCore, or CLI.
+
+Release CI separates the private-key-bearing signing runner from two
+private-key-free native packaged-functional jobs and a clean GitHub-hosted
+download/publish job. Publication depends on both native jobs. Each download
+compares five signing-job digests before any ZIP inspection or extraction. A
+missing ARM64 or X64 validation runner leaves the workflow incomplete rather
+than converting an unrun gate into a pass.
+
 ## Product-refactor acceptance / 产品重构验收
 
 The [product refactor execution](product-refactor-execution.md) defines task-level acceptance without claiming that the current commit has passed. Use the existing profiles as follows:
@@ -57,6 +86,6 @@ The [product refactor execution](product-refactor-execution.md) defines task-lev
 | Library, Maker, Configuration, Connections, Diagnostics | Focused Swift/Rust tests plus `fast/core` | Packaged main-window acceptance; real App Server only when explicitly enabled |
 | First-run demo | Fresh isolated home and negative proof that demo data never enters PetCore events/diagnostics | Packaged visible UI with Computer Use first |
 | Performance and event pressure | Renderer budget and event-storm gates | Instruments or external profiling only when actually captured |
-| Supported public distribution | Exact archive/signature/package/checksum validation | Developer ID, notarization, staple, Gatekeeper, and clean-machine launch after task `R14` implements them |
+| Supported public distribution | Offline pipeline-order/failure tests plus exact final archive/signature/package/checksum validation | Externally provisioned Developer ID signing, accepted notarization, staple validation, Gatekeeper, GitHub Release download revalidation, and clean-machine launch |
 
 Do not paste results into the task document or this file. Attach exact evidence to the matching commit, pull request, CI artifact, or GitHub Release.

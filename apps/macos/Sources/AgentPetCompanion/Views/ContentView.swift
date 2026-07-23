@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -7,108 +6,114 @@ struct ContentView: View {
     @State private var appliedShellMode: ControlCenterShellMode?
 
     var body: some View {
-        GeometryReader { geometry in
-            let policy = ControlCenterShellPolicy(windowWidth: geometry.size.width)
+        if store.shouldPresentOnboarding {
+            OnboardingView()
+        } else {
+            GeometryReader { geometry in
+                let policy = ControlCenterShellPolicy(windowWidth: geometry.size.width)
 
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView()
-                    .navigationSplitViewColumnWidth(
-                        min: ControlCenterShellPolicy.primarySidebarMinimumWidth,
-                        ideal: ControlCenterShellPolicy.primarySidebarIdealWidth,
-                        max: ControlCenterShellPolicy.primarySidebarMaximumWidth
-                    )
-            } detail: {
-                VStack(spacing: 0) {
-                    if store.petCoreRuntimeInfo.errorMessage != nil,
-                       store.selection != .diagnostics
-                    {
-                        PetCoreFailureBanner(
-                            operationalState: store.petCoreOperationalState,
-                            retrying: store.petCoreRuntimeInfo.phase == .checking,
-                            onRetry: { store.retryPetCoreStartup() }
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(
+                            min: ControlCenterShellPolicy.primarySidebarMinimumWidth,
+                            ideal: ControlCenterShellPolicy.primarySidebarIdealWidth,
+                            max: ControlCenterShellPolicy.primarySidebarMaximumWidth
                         )
-                        .padding(.horizontal, 24)
-                        .padding(.top, 14)
+                } detail: {
+                    VStack(spacing: 0) {
+                        if let recoveryBanner,
+                           store.selection != .diagnostics
+                        {
+                            InlineRecoveryBanner(
+                                identity: ProductComponentIdentity(
+                                    scope: "shell",
+                                    instance: "service"
+                                ),
+                                status: recoveryBanner.status,
+                                primaryAction: recoveryBanner.primaryAction
+                            ) { action in
+                                switch action {
+                                case .openDiagnostics:
+                                    store.selection = .diagnostics
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.top, 14)
+                        }
+                        mainContent
                     }
-                    mainContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .navigationTitle("")
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle("")
-            }
-            .navigationSplitViewStyle(.balanced)
-            .environment(\.controlCenterShellMode, policy.mode)
-            .toolbar {
+                .navigationSplitViewStyle(.balanced)
+                .environment(\.controlCenterShellMode, policy.mode)
+                .toolbar {
 #if compiler(>=6.2)
-                if #available(macOS 26.0, *) {
-                    ToolbarItem(placement: .navigation) {
-                        ControlCenterBrandTitle()
+                    if #available(macOS 26.0, *) {
+                        ToolbarItem(placement: .navigation) {
+                            ControlCenterBrandTitle()
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    } else {
+                        ToolbarItem(placement: .navigation) {
+                            ControlCenterBrandTitle()
+                        }
                     }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .navigation) {
-                        ControlCenterBrandTitle()
-                    }
-                }
 #else
-                ToolbarItem(placement: .navigation) {
-                    ControlCenterBrandTitle()
-                }
+                    ToolbarItem(placement: .navigation) {
+                        ControlCenterBrandTitle()
+                    }
 #endif
 
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        store.toggleOverlay()
-                    } label: {
-                        Label(
-                            APCLocalization.text(
-                                store.behavior.enabled ? .appActionHidePet : .appActionShowPet
-                            ),
-                            systemImage: store.behavior.enabled ? "eye.slash" : "eye"
-                        )
-                        .labelStyle(.iconOnly)
-                    }
-                    .help(APCLocalization.text(
-                        store.behavior.enabled ? .appHelpHidePet : .appHelpShowPet
-                    ))
-                    .accessibilityIdentifier("toolbar.toggle-pet")
-
-                    Button {
-                        store.selection = .diagnostics
-                    } label: {
-                        Label(serviceToolbar.title, systemImage: serviceToolbar.systemImage)
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button {
+                            store.toggleOverlay()
+                        } label: {
+                            Label(
+                                APCLocalization.text(
+                                    store.behavior.enabled ? .appActionHidePet : .appActionShowPet
+                                ),
+                                systemImage: store.behavior.enabled ? "eye.slash" : "eye"
+                            )
                             .labelStyle(.iconOnly)
-                            .foregroundStyle(serviceToolbar.tone.color)
-                    }
-                    .help(APCLocalization.format(.appHelpServiceStatus, serviceToolbar.title))
-                    .accessibilityLabel(
-                        APCLocalization.format(.contentServiceStatusLabel, serviceToolbar.title)
-                    )
-                    .accessibilityIdentifier("toolbar.service-status")
+                        }
+                        .help(APCLocalization.text(
+                            store.behavior.enabled ? .appHelpHidePet : .appHelpShowPet
+                        ))
+                        .accessibilityIdentifier("toolbar.toggle-pet")
 
-                    Menu {
-                        Button(APCLocalization.text(.navigationConnections)) {
-                            store.selection = .connections
+                        if let serviceAttention {
+                            Button {
+                                store.selection = .diagnostics
+                            } label: {
+                                Label(
+                                    serviceAttention.title,
+                                    systemImage: serviceAttention.systemImage
+                                )
+                                .labelStyle(.iconOnly)
+                                .foregroundStyle(serviceAttention.appearance.toolbarTint)
+                            }
+                            .help(APCLocalization.format(
+                                .appHelpServiceStatus,
+                                serviceAttention.title
+                            ))
+                            .accessibilityLabel(APCLocalization.format(
+                                .contentServiceStatusLabel,
+                                serviceAttention.title
+                            ))
+                            .accessibilityIdentifier("toolbar.service-attention")
                         }
-                        Divider()
-                        Button(APCLocalization.text(.appActionQuit), role: .destructive) {
-                            NSApplication.shared.terminate(nil)
-                        }
-                    } label: {
-                        Label(APCLocalization.text(.appActionMore), systemImage: "ellipsis.circle")
-                            .labelStyle(.iconOnly)
                     }
-                    .help(APCLocalization.text(.appHelpMore))
-                    .accessibilityIdentifier("toolbar.more")
+                }
+                .onAppear {
+                    apply(policy)
+                }
+                .onChange(of: policy.mode) { _, _ in
+                    apply(policy)
                 }
             }
-            .onAppear {
-                apply(policy)
-            }
-            .onChange(of: policy.mode) { _, _ in
-                apply(policy)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func apply(_ policy: ControlCenterShellPolicy) {
@@ -133,10 +138,15 @@ struct ContentView: View {
         }
     }
 
-    private var serviceToolbar: ServiceToolbarPresentation {
-        ServiceDiagnosticsPresentation.toolbar(
-            operationalState: store.petCoreOperationalState,
-            runtimeInfo: store.petCoreRuntimeInfo
+    private var serviceAttention: ControlCenterServiceAttentionPresentation? {
+        ControlCenterServiceAttentionPresentation.resolve(
+            for: store.petCoreOperationalState
+        )
+    }
+
+    private var recoveryBanner: ControlCenterRecoveryBannerPresentation? {
+        ControlCenterRecoveryBannerPresentation.resolve(
+            for: store.petCoreOperationalState
         )
     }
 }
@@ -156,74 +166,17 @@ private struct ControlCenterBrandTitle: View {
     }
 }
 
-enum PetCoreFailurePresentation {
-    static func detail(
-        for state: PetCoreOperationalState,
-        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
-    ) -> String {
-        let key: APCLocalizationKey = switch state {
-        case .checking, .recovering: .servicePetCoreRecoveringDetail
-        case .offline: .servicePetCoreOfflineDetail
-        case .runtimeMismatch: .servicePetCoreRuntimeMismatchDetail
-        case .error: .servicePetCoreFailedDetail
-        case .online: .servicePetCoreRunning
+private extension ProductStatusAppearance {
+    var toolbarTint: Color {
+        switch self {
+        case .normal:
+            .secondary
+        case .attention:
+            APCDesign.warning
+        case .error:
+            APCDesign.destructive
+        case .checking:
+            APCDesign.accent
         }
-        return APCLocalization.text(key, locale: localeIdentifier)
-    }
-}
-
-private struct PetCoreFailureBanner: View {
-    var operationalState: PetCoreOperationalState
-    var retrying: Bool
-    var onRetry: () -> Void
-
-    private var localizedDetail: String {
-        PetCoreFailurePresentation.detail(for: operationalState)
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(APCDesign.warning)
-                .font(.title3)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(APCLocalization.text(
-                    retrying ? .petCoreFailureRetryingTitle : .petCoreFailureTitle
-                ))
-                    .font(.callout.weight(.semibold))
-                Text(localizedDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 12)
-
-            if retrying {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel(
-                        APCLocalization.text(.petCoreFailureRetryingAccessibility)
-                    )
-            } else {
-                Button(APCLocalization.text(.petCoreFailureRetryAction), action: onRetry)
-                    .buttonStyle(.bordered)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(APCDesign.warning.opacity(0.45), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityElement(children: .contain)
     }
 }

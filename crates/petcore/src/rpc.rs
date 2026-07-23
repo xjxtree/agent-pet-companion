@@ -15,7 +15,7 @@ use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{app_server, enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
-    FpsProfileName, GenerationForm, OverlayPlacement, QualityLevel,
+    FpsProfileName, GenerationForm, OnboardingProgress, OverlayPlacement, QualityLevel,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1164,6 +1164,8 @@ fn known_rpc_method(method: &str) -> bool {
             | "state.wait"
             | "behavior.get"
             | "behavior.patch"
+            | "onboarding.get"
+            | "onboarding.update"
             | "overlay.placement.get"
             | "overlay.placement.update"
             | "settings.get"
@@ -1204,6 +1206,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "petcore.health"
         | "state.snapshot"
         | "behavior.get"
+        | "onboarding.get"
         | "overlay.placement.get"
         | "pet.list"
         | "generation.latest"
@@ -1213,6 +1216,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "petcore.shutdown" => &["expected_instance_id"],
         "state.wait" => &["after_revision", "timeout_ms"],
         "behavior.patch" => &["expected_revision", "changes"],
+        "onboarding.update" => &["expected_revision", "progress"],
         "overlay.placement.update" => &["x", "y", "scale", "display_id"],
         "settings.get" => &["key"],
         "settings.update" => &["key", "value"],
@@ -1391,6 +1395,22 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             Ok(json!(state
                 .database
                 .patch_behavior(expected_revision, &changes)?))
+        }
+        "onboarding.get" => Ok(json!(state.database.onboarding_with_revision()?)),
+        "onboarding.update" => {
+            let expected_revision = required_string(&request.params, "expected_revision")?
+                .parse::<u64>()
+                .map_err(|_| invalid_params("expected_revision must be a decimal string"))?;
+            let progress = request
+                .params
+                .get("progress")
+                .cloned()
+                .ok_or_else(|| invalid_params("missing onboarding progress"))?;
+            let progress: OnboardingProgress = serde_json::from_value(progress)
+                .map_err(|error| invalid_params(format!("invalid onboarding progress: {error}")))?;
+            Ok(json!(state
+                .database
+                .update_onboarding(expected_revision, &progress)?))
         }
         "overlay.placement.get" => Ok(json!(state.database.overlay_placement()?)),
         "overlay.placement.update" => {
@@ -2005,6 +2025,16 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             thread::yield_now();
             continue;
         }
+        agent_state::assign_anonymous_session_aliases(&mut active_agent_sessions);
+        if let Some(active) = &mut active_agent_state {
+            active.anonymous_session_alias = active_agent_sessions
+                .iter()
+                .find(|session| {
+                    session.source == active.source
+                        && session.source_session_sequence == active.source_session_sequence
+                })
+                .and_then(|session| session.anonymous_session_alias.clone());
+        }
         let overlay_visibility = agent_state::overlay_visibility_for_sessions(
             &behavior,
             !active_agent_sessions.is_empty(),
@@ -2012,6 +2042,7 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
         );
         let connections = state.snapshot_connection_statuses()?;
         let active_generation = active_generation_snapshot(state)?;
+        let onboarding = state.database.onboarding_with_revision()?;
         return Ok(json!({
             // Use the revision that atomically identifies the event projection.
             // If a new event commits while the rest of this snapshot is assembled,
@@ -2020,6 +2051,7 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             "changed": changed,
             "behavior": behavior,
             "behavior_revision": versioned_behavior.revision,
+            "onboarding": onboarding,
             "overlay_placement": state.database.overlay_placement()?,
             "pets": pets,
             "pet_asset_warnings": pet_asset_warnings,
@@ -2128,7 +2160,7 @@ fn hydrate_agent_session_display(
         // alone cannot provide. Expose it only in the hydrated snapshot; the
         // persisted hook event remains an honest `session_open = null` record.
         active.event.payload_json["session_open"] = Value::Bool(true);
-        active.overlay_display.navigation.session_open = Some(true);
+        active.overlay_display.navigation = agent_state::overlay_navigation(&active.event);
     }
     if display.title.is_some() {
         active.session_title = display.title;
@@ -3140,6 +3172,7 @@ mod tests {
                 created_at: created_at.to_string(),
             },
             source_session_sequence: 1,
+            session_alias_sequence: Some(1),
             session_activated_at: None,
             session_first_seen_at: None,
             latest_terminal_navigation_payload: None,

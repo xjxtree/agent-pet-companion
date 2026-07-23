@@ -146,36 +146,96 @@ guard let mainWindow = resolvedMainWindow else {
     exit(1)
 }
 
+// A fresh production home presents onboarding before the five-page control
+// center. Finish that isolated flow through its stable semantic Skip action;
+// the onboarding-specific scene progression is validated separately.
+var onboardingWasPresented = false
+for _ in 0..<80 {
+    let currentNodes = snapshotNodes(mainWindow)
+    if currentNodes.contains(where: {
+        $0.identifier == "onboarding.root"
+    }) {
+        onboardingWasPresented = true
+        guard let skip = currentNodes.first(where: {
+            $0.identifier == "onboarding.skip"
+                && actions($0.element).contains(kAXPressAction as String)
+        }) else {
+            fputs("main window UI validation failed: onboarding has no semantic Skip action\n", stderr)
+            exit(1)
+        }
+        let result = AXUIElementPerformAction(
+            skip.element,
+            kAXPressAction as CFString
+        )
+        if result != .success {
+            fputs("main window UI validation failed: onboarding Skip action failed: \(result.rawValue)\n", stderr)
+            exit(1)
+        }
+        break
+    }
+    usleep(100_000)
+}
+if onboardingWasPresented {
+    for _ in 0..<40 {
+        if !snapshotNodes(mainWindow).contains(where: {
+            $0.identifier == "onboarding.root"
+        }) {
+            break
+        }
+        usleep(100_000)
+    }
+    if snapshotNodes(mainWindow).contains(where: {
+        $0.identifier == "onboarding.root"
+    }) {
+        fputs("main window UI validation failed: onboarding remained after Skip\n", stderr)
+        exit(1)
+    }
+}
+
 guard let mainSize = size(mainWindow, kAXSizeAttribute) else {
     fputs("main window UI validation failed: main window has no AX size\n", stderr)
     exit(1)
 }
-if mainSize.width < 740 || mainSize.height < 500 {
+let supportedMinimumSize = CGSize(width: 760, height: 520)
+if mainSize.width < supportedMinimumSize.width
+    || mainSize.height < supportedMinimumSize.height {
     fputs("main window UI validation failed: main window is below the supported minimum size: \(mainSize.width)x\(mainSize.height)\n", stderr)
     exit(1)
 }
 
-if mainSize.width < 1000 {
-    var validationSize = CGSize(width: 1120, height: max(720, mainSize.height))
+func setMainWindowSize(_ requestedSize: CGSize, context: String) {
+    var validationSize = requestedSize
     if let sizeValue = AXValueCreate(.cgSize, &validationSize) {
-        _ = AXUIElementSetAttributeValue(
+        let result = AXUIElementSetAttributeValue(
             mainWindow,
             kAXSizeAttribute as CFString,
             sizeValue
         )
+        if result != .success {
+            fputs("main window UI validation failed: could not set \(context) size: \(result.rawValue)\n", stderr)
+            exit(1)
+        }
         usleep(300_000)
     }
+}
+
+// Exercise the real supported minimum before expanding to the all-column
+// structure used to validate navigation order across all five pages.
+setMainWindowSize(supportedMinimumSize, context: "supported minimum")
+guard let compactSize = size(mainWindow, kAXSizeAttribute),
+      abs(compactSize.width - supportedMinimumSize.width) <= 1,
+      abs(compactSize.height - supportedMinimumSize.height) <= 1 else {
+    fputs("main window UI validation failed: supported minimum size was not applied\n", stderr)
+    exit(1)
 }
 
 var nodes: [Node] = []
 for _ in 0..<300 {
     nodes = snapshotNodes(mainWindow)
-    let strings = nodes.flatMap(\.strings)
     let libraryIsVisible = nodes.contains { $0.identifier == "pet-library.page" }
-    let bundledPetsAreVisible = ["星雾团子", "Bytebud 字节芽"].allSatisfy { petName in
-        strings.contains { $0 == petName || $0.contains(petName) }
-    }
-    if libraryIsVisible && bundledPetsAreVisible {
+        && nodes.contains { $0.identifier == "product.pet-library.page-header" }
+        && nodes.contains { $0.identifier == "pet-library.hero" }
+    if libraryIsVisible {
         break
     }
     usleep(100_000)
@@ -249,6 +309,51 @@ func resolveVisibleControlLabel(
     return label
 }
 
+requireIdentifier("pet-library.page", "library page")
+requireIdentifier("product.pet-library.page-header", "library page header")
+requireIdentifier("pet-library.hero", "library primary experience")
+requireIdentifier(
+    "product.pet-library.featured.primary-experience-card",
+    "library primary experience card"
+)
+requireIdentifier(
+    "product.pet-library.featured.pet-preview-stage",
+    "library pet preview"
+)
+requireAny(["宠物库", "Pet Library"], "library heading")
+
+guard let compactPage = nodes.first(where: {
+    $0.identifier == "pet-library.page"
+}), let compactPageFrame = compactPage.frame,
+compactPageFrame.width > 0,
+compactPageFrame.width <= supportedMinimumSize.width + 1 else {
+    fputs("main window UI validation failed: library did not resolve inside the supported minimum width\n", stderr)
+    exit(1)
+}
+
+setMainWindowSize(
+    CGSize(width: 1_120, height: max(720, compactSize.height)),
+    context: "all-column validation"
+)
+for _ in 0..<80 {
+    nodes = snapshotNodes(mainWindow)
+    let strings = nodes.flatMap(\.strings)
+    let libraryInventoryIsVisible =
+        containsIdentifier("pet-library.collection-title", in: nodes)
+        && containsIdentifier("pet-library.grid", in: nodes)
+        && ["星雾团子", "Bytebud 字节芽"].allSatisfy { petName in
+            strings.contains { $0 == petName || $0.contains(petName) }
+        }
+    if libraryInventoryIsVisible {
+        break
+    }
+    usleep(100_000)
+}
+requireIdentifier("pet-library.collection-title", "library collection title")
+requireIdentifier("pet-library.grid", "library grid")
+requireAny(["星雾团子"], "bundled pet")
+requireAny(["Bytebud 字节芽"], "bundled pet")
+
 let libraryNavigationLabel = resolveVisibleControlLabel(
     ["宠物库", "Pet Library"],
     roles: [kAXButtonRole as String],
@@ -274,19 +379,6 @@ let diagnosticsNavigationLabel = resolveVisibleControlLabel(
     roles: [kAXButtonRole as String],
     "primary navigation"
 )
-let requiredVisibleContent: [([String], String)] = [
-    (["宠物库", "Pet Library"], "library heading"),
-    (["全部宠物", "All Pets"], "library inventory"),
-    (["宠物详情", "Pet Details"], "library detail"),
-    (["星雾团子"], "bundled pet"),
-    (["Bytebud 字节芽"], "bundled pet")
-]
-
-requireIdentifier("pet-library.page", "library page")
-requireIdentifier("pet-library.inspector", "library inspector")
-for (candidates, context) in requiredVisibleContent {
-    requireAny(candidates, context)
-}
 
 let scrollAreas = nodes.filter { $0.role == kAXScrollAreaRole as String }
 if scrollAreas.count < 2 {
@@ -419,13 +511,16 @@ let buttonRole = kAXButtonRole as String
 pressControl(identifier: "sidebar.navigation.maker")
 waitFor("AI Pet Maker page") { nodes in
     containsIdentifier("maker.page", in: nodes)
-        && (
-            containsIdentifier("maker.layout.two-stage", in: nodes)
-                || containsIdentifier("maker.layout.stacked", in: nodes)
+        && containsIdentifier("product.maker.page-header", in: nodes)
+        && containsIdentifier("maker.layout.describe", in: nodes)
+        && containsIdentifier("maker.brief", in: nodes)
+        && containsIdentifier("maker.brief.description", in: nodes)
+        && containsIdentifier("product.maker.primary-experience-card", in: nodes)
+        && containsIdentifier(
+            "product.maker.primary-experience-card.primary-action",
+            in: nodes
         )
-        && containsIdentifier("maker.action.start", in: nodes)
         && containsAny(["新宠物", "New Pet"], in: nodes)
-        && containsAny(["制作会话", "Creation Session"], in: nodes)
         && containsAny(["参考图（可选）", "Reference Images (Optional)"], in: nodes)
         && containsAny(["开始制作", "Create Pet"], in: nodes)
         && !containsIdentifier("pet-library.page", in: nodes)
@@ -444,37 +539,50 @@ if makerNodes.contains(where: { node in
 pressControl(identifier: "sidebar.navigation.configuration")
 waitFor("Pet Configuration page") { nodes in
     containsIdentifier("configuration.root", in: nodes)
-        && containsIdentifier("configuration.subpage.appearance", in: nodes)
-        && containsIdentifier("configuration.subpage.messages", in: nodes)
-        && containsIdentifier("configuration.appearance.mouse-passthrough", in: nodes)
-        && containsAny(["透明区域穿透", "Transparent-area Click-through"], in: nodes)
+        && containsIdentifier("product.configuration.page-header", in: nodes)
+        && containsIdentifier("configuration.subpage-picker", in: nodes)
+        && containsIdentifier("configuration.page.appearance", in: nodes)
+        && containsIdentifier("configuration.appearance.status-bubble", in: nodes)
+        && containsIdentifier("configuration.appearance.theme", in: nodes)
+        && containsIdentifier("configuration.appearance.fps", in: nodes)
+        && (
+            containsIdentifier("configuration.layout.wide", in: nodes)
+                || containsIdentifier("configuration.layout.compact", in: nodes)
+        )
         && mainWindowTitleMatches(["宠物配置", "Pet Configuration"])
 }
 
 pressControl(identifier: "sidebar.navigation.connections")
 waitFor("Agent Connections page") { nodes in
     containsIdentifier("connections.root", in: nodes)
-        && containsIdentifier("connections.agent.codex", in: nodes)
-        && containsIdentifier("connections.detail.header", in: nodes)
-        && containsIdentifier("connections.action.check-all", in: nodes)
+        && containsIdentifier("product.connections.page-header", in: nodes)
+        && containsIdentifier("connections.agent-section.codex", in: nodes)
+        && containsIdentifier("product.connections.codex.agent-health-row", in: nodes)
+        && containsIdentifier(
+            "product.connections.codex.advanced-details-disclosure",
+            in: nodes
+        )
         && mainWindowTitleMatches(["Agent 连接", "Agent Connections"])
 }
 
 pressControl(identifier: "sidebar.navigation.diagnostics")
 waitFor("Service & Diagnostics page") { nodes in
     containsIdentifier("diagnostics.page", in: nodes)
-        && containsIdentifier("diagnostics.refresh", in: nodes)
-        && (
-            containsIdentifier("diagnostics.layout.two-column", in: nodes)
-                || containsIdentifier("diagnostics.layout.single-column", in: nodes)
-                || containsIdentifier("diagnostics.layout.fitted-single-column", in: nodes)
+        && containsIdentifier("diagnostics.layout.single-column", in: nodes)
+        && containsIdentifier("diagnostics.service-summary", in: nodes)
+        && containsIdentifier(
+            "product.diagnostics.service.primary-experience-card",
+            in: nodes
         )
+        && containsIdentifier(
+            "product.diagnostics.service.primary-experience-card.primary-action",
+            in: nodes
+        )
+        && containsIdentifier("diagnostics.log-package", in: nodes)
+        && containsIdentifier("diagnostics.export", in: nodes)
+        && containsIdentifier("diagnostics.technical-details", in: nodes)
         && containsAny(["服务状态", "Service Status"], in: nodes)
         && containsAny(["日志打包下载", "Diagnostic Download"], in: nodes)
-        && contains("PetCore", in: nodes)
-        && containsAny(["本地 RPC", "Local RPC"], in: nodes)
-        && containsAny(["事件通道", "Event Channel"], in: nodes)
-        && containsAny(["桌宠渲染", "Desktop Pet"], in: nodes)
         && containsAny(["打包并下载", "Package and Download"], in: nodes)
         && mainWindowTitleMatches(["服务与诊断", "Service & Diagnostics"])
 }
@@ -482,7 +590,9 @@ waitFor("Service & Diagnostics page") { nodes in
 pressControl(identifier: "sidebar.navigation.library")
 waitFor("Pet Library page") { nodes in
     containsIdentifier("pet-library.page", in: nodes)
-        && containsIdentifier("pet-library.inspector", in: nodes)
+        && containsIdentifier("product.pet-library.page-header", in: nodes)
+        && containsIdentifier("pet-library.hero", in: nodes)
+        && containsIdentifier("pet-library.grid", in: nodes)
         && contains("星雾团子", in: nodes)
         && contains("Bytebud 字节芽", in: nodes)
         && (contains("导入", in: nodes) || contains("Import", in: nodes))

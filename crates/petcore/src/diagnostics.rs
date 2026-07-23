@@ -634,6 +634,8 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "state.wait" => "state.wait",
         "behavior.get" => "behavior.get",
         "behavior.patch" => "behavior.patch",
+        "onboarding.get" => "onboarding.get",
+        "onboarding.update" => "onboarding.update",
         "overlay.placement.get" => "overlay.placement.get",
         "overlay.placement.update" => "overlay.placement.update",
         "settings.get" => "settings.get",
@@ -674,6 +676,7 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
         method,
         "petcore.shutdown"
             | "behavior.patch"
+            | "onboarding.update"
             | "overlay.placement.update"
             | "settings.update"
             | "pet.activate"

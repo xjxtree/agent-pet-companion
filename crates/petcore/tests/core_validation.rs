@@ -2204,7 +2204,7 @@ fn database_migrates_pet_generation_source_columns() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema_version, 5);
+    assert_eq!(schema_version, 6);
 
     pet.generator = Some("codex-app-server-brief-petpack-v1".to_string());
     pet.provenance = Some("codex_app_server_brief".to_string());
@@ -5273,6 +5273,10 @@ done
         let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
         let active = &snapshot["active_agent_state"];
         if active["overlay_display"]["navigation"]["session_open"] == true {
+            assert_eq!(
+                active["overlay_display"]["navigation"]["capability"],
+                "exact_session"
+            );
             assert!(active["session_id"].as_str().unwrap().starts_with("ses-"));
             assert_eq!(
                 active["overlay_display"]["navigation"]["surface"],

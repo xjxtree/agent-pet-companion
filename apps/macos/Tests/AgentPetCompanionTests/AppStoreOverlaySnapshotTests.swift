@@ -7,7 +7,7 @@ import Testing
 struct AppStoreOverlaySnapshotTests {
     @MainActor
     @Test
-    func idleBubbleAvailabilityKeepsContextMenuToggleUseful() throws {
+    func idleStateRestsWithoutAPlaceholderSessionBubble() throws {
         let store = makeStore()
 
         try store.applyStateSnapshot([
@@ -26,12 +26,12 @@ struct AppStoreOverlaySnapshotTests {
             "connections": [],
         ])
 
-        #expect(store.overlayAvailableBubbleContents == [.idle])
-        #expect(store.hasAvailableOverlayBubbleContent)
+        #expect(store.overlayAvailableBubbleContents.isEmpty)
+        #expect(!store.hasAvailableOverlayBubbleContent)
 
         store.overlayBubbleDismissed = true
         #expect(store.overlayBubbleContents.isEmpty)
-        #expect(store.hasAvailableOverlayBubbleContent)
+        #expect(!store.hasAvailableOverlayBubbleContent)
 
         try store.applyStateSnapshot([
             "revision": "idle-overlay-hidden-2",

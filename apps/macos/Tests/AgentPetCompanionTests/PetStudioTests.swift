@@ -123,22 +123,36 @@ struct PetStudioTests {
 
     @Test
     func failedSessionUsesAVisibleReferenceReselectionActionBeforeRetry() {
-        #expect(PetStudioPresentation.failureRecoveryAction(
-            sessionCanRetry: false,
-            referenceReselectionCount: 2
-        ) == nil)
-        #expect(PetStudioPresentation.failureRecoveryAction(
-            sessionCanRetry: true,
+        let retryable = GenerationSession(
+            state: .failed,
+            jobID: "job",
+            submittedForm: GenerationForm(
+                description: "Pet",
+                style: "modern",
+                quality: .standard,
+                referenceImages: []
+            )
+        )
+        #expect(PetMakerProductPresentation(
+            session: retryable,
+            resultPetAvailable: false,
             referenceReselectionCount: 0
-        ) == .retry)
-        #expect(PetStudioPresentation.failureRecoveryAction(
-            sessionCanRetry: true,
+        ).primaryAction == .retry)
+        #expect(PetMakerProductPresentation(
+            session: retryable,
+            resultPetAvailable: false,
             referenceReselectionCount: 2
-        ) == .reselectReferences(count: 2))
-        #expect(PetStudioPresentation.failureRecoveryAction(
-            sessionCanRetry: true,
+        ).primaryAction == .reselectReferences)
+        #expect(PetMakerProductPresentation(
+            session: retryable,
+            resultPetAvailable: false,
             referenceReselectionCount: -1
-        ) == .retry)
+        ).primaryAction == .retry)
+        #expect(PetMakerProductPresentation(
+            session: GenerationSession(state: .failed, jobID: "job"),
+            resultPetAvailable: false,
+            referenceReselectionCount: 2
+        ).primaryAction == .unavailable)
     }
 
     @Test

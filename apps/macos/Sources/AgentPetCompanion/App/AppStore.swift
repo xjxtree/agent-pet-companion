@@ -149,25 +149,34 @@ enum AgentSessionRouter {
     ) -> AgentSessionOpenRoute? {
         guard !navigation.explicitlyClosed else { return nil }
 
-        if let openURL = validatedSessionOpenURL(navigation.openURL) {
-            return .url(openURL)
+        switch navigation.capability {
+        case .exactSession:
+            return exactSessionRoute(source: source, navigation: navigation)
+        case .agentHost:
+            return agentHostRoute(source: source, navigation: navigation)
+        case .unavailable:
+            return nil
         }
+    }
 
-        if navigation.surface == "cli_terminal"
-            || navigation.terminalApp != nil
-            || (source != nil && source != .codex)
-        {
-            if let terminalApp = navigation.terminalApp,
-               let target = terminalTargets[terminalApp]
-            {
-                return .application(bundleIdentifiers: target.0, paths: target.1)
-            }
-            let allTargets = ["warp", "terminal", "iterm2", "ghostty"]
-                .compactMap { terminalTargets[$0] }
-            return .application(
-                bundleIdentifiers: allTargets.flatMap { $0.0 },
-                paths: allTargets.flatMap { $0.1 }
-            )
+    static func validatedCapability(
+        source: AgentSource?,
+        sessionID: String?,
+        navigation: AgentSessionNavigation
+    ) -> NavigationCapability {
+        route(source: source, sessionID: sessionID, navigation: navigation) == nil
+            ? .unavailable
+            : navigation.capability
+    }
+
+    private static func exactSessionRoute(
+        source: AgentSource?,
+        navigation: AgentSessionNavigation
+    ) -> AgentSessionOpenRoute? {
+        if navigation.surface == "cli_terminal",
+           navigation.terminalApp == "warp",
+           let openURL = validatedSessionOpenURL(navigation.openURL) {
+            return .url(openURL)
         }
 
         if source == .codex,
@@ -183,8 +192,24 @@ enum AgentSessionRouter {
         {
             return .url(deepLink)
         }
+        return nil
+    }
 
-        if source == .codex {
+    private static func agentHostRoute(
+        source: AgentSource?,
+        navigation: AgentSessionNavigation
+    ) -> AgentSessionOpenRoute? {
+        guard let source else { return nil }
+        if navigation.surface == "cli_terminal" {
+            guard let terminalApp = navigation.terminalApp,
+                  let target = terminalTargets[terminalApp]
+            else {
+                return nil
+            }
+            return .application(bundleIdentifiers: target.0, paths: target.1)
+        }
+
+        if source == .codex, navigation.surface == "chatgpt_app" {
             return .application(
                 bundleIdentifiers: chatGPTBundleIdentifiers,
                 paths: chatGPTPaths
@@ -412,6 +437,13 @@ private struct SanitizedGenerationRecoveryProjection {
     var referenceReselectionCount: Int
 }
 
+enum OnboardingOperationFailure: Equatable {
+    case serviceUnavailable
+    case petActivation
+    case revisionConflict
+    case requestRejected
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     typealias BundledPetSeeder = @MainActor () async -> Bool
@@ -432,8 +464,8 @@ final class AppStore: ObservableObject {
 
     @Published var selection: NavigationSection = .library
     @Published private(set) var descriptionText = AIPetMakerDefaults.descriptionText
-    @Published private(set) var selectedStyle: StylePreset = .semiRealistic
-    @Published private(set) var selectedQuality: QualityLevel = .high
+    @Published private(set) var selectedStyle = AIPetMakerDefaults.style
+    @Published private(set) var selectedQuality = AIPetMakerDefaults.quality
     @Published private(set) var selectedNativeFPS = PetAnimationContract.defaultNativeFPS
     @Published private(set) var generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
     @Published private(set) var referenceImages: [String] = []
@@ -451,6 +483,10 @@ final class AppStore: ObservableObject {
     @Published var events: [AgentEvent] = []
     @Published var recentEvents: [AgentEvent] = []
     @Published var connections: [AgentConnectionStatus] = []
+    @Published private(set) var onboarding: VersionedOnboardingProgress?
+    @Published private(set) var onboardingMutationInFlight = false
+    @Published private(set) var onboardingDismissedForCurrentLaunch = false
+    @Published private(set) var onboardingOperationFailure: OnboardingOperationFailure?
     @Published private(set) var generationSession = GenerationSession()
     @Published var generationReplyText = ""
     @Published var statusText = "正在初始化"
@@ -508,9 +544,11 @@ final class AppStore: ObservableObject {
     private var overlayPlacementSaveTask: Task<Void, Never>?
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
+    private var authoritativeBehavior = BehaviorSettings()
     private var overlayKnownReopenIDs: Set<String> = []
     private var overlayAwaitingVisibilityRestore = false
     private var behaviorMutationTask: Task<Void, Never>?
+    private var behaviorMutationSequence: UInt64 = 0
     private var mainWindowPresenter: (() -> Void)?
     private weak var controlCenterWindow: NSWindow?
     private var pendingMainWindowPresentation = false
@@ -630,8 +668,25 @@ final class AppStore: ObservableObject {
         pets.first(where: \.active)
     }
 
+    var onboardingBundledPets: [PetSummary] {
+        pets.filter(\.isBundled)
+    }
+
+    var shouldPresentOnboarding: Bool {
+        guard !onboardingDismissedForCurrentLaunch,
+              let onboarding
+        else {
+            return false
+        }
+        return !onboarding.progress.stage.isTerminal
+    }
+
+    var onboardingAvailability: OnboardingFlowAvailability {
+        petCoreOperationalState == .online ? .ready : .serviceUnavailable
+    }
+
     var effectiveFPSProfile: FpsProfile {
-        activePet?.effectiveFPSProfile(behavior.fpsProfile) ?? behavior.fpsProfile
+        activePet?.effectiveFPSProfile(behavior.fpsProfile) ?? .standard
     }
 
     /// Compatibility projection for older callers. The typed operation state
@@ -658,40 +713,25 @@ final class AppStore: ObservableObject {
 
     var overlayBubbleEvents: [AgentEvent] {
         activeAgentSessions
-            .map(\.event)
             .filter {
                 !overlayDismissedBubbleEventIDs.contains(OverlaySessionContent.stableID(
                     source: $0.source,
-                    sessionID: $0.sessionID,
-                    fallbackEventID: $0.id
+                    sessionID: $0.sessionID ?? $0.event.sessionID,
+                    anonymousSessionAlias: $0.anonymousSessionAlias,
+                    fallbackEventID: $0.event.id
                 ))
             }
+            .map(\.event)
     }
 
     var overlayAvailableBubbleContents: [OverlayBubbleContent] {
         guard overlayVisibility.statusBubbleVisible else { return [] }
-        let visibleStates = activeAgentSessions.filter {
-            !overlayDismissedBubbleEventIDs.contains(OverlaySessionContent.stableID(
-                source: $0.source,
-                sessionID: $0.sessionID ?? $0.event.sessionID,
-                fallbackEventID: $0.event.id
-            ))
-        }
-        var grouped = AgentSource.allCases.compactMap { source -> OverlayBubbleContent? in
-            let states = visibleStates.filter { $0.source == source }
-            return states.isEmpty ? nil : OverlayBubbleContent(
-                source: source,
-                states: states,
-                isExpanded: overlayAgentGroupIsExpanded(source)
-            )
-        }
-        if activeAgentSessionsOmittedCount > 0 {
-            grouped.append(.omittedSummary(count: activeAgentSessionsOmittedCount))
-        }
-        if !grouped.isEmpty {
-            return grouped
-        }
-        return activeAgentState == nil && activeAgentSessions.isEmpty ? [.idle] : []
+        return OverlayBubbleProjection.contents(
+            states: activeAgentSessions,
+            omittedCount: activeAgentSessionsOmittedCount,
+            dismissedSessionIDs: overlayDismissedBubbleEventIDs,
+            isExpanded: { overlayAgentGroupIsExpanded($0) }
+        )
     }
 
     var overlayBubbleContents: [OverlayBubbleContent] {
@@ -747,6 +787,8 @@ final class AppStore: ObservableObject {
         !generationSession.isActive
             && (
                 descriptionText != AIPetMakerDefaults.descriptionText
+                    || selectedStyle != AIPetMakerDefaults.style
+                    || selectedQuality != AIPetMakerDefaults.quality
                     || !referenceImages.isEmpty
                     || selectedNativeFPS != PetAnimationContract.defaultNativeFPS
                     || generationStateDurationsMS != PetAnimationContract.defaultStateDurationsMS
@@ -847,21 +889,7 @@ final class AppStore: ObservableObject {
         let workspace = NSWorkspace.shared
         switch route {
         case let .url(url):
-            if workspace.open(url) { return }
-            let fallback = AgentSessionRouter.route(
-                source: source,
-                sessionID: nil,
-                navigation: AgentSessionNavigation(
-                    sessionOpen: navigation.sessionOpen,
-                    surface: navigation.surface,
-                    terminalApp: navigation.terminalApp
-                )
-            )
-            guard case let .application(bundleIdentifiers, paths) = fallback else {
-                presentMainWindow()
-                return
-            }
-            openAgentApplication(bundleIdentifiers: bundleIdentifiers, paths: paths)
+            _ = workspace.open(url)
         case let .application(bundleIdentifiers, paths):
             openAgentApplication(bundleIdentifiers: bundleIdentifiers, paths: paths)
         }
@@ -1072,6 +1100,7 @@ final class AppStore: ObservableObject {
             // The publication order is deliberate: every window gate observing
             // readiness must see behavior, revision, and AppKit appearance as
             // one fully prepared initial presentation state.
+            authoritativeBehavior = versioned.behavior
             behavior = versioned.behavior
             behaviorRevision = versioned.revision
             applyCurrentAppearance()
@@ -1475,6 +1504,11 @@ final class AppStore: ObservableObject {
         )
         let data = try JSONSerialization.data(withJSONObject: result)
         let snapshot = try JSONDecoder().decode(StateSnapshot.self, from: data)
+        authoritativeBehavior = snapshot.behavior
+        if let snapshotOnboarding = snapshot.onboarding,
+           onboarding != snapshotOnboarding {
+            onboarding = snapshotOnboarding
+        }
         if let activeGeneration = snapshot.activeGeneration {
             reconcileActiveGeneration(activeGeneration)
         }
@@ -1565,6 +1599,7 @@ final class AppStore: ObservableObject {
             OverlaySessionContent.stableID(
                 source: $0.source,
                 sessionID: $0.sessionID ?? $0.event.sessionID,
+                anonymousSessionAlias: $0.anonymousSessionAlias,
                 fallbackEventID: $0.event.id
             )
         })
@@ -1779,8 +1814,8 @@ final class AppStore: ObservableObject {
     private var generationDraftIsPristineForAutomaticRestore: Bool {
         generationSession == GenerationSession()
             && descriptionText == AIPetMakerDefaults.descriptionText
-            && selectedStyle == .semiRealistic
-            && selectedQuality == .high
+            && selectedStyle == AIPetMakerDefaults.style
+            && selectedQuality == AIPetMakerDefaults.quality
             && selectedNativeFPS == PetAnimationContract.defaultNativeFPS
             && generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS
             && referenceImages.isEmpty
@@ -2062,6 +2097,8 @@ final class AppStore: ObservableObject {
         }
         recordMakerUserMutation()
         descriptionText = AIPetMakerDefaults.descriptionText
+        selectedStyle = AIPetMakerDefaults.style
+        selectedQuality = AIPetMakerDefaults.quality
         selectedNativeFPS = PetAnimationContract.defaultNativeFPS
         generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
         referenceImages.removeAll()
@@ -2482,23 +2519,16 @@ final class AppStore: ObservableObject {
 
     func updateBehavior(_ next: BehaviorSettings) {
         var next = next
-        if let activePet {
-            next.fpsProfile = activePet.effectiveFPSProfile(next.fpsProfile)
-        }
+        next.fpsProfile = activePet?.effectiveFPSProfile(next.fpsProfile)
+            ?? .standard
         let patch = BehaviorSettingsPatch(from: behavior, to: next)
         guard !patch.isEmpty else { return }
-        let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme
-        let sessionGroupDisplayChanged = behavior.sessionGroupDisplay != next.sessionGroupDisplay
-        behavior = next
-        if appearanceChanged {
-            applyCurrentAppearance()
-        }
-        if sessionGroupDisplayChanged {
-            overlayAgentGroupExpansionOverrides.removeAll()
-            overlayController.updateLayout()
-        }
-        syncOverlayVisibilityForBehavior()
-        enqueueBehaviorPatch(patch, optimisticBehavior: next)
+        applyBehaviorProjection(next)
+        behaviorMutationSequence &+= 1
+        enqueueBehaviorPatch(
+            patch,
+            mutationSequence: behaviorMutationSequence
+        )
     }
 
     func previewBubbleTransparency(_ value: Double) {
@@ -2512,7 +2542,11 @@ final class AppStore: ObservableObject {
         previous.bubbleTransparency = BehaviorSettings.clampedBubbleTransparency(previousValue)
         let patch = BehaviorSettingsPatch(from: previous, to: behavior)
         guard !patch.isEmpty else { return }
-        enqueueBehaviorPatch(patch, optimisticBehavior: behavior)
+        behaviorMutationSequence &+= 1
+        enqueueBehaviorPatch(
+            patch,
+            mutationSequence: behaviorMutationSequence
+        )
     }
 
     func waitForBehaviorPersistence() async {
@@ -2521,19 +2555,22 @@ final class AppStore: ObservableObject {
 
     private func enqueueBehaviorPatch(
         _ patch: BehaviorSettingsPatch,
-        optimisticBehavior: BehaviorSettings
+        mutationSequence: UInt64
     ) {
         let predecessor = behaviorMutationTask
         behaviorMutationTask = Task { [weak self] in
             _ = await predecessor?.value
             guard let self else { return }
-            await persistBehaviorPatch(patch, optimisticBehavior: optimisticBehavior)
+            await persistBehaviorPatch(
+                patch,
+                mutationSequence: mutationSequence
+            )
         }
     }
 
     private func persistBehaviorPatch(
         _ patch: BehaviorSettingsPatch,
-        optimisticBehavior: BehaviorSettings
+        mutationSequence: UInt64
     ) async {
         for attempt in 0..<2 {
             do {
@@ -2552,13 +2589,9 @@ final class AppStore: ObservableObject {
                     from: resultData
                 )
                 behaviorRevision = updated.revision
-                if behavior == optimisticBehavior {
-                    let appearanceChanged = behavior.appearanceTheme != updated.behavior.appearanceTheme
-                    behavior = updated.behavior
-                    if appearanceChanged {
-                        applyCurrentAppearance()
-                    }
-                    syncOverlayVisibilityForBehavior()
+                authoritativeBehavior = updated.behavior
+                if mutationSequence == behaviorMutationSequence {
+                    applyBehaviorProjection(updated.behavior)
                 }
                 statusText = "设置已保存"
                 return
@@ -2568,14 +2601,38 @@ final class AppStore: ObservableObject {
                     try await refreshSnapshot()
                 } catch {
                     statusText = "设置冲突且刷新失败：\(error.localizedDescription)"
+                    if mutationSequence == behaviorMutationSequence {
+                        applyBehaviorProjection(authoritativeBehavior)
+                    }
                     return
                 }
             } catch {
                 statusText = "设置保存失败：\(error.localizedDescription)"
-                try? await refreshSnapshot()
+                do {
+                    try await refreshSnapshot()
+                } catch {
+                    if mutationSequence == behaviorMutationSequence {
+                        applyBehaviorProjection(authoritativeBehavior)
+                    }
+                }
                 return
             }
         }
+    }
+
+    private func applyBehaviorProjection(_ next: BehaviorSettings) {
+        let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme
+        let sessionGroupDisplayChanged = behavior.sessionGroupDisplay
+            != next.sessionGroupDisplay
+        behavior = next
+        if appearanceChanged {
+            applyCurrentAppearance()
+        }
+        if sessionGroupDisplayChanged {
+            overlayAgentGroupExpansionOverrides.removeAll()
+            overlayController.updateLayout()
+        }
+        syncOverlayVisibilityForBehavior()
     }
 
     private func syncOverlayVisibilityForBehavior() {
@@ -2615,38 +2672,55 @@ final class AppStore: ObservableObject {
         updateBehavior(next)
     }
 
+    func setAttentionPreset(_ preset: AttentionPreset) {
+        guard preset != .custom else { return }
+        updateBehavior(behavior.applyingAttentionPreset(preset))
+    }
+
     func activatePet(_ pet: PetSummary) {
-        guard !pet.active else { return }
-        petOperationIDs.insert(pet.id)
-        statusText = "正在启用 \(pet.name)"
         Task {
-            defer { petOperationIDs.remove(pet.id) }
-            await finishPetActivation(
-                pet,
-                activate: {
-                    _ = try await self.requestPetCore(
-                        method: "pet.activate",
-                        params: ["id": pet.id]
-                    )
-                },
-                refreshSnapshot: { try await self.refreshSnapshot() },
-                recoverSnapshot: { await self.refresh() }
-            )
+            _ = await activatePetAndWait(pet)
         }
     }
 
+    /// Shared activation path for the Library, Maker result, and onboarding.
+    /// Callers that must sequence another durable mutation can await the real
+    /// PetCore activation result instead of inferring success from local state.
+    @discardableResult
+    func activatePetAndWait(_ pet: PetSummary) async -> Bool {
+        if pets.first(where: { $0.id == pet.id })?.active == true || pet.active {
+            return true
+        }
+        guard !petOperationIDs.contains(pet.id) else { return false }
+        petOperationIDs.insert(pet.id)
+        statusText = "正在启用 \(pet.name)"
+        defer { petOperationIDs.remove(pet.id) }
+        return await finishPetActivation(
+            pet,
+            activate: {
+                _ = try await self.requestPetCore(
+                    method: "pet.activate",
+                    params: ["id": pet.id]
+                )
+            },
+            refreshSnapshot: { try await self.refreshSnapshot() },
+            recoverSnapshot: { await self.refresh() }
+        )
+    }
+
+    @discardableResult
     func finishPetActivation(
         _ pet: PetSummary,
         activate: @MainActor () async throws -> Void,
         refreshSnapshot: @MainActor () async throws -> Void,
         recoverSnapshot: @MainActor () async -> Void
-    ) async {
+    ) async -> Bool {
         do {
             try await activate()
         } catch {
             statusText = "启用失败：\(error.localizedDescription)"
             await recoverSnapshot()
-            return
+            return false
         }
 
         do {
@@ -2655,6 +2729,132 @@ final class AppStore: ObservableObject {
         } catch {
             statusText = "已启用 \(pet.name)，但状态刷新失败：\(error.localizedDescription)"
             await recoverSnapshot()
+        }
+        return true
+    }
+
+    func dismissOnboardingForCurrentLaunch() {
+        onboardingDismissedForCurrentLaunch = true
+        onboardingOperationFailure = nil
+    }
+
+    func retryOnboardingService() {
+        onboardingOperationFailure = nil
+        Task { [weak self] in
+            _ = await self?.recoverServiceConnection()
+        }
+    }
+
+    @discardableResult
+    func confirmOnboardingPet(_ candidate: PetSummary) async -> Bool {
+        guard !onboardingMutationInFlight,
+              onboardingAvailability == .ready,
+              let current = onboarding,
+              current.progress.stage == .choosePet,
+              let pet = onboardingBundledPets.first(where: { $0.id == candidate.id })
+        else {
+            if onboardingAvailability != .ready {
+                onboardingOperationFailure = .serviceUnavailable
+            }
+            return false
+        }
+
+        onboardingMutationInFlight = true
+        onboardingOperationFailure = nil
+        defer { onboardingMutationInFlight = false }
+
+        guard await activatePetAndWait(pet) else {
+            onboardingOperationFailure = .petActivation
+            return false
+        }
+        return await persistOnboardingTransition(
+            from: current,
+            to: .connectAgents
+        )
+    }
+
+    @discardableResult
+    func advanceOnboarding(to nextStage: OnboardingStage) async -> Bool {
+        guard !onboardingMutationInFlight,
+              onboardingAvailability == .ready,
+              let current = onboarding,
+              current.progress.stage.canAdvance(to: nextStage)
+        else {
+            if onboardingAvailability != .ready {
+                onboardingOperationFailure = .serviceUnavailable
+            }
+            return false
+        }
+
+        onboardingMutationInFlight = true
+        onboardingOperationFailure = nil
+        defer { onboardingMutationInFlight = false }
+        return await persistOnboardingTransition(from: current, to: nextStage)
+    }
+
+    private func persistOnboardingTransition(
+        from current: VersionedOnboardingProgress,
+        to nextStage: OnboardingStage
+    ) async -> Bool {
+        let nextProgress = OnboardingProgress(stage: nextStage)
+        do {
+            let progressData = try JSONEncoder().encode(nextProgress)
+            let progressObject = try JSONSerialization.jsonObject(with: progressData)
+            let result = try await requestPetCore(
+                method: "onboarding.update",
+                params: [
+                    "expected_revision": current.revision,
+                    "progress": progressObject,
+                ]
+            )
+            let resultData = try JSONSerialization.data(withJSONObject: result)
+            let updated = try JSONDecoder().decode(
+                VersionedOnboardingProgress.self,
+                from: resultData
+            )
+            guard updated.progress == nextProgress,
+                  let previousRevision = UInt64(current.revision),
+                  let updatedRevision = UInt64(updated.revision),
+                  updatedRevision > previousRevision
+            else {
+                onboardingOperationFailure = .requestRejected
+                return false
+            }
+
+            if nextStage == .completed {
+                // Completion atomically enables the pet in PetCore. Publish
+                // the terminal scene only with the authoritative behavior
+                // snapshot so the onboarding cannot disappear while the
+                // desktop pet still looks disabled.
+                do {
+                    try await refreshSnapshot()
+                    return onboarding?.progress.stage == .completed
+                } catch {
+                    onboardingOperationFailure = .serviceUnavailable
+                    return false
+                }
+            }
+
+            onboarding = updated
+            return true
+        } catch let PetCoreClientError.rpcError(message)
+            where message.contains("onboarding revision conflict") {
+            do {
+                try await refreshSnapshot()
+                if onboarding?.progress.stage == nextStage {
+                    return true
+                }
+            } catch {
+                onboardingOperationFailure = .serviceUnavailable
+                return false
+            }
+            onboardingOperationFailure = .revisionConflict
+            return false
+        } catch {
+            onboardingOperationFailure = onboardingAvailability == .ready
+                ? .requestRejected
+                : .serviceUnavailable
+            return false
         }
     }
 
@@ -3457,20 +3657,12 @@ final class AppStore: ObservableObject {
     }
 
     func dismissOverlayBubble(eventID: String) {
-        if eventID == OverlayBubbleContent.idle.id {
-            overlayBubbleDismissed = true
-        } else {
-            overlayDismissedBubbleEventIDs.insert(eventID)
-        }
+        overlayDismissedBubbleEventIDs.insert(eventID)
         overlayController.updateLayout(animateBubble: true)
     }
 
     func dismissOverlayBubble(eventIDs: [String]) {
-        if eventIDs == OverlayBubbleContent.idle.dismissalIDs {
-            overlayBubbleDismissed = true
-        } else {
-            overlayDismissedBubbleEventIDs.formUnion(eventIDs)
-        }
+        overlayDismissedBubbleEventIDs.formUnion(eventIDs)
         overlayController.updateLayout(animateBubble: true)
     }
 
@@ -3824,6 +4016,7 @@ final class AppStore: ObservableObject {
             || method.hasPrefix("petpack.")
             || method.hasPrefix("connections.")
             || method == "behavior.patch"
+            || method == "onboarding.update"
             || method == "overlay.placement.update"
             || method == "diagnostics.export"
     }
@@ -3838,6 +4031,7 @@ private struct StateSnapshot: Codable {
     var changed: Bool?
     var behavior: BehaviorSettings
     var behaviorRevision: String?
+    var onboarding: VersionedOnboardingProgress?
     var overlayPlacement: OverlayPlacement?
     var pets: [PetSummary]
     var petAssetWarnings: [PetAssetWarning]?
@@ -3855,6 +4049,7 @@ private struct StateSnapshot: Codable {
         case changed
         case behavior
         case behaviorRevision = "behavior_revision"
+        case onboarding
         case overlayPlacement = "overlay_placement"
         case pets
         case petAssetWarnings = "pet_asset_warnings"

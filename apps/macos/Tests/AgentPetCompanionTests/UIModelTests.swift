@@ -92,7 +92,7 @@ struct UIModelTests {
         runtime.phase = .running
         runtime.version = "0.1.0"
         runtime.rpcProtocol = "v2"
-        runtime.databaseSchemaRange = "0–5"
+        runtime.databaseSchemaRange = "0–6"
 
         let presentation = ServiceDiagnosticsPresentation(
             runtimeInfo: runtime,
@@ -107,7 +107,7 @@ struct UIModelTests {
 
         #expect(presentation.rows.map(\.id) == ServiceDiagnosticKind.allCases)
         #expect(try #require(presentation.row(.petCore)).status == "正常")
-        #expect(try #require(presentation.row(.localRPC)).detail == "v2 · Schema 0–5")
+        #expect(try #require(presentation.row(.localRPC)).detail == "v2 · Schema 0–6")
         #expect(try #require(presentation.row(.eventChannel)).status == "在线")
         #expect(
             try #require(presentation.row(.desktopPet)).detail
@@ -278,16 +278,20 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func clearingStudioFormRestoresDefaultAnimationTiming() {
+    func clearingStudioFormRestoresTheCompleteDefaultBrief() {
         let store = makeStore()
 
         #expect(!store.canClearStudioForm)
+        store.selectGenerationStyle(.pixel)
+        store.selectGenerationQuality(.ultra)
         store.selectGenerationNativeFPS(20)
         store.selectGenerationStateDuration(1_000, for: "idle")
         #expect(store.canClearStudioForm)
 
         store.clearStudioForm()
 
+        #expect(store.selectedStyle == AIPetMakerDefaults.style)
+        #expect(store.selectedQuality == AIPetMakerDefaults.quality)
         #expect(store.selectedNativeFPS == PetAnimationContract.defaultNativeFPS)
         #expect(store.generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS)
         #expect(!store.canClearStudioForm)
@@ -605,17 +609,22 @@ struct UIModelTests {
     @Test
     func activeSessionBubbleUsesBoundedConversationDisplayContent() throws {
         let data = Data(
-            #"{"state":"tool","official_status":"running","source":"codex","session_id":"ses-projected-session-1","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":null,"expires_at":null,"event":{"id":"evt-projected-tool-2","source":"codex","session_id":"ses-projected-session-1","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"schema_version":"apc.agent-event.v1","external_event_id":"tool-2","source_event":"PreToolUse","tool_name":"shell","outcome":"started","diagnostic":false,"turn_id":"turn-1","session_active":true,"message_role":null,"message_content":null,"activity_kind":"thinking","activity_content":"正在验证活动摘要同步","interaction_kind":null,"project_label":"agent-pet-companion"},"created_at":"2026-07-13T00:00:02Z"},"session_title":"保持会话消息持续显示","session_user_message":{"role":"user","content":"保持会话消息持续显示"},"session_message":{"role":"assistant","content":"已恢复气泡消息内容。"},"session_activity":{"kind":"thinking","content":"正在验证活动摘要同步"},"overlay_display":{"summary_kind":"thinking","navigation":{"session_open":true,"surface":"chatgpt_app","terminal_app":null,"open_url":null,"routable_session_id":"019f5b0f-88ff-7413-8953-29de4ed0951c"}}}"#.utf8
+            #"{"state":"tool","official_status":"running","source":"codex","session_id":"ses-projected-session-1","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":null,"expires_at":null,"event":{"id":"evt-projected-tool-2","source":"codex","session_id":"ses-projected-session-1","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"schema_version":"apc.agent-event.v1","external_event_id":"tool-2","source_event":"PreToolUse","tool_name":"shell","outcome":"started","diagnostic":false,"turn_id":"turn-1","session_active":true,"message_role":null,"message_content":null,"activity_kind":"thinking","activity_content":"正在验证活动摘要同步","interaction_kind":null,"project_label":"agent-pet-companion"},"created_at":"2026-07-13T00:00:02Z"},"session_title":"保持会话消息持续显示","session_user_message":{"role":"user","content":"保持会话消息持续显示"},"session_message":{"role":"assistant","content":"已恢复气泡消息内容。"},"session_activity":{"kind":"thinking","content":"正在验证活动摘要同步"},"overlay_display":{"summary_kind":"thinking","navigation":{"capability":"exact_session","session_open":true,"surface":"chatgpt_app","terminal_app":null,"open_url":null,"routable_session_id":"019f5b0f-88ff-7413-8953-29de4ed0951c"}}}"#.utf8
         )
         let state = try JSONDecoder().decode(ActiveAgentState.self, from: data)
         let content = OverlayBubbleContent(state: state)
         let session = try #require(content.sessions.first)
 
         #expect(session.messageText == "已恢复气泡消息内容。")
-        #expect(session.statusText == APCLocalization.text(.overlayStatusTool))
+        #expect(session.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
         #expect(content.agentName == "Codex")
         #expect(session.sessionTitle == "保持会话消息持续显示")
         #expect(session.sessionID == "ses-projected-session-1")
+        #expect(session.navigationCapability == .exactSession)
+        #expect(session.actionLabel == APCLocalizedPresentation.navigationActionTitle(
+            .exactSession,
+            source: .codex
+        ))
         #expect(
             AgentSessionDeepLink.url(
                 source: .codex,
@@ -661,6 +670,78 @@ struct UIModelTests {
         #expect(secondContent.eventID != firstContent.eventID)
         let dismissedSessionIDs: Set<String> = [firstContent.id]
         #expect(dismissedSessionIDs.contains(secondContent.id))
+    }
+
+    @Test
+    func persistentAnonymousAliasesSurviveReorderingWithoutBecomingDisplayData() throws {
+        func state(
+            alias: String,
+            eventID: String,
+            activatedAt: String
+        ) throws -> ActiveAgentState {
+            let json = """
+            {"state":"tool","official_status":"running","source":"codex","session_id":null,"anonymous_session_alias":"\(alias)","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":30,"expires_at":null,"session_activated_at":"\(activatedAt)","event":{"id":"\(eventID)","source":"codex","session_id":null,"event_type":"tool","title":"Executing tool","detail":null,"created_at":"\(activatedAt)"}}
+            """
+            return try JSONDecoder().decode(ActiveAgentState.self, from: Data(json.utf8))
+        }
+
+        let first = try state(
+            alias: "anon-1",
+            eventID: "anonymous-a",
+            activatedAt: "2026-07-20T00:00:01Z"
+        )
+        let second = try state(
+            alias: "anon-2",
+            eventID: "anonymous-b",
+            activatedAt: "2026-07-20T00:00:02Z"
+        )
+
+        let original = OverlayBubbleContent(source: .codex, states: [first, second])
+        let reordered = OverlayBubbleContent(source: .codex, states: [second, first])
+        let originalByID = Dictionary(
+            uniqueKeysWithValues: original.sessions.map { ($0.id, $0.sessionTitle) }
+        )
+        let reorderedByID = Dictionary(
+            uniqueKeysWithValues: reordered.sessions.map { ($0.id, $0.sessionTitle) }
+        )
+
+        #expect(originalByID == reorderedByID)
+        #expect(originalByID["session-codex-anon-1"] == APCLocalization.format(
+            .overlaySessionAliasTitleFormat,
+            "Codex",
+            "A"
+        ))
+        #expect(originalByID["session-codex-anon-2"] == APCLocalization.format(
+            .overlaySessionAliasTitleFormat,
+            "Codex",
+            "B"
+        ))
+        #expect(!original.sessions.map(\.sessionTitle).joined().contains("anon-"))
+
+        let resolved = OverlayPresentedAgentState.resolve(
+            canonicalState: first,
+            activeSessions: [first, second],
+            dismissedSessionIDs: ["session-codex-anon-1"]
+        )
+        #expect(resolved?.anonymousSessionAlias == "anon-2")
+    }
+
+    @Test
+    func malformedAnonymousAliasFailsClosedToTheGenericSessionLabel() throws {
+        let state = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(
+                #"{"state":"tool","source":"codex","session_id":null,"anonymous_session_alias":"../../project/private","source_session_sequence":1,"priority":300,"event":{"id":"malformed-alias","source":"codex","event_type":"tool","title":"Executing tool","created_at":"2026-07-20T00:00:00Z"}}"#.utf8
+            )
+        )
+        let content = OverlaySessionContent(state: state)
+
+        #expect(content.id == "session-codex-unattributed")
+        #expect(content.sessionTitle == APCLocalization.format(
+            .overlaySessionTitleFormat,
+            "Codex"
+        ))
+        #expect(!content.sessionTitle.contains("project"))
     }
 
     @Test
@@ -929,8 +1010,7 @@ struct UIModelTests {
             eventType: .tool,
             sessionTitle: "Short",
             messageText: "一行",
-            statusText: "正在使用工具",
-            actionLabel: "打开"
+            statusText: "正在使用工具"
         )
         let long = OverlaySessionContent(
             id: "long",
@@ -939,8 +1019,7 @@ struct UIModelTests {
             eventType: .tool,
             sessionTitle: "Long",
             messageText: "这是一段会自动换到第二行的较长活动描述，用来验证面板高度不会随着 hook 内容改变",
-            statusText: "正在使用工具",
-            actionLabel: "打开"
+            statusText: "正在使用工具"
         )
         let shortContent = OverlayBubbleContent(
             id: "short-content",
@@ -976,8 +1055,7 @@ struct UIModelTests {
                 eventType: .tool,
                 sessionTitle: "Session \(index)",
                 messageText: "正在运行",
-                statusText: "正在使用工具",
-                actionLabel: "打开"
+                statusText: "正在使用工具"
             )
         }
         let content = OverlayBubbleContent(
@@ -1149,8 +1227,7 @@ struct UIModelTests {
                 eventType: eventType,
                 sessionTitle: id,
                 messageText: id,
-                statusText: id,
-                actionLabel: "打开"
+                statusText: id
             )
         }
 
@@ -1181,12 +1258,12 @@ struct UIModelTests {
             )).statusText
         }
 
-        #expect(status(.start) == APCLocalization.text(.overlayStatusRunning))
-        #expect(status(.tool) == APCLocalization.text(.overlayStatusTool))
-        #expect(status(.waiting) == APCLocalization.text(.overlayStatusNeedsInput))
-        #expect(status(.review) == APCLocalization.text(.overlayStatusReview))
-        #expect(status(.done) == APCLocalization.text(.overlayStatusDone))
-        #expect(status(.failed) == APCLocalization.text(.overlayStatusBlocked))
+        #expect(status(.start) == APCLocalizedPresentation.lifecycleTitle(.start))
+        #expect(status(.tool) == APCLocalizedPresentation.lifecycleTitle(.tool))
+        #expect(status(.waiting) == APCLocalizedPresentation.lifecycleTitle(.waiting))
+        #expect(status(.review) == APCLocalizedPresentation.lifecycleTitle(.review))
+        #expect(status(.done) == APCLocalizedPresentation.lifecycleTitle(.done))
+        #expect(status(.failed) == APCLocalizedPresentation.lifecycleTitle(.failed))
         #expect(status(.review) != status(.done))
     }
 
@@ -1201,7 +1278,6 @@ struct UIModelTests {
                 sessionTitle: eventType.rawValue,
                 messageText: eventType.rawValue,
                 statusText: eventType.rawValue,
-                actionLabel: "打开",
                 navigation: AgentSessionNavigation(sessionOpen: false)
             )
         }
@@ -1226,7 +1302,6 @@ struct UIModelTests {
             sessionTitle: "Failed",
             messageText: "Blocked",
             statusText: "失败",
-            actionLabel: "打开",
             navigation: AgentSessionNavigation(sessionOpen: false)
         )
         let waiting = OverlaySessionContent(
@@ -1237,7 +1312,6 @@ struct UIModelTests {
             sessionTitle: "Waiting",
             messageText: "Needs input",
             statusText: "待确认",
-            actionLabel: "打开",
             navigation: AgentSessionNavigation(sessionOpen: false)
         )
         let review = OverlaySessionContent(
@@ -1248,7 +1322,6 @@ struct UIModelTests {
             sessionTitle: "Review",
             messageText: "Ready for review",
             statusText: "待审阅",
-            actionLabel: "打开",
             navigation: AgentSessionNavigation(sessionOpen: false)
         )
         let done = OverlaySessionContent(
@@ -1259,7 +1332,6 @@ struct UIModelTests {
             sessionTitle: "Done",
             messageText: "Completed",
             statusText: "已完成",
-            actionLabel: "打开",
             navigation: AgentSessionNavigation(sessionOpen: false)
         )
 
@@ -1409,15 +1481,15 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func revealingBubbleIsIdempotentForDismissedAndVisibleStates() {
+    func revealingBubbleWithoutSessionContentIsANoOp() {
         let store = makeStore()
         store.overlayBubbleDismissed = true
 
         store.revealOverlayBubble()
-        #expect(!store.overlayBubbleDismissed)
+        #expect(store.overlayBubbleDismissed)
 
         store.revealOverlayBubble()
-        #expect(!store.overlayBubbleDismissed)
+        #expect(store.overlayBubbleDismissed)
     }
 
     @MainActor
@@ -1437,13 +1509,14 @@ struct UIModelTests {
     }
 
     @Test
-    func agentSessionRouterPrefersWarpPaneAndNeverBlindlyDeepLinksCodexCLI() throws {
+    func agentSessionRouterEnforcesDeclaredAndStructurallyValidCapabilities() throws {
         let warpURL = "warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
         #expect(
             AgentSessionRouter.route(
                 source: .codex,
                 sessionID: "thread-1",
                 navigation: AgentSessionNavigation(
+                    capability: .exactSession,
                     sessionOpen: true,
                     surface: "cli_terminal",
                     terminalApp: "warp",
@@ -1451,12 +1524,26 @@ struct UIModelTests {
                 )
             ) == .url(try #require(URL(string: warpURL)))
         )
+        #expect(
+            AgentSessionRouter.route(
+                source: .codex,
+                sessionID: "thread-1",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "chatgpt_app",
+                    terminalApp: "warp",
+                    openURL: warpURL
+                )
+            ) == nil
+        )
 
         let unconfirmedDesktopThread = try #require(
             AgentSessionRouter.route(
                 source: .codex,
                 sessionID: "thread-unconfirmed",
                 navigation: AgentSessionNavigation(
+                    capability: .agentHost,
                     sessionOpen: nil,
                     surface: "chatgpt_app"
                 )
@@ -1472,6 +1559,7 @@ struct UIModelTests {
                 source: .codex,
                 sessionID: "ses-opaque-thread",
                 navigation: AgentSessionNavigation(
+                    capability: .exactSession,
                     sessionOpen: true,
                     surface: "chatgpt_app",
                     routableSessionID: "019f5b0f-88ff-7413-8953-29de4ed0951c"
@@ -1481,53 +1569,194 @@ struct UIModelTests {
             )))
         )
 
-        let nonUUIDDesktopThread = try #require(AgentSessionRouter.route(
-            source: .codex,
-            sessionID: "thread-confirmed",
-            navigation: AgentSessionNavigation(
-                sessionOpen: true,
-                surface: "chatgpt_app"
-            )
-        ))
-        guard case .application = nonUUIDDesktopThread else {
-            Issue.record("non-UUID Codex session identity must only activate ChatGPT")
-            return
-        }
+        #expect(
+            AgentSessionRouter.route(
+                source: .codex,
+                sessionID: "thread-confirmed",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "chatgpt_app"
+                )
+            ) == nil
+        )
 
-        let rawUUIDWithoutDedicatedRoutingField = try #require(
+        #expect(
             AgentSessionRouter.route(
                 source: .codex,
                 sessionID: "019f5b0f-88ff-7413-8953-29de4ed0951c",
                 navigation: AgentSessionNavigation(
+                    capability: .exactSession,
                     sessionOpen: true,
                     surface: "chatgpt_app"
                 )
-            )
+            ) == nil
         )
-        guard case .application = rawUUIDWithoutDedicatedRoutingField else {
-            Issue.record("generic session identity bypassed the dedicated routable-session field")
-            return
-        }
-
-        let unknownSurface = try #require(
-            AgentSessionRouter.route(
-                source: .codex,
-                sessionID: "thread-1",
-                navigation: AgentSessionNavigation(sessionOpen: true)
-            )
-        )
-        guard case .application = unknownSurface else {
-            Issue.record("unknown Codex surface must activate ChatGPT instead of using a thread deep link")
-            return
-        }
 
         #expect(
             AgentSessionRouter.route(
                 source: .codex,
                 sessionID: "thread-1",
-                navigation: AgentSessionNavigation(sessionOpen: false)
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true
+                )
+            )
+            == nil
+        )
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .pi,
+                sessionID: "terminal-host",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "cli_terminal"
+                )
             ) == nil
         )
+
+        let knownTerminal = try #require(
+            AgentSessionRouter.route(
+                source: .pi,
+                sessionID: "terminal-host",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "cli_terminal",
+                    terminalApp: "ghostty"
+                )
+            )
+        )
+        guard case let .application(bundleIdentifiers, paths) = knownTerminal else {
+            Issue.record("a structurally valid host route must activate its declared terminal")
+            return
+        }
+        #expect(bundleIdentifiers == ["com.mitchellh.ghostty"])
+        #expect(paths == ["/Applications/Ghostty.app"])
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .codex,
+                sessionID: "thread-1",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: false
+                )
+            ) == nil
+        )
+        #expect(
+            AgentSessionRouter.route(
+                source: .codex,
+                sessionID: "thread-1",
+                navigation: AgentSessionNavigation(
+                    capability: .unavailable,
+                    sessionOpen: true,
+                    surface: "chatgpt_app"
+                )
+            ) == nil
+        )
+    }
+
+    @Test
+    func overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination() {
+        func session(
+            id: String,
+            navigation: AgentSessionNavigation
+        ) -> OverlaySessionContent {
+            OverlaySessionContent(
+                id: id,
+                source: .codex,
+                sessionID: id,
+                eventType: .waiting,
+                sessionTitle: id,
+                messageText: "Needs a response",
+                statusText: "Needs You",
+                navigation: navigation
+            )
+        }
+
+        let exact = session(
+            id: "exact",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "cli_terminal",
+                terminalApp: "warp",
+                openURL: "warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+            )
+        )
+        let host = session(
+            id: "host",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
+        )
+        let unavailable = session(
+            id: "unavailable",
+            navigation: AgentSessionNavigation(
+                capability: .exactSession,
+                sessionOpen: true,
+                surface: "chatgpt_app",
+                routableSessionID: "malformed"
+            )
+        )
+        let content = OverlayBubbleContent(
+            id: "agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: [exact, host, unavailable]
+        )
+        let accessibility = OverlayBubbleAccessibilityModel(
+            content: content,
+            locale: "en"
+        )
+
+        #expect(exact.navigationCapability == .exactSession)
+        #expect(exact.actionLabel == APCLocalizedPresentation.navigationActionTitle(
+            .exactSession,
+            source: .codex
+        ))
+        #expect(host.navigationCapability == .agentHost)
+        #expect(host.actionLabel == APCLocalizedPresentation.navigationActionTitle(
+            .agentHost,
+            source: .codex
+        ))
+        #expect(unavailable.navigationCapability == .unavailable)
+        #expect(!unavailable.canOpen)
+        #expect(exact.accessibilityReadingOrder == [
+            "Codex",
+            "exact",
+            "Needs You",
+            "Needs a response",
+            APCLocalizedPresentation.navigationActionTitle(
+                .exactSession,
+                source: .codex
+            )!,
+        ])
+        #expect(accessibility.sessionActionLabels == [
+            "Return to Session",
+            "Open Codex",
+            nil,
+        ])
+    }
+
+    @Test
+    func overlayPresentationSuppressesRepeatedTitleStatusAndMessage() throws {
+        let state = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(
+                #"{"state":"tool","source":"codex","session_id":"deduplicated","source_session_sequence":1,"priority":300,"event":{"id":"deduplicated-event","source":"codex","session_id":"deduplicated","event_type":"tool","title":"Working","created_at":"2026-07-23T00:00:00Z"},"session_title":"Working","session_message":{"role":"assistant","content":"Working"}}"#.utf8
+            )
+        )
+        let content = OverlaySessionContent(state: state)
+
+        #expect(content.sessionTitle != content.statusText)
+        #expect(content.messageText != content.statusText)
+        #expect(content.messageText != content.sessionTitle)
     }
 
     @Test

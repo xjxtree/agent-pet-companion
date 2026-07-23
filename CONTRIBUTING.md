@@ -11,9 +11,9 @@ Thanks for helping improve Agent Pet Companion. The project is a local-first mac
 - Rust 1.96.0 with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
 - Python 3 for validation helpers
 
-The primary V1 performance target is Apple silicon. The current development release tooling produces separate thin `arm64` and `x86_64` ad-hoc-signed archives. Those artifacts must pass architecture, package, signature-integrity, and checksum validation. The supported public-distribution target additionally requires Developer ID signing, notarization, stapling, and Gatekeeper acceptance as defined by the [product experience contract](docs/product/experience-contract.md) and [task `R14`](docs/development/product-refactor-execution.md#r14--implement-supported-public-distribution).
+The primary V1 performance target is Apple silicon. Release tooling has explicit preview and public modes. `--preview` produces clearly labeled, ad-hoc-signed thin `arm64` and `x86_64` archives. `--public --arch all` fails closed and requires externally provisioned signing identity, Team ID, and notary profile. Publication additionally requires native validation on both architectures and exact downloaded-asset revalidation. Missing credentials or runners means unavailable or incomplete, never passed. See the [release procedure](docs/release/macos-release.md) and [validation profiles](docs/development/validation.md).
 
-V1 的主要性能目标是 Apple Silicon。当前开发发布工具分别生成采用 ad-hoc 签名的 thin `arm64` 与 `x86_64` App 归档；这些产物必须通过架构、包内容、签名完整性与校验和验证。受支持的公开分发还必须完成 Developer ID 签名、Apple 公证、staple 与 Gatekeeper 验收，具体见[产品体验合同](docs/product/experience-contract.md)与[任务 `R14`](docs/development/product-refactor-execution.md#r14--implement-supported-public-distribution)。
+V1 的主要性能目标是 Apple Silicon。发布工具明确区分 preview 与 public 两种模式：`--preview` 生成清楚标注、采用 ad-hoc 签名的 thin `arm64` 与 `x86_64` 归档；`--public --arch all` 采用 fail-closed 设计，要求外部配置签名身份、Team ID 与公证 profile。正式发布还必须在两种原生架构上完成验证，并重新校验实际下载的发布文件。缺少凭据或 runner 只能记为 unavailable 或 incomplete，不能记为通过。具体见[发布流程](docs/release/macos-release.md)与[验证层级](docs/development/validation.md)。
 
 ## Before changing behavior / 修改行为前
 

@@ -13,34 +13,34 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
 - **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own.
 - **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. Each supported concurrent session can appear in its Agent bubble, and a click opens the corresponding host or session when available.
-- **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file.
+- **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file. AI Pet Maker contacts your configured Codex provider only when you start a creation or edit.
 
 ## Features
 
 - **Pet Library** — use the bundled `星雾团子` and `Bytebud 字节芽`, or import, preview, enable, export, and manage your own `.petpack` pets.
 - **AI Pet Maker** — describe a pet, choose its style and quality, add reference images, then create or refine it through Codex.
-- **Pet Configuration** — control visibility, bubbles, appearance, interaction, session grouping, and animation profile.
+- **Pet Configuration** — choose visibility, appearance, Standard/Smooth motion, and a message-attention preset; source, event, timeout, grouping, and interaction controls remain available under Advanced Settings.
 - **Agent Connections** — check, repair, test, or remove integrations for Codex, Claude Code, Pi Coding Agent, and OpenCode.
 - **Service & Diagnostics** — confirm that the companion is working, recover unhealthy services, and export a privacy-filtered diagnostics ZIP when support needs more detail.
 - **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
 
-The app is local-first: pets, settings, normalized agent events, and diagnostics remain on the Mac unless the user explicitly exports a file. It does not read agent credentials, tokens, cookies, or API keys.
+The app is local-first: pets, settings, normalized agent events, and diagnostics remain on the Mac unless the user explicitly exports a file. AI Pet Maker uses the current user's configured Codex provider only after the user starts a creation or edit. The app does not read agent credentials, tokens, cookies, or API keys.
 
 ## Installation
 
-### Development-preview GitHub Release
+### Supported GitHub Release
 
-The repository's current release tooling produces architecture-specific, ad-hoc-signed archives that are not Apple-notarized. Any such published archive is a **Development Preview**, not the final supported public package. The supported distribution contract requires Developer ID signing, notarization, stapling, and Gatekeeper acceptance before ordinary end-user installation.
-
-When a development preview is available:
+When a Release is explicitly published as a supported public version:
 
 1. Open [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases).
-2. Download the ZIP matching your Mac—`macos-arm64` for Apple silicon or `macos-x86_64` for Intel—plus the versioned `SHA256SUMS.txt`.
+2. Download the ZIP matching your Mac—`macos-arm64` for Apple silicon or `macos-x86_64` for Intel—plus that version's `SHA256SUMS.txt`.
 3. In the download directory, verify the selected ZIP, for example: `grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -`.
 4. Extract the archive and move `AgentPetCompanion.app` to `/Applications`.
-5. Open the app and complete the checks under **Agent Connections**.
+5. Open the app and follow the three-scene setup: choose an included companion, connect the Agents you use, and watch the clearly labeled local demo.
 
-Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger the Intel-app support warning described in [Apple's Rosetta guidance](https://support.apple.com/102527). The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. A preview Release must state its signing and validation limitations and record its checksums; follow only its explicit preview guidance.
+Supported archives use Developer ID signing, Apple notarization and stapling, and Gatekeeper validation. The published checksum covers the exact downloadable ZIP. No source toolchain or quarantine workaround is part of the supported installation path. Do not run the `x86_64` archive on an Apple silicon Mac: use `arm64` instead, without Rosetta.
+
+Files ending in `-preview.zip` are explicitly ad-hoc-signed **Development Previews**. They are not notarized supported packages and are intended only for informed development handoff; their Release notes must state the narrower validation scope.
 
 ### Build from source
 
@@ -60,12 +60,11 @@ The ad-hoc-signed development app is written to `dist/`. Add `--archive` only wh
 
 ## Usage
 
-1. Open **Pet Library** and enable one of the bundled pets, or import your own `.petpack`.
-2. Open **AI Pet Maker** to create a pet. This workflow requires a working Codex App Server from the Codex CLI or the bundled ChatGPT/Codex app, with provider access available to the current user.
-3. Use **Pet Configuration** to choose the appearance, bubbles, input behavior, grouping, and animation profile. Native 20 FPS pets support Standard 10 FPS and Smooth 20 FPS playback; native 10 FPS pets remain at 10 FPS, and neither choice changes the authored action duration.
-4. Use **Agent Connections** to install or verify the integrations you use.
-5. Keep the app running while working with an agent. The pet reacts to start, tool, waiting, review, done, and failed events.
-6. If something goes wrong, open **Service & Diagnostics**, export a diagnostics ZIP, and attach it to the issue.
+On first launch, the App resumes a short setup until you finish or explicitly skip it. The demo shows thinking, working, needs-attention, and completion using only local presentation state; it does not create Agent activity or diagnostics records. Closing the setup preserves the current scene for the next launch.
+
+After setup, leave the App running and work normally in your Agent. The pet shows working, attention, and result states. A bubble action returns to the exact session when a validated route is available, opens the Agent host when only host-level navigation is safe, and stays unavailable when neither destination is valid.
+
+Open the five management pages only when you want to switch or import a pet, create or edit one, adjust the ambient experience, connect an Agent, or recover and export diagnostics. AI creation requires a working Codex App Server and access through the current user's configured provider. Standard/Smooth playback never changes authored action duration, and Smooth appears only for validated native-20 pets.
 
 Bundled pets are read-only defaults: they can be previewed, enabled, and exported, but not deleted or modified in place. App-created and imported pets can be revised; imported pets without a previous creation conversation start a new edit session from their validated package.
 
@@ -86,7 +85,7 @@ flowchart LR
     Source --> Core
 ```
 
-The macOS App owns the control center, menu-bar entry, desktop overlay, and rendering. PetCore owns durable state, pet validation and revision commits, generation jobs, normalized agent events, connector operations, and diagnostics. The two components are released as one versioned runtime set; quitting the UI closes the pet and windows while the PetCore LaunchAgent can continue preserving local event and data continuity.
+The macOS App owns the control center, menu-bar entry, desktop overlay, and rendering. PetCore owns durable state, pet validation and revision commits, generation jobs, normalized agent events, connector operations, and diagnostics. The App, PetCore, and `petcore-cli` are released as one versioned runtime set; quitting the UI closes the pet and windows while the PetCore LaunchAgent can continue preserving local event and data continuity.
 
 ## Documentation
 

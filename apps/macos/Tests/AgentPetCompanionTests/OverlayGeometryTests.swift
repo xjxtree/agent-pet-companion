@@ -39,7 +39,6 @@ struct OverlayGeometryTests {
 
     @Test
     func testBubbleToggleUsesCountChevronAndVisibilityBySessionCount() {
-        #expect(OverlayBubbleContent.idle.representedSessionCount == 0)
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 0,
             collapsed: true
@@ -824,7 +823,11 @@ struct OverlayGeometryTests {
             sessionTitle: "Session",
             messageText: "Working",
             statusText: "",
-            actionLabel: "Open"
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
         )
         var closedSession = openSession
         closedSession.navigation.sessionOpen = false
@@ -1005,7 +1008,11 @@ struct OverlayGeometryTests {
             sessionTitle: "A",
             messageText: "A",
             statusText: "",
-            actionLabel: "Open"
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
         )
         let sessionB = OverlaySessionContent(
             id: "b",
@@ -1015,7 +1022,11 @@ struct OverlayGeometryTests {
             sessionTitle: "B",
             messageText: "B",
             statusText: "",
-            actionLabel: "Open"
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "chatgpt_app"
+            )
         )
         let content = OverlayBubbleContent(
             id: "codex",
@@ -1027,14 +1038,59 @@ struct OverlayGeometryTests {
         let english = OverlayBubbleAccessibilityModel(content: content, locale: "en")
         let chinese = OverlayBubbleAccessibilityModel(content: content, locale: "zh-Hans")
 
-        #expect(english.sessionActionLabels == ["Open", "Open"])
+        #expect(english.sessionActionLabels == ["Open Codex", "Open Codex"])
         #expect(english.sessionCloseActionLabels == ["Hide This Session", "Hide This Session"])
         #expect(english.closeActionLabel == "Close session bubble")
         #expect(english.groupActionLabel == "Collapse 2 sessions")
-        #expect(chinese.sessionActionLabels == ["打开", "打开"])
+        #expect(chinese.sessionActionLabels == ["打开 Codex", "打开 Codex"])
         #expect(chinese.sessionCloseActionLabels == ["收起此会话", "收起此会话"])
         #expect(chinese.closeActionLabel == "关闭会话气泡")
         #expect(chinese.groupActionLabel == "收起 2 个会话")
+    }
+
+    @Test
+    func voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic() {
+        let fixtures = [
+            (
+                session: "A longer session title that still identifies the active work",
+                status: "Needs You",
+                message: "Return to the agent to approve, answer, or decide."
+            ),
+            (
+                session: "一个用于确认较长中文内容仍保持语义顺序的会话标题",
+                status: "等你处理",
+                message: "请回到 Agent 完成确认、回答或决策。"
+            ),
+        ]
+
+        for fixture in fixtures {
+            let session = OverlaySessionContent(
+                id: "voiceover-order",
+                source: .codex,
+                sessionID: "voiceover-order",
+                eventType: .waiting,
+                sessionTitle: fixture.session,
+                messageText: fixture.message,
+                statusText: fixture.status,
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "chatgpt_app"
+                )
+            )
+
+            #expect(session.accessibilityReadingOrder == [
+                "Codex",
+                fixture.session,
+                fixture.status,
+                fixture.message,
+                session.actionLabel,
+            ])
+            #expect(
+                session.accessibilityLabel
+                    == session.accessibilityReadingOrder.joined(separator: ", ")
+            )
+        }
     }
 
     @Test
@@ -1046,8 +1102,7 @@ struct OverlayGeometryTests {
             eventType: .tool,
             sessionTitle: "Codex session 1",
             messageText: "Working",
-            statusText: "Working",
-            actionLabel: "Open"
+            statusText: "Working"
         )
         let secondRunning = OverlaySessionContent(
             id: "second",
@@ -1056,8 +1111,7 @@ struct OverlayGeometryTests {
             eventType: .tool,
             sessionTitle: "Codex session 2",
             messageText: "Working",
-            statusText: "Working",
-            actionLabel: "Open"
+            statusText: "Working"
         )
         var secondAttention = secondRunning
         secondAttention.eventType = .waiting

@@ -11,11 +11,11 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
     BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    OverlayPlacement, PetOrigin, PetStateName, PetSummary, QualityLevel, RenderSize,
-    SessionGroupDisplay, LONG_ACTION_DURATION_MS, MAX_BUBBLE_TRANSPARENCY,
-    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
-    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, REQUIRED_STATES, SHORT_ACTION_DURATION_MS, SMOOTH_FPS,
-    STANDARD_FPS,
+    OnboardingProgress, OnboardingStage, OverlayPlacement, PetOrigin, PetStateName, PetSummary,
+    QualityLevel, RenderSize, SessionGroupDisplay, LONG_ACTION_DURATION_MS,
+    MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
+    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
+    SHORT_ACTION_DURATION_MS, SMOOTH_FPS, STANDARD_FPS,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GENERATION_HISTORY_QUERY_LIMIT: usize = 33;
+const ONBOARDING_PROGRESS_SETTING_KEY: &str = "onboarding_progress";
 
 #[derive(Debug, Clone)]
 pub struct GenerationJobRecord {
@@ -197,6 +198,12 @@ pub struct VersionedBehaviorSettings {
     pub revision: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VersionedOnboardingProgress {
+    pub progress: OnboardingProgress,
+    pub revision: String,
+}
+
 struct LegacyAgentEventRow {
     external_event_id: String,
     source: String,
@@ -259,10 +266,10 @@ impl Default for EventRetentionPolicy {
     }
 }
 
-// Keep bundled-pet identity inside schema-5-compatible PetSummary fields so a
-// candidate daemon cannot make the database unreadable to the last-known-good
-// schema-5 runtime before the candidate is committed healthy.
-pub const DATABASE_SCHEMA_VERSION: u32 = 5;
+// Schema 6 adds the smallest durable authority needed for content-free,
+// stable anonymous-session aliases. Runtime replacement preflight blocks a
+// schema-5 daemon from opening the upgraded database.
+pub const DATABASE_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_STATE_DURATIONS_JSON: &str = r#"{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}"#;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
 const SUPPRESSED_AGENT_SESSION_RETENTION_DAYS: u32 = 30;
@@ -438,6 +445,14 @@ impl Database {
               PRIMARY KEY(source, session_key)
             );
 
+            CREATE TABLE IF NOT EXISTS agent_session_aliases (
+              alias_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              source TEXT NOT NULL,
+              session_key TEXT NOT NULL,
+              assigned_at TEXT NOT NULL,
+              UNIQUE(source, session_key)
+            );
+
             CREATE TABLE IF NOT EXISTS privacy_migrations (
               migration_key TEXT PRIMARY KEY,
               phase TEXT NOT NULL,
@@ -467,6 +482,7 @@ impl Database {
             "#,
         )?;
         self.migrate_agent_events(&mut connection)?;
+        self.migrate_agent_session_aliases(&mut connection)?;
         self.ensure_pets_metadata_columns(&connection)?;
         self.ensure_generation_job_columns(&connection)?;
         self.ensure_settings_columns(&connection)?;
@@ -662,6 +678,49 @@ impl Database {
         Ok(())
     }
 
+    fn migrate_agent_session_aliases(&self, connection: &mut Connection) -> Result<()> {
+        let sessions = {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT events.source, events.session_key,
+                       MIN(events.created_at) AS first_seen_at,
+                       MIN(events.row_id) AS first_row_id
+                FROM agent_events AS events
+                LEFT JOIN agent_session_aliases AS aliases
+                  ON aliases.source = events.source
+                 AND aliases.session_key = events.session_key
+                WHERE aliases.alias_sequence IS NULL
+                GROUP BY events.source, events.session_key
+                ORDER BY events.source ASC, first_seen_at ASC,
+                         first_row_id ASC, events.session_key ASC
+                "#,
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (source, session_key, assigned_at) in sessions {
+            ensure_agent_session_alias_in_connection(
+                &transaction,
+                &source,
+                &session_key,
+                &assigned_at,
+            )?;
+        }
+        prune_agent_session_aliases(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn finish_event_privacy_scrub(&self, connection: &Connection) -> Result<()> {
         let pending = connection
             .query_row(
@@ -849,6 +908,7 @@ impl Database {
             "generation_messages",
             "agent_events",
             "suppressed_agent_sessions",
+            "agent_session_aliases",
             "pet_asset_validation",
             "settings",
         ] {
@@ -1016,6 +1076,68 @@ impl Database {
         })
     }
 
+    pub fn onboarding_with_revision(&self) -> Result<VersionedOnboardingProgress> {
+        let connection = self.open()?;
+        let (progress, revision) = read_onboarding_row(&connection)?;
+        Ok(VersionedOnboardingProgress {
+            progress,
+            revision: revision.to_string(),
+        })
+    }
+
+    pub fn update_onboarding(
+        &self,
+        expected_revision: u64,
+        next_progress: &OnboardingProgress,
+    ) -> Result<VersionedOnboardingProgress> {
+        if !next_progress.is_supported() {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "invalid params: onboarding schema_version must be {ONBOARDING_PROGRESS_SCHEMA_VERSION}"
+            )));
+        }
+
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (current_progress, actual_revision) = read_onboarding_row(&transaction)?;
+        if actual_revision != expected_revision {
+            return Err(PetCoreError::Conflict(format!(
+                "onboarding revision conflict: expected {expected_revision}, actual {actual_revision}"
+            )));
+        }
+        if !current_progress.stage.can_advance_to(next_progress.stage) {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "invalid params: onboarding transition {:?} -> {:?} is not allowed",
+                current_progress.stage, next_progress.stage
+            )));
+        }
+
+        if next_progress.stage == OnboardingStage::Completed {
+            let (mut behavior, behavior_revision) = read_behavior_row(&transaction)?;
+            if !behavior.enabled {
+                behavior.enabled = true;
+                let next_behavior_revision = behavior_revision.checked_add(1).ok_or_else(|| {
+                    PetCoreError::Validation("behavior revision overflow".to_string())
+                })?;
+                write_behavior_row(
+                    &transaction,
+                    &behavior,
+                    behavior_revision,
+                    next_behavior_revision,
+                )?;
+            }
+        }
+
+        let next_revision = actual_revision
+            .checked_add(1)
+            .ok_or_else(|| PetCoreError::Validation("onboarding revision overflow".to_string()))?;
+        write_onboarding_row(&transaction, next_progress, actual_revision, next_revision)?;
+        transaction.commit()?;
+        Ok(VersionedOnboardingProgress {
+            progress: next_progress.clone(),
+            revision: next_revision.to_string(),
+        })
+    }
+
     pub fn overlay_placement(&self) -> Result<OverlayPlacement> {
         Ok(self
             .get_setting("overlay_placement")?
@@ -1117,6 +1239,12 @@ impl Database {
             transaction.commit()?;
             return Ok(InsertEventOutcome::Suppressed);
         }
+        ensure_agent_session_alias_in_connection(
+            &transaction,
+            &enum_name(event.source),
+            &session_key,
+            &event.created_at,
+        )?;
         let changed = transaction.execute(
             r#"
             INSERT OR IGNORE INTO agent_events
@@ -1170,6 +1298,12 @@ impl Database {
         if agent_session_is_suppressed(&transaction, event.source, &session_key)? {
             return Ok(false);
         }
+        ensure_agent_session_alias_in_connection(
+            &transaction,
+            &enum_name(event.source),
+            &session_key,
+            &event.created_at,
+        )?;
         let payload_json = serde_json::to_string(&persisted_payload(event))?;
         let changed = transaction.execute(
             r#"
@@ -1795,6 +1929,7 @@ impl Database {
                         Box::new(error),
                     )
                 })?,
+                session_alias_sequence: None,
                 session_activated_at: None,
                 session_first_seen_at: None,
                 latest_terminal_navigation_payload: None,
@@ -2044,9 +2179,11 @@ impl Database {
                      ) AS session_rank
               FROM sequenced
             )
-            SELECT row_id, external_event_id, source, project_path, session_id, event_type,
-                   title, detail, payload_json, created_at, session_activated_at,
-                   session_first_seen_at,
+            SELECT selected.row_id, selected.external_event_id, selected.source,
+                   selected.project_path, selected.session_id, selected.event_type,
+                   selected.title, selected.detail, selected.payload_json,
+                   selected.created_at, selected.session_activated_at,
+                   selected.session_first_seen_at,
                    (
                      SELECT navigation.payload_json
                      FROM eligible AS navigation
@@ -2067,9 +2204,13 @@ impl Database {
                        )
                      ORDER BY navigation.created_at DESC, navigation.row_id DESC
                      LIMIT 1
-                   ) AS latest_terminal_navigation_payload
+                   ) AS latest_terminal_navigation_payload,
+                   aliases.alias_sequence
             FROM ranked AS selected
-            WHERE session_rank = 1
+            LEFT JOIN agent_session_aliases AS aliases
+              ON aliases.source = selected.source
+             AND aliases.session_key = selected.session_key
+            WHERE selected.session_rank = 1
             ORDER BY selected.created_at DESC, selected.row_id DESC
             LIMIT ?1
             "#,
@@ -2087,6 +2228,18 @@ impl Database {
                             Box::new(error),
                         )
                     })?,
+                    session_alias_sequence: row
+                        .get::<_, Option<i64>>(13)?
+                        .map(|value| {
+                            u64::try_from(value).map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    13,
+                                    rusqlite::types::Type::Integer,
+                                    Box::new(error),
+                                )
+                            })
+                        })
+                        .transpose()?,
                     session_activated_at: row.get(10)?,
                     session_first_seen_at: row.get(11)?,
                     latest_terminal_navigation_payload: row
@@ -3239,6 +3392,7 @@ fn sequenced_session_event_from_row(
                 Box::new(error),
             )
         })?,
+        session_alias_sequence: None,
         session_activated_at: None,
         session_first_seen_at: None,
         latest_terminal_navigation_payload: None,
@@ -3401,7 +3555,72 @@ fn prune_events_in_transaction(
             params![row_id],
         )?;
     }
+    prune_agent_session_aliases(transaction)?;
     Ok(rows.len())
+}
+
+fn ensure_agent_session_alias_in_connection(
+    connection: &Connection,
+    source: &str,
+    session_key: &str,
+    assigned_at: &str,
+) -> Result<u64> {
+    let existing = connection
+        .query_row(
+            r#"
+            SELECT alias_sequence
+            FROM agent_session_aliases
+            WHERE source = ?1 AND session_key = ?2
+            "#,
+            params![source, session_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(sequence) = existing {
+        return u64::try_from(sequence).map_err(|_| {
+            PetCoreError::Validation("session alias sequence must be positive".to_string())
+        });
+    }
+    connection.execute(
+        r#"
+        INSERT INTO agent_session_aliases
+          (source, session_key, assigned_at)
+        VALUES (?1, ?2, ?3)
+        "#,
+        params![source, session_key, assigned_at],
+    )?;
+    let sequence = connection.query_row(
+        r#"
+        SELECT alias_sequence
+        FROM agent_session_aliases
+        WHERE source = ?1 AND session_key = ?2
+        "#,
+        params![source, session_key],
+        |row| row.get::<_, i64>(0),
+    )?;
+    u64::try_from(sequence).map_err(|_| {
+        PetCoreError::Validation("session alias sequence must be positive".to_string())
+    })
+}
+
+fn prune_agent_session_aliases(connection: &Connection) -> Result<usize> {
+    // Alias rows only outlive a session while that session still has a
+    // retained event. The alias table is therefore bounded by the event
+    // retention row limit, while SQLite AUTOINCREMENT prevents token reuse.
+    connection
+        .execute(
+            r#"
+            DELETE FROM agent_session_aliases
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM agent_events AS events
+              WHERE events.source = agent_session_aliases.source
+                AND events.session_key = agent_session_aliases.session_key
+            )
+            "#,
+            [],
+        )
+        .map_err(Into::into)
 }
 
 fn suppress_agent_session_in_connection(
@@ -3422,6 +3641,10 @@ fn suppress_agent_session_in_connection(
     )?;
     connection.execute(
         "DELETE FROM agent_events WHERE source = ?1 AND session_key = ?2",
+        params![enum_name(source), session_key],
+    )?;
+    connection.execute(
+        "DELETE FROM agent_session_aliases WHERE source = ?1 AND session_key = ?2",
         params![enum_name(source), session_key],
     )?;
     Ok(())
@@ -3517,6 +3740,65 @@ fn write_behavior_row(
         let (_, actual_revision) = read_behavior_row(connection)?;
         return Err(PetCoreError::Conflict(format!(
             "behavior revision conflict: expected {expected_revision}, actual {actual_revision}"
+        )));
+    }
+    Ok(())
+}
+
+fn read_onboarding_row(connection: &Connection) -> Result<(OnboardingProgress, u64)> {
+    let row = connection
+        .query_row(
+            "SELECT value_json, revision FROM settings WHERE key = ?1",
+            params![ONBOARDING_PROGRESS_SETTING_KEY],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((value_json, revision)) = row else {
+        return Ok((OnboardingProgress::default(), 0));
+    };
+    let revision = u64::try_from(revision)
+        .map_err(|_| PetCoreError::Validation("onboarding revision must be non-negative".into()))?;
+    let progress: OnboardingProgress = serde_json::from_str(&value_json)?;
+    if !progress.is_supported() {
+        return Err(PetCoreError::Validation(format!(
+            "onboarding schema_version must be {ONBOARDING_PROGRESS_SCHEMA_VERSION}"
+        )));
+    }
+    Ok((progress, revision))
+}
+
+fn write_onboarding_row(
+    connection: &Connection,
+    progress: &OnboardingProgress,
+    expected_revision: u64,
+    next_revision: u64,
+) -> Result<()> {
+    let changed = connection.execute(
+        r#"
+        INSERT INTO settings (key, value_json, updated_at, revision)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at = excluded.updated_at,
+          revision = excluded.revision
+        WHERE settings.revision = ?5
+        "#,
+        params![
+            ONBOARDING_PROGRESS_SETTING_KEY,
+            serde_json::to_string_pretty(progress)?,
+            now_rfc3339(),
+            i64::try_from(next_revision).map_err(|_| {
+                PetCoreError::Validation("onboarding revision exceeds SQLite range".into())
+            })?,
+            i64::try_from(expected_revision).map_err(|_| {
+                PetCoreError::Validation("onboarding revision exceeds SQLite range".into())
+            })?,
+        ],
+    )?;
+    if changed == 0 {
+        let (_, actual_revision) = read_onboarding_row(connection)?;
+        return Err(PetCoreError::Conflict(format!(
+            "onboarding revision conflict: expected {expected_revision}, actual {actual_revision}"
         )));
     }
     Ok(())

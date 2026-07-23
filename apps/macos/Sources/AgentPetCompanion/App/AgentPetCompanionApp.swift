@@ -195,11 +195,6 @@ struct AppStatusMenuContent: View {
                 MenuBarSummary.short(MenuBarLocalizedSummary.recentEvent(store.recentEvents.first))
             ))
                 .accessibilityIdentifier("menubar.summary.agent")
-            Text(APCLocalization.format(
-                .appMenuPetCore,
-                MenuBarSummary.short(MenuBarLocalizedSummary.petCore(store.petCoreRuntimeInfo))
-            ))
-                .accessibilityIdentifier("menubar.summary.petcore")
             Divider()
             Button(APCLocalization.text(.appActionOpenControlCenter)) {
                 store.presentMainWindow()
@@ -318,19 +313,6 @@ private enum MenuBarLocalizedSummary {
         guard let event else { return APCLocalization.text(.appStateNoRecentActivity) }
         return "\(event.source.shortTitle) · \(APCLocalizedPresentation.eventTitle(event.eventType))"
     }
-
-    static func petCore(_ runtimeInfo: PetCoreRuntimeInfo) -> String {
-        switch runtimeInfo.phase {
-        case .checking:
-            APCLocalization.text(.appStatePetCoreChecking)
-        case .running:
-            runtimeInfo.version.map {
-                APCLocalization.format(.servicePetCoreRunningVersionFormat, $0)
-            } ?? APCLocalization.text(.appStatePetCoreRunning)
-        case .failed:
-            APCLocalization.text(.appStatePetCoreFailed)
-        }
-    }
 }
 
 private struct AppStatusItemLabel: View {
@@ -354,7 +336,10 @@ private struct MainWindowContent: View {
     var body: some View {
         ContentView()
             .environmentObject(store)
-            .frame(minWidth: 760, minHeight: 520)
+            .frame(
+                minWidth: ControlCenterShellPolicy.supportedMinimumWindowWidth,
+                minHeight: ControlCenterShellPolicy.supportedMinimumWindowHeight
+            )
             .apcAppearanceTheme(store.behavior.appearanceTheme)
             .background {
                 ZStack {

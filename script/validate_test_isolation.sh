@@ -267,40 +267,61 @@ HOST_MUTATING_VALIDATORS=(
 
 MAIN_UI_VALIDATOR="$ROOT_DIR/script/validate_main_window_ui.sh"
 for identifier in \
+  onboarding.root onboarding.skip \
   sidebar.navigation.library sidebar.navigation.maker sidebar.navigation.configuration \
   sidebar.navigation.connections sidebar.navigation.diagnostics \
-  pet-library.page pet-library.inspector \
-  maker.page maker.layout.two-stage maker.layout.stacked maker.action.start \
-  configuration.root configuration.subpage.appearance configuration.subpage.messages \
-  configuration.appearance.mouse-passthrough \
-  connections.root connections.agent.codex connections.detail.header connections.action.check-all \
-  diagnostics.page diagnostics.refresh diagnostics.layout.two-column \
-  diagnostics.layout.single-column diagnostics.layout.fitted-single-column; do
+  pet-library.page product.pet-library.page-header pet-library.hero \
+  product.pet-library.featured.primary-experience-card \
+  product.pet-library.featured.pet-preview-stage pet-library.collection-title pet-library.grid \
+  maker.page product.maker.page-header maker.layout.describe maker.brief \
+  maker.brief.description product.maker.primary-experience-card \
+  product.maker.primary-experience-card.primary-action \
+  configuration.root product.configuration.page-header configuration.subpage-picker \
+  configuration.page.appearance configuration.appearance.status-bubble \
+  configuration.appearance.theme configuration.appearance.fps \
+  connections.root product.connections.page-header connections.agent-section.codex \
+  product.connections.codex.agent-health-row \
+  product.connections.codex.advanced-details-disclosure \
+  diagnostics.page diagnostics.layout.single-column diagnostics.service-summary \
+  product.diagnostics.service.primary-experience-card \
+  product.diagnostics.service.primary-experience-card.primary-action \
+  diagnostics.log-package diagnostics.export diagnostics.technical-details; do
   if ! rg -Fq "$identifier" "$MAIN_UI_VALIDATOR"; then
     record_failure "main window validator is missing semantic AX identifier: $identifier"
   fi
 done
-for current_copy in '新宠物' '制作会话' '参考图（可选）' '开始制作' \
-  'New Pet' 'Creation Session' 'Reference Images (Optional)' 'Create Pet' \
+for current_copy in '新宠物' '参考图（可选）' '开始制作' \
+  'New Pet' 'Reference Images (Optional)' 'Create Pet' \
   '服务状态' '日志打包下载' '打包并下载' \
   'Service Status' 'Diagnostic Download' 'Package and Download'; do
   if ! rg -Fq "$current_copy" "$MAIN_UI_VALIDATOR"; then
-    record_failure "main window validator is missing current localized Maker copy: $current_copy"
+    record_failure "main window validator is missing current localized product copy: $current_copy"
   fi
 done
-if rg -q 'AI 辅助会话|发起 AI 辅助会话|contains[(]"响应来源"|contains[(]"响应事件"' \
+if rg -q 'pet-library[.]inspector"|maker[.]layout[.](two-stage|stacked)|maker[.]action[.]start|configuration[.]subpage[.](appearance|messages)|connections[.](agent[.]codex|detail[.]header|action[.]check-all)|diagnostics[.]layout[.](two-column|fitted-single-column)|diagnostics[.]refresh' \
+  "$MAIN_UI_VALIDATOR" \
+  || rg -q 'AI 辅助会话|发起 AI 辅助会话|contains[(]"响应来源"|contains[(]"响应事件"' \
   "$MAIN_UI_VALIDATOR"; then
-  record_failure 'main window validator still waits for removed or mutually exclusive UI copy'
+  record_failure 'main window validator still waits for removed UI identifiers or copy'
 fi
 if ! rg -Fq 'kAXIdentifierAttribute' "$MAIN_UI_VALIDATOR"; then
   record_failure 'main window validator does not read semantic AX identifiers'
+fi
+if ! rg -Fq 'supportedMinimumSize = CGSize(width: 760, height: 520)' \
+  "$MAIN_UI_VALIDATOR" \
+  || ! rg -Fq 'context: "supported minimum"' "$MAIN_UI_VALIDATOR"; then
+  record_failure 'main window validator does not exercise the supported 760x520 window'
 fi
 
 OVERLAY_NON_MOUSE_VALIDATOR="$ROOT_DIR/script/validate_overlay_non_mouse.sh"
 for current_contract in \
   'requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"]' \
-  'actionable privacy-normalized waiting session' \
-  'actionable normalized done session' \
+  'overlay.group.agent-claude_code' \
+  'overlay.session.session-claude_code-' \
+  'overlay.group.agent-codex' \
+  'overlay.session.session-codex-' \
+  'VoiceOver order is not Agent → session → status → message → action' \
+  '"等你处理", "Needs You"' \
   'RUN_ID="$RUN_ID"' \
   'bubble.frame.width >= 108' \
   'bubble.frame.height >= 70'; do
@@ -310,11 +331,135 @@ for current_contract in \
 done
 if rg -Fq 'values.contains("Claude") && values.contains("等待确认")' \
   "$OVERLAY_NON_MOUSE_VALIDATOR" \
+  || rg -Fq 'value.contains("需要输入") || value.contains("Needs input")' "$OVERLAY_NON_MOUSE_VALIDATOR" \
   || rg -Fq 'canonical bubble contains lower-priority agents' "$OVERLAY_NON_MOUSE_VALIDATOR" \
   || rg -Fq 'bubble.frame.height >= 44' "$OVERLAY_NON_MOUSE_VALIDATOR" \
   || rg -Fq 'bubble.frame.width <= 170' "$OVERLAY_NON_MOUSE_VALIDATOR"; then
   record_failure 'overlay non-mouse validator still assumes the removed single-agent legacy bubble'
 fi
+
+OVERLAY_ROOT_SOURCE="$ROOT_DIR/apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
+for accessibility_identifier in \
+  '.accessibilityIdentifier("overlay.group.\(content.id)")' \
+  '.accessibilityIdentifier("overlay.session.\(session.id)")'; do
+  if ! rg -Fq "$accessibility_identifier" "$OVERLAY_ROOT_SOURCE"; then
+    record_failure "overlay source is missing semantic AX identifier: $accessibility_identifier"
+  fi
+done
+
+OVERLAY_OFFLINE_VALIDATOR="$ROOT_DIR/script/validate_overlay_offline.sh"
+OVERLAY_ROUTER_SHIM="$ROOT_DIR/script/fixtures/AgentSessionRouterValidationShim.swift"
+if [[ "$(rg -Fc 'AgentSessionRouterValidationShim.swift' "$OVERLAY_OFFLINE_VALIDATOR")" != "2" ]]; then
+  record_failure 'overlay offline modules do not both include the navigation compile shim'
+fi
+for shim_contract in \
+  'Production navigation is already exercised by' \
+  'fatalError(' \
+  'must not exercise navigation'; do
+  if ! rg -Fq "$shim_contract" "$OVERLAY_ROUTER_SHIM"; then
+    record_failure "overlay navigation compile shim is missing its fail-closed contract: $shim_contract"
+  fi
+done
+if rg -Fq 'return navigation.capability' "$OVERLAY_ROUTER_SHIM"; then
+  record_failure 'overlay navigation compile shim substitutes routing behavior'
+fi
+
+# Keep the deterministic R13 proof mapped to concrete Swift and Rust tests.
+# The full suites still run later; these names prevent a green suite from
+# silently losing one of the required accessibility/integration contracts.
+R13_TEST_FILES=(
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/UIModelTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OverlayGeometryTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OverlayKeyboardFocusTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/ControlOverlayPanelTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/PetFramePipelineTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/BubbleGlassRegressionTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/SharedProductComponentsTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/ControlCenterShellTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingViewTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingViewTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingViewTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingAppStoreTests.swift"
+  "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingAppStoreTests.swift"
+  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/event_envelope_security.rs"
+)
+R13_TEST_NAMES=(
+  "overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination"
+  "voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic"
+  "appStoreFocusActionsGuardDisabledRoutesAndDispatchTypedEnabledActions"
+  "bubblePanelRestoresPassiveFocusStateWhenKeyboardNavigationEnds"
+  "reducedMotionPinsPlaybackToRepresentativeFrameAndPauses"
+  "accessibilityFallbacksRemainDarkerThanLegacyMaterial"
+  "completeComponentSetBuildsAtMinimumWidth"
+  "responsivePolicyPreservesTheSupportedMinimumWindow"
+  "stableAccessibilityIdentifiersCoverEverySceneAndAction"
+  "layoutAndCopyRemainUsableAtMinimumWindowAndBothLocales"
+  "localDemoProjectionHasNoPetCoreEventOrDiagnosticWritePath"
+  "snapshotHydratesResumableProgressAndOmissionDoesNotInventLocalState"
+  "explicitSkipPersistsAClosedTerminalStateWithoutTouchingThePet"
+  "display_projection_reports_sessions_omitted_by_the_eight_session_bound"
+  "waiting_without_session_active_persists_beyond_the_activity_lease"
+  "restart_restores_recent_and_stale_opencode_failures_until_the_session_advances"
+  "session_alias_authority_survives_restart_migration_and_tracks_event_retention"
+)
+for contract_index in "${!R13_TEST_FILES[@]}"; do
+  contract_file="${R13_TEST_FILES[$contract_index]}"
+  contract_name="${R13_TEST_NAMES[$contract_index]}"
+  if ! rg -Fq "$contract_name" "$contract_file"; then
+    record_failure "R13 deterministic contract is missing: $contract_name ($contract_file)"
+  fi
+done
+for long_copy_contract in \
+  'longRequiredActionCopyWrapsInsteadOfUsingSingleLineTruncation' \
+  'static let all = [english, simplifiedChinese]'; do
+  if ! rg -Fq "$long_copy_contract" \
+    "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/SharedProductComponentsTests.swift"; then
+    record_failure "long bilingual copy contract is missing: $long_copy_contract"
+  fi
+done
+
+EVENT_STORM_VALIDATOR="$ROOT_DIR/script/validate_event_storm.sh"
+for event_storm_contract in \
+  'sources=(codex claude_code pi opencode)' \
+  'events=(start tool waiting review done failed)' \
+  'len(data["events"]) <= 8' \
+  'len(data["active_agent_sessions"]) <= 8' \
+  'active_agent_sessions_omitted_count' \
+  '"/tmp/apc-storm/" not in json.dumps(data)' \
+  'events recent --limit "$EVENT_COUNT"' \
+  'state wait --after-revision "$INITIAL_REVISION"'; do
+  if ! rg -Fq "$event_storm_contract" "$EVENT_STORM_VALIDATOR"; then
+    record_failure "event-storm validator is missing contract mapping: $event_storm_contract"
+  fi
+done
+
+RENDERER_VALIDATOR="$ROOT_DIR/script/validate_renderer_runtime_budget.sh"
+for renderer_contract in \
+  'metrics["cpu_average_percent"] >= 1.0' \
+  'wait_for_telemetry high eager standard 10 10 2000 20 20' \
+  'wait_for_telemetry ultra eager standard 20 10 2000 40 20' \
+  'wait_for_telemetry ultra eager smooth 20 20 2000 40 40' \
+  'wait_for_telemetry original ring smooth 20 20 2000 40 40'; do
+  if ! rg -Fq "$renderer_contract" "$RENDERER_VALIDATOR"; then
+    record_failure "renderer validator is missing contract mapping: $renderer_contract"
+  fi
+done
+
+APP_RECOVERY_VALIDATOR="$ROOT_DIR/script/validate_app_recovery.sh"
+for recovery_contract in \
+  'apc_claim_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"' \
+  'kill "$initial_pid"' \
+  'recovered_pid" != "$initial_pid' \
+  'recovered_instance" != "$initial_instance' \
+  'recovered_parent" == "$APC_OWNED_APP_PID' \
+  'kill -0 "$APC_OWNED_APP_PID"'; do
+  if ! rg -Fq "$recovery_contract" "$APP_RECOVERY_VALIDATOR"; then
+    record_failure "app-recovery validator is missing contract mapping: $recovery_contract"
+  fi
+done
 
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 for current_contract in \

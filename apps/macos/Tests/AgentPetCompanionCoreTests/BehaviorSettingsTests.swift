@@ -5,6 +5,24 @@ import Testing
 @Suite
 struct BehaviorSettingsTests {
     @Test
+    func everySupportedAgentSourceIsEnabledByDefaultAndWhenLegacyDataOmitsIt() throws {
+        let defaults = BehaviorSettings()
+        #expect(defaults.sources.count == AgentSource.allCases.count)
+        #expect(AgentSource.allCases.allSatisfy {
+            defaults.sources[$0] == true
+        })
+
+        let legacy = try JSONDecoder().decode(
+            BehaviorSettings.self,
+            from: Data(#"{"sources":{"codex":false}}"#.utf8)
+        )
+        #expect(legacy.sources[.codex] == false)
+        #expect(legacy.sources[.claudeCode] == true)
+        #expect(legacy.sources[.pi] == true)
+        #expect(legacy.sources[.opencode] == true)
+    }
+
+    @Test
     func patchContainsOnlyChangedScalarAndMapEntries() throws {
         let previous = BehaviorSettings()
         var next = previous

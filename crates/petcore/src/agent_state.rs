@@ -18,6 +18,10 @@ const FUTURE_EVENT_GRACE_SECONDS: i64 = 60;
 pub struct SequencedAgentEvent {
     pub event: AgentEvent,
     pub source_session_sequence: u64,
+    /// Stable PetCore-owned alias authority for this source/session. The
+    /// sequence is allocated independently of event/display ordering and is
+    /// never derived from the host's raw session identifier.
+    pub session_alias_sequence: Option<u64>,
     pub session_activated_at: Option<String>,
     pub session_first_seen_at: Option<String>,
     pub latest_terminal_navigation_payload: Option<serde_json::Value>,
@@ -43,6 +47,8 @@ pub struct ActiveAgentState {
     pub session_id: Option<String>,
     pub session_active: bool,
     pub source_session_sequence: u64,
+    pub session_alias_sequence: Option<u64>,
+    pub anonymous_session_alias: Option<String>,
     pub priority: u16,
     pub lease_seconds: Option<i64>,
     pub expires_at: Option<String>,
@@ -91,8 +97,18 @@ pub enum OverlaySummaryKind {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayNavigationCapability {
+    ExactSession,
+    AgentHost,
+    #[default]
+    Unavailable,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OverlaySessionNavigation {
+    pub capability: OverlayNavigationCapability,
     pub session_open: Option<bool>,
     pub surface: Option<String>,
     pub terminal_app: Option<String>,
@@ -119,13 +135,14 @@ impl Serialize for ActiveAgentState {
     {
         let session_id = self.session_id.as_deref().map(opaque_session_id);
         let event = overlay_event_projection(&self.event);
-        let mut state = serializer.serialize_struct("ActiveAgentState", 15)?;
+        let mut state = serializer.serialize_struct("ActiveAgentState", 16)?;
         state.serialize_field("state", &self.state)?;
         state.serialize_field("official_status", &self.official_status)?;
         state.serialize_field("source", &self.source)?;
         state.serialize_field("session_id", &session_id)?;
         state.serialize_field("session_active", &self.session_active)?;
         state.serialize_field("source_session_sequence", &self.source_session_sequence)?;
+        state.serialize_field("anonymous_session_alias", &self.anonymous_session_alias)?;
         state.serialize_field("priority", &self.priority)?;
         state.serialize_field("lease_seconds", &self.lease_seconds)?;
         state.serialize_field("expires_at", &self.expires_at)?;
@@ -496,6 +513,8 @@ fn active_state_from_candidate(
         session_id: event.session_id.clone(),
         session_active,
         source_session_sequence: candidate.candidate.source_session_sequence,
+        session_alias_sequence: candidate.candidate.session_alias_sequence,
+        anonymous_session_alias: None,
         priority: event_priority(event.event_type),
         lease_seconds,
         expires_at,
@@ -620,35 +639,107 @@ pub fn overlay_activity_summary_kind(kind: &str) -> Option<OverlaySummaryKind> {
     })
 }
 
-fn overlay_navigation(event: &AgentEvent) -> OverlaySessionNavigation {
+pub(crate) fn overlay_navigation(event: &AgentEvent) -> OverlaySessionNavigation {
     let payload = &event.payload_json;
+    let session_open = payload
+        .get("session_open")
+        .and_then(serde_json::Value::as_bool);
+    let surface = payload
+        .get("session_surface")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| matches!(*value, "chatgpt_app" | "cli_terminal" | "unknown"))
+        .map(ToOwned::to_owned);
+    let terminal_app = payload
+        .get("terminal_app")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| {
+            matches!(
+                *value,
+                "warp" | "terminal" | "iterm2" | "ghostty" | "unknown"
+            )
+        })
+        .map(ToOwned::to_owned);
+    let projected_open_url = payload
+        .get("session_open_url")
+        .and_then(serde_json::Value::as_str)
+        // Ingest validates this closed URL shape. Keep the projection
+        // independently fail-closed for legacy database rows.
+        .and_then(validated_warp_focus_url);
+    let open_url = (surface.as_deref() == Some("cli_terminal")
+        && terminal_app.as_deref() == Some("warp"))
+    .then_some(projected_open_url)
+    .flatten();
+    let routable_session_id = routable_codex_session_id(event);
+    let exact_session = session_open != Some(false)
+        && (open_url.is_some()
+            || (event.source == AgentSource::Codex
+                && surface.as_deref() == Some("chatgpt_app")
+                && session_open == Some(true)
+                && routable_session_id.is_some()));
+    let known_terminal_host = surface.as_deref() == Some("cli_terminal")
+        && terminal_app
+            .as_deref()
+            .is_some_and(|value| value != "unknown");
+    let known_codex_host = event.source == AgentSource::Codex
+        && surface.as_deref() == Some("chatgpt_app")
+        && terminal_app.is_none();
+    let capability = if exact_session {
+        OverlayNavigationCapability::ExactSession
+    } else if session_open != Some(false) && (known_terminal_host || known_codex_host) {
+        // A host-only route needs a specific known application. Merely knowing
+        // that a CLI source exists is insufficient: opening an arbitrary
+        // terminal would not truthfully return to that Agent.
+        OverlayNavigationCapability::AgentHost
+    } else {
+        OverlayNavigationCapability::Unavailable
+    };
     OverlaySessionNavigation {
-        session_open: payload
-            .get("session_open")
-            .and_then(serde_json::Value::as_bool),
-        surface: payload
-            .get("session_surface")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| matches!(*value, "chatgpt_app" | "cli_terminal" | "unknown"))
-            .map(ToOwned::to_owned),
-        terminal_app: payload
-            .get("terminal_app")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| {
-                matches!(
-                    *value,
-                    "warp" | "terminal" | "iterm2" | "ghostty" | "unknown"
-                )
-            })
-            .map(ToOwned::to_owned),
-        open_url: payload
-            .get("session_open_url")
-            .and_then(serde_json::Value::as_str)
-            // Ingest validates this closed URL shape. Keep the projection
-            // independently fail-closed for legacy database rows.
-            .and_then(validated_warp_focus_url),
-        routable_session_id: routable_codex_session_id(event),
+        capability,
+        session_open,
+        surface,
+        terminal_app,
+        open_url,
+        routable_session_id,
     }
+}
+
+/// Publishes a stable opaque alias only where the visible source group needs
+/// one to distinguish two or more sessions that have neither a title nor user
+/// context. The persisted sequence is not display order and the token itself
+/// is presentation data, not a routable host identity.
+pub fn assign_anonymous_session_aliases(states: &mut [ActiveAgentState]) {
+    let mut anonymous_counts = BTreeMap::<AgentSource, usize>::new();
+    for state in states.iter_mut() {
+        state.anonymous_session_alias = None;
+        if state.session_title.is_none() && state.session_user_message.is_none() {
+            *anonymous_counts.entry(state.source).or_default() += 1;
+        }
+    }
+    for state in states {
+        if state.session_title.is_some()
+            || state.session_user_message.is_some()
+            || anonymous_counts.get(&state.source).copied().unwrap_or(0) < 2
+        {
+            continue;
+        }
+        state.anonymous_session_alias = state
+            .session_alias_sequence
+            .map(|sequence| format!("anon-{}", base36(sequence)));
+    }
+}
+
+fn base36(mut value: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut encoded = Vec::new();
+    while value > 0 {
+        encoded.push(DIGITS[(value % 36) as usize]);
+        value /= 36;
+    }
+    encoded.reverse();
+    String::from_utf8(encoded).expect("base36 digits are valid UTF-8")
 }
 
 fn routable_codex_session_id(event: &AgentEvent) -> Option<String> {
@@ -778,4 +869,184 @@ fn normalized_session_key(session_id: Option<&str>) -> String {
         .filter(|session_id| !session_id.is_empty())
         .unwrap_or("__no_session__")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn navigation_event(
+        source: AgentSource,
+        session_id: &str,
+        payload_json: serde_json::Value,
+    ) -> AgentEvent {
+        AgentEvent {
+            id: "navigation-event".to_string(),
+            source,
+            project_path: None,
+            session_id: Some(session_id.to_string()),
+            event_type: AgentEventType::Tool,
+            title: AgentEventType::Tool.zh_label().to_string(),
+            detail: None,
+            payload_json,
+            created_at: "2026-07-23T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn navigation_capability_requires_a_truthful_structural_target() {
+        let terminal = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "claude-session",
+            json!({
+                "session_open": true,
+                "session_surface": "cli_terminal",
+                "terminal_app": "warp",
+                "session_open_url": "warp://session/0123456789abcdef0123456789abcdef"
+            }),
+        ));
+        assert_eq!(
+            terminal.capability,
+            OverlayNavigationCapability::ExactSession
+        );
+
+        let codex = overlay_navigation(&navigation_event(
+            AgentSource::Codex,
+            "019f5b0f-88ff-7413-8953-29de4ed0951c",
+            json!({
+                "session_open": true,
+                "session_surface": "chatgpt_app"
+            }),
+        ));
+        assert_eq!(codex.capability, OverlayNavigationCapability::ExactSession);
+
+        let codex_host = overlay_navigation(&navigation_event(
+            AgentSource::Codex,
+            "not-a-routable-uuid",
+            json!({
+                "session_open": null,
+                "session_surface": "chatgpt_app"
+            }),
+        ));
+        assert_eq!(
+            codex_host.capability,
+            OverlayNavigationCapability::AgentHost
+        );
+
+        let malformed_terminal = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "claude-session",
+            json!({
+                "session_open": true,
+                "session_surface": "cli_terminal",
+                "terminal_app": "terminal",
+                "session_open_url": "https://example.com/not-allowed"
+            }),
+        ));
+        assert_eq!(malformed_terminal.open_url, None);
+        assert_eq!(
+            malformed_terminal.capability,
+            OverlayNavigationCapability::AgentHost
+        );
+
+        let closed = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "claude-session",
+            json!({
+                "session_open": false,
+                "session_surface": "cli_terminal",
+                "terminal_app": "terminal"
+            }),
+        ));
+        assert_eq!(closed.capability, OverlayNavigationCapability::Unavailable);
+
+        let unknown_host = overlay_navigation(&navigation_event(
+            AgentSource::Opencode,
+            "opencode-session",
+            json!({
+                "session_open": true,
+                "session_surface": "cli_terminal",
+                "terminal_app": "unknown"
+            }),
+        ));
+        assert_eq!(
+            unknown_host.capability,
+            OverlayNavigationCapability::Unavailable
+        );
+
+        let inconsistent_terminal = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "claude-session",
+            json!({
+                "session_open": true,
+                "session_surface": "chatgpt_app",
+                "terminal_app": "warp",
+                "session_open_url": "warp://session/0123456789abcdef0123456789abcdef"
+            }),
+        ));
+        assert_eq!(inconsistent_terminal.open_url, None);
+        assert_eq!(
+            inconsistent_terminal.capability,
+            OverlayNavigationCapability::Unavailable
+        );
+
+        let missing_codex_surface = overlay_navigation(&navigation_event(
+            AgentSource::Codex,
+            "not-a-routable-uuid",
+            json!({"session_open": null}),
+        ));
+        assert_eq!(
+            missing_codex_surface.capability,
+            OverlayNavigationCapability::Unavailable
+        );
+    }
+
+    #[test]
+    fn anonymous_aliases_are_only_published_for_ambiguous_source_groups() {
+        let event = navigation_event(AgentSource::Pi, "pi-session", json!({"session_open": null}));
+        let state = |sequence| ActiveAgentState {
+            state: PetStateName::Tool,
+            official_status: "running".to_string(),
+            source: AgentSource::Pi,
+            session_id: Some(format!("pi-session-{sequence}")),
+            session_active: true,
+            source_session_sequence: sequence,
+            session_alias_sequence: Some(sequence),
+            anonymous_session_alias: None,
+            priority: 300,
+            lease_seconds: None,
+            expires_at: None,
+            session_activated_at: None,
+            event: event.clone(),
+            latest_message: None,
+            latest_user_message: None,
+            session_title: None,
+            session_message: None,
+            session_user_message: None,
+            session_activity: None,
+            overlay_display: overlay_session_display(&event, None),
+        };
+
+        let mut single = vec![state(1)];
+        assign_anonymous_session_aliases(&mut single);
+        assert_eq!(single[0].anonymous_session_alias, None);
+
+        let mut multiple = vec![state(1), state(37)];
+        assign_anonymous_session_aliases(&mut multiple);
+        assert_eq!(
+            multiple[0].anonymous_session_alias.as_deref(),
+            Some("anon-1")
+        );
+        assert_eq!(
+            multiple[1].anonymous_session_alias.as_deref(),
+            Some("anon-11")
+        );
+
+        multiple[0].session_title = Some("Explicit title".to_string());
+        assign_anonymous_session_aliases(&mut multiple);
+        assert!(multiple
+            .iter()
+            .all(|state| state.anonymous_session_alias.is_none()));
+    }
 }

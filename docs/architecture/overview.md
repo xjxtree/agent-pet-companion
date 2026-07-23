@@ -25,7 +25,7 @@ The App and overlay run in one macOS UI process. PetCore is a separate daemon an
 
 | Component | Owns | Primary sources |
 |---|---|---|
-| macOS UI Host | Control center, five-entry navigation, menu-bar item, desktop pet, session bubbles, user interaction, App diagnostics | [App entry](../../apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift), [AppStore](../../apps/macos/Sources/AgentPetCompanion/App/AppStore.swift), [overlay controller](../../apps/macos/Sources/AgentPetCompanion/Overlay/PetOverlayController.swift) |
+| macOS UI Host | Resumable first-run presentation, control center, five-entry navigation, menu-bar item, desktop pet, session bubbles, user interaction, App diagnostics | [App entry](../../apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift), [AppStore](../../apps/macos/Sources/AgentPetCompanion/App/AppStore.swift), [overlay controller](../../apps/macos/Sources/AgentPetCompanion/Overlay/PetOverlayController.swift) |
 | Swift core library | Shared App models, UDS client/transport, startup coordination, frame scheduling, validation helpers | [AgentPetCompanionCore](../../apps/macos/Sources/AgentPetCompanionCore/) |
 | PetCore daemon | SQLite state, snapshots, settings, event normalization and projection, pet library, generation jobs, connector operations, runtime diagnostics | [daemon](../../crates/petcore/src/daemon.rs), [RPC](../../crates/petcore/src/rpc.rs), [database](../../crates/petcore/src/db.rs) |
 | `petcore-cli` | Stable connector adapter, RPC operations, `.petpack` build/validate/import/export, explicit offline maintenance | [CLI source](../../crates/petcore-cli/src/main.rs) |
@@ -39,7 +39,9 @@ The small `AgentPetCompanionLifecycleClient` executable is a development helper 
 
 The desktop pet and its Agent/session bubbles are the daily product surface. The five-entry control center is the management surface for pet selection, AI creation, configuration, Agent connection, and service recovery. That distinction changes presentation priority, not component ownership: PetCore remains the online state authority, and the App remains responsible for native presentation and interaction.
 
-Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. Detailed target page and bubble behavior is defined in the product experience contract; current runtime behavior remains defined by implementation and the current-state documents until the corresponding ordered task is merged.
+First run is a three-scene root presentation, not a sixth navigation destination. PetCore owns only the versioned, compare-and-swap scene progress; the App reuses real pet activation and connection operations. The demo phase reducer is deliberately View-local and cannot become Agent lifecycle data.
+
+Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. The product experience contract defines the page and bubble semantics; the implementation, typed tests, and owning current-state documents enforce their runtime projection.
 
 ## Main flows
 
@@ -50,7 +52,8 @@ Connections and bubbles use `Agent → session`; they do not introduce a project
 3. Otherwise it stages and preflights the bundled PetCore/CLI runtime, replaces the old service, health-checks the candidate, and commits or rolls back the managed runtime.
 4. At bootstrap start, the App arms a short independent fallback that reveals system appearance if PetCore startup or the focused behavior read stalls or fails. Once PetCore is healthy, the App reads versioned behavior settings through PetCore and applies the persisted appearance before revealing the control-center and About windows; bundled-pet seeding cannot keep the windows invisible. The App does not mirror settings into App-local storage or read SQLite directly.
 5. The App seeds the fixed bundled-pet inventory without overwriting an existing same-ID pet.
-6. The App reads `state.snapshot`, applies it as the final appearance/state authority, and only then presents the desktop overlay. It subsequently waits on `state.wait`. State changes are keyed by the monotonic database revision; the App does not repeatedly reload SQLite or poll the bundle on a two-second timer.
+6. The App reads `state.snapshot`, including versioned onboarding progress, and applies it as the final appearance/state authority. It presents the nonterminal first-run scene or the ordinary control center root, then presents the desktop overlay.
+7. The App subsequently waits on `state.wait`. State changes are keyed by the monotonic database revision; the App does not repeatedly reload SQLite or poll the bundle on a two-second timer.
 
 Dock reopen, second-instance activation, MenuBarExtra, and overlay actions target the registered control-center window identity. The About window is a separate scene and is never selected as the control center. Initial automatic retry and explicit user recovery coalesce onto one full bootstrap pipeline so behavior hydration, bundled-pet seeding, snapshot publication, and first overlay presentation cannot race each other.
 
@@ -111,6 +114,6 @@ logo/                       Approved reusable brand assets
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
 - Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
-- Development artifacts publish the App, PetCore, and CLI as one runtime identity in separate thin `arm64` and `x86_64` archives. Each exact archive passes architecture, ad-hoc signature-integrity, package, checksum, and changelog/version checks; packaged functionality runs on the build host's matching native architecture. The supported public-distribution target additionally requires Developer ID signing, notarization, stapling, and Gatekeeper acceptance as defined by the product contract and release procedure.
+- Release tooling exposes explicit `--preview` and fail-closed `--public --arch all` modes. Preview archives are ad-hoc development artifacts. Public mode creates the signed, notarized, stapled five-file candidate set only after package-level gates; publication additionally requires native `arm64` and `x86_64` packaged validation and exact downloaded-asset revalidation. Tooling availability alone is not release acceptance evidence.
 
 When changing one of these invariants, update the owning implementation, tests, runtime/schema version where required, and the corresponding document in the same change.

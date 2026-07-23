@@ -2,22 +2,56 @@ import AgentPetCompanionCore
 import MetalKit
 import SwiftUI
 
-/// A single, inspector-scoped idle preview. It owns an independent renderer and
+enum PetLibraryPreviewPolicy {
+    static func playbackProfile(for pet: PetSummary) -> FpsProfile {
+        pet.nativeFPS == FpsProfile.smooth.fps ? .smooth : .standard
+    }
+
+    static func canOpenAssets(assetWarning: PetAssetWarning?) -> Bool {
+        assetWarning == nil
+    }
+
+    static func canRender(assetWarning: PetAssetWarning?) -> Bool {
+        canOpenAssets(assetWarning: assetWarning)
+    }
+
+    static func loadIfValidated<Value>(
+        assetWarning: PetAssetWarning?,
+        _ load: () -> Value?
+    ) -> Value? {
+        guard canOpenAssets(assetWarning: assetWarning) else { return nil }
+        return load()
+    }
+}
+
+/// A single, library-scoped idle preview. It owns an independent renderer and
 /// never writes to AppStore or the desktop overlay's visual-envelope state.
 struct PetLibraryAnimationPreview: View {
     let pet: PetSummary
+    let assetWarning: PetAssetWarning?
 
     @State private var rendererHasContent = false
 
+    init(pet: PetSummary, assetWarning: PetAssetWarning? = nil) {
+        self.pet = pet
+        self.assetWarning = assetWarning
+    }
+
     var body: some View {
         ZStack {
-            PetCoverImage(pet: pet, fallbackScale: 0.44)
+            PetCoverImage(
+                pet: pet,
+                assetWarning: assetWarning,
+                fallbackScale: 0.44
+            )
                 .opacity(rendererHasContent ? 0 : 1)
 
-            PetLibraryIdleMetalView(pet: pet) { hasContent in
-                rendererHasContent = hasContent
+            if PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning) {
+                PetLibraryIdleMetalView(pet: pet) { hasContent in
+                    rendererHasContent = hasContent
+                }
+                .id(previewIdentity)
             }
-            .id(previewIdentity)
         }
         .clipped()
         .allowsHitTesting(false)
@@ -36,7 +70,13 @@ struct PetLibraryAnimationPreview: View {
     }
 
     private var previewIdentity: String {
-        [pet.id, pet.petpackPath, pet.coverPath, pet.revisionID ?? "legacy"].joined(separator: ":")
+        [
+            pet.id,
+            pet.petpackPath,
+            pet.coverPath,
+            pet.revisionID ?? "legacy",
+            assetWarning?.fingerprint ?? "validated",
+        ].joined(separator: ":")
     }
 }
 
@@ -60,8 +100,8 @@ private struct PetLibraryIdleMetalView: NSViewRepresentable {
             view: view,
             pet: pet,
             stateName: "idle",
-            stateEntryID: "library-inspector-idle:\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
-            fpsProfile: .standard,
+            stateEntryID: "library-hero-idle:\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
+            fpsProfile: PetLibraryPreviewPolicy.playbackProfile(for: pet),
             active: true,
             reduceMotion: reduceMotion,
             onVisualEnvelopeChanged: { envelope in

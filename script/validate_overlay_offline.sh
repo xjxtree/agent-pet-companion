@@ -23,6 +23,7 @@ CORE_OBJECT_DIR="$BIN_DIR/AgentPetCompanionCore.build"
 CORE_OBJECTS=(
   "$CORE_OBJECT_DIR/AppModels.swift.o"
   "$CORE_OBJECT_DIR/FrameScheduler.swift.o"
+  "$CORE_OBJECT_DIR/ProductPresentationModels.swift.o"
 )
 LOCALIZATION_ACCESSOR="$BIN_DIR/AgentPetCompanion.build/DerivedSources/resource_bundle_accessor.swift"
 
@@ -38,6 +39,7 @@ swiftc \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/Localization.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift" \
   "$LOCALIZATION_ACCESSOR" \
+  "$ROOT_DIR/script/fixtures/AgentSessionRouterValidationShim.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayResizeAccessibility.swift" \
   "${CORE_OBJECTS[@]}" \
@@ -139,6 +141,7 @@ swiftc \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/Localization.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift" \
   "$LOCALIZATION_ACCESSOR" \
+  "$ROOT_DIR/script/fixtures/AgentSessionRouterValidationShim.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/PetFramePipeline.swift" \
   "$MACOS_DIR/Sources/AgentPetCompanion/App/PetAssetLocator.swift" \

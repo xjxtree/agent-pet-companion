@@ -4,7 +4,7 @@ This document defines the intended product experience for the Agent Pet Companio
 
 本文定义 Agent Pet Companion V1 重构后的目标产品体验，是后续实现决策的长期产品设计依据；它不是状态报告、排期、里程碑列表，也不表示所有目标已经实现。
 
-Current runtime behavior remains authoritative until the corresponding task in [Product refactor execution](../development/product-refactor-execution.md) changes the implementation, tests, schemas, and owning current-state document together.
+Implementation, typed schemas, and tests remain the runtime authority. When this product contract changes, update the affected implementation and owning current-state document together; the [Product refactor execution](../development/product-refactor-execution.md) document defines the required dependency order and proof.
 
 ## 1. Product promise / 产品承诺
 
@@ -126,6 +126,10 @@ It contains three scenes:
 1. **Choose a companion** — show the two bundled pets with complete motion previews and one clear confirmation action.
 2. **Connect Agents** — detect supported Agents and show only `Connected`, `Needs Repair`, or `Unavailable`, with one contextual primary action.
 3. **See the pet come alive** — run a clearly labeled local demo of thinking, working, needs-attention, and completion, then invite the user to run a real Agent task.
+
+Agent detection may continue in the background and must never block entry to the local demo.
+Connection mutations still require the same typed capability and explicit confirmation as the
+ordinary Agent Connections page.
 
 Demo events remain App-local presentation data. They do not enter PetCore event history, connection receipts, session projections, or diagnostics.
 
@@ -341,7 +345,7 @@ The supported public-distribution target requires:
 - published checksums;
 - one tag, changelog version, and GitHub Release per version.
 
-Until those gates are implemented, ad-hoc-signed archives are development previews rather than the final supported public distribution.
+Ad-hoc-signed archives remain development previews. A release is a supported public distribution only when the public pipeline completes Developer ID signing, notarization, stapling, Gatekeeper assessment, architecture and package validation, native packaged-functional validation, checksums, and exact downloaded-artifact validation for that release.
 
 ## 12. Product acceptance / 产品验收
 
@@ -357,4 +361,3 @@ The refactor is complete only when:
 - healthy technical state is quiet;
 - authored animation timing remains immutable at runtime;
 - accessibility, renderer budgets, real connector behavior, packaged-App behavior, signing, and distribution gates pass for the exact release artifact.
-

@@ -14,13 +14,6 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
         case .messages: APCLocalization.text(.configSectionMessages)
         }
     }
-
-    var systemImage: String {
-        switch self {
-        case .appearance: "circle.lefthalf.filled"
-        case .messages: "rectangle.stack.badge.person.crop"
-        }
-    }
 }
 
 enum BehaviorSettingsCatalog {
@@ -35,18 +28,57 @@ enum BehaviorSettingsCatalog {
     }
 
     static func supportedFPSProfiles(for pet: PetSummary?) -> [FpsProfile] {
-        pet?.supportedFPSProfiles ?? fpsProfiles
+        pet?.supportedFPSProfiles ?? [.standard]
+    }
+
+    static func attentionPresetOptions(
+        selection: AttentionPreset,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> [AttentionPresetOption] {
+        let selectablePresets: [AttentionPreset] = [
+            .onlyWhenNeeded,
+            .standard,
+            .allActivity,
+        ]
+        var options = selectablePresets.map {
+            AttentionPresetOption(
+                preset: $0,
+                title: APCLocalizedPresentation.attentionPresetTitle($0, locale: locale),
+                detail: attentionPresetDetail($0, locale: locale)
+            )
+        }
+        if selection == .custom {
+            options.append(AttentionPresetOption(
+                preset: .custom,
+                title: APCLocalizedPresentation.attentionPresetTitle(.custom, locale: locale),
+                detail: attentionPresetDetail(.custom, locale: locale)
+            ))
+        }
+        return options
+    }
+
+    static func attentionPresetDetail(
+        _ preset: AttentionPreset,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let enabledEvents = preset.enabledEvents ?? []
+        if preset == .custom {
+            return APCLocalization.text(.configAttentionPresetCustomDetail, locale: locale)
+        }
+        let eventTitles = AgentEventKind.allCases
+            .filter(enabledEvents.contains)
+            .map { APCLocalizedPresentation.eventTitle($0, locale: locale) }
+        guard !eventTitles.isEmpty else {
+            return APCLocalization.text(.configNoEventsDetail, locale: locale)
+        }
+        return "\(APCLocalization.text(.configResponseEvents, locale: locale)): "
+            + eventTitles.joined(separator: " · ")
     }
 }
 
 enum BehaviorSettingsLayout {
     static let wideBreakpoint: CGFloat = 800
-    // The longest English label ("Appearance & Desktop Pet") must remain
-    // readable beside its leading symbol at the default 1120 pt window.
-    static let navigationWidth: CGFloat = 248
     static let previewWidth: CGFloat = 292
-    static let resizeHitTarget: CGFloat = 38
-    static let resizeVisualSize: CGFloat = 24
 
     static func usesWideLayout(
         contentWidth: CGFloat,
@@ -62,6 +94,8 @@ struct BehaviorSettingsView: View {
     @SceneStorage("apc.configuration.selected-subpage")
     private var selectedSectionRawValue = BehaviorSettingsSection.appearance.rawValue
     @State private var bubbleTransparencyBeforeEditing: Double?
+    @State private var appearanceAdvancedExpanded = false
+    @State private var messagesAdvancedExpanded = false
 
     init(initialSection: BehaviorSettingsSection = .appearance) {
         _selectedSectionRawValue = SceneStorage(
@@ -108,12 +142,7 @@ struct BehaviorSettingsView: View {
 
     private var wideLayout: some View {
         HStack(spacing: 0) {
-            BehaviorSettingsSubnavigation(selection: sectionSelection)
-                .frame(width: BehaviorSettingsLayout.navigationWidth)
-
-            Divider()
-
-            settingsPane(showsInlinePreview: false)
+            settingsColumn(showsInlinePreview: false)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
@@ -125,7 +154,25 @@ struct BehaviorSettingsView: View {
     }
 
     private var compactLayout: some View {
-        VStack(spacing: 0) {
+        settingsColumn(showsInlinePreview: true)
+            .accessibilityIdentifier("configuration.layout.compact")
+    }
+
+    private func settingsColumn(showsInlinePreview: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ProductPageHeader(
+                identity: ProductComponentIdentity(scope: "configuration"),
+                title: NavigationSection.configuration.localizedTitle,
+                summary: APCLocalization.text(
+                    selectedSection == .appearance
+                        ? .configSubtitleAppearance
+                        : .configSubtitleMessages
+                )
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+
             Picker(APCLocalization.text(.configPagePicker), selection: sectionSelection) {
                 ForEach(BehaviorSettingsSection.allCases) { section in
                     Text(section.title).tag(section)
@@ -140,10 +187,9 @@ struct BehaviorSettingsView: View {
 
             Divider()
 
-            settingsPane(showsInlinePreview: true)
+            settingsPane(showsInlinePreview: showsInlinePreview)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .accessibilityIdentifier("configuration.layout.compact")
     }
 
     @ViewBuilder
@@ -168,13 +214,6 @@ struct BehaviorSettingsView: View {
                     updateBehavior(\.enabled, value: value)
                 }
 
-                appearanceThemeSetting
-                fpsSetting
-            } header: {
-                Text(APCLocalization.text(.configDisplayAppearance))
-            }
-
-            Section {
                 SettingToggle(
                     title: APCLocalization.text(.configStatusBubble),
                     detail: APCLocalization.text(.configStatusBubbleDetail),
@@ -184,41 +223,60 @@ struct BehaviorSettingsView: View {
                     updateBehavior(\.statusBubble, value: value)
                 }
 
-                bubbleTransparencySetting
-
-                SettingToggle(
-                    title: APCLocalization.text(.configAutoHide),
-                    detail: APCLocalization.text(.configAutoHideDetail),
-                    value: store.behavior.autoHide,
-                    accessibilityIdentifier: "configuration.appearance.auto-hide"
-                ) { value in
-                    updateBehavior(\.autoHide, value: value)
-                }
+                appearanceThemeSetting
+                fpsSetting
+            } header: {
+                Text(APCLocalization.text(.configDisplayAppearance))
             }
 
             Section {
-                SettingToggle(
-                    title: APCLocalization.text(.configContextMenu),
-                    detail: APCLocalization.text(.configContextMenuDetail),
-                    value: store.behavior.clickMenu,
-                    accessibilityIdentifier: "configuration.appearance.context-menu"
-                ) { value in
-                    updateBehavior(\.clickMenu, value: value)
-                }
+                AdvancedDetailsDisclosure(
+                    identity: ProductComponentIdentity(
+                        scope: "configuration",
+                        instance: "appearance"
+                    ),
+                    title: APCLocalization.text(.configAdvancedAppearance),
+                    summary: APCLocalization.text(.configAdvancedAppearanceDetail),
+                    isExpanded: $appearanceAdvancedExpanded
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        bubbleTransparencySetting
 
-                SettingToggle(
-                    title: APCLocalization.text(.configMousePassthrough),
-                    detail: APCLocalization.text(.configMousePassthroughDetail),
-                    value: store.behavior.mousePassthrough,
-                    accessibilityIdentifier: "configuration.appearance.mouse-passthrough"
-                ) { value in
-                    updateBehavior(\.mousePassthrough, value: value)
-                }
+                        Divider()
 
-            } header: {
-                Text(APCLocalization.text(.configPetInteraction))
-            } footer: {
-                Text(APCLocalization.text(.configSizeFooter))
+                        SettingToggle(
+                            title: APCLocalization.text(.configAutoHide),
+                            detail: APCLocalization.text(.configAutoHideDetail),
+                            value: store.behavior.autoHide,
+                            accessibilityIdentifier: "configuration.appearance.auto-hide"
+                        ) { value in
+                            updateBehavior(\.autoHide, value: value)
+                        }
+
+                        SettingToggle(
+                            title: APCLocalization.text(.configContextMenu),
+                            detail: APCLocalization.text(.configContextMenuDetail),
+                            value: store.behavior.clickMenu,
+                            accessibilityIdentifier: "configuration.appearance.context-menu"
+                        ) { value in
+                            updateBehavior(\.clickMenu, value: value)
+                        }
+
+                        SettingToggle(
+                            title: APCLocalization.text(.configMousePassthrough),
+                            detail: APCLocalization.text(.configMousePassthroughDetail),
+                            value: store.behavior.mousePassthrough,
+                            accessibilityIdentifier: "configuration.appearance.mouse-passthrough"
+                        ) { value in
+                            updateBehavior(\.mousePassthrough, value: value)
+                        }
+
+                        Text(APCLocalization.text(.configSizeFooter))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
 
             if showsInlinePreview {
@@ -237,35 +295,68 @@ struct BehaviorSettingsView: View {
     private func messageSettingsPane(showsInlinePreview: Bool) -> some View {
         Form {
             Section {
-                ForEach(BehaviorSettingsCatalog.sources) { source in
-                    SourceToggle(source: source)
+                AttentionPresetPicker(
+                    identity: ProductComponentIdentity(
+                        scope: "configuration",
+                        instance: "messages"
+                    ),
+                    title: APCLocalization.text(.configAttentionPreset),
+                    selection: store.behavior.attentionPreset,
+                    options: BehaviorSettingsCatalog.attentionPresetOptions(
+                        selection: store.behavior.attentionPreset
+                    )
+                ) {
+                    store.setAttentionPreset($0)
                 }
-            } header: {
-                Text(APCLocalization.text(.configResponseSources))
             }
 
             Section {
-                LazyVGrid(
-                    columns: eventGridColumns,
-                    spacing: 10
+                AdvancedDetailsDisclosure(
+                    identity: ProductComponentIdentity(
+                        scope: "configuration",
+                        instance: "messages"
+                    ),
+                    title: APCLocalization.text(.configAdvancedMessages),
+                    summary: APCLocalization.text(.configAdvancedMessagesDetail),
+                    isExpanded: $messagesAdvancedExpanded
                 ) {
-                    ForEach(BehaviorSettingsCatalog.events) { event in
-                        EventToggle(event: event)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(APCLocalization.text(.configResponseSources))
+                            .font(.headline)
+
+                        ForEach(BehaviorSettingsCatalog.sources) { source in
+                            SourceToggle(source: source)
+                        }
+
+                        Divider()
+
+                        Text(APCLocalization.text(.configResponseEvents))
+                            .font(.headline)
+
+                        LazyVGrid(
+                            columns: eventGridColumns,
+                            spacing: 10
+                        ) {
+                            ForEach(BehaviorSettingsCatalog.events) { event in
+                                EventToggle(event: event)
+                            }
+                        }
+                        .padding(.vertical, 2)
+
+                        Divider()
+
+                        sessionTimeoutSetting
+                        sessionGroupDisplaySetting
+
+                        Text(APCLocalization.text(.configPersistenceNote))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier(
+                                "configuration.messages.persistence-note"
+                            )
                     }
                 }
-                .padding(.vertical, 2)
-            } header: {
-                Text(APCLocalization.text(.configResponseEvents))
-            }
-
-            Section {
-                sessionTimeoutSetting
-                sessionGroupDisplaySetting
-            } header: {
-                Text(APCLocalization.text(.configSessionDisplay))
-            } footer: {
-                Text(APCLocalization.text(.configPersistenceNote))
-                    .accessibilityIdentifier("configuration.messages.persistence-note")
             }
 
             if showsInlinePreview {
@@ -327,15 +418,17 @@ struct BehaviorSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Picker(APCLocalization.text(.configFPSPicker), selection: fpsProfileBinding) {
                 ForEach(supportedFPSProfiles) { profile in
-                    Text(APCLocalization.format(.commonFPSFormat, profile.fps)).tag(profile)
+                    Text(APCLocalizedPresentation.playbackProfileTitle(profile))
+                        .tag(profile)
                 }
             }
             .pickerStyle(.segmented)
             .accessibilityLabel(APCLocalization.text(.configFPSAccessibility))
-            .accessibilityValue(APCLocalization.format(
-                .commonFPSFormat,
-                store.effectiveFPSProfile.fps
-            ))
+            .accessibilityValue(
+                APCLocalizedPresentation.playbackProfileTitle(
+                    store.effectiveFPSProfile
+                )
+            )
             .accessibilityIdentifier("configuration.appearance.fps")
 
             Text(APCLocalization.text(
@@ -343,7 +436,7 @@ struct BehaviorSettingsView: View {
                     ? store.effectiveFPSProfile == .standard
                         ? .configFPSStandardDetail
                         : .configFPSSmoothDetail
-                    : .configFPSNativeStandardOnlyDetail
+                    : .configFPSStandardDetail
             ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -466,7 +559,10 @@ struct BehaviorSettingsView: View {
     private var appearancePreview: some View {
         BehaviorAppearancePreview(
             behavior: store.behavior,
-            pet: store.activePet
+            pet: store.activePet,
+            assetWarning: store.activePet.flatMap {
+                store.petAssetWarningIndex[$0.id]
+            }
         )
     }
 
@@ -504,23 +600,6 @@ struct BehaviorSettingsView: View {
         var next = store.behavior
         next[keyPath: keyPath] = value
         store.updateBehavior(next)
-    }
-}
-
-private struct BehaviorSettingsSubnavigation: View {
-    @Binding var selection: BehaviorSettingsSection
-
-    var body: some View {
-        List(selection: $selection) {
-            ForEach(BehaviorSettingsSection.allCases) { section in
-                Label(section.title, systemImage: section.systemImage)
-                    .tag(section)
-                    .accessibilityIdentifier("configuration.subpage.\(section.rawValue)")
-            }
-        }
-        .listStyle(.sidebar)
-        .accessibilityLabel(APCLocalization.text(.configSubnavigationAccessibility))
-        .accessibilityIdentifier("configuration.subnavigation")
     }
 }
 
@@ -592,26 +671,30 @@ struct SourceToggle: View {
     }
 
     private var sourceDetail: String {
-        guard let status = store.connections.first(where: { $0.source == source }) else {
-            return APCLocalization.text(.configSourcePending)
-        }
-        let badItems = status.blockingItems
-        guard !badItems.isEmpty else {
-            if status.checkMode == .light {
-                return APCLocalization.text(.configSourceFullCheck)
-            }
-            if !status.unverifiedItems.isEmpty {
-                return APCLocalization.text(.configSourcePartiallyUnverified)
-            }
-            if !status.unsupportedItems.isEmpty {
-                return APCLocalization.text(.configSourceLimited)
-            }
-            return APCLocalization.text(.configSourceHealthy)
-        }
-        if badItems.contains(where: { $0.status == .missing }) {
-            return APCLocalization.text(.configSourceMissing)
-        }
-        return APCLocalization.text(.configSourceNeedsRepair)
+        ConfigurationSourcePresentation.detail(
+            source: source,
+            status: store.connections.first(where: { $0.source == source }),
+            operationState: store.connectionOperationState
+        )
+    }
+}
+
+enum ConfigurationSourcePresentation {
+    static func detail(
+        source: AgentSource,
+        status: AgentConnectionStatus?,
+        operationState: AgentConnectionOperationState,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let connection = AgentConnectionProductPresentation(
+            source: source,
+            status: status,
+            operationState: operationState
+        )
+        return APCLocalizedPresentation.connectionHealthTitle(
+            connection.health,
+            locale: localeIdentifier
+        )
     }
 }
 
@@ -651,10 +734,11 @@ private struct BehaviorAppearancePreview: View {
     @Environment(\.colorScheme) private var colorScheme
     let behavior: BehaviorSettings
     let pet: PetSummary?
+    let assetWarning: PetAssetWarning?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack {
                 syntheticDesktop
 
                 VStack(spacing: 14) {
@@ -666,7 +750,10 @@ private struct BehaviorAppearancePreview: View {
                     Spacer(minLength: 12)
 
                     if behavior.enabled {
-                        ConfigurationPetPreviewImage(pet: pet)
+                        ConfigurationPetPreviewImage(
+                            pet: pet,
+                            assetWarning: assetWarning
+                        )
                     } else {
                         Label(APCLocalization.text(.configPetHidden), systemImage: "eye.slash")
                             .font(.callout.weight(.medium))
@@ -678,11 +765,6 @@ private struct BehaviorAppearancePreview: View {
                 }
                 .padding(18)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                if behavior.enabled {
-                    resizeHandle
-                        .padding(5)
-                }
             }
             .frame(maxWidth: 360)
             .aspectRatio(0.68, contentMode: .fit)
@@ -785,36 +867,11 @@ private struct BehaviorAppearancePreview: View {
         .accessibilityIdentifier("configuration.preview.status-bubble")
     }
 
-    private var resizeHandle: some View {
-        ZStack {
-            Color.clear
-
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.regularMaterial)
-                .frame(
-                    width: BehaviorSettingsLayout.resizeVisualSize,
-                    height: BehaviorSettingsLayout.resizeVisualSize
-                )
-                .overlay {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-        }
-        .frame(
-            width: BehaviorSettingsLayout.resizeHitTarget,
-            height: BehaviorSettingsLayout.resizeHitTarget
-        )
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(APCLocalization.text(.configResizeAccessibility))
-        .accessibilityHint(APCLocalization.text(.configResizeHint))
-        .accessibilityIdentifier("configuration.preview.resize-handle")
-    }
 }
 
 private struct ConfigurationPetPreviewImage: View {
     let pet: PetSummary?
+    let assetWarning: PetAssetWarning?
     @State private var image: NSImage?
 
     var body: some View {
@@ -842,18 +899,30 @@ private struct ConfigurationPetPreviewImage: View {
                 .lineLimit(1)
                 .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
         }
-        .task(id: pet?.id) {
+        .task(id: previewIdentity) {
             guard let pet, let url = PetAssetLocator.coverURL(for: pet) else {
                 image = nil
                 return
             }
-            image = NSImage(contentsOf: url)
+            image = PetLibraryPreviewPolicy.loadIfValidated(
+                assetWarning: assetWarning
+            ) {
+                NSImage(contentsOf: url)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(APCLocalization.format(
             .configCurrentPetFormat,
             pet?.name ?? APCLocalization.text(.appStateNoPet)
         ))
+    }
+
+    private var previewIdentity: String {
+        [
+            pet?.id ?? "none",
+            pet?.revisionID ?? "legacy",
+            assetWarning?.fingerprint ?? "validated",
+        ].joined(separator: ":")
     }
 }
 

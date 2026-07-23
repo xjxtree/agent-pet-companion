@@ -39,6 +39,7 @@ fn metadata_only_connector_events_never_drive_the_pet_state() {
     let candidates = [SequencedAgentEvent {
         event: metadata,
         source_session_sequence: 1,
+        session_alias_sequence: Some(1),
         session_activated_at: None,
         session_first_seen_at: None,
         latest_terminal_navigation_payload: None,

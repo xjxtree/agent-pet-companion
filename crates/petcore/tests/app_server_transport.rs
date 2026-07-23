@@ -350,6 +350,10 @@ done
         session["overlay_display"]["navigation"]["session_open"],
         true
     );
+    assert_eq!(
+        session["overlay_display"]["navigation"]["capability"],
+        "exact_session"
+    );
     assert_eq!(session["session_title"], "Synced ChatGPT task");
     assert_eq!(
         session["session_user_message"],
