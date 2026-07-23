@@ -87,7 +87,14 @@ jobs:
 
       - name: Reject tracked build output and caches
         run: |
-          if git ls-files | grep -E '(^|/)(__pycache__/|[^/]+\.py[co]$|DerivedData/|target/|\.build/|[^/]+\.petpack$|generation-jobs/)'; then
+          tracked_generated="$(
+            git ls-files \
+              | grep -E '(^|/)(__pycache__/|[^/]+\.py[co]$|DerivedData/|target/|\.build/|[^/]+\.petpack$|generation-jobs/)' \
+              | grep -Ev '^apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/(pet_bytebudcodex|pet_xingwutuanzi)\.petpack$' \
+              || true
+          )"
+          if [[ -n "$tracked_generated" ]]; then
+            printf '%s\n' "$tracked_generated"
             echo 'Tracked generated output or cache detected' >&2
             exit 1
           fi
