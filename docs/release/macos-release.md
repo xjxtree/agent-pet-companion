@@ -63,11 +63,18 @@ durable documentation.
 
 The build host requires macOS 14 or later, Apple Command Line Tools with Swift
 6 and a macOS SDK, the Rust toolchain pinned by `rust-toolchain.toml` with both
-Apple targets, Python 3, `rg`, `ditto`, `codesign`, `lipo`, and `shasum`.
+Apple targets, Python 3 with Pillow 11.3.0 for portable pet visual validation,
+`rg`, `ditto`, `codesign`, `lipo`, and `shasum`. The GitHub workflow installs
+Pillow into an isolated validation virtual environment; it is a build-time test
+dependency, not an App runtime dependency.
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
+
+构建主机还需要 Python 3 与 Pillow 11.3.0，用于可移植宠物视觉校验。GitHub
+工作流会将 Pillow 安装到隔离的校验虚拟环境；它只是构建期测试依赖，不会进入 App
+运行环境。
 
 No Apple account, certificate, private key, notarization profile, manually
 configured GitHub release Variable, or release Secret is required. The

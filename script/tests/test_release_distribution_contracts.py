@@ -355,6 +355,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("系统设置 → 隐私与安全性 → 仍要打开", self.publish)
 
     def test_official_build_and_exact_three_file_candidate_are_explicit(self) -> None:
+        self.assertIn("Prepare pinned Python validation environment", self.build)
+        self.assertIn("Pillow==11.3.0", self.build)
+        self.assertIn('Image.__version__ != "11.3.0"', self.build)
+        self.assertIn('features.check("webp_anim")', self.build)
+        self.assertIn('>>"$GITHUB_PATH"', self.build)
+        self.assertIn("run: ./script/test_all.sh", self.build)
+        self.assertLess(
+            self.build.index("Prepare pinned Python validation environment"),
+            self.build.index("run: ./script/test_all.sh"),
+        )
         self.assertIn(
             "run: ./script/build_release.sh --github-release --arch all",
             self.build,

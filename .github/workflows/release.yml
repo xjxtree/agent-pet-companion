@@ -105,6 +105,26 @@ jobs:
           command -v lipo
           command -v shasum
 
+      - name: Prepare pinned Python validation environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/apc-validation-python"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
+            --disable-pip-version-check \
+            --no-deps \
+            --only-binary=:all: \
+            "Pillow==11.3.0"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" - <<'PY'
+          from PIL import Image, features
+
+          if Image.__version__ != "11.3.0":
+              raise SystemExit("unexpected Pillow version")
+          if not features.check("webp_anim"):
+              raise SystemExit("Pillow lacks animated WebP support")
+          PY
+          {
+            echo "$RUNNER_TEMP/apc-validation-python/bin"
+          } >>"$GITHUB_PATH"
+
       - name: Run host-safe source and integration gates
         run: ./script/test_all.sh
 
