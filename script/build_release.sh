@@ -28,6 +28,9 @@ store, or print credentials:
   APC_CODESIGN_IDENTITY
   APC_DEVELOPER_TEAM_ID
   APC_NOTARY_PROFILE
+
+Optional for an ephemeral CI Keychain:
+  APC_NOTARY_KEYCHAIN
 EOF
 }
 
@@ -246,6 +249,7 @@ build_public_architecture() {
   APC_CODESIGN_IDENTITY="$APC_CODESIGN_IDENTITY" \
   APC_DEVELOPER_TEAM_ID="$APC_DEVELOPER_TEAM_ID" \
   APC_NOTARY_PROFILE="$APC_NOTARY_PROFILE" \
+  APC_NOTARY_KEYCHAIN="${APC_NOTARY_KEYCHAIN:-}" \
     "$ROOT_DIR/script/public_distribution_pipeline.sh" \
       --app "$app_bundle" \
       --architecture "$architecture" \

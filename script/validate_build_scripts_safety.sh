@@ -29,11 +29,15 @@ RELEASE_SCRIPTS=(
 )
 
 if unsafe="$(rg -n \
-  '(^|[[:space:]])source[[:space:]]+.*[.]env|(^|[[:space:]])[.][[:space:]]+.*[.]env|security[[:space:]]+find-identity|set[[:space:]]+-x|APPLE_ID|APP_SPECIFIC_PASSWORD|NOTARY_PASSWORD|PRIVATE_KEY' \
+  '(^|[[:space:]])source[[:space:]]+.*[.]env|(^|[[:space:]])[.][[:space:]]+.*[.]env|set[[:space:]]+-x|APPLE_ID|APP_SPECIFIC_PASSWORD|NOTARY_PASSWORD|PRIVATE_KEY' \
   "${RELEASE_SCRIPTS[@]}" "$ROOT_DIR/.github/workflows/release.yml" 2>/dev/null || true)" \
   && [[ -n "$unsafe" ]]; then
   printf 'release tooling contains credential discovery, credential material, or command tracing:\n%s\n' \
     "$unsafe" >&2
+  exit 1
+fi
+if rg -n 'security[[:space:]]+find-identity' "${RELEASE_SCRIPTS[@]}" >/dev/null; then
+  echo 'release scripts must consume an explicit signing identity instead of discovering one' >&2
   exit 1
 fi
 
@@ -62,6 +66,7 @@ rg -Fq 'STAGED_ARTIFACT_DIR="$TMP_DIR/artifacts"' "$ROOT_DIR/script/build_releas
 rg -q 'APC_CODESIGN_IDENTITY' "$ROOT_DIR/script/public_distribution_pipeline.sh"
 rg -q 'APC_DEVELOPER_TEAM_ID' "$ROOT_DIR/script/public_distribution_pipeline.sh"
 rg -q 'APC_NOTARY_PROFILE' "$ROOT_DIR/script/public_distribution_pipeline.sh"
+rg -q 'APC_NOTARY_KEYCHAIN' "$ROOT_DIR/script/public_distribution_pipeline.sh"
 rg -q -- '--options runtime' "$ROOT_DIR/script/public_distribution_pipeline.sh"
 rg -q -- '--timestamp' "$ROOT_DIR/script/public_distribution_pipeline.sh"
 rg -q 'notarytool submit' "$ROOT_DIR/script/public_distribution_pipeline.sh"
@@ -106,11 +111,29 @@ fi
 rg -q 'push:' "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'tags:' "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'workflow_dispatch:' "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'self-hosted' "$ROOT_DIR/.github/workflows/release.yml"
+if rg -q 'self-hosted' "$ROOT_DIR/.github/workflows/release.yml"; then
+  echo 'release workflow must use fresh GitHub-hosted native macOS runners' >&2
+  exit 1
+fi
 rg -q 'APC_CODESIGN_IDENTITY.*vars[.]APC_CODESIGN_IDENTITY' \
   "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'APC_NOTARY_PROFILE.*vars[.]APC_NOTARY_PROFILE' \
+rg -q 'APC_NOTARY_PROFILE: agent-pet-companion-ci' \
   "$ROOT_DIR/.github/workflows/release.yml"
+for secret in \
+  APC_DEVELOPER_ID_P12_BASE64 \
+  APC_DEVELOPER_ID_P12_PASSWORD \
+  APC_NOTARY_API_KEY_P8_BASE64 \
+  APC_NOTARY_API_KEY_ID \
+  APC_NOTARY_API_ISSUER_ID; do
+  rg -Fq '${{ secrets.'"$secret"' }}' "$ROOT_DIR/.github/workflows/release.yml"
+done
+rg -q 'security create-keychain' "$ROOT_DIR/.github/workflows/release.yml"
+rg -Fq 'security find-identity -v -p codesigning "$keychain_path"' \
+  "$ROOT_DIR/.github/workflows/release.yml"
+rg -q 'notarytool store-credentials' "$ROOT_DIR/.github/workflows/release.yml"
+rg -q 'APC_NOTARY_KEYCHAIN=' "$ROOT_DIR/.github/workflows/release.yml"
+rg -q 'security delete-keychain' "$ROOT_DIR/.github/workflows/release.yml"
+rg -Fq 'if: ${{ always() }}' "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'validate_public_release_artifacts.sh' \
   "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'gh release download' "$ROOT_DIR/.github/workflows/release.yml"
@@ -119,9 +142,9 @@ rg -q 'git merge-base --is-ancestor "\$commit" refs/remotes/origin/main' \
   "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'needs: \[build, validate_arm64, validate_x86_64\]' \
   "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'runs-on: \[self-hosted, macOS, ARM64, apc-public-validation\]' \
+rg -q 'runs-on: macos-15$' \
   "$ROOT_DIR/.github/workflows/release.yml"
-rg -q 'runs-on: \[self-hosted, macOS, X64, apc-public-validation\]' \
+rg -q 'runs-on: macos-15-intel$' \
   "$ROOT_DIR/.github/workflows/release.yml"
 rg -q 'verify_release_candidate_digests.sh' \
   "$ROOT_DIR/.github/workflows/release.yml"
@@ -130,6 +153,61 @@ if rg -n 'uses:[[:space:]]+[^#[:space:]]+@v[0-9]' \
   echo 'release workflow actions must be pinned to full commit SHAs' >&2
   exit 1
 fi
+
+python3 - "$ROOT_DIR/.github/workflows/release.yml" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+build_end = source.index("\n  validate_arm64:")
+arm_end = source.index("\n  validate_x86_64:")
+x86_end = source.index("\n  publish:")
+build = source[:build_end]
+arm = source[build_end:arm_end]
+x86 = source[arm_end:x86_end]
+
+for secret in (
+    "APC_DEVELOPER_ID_P12_BASE64",
+    "APC_DEVELOPER_ID_P12_PASSWORD",
+    "APC_NOTARY_API_KEY_P8_BASE64",
+    "APC_NOTARY_API_KEY_ID",
+    "APC_NOTARY_API_ISSUER_ID",
+):
+    reference = f"${{{{ secrets.{secret} }}}}"
+    if build.count(reference) != 1 or reference in source[build_end:]:
+        raise SystemExit(f"{secret} must be scoped only to the signing build job")
+
+source_gate = build.index("run: ./script/test_all.sh")
+provision = build.index("Provision ephemeral Developer ID and notarization credentials")
+raw_cleanup = build.index('rm -f "$certificate_path" "$api_key_path"')
+keychain_export = build.index('echo "APC_NOTARY_KEYCHAIN=$keychain_path"')
+public_build = build.index("run: ./script/build_release.sh --public --arch all")
+keychain_cleanup = build.index("Remove ephemeral signing material")
+revalidation = build.index("Revalidate final local artifact set")
+upload = build.index("Upload immutable release candidate")
+if not (
+    source_gate
+    < provision
+    < raw_cleanup
+    < keychain_export
+    < public_build
+    < keychain_cleanup
+    < revalidation
+    < upload
+):
+    raise SystemExit("release credentials are not provisioned and removed at bounded steps")
+if "if: ${{ always() }}" not in build[keychain_cleanup:revalidation]:
+    raise SystemExit("ephemeral signing material cleanup must run after failure")
+cleanup_block = build[keychain_cleanup:revalidation]
+if "${APC_NOTARY_KEYCHAIN" in cleanup_block:
+    raise SystemExit("credential cleanup must not trust a mutable environment path")
+if 'keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"' not in cleanup_block:
+    raise SystemExit("credential cleanup must target the fixed runner-temporary Keychain")
+if 'run: test "$(uname -m)" = "arm64"' not in arm:
+    raise SystemExit("arm64 validation job does not prove its native architecture")
+if 'run: test "$(uname -m)" = "x86_64"' not in x86:
+    raise SystemExit("x86_64 validation job does not prove its native architecture")
+PY
 
 "$ROOT_DIR/script/build_app_bundle.sh" --help >/dev/null
 "$ROOT_DIR/script/build_release.sh" --help >/dev/null

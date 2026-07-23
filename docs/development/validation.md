@@ -67,12 +67,22 @@ exclusive, and the former `--release` validation alias is unsupported. Public
 App validation verifies Developer ID, hardened runtime, staple, and Gatekeeper
 before invoking the packaged App, PetCore, or CLI.
 
-Release CI separates the private-key-bearing signing runner from two
-private-key-free native packaged-functional jobs and a clean GitHub-hosted
-download/publish job. Publication depends on both native jobs. Each download
-compares five signing-job digests before any ZIP inspection or extraction. A
-missing ARM64 or X64 validation runner leaves the workflow incomplete rather
-than converting an unrun gate into a pass.
+Release CI imports signing and notarization credentials from the protected
+`public-release` environment into an ephemeral Keychain only after the
+host-safe source gate, then deletes the Keychain and temporary credential files
+with an `always()` cleanup. Separate private-key-free GitHub-hosted
+`macos-15` arm64 and `macos-15-intel` x86_64 jobs assert their native
+architecture and run packaged-functional acceptance; a clean hosted job
+downloads and publishes only after both pass. Every download compares five
+signing-job digests before ZIP inspection or extraction. An unavailable or
+mismatched native job leaves publication incomplete rather than converting an
+unrun gate into a pass.
+
+发布 CI 只在 host-safe 源码门禁通过后，才从受保护的 `public-release`
+environment 将签名与公证凭据导入临时 Keychain，并通过 `always()` 清理 Keychain
+与临时凭据文件。之后由不接触私钥的 GitHub 托管 `macos-15` arm64 与
+`macos-15-intel` x86_64 任务断言原生架构并执行包内功能验收；两者都通过后，干净的
+托管任务才可下载并发布。任一原生任务不可用或架构不匹配，都保持发布未完成。
 
 ## Product-refactor acceptance / 产品重构验收
 

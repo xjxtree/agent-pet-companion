@@ -6,16 +6,16 @@
   "type": "object",
   "required": ["source", "event_type"],
   "properties": {
-    "id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+    "id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256, "pattern": "\\S", "x-maxUtf8Bytes": 256 },
     "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
     "project_path": { "type": ["string", "null"] },
-    "session_id": { "type": ["string", "null"], "maxLength": 256 },
+    "session_id": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
     "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
     "title": { "type": ["string", "null"], "deprecated": true },
     "detail": { "type": ["string", "null"], "deprecated": true },
     "payload": { "$ref": "#/$defs/strictEnvelopeInput" },
     "payload_json": { "$ref": "#/$defs/strictEnvelopeInput", "deprecated": true },
-    "created_at": { "type": "string" }
+    "created_at": { "type": "string", "maxLength": 128, "x-maxUtf8Bytes": 128 }
   },
   "not": { "required": ["payload", "payload_json"] },
   "additionalProperties": false,
@@ -24,26 +24,28 @@
       "type": "object",
       "properties": {
         "schema_version": { "const": "apc.agent-event.v1" },
-        "external_event_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+        "external_event_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 256, "pattern": "\\S", "x-maxUtf8Bytes": 256 },
         "source_event": { "type": ["string", "null"] },
         "tool_name": { "type": ["string", "null"] },
         "outcome": { "type": ["string", "null"] },
+        "contract_version": { "type": ["string", "null"], "maxLength": 128, "x-maxUtf8Bytes": 128 },
         "diagnostic": { "type": "boolean" },
-        "turn_id": { "type": ["string", "null"], "maxLength": 256 },
+        "affects_activity": { "type": "boolean" },
+        "turn_id": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
         "session_active": { "type": "boolean" },
         "message_role": { "type": ["string", "null"], "enum": ["user", "assistant", null] },
-        "message_content": { "type": ["string", "null"], "maxLength": 4096 },
+        "message_content": { "type": ["string", "null"], "maxLength": 4096, "x-maxUtf8Bytes": 4096 },
         "activity_kind": {
           "type": ["string", "null"],
           "enum": ["thinking", "plan", "command", "file", "file_change", "tool", "subagent", "search", "network", "image", "compaction", null]
         },
-        "activity_content": { "type": ["string", "null"], "maxLength": 1024 },
+        "activity_content": { "type": ["string", "null"], "maxLength": 1024, "x-maxUtf8Bytes": 1024 },
         "interaction_kind": {
           "type": ["string", "null"],
           "enum": ["approval_required", "input_required", "review_required", null]
         },
-        "project_label": { "type": ["string", "null"], "maxLength": 128 },
-        "session_title": { "type": ["string", "null"], "maxLength": 160 },
+        "project_label": { "type": ["string", "null"], "maxLength": 128, "x-maxUtf8Bytes": 128 },
+        "session_title": { "type": ["string", "null"], "maxLength": 160, "x-maxUtf8Bytes": 160 },
         "session_open": { "type": ["boolean", "null"] },
         "session_surface": {
           "type": ["string", "null"],
@@ -56,6 +58,7 @@
         "session_open_url": {
           "type": ["string", "null"],
           "maxLength": 256,
+          "x-maxUtf8Bytes": 256,
           "pattern": "^(warp|warppreview)://session/[0-9A-Fa-f]{32}$"
         }
       },

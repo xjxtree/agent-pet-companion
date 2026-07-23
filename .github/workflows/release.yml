@@ -26,7 +26,7 @@ concurrency:
 jobs:
   build:
     name: Sign, notarize, staple, and package
-    runs-on: [self-hosted, macOS, apc-public-release]
+    runs-on: macos-15
     environment: public-release
     timeout-minutes: 90
     permissions:
@@ -46,7 +46,7 @@ jobs:
     env:
       APC_CODESIGN_IDENTITY: ${{ vars.APC_CODESIGN_IDENTITY }}
       APC_DEVELOPER_TEAM_ID: ${{ vars.APC_DEVELOPER_TEAM_ID }}
-      APC_NOTARY_PROFILE: ${{ vars.APC_NOTARY_PROFILE }}
+      APC_NOTARY_PROFILE: agent-pet-companion-ci
       APC_VALIDATE_HOST_UI: "0"
       APC_VALIDATE_OVERLAY_RUNTIME: "0"
       APC_VALIDATE_OVERLAY_INTERACTION: "0"
@@ -97,13 +97,32 @@ jobs:
 
       - name: Validate externally provisioned release environment
         run: |
+          test "$(uname -m)" = "arm64"
           [[ "$APC_CODESIGN_IDENTITY" =~ ^Developer[[:space:]]ID[[:space:]]Application:[[:space:]].+ ]]
           [[ "$APC_CODESIGN_IDENTITY" != *$'\n'* ]]
+          [[ "$APC_CODESIGN_IDENTITY" != *$'\r'* ]]
           [[ ${#APC_CODESIGN_IDENTITY} -le 256 ]]
           [[ "$APC_DEVELOPER_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
+          [[ "$APC_CODESIGN_IDENTITY" == *" ($APC_DEVELOPER_TEAM_ID)" ]]
           [[ -n "$APC_NOTARY_PROFILE" && "$APC_NOTARY_PROFILE" != *$'\n'* ]]
+          [[ "$APC_NOTARY_PROFILE" != *$'\r'* ]]
           [[ ${#APC_NOTARY_PROFILE} -le 128 ]]
+          swift --version
+          xcrun --show-sdk-path
+          test "$(
+            swift --version \
+              | awk '/Apple Swift version/{split($4, version, "."); print version[1]}'
+          )" -ge 6
+          rustup show
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+          rg --version
+          command -v base64
           command -v codesign
+          command -v openssl
+          command -v security
           command -v xcrun
           command -v spctl
           command -v ditto
@@ -121,11 +140,74 @@ jobs:
       - name: Run host-safe source and integration gates
         run: ./script/test_all.sh
 
+      - name: Provision ephemeral Developer ID and notarization credentials
+        env:
+          APC_DEVELOPER_ID_P12_BASE64: ${{ secrets.APC_DEVELOPER_ID_P12_BASE64 }}
+          APC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APC_DEVELOPER_ID_P12_PASSWORD }}
+          APC_NOTARY_API_KEY_P8_BASE64: ${{ secrets.APC_NOTARY_API_KEY_P8_BASE64 }}
+          APC_NOTARY_API_KEY_ID: ${{ secrets.APC_NOTARY_API_KEY_ID }}
+          APC_NOTARY_API_ISSUER_ID: ${{ secrets.APC_NOTARY_API_ISSUER_ID }}
+        run: |
+          [[ -n "$APC_DEVELOPER_ID_P12_BASE64" ]]
+          [[ -n "$APC_DEVELOPER_ID_P12_PASSWORD" ]]
+          [[ -n "$APC_NOTARY_API_KEY_P8_BASE64" ]]
+          [[ "$APC_NOTARY_API_KEY_ID" =~ ^[A-Za-z0-9]{10,64}$ ]]
+          [[ "$APC_NOTARY_API_ISSUER_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
+
+          umask 077
+          certificate_path="$RUNNER_TEMP/apc-developer-id.p12"
+          api_key_path="$RUNNER_TEMP/apc-notary-api-key.p8"
+          keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          rm -f "$certificate_path" "$api_key_path" "$keychain_path"
+
+          printf '%s' "$APC_DEVELOPER_ID_P12_BASE64" \
+            | base64 --decode >"$certificate_path"
+          printf '%s' "$APC_NOTARY_API_KEY_P8_BASE64" \
+            | base64 --decode >"$api_key_path"
+          [[ -s "$certificate_path" && -s "$api_key_path" ]]
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -P "$APC_DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -f pkcs12 \
+            -k "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path" \
+            | grep -F -- "\"$APC_CODESIGN_IDENTITY\"" >/dev/null
+
+          xcrun notarytool store-credentials "$APC_NOTARY_PROFILE" \
+            --key "$api_key_path" \
+            --key-id "$APC_NOTARY_API_KEY_ID" \
+            --issuer "$APC_NOTARY_API_ISSUER_ID" \
+            --keychain "$keychain_path" \
+            --validate
+
+          rm -f "$certificate_path" "$api_key_path"
+          echo "APC_NOTARY_KEYCHAIN=$keychain_path" >>"$GITHUB_ENV"
+
       - name: Build both supported public archives
         env:
           APC_RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
           APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
         run: ./script/build_release.sh --public --arch all
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        run: |
+          keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"
+          security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+          rm -f \
+            "$RUNNER_TEMP/apc-developer-id.p12" \
+            "$RUNNER_TEMP/apc-notary-api-key.p8" \
+            "$keychain_path"
 
       - name: Revalidate final local artifact set
         env:
@@ -171,7 +253,7 @@ jobs:
   validate_arm64:
     name: Validate packaged arm64 App on native Apple silicon
     needs: build
-    runs-on: [self-hosted, macOS, ARM64, apc-public-validation]
+    runs-on: macos-15
     timeout-minutes: 30
     permissions:
       contents: read
@@ -182,6 +264,9 @@ jobs:
       RELEASE_BUILD: ${{ needs.build.outputs.build }}
       RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
+      - name: Prove native validation architecture
+        run: test "$(uname -m)" = "arm64"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
@@ -216,7 +301,7 @@ jobs:
   validate_x86_64:
     name: Validate packaged x86_64 App on native Intel
     needs: build
-    runs-on: [self-hosted, macOS, X64, apc-public-validation]
+    runs-on: macos-15-intel
     timeout-minutes: 30
     permissions:
       contents: read
@@ -227,6 +312,9 @@ jobs:
       RELEASE_BUILD: ${{ needs.build.outputs.build }}
       RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
+      - name: Prove native validation architecture
+        run: test "$(uname -m)" = "x86_64"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1

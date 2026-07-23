@@ -26,11 +26,15 @@ stores, or prints credentials.
 Required environment:
   APC_CODESIGN_IDENTITY    Exact Developer ID Application identity
   APC_DEVELOPER_TEAM_ID    Ten-character Apple Developer Team ID
-  APC_NOTARY_PROFILE       Name of a pre-provisioned notarytool keychain profile
+  APC_NOTARY_PROFILE       Name of the notarytool keychain profile
   APC_RELEASE_VERSION      Three-component semantic version
   APC_RELEASE_BUILD        Positive build number
   APC_RELEASE_COMMIT       Full candidate commit
   APC_BUILD_ID             Shared App/PetCore/CLI build ID
+
+Optional environment:
+  APC_NOTARY_KEYCHAIN      Absolute path to the regular Keychain containing the
+                           notarytool profile (required for an ephemeral CI Keychain)
 EOF
 }
 
@@ -96,6 +100,7 @@ done
 CODESIGN_IDENTITY="${APC_CODESIGN_IDENTITY:-}"
 TEAM_ID="${APC_DEVELOPER_TEAM_ID:-}"
 NOTARY_PROFILE="${APC_NOTARY_PROFILE:-}"
+NOTARY_KEYCHAIN="${APC_NOTARY_KEYCHAIN:-}"
 RELEASE_VERSION="${APC_RELEASE_VERSION:-}"
 RELEASE_BUILD="${APC_RELEASE_BUILD:-}"
 RELEASE_COMMIT="${APC_RELEASE_COMMIT:-}"
@@ -103,6 +108,7 @@ BUILD_ID="${APC_BUILD_ID:-}"
 
 if [[ ! "$CODESIGN_IDENTITY" =~ ^Developer[[:space:]]ID[[:space:]]Application:[[:space:]].+ \
   || "$CODESIGN_IDENTITY" == *$'\n'* \
+  || "$CODESIGN_IDENTITY" == *$'\r'* \
   || ${#CODESIGN_IDENTITY} -gt 256 ]]; then
   echo 'supported public distribution unavailable: APC_CODESIGN_IDENTITY is not provisioned' >&2
   exit 78
@@ -111,9 +117,23 @@ if [[ ! "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
   echo 'supported public distribution unavailable: APC_DEVELOPER_TEAM_ID is not provisioned' >&2
   exit 78
 fi
-if [[ -z "$NOTARY_PROFILE" || "$NOTARY_PROFILE" == *$'\n'* || ${#NOTARY_PROFILE} -gt 128 ]]; then
+if [[ -z "$NOTARY_PROFILE" \
+  || "$NOTARY_PROFILE" == *$'\n'* \
+  || "$NOTARY_PROFILE" == *$'\r'* \
+  || ${#NOTARY_PROFILE} -gt 128 ]]; then
   echo 'supported public distribution unavailable: APC_NOTARY_PROFILE is not provisioned' >&2
   exit 78
+fi
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+  if [[ "$NOTARY_KEYCHAIN" != /* \
+    || "$NOTARY_KEYCHAIN" == *$'\n'* \
+    || "$NOTARY_KEYCHAIN" == *$'\r'* \
+    || ${#NOTARY_KEYCHAIN} -gt 1024 \
+    || ! -f "$NOTARY_KEYCHAIN" \
+    || -L "$NOTARY_KEYCHAIN" ]]; then
+    echo 'supported public distribution unavailable: APC_NOTARY_KEYCHAIN is invalid' >&2
+    exit 78
+  fi
 fi
 if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+([.][0-9]+){2}$ \
   || ! "$RELEASE_BUILD" =~ ^[1-9][0-9]*$ \
@@ -225,11 +245,20 @@ APC_DEVELOPER_TEAM_ID="$TEAM_ID" \
 ditto -c -k --norsrc --keepParent "$APP_BUNDLE" "$STAGED_SUBMISSION"
 SUBMISSION_SHA256="$(shasum -a 256 "$STAGED_SUBMISSION" | awk '{print $1}')"
 
-xcrun notarytool submit "$STAGED_SUBMISSION" \
-  --keychain-profile "$NOTARY_PROFILE" \
-  --wait \
-  --output-format json \
-  >"$NOTARY_RESULT"
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+  xcrun notarytool submit "$STAGED_SUBMISSION" \
+    --keychain-profile "$NOTARY_PROFILE" \
+    --keychain "$NOTARY_KEYCHAIN" \
+    --wait \
+    --output-format json \
+    >"$NOTARY_RESULT"
+else
+  xcrun notarytool submit "$STAGED_SUBMISSION" \
+    --keychain-profile "$NOTARY_PROFILE" \
+    --wait \
+    --output-format json \
+    >"$NOTARY_RESULT"
+fi
 
 read -r NOTARY_ID NOTARY_STATUS < <(
   python3 - "$NOTARY_RESULT" <<'PY'

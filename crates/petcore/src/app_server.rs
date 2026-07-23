@@ -30,6 +30,10 @@ const HOOKS_LIST_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const THREAD_LIST_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_READ_TIMEOUT: Duration = Duration::from_millis(5000);
 const THREAD_START_TIMEOUT: Duration = Duration::from_millis(8000);
+// Pet creation is an explicit long-running action, so its App Server process
+// may tolerate normal startup scheduling pressure without inheriting the
+// shorter background-health probe budget.
+const PET_STUDIO_INITIALIZE_TIMEOUT: Duration = Duration::from_millis(8000);
 const TURN_START_TIMEOUT: Duration = Duration::from_millis(12_000);
 // Two real image-generation calls plus transparent sprite extraction can take
 // longer than ten minutes on a healthy App Server. Cancellation remains
@@ -1710,7 +1714,7 @@ fn run_pet_studio_session_stdio_command(
             "capabilities": {}
         }
     }))?;
-    let initialize = session.read_response(1, "initialize", PROBE_TIMEOUT)?;
+    let initialize = session.read_response(1, "initialize", PET_STUDIO_INITIALIZE_TIMEOUT)?;
     if initialize.get("error").is_some() {
         session.terminate();
         return Err(response_error(
@@ -2021,7 +2025,7 @@ fn run_pet_studio_follow_up_stdio_command(
             "capabilities": {}
         }
     }))?;
-    let initialize = session.read_response(1, "initialize", PROBE_TIMEOUT)?;
+    let initialize = session.read_response(1, "initialize", PET_STUDIO_INITIALIZE_TIMEOUT)?;
     if initialize.get("error").is_some() {
         session.terminate();
         return Err(response_error(
@@ -2511,7 +2515,7 @@ fn start_thread_stdio_command(command: &str, thread_params: Value) -> Result<Val
             "capabilities": {}
         }
     }))?;
-    let initialize = session.read_response(1, "initialize", PROBE_TIMEOUT)?;
+    let initialize = session.read_response(1, "initialize", PET_STUDIO_INITIALIZE_TIMEOUT)?;
     if initialize.get("error").is_some() {
         session.terminate();
         return Err(response_error(

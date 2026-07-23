@@ -64,6 +64,13 @@ while (($# > 0)); do
       ;;
   esac
 done
+case "$APP_BUNDLE" in
+  /*)
+    ;;
+  *)
+    APP_BUNDLE="$PWD/$APP_BUNDLE"
+    ;;
+esac
 case "$EXPECTED_ARCH" in
   "")
     ;;

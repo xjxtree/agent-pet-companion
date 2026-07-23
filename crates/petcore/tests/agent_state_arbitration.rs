@@ -2664,12 +2664,16 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             json!({"role": "user", "content": "完成后发送的新问题"}),
             "source={source}"
         );
+        assert_eq!(
+            session["session_title"], "完成后发送的新问题",
+            "source={source}"
+        );
         assert_eq!(session["session_message"], Value::Null, "source={source}");
     }
 }
 
 #[test]
-fn cli_overlay_projection_uses_first_user_message_as_the_session_title() {
+fn cli_overlay_projection_uses_latest_user_context_as_the_session_title() {
     let (_temp, state) = ready();
     for (source, session_id, first_message, later_message, terminal_source_event) in [
         (
@@ -2743,15 +2747,15 @@ fn cli_overlay_projection_uses_first_user_message_as_the_session_title() {
     let current = snapshot(&state);
     let sessions = current["active_agent_sessions"].as_array().unwrap();
     for (session_id, expected_title, expected_latest_user_message) in [
-        ("pi-title-fallback", "Pi 第一条用户消息", "Pi 后续用户消息"),
+        ("pi-title-fallback", "Pi 后续用户消息", "Pi 后续用户消息"),
         (
             "claude-title-fallback",
-            "Claude 第一条用户消息",
+            "Claude 后续用户消息",
             "Claude 后续用户消息",
         ),
         (
             "opencode-title-fallback",
-            "OpenCode 第一条用户消息",
+            "OpenCode 后续用户消息",
             "OpenCode 后续用户消息",
         ),
     ] {

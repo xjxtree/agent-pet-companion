@@ -642,6 +642,50 @@ done
 }
 
 #[test]
+fn pet_studio_initialization_tolerates_interactive_startup_scheduling() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("delayed-studio-initialize.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      sleep 4
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"delayed-studio-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_delayed","sessionId":"thread_delayed"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_delayed","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_delayed","turnId":"turn_delayed","item":{"type":"agentMessage","id":"message_delayed","text":"{\"name\":\"Delayed Pet\"}"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Interactive startup budget".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
+    };
+
+    let result = run_pet_studio_session(&paths, "job_delayed_initialize", &form);
+    assert_eq!(result["completed"], true, "{result}");
+    assert_eq!(result["ai_brief"]["name"], "Delayed Pet", "{result}");
+}
+
+#[test]
 fn generation_sends_initialized_and_accepts_turn_completed_boundary() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();

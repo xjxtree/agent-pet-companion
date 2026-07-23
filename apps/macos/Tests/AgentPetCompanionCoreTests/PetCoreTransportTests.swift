@@ -281,19 +281,47 @@ struct PetCoreTransportTests {
 
     @Test
     func processIgnoringTermIsKilledWithinCleanupBound() async throws {
+        let processIdentifierFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bounded-process-timeout-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: processIdentifierFile) }
+
+        let process = Task {
+            try await BoundedProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    """
+                    trap '' TERM
+                    printf '%s\n' "$$" > "$1"
+                    while :; do :; done
+                    """,
+                    "bounded-process-timeout",
+                    processIdentifierFile.path
+                ],
+                timeout: .milliseconds(500),
+                outputLimit: 1_024
+            )
+        }
+        let processIdentifiers = await waitForProcessIdentifiers(
+            at: processIdentifierFile,
+            expectedCount: 1,
+            // Swift Testing may delay the utility-QoS operation while the
+            // complete suite runs concurrently. Startup is not cleanup time.
+            timeout: .seconds(5)
+        )
+        guard processIdentifiers.count == 1 else {
+            process.cancel()
+            _ = try? await process.value
+            Issue.record("Expected the timeout fixture to start")
+            return
+        }
+
         let clock = ContinuousClock()
         let started = clock.now
-        let result = try await BoundedProcessRunner.run(
-            executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "printf '%s\n' \"$$\"; trap '' TERM; while :; do :; done"],
-            timeout: .milliseconds(100),
-            outputLimit: 1_024
-        )
+        let result = try await process.value
 
         #expect(result.termination == .timedOut)
         #expect(started.duration(to: clock.now) < .seconds(2))
-        let processIdentifiers = parseProcessIdentifiers(result.standardOutput)
-        #expect(processIdentifiers.count == 1)
         #expect(await waitForProcessesToExit(processIdentifiers))
         #expect(processIdentifiers.first.map(processGroupHasExited) == true)
     }

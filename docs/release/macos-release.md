@@ -58,18 +58,27 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
 Supported public distribution additionally requires full notarization tooling
-and these externally provisioned names:
+and these externally provisioned values:
 
 ```text
 APC_CODESIGN_IDENTITY    exact Developer ID Application identity
 APC_DEVELOPER_TEAM_ID    ten-character Apple Developer Team ID
-APC_NOTARY_PROFILE       pre-provisioned notarytool keychain profile name
+APC_NOTARY_PROFILE       notarytool keychain profile name
+APC_NOTARY_KEYCHAIN      optional absolute path to that Keychain
 ```
 
-正式公开分发还需要完整公证工具及以上三个外部注入值。证书私钥与 Apple 公证凭据
-由发布机 Keychain 管理；仓库、脚本、CI 日志和 artifact 不保存、不发现也不输出
-这些凭据。`APC_NOTARY_PROFILE` 只是已配置 profile 的名称。缺少任何外部配置时，
-`--public` 以 unavailable 状态失败；如只需本地交接，应显式运行 `--preview`。
+`APC_NOTARY_KEYCHAIN` is required when the profile lives in a non-default,
+ephemeral CI Keychain and may be omitted for a profile in the user's ordinary
+Keychain search path. The certificate private key and Apple notarization
+credentials remain Keychain-managed; repository files, scripts, logs, and
+artifacts never contain or print them. Missing or invalid provisioning makes
+`--public` exit unavailable. Use `--preview` explicitly for a local handoff.
+
+正式公开分发还需要完整公证工具及以上外部配置。profile 位于非默认临时 Keychain
+时必须传入 `APC_NOTARY_KEYCHAIN`；位于用户常规 Keychain 搜索路径时可省略。证书
+私钥与 Apple 公证凭据始终由 Keychain 管理，仓库文件、脚本、日志和 artifact
+不保存也不输出。缺少或无效配置时，`--public` 以 unavailable 状态失败；本地
+交接应显式运行 `--preview`。
 
 The repository entitlement allowlist is
 [`config/distribution/AgentPetCompanion.entitlements`](../../config/distribution/AgentPetCompanion.entitlements).
@@ -211,17 +220,59 @@ App/PetCore/CLI inventory.
 ## 6. GitHub Release automation / GitHub Release 自动化
 
 .github/workflows/release.yml runs for a `vX.Y.Z` tag or an explicit manual
-dispatch referencing an existing tag. Signing and notarization use a protected,
-externally provisioned `apc-public-release` macOS runner and the
-`public-release` environment. The workflow does not import certificates or
-create notary credentials; the runner Keychain already owns them, while
-repository environment variables provide only the identity, Team ID, and
-profile names. Every third-party workflow action is pinned to a full commit and
-checkout never persists Git credentials.
+dispatch referencing an existing tag. It uses the protected `public-release`
+environment and GitHub-hosted native macOS runners. The signing job runs on
+`macos-15` (Apple silicon); packaged acceptance runs independently on
+`macos-15` (arm64) and `macos-15-intel` (x86_64), with an explicit `uname -m`
+assertion before either native gate. Every third-party workflow action is
+pinned to a full commit and checkout never persists Git credentials.
 
-工作流由 `vX.Y.Z` tag 或引用既有 tag 的手动触发启动，运行于受保护且已外部配置的
-macOS 发布 runner 与 `public-release` environment。工作流不导入证书、不创建
-公证凭据，只接收身份、Team ID 与 profile 名称。
+工作流由 `vX.Y.Z` tag 或引用既有 tag 的手动触发启动，使用受保护的
+`public-release` environment 与 GitHub 托管原生 macOS runner。签名任务运行于
+Apple silicon `macos-15`；包内验收分别运行于 arm64 `macos-15` 与 x86_64
+`macos-15-intel`，并在原生门禁前显式断言 `uname -m`。所有第三方 Action 固定到
+完整 commit，checkout 不保存 Git 凭据。
+
+Configure these environment values:
+
+```text
+Variables:
+  APC_CODESIGN_IDENTITY
+  APC_DEVELOPER_TEAM_ID
+
+Secrets:
+  APC_DEVELOPER_ID_P12_BASE64
+  APC_DEVELOPER_ID_P12_PASSWORD
+  APC_NOTARY_API_KEY_P8_BASE64
+  APC_NOTARY_API_KEY_ID
+  APC_NOTARY_API_ISSUER_ID
+```
+
+The environment must require an explicit release-maintainer review and use
+custom deployment policies that allow only the `main` branch for manual
+dispatches and `v*.*.*` tags for tag-triggered releases. Keep credential
+variables and secrets only in this environment; do not define same-name
+repository or organization fallbacks.
+
+该 environment 必须要求发布维护者显式审核，并通过自定义 deployment policy
+只允许 `main` 分支发起手动发布、`v*.*.*` tag 发起标签发布。上述变量与 secrets
+必须只保存在该 environment，不得在仓库或组织层配置同名回退。
+
+After the host-safe source gate, the signing job decodes the P12 certificate
+and App Store Connect API key into mode-`0600` temporary files, imports the
+Developer ID identity and a validated `agent-pet-companion-ci` notary profile
+into a random-password ephemeral Keychain, and passes that exact Keychain to
+`notarytool`. An `always()` cleanup step deletes the Keychain and both files.
+Secrets are scoped only to this provisioning step; native validation and
+publication receive public identity and Team ID metadata but no private key,
+certificate password, API key, or notary profile.
+
+在 host-safe 源码门禁之后，签名任务才会将 P12 证书与 App Store Connect API key
+解码到权限为 `0600` 的临时文件，把 Developer ID 身份和已验证的
+`agent-pet-companion-ci` 公证 profile 导入随机密码临时 Keychain，并将该 Keychain
+显式传给 `notarytool`。`always()` 清理步骤会删除 Keychain 与两个临时文件。
+Secrets 仅进入凭据配置步骤；原生验证与发布任务只接收公开 identity 与 Team ID，
+不接触私钥、证书密码、API key 或公证 profile。
 
 The repository must protect `v*.*.*` with a GitHub tag ruleset that permits
 controlled creation but rejects tag updates and deletions. After the build job
@@ -257,13 +308,15 @@ The workflow:
 9. rechecks the remote tag, publishes only after all checks succeed, and checks
    the tag once more before retaining the Release.
 
-The required native validation runner labels are
-`self-hosted, macOS, ARM64, apc-public-validation` and
-`self-hosted, macOS, X64, apc-public-validation`. These jobs receive public
-signature metadata but no signing identity private key and no notary profile.
-If either native runner is not externally provisioned, the workflow remains
-incomplete and cannot reach publication; it must never describe the candidate
-as having passed native two-architecture acceptance.
+Native validation is a hard dependency of publication. If either hosted native
+job is unavailable, mismatches its asserted architecture, or fails packaged
+acceptance, the workflow remains incomplete and cannot publish. A cross-built
+archive or a run on the other architecture never substitutes for the matching
+native gate.
+
+原生双架构验证是发布的硬依赖。任一 GitHub 托管原生任务不可用、架构断言不匹配或
+包内验收失败，工作流都保持未完成且不能发布；交叉编译归档或另一架构上的执行不能
+代替对应原生门禁。
 
 An existing Release is never overwritten. If download verification fails, the
 draft is removed and no supported public Release is published. One tag, one

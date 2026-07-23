@@ -5,7 +5,9 @@ use crate::db::{
     BehaviorSettingsPatch, Database, InsertEventOutcome, RevisionChecked, SessionMessageProjection,
 };
 use crate::diagnostics::{self, DiagnosticIngestOutcome, DiagnosticLogger, DiagnosticRejection};
-use crate::event_envelope::{event_affects_activity, NormalizedAgentEvent, MAX_RECENT_EVENTS};
+use crate::event_envelope::{
+    event_affects_activity, NormalizedAgentEvent, MAX_RECENT_EVENTS, MAX_SESSION_TITLE_BYTES,
+};
 use crate::generation;
 use crate::metrics;
 use crate::paths::AppPaths;
@@ -2121,7 +2123,12 @@ fn hydrate_agent_session_display(
                 .as_ref()
                 .and_then(|event| event_payload_text(event, "session_title"))
         })
-        .or_else(|| first_user_message.as_ref().and_then(fallback_session_title));
+        .or_else(|| {
+            active
+                .latest_user_message
+                .as_ref()
+                .and_then(fallback_session_title)
+        });
     active.session_message = active
         .latest_message
         .as_ref()
@@ -2231,21 +2238,24 @@ fn fallback_session_title(event: &AgentEvent) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    let mut characters = normalized.chars();
-    let prefix = characters
-        .by_ref()
-        .take(MAX_FALLBACK_SESSION_TITLE_CHARS)
-        .collect::<String>();
-    if characters.next().is_some() {
-        let mut shortened = prefix
-            .chars()
-            .take(MAX_FALLBACK_SESSION_TITLE_CHARS.saturating_sub(1))
-            .collect::<String>();
-        shortened.push('…');
-        Some(shortened)
-    } else {
-        Some(prefix)
+    if normalized.chars().count() <= MAX_FALLBACK_SESSION_TITLE_CHARS
+        && normalized.len() <= MAX_SESSION_TITLE_BYTES
+    {
+        return Some(normalized);
     }
+
+    let ellipsis = '…';
+    let max_prefix_chars = MAX_FALLBACK_SESSION_TITLE_CHARS.saturating_sub(1);
+    let max_prefix_bytes = MAX_SESSION_TITLE_BYTES.saturating_sub(ellipsis.len_utf8());
+    let mut shortened = String::new();
+    for character in normalized.chars().take(max_prefix_chars) {
+        if shortened.len() + character.len_utf8() > max_prefix_bytes {
+            break;
+        }
+        shortened.push(character);
+    }
+    shortened.push(ellipsis);
+    Some(shortened)
 }
 
 fn event_happened_after(candidate: &str, cutoff: &str) -> bool {
@@ -2723,6 +2733,35 @@ mod tests {
         assert!(refreshed.state_revision > first.state_revision);
         assert!(!Arc::ptr_eq(&first.events, &refreshed.events));
         assert_eq!(refreshed.events[0].event.id, event.id);
+    }
+
+    #[test]
+    fn fallback_session_title_obeys_character_and_utf8_byte_bounds() {
+        let title_for = |message: String| {
+            let mut event = exact_codex_state(AgentEventType::Start, &now_rfc3339()).event;
+            event.payload_json["message_content"] = json!(message);
+            fallback_session_title(&event).expect("fallback title")
+        };
+
+        let exact_bytes = "😀".repeat(40);
+        assert_eq!(exact_bytes.len(), MAX_SESSION_TITLE_BYTES);
+        assert_eq!(title_for(exact_bytes.clone()), exact_bytes);
+
+        let over_bytes = title_for("😀".repeat(41));
+        assert!(over_bytes.len() <= MAX_SESSION_TITLE_BYTES);
+        assert!(over_bytes.chars().count() <= MAX_FALLBACK_SESSION_TITLE_CHARS);
+        assert!(over_bytes.ends_with('…'));
+        assert!(std::str::from_utf8(over_bytes.as_bytes()).is_ok());
+
+        let exact_characters = "a".repeat(MAX_FALLBACK_SESSION_TITLE_CHARS);
+        assert_eq!(title_for(exact_characters.clone()), exact_characters);
+
+        let over_characters = title_for("a".repeat(MAX_FALLBACK_SESSION_TITLE_CHARS + 1));
+        assert_eq!(
+            over_characters.chars().count(),
+            MAX_FALLBACK_SESSION_TITLE_CHARS
+        );
+        assert!(over_characters.ends_with('…'));
     }
 
     #[test]

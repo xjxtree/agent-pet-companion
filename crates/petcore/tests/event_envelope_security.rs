@@ -125,6 +125,83 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
 }
 
 #[test]
+fn session_display_fields_enforce_exact_utf8_byte_boundaries() {
+    let session_title = format!("{}a", "界".repeat(53));
+    let message_content = format!("{}a", "界".repeat(1365));
+    assert_eq!(session_title.len(), 160);
+    assert_eq!(message_content.len(), 4096);
+
+    let accepted = NormalizedAgentEvent::from_external(
+        AgentSource::Codex,
+        json!({
+            "id": "display-boundary-accepted",
+            "session_id": "display-boundary-session",
+            "event_type": "start",
+            "payload": {
+                "source_event": "UserPromptSubmit",
+                "session_active": true,
+                "message_role": "user",
+                "message_content": message_content,
+                "session_title": session_title,
+                "diagnostic": false
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap();
+    assert_eq!(
+        accepted.payload_json["session_title"]
+            .as_str()
+            .unwrap()
+            .len(),
+        160
+    );
+    assert_eq!(
+        accepted.payload_json["message_content"]
+            .as_str()
+            .unwrap()
+            .len(),
+        4096
+    );
+
+    for (index, key, maximum, oversized) in [
+        (0, "session_title", 160, format!("{}ab", "界".repeat(53))),
+        (
+            1,
+            "message_content",
+            4096,
+            format!("{}ab", "界".repeat(1365)),
+        ),
+    ] {
+        assert_eq!(oversized.len(), maximum + 1);
+        let mut payload = json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "diagnostic": false
+        });
+        payload[key] = Value::String(oversized);
+        let error = NormalizedAgentEvent::from_external(
+            AgentSource::Codex,
+            json!({
+                "id": format!("display-boundary-rejected-{index}"),
+                "session_id": "display-boundary-session",
+                "event_type": "start",
+                "payload": payload
+            }),
+            RECEIVED_AT,
+        )
+        .unwrap_err();
+        let error = error.to_string();
+        assert!(
+            error.contains(&format!(
+                "agent event payload {key} exceeds {maximum} UTF-8 bytes"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn opencode_v2_activity_events_are_first_class_allowlisted_lifecycle_names() {
     for (index, source_event) in [
         "permission.v2.asked",
@@ -265,20 +342,32 @@ fn session_navigation_accepts_only_allowlisted_warp_focus_urls() {
         "warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
     );
 
-    let rejected = NormalizedAgentEvent::from_external(
-        AgentSource::Codex,
-        json!({
-            "id": "unsafe-session-target",
-            "event_type": "start",
-            "payload": {
-                "source_event": "UserPromptSubmit",
-                "session_open_url": "https://example.com/session/not-allowed"
-            }
-        }),
-        RECEIVED_AT,
-    )
-    .unwrap_err();
-    assert!(rejected.to_string().contains("not a supported session URL"));
+    for (index, invalid_url) in [
+        "https://example.com/session/not-allowed",
+        " warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+        "warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4 ",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = NormalizedAgentEvent::from_external(
+            AgentSource::Codex,
+            json!({
+                "id": format!("unsafe-session-target-{index}"),
+                "event_type": "start",
+                "payload": {
+                    "source_event": "UserPromptSubmit",
+                    "session_open_url": invalid_url
+                }
+            }),
+            RECEIVED_AT,
+        )
+        .unwrap_err();
+        assert!(
+            rejected.to_string().contains("not a supported session URL"),
+            "{rejected}"
+        );
+    }
 }
 
 #[test]

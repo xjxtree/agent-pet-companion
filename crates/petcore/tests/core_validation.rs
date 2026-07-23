@@ -3745,7 +3745,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     let fake_app_server = temp.path().join("fake_app_server.sh");
     write_fake_app_server_script(&fake_app_server, "thread_fake_pet_studio");
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
-    let _local_fallback = EnvVarGuard::set("APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK", "1");
+    let _disable_local_fallback = EnvVarGuard::set("APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK", "0");
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
@@ -3791,16 +3791,36 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
             },
         )
         .unwrap();
-        if messages
-            .as_array()
-            .and_then(|items| items.last())
-            .and_then(|message| message.get("progress"))
-            .and_then(|progress| progress.as_f64())
-            == Some(1.0)
+        let items = messages.as_array().unwrap();
+        if items
+            .iter()
+            .any(|message| message["kind"].as_str() == Some("generation_completed"))
         {
             break;
         }
-        assert!(Instant::now() < deadline, "generation did not complete");
+        if items.iter().any(|message| {
+            matches!(
+                message["kind"].as_str(),
+                Some("generation_failed" | "generation_canceled")
+            )
+        }) {
+            let app_server_session = std::fs::read_to_string(
+                state
+                    .paths
+                    .jobs_dir
+                    .join(job_id)
+                    .join("app_server_session.json"),
+            )
+            .unwrap_or_else(|_| "<missing>".to_string());
+            panic!(
+                "generation ended without the required App Server brief: \
+                 messages={messages}; app_server_session={app_server_session}"
+            );
+        }
+        assert!(
+            Instant::now() < deadline,
+            "generation did not complete: {messages}"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 

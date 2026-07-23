@@ -1,4 +1,7 @@
-use crate::{PetCoreError, Result};
+use crate::{
+    event_envelope::{MAX_PROJECT_LABEL_BYTES, MAX_SESSION_TITLE_BYTES},
+    PetCoreError, Result,
+};
 use petcore_types::{AgentEventType, AgentSource};
 use serde::Serialize;
 use serde_json::Value;
@@ -11,7 +14,6 @@ pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v
 pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.0-activity-v8";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
-const MAX_PROJECT_LABEL_BYTES: usize = 128;
 
 /// The complete set of adapter fields allowed to cross into PetCore. Raw hook
 /// payloads, tool arguments, commands, tool output, transcripts, and errors are
@@ -708,7 +710,7 @@ fn session_title(value: &Value) -> Option<String> {
             &["properties", "session_title"],
             &["properties", "info", "title"],
         ],
-        MAX_PROJECT_LABEL_BYTES,
+        MAX_SESSION_TITLE_BYTES,
     )
 }
 

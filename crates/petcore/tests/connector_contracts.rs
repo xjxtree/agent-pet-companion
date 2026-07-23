@@ -1,4 +1,5 @@
 use petcore::adapter_contracts::parse_contract_event;
+use petcore::event_envelope::NormalizedAgentEvent;
 use petcore_types::{AgentEventType, AgentSource};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,86 @@ fn parsed(source: AgentSource, path: &str) -> petcore::adapter_contracts::Contra
     parse_contract_event(source, &fixture(path))
         .unwrap()
         .unwrap_or_else(|| panic!("fixture {path} should emit a state event"))
+}
+
+#[test]
+fn adapter_session_title_and_project_label_match_envelope_utf8_limits() {
+    let exact_title = format!("{}a", "界".repeat(53));
+    let oversized_title = format!("{exact_title}b");
+    let exact_project_label = format!("{}ab", "界".repeat(42));
+    let oversized_project_label = format!("{exact_project_label}c");
+    assert_eq!(exact_title.len(), 160);
+    assert_eq!(oversized_title.len(), 161);
+    assert_eq!(exact_project_label.len(), 128);
+    assert_eq!(oversized_project_label.len(), 129);
+
+    let parse = |title: &str, project_label: &str| {
+        parse_contract_event(
+            AgentSource::ClaudeCode,
+            &serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "utf8-adapter-session",
+                "session_title": title,
+                "cwd": format!("/tmp/{project_label}"),
+                "prompt": "verify adapter byte bounds"
+            }),
+        )
+        .unwrap()
+        .unwrap()
+    };
+
+    let exact = parse(&exact_title, &exact_project_label);
+    assert_eq!(exact.session_title.as_deref(), Some(exact_title.as_str()));
+    assert_eq!(
+        exact.project_label.as_deref(),
+        Some(exact_project_label.as_str())
+    );
+
+    let truncated = parse(&oversized_title, &oversized_project_label);
+    assert_eq!(
+        truncated.session_title.as_deref(),
+        Some(exact_title.as_str()),
+        "session titles use the 160-byte envelope boundary"
+    );
+    assert_eq!(
+        truncated.project_label.as_deref(),
+        Some(exact_project_label.as_str()),
+        "project labels remain capped at 128 bytes"
+    );
+
+    let normalized = NormalizedAgentEvent::from_external(
+        AgentSource::ClaudeCode,
+        serde_json::json!({
+            "source": "claude_code",
+            "session_id": truncated.session_id,
+            "event_type": "start",
+            "payload": {
+                "source_event": truncated.source_event,
+                "contract_version": truncated.contract_version,
+                "diagnostic": truncated.diagnostic,
+                "affects_activity": truncated.affects_activity,
+                "session_active": truncated.session_active,
+                "project_label": truncated.project_label,
+                "session_title": truncated.session_title
+            }
+        }),
+        "2026-07-10T00:00:00Z",
+    )
+    .expect("adapter output must remain valid at the runtime envelope boundary");
+    assert_eq!(
+        normalized.payload_json["session_title"]
+            .as_str()
+            .unwrap()
+            .len(),
+        160
+    );
+    assert_eq!(
+        normalized.payload_json["project_label"]
+            .as_str()
+            .unwrap()
+            .len(),
+        128
+    );
 }
 
 #[test]

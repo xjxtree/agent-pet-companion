@@ -15,8 +15,8 @@ const MAX_EVENT_ID_BYTES: usize = 256;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_PROJECT_PATH_BYTES: usize = 1_024;
 const MAX_TURN_ID_BYTES: usize = 256;
-const MAX_PROJECT_LABEL_BYTES: usize = 128;
-const MAX_SESSION_TITLE_BYTES: usize = 160;
+pub(crate) const MAX_PROJECT_LABEL_BYTES: usize = 128;
+pub(crate) const MAX_SESSION_TITLE_BYTES: usize = 160;
 const MAX_SESSION_OPEN_URL_BYTES: usize = 256;
 const MAX_CONTRACT_VERSION_BYTES: usize = 128;
 
@@ -436,6 +436,7 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
         }
     }
     for (key, maximum_bytes) in [
+        ("external_event_id", MAX_EVENT_ID_BYTES),
         ("contract_version", MAX_CONTRACT_VERSION_BYTES),
         ("turn_id", MAX_TURN_ID_BYTES),
         ("message_content", MAX_MESSAGE_CONTENT_BYTES),
@@ -460,6 +461,15 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
                 }
             }
         }
+    }
+    if payload
+        .get("external_event_id")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(invalid_event(
+            "agent event payload external_event_id must be 1-256 UTF-8 bytes",
+        ));
     }
     validate_optional_enum(payload, "message_role", &["user", "assistant"])?;
     validate_optional_enum(
@@ -711,7 +721,9 @@ fn normalized_optional_payload_enum(
 }
 
 pub(crate) fn validated_warp_focus_url(value: &str) -> Option<String> {
-    let value = value.trim();
+    if value.trim() != value {
+        return None;
+    }
     let uuid = value
         .strip_prefix("warp://session/")
         .or_else(|| value.strip_prefix("warppreview://session/"))?;

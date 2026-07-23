@@ -342,6 +342,72 @@ class ReleaseWorkflowIdentityTests(unittest.TestCase):
             3,
         )
 
+    def test_release_uses_hosted_native_runners_and_ephemeral_signing_material(self) -> None:
+        source = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("self-hosted", source)
+        self.assertIn("runs-on: macos-15\n", source)
+        self.assertIn("runs-on: macos-15-intel\n", source)
+        self.assertIn("environment: public-release", source)
+
+        build_job_end = source.index("\n  validate_arm64:")
+        build_job = source[:build_job_end]
+        arm_job_end = source.index("\n  validate_x86_64:")
+        arm_job = source[build_job_end:arm_job_end]
+        x86_job_end = source.index("\n  publish:")
+        x86_job = source[arm_job_end:x86_job_end]
+        self.assertIn('test "$(uname -m)" = "arm64"', build_job)
+        self.assertIn('run: test "$(uname -m)" = "arm64"', arm_job)
+        self.assertNotIn('run: test "$(uname -m)" = "x86_64"', arm_job)
+        self.assertIn('run: test "$(uname -m)" = "x86_64"', x86_job)
+        self.assertNotIn('= "arm64"', x86_job)
+
+        for secret in (
+            "APC_DEVELOPER_ID_P12_BASE64",
+            "APC_DEVELOPER_ID_P12_PASSWORD",
+            "APC_NOTARY_API_KEY_P8_BASE64",
+            "APC_NOTARY_API_KEY_ID",
+            "APC_NOTARY_API_ISSUER_ID",
+        ):
+            self.assertIn(f"${{{{ secrets.{secret} }}}}", source)
+
+        source_gate = source.index("run: ./script/test_all.sh")
+        credential_provisioning = source.index(
+            "Provision ephemeral Developer ID and notarization credentials"
+        )
+        public_build = source.index("run: ./script/build_release.sh --public --arch all")
+        credential_cleanup = source.index("Remove ephemeral signing material")
+        local_revalidation = source.index("Revalidate final local artifact set")
+        artifact_upload = source.index("Upload immutable release candidate")
+        self.assertLess(
+            source_gate,
+            credential_provisioning,
+        )
+        self.assertLess(credential_provisioning, public_build)
+        self.assertLess(public_build, credential_cleanup)
+        self.assertLess(credential_cleanup, local_revalidation)
+        self.assertLess(local_revalidation, artifact_upload)
+        raw_file_cleanup = source.index(
+            'rm -f "$certificate_path" "$api_key_path"'
+        )
+        keychain_export = source.index(
+            'echo "APC_NOTARY_KEYCHAIN=$keychain_path"'
+        )
+        self.assertLess(credential_provisioning, raw_file_cleanup)
+        self.assertLess(raw_file_cleanup, keychain_export)
+        self.assertIn("APC_NOTARY_KEYCHAIN=$keychain_path", source)
+        self.assertIn(
+            'security find-identity -v -p codesigning "$keychain_path"',
+            source,
+        )
+        cleanup_block = source[credential_cleanup:local_revalidation]
+        self.assertNotIn("${APC_NOTARY_KEYCHAIN", cleanup_block)
+        self.assertIn(
+            'keychain_path="$RUNNER_TEMP/apc-signing.keychain-db"',
+            cleanup_block,
+        )
+        self.assertIn("security delete-keychain", source)
+        self.assertIn("if: ${{ always() }}", source)
+
 
 if __name__ == "__main__":
     unittest.main()

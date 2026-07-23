@@ -10,6 +10,7 @@ OUTPUT_LOG="$TMP_DIR/output.log"
 SUBMISSION="$TMP_DIR/submission.zip"
 FINAL="$TMP_DIR/final.zip"
 EVIDENCE="$TMP_DIR/evidence.json"
+NOTARY_KEYCHAIN="$TMP_DIR/notary.keychain-db"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -35,6 +36,7 @@ for binary in \
   chmod +x "$binary"
 done
 : >"$COMMAND_LOG"
+: >"$NOTARY_KEYCHAIN"
 
 write_executable "$SHIM_DIR/file" \
   '#!/usr/bin/env bash' \
@@ -140,6 +142,7 @@ run_pipeline() {
   APC_CODESIGN_IDENTITY='Developer ID Application: Example Company (ABCDEFGHIJ)' \
   APC_DEVELOPER_TEAM_ID='ABCDEFGHIJ' \
   APC_NOTARY_PROFILE='fake-notary-profile' \
+  APC_NOTARY_KEYCHAIN="${APC_TEST_NOTARY_KEYCHAIN_VALUE-$NOTARY_KEYCHAIN}" \
   APC_RELEASE_VERSION='1.2.3' \
   APC_RELEASE_BUILD='45' \
   APC_RELEASE_COMMIT='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
@@ -159,7 +162,7 @@ if grep -F 'fake-notary-profile' "$OUTPUT_LOG" >/dev/null; then
   exit 1
 fi
 
-python3 - "$COMMAND_LOG" "$EVIDENCE" <<'PY'
+python3 - "$COMMAND_LOG" "$EVIDENCE" "$NOTARY_KEYCHAIN" <<'PY'
 import json
 import pathlib
 import sys
@@ -188,6 +191,8 @@ for suffix in (
 outer_sign = first("--timestamp --entitlements")
 submission_zip = first("ditto\t-c -k --norsrc --keepParent")
 notary = first("xcrun\tnotarytool submit")
+if f"--keychain {sys.argv[3]}" not in commands[notary]:
+    raise SystemExit("notarytool did not receive the explicit ephemeral Keychain")
 staple = first("xcrun\tstapler staple")
 gatekeeper = first("spctl\t--assess --type execute")
 final_zip = next(
@@ -222,6 +227,19 @@ if not evidence["published_artifact"]["stapled"]:
 if not evidence["published_artifact"]["gatekeeper_accepted"]:
     raise SystemExit("Gatekeeper evidence is absent")
 PY
+
+# The optional explicit Keychain path must remain optional on the macOS system
+# Bash. An empty value exercises the ordinary login-Keychain profile path and
+# must not add a bare or empty --keychain argument.
+: >"$COMMAND_LOG"
+rm -f "$SUBMISSION" "$FINAL" "$EVIDENCE"
+APC_TEST_NOTARY_KEYCHAIN_VALUE='' run_pipeline >"$OUTPUT_LOG" 2>&1
+notary_command="$(grep -F $'xcrun\tnotarytool submit' "$COMMAND_LOG")"
+if [[ "$notary_command" == *'--keychain '* ]]; then
+  echo 'notarytool received an explicit Keychain when the optional path was omitted' >&2
+  exit 1
+fi
+[[ -f "$SUBMISSION" && -f "$FINAL" && -f "$EVIDENCE" ]]
 
 # Notarization failure must stop before staple, Gatekeeper, final archive, or
 # evidence publication. Public mode never degrades into a preview artifact.
@@ -275,6 +293,70 @@ missing_status=$?
 set -e
 [[ "$missing_status" == "78" ]]
 grep -F 'supported public distribution unavailable' "$OUTPUT_LOG" >/dev/null
+[[ ! -s "$COMMAND_LOG" ]]
+
+# An explicit notary Keychain must be an absolute, regular, non-symlink file
+# without line-control characters. Invalid CI provisioning fails before
+# signing or a network-facing command.
+assert_invalid_notary_keychain() {
+  local invalid_keychain="$1"
+  : >"$COMMAND_LOG"
+  set +e
+  PATH="$SHIM_DIR:$PATH" \
+  APC_FAKE_COMMAND_LOG="$COMMAND_LOG" \
+  APC_CODESIGN_IDENTITY='Developer ID Application: Example Company (ABCDEFGHIJ)' \
+  APC_DEVELOPER_TEAM_ID='ABCDEFGHIJ' \
+  APC_NOTARY_PROFILE='fake-notary-profile' \
+  APC_NOTARY_KEYCHAIN="$invalid_keychain" \
+  APC_RELEASE_VERSION='1.2.3' \
+  APC_RELEASE_BUILD='45' \
+  APC_RELEASE_COMMIT='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  APC_BUILD_ID='1.2.3.45.aaaaaaaaaaaa' \
+    "$ROOT_DIR/script/public_distribution_pipeline.sh" \
+      --app "$APP_BUNDLE" \
+      --architecture arm64 \
+      --submission-archive "$SUBMISSION" \
+      --final-archive "$FINAL" \
+      --evidence "$EVIDENCE" \
+      >"$OUTPUT_LOG" 2>&1
+  invalid_keychain_status=$?
+  set -e
+  [[ "$invalid_keychain_status" == "78" ]]
+  grep -F 'APC_NOTARY_KEYCHAIN is invalid' "$OUTPUT_LOG" >/dev/null
+  [[ ! -s "$COMMAND_LOG" ]]
+}
+
+NOTARY_KEYCHAIN_SYMLINK="$TMP_DIR/notary-symlink.keychain-db"
+ln -s "$NOTARY_KEYCHAIN" "$NOTARY_KEYCHAIN_SYMLINK"
+assert_invalid_notary_keychain 'relative-or-missing.keychain-db'
+assert_invalid_notary_keychain "$NOTARY_KEYCHAIN_SYMLINK"
+assert_invalid_notary_keychain "$NOTARY_KEYCHAIN"$'\r'
+
+# Profile names are also bounded single-line values because they are passed
+# directly to notarytool.
+: >"$COMMAND_LOG"
+set +e
+PATH="$SHIM_DIR:$PATH" \
+APC_FAKE_COMMAND_LOG="$COMMAND_LOG" \
+APC_CODESIGN_IDENTITY='Developer ID Application: Example Company (ABCDEFGHIJ)' \
+APC_DEVELOPER_TEAM_ID='ABCDEFGHIJ' \
+APC_NOTARY_PROFILE=$'fake-notary-profile\r' \
+APC_NOTARY_KEYCHAIN="$NOTARY_KEYCHAIN" \
+APC_RELEASE_VERSION='1.2.3' \
+APC_RELEASE_BUILD='45' \
+APC_RELEASE_COMMIT='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+APC_BUILD_ID='1.2.3.45.aaaaaaaaaaaa' \
+  "$ROOT_DIR/script/public_distribution_pipeline.sh" \
+    --app "$APP_BUNDLE" \
+    --architecture arm64 \
+    --submission-archive "$SUBMISSION" \
+    --final-archive "$FINAL" \
+    --evidence "$EVIDENCE" \
+    >"$OUTPUT_LOG" 2>&1
+invalid_profile_status=$?
+set -e
+[[ "$invalid_profile_status" == "78" ]]
+grep -F 'APC_NOTARY_PROFILE is not provisioned' "$OUTPUT_LOG" >/dev/null
 [[ ! -s "$COMMAND_LOG" ]]
 
 echo 'Public distribution pipeline tests ok'
