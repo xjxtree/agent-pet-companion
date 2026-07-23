@@ -6,14 +6,14 @@
 
 简体中文 | [English](README.md)
 
-Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App。它把宠物保存在本机，通过轻量桌面悬浮层展示，并将 Agent 活动转换为可见的宠物状态与会话气泡。
+Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App。你可以离开聊天窗口，让本地桌宠安静地告诉你 Agent 正在工作、需要你处理，还是已有结果可看，并可从气泡直接回到相关会话。
 
 ## 核心亮点
 
 - **开箱即用**：内置两只拥有完整动画与交互能力的宠物，首次打开即可获得完整桌宠功能体验。
 - **AI宠物制作**：支持高自由度、任意风格的宠物制作，可选择高分辨率宠物画质；已有宠物也支持通过 AI 修改。
 - **多 Agent 会话支持**：按 Agent 汇总 Codex、Claude Code、Pi Coding Agent 和 OpenCode 在所有项目中的会话；每个受支持的并发会话都可显示在对应 Agent 气泡中，点击后可打开相应宿主或会话。
-- **丰富的宠物配置**：支持消息气泡透明度、会话响应规则、多会话堆叠方式、外观、交互等丰富配置。
+- **本地优先**：宠物、设置、有界会话上下文与诊断信息都保留在 Mac 上，只有你主动导出时才会生成外部文件。
 
 ## 功能
 
@@ -21,16 +21,18 @@ Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App
 - **AI宠物制作**：描述想要的宠物，选择风格、画质和参考图，再通过 Codex 创建或持续调整。
 - **宠物配置**：设置显示、气泡、外观、交互、会话分组和动画档位。
 - **Agent 连接**：检查、修复、测试或移除 Codex、Claude Code、Pi Coding Agent 和 OpenCode 集成。
-- **服务与诊断**：查看 PetCore、本地 RPC、事件通道和桌宠渲染健康状态，并在需要时导出经过隐私过滤的诊断 ZIP。
+- **服务与诊断**：确认桌宠是否正常工作，恢复异常服务，并在支持人员确实需要更多信息时导出经过隐私过滤的诊断 ZIP。
 - **桌面悬浮层**：宠物本体在启动和状态切换期间也始终可拖动；可使用右下角手柄缩放、通过右键菜单操作，并从原生气泡打开活动会话。
 
 App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断信息都保留在 Mac 上，只有用户主动导出时才会生成外部文件；App 不读取 Agent 凭据、Token、Cookie 或 API Key。
 
 ## 安装
 
-### 从 GitHub Release 安装
+### 从开发预览版 GitHub Release 安装
 
-存在发布包时：
+仓库当前的发布工具生成按架构区分、采用 ad-hoc 签名且未经过 Apple 公证的归档。任何这类公开归档都属于**开发预览版**，不是最终受支持的公开分发包。面向普通用户的受支持版本必须先完成 Developer ID 签名、Apple 公证、staple 与 Gatekeeper 验收。
+
+存在开发预览包时：
 
 1. 打开 [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases)。
 2. 按 Mac 架构下载 ZIP：Apple 芯片选择 `macos-arm64`，Intel Mac 选择 `macos-x86_64`；同时下载该版本的 `SHA256SUMS.txt`。
@@ -38,7 +40,7 @@ App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断
 4. 解压归档，并将 `AgentPetCompanion.app` 移到 `/Applications`。
 5. 打开 App，在 **Agent 连接**中完成所需集成检查。
 
-不要在 Apple 芯片 Mac 上运行 `x86_64` 归档：它依赖 Rosetta，并可能触发 [Apple 官方说明](https://support.apple.com/zh-cn/102527)中的 Intel App 支持终止提示。`arm64` 归档及其包内全部可执行文件均为 Apple 芯片原生版本，不使用 Rosetta。Release ZIP 使用 ad-hoc 签名校验包完整性，不进行 Apple 公证。若 macOS 首次启动时阻止打开，请按住 Control 点击 App，选择**打开**并确认一次。对应 GitHub Release 会记录校验和与验收范围。
+不要在 Apple 芯片 Mac 上运行 `x86_64` 归档：它依赖 Rosetta，并可能触发 [Apple 官方说明](https://support.apple.com/zh-cn/102527)中的 Intel App 支持终止提示。`arm64` 归档及其包内全部可执行文件均为 Apple 芯片原生版本，不使用 Rosetta。预览版 Release 必须明确说明其签名与验收限制并记录校验和；仅按该预览版提供的明确指引操作。
 
 ### 从源码构建
 
@@ -91,6 +93,8 @@ macOS App 负责控制中心、状态栏入口、桌面悬浮层和渲染；PetC
 | 文档 | 用途 |
 |---|---|
 | [文档索引](docs/README.md) | 长期技术文档入口与维护规则 |
+| [产品体验合同](docs/product/experience-contract.md) | 目标产品模型与不可妥协的体验决策 |
+| [产品重构实施任务](docs/development/product-refactor-execution.md) | 不包含排期与里程碑、按依赖顺序执行的工程任务 |
 | [`.petpack` V1 规范](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | 可移植宠物格式与生产者契约 |
 | [参与贡献](CONTRIBUTING.md) | 开发流程与验证入口 |
 | [版本变更记录](CHANGELOG.md) | 每个 GitHub Release 对应的用户可见变更 |

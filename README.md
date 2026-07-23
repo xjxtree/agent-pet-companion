@@ -6,14 +6,14 @@
 
 [简体中文](README.zh-CN.md) | English
 
-Agent Pet Companion is a native macOS desktop companion for people who work with coding agents. It keeps pets local, shows them in a lightweight desktop overlay, and turns agent activity into visible pet states and session bubbles.
+Agent Pet Companion is a native macOS desktop companion for people who work with coding agents. You can step away from the chat while a local desktop pet quietly shows whether an Agent is working, needs attention, or has a result ready—and jump back to the relevant session from its bubble.
 
 ## Highlight Features
 
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
 - **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own.
 - **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. Each supported concurrent session can appear in its Agent bubble, and a click opens the corresponding host or session when available.
-- **Rich pet configuration** — customize message-bubble transparency, session response rules, multi-session stacking, appearance, interaction, and other pet behavior.
+- **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file.
 
 ## Features
 
@@ -21,16 +21,18 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 - **AI Pet Maker** — describe a pet, choose its style and quality, add reference images, then create or refine it through Codex.
 - **Pet Configuration** — control visibility, bubbles, appearance, interaction, session grouping, and animation profile.
 - **Agent Connections** — check, repair, test, or remove integrations for Codex, Claude Code, Pi Coding Agent, and OpenCode.
-- **Service & Diagnostics** — inspect PetCore, local RPC, event-channel, and renderer health, then export a privacy-filtered diagnostics ZIP when needed.
+- **Service & Diagnostics** — confirm that the companion is working, recover unhealthy services, and export a privacy-filtered diagnostics ZIP when support needs more detail.
 - **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
 
 The app is local-first: pets, settings, normalized agent events, and diagnostics remain on the Mac unless the user explicitly exports a file. It does not read agent credentials, tokens, cookies, or API keys.
 
 ## Installation
 
-### GitHub Release
+### Development-preview GitHub Release
 
-When a release is available:
+The repository's current release tooling produces architecture-specific, ad-hoc-signed archives that are not Apple-notarized. Any such published archive is a **Development Preview**, not the final supported public package. The supported distribution contract requires Developer ID signing, notarization, stapling, and Gatekeeper acceptance before ordinary end-user installation.
+
+When a development preview is available:
 
 1. Open [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases).
 2. Download the ZIP matching your Mac—`macos-arm64` for Apple silicon or `macos-x86_64` for Intel—plus the versioned `SHA256SUMS.txt`.
@@ -38,7 +40,7 @@ When a release is available:
 4. Extract the archive and move `AgentPetCompanion.app` to `/Applications`.
 5. Open the app and complete the checks under **Agent Connections**.
 
-Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger the Intel-app support warning described in [Apple's Rosetta guidance](https://support.apple.com/102527). The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. Release ZIPs are ad-hoc signed for bundle-integrity verification and are not Apple-notarized. If macOS blocks the first launch, Control-click the app, choose **Open**, and confirm once. The matching GitHub Release records the checksums and validation scope.
+Do not run the `x86_64` archive on an Apple silicon Mac: it requires Rosetta and can trigger the Intel-app support warning described in [Apple's Rosetta guidance](https://support.apple.com/102527). The `arm64` archive and all of its bundled executables are Apple-silicon native and do not use Rosetta. A preview Release must state its signing and validation limitations and record its checksums; follow only its explicit preview guidance.
 
 ### Build from source
 
@@ -91,6 +93,8 @@ The macOS App owns the control center, menu-bar entry, desktop overlay, and rend
 | Document | Purpose |
 |---|---|
 | [Documentation index](docs/README.md) | Durable technical documentation and maintenance rules |
+| [Product experience contract](docs/product/experience-contract.md) | Target product model and non-negotiable experience decisions |
+| [Product refactor execution](docs/development/product-refactor-execution.md) | Dependency-ordered implementation tasks without schedules or milestones |
 | [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet format and producer contract |
 | [Contributing](CONTRIBUTING.md) | Development workflow and validation entrypoints |
 | [Changelog](CHANGELOG.md) | Versioned user-visible changes for every GitHub Release |

@@ -1,6 +1,6 @@
 # Agent Connectors
 
-Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode through host-native hooks, plugins, or extensions. These adapters emit a small local event contract; they do not turn third-party agents into in-app AI Pet Maker backends.
+Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode through host-native hooks, plugins, or extensions. These adapters emit a small local event contract; they do not turn third-party agents into in-app AI Pet Maker backends. The target connection and bubble experience is defined by the [Product Experience Contract](../product/experience-contract.md), while this document owns the current integration boundary.
 
 ## Integration matrix
 
@@ -50,11 +50,11 @@ The App exposes Agent-scoped operations:
 
 The managed runtime lifecycle separately refreshes installed references after replacement.
 
-The page shows only Agent identity, connector health, managed artifacts, verification guidance, and relevant actions. Project directories, App/PetCore runtime details, renderer state, and diagnostics export do not belong on this page. Service state and archive export live under **Service & Diagnostics**.
+The page shows only Agent identity, connector health, managed artifacts, verification guidance, and relevant actions. Project directories, App/PetCore runtime details, renderer state, and diagnostics export do not belong on this page. Service state and archive export live under **Service & Diagnostics**. The target presentation aggregates these facts into one health state and one contextual primary action per Agent; individual CLI/hook/plugin/verification checks remain typed support data behind Technical Details.
 
 Check, test, repair, and uninstall share a typed App coordinator and a serialized PetCore mutation gate. A running operation disables conflicting actions, and failures remain inline with an explicit retry path.
 
-PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. The App never infers repair or uninstall authority from display text. Missing capability data denies mutation. Check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. The App filters the non-product `project_directory` check and never offers `choose_project_directory`.
+PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. The App never infers repair or uninstall authority from display text. Missing capability data denies mutation. Check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. The App filters the non-product `project_directory` check and never offers `choose_project_directory`. Task `R02` removes active emission/actionability of those legacy values while preserving decode-only compatibility only if the current contract version requires it.
 
 PetCore distinguishes ordinary, diagnostic, and full-task receipts against the current connector contract and install time. A channel test proves only the local adapter round trip; it does not prove provider authentication, model execution, or completion of a real Agent task.
 
@@ -78,4 +78,4 @@ The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can 
 4. Implement Agent-scoped check, repair, refresh, test, receipt, and uninstall behavior for App-managed artifacts.
 5. Point managed commands at `runtime/current/petcore-cli` and preserve local-only transport.
 6. Add simulated contract tests and keep real-host validation behind the explicit gate in [Validation profiles](../development/validation.md).
-7. Update the runtime manifest, this document, public feature list, and root changelog if the supported user surface changes.
+7. Update the runtime manifest, this document, product experience contract when the target changes, public feature list, and root changelog if the supported user surface changes.

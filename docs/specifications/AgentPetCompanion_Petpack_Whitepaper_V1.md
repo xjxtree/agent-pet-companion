@@ -119,6 +119,10 @@ State array order is not semantic, but writers use the table order for determini
 - A loop begins its next cycle exactly at `duration_ms`. A one-shot completes exactly at `duration_ms` and then holds its final frame until the runtime state changes.
 - The animated preview is a non-authoritative display asset. Its codec timing must not be used to infer package timing.
 
+### Product presentation boundary
+
+The package contract stays technical and exact; the ordinary product UI does not need to lead with it. The [Product Experience Contract](../product/experience-contract.md) presents the two playback profiles as Standard Motion and Smooth Motion, keeps exact native FPS and per-state duration in advanced/technical surfaces, and never offers runtime duration control. AI Pet Maker may change authored timing only through a new validated immutable revision under this specification.
+
 ### Producer visual contract
 
 - Frame PNGs have an alpha channel, transparent background, and a visible subject fully inside the canvas.

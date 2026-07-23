@@ -1,6 +1,6 @@
 # Runtime and IPC
 
-This document defines the current process lifecycle, compatibility contract, transport boundaries, and diagnostics behavior. Exact method and field allowlists remain in source.
+This document defines the current process lifecycle, compatibility contract, transport boundaries, and diagnostics behavior. Exact method and field allowlists remain in source. Product-level visibility and copy are governed by the [Product Experience Contract](../product/experience-contract.md); planned presentation changes do not alter the runtime contract until their ordered task is implemented.
 
 ## Process topology
 
@@ -14,6 +14,8 @@ This document defines the current process lifecycle, compatibility contract, tra
 The App uses `run/app-instance.lock`; a second instance sends an activation request containing its bundle path and build ID, then exits. PetCore uses `run/petcore.lock`, `runtime.json`, and a live health identity. Shutdown requires the expected PetCore instance ID.
 
 Closing the control-center window does not terminate the UI host because the menu-bar and overlay surfaces remain active. Reopen requests resolve the registered control-center window identifier, so an already-open About window cannot intercept them. Standard **Quit** terminates the App and overlay. The normal LaunchAgent-hosted PetCore remains available; a direct child fallback is tied to the App process.
+
+The runtime topology does not make PetCore health a permanent product headline. The current UI may render typed service status in the control center and toolbar; task `R06` removes the healthy toolbar indicator while preserving an actionable failure/recovery affordance, and task `R11` moves healthy technical detail behind disclosure. PetCore operational states and recovery authority remain unchanged.
 
 ## Startup and runtime replacement
 
@@ -48,7 +50,7 @@ At bootstrap, the App applies the persisted `behavior` projection before present
 
 Initial startup, automatic retry, and explicit recovery coalesce onto one behavior → seed → snapshot → overlay pipeline so partial bootstrap work cannot race.
 
-The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. The Service & Diagnostics page, toolbar, local RPC row, and event-channel row render this typed state, while desktop-pet rendering remains an independent App-side status.
+The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. The current Service & Diagnostics page, toolbar, local RPC row, and event-channel row render this typed state, while desktop-pet rendering remains an independent App-side status. Presentation refactoring may quiet healthy state, but it must continue to consume these typed values and must never infer recovery from localized text.
 
 There is no periodic two-second disk or bundle updater. Bundle identity is re-evaluated only on lifecycle events such as activation, opening the control center, or a second-instance request. If a different valid bundle is explicitly opened, the current App can perform a normal handoff. This mechanism is not a background update service.
 
@@ -95,6 +97,8 @@ App and PetCore diagnostics use the `apc.diagnostic-log.v1` JSONL format. Each c
 
 The ZIP is allowlist-only. It contains a manifest, bounded environment summary, explanatory README, and sanitized/truncated logs. It excludes SQLite, pet assets, generation workspaces, connector configuration, runtime tokens, prompts, full messages, commands, tool input/output, credentials, raw identifiers, and user paths.
 
+Diagnostic export and service recovery remain independent even when the target UI reduces healthy detail. Collapsing PetCore/RPC/event/renderer rows is a presentation change only; it does not remove the typed status or reduce the support archive contract.
+
 Primary sources: [App diagnostics](../../apps/macos/Sources/AgentPetCompanion/App/Diagnostics.swift) and [PetCore diagnostics](../../crates/petcore/src/diagnostics.rs).
 
 ## Change checklist
@@ -106,4 +110,4 @@ When changing lifecycle or IPC:
 3. preserve bounded framing, permissions, instance-bound shutdown, and rollback;
 4. test older/newer database compatibility before changing the supported range;
 5. keep connector installs pointed at the managed `runtime/current/petcore-cli` path;
-6. update this document and the release acceptance gate when user-visible lifecycle behavior changes.
+6. update this document, the product experience contract when the target changes, the matching ordered task when its contract changes, and the release acceptance gate when user-visible lifecycle behavior changes.

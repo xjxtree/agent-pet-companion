@@ -1,6 +1,6 @@
 # System Architecture
 
-This document describes the current component boundaries and end-to-end flows. It is an orientation map, not a second copy of protocol or table definitions. Follow [Runtime and IPC](runtime-and-ipc.md), [Data model](data-model.md), and the linked source files for exact contracts.
+This document describes the current component boundaries and end-to-end flows. It is an orientation map, not a second copy of protocol or table definitions. Follow [Runtime and IPC](runtime-and-ipc.md), [Data model](data-model.md), and the linked source files for exact current contracts. The target user experience is owned by the [Product Experience Contract](../product/experience-contract.md), and its implementation order is owned by [Product Refactor Execution](../development/product-refactor-execution.md).
 
 ## Component map
 
@@ -34,6 +34,12 @@ The App and overlay run in one macOS UI process. PetCore is a separate daemon an
 | Typed contracts | Rust domain types plus JSON Schemas for portable/input boundaries | [petcore-types](../../crates/petcore-types/src/lib.rs), [schemas](../../schemas/) |
 
 The small `AgentPetCompanionLifecycleClient` executable is a development helper used by the run script to request a normal bundle-ID-scoped App quit. It is not a resident production component.
+
+## Product surface boundary
+
+The desktop pet and its Agent/session bubbles are the daily product surface. The five-entry control center is the management surface for pet selection, AI creation, configuration, Agent connection, and service recovery. That distinction changes presentation priority, not component ownership: PetCore remains the online state authority, and the App remains responsible for native presentation and interaction.
+
+Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. Detailed target page and bubble behavior is defined in the product experience contract; current runtime behavior remains defined by implementation and the current-state documents until the corresponding ordered task is merged.
 
 ## Main flows
 
@@ -105,6 +111,6 @@ logo/                       Approved reusable brand assets
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
 - Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
-- A GitHub Release publishes the App, PetCore, and CLI as one runtime identity in separate thin `arm64` and `x86_64` archives. Each exact archive must pass architecture, ad-hoc signature-integrity, package, checksum, and changelog/version checks; packaged functionality runs on the build host's matching native architecture.
+- Development artifacts publish the App, PetCore, and CLI as one runtime identity in separate thin `arm64` and `x86_64` archives. Each exact archive passes architecture, ad-hoc signature-integrity, package, checksum, and changelog/version checks; packaged functionality runs on the build host's matching native architecture. The supported public-distribution target additionally requires Developer ID signing, notarization, stapling, and Gatekeeper acceptance as defined by the product contract and release procedure.
 
 When changing one of these invariants, update the owning implementation, tests, runtime/schema version where required, and the corresponding document in the same change.

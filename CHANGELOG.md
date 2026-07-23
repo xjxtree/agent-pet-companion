@@ -12,7 +12,8 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Changed / 变更
 
-- Aligned release and validation documentation with the dual-architecture development flow: removed stale notarization and release-channel references, documented explicit runtime-gate values and native-versus-cross-architecture validation scope, and linked Apple's Rosetta guidance. / 将发布与验证文档同步到双架构开发流程：移除残留的公证与 release-channel 表述，明确真实运行门禁取值及本机/跨架构验收范围，并补充 Apple Rosetta 官方说明链接。
+- Added one durable product-experience contract and one dependency-ordered, no-schedule implementation task document; synchronized the public, architecture, data, connector, pet-format, validation, contribution, and agent-guidance documentation around those sources of truth. / 新增一份长期产品体验合同与一份按依赖顺序执行、不含排期的实施任务文档，并围绕这两个事实源同步公开说明、架构、数据、连接器、宠物格式、验证、贡献及 Agent 指引文档。
+- Clarified the dual-architecture validation and distribution contract: documented explicit runtime gates, native-versus-cross-architecture proof, and Rosetta guidance; current ad-hoc-signed, non-notarized archives are development previews, while the supported public package requires Developer ID signing, notarization, stapling, Gatekeeper acceptance, and validation of the exact published artifact. / 明确双架构验证与分发契约：说明真实运行门禁、本机与跨架构证明范围及 Rosetta 指引；当前采用 ad-hoc 签名且未公证的归档属于开发预览，受支持的公开分发包则必须完成 Developer ID 签名、Apple 公证、staple、Gatekeeper 验收以及对最终发布产物的校验。
 
 ## [0.1.0] - 2026-07-23
 

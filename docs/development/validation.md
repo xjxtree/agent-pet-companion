@@ -44,3 +44,19 @@ APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
 ```
 
 Run only the gates whose environment and authorization are present. Report skipped gates as skipped, never as passed.
+
+## Product-refactor acceptance / 产品重构验收
+
+The [product refactor execution](product-refactor-execution.md) defines task-level acceptance without claiming that the current commit has passed. Use the existing profiles as follows:
+
+| Product area / 产品区域 | Minimum deterministic proof / 最小确定性证明 | Additional acceptance / 补充验收 |
+|---|---|---|
+| Presentation models and presets | Swift unit/UI-model tests, localization consistency | Long English/Chinese copy at supported widths |
+| Session identity/navigation | Rust projection/database/RPC tests, schema/security fixtures, Swift decoding tests | Real-host navigation only through the explicit connector gate |
+| Desktop bubbles and pet interaction | Offline overlay validation and interaction model tests | Packaged visible UI with Computer Use first |
+| Library, Maker, Configuration, Connections, Diagnostics | Focused Swift/Rust tests plus `fast/core` | Packaged main-window acceptance; real App Server only when explicitly enabled |
+| First-run demo | Fresh isolated home and negative proof that demo data never enters PetCore events/diagnostics | Packaged visible UI with Computer Use first |
+| Performance and event pressure | Renderer budget and event-storm gates | Instruments or external profiling only when actually captured |
+| Supported public distribution | Exact archive/signature/package/checksum validation | Developer ID, notarization, staple, Gatekeeper, and clean-machine launch after task `R14` implements them |
+
+Do not paste results into the task document or this file. Attach exact evidence to the matching commit, pull request, CI artifact, or GitHub Release.
