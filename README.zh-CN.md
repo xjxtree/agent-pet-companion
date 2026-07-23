@@ -12,7 +12,7 @@ Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App
 
 - **开箱即用**：内置两只拥有完整动画与交互能力的宠物，首次打开即可获得完整桌宠功能体验。
 - **AI宠物制作**：支持高自由度、任意风格的宠物制作，可选择高分辨率宠物画质；已有宠物也支持通过 AI 修改。
-- **多 Agent 会话支持**：支持 Claude Code、ChatGPT Codex、Pi Coding Agent 和 OpenCode 的会话显示与状态同步；点击宠物消息即可跳转到对应会话。
+- **多 Agent 会话支持**：按 Agent 汇总 Codex、Claude Code、Pi Coding Agent 和 OpenCode 在所有项目中的会话；每个受支持的并发会话都可显示在对应 Agent 气泡中，点击后可打开相应宿主或会话。
 - **丰富的宠物配置**：支持消息气泡透明度、会话响应规则、多会话堆叠方式、外观、交互等丰富配置。
 
 ## 功能
@@ -22,7 +22,7 @@ Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App
 - **宠物配置**：设置显示、气泡、外观、交互、会话分组和动画档位。
 - **Agent 连接**：检查、修复、测试或移除 Codex、Claude Code、Pi Coding Agent 和 OpenCode 集成。
 - **服务与诊断**：查看 PetCore、本地 RPC、事件通道和桌宠渲染健康状态，并在需要时导出经过隐私过滤的诊断 ZIP。
-- **桌面悬浮层**：拖动宠物、使用右下角手柄缩放、通过右键菜单操作，并从原生气泡打开活动会话。
+- **桌面悬浮层**：宠物本体在启动和状态切换期间也始终可拖动；可使用右下角手柄缩放、通过右键菜单操作，并从原生气泡打开活动会话。
 
 App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断信息都保留在 Mac 上，只有用户主动导出时才会生成外部文件；App 不读取 Agent 凭据、Token、Cookie 或 API Key。
 
@@ -60,8 +60,8 @@ cd agent-pet-companion
 ## 使用
 
 1. 打开**宠物库**，启用一只内置宠物，或导入自己的 `.petpack`。
-2. 打开 **AI宠物制作**创建宠物。App 内流程要求本机已安装并登录 ChatGPT 桌面 App，且当前用户可使用 Codex。
-3. 在**宠物配置**中选择外观、气泡、输入行为、会话分组和帧率档位。
+2. 打开 **AI宠物制作**创建宠物。该流程需要 Codex CLI 或 ChatGPT/Codex App 内置的 Codex App Server 可用，并且当前用户拥有相应服务访问权限。
+3. 在**宠物配置**中选择外观、气泡、输入行为、会话分组和动画档位。原生 20 FPS 宠物可选择标准 10 FPS 或流畅 20 FPS，原生 10 FPS 宠物只能使用 10 FPS；切换档位不会改变动作的制作时长。
 4. 在 **Agent 连接**中安装或验证需要使用的集成。
 5. 使用 Agent 工作时保持 App 运行；桌宠会响应开始、工具执行、等待、待查看、完成和失败事件。
 6. 遇到问题时，打开**服务与诊断**，导出诊断 ZIP，并随 issue 一并提交。
@@ -92,13 +92,8 @@ macOS App 负责控制中心、状态栏入口、桌面悬浮层和渲染；PetC
 | 文档 | 用途 |
 |---|---|
 | [文档索引](docs/README.md) | 长期技术文档入口与维护规则 |
-| [架构总览](docs/architecture/overview.md) | 组件、边界、数据流和仓库结构 |
-| [运行时与 IPC](docs/architecture/runtime-and-ipc.md) | 进程生命周期、运行时兼容、传输、RPC 与诊断 |
-| [数据模型](docs/architecture/data-model.md) | SQLite 实体、文件 revision、schema 与不变量 |
-| [Agent 集成](docs/integrations/agent-connectors.md) | 连接器安装、事件归一化、信任与隐私边界 |
 | [`.petpack` V1 规范](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | 可移植宠物格式与生产者契约 |
-| [验证层级](docs/development/validation.md) | 自动化与真实运行时门禁分别能证明什么 |
-| [macOS 发布流程](docs/release/macos-release.md) | 签名、公证、验收与 GitHub Release 流程 |
+| [参与贡献](CONTRIBUTING.md) | 开发流程与验证入口 |
 | [版本变更记录](CHANGELOG.md) | 每个 GitHub Release 对应的用户可见变更 |
 
 ## Contributing

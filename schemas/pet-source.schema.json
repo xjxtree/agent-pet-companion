@@ -26,7 +26,9 @@
         "unknown"
       ]
     },
-    "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
+    "native_fps": { "enum": [10, 20] },
+    "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
+    "state_frame_counts": { "$ref": "#/$defs/stateFrameCounts" },
     "preview_only": { "type": "boolean" },
     "reference_visual_influence": { "type": "boolean" },
     "form": {
@@ -36,6 +38,8 @@
         "description": { "type": "string", "maxLength": 8000 },
         "style": { "type": "string", "maxLength": 1000 },
         "quality": { "enum": ["standard", "high", "ultra", "original"] },
+        "native_fps": { "enum": [10, 20] },
+        "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
         "reference_images": {
           "type": "array",
           "maxItems": 4,
@@ -93,10 +97,9 @@
         "required": ["provenance"]
       },
       "then": {
-        "required": ["visual_source", "frames_per_state", "preview_only"],
+        "required": ["visual_source", "native_fps", "state_durations_ms", "state_frame_counts", "preview_only"],
         "properties": {
           "visual_source": { "enum": ["image-generation", "user-reference-derived"] },
-          "frames_per_state": { "minimum": 2 },
           "preview_only": { "const": false }
         },
         "not": { "required": ["materialized_by"] }
@@ -128,6 +131,34 @@
       "minItems": 4,
       "maxItems": 4,
       "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+    },
+    "stateDurations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "properties": {
+        "idle": { "enum": [1000, 2000] },
+        "start": { "enum": [1000, 2000] },
+        "tool": { "enum": [1000, 2000] },
+        "waiting": { "enum": [1000, 2000] },
+        "review": { "enum": [1000, 2000] },
+        "done": { "enum": [1000, 2000] },
+        "failed": { "enum": [1000, 2000] }
+      }
+    },
+    "stateFrameCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "properties": {
+        "idle": { "enum": [10, 20, 40] },
+        "start": { "enum": [10, 20, 40] },
+        "tool": { "enum": [10, 20, 40] },
+        "waiting": { "enum": [10, 20, 40] },
+        "review": { "enum": [10, 20, 40] },
+        "done": { "enum": [10, 20, 40] },
+        "failed": { "enum": [10, 20, 40] }
+      }
     }
   }
 }

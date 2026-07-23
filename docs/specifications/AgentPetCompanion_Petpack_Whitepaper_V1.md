@@ -12,8 +12,8 @@ This document defines the current V1 reader, writer, and producer contract. Exac
 |---|---|
 | Runtime package | Passes the container, path, budget, manifest, media, baseline metadata, and import checks required by PetCore. |
 | Safe Producer | `source/source.json` declares `apc.pet-source.v1`; all four metadata schemas, cross-file consistency, and recursive privacy checks pass. |
-| Verified visual source | Safe Producer package with trusted full-source provenance, at least two visibly different frames per state, and sufficient differences across states. The strict in-app Studio path enforces this profile; ordinary import does not certify artistic quality. |
-| Untagged V1 compatibility | `source/source.json` has no `schema_version`; PetCore applies the baseline metadata gate so existing V1 archives remain importable. It does not grant Safe Producer status. |
+| Verified visual source | Safe Producer package with trusted full-source provenance, the exact timing-derived frame count for every state, visibly distinct adjacent motion, and sufficient differences across states. The strict in-app Studio path enforces this profile; ordinary import does not certify artistic quality. |
+| Untagged V1 metadata compatibility | A package that already satisfies the current manifest and media contract may omit `source/source.json.schema_version`; PetCore then applies only the baseline metadata gate. This does not make obsolete development manifests conforming or grant Safe Producer status. |
 
 An unknown, malformed, older, or newer explicit source metadata version fails closed; it never silently falls back to the untagged compatibility profile.
 
@@ -72,9 +72,8 @@ The runtime permits unknown root data files except explicit compatibility-packag
 | `style` | Non-blank display/production style |
 | `quality` | `standard`, `high`, `ultra`, or `original` |
 | `render_size` | Exact size for `quality` |
-| `fps_profiles` | Semantically exactly `standard: 12` and `smooth: 20` |
-| `default_fps_profile` | Exactly `standard` |
-| `states` | Exactly the seven unique states and fixed directories/loop flags below |
+| `native_fps` | Exactly `10` or `20`; the authored source-frame rate for every state in this revision |
+| `states` | Exactly the seven unique states and fixed directories/loop flags below; every state also fixes its duration to `1000` or `2000` ms |
 | `created_at` | RFC 3339 timestamp |
 
 ### Quality and canvas
@@ -90,33 +89,42 @@ Every state uses the same canvas. Producers must keep the character anchor, base
 
 ### States
 
-| State | `frames_dir` | `loop` | Runtime meaning |
-|---|---|---:|---|
-| `idle` | `assets/frames/idle` | `true` | No active Agent event |
-| `start` | `assets/frames/start` | `false` | Task or reasoning starts |
-| `tool` | `assets/frames/tool` | `true` | Tool/work activity |
-| `waiting` | `assets/frames/waiting` | `true` | User input or confirmation required |
-| `review` | `assets/frames/review` | `true` | Result ready for review |
-| `done` | `assets/frames/done` | `false` | Successful completion transition |
-| `failed` | `assets/frames/failed` | `true` | Failure or blocking error |
+| State | `frames_dir` | `loop` | Default `duration_ms` | Runtime meaning |
+|---|---|---:|---:|---|
+| `idle` | `assets/frames/idle` | `true` | `2000` | No active Agent event |
+| `start` | `assets/frames/start` | `false` | `1000` | Task or reasoning starts |
+| `tool` | `assets/frames/tool` | `true` | `2000` | Tool/work activity |
+| `waiting` | `assets/frames/waiting` | `true` | `2000` | User input or confirmation required |
+| `review` | `assets/frames/review` | `true` | `2000` | Result ready for review |
+| `done` | `assets/frames/done` | `false` | `1000` | Successful completion transition |
+| `failed` | `assets/frames/failed` | `true` | `2000` | Failure or blocking error |
 
-State array order is not semantic, but writers use the table order for deterministic output and review.
+State array order is not semantic, but writers use the table order for deterministic output and review. A producer uses the defaults unless the user explicitly requests the other allowed duration. Once written, `native_fps` and every `duration_ms` are immutable properties of that package revision.
 
 ## 5. Frames and previews
 
 ### Runtime media gate
 
-- Every state contains at least one decodable PNG.
+- Every state contains exactly `native_fps × duration_ms / 1000` decodable PNGs. The only valid counts are therefore 10, 20, or 40, depending on the state's declared timing.
 - Each PNG's pixel dimensions exactly match `render_size`.
-- A single-frame state is accepted with a static-animation warning.
-- Runtime frame ordering is natural filename order. Producers use zero-padded ASCII names such as `0000.png` and `0001.png`.
+- Runtime frame ordering uses the same deterministic ASCII natural comparator in PetCore, the maker Skill, and macOS playback. Producers use zero-padded ASCII names such as `0000.png` and `0001.png`.
 - `assets/preview/cover.png` and `assets/preview/animated_preview.webp` must decode completely. `384×416` is the recommended preview size; another size produces a warning.
+
+### Timing and playback
+
+- **Standard playback** is 10 FPS. **Smooth playback** is 20 FPS.
+- A native 10 FPS package supports Standard playback only. A native 20 FPS package supports both Standard and Smooth playback.
+- Playback profile selection changes presentation cadence and decoded-frame demand only. It never changes the declared state duration, accelerates motion, or slows motion.
+- A native 20 FPS loop sampled at 10 FPS uses every second source frame. A one-shot sample preserves the authored first and final poses while selecting ten uniformly distributed presentation frames per second.
+- A loop begins its next cycle exactly at `duration_ms`. A one-shot completes exactly at `duration_ms` and then holds its final frame until the runtime state changes.
+- The animated preview is a non-authoritative display asset. Its codec timing must not be used to infer package timing.
 
 ### Producer visual contract
 
 - Frame PNGs have an alpha channel, transparent background, and a visible subject fully inside the canvas.
-- A full visual source has at least two frames per state and at least one decoded pixel change within every state.
+- Every adjacent authored frame in a full visual source is visually distinct; duplicating a frame does not create a higher native rate or a longer action.
 - The seven states may not reuse one identical visual sequence. The strict Studio path requires at least four states to have different first-frame decoded digests.
+- For native 20 FPS output, the 10 FPS sample must remain a coherent action and the additional source frames must be real intermediate motion. Extending a state from one to two seconds requires authored continuation rather than replaying or slowing the original second.
 - `cover.png` identifies the same character without animation; the animated preview may not depict assets absent from the package.
 
 Ordinary runtime import verifies decodability, dimensions, structure, and budgets. It does not certify motion quality, anchor stability, alpha visibility, or cross-state artistic distinction. Do not present a normal import result as Verified visual source evidence.
@@ -147,12 +155,12 @@ When `source/source.json.schema_version` is `apc.pet-source.v1`, PetCore applies
 | Each JSONL record | `apc.pet-source-event.v1` | [pet-source-event.schema.json](../../schemas/pet-source-event.schema.json) |
 | `build/validation.json` | `apc.pet-validation.v1` | [pet-validation.schema.json](../../schemas/pet-validation.schema.json) |
 
-PetCore also checks cross-artifact identity, name/style, quality, render size, FPS, state coverage, reference counts/paths, generator/provenance, validation outcome, and event lifecycle. Closed schema objects reject unknown fields; optional extensions use the schema's explicit reverse-domain-keyed `extensions` container.
+PetCore also checks cross-artifact identity, name/style, quality, render size, native FPS, per-state durations and frame counts, state coverage, reference counts/paths, generator/provenance, validation outcome, and event lifecycle. Closed schema objects reject unknown fields; optional extensions use the schema's explicit reverse-domain-keyed `extensions` container.
 
 `provenance: skill-full-source` additionally requires:
 
 - `visual_source` is `image-generation` or `user-reference-derived`;
-- `frames_per_state` is at least 2;
+- `native_fps`, `state_durations_ms`, and `state_frame_counts` exactly match the manifest and decoded frame directories;
 - `preview_only` is `false`;
 - deterministic/materializer-only provenance fields are absent.
 
@@ -211,6 +219,8 @@ The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) supp
 - optional `install`: import only after explicit user authorization;
 - optional activation: a second explicit user choice, never implied by generation or install.
 
+Creation defaults to native 10 FPS, with one-second `start`/`done` states and two-second loop states. A request may select either closed FPS tier and either closed duration for an individual state. Modification preserves timing unless requested otherwise. Changing 10→20 FPS requires newly authored intermediate frames for all seven states; changing 20→10 uses deterministic temporal sampling. The sampled Standard sequence must keep adjacent poses—and loop wrap poses—pixel-distinct. Changing duration requires recomposing every affected action without runtime speed adjustment or repeated-frame padding. The result is a new immutable revision.
+
 The Skill requires real image understanding/generation/editing for visual work. When unavailable, it returns `capability_missing` instead of fabricating a package. All output still crosses `petcore-cli petpack validate` and the normal PetCore import boundary.
 
 The in-app AI Pet Maker uses Codex App Server and the internal [agent-pet-studio Skill](../../skills/agent-pet-studio/). Connecting Claude Code, Pi, or OpenCode does not make those hosts in-app generation backends.
@@ -219,7 +229,7 @@ The in-app AI Pet Maker uses Codex App Server and the internal [agent-pet-studio
 
 - V1 readers and writers use exactly `apc.petpack.v1`; unknown manifest versions fail closed.
 - The runtime manifest declares `petpack_read_versions` and `petpack_write_version`. The current set reads and writes only V1.
-- Manifest unknown fields fail closed. Tagged metadata unknown fields fail closed except inside explicitly defined extension containers.
+- Manifest unknown fields fail closed. The obsolete `fps_profiles`, `default_fps_profile`, and unconstrained/uniform frame-count fields are not accepted. Tagged metadata unknown fields fail closed except inside explicitly defined extension containers.
 - Untagged source metadata follows the baseline compatibility gate and does not gain Safe Producer status on import or export.
 - No package content is executed, and no unknown extension changes the seven core states or runtime behavior.
 - A format-version change requires a new schema identity, explicit reader/writer compatibility, fixtures, migration/round-trip tests, and a runtime-manifest update. It may not silently relax V1.
@@ -245,7 +255,7 @@ These constants are authoritative in [petpack.rs](../../crates/petcore/src/petpa
 
 | Contract area | Source of truth |
 |---|---|
-| Manifest, states, quality, FPS | [petcore-types](../../crates/petcore-types/src/lib.rs), [petpack schema](../../schemas/petpack.schema.json) |
+| Manifest, states, quality, native FPS, duration | [petcore-types](../../crates/petcore-types/src/lib.rs), [petpack schema](../../schemas/petpack.schema.json) |
 | Container, media, budgets, import/export | [petpack.rs](../../crates/petcore/src/petpack.rs) |
 | Immutable local revisions | [pet_revision.rs](../../crates/petcore/src/pet_revision.rs) |
 | Safe Producer metadata | [metadata schemas](../../schemas/), [schema fixtures](../../fixtures/schemas/) |
@@ -258,8 +268,9 @@ Run `./script/validate_schema_fixtures.sh`, relevant PetCore tests, portable Ski
 
 - [ ] Archive identity, layout, and manifest exactly match V1.
 - [ ] ID is stable and not selected from the display name.
-- [ ] Quality, canvas, seven states, directories, loop flags, and 12/20 FPS match.
-- [ ] Frames and previews decode within budgets; transparent visual assets are coherent and visibly animated when claiming full-source provenance.
+- [ ] Quality, canvas, seven states, directories, loop flags, native 10/20 FPS, and 1,000/2,000 ms durations match.
+- [ ] Every state has the exact derived frame count; frames and previews decode within budgets, and transparent visual assets are coherent and visibly animated when claiming full-source provenance.
+- [ ] Native 20 FPS output remains coherent when sampled at 10 FPS; no higher-rate or longer action is fabricated through duplicate frames or speed changes.
 - [ ] Baseline metadata is complete; tagged metadata passes all schemas and cross-file checks.
 - [ ] References and natural-language text are intentionally included and sanitized.
 - [ ] No credentials, local paths, runtime identifiers, transcripts, commands, tool data, hidden reasoning, or executable content are present.

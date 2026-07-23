@@ -26,8 +26,62 @@ struct BehaviorSettingsViewTests {
     func appearanceCatalogKeepsTheClosedThemeAndFpsProfiles() {
         #expect(BehaviorSettingsCatalog.appearanceThemes == [.system, .light, .dark])
         #expect(BehaviorSettingsCatalog.fpsProfiles == [.standard, .smooth])
-        #expect(BehaviorSettingsCatalog.fpsProfiles.map(\.fps) == [12, 20])
+        #expect(BehaviorSettingsCatalog.fpsProfiles.map(\.fps) == [10, 20])
         #expect(BehaviorSettingsCatalog.groupDisplays == [.stacked, .expanded])
+    }
+
+    @Test
+    func nativeFrameRateLimitsTheAvailablePlaybackProfiles() {
+        let standardPet = PetSummary(
+            id: "pet_standard",
+            name: "Standard",
+            style: "pixel",
+            quality: .high,
+            renderSize: QualityLevel.high.renderSize,
+            petpackPath: "/standard.petpack",
+            coverPath: "",
+            nativeFPS: 10,
+            active: true,
+            createdAt: "2026-07-22T00:00:00Z"
+        )
+        var smoothPet = standardPet
+        smoothPet.nativeFPS = 20
+
+        #expect(BehaviorSettingsCatalog.supportedFPSProfiles(for: standardPet) == [.standard])
+        #expect(BehaviorSettingsCatalog.supportedFPSProfiles(for: smoothPet) == [.standard, .smooth])
+        #expect(standardPet.effectiveFPSProfile(.smooth) == .standard)
+    }
+
+    @MainActor
+    @Test
+    func appStoreDefensivelyDowngradesUnsupportedSmoothSelection() {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
+        )
+        store.pets = [PetSummary(
+            id: "pet_standard",
+            name: "Standard",
+            style: "pixel",
+            quality: .high,
+            renderSize: QualityLevel.high.renderSize,
+            petpackPath: "/standard.petpack",
+            coverPath: "",
+            nativeFPS: 10,
+            active: true,
+            createdAt: "2026-07-22T00:00:00Z"
+        )]
+        var next = store.behavior
+        next.fpsProfile = .smooth
+
+        store.updateBehavior(next)
+
+        #expect(store.behavior.fpsProfile == .standard)
+        #expect(store.effectiveFPSProfile == .standard)
     }
 
     @Test

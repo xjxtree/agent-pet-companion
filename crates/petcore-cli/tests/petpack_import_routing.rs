@@ -10,7 +10,7 @@ fn cli() -> &'static str {
 
 fn sample(root: &std::path::Path) -> std::path::PathBuf {
     let source = root.join("source");
-    write_sample_petpack_dir(&source, QualityLevel::Standard, "CLI Routing", "半写实", 2).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "CLI Routing", "半写实").unwrap();
     source
 }
 

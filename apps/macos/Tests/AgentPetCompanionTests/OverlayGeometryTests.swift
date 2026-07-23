@@ -243,9 +243,9 @@ struct OverlayGeometryTests {
         #expect(!handles(petCenter, hitTest: hitTest))
         #expect(handles(CGPoint(x: petCenter.x - 70, y: petCenter.y), hitTest: hitTest))
 
-        // Missing/corrupt frame masks fail transparent for the pet, while the
-        // independent resize/menu targets remain fully interactive.
-        #expect(!handles(petCenter, hitTest: nil))
+        // A frame mask is briefly unavailable during launch and state changes.
+        // Keep the geometric pet region interactive until pixel data arrives.
+        #expect(handles(petCenter, hitTest: nil))
         #expect(handles(
             OverlayGeometry.resizeCenter(petCenter: petCenter, scale: 1),
             hitTest: nil
@@ -889,8 +889,10 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func overlayContentConsumesOnlyTheTypedSafeDisplayProjection() throws {
-        let rawPrompt = "PROMPT_DO_NOT_RENDER sk-live-secret /Users/alice/private.txt"
+    func overlayContentUsesDisplayFieldsAndIgnoresRawEventPayload() throws {
+        let displayTitle = "修复宠物消息气泡"
+        let displayReply = "气泡已经恢复显示最新回复。"
+        let rawPrompt = "RAW_EVENT_PROMPT_DO_NOT_RENDER sk-live-secret /Users/alice/private.txt"
         let rawCommand = "COMMAND_DO_NOT_RENDER /bin/sh -c curl-secret"
         let json = """
         {
@@ -929,8 +931,9 @@ struct OverlayGeometryTests {
             "payload_json":{"message_role":"assistant","message_content":"\(rawPrompt)"},
             "created_at":"2026-07-21T00:00:00Z"
           },
-          "session_title":"\(rawPrompt)",
-          "session_message":{"role":"assistant","content":"\(rawPrompt)"},
+          "session_title":"\(displayTitle)",
+          "session_user_message":{"role":"user","content":"\(displayTitle)"},
+          "session_message":{"role":"assistant","content":"\(displayReply)"},
           "session_activity":{"kind":"command","content":"\(rawCommand)"},
           "overlay_display":{
             "summary_kind":"command",
@@ -950,11 +953,8 @@ struct OverlayGeometryTests {
         let content = OverlaySessionContent(state: state)
 
         #expect(content.sessionID == "safe-session")
-        #expect(content.sessionTitle == APCLocalization.format(
-            .overlaySessionTitleFormat,
-            AgentSource.codex.shortTitle
-        ))
-        #expect(content.messageText == APCLocalization.text(.overlayActivityCommand))
+        #expect(content.sessionTitle == displayTitle)
+        #expect(content.messageText == displayReply)
         #expect(content.navigation.sessionOpen == true)
         #expect(!content.sessionTitle.contains(rawPrompt))
         #expect(!content.messageText.contains(rawPrompt))
@@ -962,14 +962,15 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func legacyStateFallsBackToClosedEventCopyInsteadOfRawContent() throws {
+    func legacyStateNeverFallsBackToRawEventPayload() throws {
         let state = try JSONDecoder().decode(
             ActiveAgentState.self,
-            from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER"},"created_at":"2026-07-21T00:00:00Z"},"session_title":"PRIVATE_TITLE_DO_NOT_RENDER","session_message":{"role":"assistant","content":"PRIVATE_RESULT_DO_NOT_RENDER"}}"#.utf8)
+            from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER"},"created_at":"2026-07-21T00:00:00Z"}}"#.utf8)
         )
         let content = OverlaySessionContent(state: state)
 
         #expect(content.messageText == APCLocalization.text(.overlayDetailReady))
+        #expect(content.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Pi"))
         #expect(!content.sessionTitle.contains("PRIVATE"))
         #expect(!content.messageText.contains("PRIVATE"))
     }

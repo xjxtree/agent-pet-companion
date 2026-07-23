@@ -23,8 +23,8 @@
 "library.import.message" = "请选择一个或多个本 App 自有格式的 .petpack 文件。";
 "library.import.title" = "导入本 App .petpack";
 "library.specification.unavailable" = "本地服务未报告";
-"library.specification.verified_states" = "7 个固定状态 · 每状态至少 1 张可解码 PNG";
-"library.specification.verified_fps" = "标准 12 FPS · 流畅 20 FPS";
+"library.specification.verified_states" = "7 个固定状态 · 帧数严格匹配原生帧率与动作时长";
+"library.specification.verified_fps" = "原生 10 或 20 FPS · 20 FPS 宠物可降档为 10 FPS";
 "library.state.idle" = "空闲";
 "library.state.not_active" = "非当前宠物，不显示全局事件";
 "library.validation.invalid" = "资源告警";
@@ -171,7 +171,12 @@
 "studio.brief.description_required" = "填写描述后才能开始制作";
 "studio.brief.style_heading" = "风格";
 "studio.brief.quality_heading" = "输出画质";
-"studio.brief.quality_contract_format" = "%@ · 标准 12 FPS / 流畅 20 FPS · 七个固定状态";
+"studio.brief.quality_contract_format" = "%@ · 七个固定状态 · 动画时序随 revision 固定";
+"studio.brief.timing_heading" = "动画时序";
+"studio.brief.timing_detail" = "20 FPS 需要两倍制作帧；时序生成后随此宠物 revision 固定，播放设置不会改变动作速度或时长。";
+"studio.brief.timing_native_fps" = "原生帧率";
+"studio.brief.timing_action_durations" = "动作时长";
+"studio.brief.timing_seconds_format" = "%d 秒";
 "studio.brief.references_heading" = "参考图（可选）";
 "studio.brief.references_privacy" = "图片会先安全复制到当前任务目录；界面和导出元数据不会暴露原始路径。";
 "studio.brief.references_drop_empty" = "拖入图片，或点按选择";
@@ -193,7 +198,7 @@
 "studio.session.welcome_title" = "准备开始";
 "studio.session.welcome_detail" = "完成左侧创作 brief 后开始制作。";
 "studio.session.output_contract_title" = "输出合同";
-"studio.session.output_contract_detail" = "生成结果必须包含 idle、start、tool、waiting、review、done、failed 七个状态，以及标准 12 FPS / 流畅 20 FPS 两档。";
+"studio.session.output_contract_detail" = "生成结果必须包含 idle、start、tool、waiting、review、done、failed 七个状态；原生帧率只能为 10 或 20 FPS，每个动作固定为 1 秒或 2 秒。";
 "studio.session.output_privacy" = "仅使用任务所需的安全副本；未经校验的资产不会进入宠物库。";
 "studio.session.preparing" = "正在准备本地会话…";
 "studio.session.failed_title" = "制作未完成";
@@ -247,7 +252,6 @@
 "studio.baseline.target_state" = "目标状态";
 "studio.baseline.quality" = "画质";
 "studio.baseline.animation" = "动画";
-"studio.baseline.animation_value" = "7 状态 · 12 / 20 FPS";
 "studio.baseline.restoring" = "基线正在恢复";
 "studio.baseline.restoring_detail" = "PetCore 恢复会话后会显示已提交的校验基线。";
 "studio.baseline.unavailable_title" = "基线预览不可用";
@@ -288,6 +292,7 @@
 "config.fps_accessibility" = "桌宠动画帧率";
 "config.fps.standard_detail" = "标准动效，资源占用更低";
 "config.fps.smooth_detail" = "流畅动效，动作过渡更细腻";
+"config.fps.native_standard_only_detail" = "此宠物原生 10 FPS，仅支持标准动效；动作时长保持不变。";
 "config.bubble_transparency" = "气泡透明度";
 "config.glass_more" = "玻璃更明显";
 "config.transparent_more" = "更透明";
@@ -574,6 +579,7 @@
 "library.field.revision_policy" = "修订策略";
 "library.field.states" = "七状态";
 "library.field.fps" = "帧率";
+"library.field.duration" = "动作时长";
 "library.field.validation" = "资源校验";
 "library.edit.instruction" = "本次修改要求";
 "library.edit.instruction_accessibility" = "宠物修改要求";
@@ -652,7 +658,9 @@
 "library.revision.count_format" = "%d 个";
 "library.revision.bundled_policy" = "App 内置只读基线";
 "library.revision.new_policy" = "修改将创建同一 ID 的新 revision";
-"library.fps.summary" = "标准 12 FPS · 流畅 20 FPS";
+"library.fps.summary" = "原生 20 FPS · 可播放 10 / 20 FPS";
+"library.fps.standard_summary" = "原生 10 FPS · 可播放 10 FPS";
+"library.duration.group_format" = "%d 秒：%@";
 "library.source.bundled_title" = "App 内置";
 "library.source.bundled_detail" = "随 Agent Pet Companion 提供";
 "library.source.verified_title" = "已验证 Skill 来源";

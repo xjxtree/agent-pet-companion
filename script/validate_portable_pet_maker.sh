@@ -69,6 +69,7 @@ assert_json "$CREATE_PREPARE" 'data["ok"] is True and data["status"] == "prepare
 
 python3 -B - "$CREATE_WORKSPACE/petpack-source" <<'PY'
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -85,6 +86,20 @@ state_colors = {
     "done": (62, 184, 91, 235),
     "failed": (210, 72, 87, 235),
 }
+native_fps = 10
+state_durations_ms = {
+    "idle": 2000,
+    "start": 1000,
+    "tool": 2000,
+    "waiting": 2000,
+    "review": 2000,
+    "done": 1000,
+    "failed": 2000,
+}
+state_frame_counts = {
+    state: native_fps * duration_ms // 1000
+    for state, duration_ms in state_durations_ms.items()
+}
 
 
 def write_json(path: Path, value: object) -> None:
@@ -98,8 +113,13 @@ def render_frame(state: str, index: int) -> Image.Image:
     image = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     color = state_colors[state]
-    dx = index * 4
-    dy = index * 2
+    progress = index / max(1, state_frame_counts[state] - 1)
+    if state in {"start", "done"}:
+        dx = round(progress * 6)
+        dy = round(progress * 4)
+    else:
+        dx = round(math.sin(progress * math.tau) * 5)
+        dy = round(math.cos(progress * math.tau) * 3)
     draw.ellipse((43 + dx, 49 - dy, 149 + dx, 169 - dy), fill=color)
     draw.polygon(
         [(58 + dx, 68 - dy), (70 + dx, 28 - dy), (91 + dx, 65 - dy)],
@@ -115,7 +135,9 @@ def render_frame(state: str, index: int) -> Image.Image:
     draw.ellipse((117 + dx, 95 - dy, 122 + dx, 100 - dy), fill=(25, 28, 45, 255))
     draw.arc((87 + dx, 105 - dy, 109 + dx, 126 - dy), 15, 165, fill=(255, 255, 255, 255), width=3)
     draw.ellipse((137 - dx, 131 + dy, 177 - dx, 163 + dy), fill=color)
-    draw.rectangle((19 + index, 190, 34 + index, 197), fill=(*color[:3], 170))
+    # A small bounded phase mark makes every adjacent fixture frame visibly
+    # distinct without changing the character identity.
+    draw.rectangle((19 + index, 190, 20 + index, 197), fill=(*color[:3], 170))
     return image
 
 
@@ -123,7 +145,7 @@ frames: list[Image.Image] = []
 for state in states:
     state_dir = root / "assets" / "frames" / state
     state_dir.mkdir(parents=True, exist_ok=True)
-    for index in range(2):
+    for index in range(state_frame_counts[state]):
         frame = render_frame(state, index)
         frame.save(state_dir / f"frame-{index:03d}.png", format="PNG", optimize=False)
         if state == "idle":
@@ -149,13 +171,13 @@ manifest = {
     "style": "deterministic repository validation fixture",
     "quality": "standard",
     "render_size": {"width": 192, "height": 208},
-    "fps_profiles": {"standard": 12, "smooth": 20},
-    "default_fps_profile": "standard",
+    "native_fps": native_fps,
     "states": [
         {
             "name": state,
             "frames_dir": f"assets/frames/{state}",
             "loop": state not in {"start", "done"},
+            "duration_ms": state_durations_ms[state],
         }
         for state in states
     ],
@@ -177,13 +199,17 @@ write_json(
             "preview_only": False,
         },
         "states": [
-            {"name": state, "motion": f"Deterministic {state} fixture motion."}
+            {
+                "name": state,
+                "motion": f"Deterministic {state} fixture motion.",
+                "duration_ms": state_durations_ms[state],
+            }
             for state in states
         ],
         "runtime": {
-            "default_fps": 12,
-            "smooth_fps": 20,
-            "frames_per_state": 2,
+            "native_fps": native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
             "render_size": {"width": 192, "height": 208},
         },
         "extensions": {"dev.agentpet.validation/fixture": True},
@@ -201,7 +227,9 @@ write_json(
         "style": manifest["style"],
         "quality": "standard",
         "visual_source": "image-generation",
-        "frames_per_state": 2,
+        "native_fps": native_fps,
+        "state_durations_ms": state_durations_ms,
+        "state_frame_counts": state_frame_counts,
         "preview_only": False,
         "reference_files": [],
         "runner": "repository-validation",
@@ -228,8 +256,9 @@ with session.open("a", encoding="utf-8") as handle:
                 "quality": "standard",
                 "render_size": {"width": 192, "height": 208},
                 "states": list(states),
-                "frames_per_state": 2,
-                "fps_profiles": {"standard": 12, "smooth": 20},
+                "native_fps": native_fps,
+                "state_durations_ms": state_durations_ms,
+                "state_frame_counts": state_frame_counts,
                 "extensions": {"dev.agentpet.validation/fixture": True},
             },
             ensure_ascii=False,
@@ -245,10 +274,10 @@ CREATE_FINALIZE="$(python3 -B "$HELPER" finalize \
   --output "$CREATE_OUTPUT" \
   --result "$CREATE_RESULT" \
   --cli "$CLI")"
-assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 14 and data["changed_states"] == []'
+assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 120 and data["changed_states"] == []'
 
 CREATE_VALIDATION="$("$CLI" petpack validate "$CREATE_OUTPUT")"
-assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["frame_count"] == 14 and data["warnings"] == []'
+assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
 
 MODIFY_WORKSPACE="$TMP_DIR/modify-workspace"
 MODIFY_OUTPUT="$TMP_DIR/portable-fixture-revised.petpack"
@@ -283,18 +312,27 @@ for index, frame_path in enumerate(sorted((root / "assets" / "frames" / "tool").
     with Image.open(frame_path) as source:
         frame = source.convert("RGBA")
     draw = ImageDraw.Draw(frame)
+    shift = (index % 5) - 2
     draw.rounded_rectangle(
-        (71 + index * 3, 131 - index * 2, 125 + index * 3, 175 - index * 2),
+        (71 + shift, 131 - shift, 125 + shift, 175 - shift),
         radius=8,
         fill=(25, 38, 59, 235),
         outline=(116, 232, 208, 255),
         width=4,
     )
-    draw.line((79, 144 + index, 117, 144 + index), fill=(255, 255, 255, 255), width=3)
-    draw.line((79, 155 + index, 108, 155 + index), fill=(255, 255, 255, 255), width=3)
+    draw.line((79 + shift, 144, 117 + shift, 144), fill=(255, 255, 255, 255), width=3)
+    draw.line((79 + shift, 155, 108 + shift, 155), fill=(255, 255, 255, 255), width=3)
     frame.save(frame_path, format="PNG", optimize=False)
 
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+native_fps = manifest["native_fps"]
+state_durations_ms = {
+    entry["name"]: entry["duration_ms"] for entry in manifest["states"]
+}
+state_frame_counts = {
+    state: native_fps * duration_ms // 1000
+    for state, duration_ms in state_durations_ms.items()
+}
 write_json(
     root / "brief.json",
     {
@@ -317,13 +355,14 @@ write_json(
                     if state == "tool"
                     else f"Preserved deterministic {state} fixture motion."
                 ),
+                "duration_ms": state_durations_ms[state],
             }
             for state in states
         ],
         "runtime": {
-            "default_fps": 12,
-            "smooth_fps": 20,
-            "frames_per_state": 2,
+            "native_fps": native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
             "render_size": {"width": 192, "height": 208},
         },
         "extensions": {"dev.agentpet.validation/fixture": True},
@@ -341,7 +380,9 @@ write_json(
         "style": manifest["style"],
         "quality": "standard",
         "visual_source": "image-generation",
-        "frames_per_state": 2,
+        "native_fps": native_fps,
+        "state_durations_ms": state_durations_ms,
+        "state_frame_counts": state_frame_counts,
         "preview_only": False,
         "reference_files": [],
         "runner": "repository-validation",
@@ -369,8 +410,9 @@ with session.open("a", encoding="utf-8") as handle:
                 "render_size": {"width": 192, "height": 208},
                 "states": ["tool"],
                 "changed_states": ["tool"],
-                "frames_per_state": 2,
-                "fps_profiles": {"standard": 12, "smooth": 20},
+                "native_fps": native_fps,
+                "state_durations_ms": state_durations_ms,
+                "state_frame_counts": state_frame_counts,
                 "extensions": {"dev.agentpet.validation/fixture": True},
             },
             ensure_ascii=False,
@@ -390,7 +432,7 @@ MODIFY_FINALIZE="$(python3 -B "$HELPER" finalize \
 assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True'
 
 MODIFY_VALIDATION="$("$CLI" petpack validate "$MODIFY_OUTPUT")"
-assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["frame_count"] == 14 and data["warnings"] == []'
+assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
 
 python3 -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
 import hashlib

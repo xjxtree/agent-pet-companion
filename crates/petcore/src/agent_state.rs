@@ -57,10 +57,10 @@ pub struct ActiveAgentState {
     pub overlay_display: OverlaySessionDisplay,
 }
 
-/// Closed, content-free projection consumed by the desktop overlay. Agent
-/// prompts, assistant replies, paths, command arguments, and activity detail
-/// remain available only to PetCore's internal arbitration/hydration logic and
-/// are never serialized as part of an `ActiveAgentState`.
+/// Closed structural projection consumed by the desktop overlay. The
+/// separately hydrated, bounded session title and user/assistant messages
+/// intentionally carry the conversation context rendered in the local bubble;
+/// arbitrary raw event fields are not duplicated into this projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OverlaySessionDisplay {
     pub summary_kind: OverlaySummaryKind,
@@ -119,7 +119,7 @@ impl Serialize for ActiveAgentState {
     {
         let session_id = self.session_id.as_deref().map(opaque_session_id);
         let event = overlay_event_projection(&self.event);
-        let mut state = serializer.serialize_struct("ActiveAgentState", 12)?;
+        let mut state = serializer.serialize_struct("ActiveAgentState", 15)?;
         state.serialize_field("state", &self.state)?;
         state.serialize_field("official_status", &self.official_status)?;
         state.serialize_field("source", &self.source)?;
@@ -130,15 +130,19 @@ impl Serialize for ActiveAgentState {
         state.serialize_field("lease_seconds", &self.lease_seconds)?;
         state.serialize_field("expires_at", &self.expires_at)?;
         state.serialize_field("session_activated_at", &self.session_activated_at)?;
+        state.serialize_field("session_title", &self.session_title)?;
+        state.serialize_field("session_message", &self.session_message)?;
+        state.serialize_field("session_user_message", &self.session_user_message)?;
         state.serialize_field("event", &event)?;
         state.serialize_field("overlay_display", &self.overlay_display)?;
         state.end()
     }
 }
 
-/// Converts a stored/audited event to the content-free shape permitted across
-/// the App state-snapshot boundary. The explicit `events.recent` audit RPC is
-/// intentionally separate and continues to expose the stored event contract.
+/// Converts a stored/audited event to the compact embedded event shape used by
+/// the App snapshot. Bounded session display fields are serialized separately
+/// on `ActiveAgentState`; `events.recent` remains the distinct stored-event
+/// audit RPC.
 pub fn overlay_event_projection(event: &AgentEvent) -> OverlayEventProjection {
     OverlayEventProjection {
         id: opaque_event_id(&event.id),

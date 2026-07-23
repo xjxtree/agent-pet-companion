@@ -51,31 +51,9 @@ Real connectors, real Codex App Server generation, and visible macOS UI remain e
 
 真实连接器、真实 Codex App Server 制作与可见 macOS UI 均属于显式验收门禁；每层结果的证明范围以[验证层级](../development/validation.md)为准。
 
-## 3. Build artifacts / 构建产物
+## 3. Build the release archive / 构建发布归档
 
-### Local development App / 本机开发 App
-
-```bash
-./script/build_app_bundle.sh
-```
-
-This creates an ad-hoc-signed `dist/AgentPetCompanion.app` for local testing. It is not notarized or distributable.
-
-该命令默认只生成用于本机测试的 ad-hoc 签名 App；它未经公证，不可对外分发。
-
-For informal handoff, request and verify a separate archive explicitly:
-
-如需非正式交接，显式生成并校验独立归档：
-
-```bash
-./script/build_app_bundle.sh --archive
-```
-
-This additionally creates `dist/AgentPetCompanion-develop.zip`. Use the ZIP as the authoritative handoff artifact when copying through a File Provider-managed folder.
-
-该命令会额外生成 `dist/AgentPetCompanion-develop.zip`；通过 File Provider 管理的目录复制时，应以该 ZIP 作为交接产物。
-
-### Unsigned universal inspection
+For a non-distributable universal inspection build:
 
 ```bash
 ./script/build_release.sh --unsigned
@@ -83,9 +61,9 @@ This additionally creates `dist/AgentPetCompanion-develop.zip`. Use the ZIP as t
 
 This builds a universal Release candidate for local inspection. It is not distributable.
 
-### Signed distribution
+For the signed distribution archive, set values explicitly in the release shell. Do not commit them or add credential discovery to scripts.
 
-Set values explicitly in the release shell. Do not commit them or add credential discovery to the scripts.
+签名发布时，在 release shell 中显式设置以下值；不得提交这些值，也不得在脚本中加入凭据探测。
 
 ```bash
 export APC_RELEASE_VERSION='X.Y.Z'
@@ -119,7 +97,7 @@ All checks must use the final signed/notarized archive after extracting it into 
 - Verify sidebar order: **Pet Library → AI Pet Maker → Pet Configuration → Agent Connections → Service & Diagnostics**.
 - Verify Pet Configuration contains only **Appearance & Desktop Pet** and **Messages & Sources**, while diagnostics export remains available only from the root **Service & Diagnostics** page.
 - On a clean App home, verify both bundled pets are present and one valid pet is active.
-- Verify overlay drag/resize/right-click, first-click session controls, bubble expand/open behavior, and resize-handle hiding when the pointer leaves.
+- Verify the pet body remains hoverable and draggable during launch, state transitions, and frame-mask refresh; also verify resize/right-click, first-click session controls, bubble expand/open behavior, transparent-pixel passthrough once a valid mask exists, and resize-handle hiding when the pointer leaves.
 - Verify create, cancel, retry, reply, generation history, import, export, activation, and edit-from-import flows that apply to the release.
 
 Use Computer Use first with Accessibility reads and element actions. Any fallback that can move the pointer, inject input, activate an App, or steal focus requires explicit user approval immediately before use.
@@ -127,6 +105,7 @@ Use Computer Use first with Accessibility reads and element actions. Any fallbac
 ### Pet library and package safety
 
 - Validate/render all seven states from both packaged built-in archives.
+- Verify the bundled inventory covers native 10 and 20 FPS, every state reports its fixed one- or two-second duration, native-20 Standard playback samples to 10 FPS without changing duration, and native-10 pets cannot select Smooth playback.
 - In an isolated existing library, verify same ID is preserved, same name with a different ID coexists, repeated seeding is idempotent, and an existing active pet is not replaced.
 - Verify bundled pets can be previewed, enabled, and exported, while UI and RPC reject deletion and same-ID modification/import.
 - Verify ordinary imported pets remain editable even without an App creation history, and stale-base edits cannot overwrite a newer revision.

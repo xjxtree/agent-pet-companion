@@ -12,7 +12,7 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
 - **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own.
-- **Multi-agent sessions** — displays sessions and synchronizes status for Claude Code, ChatGPT Codex, Pi Coding Agent, and OpenCode. Click a pet message to jump directly to the corresponding session.
+- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. Each supported concurrent session can appear in its Agent bubble, and a click opens the corresponding host or session when available.
 - **Rich pet configuration** — customize message-bubble transparency, session response rules, multi-session stacking, appearance, interaction, and other pet behavior.
 
 ## Features
@@ -22,7 +22,7 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 - **Pet Configuration** — control visibility, bubbles, appearance, interaction, session grouping, and animation profile.
 - **Agent Connections** — check, repair, test, or remove integrations for Codex, Claude Code, Pi Coding Agent, and OpenCode.
 - **Service & Diagnostics** — inspect PetCore, local RPC, event-channel, and renderer health, then export a privacy-filtered diagnostics ZIP when needed.
-- **Desktop overlay** — drag the pet, resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
+- **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
 
 The app is local-first: pets, settings, normalized agent events, and diagnostics remain on the Mac unless the user explicitly exports a file. It does not read agent credentials, tokens, cookies, or API keys.
 
@@ -60,8 +60,8 @@ The ad-hoc-signed development app is written to `dist/`. Add `--archive` only wh
 ## Usage
 
 1. Open **Pet Library** and enable one of the bundled pets, or import your own `.petpack`.
-2. Open **AI Pet Maker** to create a pet. This in-app workflow requires the ChatGPT desktop app to be installed and signed in, with Codex available to the current user.
-3. Use **Pet Configuration** to choose the appearance, bubbles, input behavior, grouping, and frame-rate profile.
+2. Open **AI Pet Maker** to create a pet. This workflow requires a working Codex App Server from the Codex CLI or the bundled ChatGPT/Codex app, with provider access available to the current user.
+3. Use **Pet Configuration** to choose the appearance, bubbles, input behavior, grouping, and animation profile. Native 20 FPS pets support Standard 10 FPS and Smooth 20 FPS playback; native 10 FPS pets remain at 10 FPS, and neither choice changes the authored action duration.
 4. Use **Agent Connections** to install or verify the integrations you use.
 5. Keep the app running while working with an agent. The pet reacts to start, tool, waiting, review, done, and failed events.
 6. If something goes wrong, open **Service & Diagnostics**, export a diagnostics ZIP, and attach it to the issue.
@@ -92,13 +92,8 @@ The macOS App owns the control center, menu-bar entry, desktop overlay, and rend
 | Document | Purpose |
 |---|---|
 | [Documentation index](docs/README.md) | Durable technical documentation and maintenance rules |
-| [Architecture overview](docs/architecture/overview.md) | Components, boundaries, data flow, and repository map |
-| [Runtime and IPC](docs/architecture/runtime-and-ipc.md) | Process lifecycle, runtime compatibility, transports, RPC, and diagnostics |
-| [Data model](docs/architecture/data-model.md) | SQLite entities, file-backed revisions, schemas, and invariants |
-| [Agent integrations](docs/integrations/agent-connectors.md) | Connector installation, event normalization, trust, and privacy boundaries |
 | [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet format and producer contract |
-| [Validation profiles](docs/development/validation.md) | What each automated or real-runtime gate proves |
-| [macOS release procedure](docs/release/macos-release.md) | Signing, notarization, acceptance, and GitHub Release workflow |
+| [Contributing](CONTRIBUTING.md) | Development workflow and validation entrypoints |
 | [Changelog](CHANGELOG.md) | Versioned user-visible changes for every GitHub Release |
 
 ## Contributing

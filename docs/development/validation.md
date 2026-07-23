@@ -6,7 +6,7 @@ This document defines what each validation layer can prove. A listed command is 
 
 | Profile / 层级 | Main entrypoints / 主要入口 | Proves / 能证明 | Does not prove / 不能证明 |
 |---|---|---|---|
-| `fast/core` | `cargo test --workspace --locked`, `validate_swift_tests.sh`, schema validators, `validate_overlay_offline.sh`, `validate_security_boundaries.sh` | Deterministic Rust, PetCore, CLI, schema, Swift-core, UI-model, overlay, renderer-budget, and fake-secret-redaction behavior. / 确定性核心逻辑、UI 模型、悬浮层与安全边界。 | Visible macOS UI, real third-party Agents, or real Codex App Server generation. / 不代表真实 UI、Agent 或 App Server。 |
+| `fast/core` | `cargo fmt --all -- --check`, strict workspace Clippy, `cargo test --workspace --locked`, `validate_swift_tests.sh`, schema validators, `validate_overlay_offline.sh`, `validate_security_boundaries.sh` | Rust formatting/lints, deterministic Rust, PetCore, CLI, schema, Swift-core, UI-model, overlay, renderer-budget, and bounded diagnostic filtering. / Rust 格式与 lint、确定性核心逻辑、UI 模型、悬浮层及有界诊断过滤。 | Visible macOS UI, real third-party Agents, or real Codex App Server generation. / 不代表真实 UI、Agent 或 App Server。 |
 | `simulated integration` | `validate_portable_pet_maker.sh`, `validate_connectors_runtime.sh` | Integration behavior in isolated `APC_HOME`/`APC_AGENT_CONFIG_HOME`, portable pet creation/editing, generated connector artifacts, event normalization, filtering, and library flows. / 隔离目录中的便携宠物制作、连接器与数据流。 | User Agent trust/authentication, real model/tool execution, or visible overlay acceptance. / 不代表用户真实 Agent 与可见悬浮层。 |
 | `macos runtime` | `build_and_run.sh --verify`, `validate_app_bundle.sh`, overlay/main-window/renderer/recovery validators | The exact packaged App, bundled runtime, window/overlay structure, interaction, persistence, rendering telemetry, and recovery exercised by the commands that ran. Live UI work uses Computer Use first. / 实际运行到的打包 App 与 macOS UI 行为。 | Real Agent/provider behavior, full Instruments profiling, or safety of an unapproved direct-input fallback. / 不代表真实 Agent、完整性能分析或未授权输入自动化。 |
 | `real agent connectors` | `validate_real_agent_connectors.sh` | Current managed connector commands can emit diagnostic events through the running local runtime without reading credentials. / 当前真实连接器本地事件链路。 | Provider authentication, real model execution, or a complete user task. / 不代表认证、模型执行或完整任务。 |
@@ -32,7 +32,7 @@ The default/simulated gate must use isolated homes and must not launch the GUI, 
 - `APC_VALIDATE_HOST_UI=0|1` controls packaged macOS runtime validation. Live UI verification must use Computer Use first; any fallback that can launch or activate an App, move input, or steal focus requires explicit user approval immediately before use.
 - `APC_VALIDATE_REAL_AGENT_CONNECTORS=0|1|auto` controls access to current user connector files and installed Agent CLIs. It never authorizes reading credential stores.
 - `APC_VALIDATE_REAL_APP_SERVER=0|1|auto` controls a real App Server session. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` is the strict release path; setting it to `0` explicitly downgrades the proof.
-- `APC_VALIDATE_OVERLAY_INTERACTION=1` enables a legacy direct-input technical gate but is not user authorization to take over input.
+- `APC_VALIDATE_OVERLAY_INTERACTION=1` enables the direct-input technical gate but is not user authorization to take over input.
 - `APC_EVENT_STORM_COUNT` changes the bounded stress size; the default is `180`.
 
 Recommended expanded commands:

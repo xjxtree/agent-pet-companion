@@ -576,17 +576,39 @@ struct PetLibraryPresentation: Equatable {
 
     var fpsSpecification: String? {
         validationStatus == .verified
-            ? APCLocalization.text(.librarySpecificationVerifiedFps, locale: localeIdentifier)
+            ? fpsSummary
             : nil
     }
 
     var fpsSummary: String {
-        APCLocalization.text(.libraryFPSSummary, locale: localeIdentifier)
+        APCLocalization.text(
+            pet.nativeFPS == FpsProfile.smooth.fps
+                ? .libraryFPSSummary
+                : .libraryFPSStandardSummary,
+            locale: localeIdentifier
+        )
+    }
+
+    var durationSummary: String {
+        [1_000, 2_000].compactMap { durationMS in
+            let states = Self.stateNames.filter { pet.durationMS(for: $0) == durationMS }
+            guard !states.isEmpty else { return nil }
+            return APCLocalization.format(
+                .libraryDurationGroupFormat,
+                locale: localeIdentifier,
+                durationMS / 1_000,
+                states.joined(separator: " · ")
+            )
+        }.joined(separator: "   ")
     }
 
     var stateSummary: String {
-        "idle · start · tool · waiting · review · done · failed"
+        Self.stateNames.joined(separator: " · ")
     }
+
+    private static let stateNames = [
+        "idle", "start", "tool", "waiting", "review", "done", "failed",
+    ]
 
     func currentStateTitle(activeEvent: AgentEvent?) -> String? {
         guard pet.active else { return nil }

@@ -262,6 +262,56 @@ struct AgentConnectionsTests {
     }
 
     @Test
+    func repeatedImplementationChecksCollapseIntoUserFacingCategories() throws {
+        let agentCLI = item(.ok, code: "agent_cli")
+        let managedLocated = item(.ok, code: "managed_connector")
+        let managedNeedsFix = item(
+            .needsFix,
+            code: "managed_connector",
+            recovery: .confirmManagedRepair
+        )
+        let managedMissing = item(
+            .missing,
+            code: "managed_connector",
+            recovery: .confirmManagedRepair
+        )
+        let firstHostProbe = item(
+            .unverified,
+            code: "host_verification",
+            recovery: .recheck
+        )
+        let secondHostProbe = item(
+            .unverified,
+            code: "host_verification",
+            recovery: .recheck
+        )
+        let status = makeStatus(
+            source: .codex,
+            items: [
+                agentCLI,
+                managedLocated,
+                managedNeedsFix,
+                managedMissing,
+                firstHostProbe,
+                secondHostProbe,
+            ],
+            capabilities: capabilities(repairable: true, conflict: false)
+        )
+
+        let displayed = AgentConnectionsPresentation.displayItems(in: status)
+        #expect(displayed.count == 3)
+        #expect(displayed.map(\.code) == [.agentCLI, .managedConnector, .hostVerification])
+        #expect(displayed[1].status == .missing)
+        #expect(AgentConnectionsPresentation.health(for: status) == .needsAttention(1))
+
+        let recovery = try #require(AgentConnectionsPresentation.recoveryAction(
+            for: displayed[1],
+            in: status
+        ))
+        #expect(recovery.kind == .confirmManagedRepair)
+    }
+
+    @Test
     func lightCheckPresentationNeverClaimsRuntimeVerification() {
         let located = item(.ok)
         #expect(

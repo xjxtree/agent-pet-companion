@@ -154,6 +154,8 @@ fn second_daemon_does_not_recover_first_daemon_jobs() {
         style: "pixel".to_string(),
         quality: QualityLevel::High,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     database
         .create_generation_job(job_id, &form, &job_dir)

@@ -21,7 +21,7 @@ struct PetLibraryHistoryTests {
               "validation_summary": {
                 "ok": true,
                 "state_count": 7,
-                "frame_count": 168,
+                "frame_count": 120,
                 "warning_count": 0
               }
             },

@@ -48,6 +48,8 @@ The small `AgentPetCompanionLifecycleClient` executable is a development helper 
 
 Dock reopen, second-instance activation, MenuBarExtra, and overlay actions target the registered control-center window identity. The About window is a separate scene and is never selected as the control center. Initial automatic retry and explicit user recovery coalesce onto one full bootstrap pipeline so behavior hydration, bundled-pet seeding, snapshot publication, and first overlay presentation cannot race each other.
 
+The desktop pet body remains hoverable and draggable whenever the overlay is visible. When the renderer has a valid frame alpha mask, transparent pixels may pass pointer events through; during launch, state transitions, or any interval without a mask, hit testing falls back to the geometric pet region so the pet never becomes non-interactive.
+
 See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and compatibility details.
 
 ### Agent activity to desktop reaction
@@ -61,7 +63,7 @@ sequenceDiagram
     participant A as macOS App
     H->>C: Host event with allowlisted input
     C->>P: Normalized ingest request
-    P->>P: Privacy filter, deduplicate, suppress, project
+    P->>P: Validate and bound fields, deduplicate, suppress, project
     P->>D: Persist event and increment state revision
     A->>P: state.wait(after_revision)
     P-->>A: Snapshot delta / current projection
@@ -101,7 +103,7 @@ logo/                       Approved reusable brand assets
 - App, PetCore, CLI, database range, `.petpack` versions, event schema, and connector contracts ship as one runtime manifest identity.
 - Normal online writes go through PetCore. The App and Agent hosts do not bypass its validation or state revision.
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
-- Credentials and complete transcripts are outside the data model. Only explicit, length-bounded display fields may cross an event boundary.
+- Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
 - A public artifact is not a release until the exact universal App is signed, notarized, accepted, and recorded in the root changelog.
 

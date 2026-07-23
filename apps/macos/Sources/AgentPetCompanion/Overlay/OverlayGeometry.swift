@@ -98,7 +98,7 @@ struct OverlayPetAlphaMask: Equatable, Sendable {
 
 /// Describes the exact decoded frame currently presented by the Metal view.
 /// `frameID` lets the renderer and AppStore coalesce repeated display-link
-/// draws without comparing the mask payload at 12/20 FPS.
+/// draws without comparing the mask payload at 10/20 FPS.
 struct OverlayPetFrameHitTest: Equatable, Sendable {
     let frameID: UUID
     let canvasSize: CGSize
@@ -1353,11 +1353,14 @@ enum OverlayGeometry {
         if rects.dropFirst().contains(where: { $0.contains(point) }) {
             return true
         }
-        guard petDragRect.contains(point), let petFrameHitTest else {
-            // With passthrough enabled, an unavailable/corrupt alpha mask must
-            // fail transparent so an invisible rectangle never blocks another
-            // app. The independent menu/resize panels remain reachable.
+        guard petDragRect.contains(point) else {
             return false
+        }
+        guard let petFrameHitTest else {
+            // Frame masks are published asynchronously and are intentionally
+            // cleared during renderer/state transitions. Keep the visible pet
+            // draggable until the next mask can refine transparent pixels.
+            return true
         }
         return petFrameContainsOpaquePixel(
             atTopLeftPoint: point,
@@ -1602,7 +1605,15 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     private static func sessionTitle(for state: ActiveAgentState) -> String {
-        APCLocalization.format(.overlaySessionTitleFormat, state.source.shortTitle)
+        if let title = compactTitle(state.sessionTitle) {
+            return title
+        }
+        if state.sessionUserMessage?.role == "user",
+           let title = compactTitle(state.sessionUserMessage?.content)
+        {
+            return title
+        }
+        return APCLocalization.format(.overlaySessionTitleFormat, state.source.shortTitle)
     }
 
     static func displayMessage(
@@ -1613,10 +1624,26 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     private static func displayMessage(for state: ActiveAgentState) -> String {
-        displayMessage(
+        assistantMessage(for: state) ?? displayMessage(
             summaryKind: state.overlayDisplay?.summaryKind,
             eventType: state.event.eventType
         )
+    }
+
+    private static func assistantMessage(for state: ActiveAgentState) -> String? {
+        guard state.sessionMessage?.role == "assistant" else { return nil }
+        return compactMessage(state.sessionMessage?.content)
+    }
+
+    private static func compactTitle(_ value: String?) -> String? {
+        guard let value = compactMessage(value) else { return nil }
+        let firstLine = value.split(whereSeparator: \.isNewline).first.map(String.init) ?? value
+        return firstLine.count > 80 ? "\(firstLine.prefix(79))…" : firstLine
+    }
+
+    private static func compactMessage(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private static func fallbackSummaryKind(
@@ -1761,16 +1788,8 @@ struct OverlayBubbleContent: Equatable, Identifiable {
             .enumerated()
             .sorted(by: Self.isMoreRecentlyActivated)
             .prefix(8))
-        sessions = orderedStates.enumerated().map { index, entry in
-            var content = OverlaySessionContent(state: entry.element)
-            if orderedStates.count > 1 {
-                // Session titles must remain content-free, but two rows from
-                // the same Agent still need distinct visual and accessible
-                // identities. The display-order ordinal contains no host
-                // prompt, project, path, or raw session identifier.
-                content.sessionTitle += " \(index + 1)"
-            }
-            return content
+        sessions = orderedStates.map { entry in
+            OverlaySessionContent(state: entry.element)
         }
         self.isExpanded = isExpanded
         omittedSessionCount = 0

@@ -14,7 +14,6 @@ PETCORE_CLI="$APP_BUNDLE/Contents/Resources/bin/petcore-cli"
 TELEMETRY_PATH="$TMP_DIR/renderer-telemetry.json"
 APP_LOG="$TMP_DIR/app.log"
 OWNED_PROTOCOL="$APC_HOME/run/validation-owned-runtime.json"
-FRAMES="${APC_RENDERER_RUNTIME_FRAMES:-9}"
 METRIC_SAMPLES="${APC_RENDERER_METRIC_SAMPLES:-61}"
 METRIC_INTERVAL_SECONDS="${APC_RENDERER_METRIC_INTERVAL_SECONDS:-0.5}"
 export LC_ALL=C
@@ -84,13 +83,27 @@ wait_for_telemetry() {
   local quality="$1"
   local source_kind="$2"
   local fps_profile="$3"
-  local expected_fps="$4"
-  local extra_expr="$5"
+  local expected_native_fps="$4"
+  local expected_fps="$5"
+  local expected_duration_ms="$6"
+  local expected_source_frame_count="$7"
+  local expected_sampled_frame_count="$8"
+  local extra_expr="$9"
   for _ in {1..120}; do
     if [[ -s "$TELEMETRY_PATH" ]]; then
       local telemetry
       telemetry="$(read_json_file "$TELEMETRY_PATH")"
-      if JSON="$telemetry" QUALITY="$quality" SOURCE_KIND="$source_kind" FPS_PROFILE="$fps_profile" EXPECTED_FPS="$expected_fps" EXTRA_EXPR="$extra_expr" python3 - <<'PY'
+      if JSON="$telemetry" \
+        QUALITY="$quality" \
+        SOURCE_KIND="$source_kind" \
+        FPS_PROFILE="$fps_profile" \
+        EXPECTED_NATIVE_FPS="$expected_native_fps" \
+        EXPECTED_FPS="$expected_fps" \
+        EXPECTED_DURATION_MS="$expected_duration_ms" \
+        EXPECTED_SOURCE_FRAME_COUNT="$expected_source_frame_count" \
+        EXPECTED_SAMPLED_FRAME_COUNT="$expected_sampled_frame_count" \
+        EXTRA_EXPR="$extra_expr" \
+        python3 - <<'PY'
 import json
 import os
 import sys
@@ -99,13 +112,21 @@ data = json.loads(os.environ["JSON"])
 quality = os.environ["QUALITY"]
 source_kind = os.environ["SOURCE_KIND"]
 fps_profile = os.environ["FPS_PROFILE"]
+expected_native_fps = int(os.environ["EXPECTED_NATIVE_FPS"])
 expected_fps = int(os.environ["EXPECTED_FPS"])
+expected_duration_ms = int(os.environ["EXPECTED_DURATION_MS"])
+expected_source_frame_count = int(os.environ["EXPECTED_SOURCE_FRAME_COUNT"])
+expected_sampled_frame_count = int(os.environ["EXPECTED_SAMPLED_FRAME_COUNT"])
 extra_expr = os.environ["EXTRA_EXPR"]
 ok = (
     data.get("quality") == quality
     and data.get("source_kind") == source_kind
-    and data.get("fps") == expected_fps
     and data.get("fps_profile") == fps_profile
+    and data.get("native_fps") == expected_native_fps
+    and data.get("fps") == expected_fps
+    and data.get("duration_ms") == expected_duration_ms
+    and data.get("source_frame_count") == expected_source_frame_count
+    and data.get("sampled_frame_count") == expected_sampled_frame_count
     and bool(data.get("active")) is True
     and data.get("decode_pipeline") == "actor"
     and data.get("draw_reads_disk") is False
@@ -130,7 +151,7 @@ PY
     sleep 0.25
   done
 
-  echo "renderer runtime validation failed: telemetry did not match quality=$quality source=$source_kind fps_profile=$fps_profile" >&2
+  echo "renderer runtime validation failed: telemetry did not match quality=$quality source=$source_kind native_fps=$expected_native_fps fps_profile=$fps_profile fps=$expected_fps duration_ms=$expected_duration_ms source_frames=$expected_source_frame_count sampled_frames=$expected_sampled_frame_count" >&2
   [[ -s "$TELEMETRY_PATH" ]] && cat "$TELEMETRY_PATH" >&2
   return 1
 }
@@ -273,13 +294,24 @@ PY
 HIGH_SOURCE="$TMP_DIR/high-source"
 ULTRA_SOURCE="$TMP_DIR/ultra-source"
 ORIGINAL_SOURCE="$TMP_DIR/original-source"
-"$PETCORE_CLI" petpack sample --output "$HIGH_SOURCE" --quality high --frames "$FRAMES" >/dev/null
-"$PETCORE_CLI" petpack sample --output "$ULTRA_SOURCE" --quality ultra --frames "$FRAMES" >/dev/null
-"$PETCORE_CLI" petpack sample --output "$ORIGINAL_SOURCE" --quality original --frames "$FRAMES" >/dev/null
+"$PETCORE_CLI" petpack sample --output "$HIGH_SOURCE" --quality high >/dev/null
+STATE_DURATIONS_JSON='{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}'
+ULTRA_FORM_JSON="{\"description\":\"Native 20 FPS ultra renderer fixture\",\"style\":\"validation\",\"quality\":\"ultra\",\"reference_images\":[],\"native_fps\":20,\"state_durations_ms\":$STATE_DURATIONS_JSON}"
+ORIGINAL_FORM_JSON="{\"description\":\"Native 20 FPS original renderer fixture\",\"style\":\"validation\",\"quality\":\"original\",\"reference_images\":[],\"native_fps\":20,\"state_durations_ms\":$STATE_DURATIONS_JSON}"
+"$PETCORE_CLI" petpack materialize \
+  --output "$ULTRA_SOURCE" \
+  --name "Native 20 Ultra Fixture" \
+  --form-json "$ULTRA_FORM_JSON" \
+  >/dev/null
+"$PETCORE_CLI" petpack materialize \
+  --output "$ORIGINAL_SOURCE" \
+  --name "Native 20 Original Fixture" \
+  --form-json "$ORIGINAL_FORM_JSON" \
+  >/dev/null
 mkdir -p "$TMP_DIR/home"
 
 HIGH_BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
-json_expr "$HIGH_BUDGET" 'data["fps"] == 12 and data["renderer_budget_mb"] == 180 and data["uses_ring_cache"] is False'
+json_expr "$HIGH_BUDGET" 'data["fps"] == 10 and data["renderer_budget_mb"] == 180 and data["uses_ring_cache"] is False'
 ULTRA_BUDGET="$("$PETCORE_CLI" renderer budget --quality ultra --fps-profile smooth)"
 json_expr "$ULTRA_BUDGET" 'data["fps"] == 20 and data["renderer_budget_mb"] == 260 and data["uses_ring_cache"] is False'
 ORIGINAL_BUDGET="$("$PETCORE_CLI" renderer budget --quality original --fps-profile smooth)"
@@ -288,6 +320,9 @@ json_expr "$ORIGINAL_BUDGET" 'data["fps"] == 20 and data["renderer_budget_mb"] =
 HIGH_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$HIGH_SOURCE")"
 ULTRA_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$ULTRA_SOURCE")"
 ORIGINAL_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$ORIGINAL_SOURCE")"
+json_expr "$HIGH_PET" 'data["native_fps"] == 10 and data["state_durations_ms"]["waiting"] == 2000'
+json_expr "$ULTRA_PET" 'data["native_fps"] == 20 and data["state_durations_ms"]["waiting"] == 2000'
+json_expr "$ORIGINAL_PET" 'data["native_fps"] == 20 and data["state_durations_ms"]["waiting"] == 2000'
 HIGH_ID="$(JSON="$HIGH_PET" python3 - <<'PY'
 import json
 import os
@@ -343,23 +378,28 @@ activate_looping_renderer_state() {
 APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$STANDARD_BEHAVIOR" >/dev/null
 activate_looping_renderer_state "$HIGH_ID"
 
-HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 12 'data["frame_count"] >= 1 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 180 and data["pipeline_cache_bytes"] <= 180 * 1024 * 1024 and abs(data["canvas_width"] - 384) < 1 and abs(data["canvas_height"] - 416) < 1')"
+HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 10 10 2000 20 20 'data["frame_count"] == 20 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 180 and data["pipeline_cache_bytes"] <= 180 * 1024 * 1024 and abs(data["canvas_width"] - 384) < 1 and abs(data["canvas_height"] - 416) < 1')"
 HIGH_METRICS="$(sample_process_metrics high)"
-HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 12 'data["measurement_seconds"] >= 30')"
-HIGH_TELEMETRY="$(attach_process_metrics "$HIGH_TELEMETRY" "$BASELINE_METRICS" "$HIGH_METRICS" 4 180 10.8)"
+HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 10 10 2000 20 20 'data["measurement_seconds"] >= 30')"
+HIGH_TELEMETRY="$(attach_process_metrics "$HIGH_TELEMETRY" "$BASELINE_METRICS" "$HIGH_METRICS" 4 180 9)"
+
+activate_looping_renderer_state "$ULTRA_ID"
+ULTRA_STANDARD_TELEMETRY="$(wait_for_telemetry ultra eager standard 20 10 2000 40 20 'data["frame_count"] == 20 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
 
 APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$SMOOTH_BEHAVIOR" >/dev/null
-activate_looping_renderer_state "$ULTRA_ID"
-
-ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 'data["frame_count"] >= 1 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
+ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 20 2000 40 40 'data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
 ULTRA_METRICS="$(sample_process_metrics ultra)"
-ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 'data["measurement_seconds"] >= 30')"
+ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 20 2000 40 40 'data["measurement_seconds"] >= 30')"
 ULTRA_TELEMETRY="$(attach_process_metrics "$ULTRA_TELEMETRY" "$BASELINE_METRICS" "$ULTRA_METRICS" 7 260 18)"
 
 activate_looping_renderer_state "$ORIGINAL_ID"
-ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 'data["frame_count"] >= 9 and data["runtime_cache_frame_limit"] == 9 and data["estimated_runtime_cache_mb"] <= 420 and data["pipeline_cache_bytes"] <= 420 * 1024 * 1024 and abs(data["canvas_width"] - 1536) < 1 and abs(data["canvas_height"] - 1664) < 1')"
+ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 20 2000 40 40 'data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == 9 and data["estimated_runtime_cache_mb"] <= 420 and data["pipeline_cache_bytes"] <= 420 * 1024 * 1024 and abs(data["canvas_width"] - 1536) < 1 and abs(data["canvas_height"] - 1664) < 1')"
 ORIGINAL_METRICS="$(sample_process_metrics original)"
-ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 'data["measurement_seconds"] >= 30')"
+ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 20 2000 40 40 'data["measurement_seconds"] >= 30')"
 ORIGINAL_TELEMETRY="$(attach_process_metrics "$ORIGINAL_TELEMETRY" "$BASELINE_METRICS" "$ORIGINAL_METRICS" 9 420 18)"
 
-printf 'Renderer runtime validation ok: high=%s ultra=%s original=%s\n' "$HIGH_TELEMETRY" "$ULTRA_TELEMETRY" "$ORIGINAL_TELEMETRY"
+printf 'Renderer runtime validation ok: high=%s ultra_standard=%s ultra_smooth=%s original=%s\n' \
+  "$HIGH_TELEMETRY" \
+  "$ULTRA_STANDARD_TELEMETRY" \
+  "$ULTRA_TELEMETRY" \
+  "$ORIGINAL_TELEMETRY"

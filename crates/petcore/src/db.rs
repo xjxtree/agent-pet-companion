@@ -11,9 +11,11 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
     BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    OverlayPlacement, PetOrigin, PetSummary, QualityLevel, RenderSize, SessionGroupDisplay,
-    MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
-    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    OverlayPlacement, PetOrigin, PetStateName, PetSummary, QualityLevel, RenderSize,
+    SessionGroupDisplay, LONG_ACTION_DURATION_MS, MAX_BUBBLE_TRANSPARENCY,
+    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
+    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, REQUIRED_STATES, SHORT_ACTION_DURATION_MS, SMOOTH_FPS,
+    STANDARD_FPS,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
@@ -261,6 +263,7 @@ impl Default for EventRetentionPolicy {
 // candidate daemon cannot make the database unreadable to the last-known-good
 // schema-5 runtime before the candidate is committed healthy.
 pub const DATABASE_SCHEMA_VERSION: u32 = 5;
+const DEFAULT_STATE_DURATIONS_JSON: &str = r#"{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}"#;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
 const SUPPRESSED_AGENT_SESSION_RETENTION_DAYS: u32 = 30;
 const MAX_SUPPRESSED_AGENT_SESSIONS: usize = 10_000;
@@ -353,6 +356,8 @@ impl Database {
               quality TEXT NOT NULL,
               render_width INTEGER NOT NULL,
               render_height INTEGER NOT NULL,
+              native_fps INTEGER NOT NULL DEFAULT 10,
+              state_durations_json TEXT NOT NULL DEFAULT '{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}',
               petpack_path TEXT NOT NULL,
               cover_path TEXT NOT NULL,
               origin TEXT NOT NULL DEFAULT 'external_import',
@@ -510,6 +515,18 @@ impl Database {
                 "ALTER TABLE pets ADD COLUMN origin TEXT NOT NULL DEFAULT 'external_import'",
                 [],
             )?;
+        }
+        if !table_has_column(connection, "pets", "native_fps")? {
+            connection.execute(
+                "ALTER TABLE pets ADD COLUMN native_fps INTEGER NOT NULL DEFAULT 10",
+                [],
+            )?;
+        }
+        if !table_has_column(connection, "pets", "state_durations_json")? {
+            let sql = format!(
+                "ALTER TABLE pets ADD COLUMN state_durations_json TEXT NOT NULL DEFAULT '{DEFAULT_STATE_DURATIONS_JSON}'"
+            );
+            connection.execute(&sql, [])?;
         }
         Ok(())
     }
@@ -2774,17 +2791,20 @@ impl Database {
 
     pub fn upsert_pet(&self, pet: &PetSummary) -> Result<()> {
         let connection = self.open()?;
+        let state_durations_json = serde_json::to_string(&pet.state_durations_ms)?;
         connection.execute(
             r#"
             INSERT INTO pets
-              (id, name, style, quality, render_width, render_height, petpack_path, cover_path, origin, generator, provenance, active, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+              (id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               style = excluded.style,
               quality = excluded.quality,
               render_width = excluded.render_width,
               render_height = excluded.render_height,
+              native_fps = excluded.native_fps,
+              state_durations_json = excluded.state_durations_json,
               petpack_path = excluded.petpack_path,
               cover_path = excluded.cover_path,
               origin = excluded.origin,
@@ -2800,6 +2820,8 @@ impl Database {
                 enum_name(pet.quality),
                 pet.render_size.width as i64,
                 pet.render_size.height as i64,
+                pet.native_fps as i64,
+                state_durations_json,
                 pet.petpack_path,
                 pet.cover_path,
                 enum_name(pet.origin),
@@ -2818,20 +2840,23 @@ impl Database {
     pub fn upsert_pet_and_activate_if_first(&self, pet: &PetSummary) -> Result<bool> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
+        let state_durations_json = serde_json::to_string(&pet.state_durations_ms)?;
         let pet_count: i64 =
             transaction.query_row("SELECT COUNT(*) FROM pets", [], |row| row.get(0))?;
         let effective_active = pet_count == 0 || pet.active;
         transaction.execute(
             r#"
             INSERT INTO pets
-              (id, name, style, quality, render_width, render_height, petpack_path, cover_path, origin, generator, provenance, active, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+              (id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               style = excluded.style,
               quality = excluded.quality,
               render_width = excluded.render_width,
               render_height = excluded.render_height,
+              native_fps = excluded.native_fps,
+              state_durations_json = excluded.state_durations_json,
               petpack_path = excluded.petpack_path,
               cover_path = excluded.cover_path,
               origin = excluded.origin,
@@ -2847,6 +2872,8 @@ impl Database {
                 enum_name(pet.quality),
                 pet.render_size.width as i64,
                 pet.render_size.height as i64,
+                pet.native_fps as i64,
+                state_durations_json,
                 pet.petpack_path,
                 pet.cover_path,
                 enum_name(pet.origin),
@@ -2864,13 +2891,15 @@ impl Database {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, name, style, quality, render_width, render_height, petpack_path, cover_path, origin, generator, provenance, active, created_at
+            SELECT id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
             FROM pets
             ORDER BY created_at DESC
             "#,
         )?;
         let rows = statement.query_map([], |row| {
             let quality: String = row.get(3)?;
+            let (native_fps, state_durations_ms) =
+                decode_pet_timing(row.get(6)?, &row.get::<_, String>(7)?)?;
             Ok(PetSummary {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -2880,16 +2909,18 @@ impl Database {
                     width: row.get::<_, i64>(4)? as u32,
                     height: row.get::<_, i64>(5)? as u32,
                 },
-                petpack_path: row.get(6)?,
-                cover_path: row.get(7)?,
-                origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(8)?)
+                native_fps,
+                state_durations_ms,
+                petpack_path: row.get(8)?,
+                cover_path: row.get(9)?,
+                origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(10)?)
                     .map_err(to_sql_error)?,
-                generator: row.get(9)?,
-                provenance: row.get(10)?,
+                generator: row.get(11)?,
+                provenance: row.get(12)?,
                 revision_id: None,
                 revision_count: 0,
-                active: row.get::<_, i64>(11)? == 1,
-                created_at: row.get(12)?,
+                active: row.get::<_, i64>(13)? == 1,
+                created_at: row.get(14)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -2901,13 +2932,14 @@ impl Database {
         let pet = connection
             .query_row(
                 r#"
-                SELECT id, name, style, quality, render_width, render_height, petpack_path, cover_path, origin, generator, provenance, active, created_at
+                SELECT id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
                 FROM pets
                 WHERE id = ?1
                 "#,
                 params![pet_id],
                 |row| {
                     let quality: String = row.get(3)?;
+                    let (native_fps, state_durations_ms) = decode_pet_timing(row.get(6)?, &row.get::<_, String>(7)?)?;
                     Ok(PetSummary {
                         id: row.get(0)?,
                         name: row.get(1)?,
@@ -2917,16 +2949,18 @@ impl Database {
                             width: row.get::<_, i64>(4)? as u32,
                             height: row.get::<_, i64>(5)? as u32,
                         },
-                        petpack_path: row.get(6)?,
-                        cover_path: row.get(7)?,
-                        origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(8)?)
+                        native_fps,
+                        state_durations_ms,
+                        petpack_path: row.get(8)?,
+                        cover_path: row.get(9)?,
+                        origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(10)?)
                             .map_err(to_sql_error)?,
-                        generator: row.get(9)?,
-                        provenance: row.get(10)?,
+                        generator: row.get(11)?,
+                        provenance: row.get(12)?,
                         revision_id: None,
                         revision_count: 0,
-                        active: row.get::<_, i64>(11)? == 1,
-                        created_at: row.get(12)?,
+                        active: row.get::<_, i64>(13)? == 1,
+                        created_at: row.get(14)?,
                     })
                 },
             )
@@ -3606,6 +3640,33 @@ fn reject_other_active_generation(
 
 fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+}
+
+fn decode_pet_timing(
+    native_fps: i64,
+    state_durations_json: &str,
+) -> std::result::Result<(u32, BTreeMap<PetStateName, u32>), rusqlite::Error> {
+    let native_fps = u32::try_from(native_fps).map_err(to_sql_error)?;
+    if !matches!(native_fps, STANDARD_FPS | SMOOTH_FPS) {
+        return Err(to_sql_error(PetCoreError::Validation(format!(
+            "stored pet has unsupported native_fps {native_fps}"
+        ))));
+    }
+    let state_durations_ms: BTreeMap<PetStateName, u32> =
+        serde_json::from_str(state_durations_json).map_err(to_sql_error)?;
+    if state_durations_ms.len() != REQUIRED_STATES.len()
+        || REQUIRED_STATES.iter().any(|state| {
+            !matches!(
+                state_durations_ms.get(state),
+                Some(&SHORT_ACTION_DURATION_MS) | Some(&LONG_ACTION_DURATION_MS)
+            )
+        })
+    {
+        return Err(to_sql_error(PetCoreError::Validation(
+            "stored pet has invalid state duration contract".to_string(),
+        )));
+    }
+    Ok((native_fps, state_durations_ms))
 }
 
 fn is_recoverable_corruption(error: &PetCoreError) -> bool {

@@ -1,0 +1,37 @@
+{
+  "schema_version": "apc.pet-brief.v1",
+  "name": "Invalid Timing Pet",
+  "style": "test fixture",
+  "quality": "standard",
+  "states": [
+    { "name": "idle", "duration_ms": 2000 },
+    { "name": "start", "duration_ms": 1000 },
+    { "name": "tool", "duration_ms": 2000 },
+    { "name": "waiting", "duration_ms": 2000 },
+    { "name": "review", "duration_ms": 2000 },
+    { "name": "done", "duration_ms": 1000 },
+    { "name": "failed", "duration_ms": 2000 }
+  ],
+  "runtime": {
+    "native_fps": 10,
+    "state_durations_ms": {
+      "idle": 2000,
+      "start": 1000,
+      "tool": 2000,
+      "waiting": 2000,
+      "review": 2000,
+      "done": 1000,
+      "failed": 2000
+    },
+    "state_frame_counts": {
+      "idle": 20,
+      "start": 11,
+      "tool": 20,
+      "waiting": 20,
+      "review": 20,
+      "done": 10,
+      "failed": 20
+    },
+    "render_size": { "width": 192, "height": 208 }
+  }
+}

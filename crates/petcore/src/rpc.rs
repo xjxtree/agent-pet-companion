@@ -1224,7 +1224,14 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "petpack.import" => &["path", "expect_absent"],
         "petpack.seed_bundled" => &["inventory", "inventory_root"],
         "petpack.export" => &["id", "path"],
-        "generation.start" => &["description", "style", "quality", "reference_images"],
+        "generation.start" => &[
+            "description",
+            "style",
+            "quality",
+            "reference_images",
+            "native_fps",
+            "state_durations_ms",
+        ],
         "generation.retry" => &["job_id", "form"],
         "generation.messages" | "generation.cancel" => &["job_id"],
         "generation.for_pet" => &["pet_id"],
@@ -1607,12 +1614,15 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             })?;
             let baseline_revision_id =
                 generation::generation_job_baseline_revision_id(&state.paths, &created_job)?;
+            let accepted_form: GenerationForm = serde_json::from_str(&created_job.form_json)?;
             Ok(json!({
                 "ok": true,
                 "job_id": job_id,
                 "pet_id": pet_id,
                 "baseline_revision_id": baseline_revision_id,
-                "operation": generation::GENERATION_OPERATION_MODIFY
+                "operation": generation::GENERATION_OPERATION_MODIFY,
+                "native_fps": accepted_form.native_fps,
+                "state_durations_ms": accepted_form.state_durations_ms
             }))
         }
         "generation.messages.wait" => {
@@ -2578,9 +2588,9 @@ fn required_fps_profile(params: &Value) -> Result<FpsProfileName> {
             "fps_profile and fps must not be provided together",
         )),
         (Some(profile), None) => enum_from_name(profile),
-        (None, Some(12)) => Ok(FpsProfileName::Standard),
+        (None, Some(10)) => Ok(FpsProfileName::Standard),
         (None, Some(20)) => Ok(FpsProfileName::Smooth),
-        (None, Some(_)) => Err(invalid_params("fps must be exactly 12 or 20")),
+        (None, Some(_)) => Err(invalid_params("fps must be exactly 10 or 20")),
         (None, None) => Ok(FpsProfileName::Standard),
     }
 }

@@ -1,0 +1,24 @@
+{
+  "schema_version": "apc.pet-source-event.v1",
+  "event": "states.rendered",
+  "states": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+  "native_fps": 10,
+  "state_durations_ms": {
+    "idle": 2000,
+    "start": 1000,
+    "tool": 2000,
+    "waiting": 2000,
+    "review": 2000,
+    "done": 1000,
+    "failed": 2000
+  },
+  "state_frame_counts": {
+    "idle": 20,
+    "start": 11,
+    "tool": 20,
+    "waiting": 20,
+    "review": 20,
+    "done": 10,
+    "failed": 20
+  }
+}

@@ -27,23 +27,20 @@ Do not add cloud accounts, public galleries, sharing/community features, Petdex 
 
 ## Development workflow / 开发流程
 
-Create a branch with the `codex/` prefix when working through Codex, keep changes focused, and add the smallest useful regression test.
+Create a focused task branch. When working through Codex in this repository, use the `xjx-` prefix. Add the smallest useful regression test for behavior changes.
 
-通过 Codex 开发时使用 `codex/` 分支前缀；保持改动聚焦，并为行为变更补充最小有效回归测试。
+为任务创建聚焦的分支；通过 Codex 开发时使用 `xjx-` 前缀。行为变更应补充最小有效回归测试。
 
 The default validation gate is deliberately host-safe: it uses isolated temporary homes and does not launch the GUI, modify LaunchAgents, invoke real agents, or read credentials.
 
 默认验证门禁必须对宿主安全：使用隔离临时目录，不启动 GUI、不修改 LaunchAgent、不调用真实 Agent，也不读取凭据。
 
 ```bash
-./script/validate_test_isolation.sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
-(cd apps/macos && swift test)
-./script/validate_schema_fixtures.sh
-./script/build_app_bundle.sh
-./script/validate_app_bundle.sh
+APC_VALIDATE_HOST_UI=0 \
+APC_VALIDATE_OVERLAY_INTERACTION=0 \
+APC_VALIDATE_REAL_AGENT_CONNECTORS=0 \
+APC_VALIDATE_REAL_APP_SERVER=0 \
+./script/test_all.sh
 ```
 
 Real UI, real connector, and real App Server checks are separate opt-in gates. Use only the documented environment flags and never inspect auth, token, cookie, API key, or secret files.

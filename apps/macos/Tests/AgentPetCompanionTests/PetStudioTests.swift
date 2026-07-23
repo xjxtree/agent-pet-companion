@@ -24,6 +24,21 @@ struct PetStudioTests {
     }
 
     @Test
+    func timingSummaryUsesTheClosedAuthoredContractInBothLocales() {
+        let durations = PetAnimationContract.defaultStateDurationsMS
+
+        #expect(PetStudioPresentation.timingSummary(
+            nativeFPS: 20,
+            stateDurationsMS: durations,
+            localeIdentifier: "en"
+        ) == "20 FPS · 1 s: start · done   2 s: idle · tool · waiting · review · failed")
+        #expect(PetStudioPresentation.stateDurationSummary(
+            durations,
+            localeIdentifier: "zh-Hans"
+        ) == "1 秒：start · done   2 秒：idle · tool · waiting · review · failed")
+    }
+
+    @Test
     func generationStagesExposeStateWithoutInventingAPercentage() {
         #expect(PetStudioPresentation.stageState(
             at: 0,
@@ -77,7 +92,7 @@ struct PetStudioTests {
             validationSummary: GenerationValidationSummary(
                 ok: true,
                 stateCount: 7,
-                frameCount: 84,
+                frameCount: 120,
                 warningCount: 0
             )
         )

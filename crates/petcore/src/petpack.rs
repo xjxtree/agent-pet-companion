@@ -8,8 +8,9 @@ use image::{
     imageops, AnimationDecoder, ImageBuffer, ImageEncoder, Rgba, RgbaImage,
 };
 use petcore_types::{
-    GenerationForm, PetManifest, PetOrigin, PetStateName, PetSummary, QualityLevel, RenderSize,
-    PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    expected_frame_count, GenerationForm, PetManifest, PetOrigin, PetStateName, PetSummary,
+    QualityLevel, RenderSize, DEFAULT_NATIVE_FPS, LONG_ACTION_DURATION_MS, PETPACK_SCHEMA_VERSION,
+    REQUIRED_STATES, SHORT_ACTION_DURATION_MS, SMOOTH_FPS, STANDARD_FPS,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +21,12 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use zip::write::SimpleFileOptions;
 
-pub const GENERATED_FRAMES_PER_STATE: usize = 24;
+pub const GENERATED_NATIVE_FPS: u32 = DEFAULT_NATIVE_FPS;
 pub const BUNDLED_PET_INVENTORY_VERSION: &str = "apc.bundled-pets.v1";
 pub const BUNDLED_PET_GENERATOR_MARKER: &str = "agent-pet-companion.release-inventory";
 pub const BUNDLED_PET_PROVENANCE_MARKER: &str = BUNDLED_PET_INVENTORY_VERSION;
 const RUNTIME_ASSETS_MARKER: &str = ".apc-runtime-assets.json";
-const RUNTIME_ASSETS_SCHEMA_VERSION: &str = "apc.runtime-assets.v1";
+const RUNTIME_ASSETS_SCHEMA_VERSION: &str = "apc.runtime-assets.v2";
 const MAX_PETPACK_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PETPACK_ENTRIES: usize = 5_000;
 const MAX_PETPACK_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
@@ -51,6 +52,7 @@ pub struct PetpackValidation {
     pub ok: bool,
     pub manifest: PetManifest,
     pub frame_count: usize,
+    pub state_frame_counts: BTreeMap<PetStateName, usize>,
     pub warnings: Vec<String>,
 }
 
@@ -104,12 +106,12 @@ const BUNDLED_PET_DESCRIPTORS: [BundledPetDescriptor; 2] = [
     BundledPetDescriptor {
         file_name: "pet_xingwutuanzi.petpack",
         pet_id: "pet_xingwutuanzi",
-        sha256: "035033377ac607fa07cf26c03100749dad44e8cd0575558d0b4049a1339b3d12",
+        sha256: "9a67254a1ee3f1a2afd599f376fd0cc0ee9935e137426924a99c20a24bdb49c2",
     },
     BundledPetDescriptor {
         file_name: "pet_bytebudcodex.petpack",
         pet_id: "pet_bytebudcodex",
-        sha256: "fa1754d815d8aa544e254880183c7ca920098becb32c8e612e4b585d58ed74e0",
+        sha256: "a0b64b46054ed5a73abeefc7c0f734cfaa2d92878f5c097ca85bdcb06d547d6f",
     },
 ];
 
@@ -216,6 +218,7 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
     validate_no_codex_compat_package_markers(dir)?;
 
     let mut frame_count = 0usize;
+    let mut state_frame_counts = BTreeMap::new();
     let mut warnings = Vec::new();
     validate_petpack_metadata(dir, &manifest)?;
     let skill_full_source = has_skill_full_source_provenance(dir)?;
@@ -243,7 +246,10 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
         let mut opaque_state_frames = 0usize;
         let mut invisible_state_frames = 0usize;
         let mut first_frame_digest: Option<[u8; 32]> = None;
-        let mut has_distinct_state_frame = false;
+        let mut previous_frame_digest: Option<[u8; 32]> = None;
+        let mut frame_digests = Vec::new();
+        let mut adjacent_duplicate_pairs = 0usize;
+        let mut frame_paths = Vec::new();
         for entry in fs::read_dir(&state_dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -254,6 +260,10 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                     path.display()
                 )));
             }
+            frame_paths.push(path);
+        }
+        frame_paths.sort_by(|left, right| natural_frame_path_cmp(left, right));
+        for path in frame_paths {
             if is_png(&path) {
                 let (width, height) = image::image_dimensions(&path)?;
                 validate_pixel_budget(width, height, &format!("frame {}", path.display()))?;
@@ -316,11 +326,23 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                 }
                 normalize_visible_pixels(&mut decoded);
                 let digest: [u8; 32] = Sha256::digest(decoded.as_raw()).into();
-                if let Some(first) = first_frame_digest {
-                    has_distinct_state_frame |= digest != first;
-                } else {
+                if first_frame_digest.is_none() {
                     first_frame_digest = Some(digest);
                 }
+                if previous_frame_digest == Some(digest) {
+                    if skill_full_source {
+                        return Err(PetCoreError::Validation(format!(
+                            "skill-full-source state {} has adjacent pixel-duplicate PNG frames near {}",
+                            state.as_str(),
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("<frame>")
+                        )));
+                    }
+                    adjacent_duplicate_pairs += 1;
+                }
+                previous_frame_digest = Some(digest);
+                frame_digests.push(digest);
                 frame_count += 1;
                 if frame_count > MAX_TOTAL_FRAMES {
                     return Err(PetCoreError::Validation(format!(
@@ -368,28 +390,44 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                 state.as_str()
             )));
         }
-        if state_frames < 2 {
-            if skill_full_source {
-                return Err(PetCoreError::Validation(format!(
-                    "skill-full-source state {} has only one PNG frame; at least two frames are required",
+        let expected_frames = expected_frame_count(manifest.native_fps, state_entry.duration_ms)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "state {} frame count overflows its timing contract",
                     state.as_str()
-                )));
-            }
-            warnings.push(format!(
-                "state {} has only one frame; animation will be static",
-                state.as_str()
-            ));
+                ))
+            })?;
+        if state_frames != expected_frames {
+            return Err(PetCoreError::Validation(format!(
+                "state {} has {} PNG frames, expected {} for {} FPS and {} ms",
+                state.as_str(),
+                state_frames,
+                expected_frames,
+                manifest.native_fps,
+                state_entry.duration_ms
+            )));
         }
-        if state_frames >= 2 && !has_distinct_state_frame {
+        if state_entry.looped && state_frames >= 2 && first_frame_digest == previous_frame_digest {
             if skill_full_source {
                 return Err(PetCoreError::Validation(format!(
-                    "skill-full-source state {} has no pixel-distinct PNG frames",
+                    "skill-full-source loop state {} repeats the same decoded pixels across its last-to-first playback boundary",
                     state.as_str()
                 )));
             }
+            adjacent_duplicate_pairs += 1;
+        }
+        if skill_full_source && manifest.native_fps == SMOOTH_FPS {
+            validate_standard_sample_motion(
+                state,
+                state_entry.duration_ms,
+                state_entry.looped,
+                &frame_digests,
+            )?;
+        }
+        if adjacent_duplicate_pairs > 0 {
             warnings.push(format!(
-                "state {} has no pixel-distinct PNG frames; animation will appear static",
-                state.as_str()
+                "state {} has {adjacent_duplicate_pairs} adjacent pixel-duplicate playback pair(s); animation may contain padded holds",
+                state.as_str(),
             ));
         }
         if opaque_state_frames > 0 {
@@ -404,14 +442,84 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                 state.as_str()
             ));
         }
+        state_frame_counts.insert(state, state_frames);
     }
 
     Ok(PetpackValidation {
         ok: true,
         manifest,
         frame_count,
+        state_frame_counts,
         warnings,
     })
+}
+
+fn runtime_sample_indices(
+    source_frame_count: usize,
+    target_frame_count: usize,
+    loops: bool,
+) -> Vec<usize> {
+    if source_frame_count == 0 || target_frame_count == 0 {
+        return Vec::new();
+    }
+    let target_frame_count = source_frame_count.min(target_frame_count);
+    if target_frame_count == source_frame_count {
+        return (0..source_frame_count).collect();
+    }
+    if loops {
+        return (0..target_frame_count)
+            .map(|logical_index| logical_index * source_frame_count / target_frame_count)
+            .collect();
+    }
+    if target_frame_count == 1 {
+        return vec![source_frame_count - 1];
+    }
+
+    let denominator = target_frame_count - 1;
+    (0..target_frame_count)
+        .map(|logical_index| {
+            let numerator = logical_index * (source_frame_count - 1);
+            let quotient = numerator / denominator;
+            let remainder = numerator % denominator;
+            quotient + usize::from(remainder * 2 >= denominator)
+        })
+        .collect()
+}
+
+fn validate_standard_sample_motion(
+    state: PetStateName,
+    duration_ms: u32,
+    loops: bool,
+    frame_digests: &[[u8; 32]],
+) -> Result<()> {
+    let target_frame_count = expected_frame_count(STANDARD_FPS, duration_ms).ok_or_else(|| {
+        PetCoreError::Validation(format!(
+            "state {} Standard sample count overflows its timing contract",
+            state.as_str()
+        ))
+    })?;
+    let indices = runtime_sample_indices(frame_digests.len(), target_frame_count, loops);
+    for pair in indices.windows(2) {
+        if frame_digests[pair[0]] == frame_digests[pair[1]] {
+            return Err(PetCoreError::Validation(format!(
+                "skill-full-source state {} has duplicate runtime Standard 10 FPS poses at source indices {} and {}",
+                state.as_str(), pair[0], pair[1]
+            )));
+        }
+    }
+    if loops
+        && indices.len() >= 2
+        && frame_digests[*indices.last().expect("checked non-empty sample")]
+            == frame_digests[indices[0]]
+    {
+        return Err(PetCoreError::Validation(format!(
+            "skill-full-source loop state {} repeats the same decoded pixels across its runtime Standard 10 FPS wrap boundary at source indices {} and {}",
+            state.as_str(),
+            indices.last().expect("checked non-empty sample"),
+            indices[0]
+        )));
+    }
+    Ok(())
 }
 
 pub fn validate_manifest(manifest: &PetManifest) -> Result<()> {
@@ -450,6 +558,12 @@ pub fn validate_manifest(manifest: &PetManifest) -> Result<()> {
             manifest.quality.zh_label(),
             expected_size.width,
             expected_size.height
+        )));
+    }
+
+    if !matches!(manifest.native_fps, STANDARD_FPS | SMOOTH_FPS) {
+        return Err(PetCoreError::Validation(format!(
+            "native_fps must be exactly {STANDARD_FPS} or {SMOOTH_FPS}"
         )));
     }
 
@@ -494,25 +608,32 @@ pub fn validate_manifest(manifest: &PetManifest) -> Result<()> {
                 expected_loop
             )));
         }
-    }
-
-    let standard = manifest
-        .fps_profiles
-        .get(&petcore_types::FpsProfileName::Standard)
-        .copied();
-    let smooth = manifest
-        .fps_profiles
-        .get(&petcore_types::FpsProfileName::Smooth)
-        .copied();
-    if standard != Some(12) || smooth != Some(20) {
-        return Err(PetCoreError::Validation(
-            "fps_profiles must contain standard=12 and smooth=20".to_string(),
-        ));
-    }
-    if manifest.default_fps_profile != petcore_types::FpsProfileName::Standard {
-        return Err(PetCoreError::Validation(
-            "default_fps_profile must be standard".to_string(),
-        ));
+        if !matches!(
+            state.duration_ms,
+            SHORT_ACTION_DURATION_MS | LONG_ACTION_DURATION_MS
+        ) {
+            return Err(PetCoreError::Validation(format!(
+                "state {} duration_ms must be exactly {} or {}",
+                state.name.as_str(),
+                SHORT_ACTION_DURATION_MS,
+                LONG_ACTION_DURATION_MS
+            )));
+        }
+        let expected_frames = expected_frame_count(manifest.native_fps, state.duration_ms)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "state {} timing contract overflows",
+                    state.name.as_str()
+                ))
+            })?;
+        if expected_frames == 0 || expected_frames > MAX_FRAMES_PER_STATE {
+            return Err(PetCoreError::Validation(format!(
+                "state {} timing requires {} frames, outside the 1-{} frame budget",
+                state.name.as_str(),
+                expected_frames,
+                MAX_FRAMES_PER_STATE
+            )));
+        }
     }
 
     Ok(())
@@ -721,6 +842,31 @@ fn validate_petpack_metadata(dir: &Path, manifest: &PetManifest) -> Result<()> {
     Ok(())
 }
 
+fn manifest_state_durations_ms(manifest: &PetManifest) -> BTreeMap<PetStateName, u32> {
+    manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.duration_ms))
+        .collect()
+}
+
+fn manifest_state_frame_counts(manifest: &PetManifest) -> Result<BTreeMap<PetStateName, usize>> {
+    manifest
+        .states
+        .iter()
+        .map(|state| {
+            expected_frame_count(manifest.native_fps, state.duration_ms)
+                .map(|count| (state.name, count))
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "state {} frame count overflows its timing contract",
+                        state.name.as_str()
+                    ))
+                })
+        })
+        .collect()
+}
+
 fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result<()> {
     let source = read_json_file(dir, "source/source.json")?;
     let Some(schema_version) = source.get("schema_version") else {
@@ -769,6 +915,11 @@ fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result
     let manifest_style = serde_json::Value::String(manifest.style.clone());
     let manifest_quality = serde_json::to_value(manifest.quality)?;
     let manifest_size = serde_json::to_value(manifest.render_size)?;
+    let manifest_native_fps = serde_json::json!(manifest.native_fps);
+    let manifest_durations = serde_json::to_value(manifest_state_durations_ms(manifest))?;
+    let frame_counts = manifest_state_frame_counts(manifest)?;
+    let manifest_frame_count = serde_json::json!(frame_counts.values().sum::<usize>());
+    let manifest_frame_counts = serde_json::to_value(frame_counts)?;
     require_metadata_match("brief.json", "name", brief.get("name"), &manifest_name)?;
     require_metadata_match("brief.json", "style", brief.get("style"), &manifest_style)?;
     require_metadata_match(
@@ -784,6 +935,24 @@ fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result
             runtime.get("render_size"),
             &manifest_size,
         )?;
+        require_metadata_match(
+            "brief.json",
+            "runtime.native_fps",
+            runtime.get("native_fps"),
+            &manifest_native_fps,
+        )?;
+        require_metadata_match(
+            "brief.json",
+            "runtime.state_durations_ms",
+            runtime.get("state_durations_ms"),
+            &manifest_durations,
+        )?;
+        require_metadata_match(
+            "brief.json",
+            "runtime.state_frame_counts",
+            runtime.get("state_frame_counts"),
+            &manifest_frame_counts,
+        )?;
     }
     for (field, expected) in [
         (
@@ -798,6 +967,15 @@ fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result
             require_metadata_match("source/source.json", field, source.get(field), &expected)?;
         }
     }
+    for (field, expected) in [
+        ("native_fps", &manifest_native_fps),
+        ("state_durations_ms", &manifest_durations),
+        ("state_frame_counts", &manifest_frame_counts),
+    ] {
+        if source.get(field).is_some() {
+            require_metadata_match("source/source.json", field, source.get(field), expected)?;
+        }
+    }
     if validation.get("manifest_id").is_some() {
         require_metadata_match(
             "build/validation.json",
@@ -805,6 +983,21 @@ fn validate_safe_producer_metadata(dir: &Path, manifest: &PetManifest) -> Result
             validation.get("manifest_id"),
             &serde_json::Value::String(manifest.id.clone()),
         )?;
+    }
+    for (field, expected) in [
+        ("frame_count", &manifest_frame_count),
+        ("native_fps", &manifest_native_fps),
+        ("state_durations_ms", &manifest_durations),
+        ("state_frame_counts", &manifest_frame_counts),
+    ] {
+        if validation.get(field).is_some() {
+            require_metadata_match(
+                "build/validation.json",
+                field,
+                validation.get(field),
+                expected,
+            )?;
+        }
     }
     if let Some(artifact_manifest) = validation.get("manifest") {
         validate_json_schema(
@@ -1391,7 +1584,6 @@ pub fn write_sample_petpack_dir(
     quality: QualityLevel,
     name: &str,
     style: &str,
-    frames_per_state: usize,
 ) -> Result<PetManifest> {
     fs::create_dir_all(dir)?;
     let manifest = PetManifest::new(
@@ -1403,6 +1595,9 @@ pub fn write_sample_petpack_dir(
     );
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     fs::write(dir.join("manifest.json"), manifest_json)?;
+    let state_durations_ms = manifest_state_durations_ms(&manifest);
+    let state_frame_counts = manifest_state_frame_counts(&manifest)?;
+    let total_frame_count = state_frame_counts.values().sum::<usize>();
     fs::write(
         dir.join("brief.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
@@ -1410,14 +1605,27 @@ pub fn write_sample_petpack_dir(
             "name": name,
             "style": style,
             "quality": quality,
-            "states": REQUIRED_STATES.iter().map(|state| state.as_str()).collect::<Vec<_>>(),
+            "states": REQUIRED_STATES.iter().map(|state| serde_json::json!({
+                "name": state.as_str(),
+                "motion": "Sample validation motion",
+                "duration_ms": state.default_duration_ms()
+            })).collect::<Vec<_>>(),
+            "runtime": {
+                "native_fps": manifest.native_fps,
+                "state_durations_ms": state_durations_ms,
+                "state_frame_counts": state_frame_counts,
+                "render_size": manifest.render_size
+            }
         }))?,
     )?;
 
     for state in REQUIRED_STATES {
         let state_dir = dir.join("assets").join("frames").join(state.as_str());
         fs::create_dir_all(&state_dir)?;
-        for index in 0..frames_per_state.max(1) {
+        let frame_count = state_frame_counts.get(&state).copied().ok_or_else(|| {
+            PetCoreError::Validation(format!("missing frame count for state {}", state.as_str()))
+        })?;
+        for index in 0..frame_count {
             let frame = draw_sample_frame(manifest.render_size, state, index);
             frame.save(state_dir.join(format!("{index:04}.png")))?;
         }
@@ -1452,7 +1660,10 @@ pub fn write_sample_petpack_dir(
             "created_at": manifest.created_at,
             "pet_name": name,
             "style": style,
-            "quality": quality
+            "quality": quality,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts
         }))?,
     )?;
     fs::write(
@@ -1473,7 +1684,11 @@ pub fn write_sample_petpack_dir(
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": "apc.pet-validation.v1",
             "ok": true,
-            "validator": "sample-petpack"
+            "validator": "sample-petpack",
+            "frame_count": total_frame_count,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts
         }))?,
     )?;
 
@@ -1485,9 +1700,8 @@ pub fn write_generated_petpack_dir(
     form: &GenerationForm,
     pet_name: &str,
     ai_brief: Option<&serde_json::Value>,
-    frames_per_state: usize,
 ) -> Result<PetManifest> {
-    write_generated_petpack_dir_with_identity(dir, form, pet_name, ai_brief, frames_per_state, None)
+    write_generated_petpack_dir_with_identity(dir, form, pet_name, ai_brief, None)
 }
 
 pub fn write_skill_generated_petpack_dir(
@@ -1495,14 +1709,12 @@ pub fn write_skill_generated_petpack_dir(
     form: &GenerationForm,
     pet_name: &str,
     ai_brief: Option<&serde_json::Value>,
-    frames_per_state: usize,
 ) -> Result<PetManifest> {
     write_generated_petpack_dir_with_identity(
         dir,
         form,
         pet_name,
         ai_brief,
-        frames_per_state,
         Some(("petcore-deterministic-preview", "deterministic_preview")),
     )
 }
@@ -1512,17 +1724,28 @@ fn write_generated_petpack_dir_with_identity(
     form: &GenerationForm,
     pet_name: &str,
     ai_brief: Option<&serde_json::Value>,
-    frames_per_state: usize,
     source_identity: Option<(&str, &str)>,
 ) -> Result<PetManifest> {
     fs::create_dir_all(dir)?;
-    let manifest = PetManifest::new(
+    let mut manifest = PetManifest::new(
         new_id("pet"),
         pet_name.to_string(),
         form.style.clone(),
         form.quality,
         now_rfc3339(),
     );
+    manifest.native_fps = form.native_fps;
+    for state in &mut manifest.states {
+        state.duration_ms = form
+            .state_durations_ms
+            .get(&state.name)
+            .copied()
+            .unwrap_or_else(|| state.name.default_duration_ms());
+    }
+    validate_manifest(&manifest)?;
+    let state_durations_ms = manifest_state_durations_ms(&manifest);
+    let state_frame_counts = manifest_state_frame_counts(&manifest)?;
+    let total_frame_count = state_frame_counts.values().sum::<usize>();
     fs::write(
         dir.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest)?,
@@ -1533,7 +1756,6 @@ fn write_generated_petpack_dir_with_identity(
         materialize_reference_inputs(dir, &form.reference_images, manifest.render_size)?;
     let source_form = form_with_package_references(form, &reference_copies);
     let action_plan = action_plan_for_form(form, ai_brief);
-    let frame_count = frames_per_state.max(GENERATED_FRAMES_PER_STATE);
     let has_ai_brief = ai_brief.map(|brief| !brief.is_null()).unwrap_or(false);
     let (generator, provenance) = if let Some(identity) = source_identity {
         identity
@@ -1561,25 +1783,45 @@ fn write_generated_petpack_dir_with_identity(
             "references": reference_copies,
             "states": action_plan,
             "runtime": {
-                "default_fps": 12,
-                "smooth_fps": 20,
-                "frames_per_state": frame_count,
+                "native_fps": manifest.native_fps,
+                "state_durations_ms": state_durations_ms,
+                "state_frame_counts": state_frame_counts,
                 "render_size": manifest.render_size
             }
         }))?,
     )?;
 
     for state in REQUIRED_STATES {
+        let frame_count = state_frame_counts.get(&state).copied().ok_or_else(|| {
+            PetCoreError::Validation(format!("missing frame count for state {}", state.as_str()))
+        })?;
+        let duration_ms = state_durations_ms.get(&state).copied().ok_or_else(|| {
+            PetCoreError::Validation(format!("missing duration for state {}", state.as_str()))
+        })?;
         let state_dir = dir.join("assets").join("frames").join(state.as_str());
         fs::create_dir_all(&state_dir)?;
         for index in 0..frame_count {
+            // Native FPS and duration are immutable authored properties. A
+            // timing edit must therefore produce a new ordered sequence even
+            // when two valid timing combinations happen to have the same
+            // frame count (10 FPS × 2 s and 20 FPS × 1 s).
+            let rendered_index =
+                timing_adjusted_frame_index(index, frame_count, manifest.native_fps, duration_ms);
             let frame = match reference_frame_source.as_ref() {
-                Some(source) => {
-                    draw_reference_frame(source, manifest.render_size, state, index, frame_count)
-                }
-                None => {
-                    draw_generated_frame(manifest.render_size, state, index, frame_count, &palette)
-                }
+                Some(source) => draw_reference_frame(
+                    source,
+                    manifest.render_size,
+                    state,
+                    rendered_index,
+                    frame_count,
+                ),
+                None => draw_generated_frame(
+                    manifest.render_size,
+                    state,
+                    rendered_index,
+                    frame_count,
+                    &palette,
+                ),
             };
             frame.save(state_dir.join(format!("{index:04}.png")))?;
         }
@@ -1591,18 +1833,42 @@ fn write_generated_petpack_dir_with_identity(
         width: 384,
         height: 416,
     };
+    let idle_frame_count = state_frame_counts
+        .get(&PetStateName::Idle)
+        .copied()
+        .ok_or_else(|| PetCoreError::Validation("missing idle frame count".to_string()))?;
     let preview_cover = match reference_frame_source.as_ref() {
-        Some(source) => {
-            draw_reference_frame(source, preview_size, PetStateName::Idle, 0, frame_count)
-        }
-        None => draw_generated_frame(preview_size, PetStateName::Idle, 0, frame_count, &palette),
+        Some(source) => draw_reference_frame(
+            source,
+            preview_size,
+            PetStateName::Idle,
+            0,
+            idle_frame_count,
+        ),
+        None => draw_generated_frame(
+            preview_size,
+            PetStateName::Idle,
+            0,
+            idle_frame_count,
+            &palette,
+        ),
     };
     preview_cover.save(preview_dir.join("cover.png"))?;
     let preview_animated = match reference_frame_source.as_ref() {
-        Some(source) => {
-            draw_reference_frame(source, preview_size, PetStateName::Idle, 1, frame_count)
-        }
-        None => draw_generated_frame(preview_size, PetStateName::Idle, 1, frame_count, &palette),
+        Some(source) => draw_reference_frame(
+            source,
+            preview_size,
+            PetStateName::Idle,
+            1,
+            idle_frame_count,
+        ),
+        None => draw_generated_frame(
+            preview_size,
+            PetStateName::Idle,
+            1,
+            idle_frame_count,
+            &palette,
+        ),
     };
     write_animated_webp(
         &preview_dir.join("animated_preview.webp"),
@@ -1628,7 +1894,9 @@ fn write_generated_petpack_dir_with_identity(
             "palette": palette.as_json(),
             "palette_source": if palette.from_ai_brief { "codex-ai-brief" } else { "form-derived" },
             "visual_source": if reference_frame_source.is_some() { "reference-image" } else { "generated-vector" },
-            "frames_per_state": frame_count,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
             "input_reference_count": form.reference_images.len(),
             "copied_reference_count": reference_copies.len(),
             "reference_files": reference_copies
@@ -1645,7 +1913,10 @@ fn write_generated_petpack_dir_with_identity(
             "validator": "petcore",
             "generator": generator,
             "provenance": provenance,
-            "frames_per_state": frame_count
+            "frame_count": total_frame_count,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts
         }))?,
     )?;
 
@@ -2073,6 +2344,8 @@ fn import_petpack_with_origin_policy_guarded(
         style: validation.manifest.style.clone(),
         quality: validation.manifest.quality,
         render_size: validation.manifest.render_size,
+        native_fps: validation.manifest.native_fps,
+        state_durations_ms: manifest_state_durations_ms(&validation.manifest),
         petpack_path: target_path.display().to_string(),
         cover_path: cover_path.display().to_string(),
         origin,
@@ -2442,7 +2715,19 @@ pub fn ensure_runtime_assets_cached(
 
 fn pet_asset_fingerprint(paths: &AppPaths, pet: &PetSummary) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"apc.pet-assets.fingerprint.v1\0");
+    hasher.update(b"apc.pet-assets.fingerprint.v2\0");
+    hasher.update(pet.native_fps.to_le_bytes());
+    for state in REQUIRED_STATES {
+        hasher.update(state.as_str().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(
+            pet.state_durations_ms
+                .get(&state)
+                .copied()
+                .unwrap_or_default()
+                .to_le_bytes(),
+        );
+    }
     let petpack = Path::new(&pet.petpack_path);
     let cover = if Path::new(&pet.cover_path).is_absolute() {
         PathBuf::from(&pet.cover_path)
@@ -2933,7 +3218,11 @@ fn extract_runtime_frames_from_zip(
 
 fn validate_runtime_frames_for_pet(output_dir: &Path, pet: &PetSummary) -> Result<()> {
     let marker = read_runtime_assets_marker(output_dir, None)?;
-    if marker.pet_id != pet.id || marker.render_size != pet.render_size {
+    if marker.pet_id != pet.id
+        || marker.render_size != pet.render_size
+        || marker.native_fps != pet.native_fps
+        || marker.state_durations_ms != pet.state_durations_ms
+    {
         return Err(PetCoreError::Validation(
             "runtime frames marker does not match pet summary".to_string(),
         ));
@@ -2953,6 +3242,8 @@ struct RuntimeAssetsMarker {
     schema_version: String,
     pet_id: String,
     render_size: RenderSize,
+    native_fps: u32,
+    state_durations_ms: BTreeMap<PetStateName, u32>,
     states: BTreeMap<String, usize>,
 }
 
@@ -2973,7 +3264,11 @@ fn read_runtime_assets_marker(
         ));
     }
     if let Some(manifest) = manifest {
-        if marker.pet_id != manifest.id || marker.render_size != manifest.render_size {
+        if marker.pet_id != manifest.id
+            || marker.render_size != manifest.render_size
+            || marker.native_fps != manifest.native_fps
+            || marker.state_durations_ms != manifest_state_durations_ms(manifest)
+        {
             return Err(PetCoreError::Validation(
                 "runtime frames marker does not match petpack manifest".to_string(),
             ));
@@ -2993,6 +3288,8 @@ fn write_runtime_assets_marker(
             "schema_version": RUNTIME_ASSETS_SCHEMA_VERSION,
             "pet_id": manifest.id,
             "render_size": manifest.render_size,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": manifest_state_durations_ms(manifest),
             "states": state_counts,
             "created_at": now_rfc3339()
         }))?,
@@ -3119,6 +3416,67 @@ fn is_png(path: &Path) -> bool {
         .and_then(|value| value.to_str())
         .map(|value| value.eq_ignore_ascii_case("png"))
         .unwrap_or(false)
+}
+
+pub(crate) fn natural_frame_path_cmp(left: &Path, right: &Path) -> std::cmp::Ordering {
+    let left_name = left
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let right_name = right
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let left_bytes = left_name.as_bytes();
+    let right_bytes = right_name.as_bytes();
+    let (mut left_index, mut right_index) = (0usize, 0usize);
+    while left_index < left_bytes.len() && right_index < right_bytes.len() {
+        if left_bytes[left_index].is_ascii_digit() && right_bytes[right_index].is_ascii_digit() {
+            let left_end = left_bytes[left_index..]
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .map(|offset| left_index + offset)
+                .unwrap_or(left_bytes.len());
+            let right_end = right_bytes[right_index..]
+                .iter()
+                .position(|byte| !byte.is_ascii_digit())
+                .map(|offset| right_index + offset)
+                .unwrap_or(right_bytes.len());
+            let left_significant = left_bytes[left_index..left_end]
+                .iter()
+                .position(|byte| *byte != b'0')
+                .map(|offset| left_index + offset)
+                .unwrap_or(left_end.saturating_sub(1));
+            let right_significant = right_bytes[right_index..right_end]
+                .iter()
+                .position(|byte| *byte != b'0')
+                .map(|offset| right_index + offset)
+                .unwrap_or(right_end.saturating_sub(1));
+            let ordering = (left_end - left_significant)
+                .cmp(&(right_end - right_significant))
+                .then_with(|| {
+                    left_bytes[left_significant..left_end]
+                        .cmp(&right_bytes[right_significant..right_end])
+                })
+                .then_with(|| (left_end - left_index).cmp(&(right_end - right_index)));
+            if ordering != std::cmp::Ordering::Equal {
+                return ordering;
+            }
+            left_index = left_end;
+            right_index = right_end;
+            continue;
+        }
+        let ordering = left_bytes[left_index]
+            .to_ascii_lowercase()
+            .cmp(&right_bytes[right_index].to_ascii_lowercase())
+            .then_with(|| left_bytes[left_index].cmp(&right_bytes[right_index]));
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+        left_index += 1;
+        right_index += 1;
+    }
+    left_bytes.len().cmp(&right_bytes.len())
 }
 
 fn draw_sample_frame(
@@ -3483,6 +3841,20 @@ fn frame_phase(frame_index: usize, frame_count: usize) -> f32 {
     (frame_index as f32 % cycle) / cycle
 }
 
+fn timing_adjusted_frame_index(
+    frame_index: usize,
+    frame_count: usize,
+    native_fps: u32,
+    duration_ms: u32,
+) -> usize {
+    if frame_count == 0 {
+        return frame_index;
+    }
+    let fps_offset = usize::from(native_fps == SMOOTH_FPS) * 2;
+    let duration_offset = usize::from(duration_ms == LONG_ACTION_DURATION_MS);
+    (frame_index + fps_offset + duration_offset) % frame_count
+}
+
 #[derive(Clone)]
 struct Palette {
     hair: Rgba<u8>,
@@ -3650,11 +4022,27 @@ fn form_with_package_references(
 }
 
 fn prompt_markdown(form: &GenerationForm, pet_name: &str) -> String {
+    let durations = REQUIRED_STATES
+        .iter()
+        .map(|state| {
+            format!(
+                "- {}: {} ms",
+                state.as_str(),
+                form.state_durations_ms
+                    .get(state)
+                    .copied()
+                    .unwrap_or_else(|| state.default_duration_ms())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
-        "# {pet_name}\n\n## 描述\n{}\n\n## 风格\n{}\n\n## 画质\n{}\n\n## 参考图\n{}\n",
+        "# {pet_name}\n\n## 描述\n{}\n\n## 风格\n{}\n\n## 画质\n{}\n\n## 原生帧率\n{} FPS\n\n## 动作时长\n{}\n\n## 参考图\n{}\n",
         form.description.trim(),
         form.style,
         form.quality.zh_label(),
+        form.native_fps,
+        durations,
         if form.reference_images.is_empty() {
             "无".to_string()
         } else {
@@ -3673,6 +4061,11 @@ fn action_plan_for_form(
             serde_json::json!({
                 "state": state.as_str(),
                 "label": state.zh_event_label(),
+                "duration_ms": form
+                    .state_durations_ms
+                    .get(state)
+                    .copied()
+                    .unwrap_or_else(|| state.default_duration_ms()),
                 "motion": ai_motion_for_state(*state, ai_brief)
                     .unwrap_or_else(|| motion_for_state(*state, form).to_string()),
             })
@@ -3972,7 +4365,7 @@ fn validate_visible_cover(image: &RgbaImage, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn normalize_visible_pixels(image: &mut RgbaImage) {
+pub(crate) fn normalize_visible_pixels(image: &mut RgbaImage) {
     for pixel in image.pixels_mut() {
         let alpha = pixel.0[3];
         if alpha < MIN_VISIBLE_ALPHA {
@@ -3989,32 +4382,189 @@ fn normalize_visible_pixels(image: &mut RgbaImage) {
 mod asset_contract_tests {
     use super::*;
 
-    fn write_strict_sample(dir: &Path) -> PetManifest {
-        let manifest =
-            write_sample_petpack_dir(dir, QualityLevel::Standard, "Contract Pet", "storybook", 2)
-                .unwrap();
+    #[test]
+    fn frame_paths_use_runtime_natural_numeric_order() {
+        let mut paths = [
+            PathBuf::from("frame-10.png"),
+            PathBuf::from("frame-02.png"),
+            PathBuf::from("frame-2.png"),
+            PathBuf::from("frame-1.png"),
+            PathBuf::from("frame-002.png"),
+            PathBuf::from("Frame-2.png"),
+        ];
+        paths.sort_by(|left, right| natural_frame_path_cmp(left, right));
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "Frame-2.png",
+                "frame-1.png",
+                "frame-2.png",
+                "frame-02.png",
+                "frame-002.png",
+                "frame-10.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn generated_native_20_pet_preserves_custom_authored_durations() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut durations = petcore_types::default_state_durations_ms();
+        durations.insert(PetStateName::Idle, SHORT_ACTION_DURATION_MS);
+        durations.insert(PetStateName::Start, LONG_ACTION_DURATION_MS);
+        let form = GenerationForm {
+            description: "native 20 contract fixture".to_string(),
+            style: "storybook".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: Vec::new(),
+            native_fps: SMOOTH_FPS,
+            state_durations_ms: durations.clone(),
+        };
+
+        let manifest = write_generated_petpack_dir(temp.path(), &form, "Timing Pet", None).unwrap();
         fs::write(
-            dir.join("source/source.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": PET_SOURCE_SCHEMA_VERSION,
-                "generator": "test-image-generator",
-                "provenance": "skill-full-source",
-                "created_at": manifest.created_at.clone(),
-                "manifest_id": manifest.id.clone(),
-                "pet_name": manifest.name.clone(),
-                "style": manifest.style.clone(),
-                "quality": manifest.quality,
-                "visual_source": "image-generation",
-                "frames_per_state": 2,
-                "preview_only": false,
-                "reference_files": [],
-                "runner": "petcore-test",
-                "skill_helper": "agent-pet-maker"
+            temp.path().join("source/skill_session.jsonl"),
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": "apc.pet-source-event.v1",
+                "event": "skill.loaded",
+                "skill": "agent-pet-studio",
+                "runner": "petcore-test"
             }))
-            .unwrap(),
+            .unwrap()
+                + "\n",
         )
         .unwrap();
+        let validation = validate_petpack_dir(temp.path()).unwrap();
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&fs::read(temp.path().join("build/validation.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(manifest.native_fps, SMOOTH_FPS);
+        assert_eq!(
+            manifest
+                .states
+                .iter()
+                .find(|state| state.name == PetStateName::Idle)
+                .unwrap()
+                .duration_ms,
+            SHORT_ACTION_DURATION_MS
+        );
+        assert_eq!(
+            manifest
+                .states
+                .iter()
+                .find(|state| state.name == PetStateName::Start)
+                .unwrap()
+                .duration_ms,
+            LONG_ACTION_DURATION_MS
+        );
+        assert_eq!(validation.state_frame_counts[&PetStateName::Idle], 20);
+        assert_eq!(validation.state_frame_counts[&PetStateName::Start], 40);
+        assert_eq!(artifact["native_fps"], serde_json::json!(SMOOTH_FPS));
+        assert_eq!(artifact["state_durations_ms"], serde_json::json!(durations));
+        assert_eq!(
+            artifact["frame_count"],
+            serde_json::json!(validation.frame_count)
+        );
+    }
+
+    fn write_strict_sample(dir: &Path) -> PetManifest {
+        let manifest =
+            write_sample_petpack_dir(dir, QualityLevel::Standard, "Contract Pet", "storybook")
+                .unwrap();
+        let source_path = dir.join("source/source.json");
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).unwrap()).unwrap();
+        let source = source.as_object_mut().unwrap();
+        source.insert(
+            "generator".to_string(),
+            serde_json::json!("test-image-generator"),
+        );
+        source.insert(
+            "provenance".to_string(),
+            serde_json::json!("skill-full-source"),
+        );
+        source.insert(
+            "visual_source".to_string(),
+            serde_json::json!("image-generation"),
+        );
+        source.insert("preview_only".to_string(), serde_json::json!(false));
+        source.insert("runner".to_string(), serde_json::json!("petcore-test"));
+        source.insert(
+            "skill_helper".to_string(),
+            serde_json::json!("agent-pet-maker"),
+        );
+        fs::write(source_path, serde_json::to_vec_pretty(&source).unwrap()).unwrap();
         manifest
+    }
+
+    fn rewrite_strict_sample_as_native_20_alternating(dir: &Path) -> PetManifest {
+        let mut manifest = write_strict_sample(dir);
+        manifest.native_fps = SMOOTH_FPS;
+        for state in REQUIRED_STATES {
+            let state_entry = manifest
+                .states
+                .iter()
+                .find(|entry| entry.name == state)
+                .unwrap();
+            let frame_count = expected_frame_count(SMOOTH_FPS, state_entry.duration_ms).unwrap();
+            let state_dir = dir.join("assets/frames").join(state.as_str());
+            for entry in fs::read_dir(&state_dir).unwrap() {
+                let path = entry.unwrap().path();
+                if is_png(&path) {
+                    fs::remove_file(path).unwrap();
+                }
+            }
+            for index in 0..frame_count {
+                draw_sample_frame(manifest.render_size, state, index)
+                    .save(state_dir.join(format!("{index:04}.png")))
+                    .unwrap();
+            }
+        }
+        rewrite_timing_metadata(dir, &manifest);
+        manifest
+    }
+
+    fn rewrite_timing_metadata(dir: &Path, manifest: &PetManifest) {
+        let durations = manifest_state_durations_ms(manifest);
+        let counts = manifest_state_frame_counts(manifest).unwrap();
+        fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec_pretty(manifest).unwrap(),
+        )
+        .unwrap();
+        for (relative, nested) in [
+            ("brief.json", Some("runtime")),
+            ("source/source.json", None),
+            ("build/validation.json", None),
+        ] {
+            let path = dir.join(relative);
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let target = match nested {
+                Some(key) => value.get_mut(key).unwrap().as_object_mut().unwrap(),
+                None => value.as_object_mut().unwrap(),
+            };
+            target.insert(
+                "native_fps".to_string(),
+                serde_json::json!(manifest.native_fps),
+            );
+            target.insert(
+                "state_durations_ms".to_string(),
+                serde_json::json!(durations),
+            );
+            target.insert("state_frame_counts".to_string(), serde_json::json!(counts));
+            if relative == "build/validation.json" {
+                target.insert(
+                    "frame_count".to_string(),
+                    serde_json::json!(counts.values().sum::<usize>()),
+                );
+            }
+            fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        }
     }
 
     fn replace_preview_with_static_webp(dir: &Path) {
@@ -4125,6 +4675,28 @@ mod asset_contract_tests {
     }
 
     #[test]
+    fn skill_full_source_rejects_validation_total_frame_count_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let validation_path = temp.path().join("build/validation.json");
+        let mut validation: serde_json::Value =
+            serde_json::from_slice(&fs::read(&validation_path).unwrap()).unwrap();
+        validation["frame_count"] = serde_json::json!(110);
+        fs::write(
+            &validation_path,
+            serde_json::to_vec_pretty(&validation).unwrap(),
+        )
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(
+            error.contains("build/validation.json field frame_count does not match manifest"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn skill_full_source_rejects_a_fully_opaque_png_frame() {
         let temp = tempfile::tempdir().unwrap();
         let manifest = write_strict_sample(temp.path());
@@ -4227,15 +4799,15 @@ mod asset_contract_tests {
     }
 
     #[test]
-    fn skill_full_source_rejects_a_one_frame_state_despite_claimed_count() {
+    fn skill_full_source_rejects_a_state_below_its_exact_timing_count() {
         let temp = tempfile::tempdir().unwrap();
         write_strict_sample(temp.path());
-        fs::remove_file(temp.path().join("assets/frames/idle/0001.png")).unwrap();
+        fs::remove_file(temp.path().join("assets/frames/idle/0019.png")).unwrap();
 
         let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
 
-        assert!(error.contains("skill-full-source state idle"), "{error}");
-        assert!(error.contains("at least two frames"), "{error}");
+        assert!(error.contains("state idle has 19 PNG frames"), "{error}");
+        assert!(error.contains("expected 20"), "{error}");
     }
 
     #[test]
@@ -4253,7 +4825,7 @@ mod asset_contract_tests {
         let error = validate_petpack_dir(strict.path()).unwrap_err().to_string();
 
         assert!(error.contains("state idle"), "{error}");
-        assert!(error.contains("no pixel-distinct PNG frames"), "{error}");
+        assert!(error.contains("adjacent pixel-duplicate"), "{error}");
 
         let legacy = tempfile::tempdir().unwrap();
         write_sample_petpack_dir(
@@ -4261,7 +4833,6 @@ mod asset_contract_tests {
             QualityLevel::Standard,
             "Legacy Duplicate Frames",
             "storybook",
-            2,
         )
         .unwrap();
         let legacy_first = legacy.path().join("assets/frames/idle/0000.png");
@@ -4274,7 +4845,91 @@ mod asset_contract_tests {
         assert!(validation
             .warnings
             .iter()
-            .any(|warning| warning.contains("state idle has no pixel-distinct")));
+            .any(|warning| warning.contains("state idle has")
+                && warning.contains("adjacent pixel-duplicate")));
+    }
+
+    #[test]
+    fn skill_full_source_rejects_duplicate_padding_in_a_high_rate_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manifest = write_strict_sample(temp.path());
+        manifest.native_fps = SMOOTH_FPS;
+        for state in REQUIRED_STATES {
+            let state_dir = temp.path().join("assets/frames").join(state.as_str());
+            let mut originals = fs::read_dir(&state_dir)
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| is_png(path))
+                .collect::<Vec<_>>();
+            originals.sort_by(|left, right| natural_frame_path_cmp(left, right));
+            let frames = originals
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>();
+            for path in originals {
+                fs::remove_file(path).unwrap();
+            }
+            for (index, bytes) in frames.iter().enumerate() {
+                fs::write(state_dir.join(format!("{:04}.png", index * 2)), bytes).unwrap();
+                fs::write(state_dir.join(format!("{:04}.png", index * 2 + 1)), bytes).unwrap();
+            }
+        }
+        rewrite_timing_metadata(temp.path(), &manifest);
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("adjacent pixel-duplicate"), "{error}");
+    }
+
+    #[test]
+    fn runtime_standard_sampling_matches_loop_and_one_shot_renderer_contract() {
+        assert_eq!(
+            runtime_sample_indices(20, 10, true),
+            vec![0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
+        );
+        assert_eq!(
+            runtime_sample_indices(20, 10, false),
+            vec![0, 2, 4, 6, 8, 11, 13, 15, 17, 19]
+        );
+    }
+
+    #[test]
+    fn skill_full_source_rejects_native_20_motion_that_becomes_static_at_standard_fps() {
+        let temp = tempfile::tempdir().unwrap();
+        rewrite_strict_sample_as_native_20_alternating(temp.path());
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("state idle"), "{error}");
+        assert!(error.contains("runtime Standard 10 FPS poses"), "{error}");
+        assert!(error.contains("source indices 0 and 2"), "{error}");
+    }
+
+    #[test]
+    fn skill_full_source_rejects_duplicate_loop_boundary_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let idle_dir = temp.path().join("assets/frames/idle");
+        let mut paths = fs::read_dir(&idle_dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| is_png(path))
+            .collect::<Vec<_>>();
+        paths.sort_by(|left, right| natural_frame_path_cmp(left, right));
+        for (index, path) in paths.iter().enumerate() {
+            let mut frame = image::open(path).unwrap().to_rgba8();
+            let x = frame.width() / 2;
+            let y = frame.height() / 2;
+            frame.put_pixel(x, y, Rgba([index as u8 + 1, 160, 80, u8::MAX]));
+            frame.save(path).unwrap();
+        }
+        fs::copy(&paths[0], paths.last().unwrap()).unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("last-to-first playback boundary"), "{error}");
     }
 
     #[test]
@@ -4361,7 +5016,6 @@ mod asset_contract_tests {
             QualityLevel::Standard,
             "Legacy Oversized Preview",
             "storybook",
-            2,
         )
         .unwrap();
         let frames = (0..=MAX_ANIMATED_PREVIEW_FRAMES)
@@ -4394,14 +5048,13 @@ mod asset_contract_tests {
     }
 
     #[test]
-    fn legacy_assets_remain_valid_with_contract_warnings() {
+    fn ordinary_assets_remain_valid_with_visual_contract_warnings() {
         let temp = tempfile::tempdir().unwrap();
         let manifest = write_sample_petpack_dir(
             temp.path(),
             QualityLevel::Standard,
             "Legacy Contract Pet",
             "storybook",
-            2,
         )
         .unwrap();
         RgbaImage::from_pixel(
@@ -4411,7 +5064,6 @@ mod asset_contract_tests {
         )
         .save(temp.path().join("assets/frames/idle/0000.png"))
         .unwrap();
-        fs::remove_file(temp.path().join("assets/frames/idle/0001.png")).unwrap();
         RgbaImage::from_pixel(
             manifest.render_size.width,
             manifest.render_size.height,
@@ -4432,10 +5084,6 @@ mod asset_contract_tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("below 1% visible coverage")));
-        assert!(validation
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("only one frame")));
         assert!(validation
             .warnings
             .iter()

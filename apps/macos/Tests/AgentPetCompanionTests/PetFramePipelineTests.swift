@@ -283,6 +283,82 @@ struct PetFramePipelineTests {
     }
 
     @Test
+    func standardPlaybackOfSmoothPetDecodesOnlyTheSampledFrames() async throws {
+        let standardProbe = FrameDecoderProbe()
+        let standardPipeline = makePipeline(probe: standardProbe, frameCount: 40)
+        let standard = try await standardPipeline.prepare(request(
+            quality: .high,
+            stateName: "tool",
+            nativeFPS: 20,
+            requestedFPS: 10,
+            durationMS: 2_000
+        ))
+
+        #expect(standard.sourceFrameCount == 40)
+        #expect(standard.frameCount == 20)
+        #expect(standard.sampledSourceIndices == Array(stride(from: 0, to: 40, by: 2)))
+        #expect(standardProbe.decodeCount == 20)
+
+        let smoothProbe = FrameDecoderProbe()
+        let smoothPipeline = makePipeline(probe: smoothProbe, frameCount: 40)
+        let smooth = try await smoothPipeline.prepare(request(
+            quality: .high,
+            stateName: "tool",
+            nativeFPS: 20,
+            requestedFPS: 20,
+            durationMS: 2_000
+        ))
+
+        #expect(smooth.frameCount == 40)
+        #expect(smooth.sampledSourceIndices == Array(0..<40))
+        #expect(smoothProbe.decodeCount == 40)
+    }
+
+    @Test
+    func downsampledOneShotKeepsTheTrueTerminalSourceFrame() async throws {
+        let probe = FrameDecoderProbe()
+        let pipeline = makePipeline(probe: probe, frameCount: 20)
+        let prepared = try await pipeline.prepare(request(
+            quality: .high,
+            stateName: "done",
+            nativeFPS: 20,
+            requestedFPS: 10,
+            durationMS: 1_000
+        ))
+
+        #expect(prepared.frameCount == 10)
+        #expect(prepared.sampledSourceIndices.first == 0)
+        #expect(prepared.sampledSourceIndices.last == 19)
+        #expect(probe.decodedPaths.contains("/virtual/frame-19.png"))
+
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "done:first", enteredAt: 10)
+        #expect(handoff.publish(prepared, generation: generation))
+        handoff.holdTerminalFrame(stateID: "done:seen-again")
+        let terminal = handoff.lookup(at: 10)
+        #expect(terminal.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
+        #expect(terminal.shouldPauseAfterDraw)
+    }
+
+    @Test
+    func nativeStandardPetCannotPrepareSmoothPlayback() async throws {
+        let probe = FrameDecoderProbe()
+        let pipeline = makePipeline(probe: probe, frameCount: 20)
+        let prepared = try await pipeline.prepare(request(
+            quality: .high,
+            stateName: "tool",
+            nativeFPS: 10,
+            requestedFPS: 20,
+            durationMS: 2_000
+        ))
+
+        #expect(prepared.request.effectiveFPS == 10)
+        #expect(prepared.frameCount == 20)
+        #expect(probe.decodeCount == 20)
+    }
+
+    @Test
     func testPreparedFramesExposeStableUnionOfVisibleActionBounds() async throws {
         let urls = (0..<2).map { URL(fileURLWithPath: "/virtual/visible-\($0).png") }
         let pipeline = PetFramePipeline(
@@ -479,7 +555,7 @@ struct PetFramePipelineTests {
         #expect(handoff.publish(prepared, generation: generation))
 
         let first = try #require(handoff.lookup(at: 10).frameHitTest)
-        let second = try #require(handoff.lookup(at: 10 + 1.0 / 12.0).frameHitTest)
+        let second = try #require(handoff.lookup(at: 10 + 1.0 / 10.0).frameHitTest)
 
         #expect(first.frameID != second.frameID)
         #expect(!first.alphaMask.containsOpaquePixel(atBottomLeftPoint: CGPoint(x: 0.5, y: 0.5)))
@@ -523,6 +599,11 @@ struct PetFramePipelineTests {
         #expect(telemetry.readyDecodedFrameCount == 2)
         #expect(telemetry.pipelineCacheBytes == 160)
         #expect(telemetry.pipelineCacheFrameCount == 2)
+        #expect(telemetry.nativeFPS == 20)
+        #expect(telemetry.fps == 10)
+        #expect(telemetry.durationMS == 2_000)
+        #expect(telemetry.sourceFrameCount == 2)
+        #expect(telemetry.sampledFrameCount == 2)
     }
 
     @MainActor
@@ -550,8 +631,17 @@ struct PetFramePipelineTests {
         )
     }
 
-    private func request(quality: QualityLevel, stateName: String) -> PetFrameLoadRequest {
-        PetFrameLoadRequest(
+    private func request(
+        quality: QualityLevel,
+        stateName: String,
+        nativeFPS: Int = 20,
+        requestedFPS: Int = 10,
+        durationMS: Int? = nil
+    ) -> PetFrameLoadRequest {
+        let resolvedDurationMS = durationMS
+            ?? PetAnimationContract.defaultStateDurationsMS[stateName]
+            ?? 1_000
+        return PetFrameLoadRequest(
             pet: PetSummary(
                 id: "pet_test",
                 name: "Test",
@@ -564,7 +654,9 @@ struct PetFramePipelineTests {
                 createdAt: "2026-07-10T00:00:00Z"
             ),
             stateName: stateName,
-            fps: 12,
+            requestedFPS: requestedFPS,
+            nativeFPS: nativeFPS,
+            durationMS: resolvedDurationMS,
             loops: stateName != "start" && stateName != "done"
         )
     }
@@ -588,6 +680,7 @@ private final class FrameDecoderProbe: @unchecked Sendable {
     private let pixelHeight: Int
     private var _decodeCount = 0
     private var _didDecodeOnMainThread = false
+    private var _decodedPaths: [String] = []
 
     init(pixelWidth: Int = 2, pixelHeight: Int = 2) {
         self.pixelWidth = pixelWidth
@@ -606,10 +699,17 @@ private final class FrameDecoderProbe: @unchecked Sendable {
         return _didDecodeOnMainThread
     }
 
+    var decodedPaths: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _decodedPaths
+    }
+
     func decode(_ url: URL) -> PetDecodedFrame? {
         lock.lock()
         _decodeCount += 1
         _didDecodeOnMainThread = _didDecodeOnMainThread || Thread.isMainThread
+        _decodedPaths.append(url.path)
         lock.unlock()
 
         let image = CIImage(color: .white).cropped(to: CGRect(

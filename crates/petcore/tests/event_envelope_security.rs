@@ -860,6 +860,8 @@ fn state_revision_changes_for_every_client_visible_pet_field() {
             width: 384,
             height: 416,
         },
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
         petpack_path: "/tmp/pet.petpack".to_string(),
         cover_path: "/tmp/cover.png".to_string(),
         origin: PetOrigin::ExternalImport,

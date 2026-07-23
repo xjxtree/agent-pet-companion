@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v1";
+pub const STANDARD_FPS: u32 = 10;
+pub const SMOOTH_FPS: u32 = 20;
+pub const DEFAULT_NATIVE_FPS: u32 = STANDARD_FPS;
+pub const SHORT_ACTION_DURATION_MS: u32 = 1_000;
+pub const LONG_ACTION_DURATION_MS: u32 = 2_000;
 pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
 pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
 pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
@@ -16,6 +21,12 @@ pub const REQUIRED_STATES: [PetStateName; 7] = [
     PetStateName::Review,
     PetStateName::Done,
     PetStateName::Failed,
+];
+/// Every package has seven states, each authored for one or two seconds, at
+/// one package-wide native rate of 10 or 20 FPS. This is the complete set of
+/// possible package totals under that closed contract.
+pub const VALID_TOTAL_FRAME_COUNTS: [usize; 15] = [
+    70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200, 220, 240, 260, 280,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -76,8 +87,8 @@ pub enum FpsProfileName {
 impl FpsProfileName {
     pub fn fps(self) -> u32 {
         match self {
-            Self::Standard => 12,
-            Self::Smooth => 20,
+            Self::Standard => STANDARD_FPS,
+            Self::Smooth => SMOOTH_FPS,
         }
     }
 }
@@ -135,6 +146,36 @@ impl PetStateName {
             Self::Failed => "失败",
         }
     }
+
+    pub fn default_duration_ms(self) -> u32 {
+        if matches!(self, Self::Start | Self::Done) {
+            SHORT_ACTION_DURATION_MS
+        } else {
+            LONG_ACTION_DURATION_MS
+        }
+    }
+}
+
+pub fn default_native_fps() -> u32 {
+    DEFAULT_NATIVE_FPS
+}
+
+pub fn default_state_durations_ms() -> BTreeMap<PetStateName, u32> {
+    REQUIRED_STATES
+        .into_iter()
+        .map(|state| (state, state.default_duration_ms()))
+        .collect()
+}
+
+pub fn expected_frame_count(native_fps: u32, duration_ms: u32) -> Option<usize> {
+    native_fps
+        .checked_mul(duration_ms)?
+        .checked_div(1_000)
+        .and_then(|count| usize::try_from(count).ok())
+}
+
+pub fn is_valid_total_frame_count(frame_count: usize) -> bool {
+    VALID_TOTAL_FRAME_COUNTS.binary_search(&frame_count).is_ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -194,8 +235,7 @@ pub struct PetManifest {
     pub style: String,
     pub quality: QualityLevel,
     pub render_size: RenderSize,
-    pub fps_profiles: BTreeMap<FpsProfileName, u32>,
-    pub default_fps_profile: FpsProfileName,
+    pub native_fps: u32,
     pub states: Vec<PetState>,
     pub created_at: String,
 }
@@ -208,16 +248,13 @@ impl PetManifest {
         quality: QualityLevel,
         created_at: String,
     ) -> Self {
-        let mut fps_profiles = BTreeMap::new();
-        fps_profiles.insert(FpsProfileName::Standard, FpsProfileName::Standard.fps());
-        fps_profiles.insert(FpsProfileName::Smooth, FpsProfileName::Smooth.fps());
-
         let states = REQUIRED_STATES
             .iter()
             .map(|state| PetState {
                 name: *state,
                 frames_dir: format!("assets/frames/{}", state.as_str()),
                 looped: !matches!(state, PetStateName::Start | PetStateName::Done),
+                duration_ms: state.default_duration_ms(),
             })
             .collect();
 
@@ -228,8 +265,7 @@ impl PetManifest {
             style,
             quality,
             render_size: quality.render_size(),
-            fps_profiles,
-            default_fps_profile: FpsProfileName::Standard,
+            native_fps: DEFAULT_NATIVE_FPS,
             states,
             created_at,
         }
@@ -243,6 +279,7 @@ pub struct PetState {
     pub frames_dir: String,
     #[serde(rename = "loop")]
     pub looped: bool,
+    pub duration_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -403,6 +440,10 @@ pub struct GenerationForm {
     pub style: String,
     pub quality: QualityLevel,
     pub reference_images: Vec<String>,
+    #[serde(default = "default_native_fps")]
+    pub native_fps: u32,
+    #[serde(default = "default_state_durations_ms")]
+    pub state_durations_ms: BTreeMap<PetStateName, u32>,
 }
 
 pub const MAX_GENERATION_DESCRIPTION_CHARS: usize = 8_000;
@@ -553,6 +594,10 @@ pub struct PetSummary {
     pub style: String,
     pub quality: QualityLevel,
     pub render_size: RenderSize,
+    #[serde(default = "default_native_fps")]
+    pub native_fps: u32,
+    #[serde(default = "default_state_durations_ms")]
+    pub state_durations_ms: BTreeMap<PetStateName, u32>,
     pub petpack_path: String,
     pub cover_path: String,
     #[serde(default)]
@@ -748,6 +793,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn total_frame_count_is_closed_over_the_two_native_rates_and_state_durations() {
+        for frame_count in VALID_TOTAL_FRAME_COUNTS {
+            assert!(is_valid_total_frame_count(frame_count));
+        }
+        for frame_count in [0, 69, 71, 150, 168, 281] {
+            assert!(!is_valid_total_frame_count(frame_count));
+        }
+    }
+
+    #[test]
     fn legacy_pet_summary_defaults_revision_metadata() {
         let pet: PetSummary = serde_json::from_value(serde_json::json!({
             "id": "pet_legacy",
@@ -775,7 +830,17 @@ mod tests {
                 "description": "Refine the ears",
                 "style": "pixel",
                 "quality": "high",
-                "reference_images": []
+                "reference_images": [],
+                "native_fps": 10,
+                "state_durations_ms": {
+                    "idle": 2000,
+                    "start": 1000,
+                    "tool": 2000,
+                    "waiting": 2000,
+                    "review": 2000,
+                    "done": 1000,
+                    "failed": 2000
+                }
             },
             "reference_reselection_count": 0,
             "session_id": "session_1",

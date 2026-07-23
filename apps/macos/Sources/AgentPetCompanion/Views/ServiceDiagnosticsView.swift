@@ -464,7 +464,7 @@ struct ServiceDiagnosticsView: View {
             desktopPetEnabled: store.behavior.enabled,
             desktopPetVisible: store.overlayVisible,
             activePetName: store.activePet?.name,
-            framesPerSecond: store.behavior.fpsProfile.fps
+            framesPerSecond: store.effectiveFPSProfile.fps
         )
     }
 

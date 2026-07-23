@@ -126,7 +126,10 @@ run_step "fast/core" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/s
 run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
 run_step "fast/core" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
 run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
+run_step "fast/core" "in-app Pet Studio timing source helper" "$ROOT_DIR/script/validate_pet_studio_helper.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
+run_step "fast/core" "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
+run_step "fast/core" "strict Rust linting" cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --all-targets --all-features --locked -- -D warnings
 run_step "fast/core" "Rust workspace unit and integration tests" cargo test --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --locked
 run_step "fast/core" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
 run_step "simulated integration" "generated connector hook/plugin runtime smoke; not real third-party agent acceptance" "$ROOT_DIR/script/validate_connectors_runtime.sh"

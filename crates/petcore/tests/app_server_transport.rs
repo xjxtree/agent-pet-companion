@@ -350,14 +350,17 @@ done
         session["overlay_display"]["navigation"]["session_open"],
         true
     );
+    assert_eq!(session["session_title"], "Synced ChatGPT task");
+    assert_eq!(
+        session["session_user_message"],
+        json!({"role": "user", "content": "Sync this task"})
+    );
+    assert_eq!(
+        session["session_message"],
+        json!({"role": "assistant", "content": "Task result is ready"})
+    );
     let overlay_json = serde_json::to_string(session).unwrap();
-    for private in [
-        "Synced ChatGPT task",
-        "Task result is ready",
-        "Sync this task",
-    ] {
-        assert!(!overlay_json.contains(private));
-    }
+    assert!(!overlay_json.contains("Final verification"));
     assert_eq!(session["lease_seconds"], 900);
 }
 
@@ -612,6 +615,8 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let started = Instant::now();
@@ -670,6 +675,8 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let result = run_pet_studio_session(&paths, "job_turn_completed", &form);

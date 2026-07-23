@@ -19,7 +19,7 @@ fn ready_store(home: &Path) -> (AppPaths, Database) {
 
 fn sample_source(root: &Path, name: &str) -> std::path::PathBuf {
     let source = root.join("source");
-    write_sample_petpack_dir(&source, QualityLevel::Standard, name, "半写实", 2).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, name, "半写实").unwrap();
     source
 }
 

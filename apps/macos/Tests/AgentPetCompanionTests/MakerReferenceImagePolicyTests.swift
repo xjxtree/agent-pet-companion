@@ -112,6 +112,9 @@ struct MakerReferenceImagePolicyTests {
 
     @Test
     func failedCreateRetryUsesTheEditedDraftInsteadOfTheSubmittedForm() throws {
+        var editedDurations = PetAnimationContract.defaultStateDurationsMS
+        editedDurations["idle"] = 1_000
+        editedDurations["done"] = 2_000
         let oldForm = GenerationForm(
             description: "old brief",
             style: StylePreset.realistic.rawValue,
@@ -130,13 +133,149 @@ struct MakerReferenceImagePolicyTests {
             descriptionText: "edited brief",
             style: .pixel,
             quality: .ultra,
-            referenceImages: []
+            referenceImages: [],
+            nativeFPS: 20,
+            stateDurationsMS: editedDurations
         ))
 
         #expect(retry.description == "edited brief")
         #expect(retry.description != oldForm.description)
         #expect(retry.style == StylePreset.pixel.rawValue)
         #expect(retry.quality == .ultra)
+        #expect(retry.nativeFPS == 20)
+        #expect(retry.stateDurationsMS == editedDurations)
+    }
+
+    @MainActor
+    @Test
+    func createAndEditSessionsSubmitTheSelectedOrBaselineTiming() {
+        var durations = PetAnimationContract.defaultStateDurationsMS
+        durations["idle"] = 1_000
+        durations["done"] = 2_000
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, _, _ in
+                if method == "generation.edit" {
+                    return [
+                        "job_id": "job_timing",
+                        "native_fps": 20,
+                        "state_durations_ms": durations,
+                    ]
+                }
+                return ["job_id": "job_timing"]
+            }
+        )
+
+        store.updateGenerationDescription("A pet with authored timing")
+        store.selectGenerationNativeFPS(20)
+        for stateName in PetAnimationContract.orderedStateNames {
+            store.selectGenerationStateDuration(
+                durations[stateName] ?? 1_000,
+                for: stateName
+            )
+        }
+        store.startGeneration()
+
+        #expect(store.generationSession.operation == .create)
+        #expect(store.generationSession.submittedForm?.nativeFPS == 20)
+        #expect(store.generationSession.submittedForm?.stateDurationsMS == durations)
+
+        _ = store.reduceGeneration(.reset)
+        let pet = PetSummary(
+            id: "pet_authoredtiming",
+            name: "Authored Timing",
+            style: StylePreset.pixel.rawValue,
+            quality: .high,
+            renderSize: QualityLevel.high.renderSize,
+            petpackPath: "/tmp/pet_authoredtiming.petpack",
+            coverPath: "",
+            nativeFPS: 20,
+            stateDurationsMS: durations,
+            active: false,
+            createdAt: "2026-07-23T00:00:00Z"
+        )
+        store.startPetEdit(pet, instruction: "Keep the animation timing")
+
+        #expect(store.generationSession.operation == .modify)
+        #expect(store.generationSession.submittedForm?.nativeFPS == pet.nativeFPS)
+        #expect(store.generationSession.submittedForm?.stateDurationsMS == pet.stateDurationsMS)
+    }
+
+    @MainActor
+    @Test
+    func historicalEditReceiptImmediatelyReconcilesTheSelectedBaselineTiming() async {
+        let receiptGate = HistoricalEditReceiptGate()
+        let baselineRevisionID = "rev_11111111111111111111111111111111"
+        var currentHeadDurations = PetAnimationContract.defaultStateDurationsMS
+        currentHeadDurations["idle"] = 1_000
+        currentHeadDurations["start"] = 2_000
+        let baselineDurations = PetAnimationContract.defaultStateDurationsMS
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, _, _ in
+                switch method {
+                case "generation.edit":
+                    return await receiptGate.request()
+                case "generation.messages.wait":
+                    await Task.yield()
+                    return ["revision": "0", "messages": []]
+                default:
+                    return [:]
+                }
+            }
+        )
+        let currentHead = PetSummary(
+            id: "pet_historicaltiming",
+            name: "Historical Timing",
+            style: StylePreset.pixel.rawValue,
+            quality: .high,
+            renderSize: QualityLevel.high.renderSize,
+            petpackPath: "/tmp/pet_historicaltiming.petpack",
+            coverPath: "",
+            revisionID: "rev_22222222222222222222222222222222",
+            revisionCount: 2,
+            nativeFPS: 20,
+            stateDurationsMS: currentHeadDurations,
+            active: false,
+            createdAt: "2026-07-23T00:00:00Z"
+        )
+
+        store.startPetEdit(
+            currentHead,
+            baselineRevisionID: baselineRevisionID,
+            instruction: "Edit the selected historical revision"
+        )
+        await receiptGate.waitUntilRequested()
+
+        #expect(store.generationSession.state == .starting)
+        #expect(store.generationSession.submittedForm?.nativeFPS == 20)
+        #expect(store.generationSession.submittedForm?.stateDurationsMS == currentHeadDurations)
+
+        receiptGate.resume(with: [
+            "job_id": "job_historical_timing",
+            "baseline_revision_id": baselineRevisionID,
+            "native_fps": 10,
+            "state_durations_ms": baselineDurations,
+        ])
+        for _ in 0 ..< 100 where store.generationSession.jobID == nil {
+            await Task.yield()
+        }
+
+        #expect(store.generationSession.jobID == "job_historical_timing")
+        #expect(store.generationSession.baselineRevisionID == baselineRevisionID)
+        #expect(store.generationSession.submittedForm?.nativeFPS == 10)
+        #expect(store.generationSession.submittedForm?.stateDurationsMS == baselineDurations)
+        _ = store.reduceGeneration(.reset)
     }
 
     @Test
@@ -215,5 +354,36 @@ struct MakerReferenceImagePolicyTests {
             bitsPerPixel: 0
         ))
         return try #require(bitmap.representation(using: .png, properties: [:]))
+    }
+}
+
+@MainActor
+private final class HistoricalEditReceiptGate {
+    private var responseContinuation: CheckedContinuation<Void, Never>?
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var response: [String: Any] = [:]
+
+    func request() async -> [String: Any] {
+        await withCheckedContinuation { continuation in
+            responseContinuation = continuation
+            let waiters = requestWaiters
+            requestWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        return response
+    }
+
+    func waitUntilRequested() async {
+        if responseContinuation != nil { return }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append(continuation)
+        }
+    }
+
+    func resume(with response: [String: Any]) {
+        self.response = response
+        let continuation = responseContinuation
+        responseContinuation = nil
+        continuation?.resume()
     }
 }

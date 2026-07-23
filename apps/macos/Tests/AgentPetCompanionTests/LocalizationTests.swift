@@ -74,7 +74,7 @@ struct LocalizationTests {
             desktopPetEnabled: false,
             desktopPetVisible: false,
             activePetName: nil,
-            framesPerSecond: 12,
+            framesPerSecond: 10,
             localeIdentifier: "en"
         )
         let chinese = ServiceDiagnosticsPresentation(
@@ -84,7 +84,7 @@ struct LocalizationTests {
             desktopPetEnabled: false,
             desktopPetVisible: false,
             activePetName: nil,
-            framesPerSecond: 12,
+            framesPerSecond: 10,
             localeIdentifier: "zh-Hans"
         )
 

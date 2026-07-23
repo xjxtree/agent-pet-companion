@@ -48,7 +48,7 @@ manifest = {
 }
 
 if args[:2] == ["petpack", "validate"]:
-    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 14, "warnings": []}))
+    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 120, "warnings": []}))
 elif args[:2] == ["pet", "list"]:
     print(json.dumps(state["pets"]))
 elif args[:2] == ["petpack", "import"]:
@@ -335,7 +335,7 @@ class MetadataContractTests(unittest.TestCase):
             )
             with self.assertRaises(workspace_helper.MakerError) as raised:
                 workspace_helper.validate_generated_motion(state_files, ["idle"])
-            self.assertIn("duplicate still frames", raised.exception.message)
+            self.assertIn("copied adjacent frames", raised.exception.message)
 
     def test_visual_contract_rejects_an_invisible_cover(self) -> None:
         from PIL import Image
@@ -376,6 +376,19 @@ class MetadataContractTests(unittest.TestCase):
         first = self.visible_frame((40, 80, 120, 255), hidden_rgb=(255, 0, 0))
         second = self.visible_frame((40, 80, 120, 255), hidden_rgb=(0, 255, 0))
         self.assertNotEqual(first.tobytes(), second.tobytes())
+        self.assertEqual(
+            workspace_helper.canonical_premultiplied_rgba(first),
+            workspace_helper.canonical_premultiplied_rgba(second),
+        )
+
+    def test_motion_digest_ignores_rgb_below_the_visible_alpha_threshold(self) -> None:
+        from PIL import Image
+
+        first = Image.new("RGBA", (8, 8), (255, 0, 0, 15))
+        second = Image.new("RGBA", (8, 8), (0, 255, 0, 1))
+        first.putpixel((4, 4), (40, 80, 120, 255))
+        second.putpixel((4, 4), (40, 80, 120, 255))
+
         self.assertEqual(
             workspace_helper.canonical_premultiplied_rgba(first),
             workspace_helper.canonical_premultiplied_rgba(second),
@@ -578,7 +591,12 @@ class MetadataContractTests(unittest.TestCase):
                 "provenance": "skill-full-source",
                 "runner": "host-agent",
                 "visual_source": "image-generation",
-                "frames_per_state": 2,
+                "native_fps": 10,
+                "state_durations_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS,
+                "state_frame_counts": {
+                    state: 10 * duration // 1000
+                    for state, duration in workspace_helper.DEFAULT_STATE_DURATIONS_MS.items()
+                },
                 "preview_only": False,
                 "reference_files": [],
             }
@@ -590,12 +608,25 @@ class MetadataContractTests(unittest.TestCase):
                 "modify",
                 {"base": {"pet_id": "pet_test"}},
                 ["tool"],
-                {state: 2 for state in workspace_helper.STATES},
+                {
+                    state: 10 * workspace_helper.DEFAULT_STATE_DURATIONS_MS[state] // 1000
+                    for state in workspace_helper.STATES
+                },
                 {
                     "id": "pet_test",
                     "name": "Test",
                     "style": "storybook",
                     "quality": "standard",
+                    "native_fps": 10,
+                    "states": [
+                        {
+                            "name": state,
+                            "frames_dir": f"assets/frames/{state}",
+                            "loop": state not in {"start", "done"},
+                            "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                        }
+                        for state in workspace_helper.STATES
+                    ],
                 },
             )
             self.assertFalse(set(normalized) - workspace_helper.SOURCE_ALLOWED_KEYS)
@@ -605,6 +636,9 @@ class MetadataContractTests(unittest.TestCase):
             self.assertNotIn("producer", normalized)
             self.assertNotIn("operation", normalized)
             self.assertNotIn("frame_counts", normalized)
+            self.assertNotIn("frames_per_state", normalized)
+            self.assertNotIn("fps_profiles", normalized)
+            self.assertEqual(normalized["native_fps"], 10)
 
     def test_source_and_events_reject_undeclared_forward_test_fields(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-metadata-") as temporary:
@@ -618,7 +652,12 @@ class MetadataContractTests(unittest.TestCase):
                         "provenance": "skill-full-source",
                         "runner": "host-agent",
                         "visual_source": "image-generation",
-                        "frames_per_state": 2,
+                        "native_fps": 10,
+                        "state_durations_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS,
+                        "state_frame_counts": {
+                            state: 10 * duration // 1000
+                            for state, duration in workspace_helper.DEFAULT_STATE_DURATIONS_MS.items()
+                        },
                         "preview_only": False,
                         "reference_files": [],
                         "producer": {"agent": "host-agent"},
@@ -638,6 +677,16 @@ class MetadataContractTests(unittest.TestCase):
                         "name": "Test",
                         "style": "storybook",
                         "quality": "standard",
+                        "native_fps": 10,
+                        "states": [
+                            {
+                                "name": state,
+                                "frames_dir": f"assets/frames/{state}",
+                                "loop": state not in {"start", "done"},
+                                "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                            }
+                            for state in workspace_helper.STATES
+                        ],
                     },
                 )
 
@@ -651,6 +700,317 @@ class MetadataContractTests(unittest.TestCase):
             )
             with self.assertRaises(workspace_helper.MakerError):
                 workspace_helper.validate_session(source)
+
+
+class TimingContractTests(unittest.TestCase):
+    @staticmethod
+    def timing(native_fps: int, durations: dict[str, int] | None = None) -> dict:
+        durations = dict(durations or workspace_helper.DEFAULT_STATE_DURATIONS_MS)
+        return {
+            "native_fps": native_fps,
+            "state_durations_ms": durations,
+            "state_frame_counts": {
+                state: native_fps * durations[state] // 1000
+                for state in workspace_helper.STATES
+            },
+        }
+
+    @staticmethod
+    def state_files(timing: dict, prefix: str) -> dict[str, dict[str, str]]:
+        return {
+            state: {
+                f"{index:04d}.png": f"{prefix}-{state}-{index}"
+                for index in range(timing["state_frame_counts"][state])
+            }
+            for state in workspace_helper.STATES
+        }
+
+    def test_exact_state_counts_cover_both_native_fps_tiers_and_durations(self) -> None:
+        for native_fps, expected_total in ((10, 120), (20, 240)):
+            with self.subTest(native_fps=native_fps):
+                timing = self.timing(native_fps)
+                self.assertEqual(sum(timing["state_frame_counts"].values()), expected_total)
+                workspace_helper.validate_exact_state_counts(
+                    timing["state_frame_counts"], timing
+                )
+                invalid = dict(timing["state_frame_counts"])
+                invalid["start"] -= 1
+                with self.assertRaises(workspace_helper.MakerError) as raised:
+                    workspace_helper.validate_exact_state_counts(invalid, timing)
+                self.assertEqual(raised.exception.code, "invalid_assets")
+                self.assertIn("expected exactly", raised.exception.message)
+
+    def test_frame_digests_follow_petcore_natural_filename_order(self) -> None:
+        state_files = {
+            "idle": {
+                "10.png": "ten",
+                "02.png": "two-padded",
+                "002.png": "two-more-padded",
+                "2.png": "two",
+                "1.png": "one",
+                "A2.png": "uppercase",
+                "a2.png": "lowercase",
+            }
+        }
+        self.assertEqual(
+            workspace_helper.ordered_state_digests(state_files, "idle"),
+            [
+                "one",
+                "two",
+                "two-padded",
+                "two-more-padded",
+                "ten",
+                "uppercase",
+                "lowercase",
+            ],
+        )
+
+    def test_native_fps_change_requires_all_seven_states(self) -> None:
+        base = self.timing(10)
+        current = self.timing(20)
+        base_files = self.state_files(base, "base")
+        current_files = self.state_files(current, "current")
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files, current_files, base, current, ["tool"]
+            )
+        self.assertEqual(raised.exception.code, "timing_change_incomplete")
+
+    def test_native_20_rejects_duplicate_canonical_10_fps_poses(self) -> None:
+        timing = self.timing(20)
+        state_files = self.state_files(timing, "frame")
+        state_files["idle"]["0002.png"] = state_files["idle"]["0000.png"]
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_native_frame_semantics(
+                state_files, ["idle"], timing
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("canonical 10 FPS", raised.exception.message)
+
+    def test_native_20_one_shot_canonical_sample_preserves_the_final_pose(self) -> None:
+        timing = self.timing(20)
+        state_files = self.state_files(timing, "frame")
+        indices = workspace_helper.standard_sample_indices("done", 20, 1000)
+        self.assertEqual(indices, [0, 2, 4, 6, 8, 11, 13, 15, 17, 19])
+        state_files["done"]["0019.png"] = state_files["done"]["0017.png"]
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_native_frame_semantics(
+                state_files, ["done"], timing
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("indices 17 and 19", raised.exception.message)
+
+    def test_native_20_loop_rejects_duplicate_standard_wrap_pose(self) -> None:
+        timing = self.timing(20)
+        state_files = self.state_files(timing, "frame")
+        indices = workspace_helper.standard_sample_indices("idle", 40, 2000)
+        self.assertEqual(indices[-1], 38)
+        state_files["idle"]["0038.png"] = state_files["idle"]["0000.png"]
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_native_frame_semantics(
+                state_files, ["idle"], timing
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("wrap boundary", raised.exception.message)
+        self.assertIn("indices 38 and 0", raised.exception.message)
+
+    def test_10_to_20_preserves_runtime_sample_poses_and_real_intermediates(self) -> None:
+        base = self.timing(10)
+        current = self.timing(20)
+        base_files = self.state_files(base, "base")
+        converted: dict[str, dict[str, str]] = {}
+        for state in workspace_helper.STATES:
+            source = workspace_helper.ordered_state_digests(base_files, state)
+            sequence = [f"mid-{state}-{index}" for index in range(len(source) * 2)]
+            preserved_indices = workspace_helper.standard_sample_indices(
+                state,
+                len(sequence),
+                current["state_durations_ms"][state],
+            )
+            for index, digest in zip(preserved_indices, source):
+                sequence[index] = digest
+            converted[state] = {
+                f"{index:04d}.png": digest for index, digest in enumerate(sequence)
+            }
+        workspace_helper.validate_timing_revision(
+            base_files,
+            converted,
+            base,
+            current,
+            list(workspace_helper.STATES),
+        )
+
+        copied = {state: dict(files) for state, files in converted.items()}
+        copied["idle"]["0001.png"] = copied["idle"]["0000.png"]
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files,
+                copied,
+                base,
+                current,
+                list(workspace_helper.STATES),
+            )
+        self.assertEqual(raised.exception.code, "invalid_frame_interpolation")
+
+        distant_copy = {state: dict(files) for state, files in converted.items()}
+        distant_copy["idle"]["0001.png"] = base_files["idle"]["0005.png"]
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files,
+                distant_copy,
+                base,
+                current,
+                list(workspace_helper.STATES),
+            )
+        self.assertEqual(raised.exception.code, "invalid_frame_interpolation")
+        self.assertIn("copied source pose", raised.exception.message)
+
+    def test_20_to_10_matches_loop_and_one_shot_runtime_sampling(self) -> None:
+        base = self.timing(20)
+        current = self.timing(10)
+        base_files = self.state_files(base, "base")
+        sampled = {
+            state: {
+                f"{index:04d}.png": digest
+                for index, digest in enumerate(
+                    [
+                        workspace_helper.ordered_state_digests(base_files, state)[
+                            source_index
+                        ]
+                        for source_index in workspace_helper.standard_sample_indices(
+                            state,
+                            len(workspace_helper.ordered_state_digests(base_files, state)),
+                            base["state_durations_ms"][state],
+                        )
+                    ]
+                )
+            }
+            for state in workspace_helper.STATES
+        }
+        self.assertEqual(
+            list(sampled["idle"].values()),
+            workspace_helper.ordered_state_digests(base_files, "idle")[::2],
+        )
+        self.assertEqual(list(sampled["done"].values())[-1], "base-done-19")
+        workspace_helper.validate_timing_revision(
+            base_files,
+            sampled,
+            base,
+            current,
+            list(workspace_helper.STATES),
+        )
+        sampled["done"]["0001.png"] = "recomposed-instead-of-even-sample"
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files,
+                sampled,
+                base,
+                current,
+                list(workspace_helper.STATES),
+            )
+        self.assertEqual(raised.exception.code, "invalid_frame_downsample")
+
+    def test_duration_shortening_rejects_one_shot_endpoint_sampling(self) -> None:
+        base_durations = dict(workspace_helper.DEFAULT_STATE_DURATIONS_MS)
+        base_durations["start"] = 2000
+        base = self.timing(10, base_durations)
+        current = self.timing(10)
+        base_files = self.state_files(base, "base")
+        current_files = {state: dict(files) for state, files in base_files.items()}
+        before = workspace_helper.ordered_state_digests(base_files, "start")
+        sampled = [
+            before[index]
+            for index in workspace_helper.runtime_sample_indices(
+                len(before),
+                current["state_frame_counts"]["start"],
+                False,
+            )
+        ]
+        current_files["start"] = {
+            f"{index:04d}.png": digest for index, digest in enumerate(sampled)
+        }
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files, current_files, base, current, ["start"]
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("re-storyboard", raised.exception.message)
+
+    def test_duration_change_rejects_repeated_old_action(self) -> None:
+        base = self.timing(10)
+        durations = dict(workspace_helper.DEFAULT_STATE_DURATIONS_MS)
+        durations["start"] = 2000
+        current = self.timing(10, durations)
+        base_files = self.state_files(base, "base")
+        current_files = {state: dict(files) for state, files in base_files.items()}
+        before = workspace_helper.ordered_state_digests(base_files, "start")
+        current_files["start"] = {
+            f"{index:04d}.png": digest
+            for index, digest in enumerate(before * 2)
+        }
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                base_files, current_files, base, current, ["start"]
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("re-storyboard", raised.exception.message)
+
+    def test_duration_change_rejects_rotated_repeat_and_middle_slice(self) -> None:
+        expanded_durations = dict(workspace_helper.DEFAULT_STATE_DURATIONS_MS)
+        expanded_durations["start"] = 2000
+        short_timing = self.timing(10)
+        expanded_timing = self.timing(10, expanded_durations)
+        short_files = self.state_files(short_timing, "base")
+        expanded_files = {state: dict(files) for state, files in short_files.items()}
+        before = workspace_helper.ordered_state_digests(short_files, "start")
+        rotated = before[1:] + before[:1]
+        expanded_files["start"] = {
+            f"{index:04d}.png": digest
+            for index, digest in enumerate(rotated * 2)
+        }
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                short_files,
+                expanded_files,
+                short_timing,
+                expanded_timing,
+                ["start"],
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("re-storyboard", raised.exception.message)
+
+        long_files = self.state_files(expanded_timing, "base")
+        shortened_files = {state: dict(files) for state, files in long_files.items()}
+        long_before = workspace_helper.ordered_state_digests(long_files, "start")
+        shortened_files["start"] = {
+            f"{index:04d}.png": digest
+            for index, digest in enumerate(long_before[5:15])
+        }
+        with self.assertRaises(workspace_helper.MakerError) as raised:
+            workspace_helper.validate_timing_revision(
+                long_files,
+                shortened_files,
+                expanded_timing,
+                short_timing,
+                ["start"],
+            )
+        self.assertEqual(raised.exception.code, "invalid_assets")
+        self.assertIn("re-storyboard", raised.exception.message)
+
+    def test_duration_change_accepts_a_recomposed_action(self) -> None:
+        base = self.timing(10)
+        durations = dict(workspace_helper.DEFAULT_STATE_DURATIONS_MS)
+        durations["start"] = 2000
+        current = self.timing(10, durations)
+        base_files = self.state_files(base, "base")
+        current_files = {state: dict(files) for state, files in base_files.items()}
+        current_files["start"] = {
+            f"{index:04d}.png": f"recomposed-start-{index}"
+            for index in range(current["state_frame_counts"]["start"])
+        }
+        workspace_helper.validate_timing_revision(
+            base_files, current_files, base, current, ["start"]
+        )
 
 
 class FinalizeSafetyTests(unittest.TestCase):
@@ -678,8 +1038,14 @@ class FinalizeSafetyTests(unittest.TestCase):
             "style": "storybook",
             "quality": "standard",
             "render_size": {"width": 8, "height": 8},
+            "native_fps": 10,
             "states": [
-                {"name": state, "frames_dir": f"assets/frames/{state}"}
+                {
+                    "name": state,
+                    "frames_dir": f"assets/frames/{state}",
+                    "loop": state not in {"start", "done"},
+                    "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                }
                 for state in workspace_helper.STATES
             ],
         }
@@ -696,9 +1062,15 @@ class FinalizeSafetyTests(unittest.TestCase):
         return source, args
 
     def finalize_patches(self):
-        counts = {state: 2 for state in workspace_helper.STATES}
+        counts = {
+            state: 10 * workspace_helper.DEFAULT_STATE_DURATIONS_MS[state] // 1000
+            for state in workspace_helper.STATES
+        }
         hashes = {
-            state: {"frame-000.png": "first", "frame-001.png": "second"}
+            state: {
+                f"frame-{index:03d}.png": f"{state}-{index}"
+                for index in range(counts[state])
+            }
             for state in workspace_helper.STATES
         }
         return (
@@ -745,7 +1117,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     build_destinations.append(staged)
                     staged.write_bytes(b"partial-new-package")
                     raise workspace_helper.MakerError("build_failed", "simulated failure")
-                return {"ok": True, "frame_count": 14, "warnings": []}
+                return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
@@ -776,7 +1148,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     raise workspace_helper.MakerError(
                         "validation_failed", "simulated staged validation failure"
                     )
-                return {"ok": True, "frame_count": 14, "warnings": []}
+                return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
@@ -806,11 +1178,32 @@ class FinalizeSafetyTests(unittest.TestCase):
                     calls.append(("build", staged))
                 elif arguments[:2] == ["petpack", "validate"]:
                     candidate = Path(arguments[-1])
-                    if candidate.is_file():
+                    if candidate.is_dir():
+                        validation = json.loads(
+                            (candidate / "build" / "validation.json").read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                        self.assertEqual(validation["frame_count"], 120)
+                        self.assertEqual(validation["native_fps"], 10)
+                        self.assertEqual(
+                            validation["state_durations_ms"],
+                            workspace_helper.DEFAULT_STATE_DURATIONS_MS,
+                        )
+                        self.assertEqual(
+                            validation["state_frame_counts"],
+                            {
+                                state: 10
+                                * workspace_helper.DEFAULT_STATE_DURATIONS_MS[state]
+                                // 1000
+                                for state in workspace_helper.STATES
+                            },
+                        )
+                    else:
                         self.assertEqual(candidate.read_bytes(), b"validated-new-package")
                         self.assertEqual(output.read_bytes(), b"known-good-old-package")
                         calls.append(("validate-staged", candidate))
-                return {"ok": True, "frame_count": 14, "warnings": []}
+                return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
@@ -867,6 +1260,14 @@ class PrivacyHelpersTests(unittest.TestCase):
             "style": "storybook",
             "quality": "standard",
             "render_size": {"width": 8, "height": 8},
+            "native_fps": 10,
+            "states": [
+                {
+                    "name": state,
+                    "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                }
+                for state in workspace_helper.STATES
+            ],
         }
         source_metadata = {"generator": "image-tool", "provenance": "skill-full-source"}
         rejected = (
@@ -907,6 +1308,65 @@ class PrivacyHelpersTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, "privacy_violation")
                 self.assertNotIn(locator, raised.exception.message)
 
+    def test_brief_object_state_duration_must_match_manifest(self) -> None:
+        manifest = {
+            "name": "Test Pet",
+            "style": "storybook",
+            "quality": "standard",
+            "render_size": {"width": 8, "height": 8},
+            "native_fps": 10,
+            "states": [
+                {
+                    "name": state,
+                    "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                }
+                for state in workspace_helper.STATES
+            ],
+        }
+        source_metadata = {"generator": "image-tool", "provenance": "skill-full-source"}
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-brief-") as temporary:
+            source = Path(temporary)
+            (source / "source").mkdir()
+            (source / "source" / "prompt.md").write_text(
+                "Create a compact storybook pet.", encoding="utf-8"
+            )
+            brief = {
+                "schema_version": "apc.pet-brief.v1",
+                "name": "Test Pet",
+                "style": "storybook",
+                "quality": "standard",
+                "states": [
+                    {
+                        "name": state,
+                        "motion": f"A clear {state} motion.",
+                        "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                    }
+                    for state in workspace_helper.STATES
+                ],
+            }
+            (source / "brief.json").write_text(json.dumps(brief), encoding="utf-8")
+            workspace_helper.validate_text_metadata(
+                source,
+                manifest,
+                {
+                    state: 10 * workspace_helper.DEFAULT_STATE_DURATIONS_MS[state] // 1000
+                    for state in workspace_helper.STATES
+                },
+                source_metadata,
+            )
+
+            brief["states"][0]["duration_ms"] = 1000
+            (source / "brief.json").write_text(json.dumps(brief), encoding="utf-8")
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.validate_text_metadata(
+                    source,
+                    manifest,
+                    {},
+                    source_metadata,
+                )
+            self.assertEqual(raised.exception.code, "invalid_metadata")
+            self.assertIn("duration_ms", raised.exception.message)
+
     def test_namespaced_and_affixed_private_keys_return_only_the_category(self) -> None:
         for key, category in (
             ("dev.example/thread_id", "thread_id"),
@@ -929,7 +1389,7 @@ class PrivacyHelpersTests(unittest.TestCase):
 
     def test_path_like_prose_and_non_private_words_remain_allowed(self) -> None:
         value = {
-            "note": "Animate idle/start/tool at 12/20 fps; use / as a separator and (https-inspired) highlights.",
+            "note": "Animate idle/start/tool at 10/20 fps; use / as a separator and (https-inspired) highlights.",
             "reference_note": "reference(images/moon.png) and assets/frames/idle/frame_000.png",
             "authentic_style": "storybook",
             "commanding_motion": "confident pose",
@@ -962,7 +1422,12 @@ class PrivacyHelpersTests(unittest.TestCase):
                                 "provenance": "skill-full-source",
                                 "runner": "host-agent",
                                 "visual_source": "image-generation",
-                                "frames_per_state": 2,
+                                "native_fps": 10,
+                                "state_durations_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS,
+                                "state_frame_counts": {
+                                    state: 10 * duration // 1000
+                                    for state, duration in workspace_helper.DEFAULT_STATE_DURATIONS_MS.items()
+                                },
                                 "preview_only": False,
                                 "reference_files": [],
                                 "ai_brief": ai_brief,
@@ -976,12 +1441,25 @@ class PrivacyHelpersTests(unittest.TestCase):
                             "create",
                             {},
                             [],
-                            {state: 2 for state in workspace_helper.STATES},
+                            {
+                                state: 10 * workspace_helper.DEFAULT_STATE_DURATIONS_MS[state] // 1000
+                                for state in workspace_helper.STATES
+                            },
                             {
                                 "id": "pet_test",
                                 "name": "Test",
                                 "style": "storybook",
                                 "quality": "standard",
+                                "native_fps": 10,
+                                "states": [
+                                    {
+                                        "name": state,
+                                        "frames_dir": f"assets/frames/{state}",
+                                        "loop": state not in {"start", "done"},
+                                        "duration_ms": workspace_helper.DEFAULT_STATE_DURATIONS_MS[state],
+                                    }
+                                    for state in workspace_helper.STATES
+                                ],
                             },
                         )
                     self.assertEqual(raised.exception.code, "privacy_violation")

@@ -124,7 +124,43 @@ enum AgentConnectionsPresentation {
         // host canary as a product-facing project check. Connection management
         // is Agent-scoped, so that implementation detail must not reintroduce a
         // project dimension in the App.
-        status.items.filter { $0.code != .projectDirectory }
+        let agentScopedItems = status.items.filter { $0.code != .projectDirectory }
+
+        // PetCore keeps one typed result per managed file and host probe so its
+        // diagnostics stay precise. Those rows deliberately share one localized
+        // user-facing category, however, and rendering every file produces a
+        // wall of identical "Managed Connector" / "Host Verification" rows.
+        // Keep the most actionable result for each of those categories; the
+        // single repair/recheck action still evaluates the complete Agent.
+        let groupedCodes: Set<ConnectionCheckCode> = [.managedConnector, .hostVerification]
+        var groupedIndexes: [ConnectionCheckCode: Int] = [:]
+        var result: [ConnectionCheckItem] = []
+        for item in agentScopedItems {
+            guard groupedCodes.contains(item.code) else {
+                result.append(item)
+                continue
+            }
+            if let index = groupedIndexes[item.code] {
+                if checkPriority(item.status) > checkPriority(result[index].status) {
+                    result[index] = item
+                }
+            } else {
+                groupedIndexes[item.code] = result.count
+                result.append(item)
+            }
+        }
+        return result
+    }
+
+    private static func checkPriority(_ status: CheckStatus) -> Int {
+        switch status {
+        case .missing: 5
+        case .needsFix: 4
+        case .unverified: 3
+        case .unsupported: 2
+        case .ok: 1
+        case .notRequired: 0
+        }
     }
 
     static func health(for status: AgentConnectionStatus?) -> AgentConnectionHealth {

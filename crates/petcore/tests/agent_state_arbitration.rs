@@ -498,7 +498,7 @@ fn idle_auto_hide_semantics_are_consistent() {
 }
 
 #[test]
-fn active_session_persists_without_exporting_user_message_to_overlay() {
+fn active_session_persists_with_bounded_user_context_for_the_overlay() {
     let (_temp, state) = ready();
     handle_request(
         &state,
@@ -554,8 +554,15 @@ fn active_session_persists_without_exporting_user_message_to_overlay() {
         active["active_agent_state"]["overlay_display"]["summary_kind"],
         "tool"
     );
-    let overlay_json = serde_json::to_string(&active["active_agent_state"]).unwrap();
-    assert!(!overlay_json.contains("保持当前会话信息"));
+    assert_eq!(
+        active["active_agent_state"]["session_title"],
+        "保持当前会话信息"
+    );
+    assert_eq!(
+        active["active_agent_state"]["session_user_message"],
+        json!({"role": "user", "content": "保持当前会话信息"})
+    );
+    assert_eq!(active["active_agent_state"]["session_message"], Value::Null);
     assert!(active["active_agent_state"]
         .get("latest_user_message")
         .is_none());
@@ -1118,15 +1125,15 @@ fn same_agent_projects_share_one_session_projection_without_project_filtering() 
 }
 
 #[test]
-fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
+fn overlay_projection_allows_display_messages_but_excludes_private_event_fields() {
     let (_temp, state) = ready();
-    let prompt = "PROMPT_DO_NOT_EXPORT use credential sk-live-super-secret";
+    let prompt = "Restore useful pet bubble context";
     let path = "/Users/alice/private/customer/launch-plan.md";
     let command = "COMMAND_DO_NOT_EXPORT /bin/sh -c 'curl -H Authorization:Bearer-secret'";
-    let assistant = "ASSISTANT_DO_NOT_EXPORT copied private file contents";
+    let assistant = "The pet bubble now shows the latest result.";
     let hostile_event_id = "EVENT_ID_DO_NOT_EXPORT_/Users/alice/private_sk-live-id-secret";
     let hostile_session_id = "SESSION_ID_DO_NOT_EXPORT_/Users/alice/private/token.txt";
-    let hostile_detail = "DETAIL_DO_NOT_EXPORT bearer-private-detail";
+    let hostile_detail = "DETAIL_DO_NOT_EXPORT bearer-private-detail sk-live-super-secret";
 
     handle_request(
         &state,
@@ -1182,6 +1189,20 @@ fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
     .unwrap();
     ingest_payload(
         &state,
+        "privacy-review-user",
+        "privacy-review-session",
+        "start",
+        &timestamp(2),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "message_role": "user",
+            "message_content": "Review the completed bubble result",
+            "diagnostic": false
+        }),
+    );
+    ingest_payload(
+        &state,
         "privacy-assistant",
         "privacy-review-session",
         "review",
@@ -1198,10 +1219,8 @@ fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
     let current = snapshot(&state);
     let serialized = serde_json::to_string(&current).unwrap();
     for forbidden in [
-        prompt,
         path,
         command,
-        assistant,
         hostile_event_id,
         hostile_session_id,
         hostile_detail,
@@ -1212,6 +1231,8 @@ fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
             "overlay projection leaked forbidden content: {forbidden}"
         );
     }
+    assert!(serialized.contains(prompt));
+    assert!(serialized.contains(assistant));
     let sessions = current["active_agent_sessions"].as_array().unwrap();
     let tool = sessions
         .iter()
@@ -1221,6 +1242,19 @@ fn overlay_projection_excludes_prompts_paths_commands_and_credentials() {
     assert!(tool["event"]["id"].as_str().unwrap().starts_with("evt-"));
     assert!(tool["session_id"].as_str().unwrap().starts_with("ses-"));
     assert_eq!(tool["overlay_display"]["summary_kind"], "command");
+    assert_eq!(tool["session_title"], prompt);
+    assert_eq!(
+        tool["session_user_message"],
+        json!({"role": "user", "content": prompt})
+    );
+    let review = sessions
+        .iter()
+        .find(|session| session["overlay_display"]["summary_kind"] == "review")
+        .unwrap();
+    assert_eq!(
+        review["session_message"],
+        json!({"role": "assistant", "content": assistant})
+    );
     assert_eq!(
         tool["overlay_display"]["navigation"]["open_url"],
         "warp://session/0123456789abcdef0123456789abcdef"
@@ -1548,7 +1582,10 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
         projected_event_id("same-time-assistant-after")
     );
     assert_eq!(replied_session["overlay_display"]["summary_kind"], "review");
-    assert!(replied_session.get("session_message").is_none());
+    assert_eq!(
+        replied_session["session_message"],
+        json!({"role": "assistant", "content": "后到回复"})
+    );
 
     ingest_message(
         "same-time-assistant-first",
@@ -1579,6 +1616,11 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
         reactivated_session["overlay_display"]["summary_kind"],
         "running"
     );
+    assert_eq!(
+        reactivated_session["session_user_message"],
+        json!({"role": "user", "content": "后到的新问题"})
+    );
+    assert_eq!(reactivated_session["session_message"], Value::Null);
 }
 
 #[test]
@@ -1635,9 +1677,15 @@ fn pi_settled_event_carries_reply_into_ready_bubble() {
         projected_event_id("pi-settled-with-reply")
     );
     assert_eq!(session["overlay_display"]["summary_kind"], "done");
-    assert!(!serde_json::to_string(session)
-        .unwrap()
-        .contains("你好！有什么我可以帮你的吗？"));
+    assert_eq!(session["session_title"], "你好");
+    assert_eq!(
+        session["session_user_message"],
+        json!({"role": "user", "content": "你好"})
+    );
+    assert_eq!(
+        session["session_message"],
+        json!({"role": "assistant", "content": "你好！有什么我可以帮你的吗？"})
+    );
 }
 
 #[test]
@@ -2463,9 +2511,12 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             session["overlay_display"]["summary_kind"].as_str(),
             Some("review" | "done")
         ));
-        assert!(!serde_json::to_string(session)
-            .unwrap()
-            .contains("第一条完整回复"));
+        assert_eq!(session["session_title"], "第一条问题", "source={source}");
+        assert_eq!(
+            session["session_message"],
+            json!({"role": "assistant", "content": "第一条完整回复"}),
+            "source={source}"
+        );
 
         ingest_lifecycle(
             &format!("{session_id}-prompt-2"),
@@ -2488,14 +2539,17 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             session["overlay_display"]["summary_kind"], "running",
             "source={source}"
         );
-        assert!(!serde_json::to_string(session)
-            .unwrap()
-            .contains("完成后发送的新问题"));
+        assert_eq!(
+            session["session_user_message"],
+            json!({"role": "user", "content": "完成后发送的新问题"}),
+            "source={source}"
+        );
+        assert_eq!(session["session_message"], Value::Null, "source={source}");
     }
 }
 
 #[test]
-fn cli_overlay_projection_never_uses_user_messages_as_titles() {
+fn cli_overlay_projection_uses_first_user_message_as_the_session_title() {
     let (_temp, state) = ready();
     for (source, session_id, first_message, later_message, terminal_source_event) in [
         (
@@ -2585,11 +2639,12 @@ fn cli_overlay_projection_never_uses_user_messages_as_titles() {
             .iter()
             .find(|session| session["session_id"] == projected_session_id(session_id))
             .unwrap();
-        let serialized = serde_json::to_string(session).unwrap();
-        assert!(!serialized.contains(expected_title));
-        assert!(!serialized.contains(expected_latest_user_message));
-        assert!(session.get("session_title").is_none());
-        assert!(session.get("session_user_message").is_none());
+        assert_eq!(session["session_title"], expected_title);
+        assert_eq!(
+            session["session_user_message"],
+            json!({"role": "user", "content": expected_latest_user_message})
+        );
+        assert_eq!(session["session_message"], Value::Null);
     }
 
     handle_request(
@@ -2619,9 +2674,7 @@ fn cli_overlay_projection_never_uses_user_messages_as_titles() {
         .iter()
         .find(|session| session["session_id"] == projected_session_id("pi-title-fallback"))
         .unwrap();
-    assert!(!serde_json::to_string(pi_session)
-        .unwrap()
-        .contains("Pi 原生会话标题"));
+    assert_eq!(pi_session["session_title"], "Pi 原生会话标题");
     assert_eq!(pi_session["overlay_display"]["summary_kind"], "done");
 }
 

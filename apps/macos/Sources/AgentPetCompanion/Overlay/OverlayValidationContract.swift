@@ -298,8 +298,8 @@ public enum AgentPetCompanionUIValidationContract {
         }
 
         try require(
-            session.messageText == APCLocalization.text(.overlayActivityThinking),
-            "active bubble did not render the typed safe activity summary"
+            session.messageText == "Latest App Server message",
+            "active bubble did not render the bounded assistant display message"
         )
         try require(
             content.agentName == "Codex",
@@ -307,14 +307,13 @@ public enum AgentPetCompanionUIValidationContract {
         )
         try require(session.sessionID == "session_validation", "active bubble omitted its session id")
         try require(
-            session.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Codex"),
-            "active bubble did not use the content-free session title"
+            session.sessionTitle == "Persistent Codex task title",
+            "active bubble did not render the bounded session title"
         )
         try require(
             !session.messageText.contains("Verifying live activity synchronization")
-                && !session.sessionTitle.contains("Persistent Codex task title")
-                && !session.messageText.contains("Latest App Server message"),
-            "active bubble rendered private Agent content"
+                && !session.messageText.contains("Keep the current conversation message visible."),
+            "active bubble fell back to raw event or activity content"
         )
         try require(!session.statusText.isEmpty, "active bubble omitted its run status")
         try require(!session.actionLabel.isEmpty, "active bubble omitted its interaction action")
@@ -340,20 +339,12 @@ public enum AgentPetCompanionUIValidationContract {
             isExpanded: true
         )
         try require(grouped.sessions.count == 2, "same-Agent sessions were not grouped")
-        let safeSessionTitle = APCLocalization.format(.overlaySessionTitleFormat, "Codex")
         try require(
             grouped.sessions.map(\.sessionTitle) == [
-                "\(safeSessionTitle) 1",
-                "\(safeSessionTitle) 2",
+                "Persistent Codex task title",
+                "Second Codex task title",
             ],
-            "grouped session titles lost their visual identity"
-        )
-        try require(
-            grouped.sessions.allSatisfy {
-                !$0.sessionTitle.contains("Persistent Codex task title")
-                    && !$0.sessionTitle.contains("Second Codex task title")
-            },
-            "grouped session titles rendered private Agent content"
+            "grouped session titles did not preserve their original values"
         )
         let groupedSize = OverlayGeometry.resolvedBubbleSize(
             in: CGSize(width: 1512, height: 934),
@@ -449,13 +440,23 @@ public enum AgentPetCompanionUIValidationContract {
     }
 
     private static func validateScheduler() throws {
-        let oneShot = FrameScheduler(fps: 12, frameCount: 4, loops: false)
-        try require(oneShot.frameIndex(elapsedSeconds: 10) == 3, "one-shot did not stop at final frame")
+        let oneShot = FrameScheduler(
+            fps: 10,
+            frameCount: 10,
+            durationMS: 1_000,
+            loops: false
+        )
+        try require(oneShot.frameIndex(elapsedSeconds: 10) == 9, "one-shot did not stop at final frame")
         try require(oneShot.hasCompleted(elapsedSeconds: 10), "one-shot completion was not reported")
 
-        let looping = FrameScheduler(fps: 12, frameCount: 4, loops: true)
+        let looping = FrameScheduler(
+            fps: 10,
+            frameCount: 20,
+            durationMS: 2_000,
+            loops: true
+        )
         try require(
-            looping.frameIndex(elapsedSeconds: 4.0 / 12.0) == 0,
+            looping.frameIndex(elapsedSeconds: 2) == 0,
             "looping state did not wrap"
         )
 
@@ -511,7 +512,7 @@ public enum AgentPetCompanionUIValidationContract {
     }
 
     private static func validateFramePipeline() async throws {
-        let urls = (0..<20).map { URL(fileURLWithPath: "/virtual/frame-\($0).png") }
+        let urls = (0..<40).map { URL(fileURLWithPath: "/virtual/frame-\($0).png") }
         let probe = UIValidationDecodeProbe()
         let pipeline = PetFramePipeline(
             memoryBudgetBytes: 32,
@@ -531,7 +532,14 @@ public enum AgentPetCompanionUIValidationContract {
             active: true,
             createdAt: "2026-07-10T00:00:00Z"
         )
-        let request = PetFrameLoadRequest(pet: pet, stateName: "tool", fps: 12, loops: true)
+        let request = PetFrameLoadRequest(
+            pet: pet,
+            stateName: "tool",
+            requestedFPS: 10,
+            nativeFPS: 20,
+            durationMS: 2_000,
+            loops: true
+        )
         let prepared = try await Task { @MainActor in
             try await pipeline.prepare(request)
         }.value

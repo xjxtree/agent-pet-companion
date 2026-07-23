@@ -12,18 +12,34 @@
   "references": ["source/references/reference-00.png"],
   "palette": ["violet", "indigo", "cool white"],
   "states": [
-    { "name": "idle", "motion": "Breathes softly and lets the tail sparkle." },
-    { "state": "start", "motion": "Raises its ears and looks toward the task." },
-    { "name": "tool", "motion": "Paws move while the tail emits short pulses." },
-    { "state": "waiting", "motion": "Pauses with one ear tilted toward the user." },
-    { "name": "review", "motion": "Turns slightly and presents the result." },
-    { "state": "done", "motion": "Nods once with a bright star burst." },
-    { "name": "failed", "motion": "Lowers its ears and dims the tail glow." }
+    { "name": "idle", "duration_ms": 2000, "motion": "Breathes softly and lets the tail sparkle." },
+    { "state": "start", "duration_ms": 1000, "motion": "Raises its ears and looks toward the task." },
+    { "name": "tool", "duration_ms": 2000, "motion": "Paws move while the tail emits short pulses." },
+    { "state": "waiting", "duration_ms": 2000, "motion": "Pauses with one ear tilted toward the user." },
+    { "name": "review", "duration_ms": 2000, "motion": "Turns slightly and presents the result." },
+    { "state": "done", "duration_ms": 1000, "motion": "Nods once with a bright star burst." },
+    { "name": "failed", "duration_ms": 2000, "motion": "Lowers its ears and dims the tail glow." }
   ],
   "runtime": {
-    "default_fps": 12,
-    "smooth_fps": 20,
-    "frames_per_state": 2,
+    "native_fps": 10,
+    "state_durations_ms": {
+      "idle": 2000,
+      "start": 1000,
+      "tool": 2000,
+      "waiting": 2000,
+      "review": 2000,
+      "done": 1000,
+      "failed": 2000
+    },
+    "state_frame_counts": {
+      "idle": 20,
+      "start": 10,
+      "tool": 20,
+      "waiting": 20,
+      "review": 20,
+      "done": 10,
+      "failed": 20
+    },
     "render_size": {
       "width": 384,
       "height": 416

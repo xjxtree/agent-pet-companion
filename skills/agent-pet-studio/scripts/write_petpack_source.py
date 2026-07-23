@@ -18,11 +18,22 @@ import sys
 import time
 import zlib
 
-HELPER_ID = "agent-pet-studio-preview-helper-v2"
-FRAMES_PER_STATE = 12
+HELPER_ID = "agent-pet-studio-preview-helper-v3"
+DEFAULT_NATIVE_FPS = 10
+VALID_NATIVE_FPS = {10, 20}
+VALID_DURATION_MS = {1000, 2000}
 FORM_PATH = Path("apc_skill_form.json")
 OUTPUT_DIR = Path("petpack-source")
 STATES = ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+DEFAULT_STATE_DURATIONS_MS = {
+    "idle": 2000,
+    "start": 1000,
+    "tool": 2000,
+    "waiting": 2000,
+    "review": 2000,
+    "done": 1000,
+    "failed": 2000,
+}
 RENDER_SIZES = {
     "standard": (192, 208),
     "high": (384, 416),
@@ -58,6 +69,25 @@ def safe_pet_id(description):
     return f"pet_{suffix}{millis}"
 
 
+def timing_from_form(form):
+    native_fps = form.get("native_fps", DEFAULT_NATIVE_FPS)
+    if type(native_fps) is not int or native_fps not in VALID_NATIVE_FPS:
+        raise SystemExit("native_fps must be exactly 10 or 20")
+    raw_durations = form.get("state_durations_ms", DEFAULT_STATE_DURATIONS_MS)
+    if not isinstance(raw_durations, dict) or set(raw_durations) != set(STATES):
+        raise SystemExit("state_durations_ms must contain exactly the seven fixed states")
+    state_durations_ms = {}
+    for state in STATES:
+        duration_ms = raw_durations.get(state)
+        if type(duration_ms) is not int or duration_ms not in VALID_DURATION_MS:
+            raise SystemExit(f"state_durations_ms.{state} must be exactly 1000 or 2000")
+        state_durations_ms[state] = duration_ms
+    state_frame_counts = {
+        state: native_fps * state_durations_ms[state] // 1000 for state in STATES
+    }
+    return native_fps, state_durations_ms, state_frame_counts
+
+
 def chunk(kind, data):
     return (
         struct.pack(">I", len(data))
@@ -84,7 +114,7 @@ def write_png(path, width, height, state_name, frame_index=0):
     head_limit = head_rx * head_rx * head_ry * head_ry
     accent_limit = accent_rx * accent_rx * accent_ry * accent_ry
     rows = []
-    phase = frame_index % 2
+    phase = frame_index % 4
     for y in range(height):
         row = bytearray([0])
         for x in range(width):
@@ -137,6 +167,7 @@ def write_text(path, text):
 def build_source(form):
     quality = str(form.get("quality") or "standard")
     width, height = RENDER_SIZES.get(quality, RENDER_SIZES["standard"])
+    native_fps, state_durations_ms, state_frame_counts = timing_from_form(form)
     created_at = now_rfc3339()
     pet_id = safe_pet_id(form.get("description", "skillpet"))
     name = "Skill Studio Pet"
@@ -148,13 +179,13 @@ def build_source(form):
         "style": style,
         "quality": quality if quality in RENDER_SIZES else "standard",
         "render_size": {"width": width, "height": height},
-        "fps_profiles": {"standard": 12, "smooth": 20},
-        "default_fps_profile": "standard",
+        "native_fps": native_fps,
         "states": [
             {
                 "name": state,
                 "frames_dir": f"assets/frames/{state}",
                 "loop": state not in {"start", "done"},
+                "duration_ms": state_durations_ms[state],
             }
             for state in STATES
         ],
@@ -170,9 +201,19 @@ def build_source(form):
             "quality": quality,
             "description": form.get("description"),
             "states": [
-                {"name": state, "motion": f"{state} validation motion from App Server Skill helper"}
+                {
+                    "name": state,
+                    "motion": f"{state} validation motion from App Server Skill helper",
+                    "duration_ms": state_durations_ms[state],
+                }
                 for state in STATES
             ],
+            "runtime": {
+                "native_fps": native_fps,
+                "state_durations_ms": state_durations_ms,
+                "state_frame_counts": state_frame_counts,
+                "render_size": {"width": width, "height": height},
+            },
             "generation": {
                 "generator": "agent-pet-studio-preview-helper",
                 "provenance": "deterministic_preview",
@@ -183,7 +224,7 @@ def build_source(form):
     )
 
     for state in STATES:
-        for frame_index in range(FRAMES_PER_STATE):
+        for frame_index in range(state_frame_counts[state]):
             write_png(
                 OUTPUT_DIR / "assets" / "frames" / state / f"{frame_index:04d}.png",
                 width,
@@ -211,6 +252,8 @@ def build_source(form):
         reference_files.append(copied_name)
     packaged_form = dict(form)
     packaged_form["reference_images"] = reference_files
+    packaged_form["native_fps"] = native_fps
+    packaged_form["state_durations_ms"] = state_durations_ms
     write_text(
         source_dir / "prompt.md",
         "# Agent Pet Studio Prompt\n\n"
@@ -228,7 +271,9 @@ def build_source(form):
             "created_at": created_at,
             "form": packaged_form,
             "reference_files": reference_files,
-            "frames_per_state": FRAMES_PER_STATE,
+            "native_fps": native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
             "visual_source": "deterministic-preview",
             "preview_only": True,
             "reference_visual_influence": False,
@@ -268,7 +313,10 @@ def build_source(form):
             "ok": True,
             "skill_helper": HELPER_ID,
             "preview_only": True,
-            "frames_per_state": FRAMES_PER_STATE,
+            "frame_count": sum(state_frame_counts.values()),
+            "native_fps": native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
         },
     )
     return manifest
@@ -298,8 +346,21 @@ def validate_source():
         )
         raise SystemExit(result.stderr or result.stdout or "petpack validate failed")
     validation = json.loads(result.stdout)
+    manifest = json.loads((OUTPUT_DIR / "manifest.json").read_text(encoding="utf-8"))
+    native_fps = manifest["native_fps"]
+    state_durations_ms = {
+        entry["name"]: entry["duration_ms"] for entry in manifest["states"]
+    }
+    state_frame_counts = {
+        state: native_fps * duration_ms // 1000
+        for state, duration_ms in state_durations_ms.items()
+    }
     validation["schema_version"] = "apc.pet-validation.v1"
     validation["skill_helper"] = HELPER_ID
+    validation["frame_count"] = sum(state_frame_counts.values())
+    validation["native_fps"] = native_fps
+    validation["state_durations_ms"] = state_durations_ms
+    validation["state_frame_counts"] = state_frame_counts
     write_json(OUTPUT_DIR / "build" / "validation.json", validation)
     return validation
 

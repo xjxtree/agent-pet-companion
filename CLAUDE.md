@@ -2,26 +2,8 @@
 
 # Claude Code Notes
 
-This file provides Claude Code-specific guidance for this repository. Shared project rules live in `AGENTS.md`, which is included above via `@AGENTS.md`.
+Shared project rules live in `AGENTS.md`, included above via `@AGENTS.md`. Do not duplicate shared scope, architecture, safety, or workflow rules here.
 
-## Required Baseline
+Use this context order: user request, `AGENTS.md`, implementation/schemas/manifests/tests in the touched area, then the owning document indexed by `docs/README.md`.
 
-Treat `AGENTS.md` as the canonical shared instruction entrypoint. Do not duplicate or reinterpret its product scope, architecture, repository layout, safety boundaries, or development guidelines here.
-
-## Claude-Specific Context Order
-
-When starting a task, use this reading order:
-
-1. The user request
-2. `AGENTS.md`
-3. Existing code, schemas, manifests, and tests in the touched area
-4. A relevant durable contract document listed in `docs/README.md`, when one applies
-
-If a rule should apply to every agent, update `AGENTS.md` instead of adding it to this file.
-
-## Claude-Specific Notes
-
-- Keep responses explicit about whether a requested behavior is planned, implemented, or not yet available.
-- For docs-only changes, verify Markdown links and referenced assets when practical.
-- For future code changes, report the exact Swift, Rust, or integration checks that were run. If the project skeleton needed for a check does not exist yet, say that directly.
-- When working on Claude Code integration, keep it in `plugins/claude-code/` and follow the shared event model defined by the active schemas, implementation, and tests.
+Claude Code connector changes belong in `plugins/claude-code/` and must follow the shared event contracts in the active implementation, schemas, and tests.

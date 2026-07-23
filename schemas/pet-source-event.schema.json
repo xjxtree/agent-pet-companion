@@ -40,16 +40,9 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/stateName" }
     },
-    "frames_per_state": { "type": "integer", "minimum": 1, "maximum": 40 },
-    "fps_profiles": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["standard", "smooth"],
-      "properties": {
-        "standard": { "const": 12 },
-        "smooth": { "const": 20 }
-      }
-    },
+    "native_fps": { "enum": [10, 20] },
+    "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
+    "state_frame_counts": { "$ref": "#/$defs/stateFrameCounts" },
     "completed": { "type": "boolean" },
     "validation_ok": { "type": "boolean" },
     "reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
@@ -59,6 +52,22 @@
       "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "event": { "const": "states.rendered" } },
+        "required": ["event"]
+      },
+      "then": {
+        "required": [
+          "states",
+          "native_fps",
+          "state_durations_ms",
+          "state_frame_counts"
+        ]
+      }
+    }
+  ],
   "$defs": {
     "boundedText": {
       "type": "string",
@@ -76,6 +85,34 @@
       "properties": {
         "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
         "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      }
+    },
+    "stateDurations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "properties": {
+        "idle": { "enum": [1000, 2000] },
+        "start": { "enum": [1000, 2000] },
+        "tool": { "enum": [1000, 2000] },
+        "waiting": { "enum": [1000, 2000] },
+        "review": { "enum": [1000, 2000] },
+        "done": { "enum": [1000, 2000] },
+        "failed": { "enum": [1000, 2000] }
+      }
+    },
+    "stateFrameCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "properties": {
+        "idle": { "enum": [10, 20, 40] },
+        "start": { "enum": [10, 20, 40] },
+        "tool": { "enum": [10, 20, 40] },
+        "waiting": { "enum": [10, 20, 40] },
+        "review": { "enum": [10, 20, 40] },
+        "done": { "enum": [10, 20, 40] },
+        "failed": { "enum": [10, 20, 40] }
       }
     }
   }

@@ -434,6 +434,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var descriptionText = AIPetMakerDefaults.descriptionText
     @Published private(set) var selectedStyle: StylePreset = .semiRealistic
     @Published private(set) var selectedQuality: QualityLevel = .high
+    @Published private(set) var selectedNativeFPS = PetAnimationContract.defaultNativeFPS
+    @Published private(set) var generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
     @Published private(set) var referenceImages: [String] = []
     @Published private(set) var referenceImageIssue: MakerReferenceImageIssue?
     @Published private(set) var referenceReselectionCount = 0
@@ -628,6 +630,10 @@ final class AppStore: ObservableObject {
         pets.first(where: \.active)
     }
 
+    var effectiveFPSProfile: FpsProfile {
+        activePet?.effectiveFPSProfile(behavior.fpsProfile) ?? behavior.fpsProfile
+    }
+
     /// Compatibility projection for older callers. The typed operation state
     /// remains the single source of truth for serialization and failure UI.
     var connectionOperationSources: Set<AgentSource> {
@@ -735,6 +741,19 @@ final class AppStore: ObservableObject {
     var canStartGeneration: Bool {
         !generationSession.isActive
             && GenerationPromptPolicy.isValid(descriptionText)
+    }
+
+    var canClearStudioForm: Bool {
+        !generationSession.isActive
+            && (
+                descriptionText != AIPetMakerDefaults.descriptionText
+                    || !referenceImages.isEmpty
+                    || selectedNativeFPS != PetAnimationContract.defaultNativeFPS
+                    || generationStateDurationsMS != PetAnimationContract.defaultStateDurationsMS
+                    || referenceImageIssue != nil
+                    || referenceReselectionCount != 0
+                    || !generationReplyText.isEmpty
+            )
     }
 
     var isWaitingForGenerationInput: Bool {
@@ -1762,6 +1781,8 @@ final class AppStore: ObservableObject {
             && descriptionText == AIPetMakerDefaults.descriptionText
             && selectedStyle == .semiRealistic
             && selectedQuality == .high
+            && selectedNativeFPS == PetAnimationContract.defaultNativeFPS
+            && generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS
             && referenceImages.isEmpty
             && referenceImageIssue == nil
     }
@@ -1795,7 +1816,9 @@ final class AppStore: ObservableObject {
             description: form.description,
             style: form.style,
             quality: form.quality,
-            referenceImages: safePaths
+            referenceImages: safePaths,
+            nativeFPS: form.nativeFPS,
+            stateDurationsMS: form.stateDurationsMS
         )
         return sanitized
     }
@@ -1810,6 +1833,8 @@ final class AppStore: ObservableObject {
             selectedStyle = style
         }
         selectedQuality = form.quality
+        selectedNativeFPS = form.nativeFPS
+        generationStateDurationsMS = form.stateDurationsMS
         referenceImages = form.referenceImages
         self.referenceReselectionCount = referenceReselectionCount
         reselectedReferenceImagePaths.removeAll()
@@ -1851,6 +1876,25 @@ final class AppStore: ObservableObject {
         selectedQuality = quality
     }
 
+    func selectGenerationNativeFPS(_ nativeFPS: Int) {
+        guard !generationSession.isActive,
+              PetAnimationContract.supportedNativeFPS.contains(nativeFPS)
+        else { return }
+        recordMakerUserMutation()
+        selectedNativeFPS = nativeFPS
+    }
+
+    func selectGenerationStateDuration(_ durationMS: Int, for stateName: String) {
+        guard !generationSession.isActive,
+              PetAnimationContract.orderedStateNames.contains(stateName),
+              PetAnimationContract.supportedDurationsMS.contains(durationMS)
+        else { return }
+        recordMakerUserMutation()
+        var durations = generationStateDurationsMS
+        durations[stateName] = durationMS
+        generationStateDurationsMS = durations
+    }
+
     func startGeneration() {
         guard canStartGeneration else {
             statusText = generationSession.isActive ? generationStateTitle : "请先填写宠物描述"
@@ -1866,7 +1910,9 @@ final class AppStore: ObservableObject {
             description: description,
             style: selectedStyle.rawValue,
             quality: selectedQuality,
-            referenceImages: referenceImages
+            referenceImages: referenceImages,
+            nativeFPS: selectedNativeFPS,
+            stateDurationsMS: generationStateDurationsMS
         )
         beginGeneration(
             with: form,
@@ -1910,7 +1956,9 @@ final class AppStore: ObservableObject {
             description: instruction,
             style: pet.style,
             quality: pet.quality,
-            referenceImages: []
+            referenceImages: [],
+            nativeFPS: pet.nativeFPS,
+            stateDurationsMS: pet.stateDurationsMS
         )
         let initialUserMessage = GenerationMessage(
             role: "user",
@@ -1943,7 +1991,11 @@ final class AppStore: ObservableObject {
                 )
                 guard let dict = result as? [String: Any],
                       let jobID = dict["job_id"] as? String,
-                      !jobID.isEmpty
+                      !jobID.isEmpty,
+                      let acceptedNativeFPS = dict["native_fps"] as? Int,
+                      PetAnimationContract.supportedNativeFPS.contains(acceptedNativeFPS),
+                      let acceptedStateDurationsMS = dict["state_durations_ms"] as? [String: Int],
+                      PetAnimationContract.hasValidStateDurations(acceptedStateDurationsMS)
                 else {
                     throw PetCoreClientError.invalidResponse
                 }
@@ -1951,7 +2003,9 @@ final class AppStore: ObservableObject {
                     ?? baselineRevisionID
                 _ = reduceGeneration(.startAccepted(
                     jobID: jobID,
-                    baselineRevisionID: acceptedBaselineRevisionID
+                    baselineRevisionID: acceptedBaselineRevisionID,
+                    nativeFPS: acceptedNativeFPS,
+                    stateDurationsMS: acceptedStateDurationsMS
                 ))
                 statusText = "正在修改 \(pet.name)"
             } catch {
@@ -1990,6 +2044,8 @@ final class AppStore: ObservableObject {
         descriptionText = draft.brief
         selectedStyle = draft.style
         selectedQuality = draft.quality
+        selectedNativeFPS = pet.nativeFPS
+        generationStateDurationsMS = pet.stateDurationsMS
         referenceImages = referencePath.map { [$0] } ?? []
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
@@ -2006,6 +2062,8 @@ final class AppStore: ObservableObject {
         }
         recordMakerUserMutation()
         descriptionText = AIPetMakerDefaults.descriptionText
+        selectedNativeFPS = PetAnimationContract.defaultNativeFPS
+        generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
         referenceImages.removeAll()
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
@@ -2056,7 +2114,9 @@ final class AppStore: ObservableObject {
             descriptionText: descriptionText,
             style: selectedStyle,
             quality: selectedQuality,
-            referenceImages: referenceImages
+            referenceImages: referenceImages,
+            nativeFPS: selectedNativeFPS,
+            stateDurationsMS: generationStateDurationsMS
         ) else { return }
         if modifying, generationSession.resultPetID == nil {
             statusText = "修改会话缺少宠物 ID，无法安全重试"
@@ -2421,6 +2481,10 @@ final class AppStore: ObservableObject {
     }
 
     func updateBehavior(_ next: BehaviorSettings) {
+        var next = next
+        if let activePet {
+            next.fpsProfile = activePet.effectiveFPSProfile(next.fpsProfile)
+        }
         let patch = BehaviorSettingsPatch(from: behavior, to: next)
         guard !patch.isEmpty else { return }
         let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme

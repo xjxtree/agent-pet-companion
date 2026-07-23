@@ -8,6 +8,7 @@ base-revision bookkeeping, PetCore CLI discovery, validation, and packaging.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -31,6 +32,19 @@ SOURCE_EVENT_SCHEMA = "apc.pet-source-event.v1"
 VALIDATION_SCHEMA = "apc.pet-validation.v1"
 PETPACK_SCHEMA = "apc.petpack.v1"
 STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+ONE_SHOT_STATES = frozenset({"start", "done"})
+VALID_NATIVE_FPS = (10, 20)
+VALID_DURATION_MS = (1000, 2000)
+DEFAULT_NATIVE_FPS = 10
+DEFAULT_STATE_DURATIONS_MS = {
+    "idle": 2000,
+    "start": 1000,
+    "tool": 2000,
+    "waiting": 2000,
+    "review": 2000,
+    "done": 1000,
+    "failed": 2000,
+}
 
 # Keep these limits aligned with PetCore's v1 archive limits.
 MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
@@ -58,7 +72,9 @@ SOURCE_ALLOWED_KEYS = {
     "style",
     "quality",
     "visual_source",
-    "frames_per_state",
+    "native_fps",
+    "state_durations_ms",
+    "state_frame_counts",
     "preview_only",
     "reference_visual_influence",
     "form",
@@ -94,8 +110,9 @@ EVENT_ALLOWED_KEYS = {
     "render_size",
     "states",
     "changed_states",
-    "frames_per_state",
-    "fps_profiles",
+    "native_fps",
+    "state_durations_ms",
+    "state_frame_counts",
     "completed",
     "validation_ok",
     "reference_count",
@@ -213,22 +230,25 @@ def minimum_visual_pixel_count(total_pixels: int) -> int:
 
 
 def canonical_premultiplied_rgba(image: Any) -> bytes:
-    """Return display-relevant pixels, excluding hidden RGB under transparency.
+    """Return display-relevant pixels using PetCore's alpha normalization.
 
     Comparing encoded PNG/WebP bytes (or straight-alpha RGBA) lets a producer
-    fake motion by changing RGB values that are invisible at alpha zero.  A
-    premultiplied representation matches the compositor-facing visual value and
-    deterministically maps every fully transparent pixel to zero RGBA.
+    fake motion by changing RGB values hidden below the visible threshold. A
+    premultiplied representation matches the compositor-facing visual value;
+    pixels below PetCore's visible-alpha threshold map to zero RGBA.
     """
 
     rgba = image.convert("RGBA")
     canonical = bytearray(rgba.width * rgba.height * 4)
     offset = 0
     for red, green, blue, alpha in rgba.getdata():
-        canonical[offset] = (red * alpha + 127) // 255
-        canonical[offset + 1] = (green * alpha + 127) // 255
-        canonical[offset + 2] = (blue * alpha + 127) // 255
-        canonical[offset + 3] = alpha
+        if alpha < VISIBLE_ALPHA_THRESHOLD:
+            canonical[offset : offset + 4] = b"\x00\x00\x00\x00"
+        else:
+            canonical[offset] = (red * alpha + 127) // 255
+            canonical[offset + 1] = (green * alpha + 127) // 255
+            canonical[offset + 2] = (blue * alpha + 127) // 255
+            canonical[offset + 3] = alpha
         offset += 4
     return bytes(canonical)
 
@@ -751,6 +771,118 @@ def manifest_state_paths(manifest: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def manifest_timing_contract(manifest: dict[str, Any]) -> dict[str, Any]:
+    native_fps = manifest.get("native_fps")
+    if type(native_fps) is not int or native_fps not in VALID_NATIVE_FPS:
+        raise MakerError("invalid_manifest", "manifest.native_fps must be exactly 10 or 20")
+
+    entries = manifest.get("states")
+    if not isinstance(entries, list) or len(entries) != len(STATES):
+        raise MakerError("invalid_manifest", "manifest.json must contain exactly seven states")
+    durations: dict[str, int] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise MakerError("invalid_manifest", "manifest.json contains an invalid state entry")
+        state = entry.get("name")
+        duration_ms = entry.get("duration_ms")
+        if state not in STATES or state in durations:
+            raise MakerError("invalid_manifest", "manifest.json state names must be unique and fixed")
+        if type(duration_ms) is not int or duration_ms not in VALID_DURATION_MS:
+            raise MakerError(
+                "invalid_manifest",
+                f"State {state} duration_ms must be exactly 1000 or 2000",
+            )
+        durations[state] = duration_ms
+    if set(durations) != set(STATES):
+        raise MakerError("invalid_manifest", "manifest.json must contain all seven fixed states")
+
+    frame_counts = {
+        state: native_fps * durations[state] // 1000
+        for state in STATES
+    }
+    return {
+        "native_fps": native_fps,
+        "state_durations_ms": durations,
+        "state_frame_counts": frame_counts,
+    }
+
+
+def validate_exact_state_counts(
+    state_counts: dict[str, int], timing: dict[str, Any]
+) -> None:
+    expected = timing["state_frame_counts"]
+    for state in STATES:
+        actual = state_counts.get(state)
+        if actual != expected[state]:
+            raise MakerError(
+                "invalid_assets",
+                f"State {state} has {actual or 0} PNG frames; expected exactly {expected[state]} "
+                f"for {timing['native_fps']} FPS and {timing['state_durations_ms'][state]} ms",
+            )
+
+
+def natural_frame_name_cmp(left: str, right: str) -> int:
+    """Mirror PetCore's natural_frame_path_cmp for runtime-identical ordering."""
+    left_bytes = left.encode("utf-8")
+    right_bytes = right.encode("utf-8")
+    left_index = 0
+    right_index = 0
+
+    while left_index < len(left_bytes) and right_index < len(right_bytes):
+        left_byte = left_bytes[left_index]
+        right_byte = right_bytes[right_index]
+        if 48 <= left_byte <= 57 and 48 <= right_byte <= 57:
+            left_end = left_index
+            while left_end < len(left_bytes) and 48 <= left_bytes[left_end] <= 57:
+                left_end += 1
+            right_end = right_index
+            while right_end < len(right_bytes) and 48 <= right_bytes[right_end] <= 57:
+                right_end += 1
+
+            left_significant = left_index
+            while left_significant < left_end and left_bytes[left_significant] == 48:
+                left_significant += 1
+            if left_significant == left_end:
+                left_significant = max(left_index, left_end - 1)
+            right_significant = right_index
+            while right_significant < right_end and right_bytes[right_significant] == 48:
+                right_significant += 1
+            if right_significant == right_end:
+                right_significant = max(right_index, right_end - 1)
+
+            left_key = (
+                left_end - left_significant,
+                left_bytes[left_significant:left_end],
+                left_end - left_index,
+            )
+            right_key = (
+                right_end - right_significant,
+                right_bytes[right_significant:right_end],
+                right_end - right_index,
+            )
+            if left_key != right_key:
+                return -1 if left_key < right_key else 1
+            left_index = left_end
+            right_index = right_end
+            continue
+
+        left_lower = left_byte + 32 if 65 <= left_byte <= 90 else left_byte
+        right_lower = right_byte + 32 if 65 <= right_byte <= 90 else right_byte
+        left_key = (left_lower, left_byte)
+        right_key = (right_lower, right_byte)
+        if left_key != right_key:
+            return -1 if left_key < right_key else 1
+        left_index += 1
+        right_index += 1
+
+    if len(left_bytes) == len(right_bytes):
+        return 0
+    return -1 if len(left_bytes) < len(right_bytes) else 1
+
+
+NATURAL_FRAME_NAME_KEY = functools.cmp_to_key(natural_frame_name_cmp)
+
+
 def collect_state_files(source_dir: Path, manifest: dict[str, Any]) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
     hashes: dict[str, dict[str, str]] = {}
     counts: dict[str, int] = {}
@@ -759,7 +891,10 @@ def collect_state_files(source_dir: Path, manifest: dict[str, Any]) -> tuple[dic
         if state_dir.is_symlink() or not state_dir.is_dir():
             raise MakerError("invalid_assets", f"Missing safe frame directory for state {state}")
         state_hashes: dict[str, str] = {}
-        for child in sorted(state_dir.iterdir(), key=lambda path: path.name):
+        for child in sorted(
+            state_dir.iterdir(),
+            key=lambda path: NATURAL_FRAME_NAME_KEY(path.name),
+        ):
             if child.is_symlink() or not child.is_file():
                 raise MakerError("invalid_assets", f"State {state} contains a non-file or symlink entry")
             if child.suffix.lower() == ".png":
@@ -772,17 +907,26 @@ def collect_state_files(source_dir: Path, manifest: dict[str, Any]) -> tuple[dic
 
 
 def structural_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "schema_version",
-        "id",
-        "quality",
-        "render_size",
-        "fps_profiles",
-        "default_fps_profile",
-        "states",
-        "created_at",
-    )
-    return {key: manifest.get(key) for key in keys}
+    states = manifest.get("states")
+    state_layout = []
+    if isinstance(states, list):
+        state_layout = [
+            {
+                "name": entry.get("name"),
+                "frames_dir": entry.get("frames_dir"),
+                "loop": entry.get("loop"),
+            }
+            for entry in states
+            if isinstance(entry, dict)
+        ]
+    return {
+        "schema_version": manifest.get("schema_version"),
+        "id": manifest.get("id"),
+        "quality": manifest.get("quality"),
+        "render_size": manifest.get("render_size"),
+        "states": state_layout,
+        "created_at": manifest.get("created_at"),
+    }
 
 
 def make_context(
@@ -838,6 +982,8 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             if manifest.get("schema_version") != PETPACK_SCHEMA:
                 raise MakerError("invalid_manifest", "Only apc.petpack.v1 packages can be modified")
             state_files, state_counts = collect_state_files(staging, manifest)
+            timing = manifest_timing_contract(manifest)
+            validate_exact_state_counts(state_counts, timing)
             source_dir = staging.rename(source_dir)
             base = {
                 "pet_id": manifest.get("id"),
@@ -845,6 +991,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
                 "input_name": input_path.name,
                 "input_path": str(input_path),
                 "manifest": structural_manifest(manifest),
+                "timing": timing,
                 "manifest_sha256": sha256_file(source_dir / "manifest.json"),
                 "state_files": state_files,
                 "state_counts": state_counts,
@@ -1156,7 +1303,11 @@ def normalize_source_metadata(
         raise MakerError("privacy_violation", "source.json must not contain absolute paths or URLs")
     validate_reference_files(source_dir, metadata)
 
-    metadata["frames_per_state"] = min(state_counts.values())
+    timing = manifest_timing_contract(manifest)
+    validate_exact_state_counts(state_counts, timing)
+    metadata["native_fps"] = timing["native_fps"]
+    metadata["state_durations_ms"] = timing["state_durations_ms"]
+    metadata["state_frame_counts"] = timing["state_frame_counts"]
     metadata["manifest_id"] = manifest.get("id")
     metadata["pet_name"] = manifest.get("name")
     metadata["style"] = manifest.get("style")
@@ -1187,15 +1338,215 @@ def compare_modified_states(
     return [state for state in STATES if base_files.get(state) != current_files.get(state)]
 
 
+def ordered_state_digests(state_files: dict[str, dict[str, str]], state: str) -> list[str]:
+    return [
+        digest
+        for _, digest in sorted(
+            state_files.get(state, {}).items(),
+            key=lambda item: NATURAL_FRAME_NAME_KEY(item[0]),
+        )
+    ]
+
+
+def runtime_sample_indices(
+    source_frame_count: int,
+    target_frame_count: int,
+    loops: bool,
+) -> list[int]:
+    """Mirror FrameSamplingPlan so authored revisions preserve runtime poses."""
+    if source_frame_count <= 0 or target_frame_count <= 0:
+        return []
+    target_frame_count = min(source_frame_count, target_frame_count)
+    if target_frame_count == source_frame_count:
+        return list(range(source_frame_count))
+    if loops:
+        return [
+            logical_index * source_frame_count // target_frame_count
+            for logical_index in range(target_frame_count)
+        ]
+    if target_frame_count == 1:
+        return [source_frame_count - 1]
+
+    denominator = target_frame_count - 1
+    indices: list[int] = []
+    for logical_index in range(target_frame_count):
+        numerator = logical_index * (source_frame_count - 1)
+        quotient, remainder = divmod(numerator, denominator)
+        indices.append(quotient + (1 if remainder * 2 >= denominator else 0))
+    return indices
+
+
+def standard_sample_indices(state: str, source_frame_count: int, duration_ms: int) -> list[int]:
+    return runtime_sample_indices(
+        source_frame_count,
+        10 * duration_ms // 1000,
+        state not in ONE_SHOT_STATES,
+    )
+
+
 def validate_generated_motion(
     state_files: dict[str, dict[str, str]], generated_states: Iterable[str]
 ) -> None:
     for state in generated_states:
-        hashes = state_files.get(state, {})
-        if len(hashes) < 2:
-            raise MakerError("invalid_assets", f"Generated state {state} requires at least two PNG frames")
-        if len(set(hashes.values())) < 2:
-            raise MakerError("invalid_assets", f"Generated state {state} contains duplicate still frames")
+        digests = ordered_state_digests(state_files, state)
+        if len(digests) < 2:
+            raise MakerError(
+                "invalid_assets",
+                f"Generated state {state} requires at least two PNG frames",
+            )
+        for index, (previous, current) in enumerate(zip(digests, digests[1:]), 1):
+            if previous == current:
+                raise MakerError(
+                    "invalid_assets",
+                    f"Generated state {state} has copied adjacent frames at indices {index - 1} and {index}",
+                )
+
+
+def validate_native_frame_semantics(
+    state_files: dict[str, dict[str, str]],
+    generated_states: Iterable[str],
+    timing: dict[str, Any],
+) -> None:
+    if timing.get("native_fps") != 20:
+        return
+    for state in generated_states:
+        digests = ordered_state_digests(state_files, state)
+        indices = standard_sample_indices(
+            state,
+            len(digests),
+            timing["state_durations_ms"][state],
+        )
+        canonical = [digests[index] for index in indices]
+        for index, (previous, current) in enumerate(zip(canonical, canonical[1:]), 1):
+            if previous == current:
+                raise MakerError(
+                    "invalid_assets",
+                    f"Generated state {state} has duplicate canonical 10 FPS poses at indices "
+                    f"{indices[index - 1]} and {indices[index]}",
+                )
+        if (
+            state not in ONE_SHOT_STATES
+            and len(canonical) >= 2
+            and canonical[-1] == canonical[0]
+        ):
+            raise MakerError(
+                "invalid_assets",
+                f"Generated loop state {state} has duplicate canonical 10 FPS poses across "
+                f"the wrap boundary at indices {indices[-1]} and {indices[0]}",
+            )
+
+
+def reject_naive_duration_retime(state: str, before: list[str], after: list[str]) -> None:
+    if not before or not after:
+        return
+    candidates: list[list[str]] = []
+    if len(after) > len(before):
+        candidates.extend(
+            [
+                before * (len(after) // len(before)),
+                [before[index % len(before)] for index in range(len(after))],
+            ]
+        )
+    else:
+        candidates.extend([before[: len(after)], before[-len(after) :]])
+        candidates.append(
+            [
+                before[index]
+                for index in runtime_sample_indices(
+                    len(before),
+                    len(after),
+                    state not in ONE_SHOT_STATES,
+                )
+            ]
+        )
+    if any(after == candidate for candidate in candidates) or set(after).issubset(set(before)):
+        raise MakerError(
+            "invalid_assets",
+            f"State {state} duration changed by truncating, repeating, or sampling the old motion; re-storyboard it",
+        )
+
+
+def validate_timing_revision(
+    base_files: dict[str, dict[str, str]],
+    current_files: dict[str, dict[str, str]],
+    base_timing: dict[str, Any],
+    current_timing: dict[str, Any],
+    changed_states: list[str],
+) -> None:
+    base_fps = base_timing.get("native_fps")
+    current_fps = current_timing.get("native_fps")
+    native_fps_changed = base_fps != current_fps
+    duration_changed = {
+        state
+        for state in STATES
+        if base_timing.get("state_durations_ms", {}).get(state)
+        != current_timing.get("state_durations_ms", {}).get(state)
+    }
+    changed = set(changed_states)
+
+    if native_fps_changed and changed != set(STATES):
+        raise MakerError(
+            "timing_change_incomplete",
+            "Changing native_fps requires regenerated frame sequences for all seven states",
+        )
+    missing_duration_changes = duration_changed - changed
+    if missing_duration_changes:
+        raise MakerError(
+            "timing_change_incomplete",
+            "Changing duration_ms requires regenerated frames for states: "
+            + ", ".join(sorted(missing_duration_changes, key=STATES.index)),
+        )
+
+    for state in STATES:
+        before = ordered_state_digests(base_files, state)
+        after = ordered_state_digests(current_files, state)
+        if state in duration_changed:
+            reject_naive_duration_retime(state, before, after)
+            continue
+        if not native_fps_changed:
+            continue
+        if base_fps == 10 and current_fps == 20:
+            preserved_indices = standard_sample_indices(
+                state,
+                len(after),
+                current_timing["state_durations_ms"][state],
+            )
+            if (
+                len(after) != len(before) * 2
+                or [after[index] for index in preserved_indices] != before
+            ):
+                raise MakerError(
+                    "invalid_frame_interpolation",
+                    f"State {state} 10 to 20 FPS conversion must preserve source frames at the runtime 10 FPS sample indices",
+                )
+            preserved = set(preserved_indices)
+            source_poses = set(before)
+            for index in range(len(after)):
+                if index in preserved:
+                    continue
+                if after[index] in source_poses or after[index] == after[index - 1] or (
+                    index + 1 < len(after) and after[index] == after[index + 1]
+                ):
+                    raise MakerError(
+                        "invalid_frame_interpolation",
+                        f"State {state} has a copied source pose instead of a real intermediate at index {index}",
+                    )
+        elif base_fps == 20 and current_fps == 10:
+            source_indices = standard_sample_indices(
+                state,
+                len(before),
+                base_timing["state_durations_ms"][state],
+            )
+            if after != [before[index] for index in source_indices]:
+                raise MakerError(
+                    "invalid_frame_downsample",
+                    f"State {state} 20 to 10 FPS conversion must match the runtime 10 FPS sample indices",
+                )
+        else:
+            raise MakerError(
+                "invalid_manifest",
+                f"Unsupported native FPS transition {base_fps!r} to {current_fps!r}",
+            )
 
 
 def validate_portable_visual_assets(source_dir: Path, manifest: dict[str, Any]) -> None:
@@ -1225,7 +1576,10 @@ def validate_portable_visual_assets(source_dir: Path, manifest: dict[str, Any]) 
 
     try:
         for state, relative in manifest_state_paths(manifest).items():
-            for frame_path in sorted((source_dir / relative).glob("*.png")):
+            for frame_path in sorted(
+                (source_dir / relative).glob("*.png"),
+                key=lambda path: NATURAL_FRAME_NAME_KEY(path.name),
+            ):
                 with Image.open(frame_path) as decoded:
                     if decoded.format != "PNG" or decoded.size != expected_size:
                         raise MakerError(
@@ -1347,6 +1701,7 @@ def validate_text_metadata(
     if not isinstance(brief_states, list) or len(brief_states) != len(STATES):
         raise MakerError("invalid_metadata", "brief.states must contain all seven fixed states")
     named_states: list[str] = []
+    manifest_durations = manifest_timing_contract(manifest)["state_durations_ms"]
     for entry in brief_states:
         if isinstance(entry, str):
             named_states.append(entry)
@@ -1357,19 +1712,26 @@ def validate_text_metadata(
         motion = entry.get("motion")
         if state not in STATES or not isinstance(motion, str) or not motion.strip():
             raise MakerError("invalid_metadata", "brief state objects require a fixed name and motion")
+        duration_ms = entry.get("duration_ms")
+        if duration_ms != manifest_durations[state]:
+            raise MakerError(
+                "invalid_metadata",
+                f"brief state {state} duration_ms must match manifest.json",
+            )
         if ("name" in entry) == ("state" in entry):
             raise MakerError("invalid_metadata", "brief state objects use exactly one of name or state")
-        if set(entry) - {"name", "state", "label", "motion"}:
+        if set(entry) - {"name", "state", "label", "motion", "duration_ms"}:
             raise MakerError("invalid_metadata", "brief state object contains undeclared fields")
         named_states.append(state)
     if set(named_states) != set(STATES) or len(set(named_states)) != len(STATES):
         raise MakerError("invalid_metadata", "brief.states must identify each fixed state exactly once")
     runtime = brief.get("runtime")
     if runtime is not None:
+        timing = manifest_timing_contract(manifest)
         expected_runtime = {
-            "default_fps": 12,
-            "smooth_fps": 20,
-            "frames_per_state": min(state_counts.values()),
+            "native_fps": timing["native_fps"],
+            "state_durations_ms": timing["state_durations_ms"],
+            "state_frame_counts": timing["state_frame_counts"],
             "render_size": manifest.get("render_size"),
         }
         if runtime != expected_runtime:
@@ -1498,11 +1860,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError("invalid_manifest", "manifest.schema_version must be apc.petpack.v1")
     current_files, state_counts = collect_state_files(source_dir, manifest)
-    if min(state_counts.values()) < 2:
-        raise MakerError(
-            "invalid_assets",
-            "skill-full-source packages require at least two PNG frames in every state",
-        )
+    timing = manifest_timing_contract(manifest)
+    validate_exact_state_counts(state_counts, timing)
 
     changed_states: list[str] = []
     if args.operation == "modify":
@@ -1512,7 +1871,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         if structural_manifest(manifest) != base.get("manifest"):
             raise MakerError(
                 "base_contract_changed",
-                "Modify must preserve ID, format, quality, render size, FPS, states, and created_at",
+                "Modify must preserve ID, format, quality, render size, state layout, and created_at",
             )
         changed_states = compare_modified_states(base.get("state_files", {}), current_files)
         declared = sorted(set(args.changed_state or []), key=STATES.index)
@@ -1526,6 +1885,17 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         if not declared:
             raise MakerError("changed_states_required", "Declare every modified state with --changed-state")
         validate_generated_motion(current_files, changed_states)
+        validate_native_frame_semantics(current_files, changed_states, timing)
+        base_timing = base.get("timing")
+        if not isinstance(base_timing, dict):
+            raise MakerError("invalid_workspace", "Modify workspace has no base timing contract")
+        validate_timing_revision(
+            base.get("state_files", {}),
+            current_files,
+            base_timing,
+            timing,
+            changed_states,
+        )
 
         base_input = Path(base.get("input_path", "")).resolve()
         if output == base_input:
@@ -1534,6 +1904,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         raise MakerError("invalid_request", "--changed-state is only valid for modify")
     else:
         validate_generated_motion(current_files, STATES)
+        validate_native_frame_semantics(current_files, STATES, timing)
 
     validate_portable_visual_assets(source_dir, manifest)
 
@@ -1550,6 +1921,10 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "schema_version": VALIDATION_SCHEMA,
             "ok": True,
             "validator": "agent-pet-maker",
+            "frame_count": sum(timing["state_frame_counts"].values()),
+            "native_fps": timing["native_fps"],
+            "state_durations_ms": timing["state_durations_ms"],
+            "state_frame_counts": timing["state_frame_counts"],
             "skipped": "Temporary workspace artifact; PetCore validation is pending.",
         },
     )
@@ -1562,6 +1937,10 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
                 "schema_version": VALIDATION_SCHEMA,
                 "ok": True,
                 "validator": "agent-pet-maker",
+                "frame_count": sum(timing["state_frame_counts"].values()),
+                "native_fps": timing["native_fps"],
+                "state_durations_ms": timing["state_durations_ms"],
+                "state_frame_counts": timing["state_frame_counts"],
                 "skipped": f"PetCore validation failed ({error.code}); this workspace is not a completed package.",
             },
         )
@@ -1572,7 +1951,9 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         "ok": True,
         "validator": "petcore-cli",
         "frame_count": validation.get("frame_count"),
-        "frames_per_state": min(state_counts.values()),
+        "native_fps": timing["native_fps"],
+        "state_durations_ms": timing["state_durations_ms"],
+        "state_frame_counts": timing["state_frame_counts"],
         "warnings": validation.get("warnings", []),
         "validated_at": utc_now(),
         "manifest_id": manifest.get("id"),
@@ -1613,6 +1994,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "name": manifest.get("name"),
             "quality": manifest.get("quality"),
             "render_size": manifest.get("render_size"),
+            "native_fps": timing["native_fps"],
+            "state_durations_ms": timing["state_durations_ms"],
         },
         "base": public_base(context.get("base")),
         "changed_states": changed_states,

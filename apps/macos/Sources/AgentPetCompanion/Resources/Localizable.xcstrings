@@ -153,14 +153,14 @@
     },
     "library.specification.verified_fps" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Standard 12 FPS · Smooth 20 FPS" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准 12 FPS · 流畅 20 FPS" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Native 10 or 20 FPS · 20 FPS pets can play at 10 FPS" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "原生 10 或 20 FPS · 20 FPS 宠物可降档为 10 FPS" } }
       }
     },
     "library.specification.verified_states" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "7 fixed states · at least 1 decodable PNG each" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 个固定状态 · 每状态至少 1 张可解码 PNG" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "7 fixed states · frame counts exactly match native FPS and action duration" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 个固定状态 · 帧数严格匹配原生帧率与动作时长" } }
       }
     },
     "library.state.idle" : {
@@ -504,7 +504,12 @@
     "studio.brief.description_required" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Add a description to start creating." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "填写描述后才能开始制作" } } } },
     "studio.brief.style_heading" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Style" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "风格" } } } },
     "studio.brief.quality_heading" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Output Quality" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "输出画质" } } } },
-    "studio.brief.quality_contract_format" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ · Standard 12 FPS / Smooth 20 FPS · 7 fixed states" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ · 标准 12 FPS / 流畅 20 FPS · 七个固定状态" } } } },
+    "studio.brief.quality_contract_format" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ · 7 fixed states · Animation timing is fixed per revision" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ · 七个固定状态 · 动画时序随 revision 固定" } } } },
+    "studio.brief.timing_heading" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Animation Timing" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "动画时序" } } } },
+    "studio.brief.timing_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "20 FPS requires twice as many authored frames. Timing becomes fixed in this pet revision; playback settings never retime the action." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "20 FPS 需要两倍制作帧；时序生成后随此宠物 revision 固定，播放设置不会改变动作速度或时长。" } } } },
+    "studio.brief.timing_native_fps" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Native FPS" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "原生帧率" } } } },
+    "studio.brief.timing_action_durations" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Action Durations" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "动作时长" } } } },
+    "studio.brief.timing_seconds_format" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "%d s" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d 秒" } } } },
     "studio.brief.references_heading" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Reference Images (Optional)" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "参考图（可选）" } } } },
     "studio.brief.references_privacy" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Images are copied safely into the current task. The UI and exported metadata never expose original paths." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "图片会先安全复制到当前任务目录；界面和导出元数据不会暴露原始路径。" } } } },
     "studio.brief.references_drop_empty" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Drop images here, or choose files" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "拖入图片，或点按选择" } } } },
@@ -526,7 +531,7 @@
     "studio.session.welcome_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Ready to Create" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "准备开始" } } } },
     "studio.session.welcome_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Complete the creation brief to begin." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成左侧创作 brief 后开始制作。" } } } },
     "studio.session.output_contract_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Output Contract" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "输出合同" } } } },
-    "studio.session.output_contract_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The result must include idle, start, tool, waiting, review, done, and failed, plus Standard 12 FPS and Smooth 20 FPS." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "生成结果必须包含 idle、start、tool、waiting、review、done、failed 七个状态，以及标准 12 FPS / 流畅 20 FPS 两档。" } } } },
+    "studio.session.output_contract_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The result must include idle, start, tool, waiting, review, done, and failed; native frame rate must be 10 or 20 FPS and every action must be fixed at 1 or 2 seconds." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "生成结果必须包含 idle、start、tool、waiting、review、done、failed 七个状态；原生帧率只能为 10 或 20 FPS，每个动作固定为 1 秒或 2 秒。" } } } },
     "studio.session.output_privacy" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Only task-scoped safe copies are used. Unvalidated assets never enter the pet library." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅使用任务所需的安全副本；未经校验的资产不会进入宠物库。" } } } },
     "studio.session.preparing" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Preparing the local session…" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在准备本地会话…" } } } },
     "studio.session.failed_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Creation Incomplete" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "制作未完成" } } } },
@@ -580,7 +585,6 @@
     "studio.baseline.target_state" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Target state" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "目标状态" } } } },
     "studio.baseline.quality" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Quality" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "画质" } } } },
     "studio.baseline.animation" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Animation" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "动画" } } } },
-    "studio.baseline.animation_value" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "7 states · 12 / 20 FPS" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "7 状态 · 12 / 20 FPS" } } } },
     "studio.baseline.restoring" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Restoring Baseline" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "基线正在恢复" } } } },
     "studio.baseline.restoring_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The submitted validated baseline appears after PetCore restores the session." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "PetCore 恢复会话后会显示已提交的校验基线。" } } } },
     "studio.baseline.unavailable_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Baseline Preview Unavailable" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "基线预览不可用" } } } },
@@ -621,6 +625,7 @@
     "config.fps_accessibility" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Desktop pet animation frame rate" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "桌宠动画帧率" } } } },
     "config.fps.standard_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Standard motion with lower resource use." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准动效，资源占用更低" } } } },
     "config.fps.smooth_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Smoother motion and more refined transitions." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "流畅动效，动作过渡更细腻" } } } },
+    "config.fps.native_standard_only_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This pet is authored at 10 FPS and supports Standard motion only; action duration stays fixed." } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此宠物原生 10 FPS，仅支持标准动效；动作时长保持不变。" } } } },
     "config.bubble_transparency" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Bubble Transparency" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "气泡透明度" } } } },
     "config.glass_more" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "More glass" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "玻璃更明显" } } } },
     "config.transparent_more" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "More transparent" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更透明" } } } },
@@ -907,6 +912,7 @@
     "library.field.revision_policy" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Revision Policy" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "修订策略" } } } },
     "library.field.states" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Seven States" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "七状态" } } } },
     "library.field.fps" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Frame Rate" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "帧率" } } } },
+    "library.field.duration" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Action Duration" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "动作时长" } } } },
     "library.field.validation" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Asset Validation" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "资源校验" } } } },
     "library.edit.instruction" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Revision Requirements" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本次修改要求" } } } },
     "library.edit.instruction_accessibility" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Pet revision requirements" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "宠物修改要求" } } } },
@@ -985,7 +991,9 @@
     "library.revision.count_format" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "%d revisions" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d 个" } } } },
     "library.revision.bundled_policy" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Bundled read-only baseline" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "App 内置只读基线" } } } },
     "library.revision.new_policy" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Revisions create a new immutable revision for the same ID" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "修改将创建同一 ID 的新 revision" } } } },
-    "library.fps.summary" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Standard 12 FPS · Smooth 20 FPS" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准 12 FPS · 流畅 20 FPS" } } } },
+    "library.fps.summary" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Native 20 FPS · Plays at 10 / 20 FPS" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "原生 20 FPS · 可播放 10 / 20 FPS" } } } },
+    "library.fps.standard_summary" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Native 10 FPS · Plays at 10 FPS" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "原生 10 FPS · 可播放 10 FPS" } } } },
+    "library.duration.group_format" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "%d s: %@" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%d 秒：%@" } } } },
     "library.source.bundled_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Bundled" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "App 内置" } } } },
     "library.source.bundled_detail" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Included with Agent Pet Companion" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "随 Agent Pet Companion 提供" } } } },
     "library.source.verified_title" : { "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Verified Skill Source" } }, "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已验证 Skill 来源" } } } },

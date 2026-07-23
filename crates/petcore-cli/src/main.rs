@@ -395,11 +395,8 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
             let name =
                 flag_optional(&mut args, "--name").unwrap_or_else(|| "Cloud Maiden".to_string());
             let style = flag_optional(&mut args, "--style").unwrap_or_else(|| "半写实".to_string());
-            let frames = flag_optional(&mut args, "--frames")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(2);
-            let manifest =
-                petpack::write_sample_petpack_dir(&output, quality, &name, &style, frames)?;
+            reject_extra_args(&args, "petpack sample")?;
+            let manifest = petpack::write_sample_petpack_dir(&output, quality, &name, &style)?;
             print_json(json!({ "ok": true, "manifest": manifest }))
         }
         "materialize" => {
@@ -411,19 +408,18 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
             let ai_brief = flag_optional(&mut args, "--ai-brief-json")
                 .map(|brief| serde_json::from_str::<Value>(&brief))
                 .transpose()?;
-            let frames = flag_optional(&mut args, "--frames")
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(petpack::GENERATED_FRAMES_PER_STATE);
-            let manifest = petpack::write_generated_petpack_dir(
-                &output,
-                &form,
-                &name,
-                ai_brief.as_ref(),
-                frames,
-            )?;
-            if let Some(generator) = flag_optional(&mut args, "--generator") {
-                let provenance = flag_optional(&mut args, "--provenance")
-                    .unwrap_or_else(|| "cli_materialized".to_string());
+            let generator = flag_optional(&mut args, "--generator");
+            let provenance = flag_optional(&mut args, "--provenance");
+            if generator.is_none() && provenance.is_some() {
+                return Err(PetCoreError::InvalidRequest(
+                    "--provenance requires --generator".to_string(),
+                ));
+            }
+            reject_extra_args(&args, "petpack materialize")?;
+            let manifest =
+                petpack::write_generated_petpack_dir(&output, &form, &name, ai_brief.as_ref())?;
+            if let Some(generator) = generator {
+                let provenance = provenance.unwrap_or_else(|| "cli_materialized".to_string());
                 if generator == "codex-app-server-skill" && provenance == "skill-full-source" {
                     return Err(PetCoreError::InvalidRequest(
                         "petcore-cli materialize cannot declare trusted skill-full-source provenance"
@@ -1121,11 +1117,15 @@ fn run_renderer(mut args: Vec<String>) -> Result<()> {
             } else {
                 let fps = flag_optional(&mut args, "--fps")
                     .and_then(|value| value.parse::<u32>().ok())
-                    .unwrap_or(12);
-                if fps >= 20 {
-                    FpsProfileName::Smooth
-                } else {
-                    FpsProfileName::Standard
+                    .unwrap_or(10);
+                match fps {
+                    10 => FpsProfileName::Standard,
+                    20 => FpsProfileName::Smooth,
+                    _ => {
+                        return Err(PetCoreError::InvalidRequest(
+                            "fps must be exactly 10 or 20".to_string(),
+                        ));
+                    }
                 }
             };
             print_json(json!(petcore::metrics::renderer_budget(

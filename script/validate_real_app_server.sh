@@ -205,16 +205,28 @@ from pathlib import Path
 
 root = Path(os.environ["SOURCE_DIR"])
 metadata = json.loads((root / "source/source.json").read_text(encoding="utf-8"))
+manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
 assert metadata.get("generator") == "codex-app-server-skill"
 assert metadata.get("provenance") == "skill-full-source"
 assert metadata.get("visual_source") in {"image-generation", "user-reference-derived"}
 assert metadata.get("preview_only") is False
-assert int(metadata.get("frames_per_state", 0)) >= 2
+native_fps = int(manifest["native_fps"])
+assert native_fps in {10, 20}
+durations = {state["name"]: int(state["duration_ms"]) for state in manifest["states"]}
+assert set(durations) == {"idle", "start", "tool", "waiting", "review", "done", "failed"}
+assert set(durations.values()) <= {1000, 2000}
+expected_counts = {
+    state: native_fps * duration_ms // 1000
+    for state, duration_ms in durations.items()
+}
+assert metadata.get("native_fps") == native_fps
+assert metadata.get("state_durations_ms") == durations
+assert metadata.get("state_frame_counts") == expected_counts
 
 first_frames = set()
 for state in ["idle", "start", "tool", "waiting", "review", "done", "failed"]:
     frames = sorted((root / "assets/frames" / state).glob("*.png"))
-    assert len(frames) >= 2
+    assert len(frames) == expected_counts[state]
     digests = {hashlib.sha256(path.read_bytes()).hexdigest() for path in frames}
     assert len(digests) >= 2
     first_frames.add(hashlib.sha256(frames[0].read_bytes()).hexdigest())

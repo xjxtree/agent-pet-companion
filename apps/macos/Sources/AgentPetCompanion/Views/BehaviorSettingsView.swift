@@ -33,6 +33,10 @@ enum BehaviorSettingsCatalog {
     static func title(for theme: AppearanceTheme) -> String {
         APCLocalizedPresentation.appearanceTitle(theme)
     }
+
+    static func supportedFPSProfiles(for pet: PetSummary?) -> [FpsProfile] {
+        pet?.supportedFPSProfiles ?? fpsProfiles
+    }
 }
 
 enum BehaviorSettingsLayout {
@@ -321,8 +325,8 @@ struct BehaviorSettingsView: View {
 
     private var fpsSetting: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker(APCLocalization.text(.configFPSPicker), selection: behaviorBinding(\.fpsProfile)) {
-                ForEach(BehaviorSettingsCatalog.fpsProfiles) { profile in
+            Picker(APCLocalization.text(.configFPSPicker), selection: fpsProfileBinding) {
+                ForEach(supportedFPSProfiles) { profile in
                     Text(APCLocalization.format(.commonFPSFormat, profile.fps)).tag(profile)
                 }
             }
@@ -330,14 +334,16 @@ struct BehaviorSettingsView: View {
             .accessibilityLabel(APCLocalization.text(.configFPSAccessibility))
             .accessibilityValue(APCLocalization.format(
                 .commonFPSFormat,
-                store.behavior.fpsProfile.fps
+                store.effectiveFPSProfile.fps
             ))
             .accessibilityIdentifier("configuration.appearance.fps")
 
             Text(APCLocalization.text(
-                store.behavior.fpsProfile == .standard
-                    ? .configFPSStandardDetail
-                    : .configFPSSmoothDetail
+                supportedFPSProfiles.contains(.smooth)
+                    ? store.effectiveFPSProfile == .standard
+                        ? .configFPSStandardDetail
+                        : .configFPSSmoothDetail
+                    : .configFPSNativeStandardOnlyDetail
             ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -466,6 +472,20 @@ struct BehaviorSettingsView: View {
 
     private var messagePreview: some View {
         BehaviorMessagePreview(behavior: store.behavior)
+    }
+
+    private var supportedFPSProfiles: [FpsProfile] {
+        BehaviorSettingsCatalog.supportedFPSProfiles(for: store.activePet)
+    }
+
+    private var fpsProfileBinding: Binding<FpsProfile> {
+        Binding(
+            get: { store.effectiveFPSProfile },
+            set: { profile in
+                guard supportedFPSProfiles.contains(profile) else { return }
+                updateBehavior(\.fpsProfile, value: profile)
+            }
+        )
     }
 
     private func behaviorBinding<Value>(

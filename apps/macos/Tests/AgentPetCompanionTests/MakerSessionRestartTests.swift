@@ -23,6 +23,8 @@ struct MakerSessionRestartTests {
         #expect(store.descriptionText == "A recovered pixel pet")
         #expect(store.selectedStyle == .pixel)
         #expect(store.selectedQuality == .standard)
+        #expect(store.selectedNativeFPS == 20)
+        #expect(store.generationStateDurationsMS == Self.recoveredDurations)
         #expect(store.referenceImages.isEmpty)
         #expect(store.referenceReselectionCount == 0)
         #expect(store.generationSession.canRetry)
@@ -193,6 +195,8 @@ struct MakerSessionRestartTests {
             ("description", { $0.updateGenerationDescription(AIPetMakerDefaults.descriptionText) }),
             ("style", { $0.selectGenerationStyle(.semiRealistic) }),
             ("quality", { $0.selectGenerationQuality(.high) }),
+            ("native fps", { $0.selectGenerationNativeFPS(20) }),
+            ("state duration", { $0.selectGenerationStateDuration(1_000, for: "idle") }),
             ("clear", { $0.clearStudioForm() }),
             ("new", { $0.showNewPetDraft() }),
             ("add", { $0.addReferenceImageURLs([]) }),
@@ -231,6 +235,8 @@ struct MakerSessionRestartTests {
                 "style": StylePreset.modern.rawValue,
                 "quality": QualityLevel.high.rawValue,
                 "reference_images": [],
+                "native_fps": 20,
+                "state_durations_ms": Self.recoveredDurations,
             ],
             "reference_reselection_count": 0,
             "heartbeat_at": "2026-07-22T00:00:00Z",
@@ -244,6 +250,8 @@ struct MakerSessionRestartTests {
         #expect(store.generationSession.state == .waitingForInput)
         #expect(store.generationSession.jobID == "job_active_snapshot")
         #expect(store.descriptionText == "Authoritative active brief")
+        #expect(store.selectedNativeFPS == 20)
+        #expect(store.generationStateDurationsMS == Self.recoveredDurations)
     }
 
     @MainActor
@@ -391,7 +399,7 @@ struct MakerSessionRestartTests {
             payload["validation_summary"] = [
                 "ok": true,
                 "state_count": 7,
-                "frame_count": 84,
+                "frame_count": 120,
                 "warning_count": 0,
             ]
         }
@@ -415,6 +423,8 @@ struct MakerSessionRestartTests {
                 "style": StylePreset.pixel.rawValue,
                 "quality": QualityLevel.standard.rawValue,
                 "reference_images": references,
+                "native_fps": 20,
+                "state_durations_ms": recoveredDurations,
             ],
             "reference_reselection_count": reselectionCount,
             "message_revision": "3",
@@ -488,6 +498,16 @@ struct MakerSessionRestartTests {
             reselectionCount: 0
         )
     }
+
+    private static let recoveredDurations: [String: Int] = [
+        "idle": 1_000,
+        "start": 2_000,
+        "tool": 1_000,
+        "waiting": 2_000,
+        "review": 1_000,
+        "done": 2_000,
+        "failed": 1_000,
+    ]
 }
 
 private enum RestoreTestError: Error {

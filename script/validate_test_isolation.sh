@@ -49,6 +49,9 @@ write_executable "$SHIM_DIR/cargo" \
   'if [[ -n "${APC_BUILD_ENV_LOG:-}" ]]; then' \
   '  printf '\''%s\t%s\t%s\t%s\n'\'' "$HOME" "${XDG_CONFIG_HOME:-}" "${APC_AGENT_CONFIG_HOME:-}" "${APC_HOME:-}" >>"$APC_BUILD_ENV_LOG"' \
   'fi' \
+  'if [[ -n "${APC_TEST_ALL_CARGO_LOG:-}" ]]; then' \
+  '  printf '\''%s\n'\'' "$*" >>"$APC_TEST_ALL_CARGO_LOG"' \
+  'fi' \
   'exit 0'
 write_executable "$SHIM_DIR/swift" \
   '#!/usr/bin/env bash' \
@@ -134,7 +137,7 @@ for script_name in \
   validate_test_isolation.sh validate_app_lifecycle_contract.sh validate_schema_fixtures.sh \
   validate_build_scripts_safety.sh validate_source_syntax.sh validate_swift_tests.sh build_app_bundle.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
-  validate_portable_pet_maker.sh validate_petpack_spec_schemas.sh \
+  validate_portable_pet_maker.sh validate_pet_studio_helper.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
   validate_overlay_non_mouse.sh validate_overlay_interaction.sh \
   validate_overlay_scale_persistence.sh validate_renderer_runtime_budget.sh \
@@ -157,6 +160,8 @@ write_executable "$TEST_ROOT/script/validate_real_app_server.sh" \
   'exit 0'
 
 : >"$FORBIDDEN_LOG"
+TEST_ALL_CARGO_LOG="$TMP_DIR/test-all-cargo.log"
+: >"$TEST_ALL_CARGO_LOG"
 if ! env \
   -u APC_VALIDATE_HOST_UI \
   -u APC_VALIDATE_OVERLAY_RUNTIME \
@@ -164,11 +169,18 @@ if ! env \
   -u APC_VALIDATE_REAL_APP_SERVER \
   PATH="$SHIM_DIR:$PATH" \
   APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+  APC_TEST_ALL_CARGO_LOG="$TEST_ALL_CARGO_LOG" \
   "$TEST_ROOT/script/test_all.sh" >/dev/null 2>&1; then
   record_failure 'default test_all.sh failed in the isolated fixture'
 fi
 if [[ -s "$FORBIDDEN_LOG" ]]; then
   record_failure "default test_all invoked forbidden host/agent commands: $(tr '\n' ' ' <"$FORBIDDEN_LOG")"
+fi
+if ! rg -q '^fmt --all --manifest-path .+/Cargo\.toml -- --check$' "$TEST_ALL_CARGO_LOG"; then
+  record_failure 'default test_all did not invoke the Rust formatting gate'
+fi
+if ! rg -q '^clippy --manifest-path .+/Cargo\.toml --workspace --all-targets --all-features --locked -- -D warnings$' "$TEST_ALL_CARGO_LOG"; then
+  record_failure 'default test_all did not invoke the strict Rust linting gate'
 fi
 
 if rg -n '/tmp/apc-connector-extra\.(out|err)' "$ROOT_DIR/script/validate_connectors_runtime.sh" >/dev/null; then

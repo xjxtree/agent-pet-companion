@@ -1,8 +1,8 @@
 use petcore::paths::AppPaths;
-use petcore::petpack::{build_petpack, write_sample_petpack_dir};
+use petcore::petpack::{build_petpack, write_generated_petpack_dir, write_sample_petpack_dir};
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{
-    GenerationForm, GenerationJobStatus, PetOrigin, PetSummary, QualityLevel,
+    GenerationForm, GenerationJobStatus, PetOrigin, PetStateName, PetSummary, QualityLevel,
     MAX_GENERATION_DESCRIPTION_CHARS,
 };
 use serde_json::{json, Value};
@@ -117,7 +117,7 @@ fn pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation() {
 
     let source = temp.path().join("edit-boundary-source");
     let manifest =
-        write_sample_petpack_dir(&source, QualityLevel::Standard, "边界宠物", "半写实", 2).unwrap();
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "边界宠物", "半写实").unwrap();
     let package = temp.path().join("edit-boundary.petpack");
     build_petpack(&source, &package).unwrap();
     handle_request(
@@ -170,6 +170,129 @@ fn pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation() {
 }
 
 #[test]
+fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_current_head() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "/usr/bin/false");
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+
+    let baseline_source = temp.path().join("historical-timing-baseline");
+    let baseline_manifest = write_sample_petpack_dir(
+        &baseline_source,
+        QualityLevel::Standard,
+        "历史时序宠物",
+        "像素",
+    )
+    .unwrap();
+    let baseline_package = temp.path().join("historical-timing-baseline.petpack");
+    build_petpack(&baseline_source, &baseline_package).unwrap();
+    let baseline_import = handle_request(
+        &state,
+        request(
+            "petpack.import",
+            json!({ "path": baseline_package.display().to_string() }),
+        ),
+    )
+    .unwrap();
+    let baseline_revision_id = Path::new(baseline_import["petpack_path"].as_str().unwrap())
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_string();
+
+    let mut current_head_durations = petcore_types::default_state_durations_ms();
+    current_head_durations.insert(PetStateName::Idle, 1_000);
+    current_head_durations.insert(PetStateName::Start, 2_000);
+    let current_head_form = GenerationForm {
+        description: "Current head with different authored timing".to_string(),
+        style: baseline_manifest.style.clone(),
+        quality: baseline_manifest.quality,
+        reference_images: Vec::new(),
+        native_fps: 20,
+        state_durations_ms: current_head_durations.clone(),
+    };
+    let current_head_source = temp.path().join("historical-timing-current-head");
+    let mut current_head_manifest = write_generated_petpack_dir(
+        &current_head_source,
+        &current_head_form,
+        &baseline_manifest.name,
+        None,
+    )
+    .unwrap();
+    current_head_manifest.id = baseline_manifest.id.clone();
+    std::fs::write(
+        current_head_source.join("manifest.json"),
+        serde_json::to_vec_pretty(&current_head_manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        current_head_source.join("source/skill_session.jsonl"),
+        serde_json::to_string(&json!({
+            "schema_version": "apc.pet-source-event.v1",
+            "event": "skill.loaded",
+            "skill": "agent-pet-studio",
+            "runner": "generation-lifecycle-test"
+        }))
+        .unwrap()
+            + "\n",
+    )
+    .unwrap();
+    let current_head_package = temp.path().join("historical-timing-current-head.petpack");
+    build_petpack(&current_head_source, &current_head_package).unwrap();
+    handle_request(
+        &state,
+        request(
+            "petpack.import",
+            json!({ "path": current_head_package.display().to_string() }),
+        ),
+    )
+    .unwrap();
+
+    let current_head = state
+        .database
+        .get_pet(&baseline_manifest.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_head.native_fps, 20);
+    assert_eq!(current_head.state_durations_ms, current_head_durations);
+
+    let edit = handle_request(
+        &state,
+        request(
+            "generation.edit",
+            json!({
+                "pet_id": baseline_manifest.id,
+                "baseline_revision_id": baseline_revision_id,
+                "instruction": "从历史 revision 修改外观"
+            }),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(edit["baseline_revision_id"], baseline_revision_id);
+    assert_eq!(edit["native_fps"], baseline_manifest.native_fps);
+    assert_eq!(
+        edit["state_durations_ms"],
+        json!(petcore_types::default_state_durations_ms())
+    );
+    assert!(edit.get("form").is_none());
+    assert!(edit.get("reference_images").is_none());
+
+    let job_id = edit["job_id"].as_str().unwrap();
+    let job = state.database.generation_job(job_id).unwrap().unwrap();
+    let accepted_form: GenerationForm = serde_json::from_str(&job.form_json).unwrap();
+    assert_eq!(accepted_form.native_fps, baseline_manifest.native_fps);
+    assert_eq!(
+        accepted_form.state_durations_ms,
+        petcore_types::default_state_durations_ms()
+    );
+    wait_for_terminal_message(&state, job_id, "generation_failed");
+}
+
+#[test]
 fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
     let _env_lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -183,7 +306,7 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
     // in place by the external owner.
     let source = temp.path().join("legacy-external-source");
     let manifest =
-        write_sample_petpack_dir(&source, QualityLevel::Standard, "外部基线宠物", "半写实", 2)
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "外部基线宠物", "半写实")
             .unwrap();
     let package = temp.path().join("legacy-external.petpack");
     build_petpack(&source, &package).unwrap();
@@ -196,6 +319,12 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
             style: manifest.style.clone(),
             quality: manifest.quality,
             render_size: manifest.render_size,
+            native_fps: manifest.native_fps,
+            state_durations_ms: manifest
+                .states
+                .iter()
+                .map(|state| (state.name, state.duration_ms))
+                .collect(),
             petpack_path: package.display().to_string(),
             cover_path: source
                 .join("assets/preview/cover.png")
@@ -280,7 +409,6 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
         QualityLevel::Standard,
         "被外部替换的新版本",
         "半写实",
-        2,
     )
     .unwrap();
     replacement_manifest.id = manifest.id.clone();
@@ -506,7 +634,7 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
     assert_eq!(terminal["revision_id"], committed_revision);
     assert_eq!(terminal["validation_summary"]["ok"], true);
     assert_eq!(terminal["validation_summary"]["state_count"], 7);
-    assert_eq!(terminal["validation_summary"]["frame_count"], 168);
+    assert_eq!(terminal["validation_summary"]["frame_count"], 120);
 
     let history = handle_request(
         &state,
@@ -575,7 +703,7 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
 
     let source = temp.path().join("imported-source");
     let manifest =
-        write_sample_petpack_dir(&source, QualityLevel::Standard, "外部导入宠物", "半写实", 2)
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "外部导入宠物", "半写实")
             .unwrap();
     let package = temp.path().join("external.petpack");
     build_petpack(&source, &package).unwrap();
@@ -809,7 +937,7 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
 
     let source = temp.path().join("base-source");
     let manifest =
-        write_sample_petpack_dir(&source, QualityLevel::Standard, "冲突基线", "半写实", 2).unwrap();
+        write_sample_petpack_dir(&source, QualityLevel::Standard, "冲突基线", "半写实").unwrap();
     let package = temp.path().join("base.petpack");
     build_petpack(&source, &package).unwrap();
     let imported = handle_request(
@@ -849,7 +977,6 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
         QualityLevel::Standard,
         "用户刚导入的新版本",
         "半写实",
-        2,
     )
     .unwrap();
     replacement_manifest.id = manifest.id.clone();
@@ -943,6 +1070,8 @@ fn generation_lifecycle_interrupted_recovery_appends_one_failed_terminal() {
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let job_dir = paths.jobs_dir.join("job_lifecycle_interrupted");
     std::fs::create_dir_all(&job_dir).unwrap();
@@ -992,6 +1121,8 @@ fn generation_lifecycle_cancel_is_noop_for_failed_terminal_job() {
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let job_id = "job_lifecycle_failed";
     let job_dir = state.paths.jobs_dir.join(job_id);

@@ -34,7 +34,7 @@ apc_start_owned_runtime \
 # Exercise the populated Pet Library rather than accidentally depending on a
 # developer's existing pet data. All assets stay inside this validation HOME.
 PET_SOURCE="$TMP_DIR/library-pet"
-"$PETCORE_CLI" petpack sample --output "$PET_SOURCE" --quality high --frames 2 >/dev/null
+"$PETCORE_CLI" petpack sample --output "$PET_SOURCE" --quality high >/dev/null
 "$PETCORE_CLI" petpack import "$PET_SOURCE" >/dev/null
 
 APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'

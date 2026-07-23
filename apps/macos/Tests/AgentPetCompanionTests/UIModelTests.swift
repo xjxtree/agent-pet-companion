@@ -101,7 +101,7 @@ struct UIModelTests {
             desktopPetEnabled: true,
             desktopPetVisible: true,
             activePetName: "Bytebud 字节芽",
-            framesPerSecond: 12,
+            framesPerSecond: 10,
             localeIdentifier: "zh-Hans"
         )
 
@@ -111,7 +111,7 @@ struct UIModelTests {
         #expect(try #require(presentation.row(.eventChannel)).status == "在线")
         #expect(
             try #require(presentation.row(.desktopPet)).detail
-                == "12 FPS · Bytebud 字节芽"
+                == "10 FPS · Bytebud 字节芽"
         )
         #expect(ServiceDiagnosticsPresentation.toolbar(
             runtimeInfo: runtime,
@@ -264,6 +264,23 @@ struct UIModelTests {
         #expect(store.generationSession.operation == .create)
         #expect(store.generationSession.resultPetID == nil)
         #expect(store.selection == .maker)
+    }
+
+    @MainActor
+    @Test
+    func clearingStudioFormRestoresDefaultAnimationTiming() {
+        let store = makeStore()
+
+        #expect(!store.canClearStudioForm)
+        store.selectGenerationNativeFPS(20)
+        store.selectGenerationStateDuration(1_000, for: "idle")
+        #expect(store.canClearStudioForm)
+
+        store.clearStudioForm()
+
+        #expect(store.selectedNativeFPS == PetAnimationContract.defaultNativeFPS)
+        #expect(store.generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS)
+        #expect(!store.canClearStudioForm)
     }
 
     @MainActor
@@ -431,7 +448,8 @@ struct UIModelTests {
 
     @Test
     func libraryUsesValidationSummary() {
-        let pet = makePet(id: "pet_warning", active: true)
+        var pet = makePet(id: "pet_warning", active: true)
+        pet.nativeFPS = 20
         let warning = PetAssetWarning(
             petId: pet.id,
             code: "pet_assets_invalid",
@@ -446,8 +464,8 @@ struct UIModelTests {
         #expect(imported.validationStatus == .verified)
         #expect(imported.validationTitle == "资源校验通过")
         #expect(imported.validationDetail.contains("PetCore 已验证"))
-        #expect(imported.stateSpecification == "7 个固定状态 · 每状态至少 1 张可解码 PNG")
-        #expect(imported.fpsSpecification == "标准 12 FPS · 流畅 20 FPS")
+        #expect(imported.stateSpecification == "7 个固定状态 · 帧数严格匹配原生帧率与动作时长")
+        #expect(imported.fpsSpecification == "原生 20 FPS · 可播放 10 / 20 FPS")
 
         var verifiedPet = pet
         verifiedPet.origin = .verifiedSkillSource
@@ -457,8 +475,8 @@ struct UIModelTests {
         #expect(verified.validationStatus == .verified)
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
-        #expect(verified.stateSpecification == "7 个固定状态 · 每状态至少 1 张可解码 PNG")
-        #expect(verified.fpsSpecification == "标准 12 FPS · 流畅 20 FPS")
+        #expect(verified.stateSpecification == "7 个固定状态 · 帧数严格匹配原生帧率与动作时长")
+        #expect(verified.fpsSpecification == "原生 20 FPS · 可播放 10 / 20 FPS")
     }
 
     @MainActor
@@ -558,20 +576,18 @@ struct UIModelTests {
     }
 
     @Test
-    func activeSessionBubbleUsesTypedSummaryWithoutConversationContent() throws {
+    func activeSessionBubbleUsesBoundedConversationDisplayContent() throws {
         let data = Data(
-            #"{"state":"tool","official_status":"running","source":"codex","session_id":"ses-projected-session-1","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":null,"expires_at":null,"event":{"id":"evt-projected-tool-2","source":"codex","session_id":"ses-projected-session-1","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"schema_version":"apc.agent-event.v1","external_event_id":"tool-2","source_event":"PreToolUse","tool_name":"shell","outcome":"started","diagnostic":false,"turn_id":"turn-1","session_active":true,"message_role":null,"message_content":null,"activity_kind":"thinking","activity_content":"正在验证活动摘要同步","interaction_kind":null,"project_label":"agent-pet-companion"},"created_at":"2026-07-13T00:00:02Z"},"latest_message":{"id":"prompt-1","source":"codex","session_id":"session-1","event_type":"start","title":"开始处理","detail":null,"payload_json":{"schema_version":"apc.agent-event.v1","external_event_id":"prompt-1","source_event":"UserPromptSubmit","tool_name":null,"outcome":"started","diagnostic":false,"turn_id":"turn-1","session_active":true,"message_role":"user","message_content":"保持会话消息持续显示","interaction_kind":null,"project_label":"agent-pet-companion"},"created_at":"2026-07-13T00:00:01Z"},"session_activity":{"kind":"thinking","content":"正在验证活动摘要同步"},"overlay_display":{"summary_kind":"thinking","navigation":{"session_open":true,"surface":"chatgpt_app","terminal_app":null,"open_url":null,"routable_session_id":"019f5b0f-88ff-7413-8953-29de4ed0951c"}}}"#.utf8
+            #"{"state":"tool","official_status":"running","source":"codex","session_id":"ses-projected-session-1","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":null,"expires_at":null,"event":{"id":"evt-projected-tool-2","source":"codex","session_id":"ses-projected-session-1","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"schema_version":"apc.agent-event.v1","external_event_id":"tool-2","source_event":"PreToolUse","tool_name":"shell","outcome":"started","diagnostic":false,"turn_id":"turn-1","session_active":true,"message_role":null,"message_content":null,"activity_kind":"thinking","activity_content":"正在验证活动摘要同步","interaction_kind":null,"project_label":"agent-pet-companion"},"created_at":"2026-07-13T00:00:02Z"},"session_title":"保持会话消息持续显示","session_user_message":{"role":"user","content":"保持会话消息持续显示"},"session_message":{"role":"assistant","content":"已恢复气泡消息内容。"},"session_activity":{"kind":"thinking","content":"正在验证活动摘要同步"},"overlay_display":{"summary_kind":"thinking","navigation":{"session_open":true,"surface":"chatgpt_app","terminal_app":null,"open_url":null,"routable_session_id":"019f5b0f-88ff-7413-8953-29de4ed0951c"}}}"#.utf8
         )
         let state = try JSONDecoder().decode(ActiveAgentState.self, from: data)
         let content = OverlayBubbleContent(state: state)
         let session = try #require(content.sessions.first)
 
-        #expect(session.messageText == APCLocalization.text(.overlayActivityThinking))
+        #expect(session.messageText == "已恢复气泡消息内容。")
         #expect(session.statusText == APCLocalization.text(.overlayStatusTool))
         #expect(content.agentName == "Codex")
-        #expect(session.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Codex"))
-        #expect(!session.messageText.contains("正在验证活动摘要同步"))
-        #expect(!session.sessionTitle.contains("agent-pet-companion"))
+        #expect(session.sessionTitle == "保持会话消息持续显示")
         #expect(session.sessionID == "ses-projected-session-1")
         #expect(
             AgentSessionDeepLink.url(

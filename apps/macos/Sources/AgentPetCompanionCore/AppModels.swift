@@ -118,9 +118,43 @@ public enum FpsProfile: String, CaseIterable, Identifiable, Codable, Sendable {
 
     public var fps: Int {
         switch self {
-        case .standard: 12
+        case .standard: 10
         case .smooth: 20
         }
+    }
+}
+
+public enum PetAnimationContract {
+    public static let defaultNativeFPS = 10
+    public static let supportedNativeFPS: Set<Int> = [10, 20]
+    public static let supportedDurationsMS: Set<Int> = [1_000, 2_000]
+    public static let orderedStateNames = [
+        "idle",
+        "start",
+        "tool",
+        "waiting",
+        "review",
+        "done",
+        "failed",
+    ]
+    public static let defaultStateDurationsMS: [String: Int] = [
+        "idle": 2_000,
+        "start": 1_000,
+        "tool": 2_000,
+        "waiting": 2_000,
+        "review": 2_000,
+        "done": 1_000,
+        "failed": 2_000,
+    ]
+
+    public static func loops(stateName: String) -> Bool {
+        stateName != "start" && stateName != "done"
+    }
+
+    public static func hasValidStateDurations(_ durations: [String: Int]) -> Bool {
+        durations.keys.count == orderedStateNames.count
+            && Set(durations.keys) == Set(orderedStateNames)
+            && durations.values.allSatisfy(supportedDurationsMS.contains)
     }
 }
 
@@ -479,6 +513,8 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
     public var provenance: String?
     public var revisionID: String?
     public var revisionCount: Int
+    public var nativeFPS: Int
+    public var stateDurationsMS: [String: Int]
     public var active: Bool
     public var createdAt: String
 
@@ -495,9 +531,13 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         provenance: String? = nil,
         revisionID: String? = nil,
         revisionCount: Int = 0,
+        nativeFPS: Int = PetAnimationContract.defaultNativeFPS,
+        stateDurationsMS: [String: Int] = PetAnimationContract.defaultStateDurationsMS,
         active: Bool,
         createdAt: String
     ) {
+        precondition(PetAnimationContract.supportedNativeFPS.contains(nativeFPS))
+        precondition(PetAnimationContract.hasValidStateDurations(stateDurationsMS))
         self.id = id
         self.name = name
         self.style = style
@@ -510,6 +550,8 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         self.provenance = provenance
         self.revisionID = revisionID
         self.revisionCount = max(0, revisionCount)
+        self.nativeFPS = nativeFPS
+        self.stateDurationsMS = stateDurationsMS
         self.active = active
         self.createdAt = createdAt
     }
@@ -527,6 +569,8 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         case provenance
         case revisionID = "revision_id"
         case revisionCount = "revision_count"
+        case nativeFPS = "native_fps"
+        case stateDurationsMS = "state_durations_ms"
         case active
         case createdAt = "created_at"
     }
@@ -545,8 +589,38 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         provenance = try container.decodeIfPresent(String.self, forKey: .provenance)
         revisionID = try container.decodeIfPresent(String.self, forKey: .revisionID)
         revisionCount = max(0, try container.decodeIfPresent(Int.self, forKey: .revisionCount) ?? 0)
+        nativeFPS = try container.decode(Int.self, forKey: .nativeFPS)
+        guard PetAnimationContract.supportedNativeFPS.contains(nativeFPS) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .nativeFPS,
+                in: container,
+                debugDescription: "native_fps must be 10 or 20"
+            )
+        }
+        stateDurationsMS = try container.decode([String: Int].self, forKey: .stateDurationsMS)
+        guard PetAnimationContract.hasValidStateDurations(stateDurationsMS) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .stateDurationsMS,
+                in: container,
+                debugDescription: "state_durations_ms must contain exactly the seven states at 1000 or 2000 ms"
+            )
+        }
         active = try container.decode(Bool.self, forKey: .active)
         createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
+
+    public var supportedFPSProfiles: [FpsProfile] {
+        nativeFPS == FpsProfile.smooth.fps ? [.standard, .smooth] : [.standard]
+    }
+
+    public func effectiveFPSProfile(_ requested: FpsProfile) -> FpsProfile {
+        supportedFPSProfiles.contains(requested) ? requested : .standard
+    }
+
+    public func durationMS(for stateName: String) -> Int {
+        stateDurationsMS[stateName]
+            ?? PetAnimationContract.defaultStateDurationsMS[stateName]
+            ?? 1_000
     }
 
     /// Mirrors PetCore's schema-5-compatible, closed bundled identity. A
@@ -1928,12 +2002,25 @@ public struct GenerationForm: Codable, Equatable, Sendable {
     public var style: String
     public var quality: QualityLevel
     public var referenceImages: [String]
+    public var nativeFPS: Int
+    public var stateDurationsMS: [String: Int]
 
-    public init(description: String, style: String, quality: QualityLevel, referenceImages: [String]) {
+    public init(
+        description: String,
+        style: String,
+        quality: QualityLevel,
+        referenceImages: [String],
+        nativeFPS: Int = PetAnimationContract.defaultNativeFPS,
+        stateDurationsMS: [String: Int] = PetAnimationContract.defaultStateDurationsMS
+    ) {
+        precondition(PetAnimationContract.supportedNativeFPS.contains(nativeFPS))
+        precondition(PetAnimationContract.hasValidStateDurations(stateDurationsMS))
         self.description = description
         self.style = style
         self.quality = quality
         self.referenceImages = referenceImages
+        self.nativeFPS = nativeFPS
+        self.stateDurationsMS = stateDurationsMS
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1941,5 +2028,45 @@ public struct GenerationForm: Codable, Equatable, Sendable {
         case style
         case quality
         case referenceImages = "reference_images"
+        case nativeFPS = "native_fps"
+        case stateDurationsMS = "state_durations_ms"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        description = try container.decode(String.self, forKey: .description)
+        style = try container.decode(String.self, forKey: .style)
+        quality = try container.decode(QualityLevel.self, forKey: .quality)
+        referenceImages = try container.decode([String].self, forKey: .referenceImages)
+        nativeFPS = try container.decodeIfPresent(Int.self, forKey: .nativeFPS)
+            ?? PetAnimationContract.defaultNativeFPS
+        guard PetAnimationContract.supportedNativeFPS.contains(nativeFPS) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .nativeFPS,
+                in: container,
+                debugDescription: "native_fps must be 10 or 20"
+            )
+        }
+        stateDurationsMS = try container.decodeIfPresent(
+            [String: Int].self,
+            forKey: .stateDurationsMS
+        ) ?? PetAnimationContract.defaultStateDurationsMS
+        guard PetAnimationContract.hasValidStateDurations(stateDurationsMS) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .stateDurationsMS,
+                in: container,
+                debugDescription: "state_durations_ms must contain exactly the seven states at 1000 or 2000 ms"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(description, forKey: .description)
+        try container.encode(style, forKey: .style)
+        try container.encode(quality, forKey: .quality)
+        try container.encode(referenceImages, forKey: .referenceImages)
+        try container.encode(nativeFPS, forKey: .nativeFPS)
+        try container.encode(stateDurationsMS, forKey: .stateDurationsMS)
     }
 }

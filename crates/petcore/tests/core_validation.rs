@@ -360,7 +360,7 @@ fn http_post_agent_event(
 #[test]
 fn petpack_validation_rejects_missing_state() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 1).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::remove_dir_all(temp.path().join("assets/frames/tool")).unwrap();
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
@@ -370,7 +370,7 @@ fn petpack_validation_rejects_missing_state() {
 #[test]
 fn petpack_validation_rejects_missing_animated_preview() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::remove_file(temp.path().join("assets/preview/animated_preview.webp")).unwrap();
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
@@ -380,7 +380,7 @@ fn petpack_validation_rejects_missing_animated_preview() {
 #[test]
 fn petpack_validation_rejects_missing_source_metadata() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::remove_file(temp.path().join("source/source.json")).unwrap();
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
@@ -390,7 +390,7 @@ fn petpack_validation_rejects_missing_source_metadata() {
 #[test]
 fn petpack_validation_rejects_missing_skill_session_metadata() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::remove_file(temp.path().join("source/skill_session.jsonl")).unwrap();
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
@@ -400,7 +400,7 @@ fn petpack_validation_rejects_missing_skill_session_metadata() {
 #[test]
 fn strict_petpack_metadata_rejects_nested_private_session_fields_without_echoing_values() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     let source_path = temp.path().join("source/source.json");
     let mut source: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&source_path).unwrap()).unwrap();
@@ -420,7 +420,7 @@ fn strict_petpack_metadata_rejects_nested_private_session_fields_without_echoing
 #[test]
 fn strict_petpack_metadata_rejects_nested_absolute_paths_without_echoing_values() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     let brief_path = temp.path().join("brief.json");
     let mut brief: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&brief_path).unwrap()).unwrap();
@@ -457,7 +457,7 @@ fn strict_petpack_metadata_rejects_embedded_paths_and_external_locators() {
         ),
     ] {
         let temp = tempfile::tempdir().unwrap();
-        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2)
+        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实")
             .unwrap();
         let brief_path = temp.path().join("brief.json");
         let mut brief: serde_json::Value =
@@ -488,7 +488,7 @@ fn strict_petpack_metadata_rejects_namespaced_and_affixed_private_fields() {
         "backupapikey",
     ] {
         let temp = tempfile::tempdir().unwrap();
-        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2)
+        write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实")
             .unwrap();
         let source_path = temp.path().join("source/source.json");
         let mut source: serde_json::Value =
@@ -507,12 +507,12 @@ fn strict_petpack_metadata_rejects_namespaced_and_affixed_private_fields() {
 #[test]
 fn strict_petpack_metadata_allows_path_like_prose_and_non_private_words() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     let brief_path = temp.path().join("brief.json");
     let mut brief: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&brief_path).unwrap()).unwrap();
     brief["ai_brief"] = json!({
-        "note": "Animate idle/start/tool at 12/20 fps; use / as a separator and (https-inspired) highlights.",
+        "note": "Animate idle/start/tool at 10/20 fps; use / as a separator and (https-inspired) highlights.",
         "reference_note": "reference(images/moon.png) and assets/frames/idle/frame_000.png",
         "authentic_style": "storybook",
         "commanding_motion": "confident pose",
@@ -530,7 +530,7 @@ fn strict_petpack_metadata_allows_path_like_prose_and_non_private_words() {
 #[test]
 fn petpack_validation_rejects_failed_build_metadata() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::write(
         temp.path().join("build/validation.json"),
         serde_json::to_vec_pretty(&json!({ "ok": false })).unwrap(),
@@ -544,7 +544,7 @@ fn petpack_validation_rejects_failed_build_metadata() {
 #[test]
 fn petpack_validation_rejects_escaping_asset_paths() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 1).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     let manifest_path = temp.path().join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
@@ -562,7 +562,7 @@ fn petpack_validation_rejects_escaping_asset_paths() {
 #[test]
 fn petpack_validation_rejects_codex_compatibility_package_markers() {
     let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(temp.path(), QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     std::fs::write(temp.path().join("codex-pet.json"), "{}").unwrap();
 
     let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
@@ -573,7 +573,7 @@ fn petpack_validation_rejects_codex_compatibility_package_markers() {
 fn petpack_build_rejects_source_symlink() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Cloud Maiden", "半写实", 2).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Cloud Maiden", "半写实").unwrap();
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(
@@ -1689,6 +1689,8 @@ fn generation_messages_wait_returns_when_message_file_changes() {
                 style: "半写实".to_string(),
                 quality: QualityLevel::Standard,
                 reference_images: Vec::new(),
+                native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+                state_durations_ms: petcore_types::default_state_durations_ms(),
             },
             &job_dir,
         )
@@ -2193,6 +2195,16 @@ fn database_migrates_pet_generation_source_columns() {
     assert_eq!(pet.origin, petcore_types::PetOrigin::ExternalImport);
     assert_eq!(pet.generator, None);
     assert_eq!(pet.provenance, None);
+    assert_eq!(pet.native_fps, 10);
+    assert_eq!(
+        pet.state_durations_ms,
+        petcore_types::default_state_durations_ms()
+    );
+    let schema_version: u32 = rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(schema_version, 5);
 
     pet.generator = Some("codex-app-server-brief-petpack-v1".to_string());
     pet.provenance = Some("codex_app_server_brief".to_string());
@@ -2221,6 +2233,7 @@ fn renderer_budget_reports_original_ring_cache_window() {
     let high_standard =
         petcore::metrics::renderer_budget(QualityLevel::High, FpsProfileName::Standard);
     assert!(!high_standard.uses_ring_cache);
+    assert_eq!(high_standard.fps, 10);
     assert_eq!(
         high_standard.runtime_cache_frame_limit,
         high_standard.frame_count_for_two_seconds
@@ -2236,15 +2249,8 @@ fn deleting_active_pet_removes_assets_and_reactivates_remaining_pet() {
 
     let first_source = temp.path().join("first");
     let second_source = temp.path().join("second");
-    write_sample_petpack_dir(&first_source, QualityLevel::High, "First Pet", "半写实", 1).unwrap();
-    write_sample_petpack_dir(
-        &second_source,
-        QualityLevel::High,
-        "Second Pet",
-        "半写实",
-        1,
-    )
-    .unwrap();
+    write_sample_petpack_dir(&first_source, QualityLevel::High, "First Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&second_source, QualityLevel::High, "Second Pet", "半写实").unwrap();
 
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
@@ -2304,7 +2310,7 @@ fn pet_delete_keeps_database_row_when_asset_staging_fails() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("broken-delete");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Broken Delete", "半写实", 1).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Broken Delete", "半写实").unwrap();
 
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
@@ -2346,7 +2352,7 @@ fn activating_or_deleting_unknown_pet_does_not_clear_active_pet() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("known");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Known Pet", "半写实", 1).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Known Pet", "半写实").unwrap();
 
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
@@ -2397,7 +2403,7 @@ fn reimporting_petpack_preserves_active_state_and_owned_package() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("reimport-source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Reimport Pet", "半写实", 1).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Reimport Pet", "半写实").unwrap();
 
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
@@ -2453,7 +2459,7 @@ fn snapshot_repairs_legacy_relative_cover_path_from_petpack() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("legacy-cover");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Legacy Cover Pet", "半写实", 1).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Legacy Cover Pet", "半写实").unwrap();
 
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
@@ -2492,7 +2498,7 @@ fn snapshot_exposes_cached_pet_asset_repair_failure() {
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
     let source = temp.path().join("snapshot-warning-source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Snapshot Warning", "半写实", 2).unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::High, "Snapshot Warning", "半写实").unwrap();
     let request = |method: &str, params| RpcRequest {
         jsonrpc: Some("2.0".to_string()),
         id: Some(json!("snapshot-warning")),
@@ -3022,7 +3028,7 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
     );
     std::fs::write(&wait_file, "ok").unwrap();
 
-    // The injected helper writes 84 preview frames. Rejection still decodes the
+    // The injected helper writes the complete fixed-timing preview frames. Rejection still decodes the
     // full source contract, which can take longer while CI runs other image-heavy
     // generation tests in parallel.
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -3063,9 +3069,11 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
         serde_json::from_slice(&std::fs::read(source_path).unwrap()).unwrap();
     assert_eq!(source["generator"], "agent-pet-studio-preview-helper");
     assert_eq!(source["provenance"], "deterministic_preview");
-    assert_eq!(source["skill_helper"], "agent-pet-studio-preview-helper-v2");
+    assert_eq!(source["skill_helper"], "agent-pet-studio-preview-helper-v3");
     assert_eq!(source["preview_only"], true);
-    assert_eq!(source["frames_per_state"], 12);
+    assert_eq!(source["native_fps"], 10);
+    assert_eq!(source["state_frame_counts"]["idle"], 20);
+    assert_eq!(source["state_frame_counts"]["start"], 10);
     assert!(source.get("materialized_by").is_none());
 
     let snapshot = handle_request(
@@ -3513,6 +3521,8 @@ fn generation_retry_creates_tracked_job_from_previous_form() {
         style: "半写实".to_string(),
         quality: QualityLevel::High,
         reference_images: vec![],
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let failed_dir = paths.jobs_dir.join("job_retry_source");
@@ -3678,6 +3688,8 @@ fn ensure_ready_marks_stale_interrupted_generation_job_failed() {
         style: "半写实".to_string(),
         quality: QualityLevel::High,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let running_dir = paths.jobs_dir.join("job_interrupted_running");
     std::fs::create_dir_all(&running_dir).unwrap();
@@ -3817,7 +3829,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
         .unwrap()
         .join(format!("{}-frames", pet["id"].as_str().unwrap()));
     assert!(frames_dir.join("idle/0000.png").is_file());
-    assert!(frames_dir.join("tool/0023.png").is_file());
+    assert!(frames_dir.join("tool/0019.png").is_file());
     std::fs::remove_dir_all(&frames_dir).unwrap();
     handle_request(
         &state,
@@ -3830,7 +3842,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     )
     .unwrap();
     assert!(frames_dir.join("idle/0000.png").is_file());
-    assert!(frames_dir.join("tool/0023.png").is_file());
+    assert!(frames_dir.join("tool/0019.png").is_file());
     let idle_frame = image::open(frames_dir.join("idle/0000.png"))
         .unwrap()
         .to_rgba8();
@@ -3906,7 +3918,8 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert!(!skill_session.contains("turn_fake_pet_studio"));
     assert!(!skill_session.contains("studio.messages"));
     assert!(skill_session.contains("states.rendered"));
-    assert!(skill_session.contains("\"frames_per_state\":24"));
+    assert!(skill_session.contains("\"native_fps\":10"));
+    assert!(skill_session.contains("\"state_frame_counts\""));
     assert!(skill_session.contains("\"reference_count\":1"));
     assert!(!skill_session.contains(&original_reference_path));
     for line in skill_session.lines().filter(|line| !line.trim().is_empty()) {
@@ -3939,7 +3952,9 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(source["palette_source"], "codex-ai-brief");
     assert_eq!(source["palette"]["source"], "codex-ai-brief");
     assert_eq!(source["visual_source"], "reference-image");
-    assert_eq!(source["frames_per_state"], 24);
+    assert_eq!(source["native_fps"], 10);
+    assert_eq!(source["state_durations_ms"]["idle"], 2000);
+    assert_eq!(source["state_frame_counts"]["idle"], 20);
     assert_eq!(
         source["form"]["reference_images"][0],
         "source/references/reference-00.png"
@@ -3967,7 +3982,8 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
         "codex-app-server-brief-petpack-v1"
     );
     assert_eq!(validation_metadata["provenance"], "codex_app_server_brief");
-    assert_eq!(validation_metadata["frames_per_state"], 24);
+    assert_eq!(validation_metadata["native_fps"], 10);
+    assert_eq!(validation_metadata["state_frame_counts"]["start"], 10);
 
     let reply_messages = handle_request(
         &state,
@@ -4093,7 +4109,6 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
         QualityLevel::High,
         "Skill Rendered Pet",
         "现代",
-        2,
     )
     .unwrap();
     let source_metadata_dir = source_dir.join("source");
@@ -4106,7 +4121,6 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
             "manifest_id": manifest.id,
             "pet_name": "Skill Rendered Pet",
             "visual_source": "image-generation",
-            "frames_per_state": 2,
             "preview_only": false
         }))
         .unwrap(),
@@ -4126,7 +4140,7 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
     // A strict skill-full-source import decodes every PNG and the animated
     // preview before publishing. Keep enough debug-build headroom to test the
     // result instead of racing the validation work.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let messages = handle_request(
             &state,
@@ -4238,7 +4252,6 @@ fn generation_rejects_provider_symlink_before_portable_metadata_write() {
         QualityLevel::High,
         "Symlink Provider Pet",
         "现代",
-        2,
     )
     .unwrap();
 
@@ -5176,6 +5189,8 @@ fn codex_app_server_probe_uses_configured_stdio_command() {
             style: "半写实".to_string(),
             quality: QualityLevel::High,
             reference_images: vec![],
+            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+            state_durations_ms: petcore_types::default_state_durations_ms(),
         },
     );
     assert_eq!(thread["started"], true);
@@ -5189,6 +5204,8 @@ fn codex_app_server_probe_uses_configured_stdio_command() {
             style: "半写实".to_string(),
             quality: QualityLevel::High,
             reference_images: vec![],
+            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+            state_durations_ms: petcore_types::default_state_durations_ms(),
         },
     );
     assert_eq!(session["completed"], true);
@@ -5265,9 +5282,16 @@ done
                 active["overlay_display"]["navigation"]["routable_session_id"],
                 "019f5a6f-0c52-75e1-b652-004d4487c4ae"
             );
-            let overlay_json = serde_json::to_string(active).unwrap();
-            assert!(!overlay_json.contains("Current Codex task"));
-            assert!(!overlay_json.contains("Latest agent response"));
+            assert_eq!(active["session_title"], "Current Codex task");
+            assert_eq!(
+                active["session_user_message"],
+                json!({"role": "user", "content": "Show this conversation"})
+            );
+            assert_eq!(
+                active["session_message"],
+                json!({"role": "assistant", "content": "Latest agent response"})
+            );
+            assert!(active["event"].get("payload_json").is_none());
             break;
         }
         assert!(

@@ -60,7 +60,7 @@ struct ServiceDiagnosticsTests {
             desktopPetEnabled: true,
             desktopPetVisible: true,
             activePetName: "Bytebud 字节芽",
-            framesPerSecond: 12,
+            framesPerSecond: 10,
             localeIdentifier: "zh-Hans"
         )
 

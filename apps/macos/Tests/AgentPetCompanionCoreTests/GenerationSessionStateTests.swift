@@ -4,6 +4,50 @@ import Testing
 
 @Suite
 struct GenerationSessionStateTests {
+    @Test("generation timing round-trips and legacy forms receive closed defaults")
+    func generationFormTimingCodableContract() throws {
+        var customDurations = PetAnimationContract.defaultStateDurationsMS
+        customDurations["idle"] = 1_000
+        customDurations["done"] = 2_000
+        let form = GenerationForm(
+            description: "Smooth custom timing",
+            style: "像素",
+            quality: .high,
+            referenceImages: [],
+            nativeFPS: 20,
+            stateDurationsMS: customDurations
+        )
+
+        let encoded = try JSONEncoder().encode(form)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        #expect(object["native_fps"] as? Int == 20)
+        #expect((object["state_durations_ms"] as? [String: Int])?["idle"] == 1_000)
+        #expect(try JSONDecoder().decode(GenerationForm.self, from: encoded) == form)
+
+        let legacy = try JSONDecoder().decode(
+            GenerationForm.self,
+            from: Data(
+                #"{"description":"Legacy","style":"像素","quality":"standard","reference_images":[]}"#.utf8
+            )
+        )
+        #expect(legacy.nativeFPS == PetAnimationContract.defaultNativeFPS)
+        #expect(legacy.stateDurationsMS == PetAnimationContract.defaultStateDurationsMS)
+    }
+
+    @Test("generation timing rejects values outside the closed contract")
+    func generationFormTimingRejectsInvalidValues() {
+        for json in [
+            #"{"description":"Invalid","style":"像素","quality":"standard","reference_images":[],"native_fps":12,"state_durations_ms":{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}}"#,
+            #"{"description":"Invalid","style":"像素","quality":"standard","reference_images":[],"native_fps":10,"state_durations_ms":{"idle":1500,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}}"#,
+        ] {
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(GenerationForm.self, from: Data(json.utf8))
+            }
+        }
+    }
+
     @Test("a pet without a private generation job decodes as empty history")
     func missingGenerationHistoryDecodes() throws {
         let data = Data(#"{"found":false,"ok":true,"pet_id":"pet_external"}"#.utf8)
@@ -370,7 +414,7 @@ struct GenerationSessionStateTests {
           "status":"completed",
           "result_pet_id":"pet_created",
           "revision_id":"rev_0123456789abcdef0123456789abcdef",
-          "validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":0},
+          "validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":0},
           "messages":[]
         }
         """#.utf8)
@@ -394,7 +438,7 @@ struct GenerationSessionStateTests {
         #expect(session.resultRevisionID == "rev_0123456789abcdef0123456789abcdef")
         #expect(session.resultPetID != session.resultRevisionID)
         #expect(session.validationSummary?.stateCount == 7)
-        #expect(session.validationSummary?.frameCount == 168)
+        #expect(session.validationSummary?.frameCount == 120)
         #expect(!session.canSendReply)
     }
 
@@ -412,7 +456,7 @@ struct GenerationSessionStateTests {
             validationSummary: GenerationValidationSummary(
                 ok: true,
                 stateCount: 7,
-                frameCount: 168,
+                frameCount: 120,
                 warningCount: 0
             )
         )))

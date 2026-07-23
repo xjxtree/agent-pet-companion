@@ -23,8 +23,8 @@
 "library.import.message" = "Select one or more app-owned .petpack files.";
 "library.import.title" = "Import app-owned .petpack";
 "library.specification.unavailable" = "Not reported by the local service";
-"library.specification.verified_states" = "7 fixed states · at least 1 decodable PNG each";
-"library.specification.verified_fps" = "Standard 12 FPS · Smooth 20 FPS";
+"library.specification.verified_states" = "7 fixed states · frame counts exactly match native FPS and action duration";
+"library.specification.verified_fps" = "Native 10 or 20 FPS · 20 FPS pets can play at 10 FPS";
 "library.state.idle" = "Idle";
 "library.state.not_active" = "Not the active pet";
 "library.validation.invalid" = "Asset warning";
@@ -171,7 +171,12 @@
 "studio.brief.description_required" = "Add a description to start creating.";
 "studio.brief.style_heading" = "Style";
 "studio.brief.quality_heading" = "Output Quality";
-"studio.brief.quality_contract_format" = "%@ · Standard 12 FPS / Smooth 20 FPS · 7 fixed states";
+"studio.brief.quality_contract_format" = "%@ · 7 fixed states · Animation timing is fixed per revision";
+"studio.brief.timing_heading" = "Animation Timing";
+"studio.brief.timing_detail" = "20 FPS requires twice as many authored frames. Timing becomes fixed in this pet revision; playback settings never retime the action.";
+"studio.brief.timing_native_fps" = "Native FPS";
+"studio.brief.timing_action_durations" = "Action Durations";
+"studio.brief.timing_seconds_format" = "%d s";
 "studio.brief.references_heading" = "Reference Images (Optional)";
 "studio.brief.references_privacy" = "Images are copied safely into the current task. The UI and exported metadata never expose original paths.";
 "studio.brief.references_drop_empty" = "Drop images here, or choose files";
@@ -193,7 +198,7 @@
 "studio.session.welcome_title" = "Ready to Create";
 "studio.session.welcome_detail" = "Complete the creation brief to begin.";
 "studio.session.output_contract_title" = "Output Contract";
-"studio.session.output_contract_detail" = "The result must include idle, start, tool, waiting, review, done, and failed, plus Standard 12 FPS and Smooth 20 FPS.";
+"studio.session.output_contract_detail" = "The result must include idle, start, tool, waiting, review, done, and failed; native frame rate must be 10 or 20 FPS and every action must be fixed at 1 or 2 seconds.";
 "studio.session.output_privacy" = "Only task-scoped safe copies are used. Unvalidated assets never enter the pet library.";
 "studio.session.preparing" = "Preparing the local session…";
 "studio.session.failed_title" = "Creation Incomplete";
@@ -247,7 +252,6 @@
 "studio.baseline.target_state" = "Target state";
 "studio.baseline.quality" = "Quality";
 "studio.baseline.animation" = "Animation";
-"studio.baseline.animation_value" = "7 states · 12 / 20 FPS";
 "studio.baseline.restoring" = "Restoring Baseline";
 "studio.baseline.restoring_detail" = "The submitted validated baseline appears after PetCore restores the session.";
 "studio.baseline.unavailable_title" = "Baseline Preview Unavailable";
@@ -288,6 +292,7 @@
 "config.fps_accessibility" = "Desktop pet animation frame rate";
 "config.fps.standard_detail" = "Standard motion with lower resource use.";
 "config.fps.smooth_detail" = "Smoother motion and more refined transitions.";
+"config.fps.native_standard_only_detail" = "This pet is authored at 10 FPS and supports Standard motion only; action duration stays fixed.";
 "config.bubble_transparency" = "Bubble Transparency";
 "config.glass_more" = "More glass";
 "config.transparent_more" = "More transparent";
@@ -574,6 +579,7 @@
 "library.field.revision_policy" = "Revision Policy";
 "library.field.states" = "Seven States";
 "library.field.fps" = "Frame Rate";
+"library.field.duration" = "Action Duration";
 "library.field.validation" = "Asset Validation";
 "library.edit.instruction" = "Revision Requirements";
 "library.edit.instruction_accessibility" = "Pet revision requirements";
@@ -652,7 +658,9 @@
 "library.revision.count_format" = "%d revisions";
 "library.revision.bundled_policy" = "Bundled read-only baseline";
 "library.revision.new_policy" = "Revisions create a new immutable revision for the same ID";
-"library.fps.summary" = "Standard 12 FPS · Smooth 20 FPS";
+"library.fps.summary" = "Native 20 FPS · Plays at 10 / 20 FPS";
+"library.fps.standard_summary" = "Native 10 FPS · Plays at 10 FPS";
+"library.duration.group_format" = "%d s: %@";
 "library.source.bundled_title" = "Bundled";
 "library.source.bundled_detail" = "Included with Agent Pet Companion";
 "library.source.verified_title" = "Verified Skill Source";

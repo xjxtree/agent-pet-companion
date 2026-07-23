@@ -22,6 +22,8 @@ fn ready_job() -> (tempfile::TempDir, AppPaths, Database, String) {
                 style: "半写实".to_string(),
                 quality: QualityLevel::Standard,
                 reference_images: Vec::new(),
+                native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+                state_durations_ms: petcore_types::default_state_durations_ms(),
             },
             &job_dir,
         )

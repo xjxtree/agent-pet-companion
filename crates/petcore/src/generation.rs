@@ -6,9 +6,9 @@ use crate::pet_revision::{
 };
 use crate::petpack::{
     build_petpack, extract_validated_petpack_source, import_petpack_with_origin_guarded,
-    is_bundled_pet, validate_petpack_path, validate_safe_producer_json_privacy,
-    validate_source_tree_budgets, write_generated_petpack_dir, write_skill_generated_petpack_dir,
-    GENERATED_FRAMES_PER_STATE,
+    is_bundled_pet, natural_frame_path_cmp, normalize_visible_pixels, validate_petpack_path,
+    validate_safe_producer_json_privacy, validate_source_tree_budgets, write_generated_petpack_dir,
+    write_skill_generated_petpack_dir,
 };
 use crate::reference_images::{
     stage_reference_inputs, validate_private_recovery_reference_at, MAX_REFERENCE_IMAGES,
@@ -16,10 +16,12 @@ use crate::reference_images::{
 };
 use crate::{app_server, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    GenerationForm, GenerationJobHistoryRecord, GenerationJobStatus, GenerationMessageRecord,
-    GenerationOperation, GenerationResultSummary, GenerationValidationSummary, PetHistorySnapshot,
-    PetManifest, PetOrigin, PetRevisionHistoryRecord, PetSummary, MAX_GENERATION_DESCRIPTION_CHARS,
-    PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    expected_frame_count, is_valid_total_frame_count, GenerationForm, GenerationJobHistoryRecord,
+    GenerationJobStatus, GenerationMessageRecord, GenerationOperation, GenerationResultSummary,
+    GenerationValidationSummary, PetHistorySnapshot, PetManifest, PetOrigin,
+    PetRevisionHistoryRecord, PetStateName, PetSummary, LONG_ACTION_DURATION_MS,
+    MAX_GENERATION_DESCRIPTION_CHARS, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    SHORT_ACTION_DURATION_MS, SMOOTH_FPS, STANDARD_FPS,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -199,6 +201,12 @@ fn start_pet_edit_with_retry(
         style: baseline_manifest.style.clone(),
         quality: baseline_manifest.quality,
         reference_images: Vec::new(),
+        native_fps: baseline_manifest.native_fps,
+        state_durations_ms: baseline_manifest
+            .states
+            .iter()
+            .map(|state| (state.name, state.duration_ms))
+            .collect(),
     };
     if let Err(error) = validate_generation_form(&form) {
         let _ = fs::remove_dir_all(&job_dir);
@@ -565,6 +573,46 @@ fn validate_generation_form(form: &GenerationForm) -> Result<()> {
             "generation description must not exceed {MAX_GENERATION_DESCRIPTION_CHARS} characters"
         )));
     }
+    if !matches!(form.native_fps, STANDARD_FPS | SMOOTH_FPS) {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "native_fps must be exactly {STANDARD_FPS} or {SMOOTH_FPS}"
+        )));
+    }
+    if form.state_durations_ms.len() != REQUIRED_STATES.len() {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "state_durations_ms must contain exactly {} states",
+            REQUIRED_STATES.len()
+        )));
+    }
+    for state in REQUIRED_STATES {
+        let duration_ms = form
+            .state_durations_ms
+            .get(&state)
+            .copied()
+            .ok_or_else(|| {
+                PetCoreError::InvalidRequest(format!(
+                    "state_durations_ms is missing {}",
+                    state.as_str()
+                ))
+            })?;
+        if !matches!(
+            duration_ms,
+            SHORT_ACTION_DURATION_MS | LONG_ACTION_DURATION_MS
+        ) {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "state {} duration must be exactly {} or {} ms",
+                state.as_str(),
+                SHORT_ACTION_DURATION_MS,
+                LONG_ACTION_DURATION_MS
+            )));
+        }
+        if expected_frame_count(form.native_fps, duration_ms).is_none() {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "state {} timing overflows its frame count",
+                state.as_str()
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -635,6 +683,8 @@ fn validated_staged_recovery_form(
     if staged.description != original.description
         || staged.style != original.style
         || staged.quality != original.quality
+        || staged.native_fps != original.native_fps
+        || staged.state_durations_ms != original.state_durations_ms
         || staged.reference_images.len() != original.reference_images.len()
     {
         return Err(invalid_recovery_workspace());
@@ -1121,8 +1171,7 @@ pub fn read_generation_result(
     if !valid_revision_id(&result.revision_id)
         || !result.validation_summary.ok
         || result.validation_summary.state_count != REQUIRED_STATES.len()
-        || result.validation_summary.frame_count == 0
-        || result.validation_summary.frame_count > REQUIRED_STATES.len() * 40
+        || !is_valid_total_frame_count(result.validation_summary.frame_count)
         || result.validation_summary.warning_count > 4_096
     {
         return Err(PetCoreError::Validation(
@@ -1632,6 +1681,11 @@ fn run_local_petpack_generation(
     if pause_generation_for_input_request(paths, database, job_id, &app_server_session, 0.18)? {
         return Ok(());
     }
+    let render_form = if read_edit_context(paths, job_id)?.is_null() {
+        staged_form.clone()
+    } else {
+        form_with_ai_timing(&staged_form, app_server_session.get("ai_brief"))?
+    };
     if app_server_session
         .get("completed")
         .and_then(serde_json::Value::as_bool)
@@ -1652,7 +1706,7 @@ fn run_local_petpack_generation(
                 paths,
                 database,
                 job_id,
-                &staged_form,
+                &render_form,
                 &app_server_session,
             )? {
                 SkillPetpackImport::Imported { pet, previous_pet } => {
@@ -1711,7 +1765,7 @@ fn run_local_petpack_generation(
         paths,
         database,
         job_id,
-        &staged_form,
+        &render_form,
         &app_server_session,
     )? {
         SkillPetpackImport::Imported { pet, previous_pet } => {
@@ -1775,7 +1829,7 @@ fn run_local_petpack_generation(
                 paths,
                 database,
                 job_id,
-                &staged_form,
+                &render_form,
                 &app_server_session,
             )? {
                 complete_imported_pet(
@@ -1842,20 +1896,19 @@ fn run_local_petpack_generation(
     if source_dir.exists() {
         fs::remove_dir_all(&source_dir)?;
     }
-    let pet_name = derive_pet_name(&staged_form, app_server_session.get("ai_brief"));
+    let pet_name = derive_pet_name(&render_form, app_server_session.get("ai_brief"));
     let manifest = write_generated_petpack_dir(
         &source_dir,
-        &staged_form,
+        &render_form,
         &pet_name,
         app_server_session.get("ai_brief"),
-        GENERATED_FRAMES_PER_STATE,
     )?;
     let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     write_skill_session(
         paths,
         job_id,
         &source_dir,
-        &staged_form,
+        &render_form,
         &manifest,
         &app_server_session,
     )?;
@@ -1905,13 +1958,18 @@ fn run_reply_revision(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
-    refresh_edit_workspace_for_reply(
+    let refreshed_baseline_manifest = refresh_edit_workspace_for_reply(
         paths,
         database,
         job_id,
         user_message,
         rebase_on_current_revision,
     )?;
+    let staged_form = if let Some(manifest) = refreshed_baseline_manifest.as_ref() {
+        form_with_manifest_timing(&staged_form, manifest)?
+    } else {
+        staged_form
+    };
     let source_dir = paths.jobs_dir.join(job_id).join("petpack-source");
     if source_dir.exists() {
         fs::remove_dir_all(&source_dir)?;
@@ -1987,6 +2045,7 @@ fn run_reply_revision(
             || is_generation_canceled(paths, job_id),
         );
     }
+    render_form = form_with_ai_timing(&render_form, app_server_session.get("ai_brief"))?;
 
     write_app_server_session(paths, job_id, &app_server_session)?;
     if let Some(session_id) = app_server_session
@@ -2168,7 +2227,6 @@ fn run_reply_revision(
         &render_form,
         &pet_name,
         app_server_session.get("ai_brief"),
-        GENERATED_FRAMES_PER_STATE,
     )?;
     let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     write_skill_session(
@@ -2388,9 +2446,9 @@ fn refresh_edit_workspace_for_reply(
     job_id: &str,
     instruction: &str,
     rebase_on_current_revision: bool,
-) -> Result<()> {
+) -> Result<Option<PetManifest>> {
     let Some(pet_id) = expected_pet_id(database, job_id)? else {
-        return Ok(());
+        return Ok(None);
     };
     let pet = database
         .get_pet(&pet_id)?
@@ -2432,7 +2490,7 @@ fn refresh_edit_workspace_for_reply(
             .map(EditBaseline::OwnedRevision)
             .unwrap_or(EditBaseline::Current),
     )
-    .map(|_| ())
+    .map(Some)
 }
 
 fn expected_pet_id(database: &Database, job_id: &str) -> Result<Option<String>> {
@@ -2521,6 +2579,7 @@ fn ensure_edit_commit_preconditions(
     database: &Database,
     job_id: &str,
     output_manifest: &PetManifest,
+    output_path: &Path,
 ) -> Result<()> {
     let context = read_edit_context(paths, job_id)?;
     if context.is_null() {
@@ -2547,18 +2606,54 @@ fn ensure_edit_commit_preconditions(
                 PetCoreError::Validation(format!("edit context base_manifest is invalid: {error}"))
             })
         })?;
+    let output_state_layout = output_manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.frames_dir.as_str(), state.looped))
+        .collect::<Vec<_>>();
+    let base_state_layout = base_manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.frames_dir.as_str(), state.looped))
+        .collect::<Vec<_>>();
     if output_manifest.schema_version != base_manifest.schema_version
         || output_manifest.quality != base_manifest.quality
         || output_manifest.render_size != base_manifest.render_size
-        || output_manifest.fps_profiles != base_manifest.fps_profiles
-        || output_manifest.default_fps_profile != base_manifest.default_fps_profile
-        || output_manifest.states != base_manifest.states
+        || output_state_layout != base_state_layout
         || output_manifest.created_at != base_manifest.created_at
     {
         return Err(PetCoreError::Validation(
-            "pet modification changed the base format, quality, state layout, FPS, or created_at contract"
+            "pet modification changed the base format, quality, state layout, or created_at contract"
                 .to_string(),
         ));
+    }
+    let base_durations_ms = base_manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.duration_ms))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let output_durations_ms = output_manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.duration_ms))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let timing_changed_states = REQUIRED_STATES
+        .iter()
+        .copied()
+        .filter(|state| {
+            output_manifest.native_fps != base_manifest.native_fps
+                || output_durations_ms.get(state) != base_durations_ms.get(state)
+        })
+        .collect::<Vec<_>>();
+    if !timing_changed_states.is_empty() {
+        ensure_timing_changed_frames(
+            paths,
+            job_id,
+            output_path,
+            &base_manifest,
+            output_manifest,
+            &timing_changed_states,
+        )?;
     }
     let expected_sha256 = context
         .get("expected_current_petpack_sha256")
@@ -2590,6 +2685,274 @@ fn ensure_edit_commit_preconditions(
         ));
     }
     Ok(())
+}
+
+fn ensure_timing_changed_frames(
+    paths: &AppPaths,
+    job_id: &str,
+    output_path: &Path,
+    base_manifest: &PetManifest,
+    output_manifest: &PetManifest,
+    changed_states: &[PetStateName],
+) -> Result<()> {
+    let job_dir = paths.jobs_dir.join(job_id);
+    let base_dir = job_dir.join("base-petpack-source");
+    if !base_dir.is_dir() {
+        return Err(PetCoreError::Validation(
+            "pet edit timing verification is missing its baseline source".to_string(),
+        ));
+    }
+    let output_dir = job_dir.join(".edit-output-timing-verify");
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir)?;
+    }
+    extract_validated_petpack_source(output_path, &output_dir)?;
+    let result = changed_states.iter().try_for_each(|state| {
+        let relative = Path::new("assets/frames").join(state.as_str());
+        let base_frames = decoded_state_frame_digests(&base_dir.join(&relative))?;
+        let output_frames = decoded_state_frame_digests(&output_dir.join(&relative))?;
+        let base_state = base_manifest
+            .states
+            .iter()
+            .find(|candidate| candidate.name == *state)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "timing verification baseline is missing state {}",
+                    state.as_str()
+                ))
+            })?;
+        let output_state = output_manifest
+            .states
+            .iter()
+            .find(|candidate| candidate.name == *state)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "timing verification output is missing state {}",
+                    state.as_str()
+                ))
+            })?;
+        validate_timing_revision_state(
+            *state,
+            &base_frames,
+            &output_frames,
+            base_manifest.native_fps,
+            output_manifest.native_fps,
+            base_state.duration_ms,
+            output_state.duration_ms,
+            base_state.looped,
+        )
+    });
+    let cleanup = fs::remove_dir_all(&output_dir);
+    result?;
+    cleanup?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_timing_revision_state(
+    state: PetStateName,
+    before: &[String],
+    after: &[String],
+    base_fps: u32,
+    output_fps: u32,
+    base_duration_ms: u32,
+    output_duration_ms: u32,
+    looped: bool,
+) -> Result<()> {
+    if before.is_empty() || after.is_empty() {
+        return Err(PetCoreError::Validation(format!(
+            "timing revision state {} must contain frames",
+            state.as_str()
+        )));
+    }
+
+    if base_duration_ms != output_duration_ms {
+        return reject_naive_duration_retime(state, before, after, looped);
+    }
+    if base_fps == output_fps {
+        if before == after {
+            return Err(PetCoreError::Validation(format!(
+                "pet modification changed timing for state {} without replacing its frames",
+                state.as_str()
+            )));
+        }
+        return Ok(());
+    }
+
+    match (base_fps, output_fps) {
+        (STANDARD_FPS, SMOOTH_FPS) => {
+            let target_standard_count = expected_frame_count(STANDARD_FPS, output_duration_ms)
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "state {} timing overflows its Standard sample count",
+                        state.as_str()
+                    ))
+                })?;
+            let preserved_indices =
+                runtime_sample_indices(after.len(), target_standard_count, looped);
+            let preserves_source = after.len() == before.len().saturating_mul(2)
+                && preserved_indices.len() == before.len()
+                && preserved_indices
+                    .iter()
+                    .zip(before)
+                    .all(|(index, digest)| after.get(*index) == Some(digest));
+            if !preserves_source {
+                return Err(PetCoreError::Validation(format!(
+                    "state {} 10 to 20 FPS conversion must preserve source frames at the runtime 10 FPS sample indices",
+                    state.as_str()
+                )));
+            }
+            let preserved = preserved_indices
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            for index in 0..after.len() {
+                if preserved.contains(&index) {
+                    continue;
+                }
+                let copied_source = before.contains(&after[index]);
+                let copied_previous = index > 0 && after[index] == after[index - 1];
+                let copied_next = index + 1 < after.len() && after[index] == after[index + 1];
+                if copied_source || copied_previous || copied_next {
+                    return Err(PetCoreError::Validation(format!(
+                        "state {} has a copied source pose instead of a real intermediate at index {index}",
+                        state.as_str()
+                    )));
+                }
+            }
+            Ok(())
+        }
+        (SMOOTH_FPS, STANDARD_FPS) => {
+            let target_standard_count = expected_frame_count(STANDARD_FPS, base_duration_ms)
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "state {} timing overflows its Standard sample count",
+                        state.as_str()
+                    ))
+                })?;
+            let source_indices =
+                runtime_sample_indices(before.len(), target_standard_count, looped);
+            let expected = source_indices
+                .iter()
+                .filter_map(|index| before.get(*index))
+                .collect::<Vec<_>>();
+            if expected.len() != after.len()
+                || !expected
+                    .iter()
+                    .zip(after)
+                    .all(|(expected, actual)| *expected == actual)
+            {
+                return Err(PetCoreError::Validation(format!(
+                    "state {} 20 to 10 FPS conversion must match the runtime 10 FPS sample indices",
+                    state.as_str()
+                )));
+            }
+            Ok(())
+        }
+        _ => Err(PetCoreError::Validation(format!(
+            "unsupported native FPS transition {base_fps} to {output_fps} for state {}",
+            state.as_str()
+        ))),
+    }
+}
+
+fn reject_naive_duration_retime(
+    state: PetStateName,
+    before: &[String],
+    after: &[String],
+    looped: bool,
+) -> Result<()> {
+    let matches_naive_retime = if after.len() > before.len() {
+        let repeated = before
+            .iter()
+            .cycle()
+            .take(before.len().saturating_mul(after.len() / before.len()))
+            .collect::<Vec<_>>();
+        let padded = before.iter().cycle().take(after.len()).collect::<Vec<_>>();
+        (repeated.len() == after.len()
+            && repeated
+                .iter()
+                .zip(after)
+                .all(|(left, right)| *left == right))
+            || padded.iter().zip(after).all(|(left, right)| *left == right)
+    } else {
+        let prefix_matches = before
+            .iter()
+            .take(after.len())
+            .zip(after)
+            .all(|(left, right)| left == right);
+        let suffix_matches = before[before.len() - after.len()..]
+            .iter()
+            .zip(after)
+            .all(|(left, right)| left == right);
+        let sampled = runtime_sample_indices(before.len(), after.len(), looped)
+            .into_iter()
+            .filter_map(|index| before.get(index))
+            .collect::<Vec<_>>();
+        prefix_matches
+            || suffix_matches
+            || (sampled.len() == after.len()
+                && sampled
+                    .iter()
+                    .zip(after)
+                    .all(|(left, right)| *left == right))
+    };
+    let uses_only_old_frames = after.iter().all(|digest| before.contains(digest));
+    if matches_naive_retime || uses_only_old_frames {
+        return Err(PetCoreError::Validation(format!(
+            "state {} duration changed by truncating, repeating, or sampling the old motion; re-storyboard it",
+            state.as_str()
+        )));
+    }
+    Ok(())
+}
+
+fn runtime_sample_indices(
+    source_frame_count: usize,
+    target_frame_count: usize,
+    looped: bool,
+) -> Vec<usize> {
+    if source_frame_count == 0 || target_frame_count == 0 {
+        return Vec::new();
+    }
+    let target_frame_count = target_frame_count.min(source_frame_count);
+    if target_frame_count == source_frame_count {
+        return (0..source_frame_count).collect();
+    }
+    if looped {
+        return (0..target_frame_count)
+            .map(|logical_index| logical_index * source_frame_count / target_frame_count)
+            .collect();
+    }
+    if target_frame_count == 1 {
+        return vec![source_frame_count - 1];
+    }
+
+    let denominator = target_frame_count - 1;
+    (0..target_frame_count)
+        .map(|logical_index| {
+            let numerator = logical_index * (source_frame_count - 1);
+            let quotient = numerator / denominator;
+            let remainder = numerator % denominator;
+            quotient + usize::from(remainder * 2 >= denominator)
+        })
+        .collect()
+}
+
+fn decoded_state_frame_digests(state_dir: &Path) -> Result<Vec<String>> {
+    let mut paths = fs::read_dir(state_dir)?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| natural_frame_path_cmp(left, right));
+    paths
+        .iter()
+        .map(|path| decoded_frame_digest(path))
+        .collect()
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -2837,15 +3200,6 @@ fn validate_skill_source_identity(source_dir: &Path) -> Result<()> {
                 "external full source mode requires visual_source=image-generation or user-reference-derived, got {visual_source:?}"
             )));
         }
-        let frames_per_state = metadata
-            .get("frames_per_state")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        if frames_per_state < 2 {
-            return Err(PetCoreError::Validation(
-                "external full source mode requires at least two frames per state".to_string(),
-            ));
-        }
         if visual_source == Some("user-reference-derived") {
             let visibly_applied = metadata
                 .get("reference_visual_influence")
@@ -2882,7 +3236,7 @@ fn validate_external_frame_diversity(source_dir: &Path) -> Result<()> {
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
             })
             .collect::<Vec<_>>();
-        frames.sort();
+        frames.sort_by(|left, right| natural_frame_path_cmp(left, right));
         if frames.len() < 2 {
             return Err(PetCoreError::Validation(format!(
                 "external full source state {} must contain at least two PNG frames",
@@ -2914,7 +3268,8 @@ fn validate_external_frame_diversity(source_dir: &Path) -> Result<()> {
 }
 
 fn decoded_frame_digest(path: &Path) -> Result<String> {
-    let image = image::open(path)?.to_rgba8();
+    let mut image = image::open(path)?.to_rgba8();
+    normalize_visible_pixels(&mut image);
     let mut hasher = Sha256::new();
     hasher.update(image.width().to_le_bytes());
     hasher.update(image.height().to_le_bytes());
@@ -2969,6 +3324,9 @@ fn ensure_skill_full_source_metadata(
         "session_id",
         "request_id",
         "command_source",
+        "frames_per_state",
+        "fps_profiles",
+        "default_fps_profile",
     ] {
         metadata.remove(private_key);
     }
@@ -2992,9 +3350,31 @@ fn ensure_skill_full_source_metadata(
             "description": form.description,
             "style": form.style,
             "quality": form.quality,
-            "reference_images": portable_references
+            "reference_images": portable_references,
+            "native_fps": form.native_fps,
+            "state_durations_ms": form.state_durations_ms
         }),
     );
+    let state_frame_counts = form
+        .state_durations_ms
+        .iter()
+        .map(|(state, duration_ms)| {
+            expected_frame_count(form.native_fps, *duration_ms)
+                .map(|count| (*state, count))
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "state {} timing overflows its frame count",
+                        state.as_str()
+                    ))
+                })
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+    metadata.insert("native_fps".to_string(), json!(form.native_fps));
+    metadata.insert(
+        "state_durations_ms".to_string(),
+        json!(form.state_durations_ms),
+    );
+    metadata.insert("state_frame_counts".to_string(), json!(state_frame_counts));
 
     let metadata_value = Value::Object(metadata);
     validate_safe_producer_json_privacy("source/source.json", &metadata_value)?;
@@ -3040,6 +3420,19 @@ fn write_petcore_validation_artifact(
     artifact.insert("validator".to_string(), json!("petcore"));
     artifact.insert("validated_at".to_string(), json!(now_rfc3339()));
     artifact.insert("manifest_id".to_string(), json!(validation.manifest.id));
+    artifact.insert(
+        "native_fps".to_string(),
+        json!(validation.manifest.native_fps),
+    );
+    artifact.insert(
+        "state_durations_ms".to_string(),
+        json!(validation
+            .manifest
+            .states
+            .iter()
+            .map(|state| (state.name, state.duration_ms))
+            .collect::<std::collections::BTreeMap<_, _>>()),
+    );
     fs::write(
         build_dir.join("validation.json"),
         serde_json::to_vec_pretty(&Value::Object(artifact))?,
@@ -3081,14 +3474,9 @@ fn normalize_skill_manifest(source_dir: &Path, form: &GenerationForm) -> Result<
     }
     manifest.insert("quality".to_string(), json!(form.quality));
     manifest.insert("render_size".to_string(), json!(form.quality.render_size()));
-    manifest.insert(
-        "fps_profiles".to_string(),
-        json!({
-            "standard": 12,
-            "smooth": 20
-        }),
-    );
-    manifest.insert("default_fps_profile".to_string(), json!("standard"));
+    manifest.remove("fps_profiles");
+    manifest.remove("default_fps_profile");
+    manifest.insert("native_fps".to_string(), json!(form.native_fps));
     if manifest
         .get("created_at")
         .and_then(Value::as_str)
@@ -3100,7 +3488,10 @@ fn normalize_skill_manifest(source_dir: &Path, form: &GenerationForm) -> Result<
     }
 
     let raw_states = manifest.remove("states");
-    manifest.insert("states".to_string(), normalize_manifest_states(raw_states));
+    manifest.insert(
+        "states".to_string(),
+        normalize_manifest_states(raw_states, &form.state_durations_ms),
+    );
 
     write_json_atomic(&manifest_path, &manifest_json)?;
     Ok(())
@@ -3124,7 +3515,10 @@ fn normalized_pet_id(raw_id: &str) -> String {
     suffix
 }
 
-fn normalize_manifest_states(raw_states: Option<Value>) -> Value {
+fn normalize_manifest_states(
+    raw_states: Option<Value>,
+    fallback_durations_ms: &std::collections::BTreeMap<PetStateName, u32>,
+) -> Value {
     Value::Array(
         REQUIRED_STATES
             .iter()
@@ -3140,10 +3534,15 @@ fn normalize_manifest_states(raw_states: Option<Value>) -> Value {
                     .and_then(|value| value.get("loop").or_else(|| value.get("looped")))
                     .and_then(Value::as_bool)
                     .unwrap_or_else(|| default_state_loop(state.as_str()));
+                let duration_ms = fallback_durations_ms
+                    .get(state)
+                    .copied()
+                    .unwrap_or_else(|| state.default_duration_ms());
                 json!({
                     "name": state.as_str(),
                     "frames_dir": frames_dir,
-                    "loop": looped
+                    "loop": looped,
+                    "duration_ms": duration_ms
                 })
             })
             .collect(),
@@ -3200,7 +3599,6 @@ fn materialize_internal_skill_petpack(
         form,
         &pet_name,
         app_server_session.get("ai_brief"),
-        GENERATED_FRAMES_PER_STATE,
     )?;
     let manifest = apply_expected_pet_identity(paths, database, job_id, &source_dir, manifest)?;
     mark_internal_skill_materializer(&source_dir)?;
@@ -3278,7 +3676,13 @@ fn import_petpack_if_active(
     }
     let store_guard = PetStoreGuard::acquire(paths)?;
     let output_validation = validate_petpack_path(source_path)?;
-    ensure_edit_commit_preconditions(paths, database, job_id, &output_validation.manifest)?;
+    ensure_edit_commit_preconditions(
+        paths,
+        database,
+        job_id,
+        &output_validation.manifest,
+        source_path,
+    )?;
     let previous_pet = match pet_id_hint {
         Some(pet_id) => database.get_pet(pet_id)?,
         None => None,
@@ -3556,6 +3960,78 @@ fn form_with_revision_feedback(form: &GenerationForm, user_message: &str) -> Gen
     adjusted
 }
 
+fn form_with_manifest_timing(
+    form: &GenerationForm,
+    manifest: &PetManifest,
+) -> Result<GenerationForm> {
+    let adjusted = GenerationForm {
+        native_fps: manifest.native_fps,
+        state_durations_ms: manifest
+            .states
+            .iter()
+            .map(|state| (state.name, state.duration_ms))
+            .collect(),
+        ..form.clone()
+    };
+    validate_generation_form(&adjusted)?;
+    Ok(adjusted)
+}
+
+fn form_with_ai_timing(form: &GenerationForm, ai_brief: Option<&Value>) -> Result<GenerationForm> {
+    let Some(ai_brief) =
+        ai_brief.filter(|brief| brief.get("timing_changed").and_then(Value::as_bool) == Some(true))
+    else {
+        return Ok(form.clone());
+    };
+    let native_fps = ai_brief
+        .get("native_fps")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| matches!(*value, STANDARD_FPS | SMOOTH_FPS))
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "AI edit marked timing_changed but did not provide native_fps 10 or 20".to_string(),
+            )
+        })?;
+    let states = ai_brief
+        .get("states")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "AI edit marked timing_changed but did not provide state timing".to_string(),
+            )
+        })?;
+    let mut state_durations_ms = std::collections::BTreeMap::new();
+    for state in REQUIRED_STATES {
+        let duration_ms = states
+            .iter()
+            .find(|item| {
+                item.get("name")
+                    .or_else(|| item.get("state"))
+                    .and_then(Value::as_str)
+                    == Some(state.as_str())
+            })
+            .and_then(|item| item.get("duration_ms"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| matches!(*value, SHORT_ACTION_DURATION_MS | LONG_ACTION_DURATION_MS))
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "AI edit marked timing_changed but state {} lacks a 1000 or 2000 ms duration",
+                    state.as_str()
+                ))
+            })?;
+        state_durations_ms.insert(state, duration_ms);
+    }
+    let adjusted = GenerationForm {
+        native_fps,
+        state_durations_ms,
+        ..form.clone()
+    };
+    validate_generation_form(&adjusted)?;
+    Ok(adjusted)
+}
+
 fn write_skill_session(
     _paths: &AppPaths,
     _job_id: &str,
@@ -3576,6 +4052,25 @@ fn write_skill_session(
         .iter()
         .map(|state| state.as_str())
         .collect::<Vec<_>>();
+    let state_durations_ms = manifest
+        .states
+        .iter()
+        .map(|state| (state.name, state.duration_ms))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let state_frame_counts = manifest
+        .states
+        .iter()
+        .map(|state| {
+            expected_frame_count(manifest.native_fps, state.duration_ms)
+                .map(|count| (state.name, count))
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "state {} timing overflows its frame count",
+                        state.name.as_str()
+                    ))
+                })
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
     let runner = if app_server_session
         .get("started")
         .and_then(serde_json::Value::as_bool)
@@ -3617,8 +4112,9 @@ fn write_skill_session(
             "event": "states.rendered",
             "skill": "agent-pet-studio",
             "states": states,
-            "frames_per_state": GENERATED_FRAMES_PER_STATE,
-            "fps_profiles": manifest.fps_profiles,
+            "native_fps": manifest.native_fps,
+            "state_durations_ms": state_durations_ms,
+            "state_frame_counts": state_frame_counts,
             "created_at": now_rfc3339()
         }),
         json!({
@@ -3733,7 +4229,441 @@ fn derive_pet_name(form: &GenerationForm, ai_brief: Option<&serde_json::Value>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{ImageBuffer, Rgba};
+    use petcore_types::QualityLevel;
     use std::os::unix::fs::symlink;
+
+    fn timing_form() -> GenerationForm {
+        GenerationForm {
+            description: "timing edit".to_string(),
+            style: "test".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: Vec::new(),
+            native_fps: STANDARD_FPS,
+            state_durations_ms: petcore_types::default_state_durations_ms(),
+        }
+    }
+
+    fn timing_brief(timing_changed: bool) -> Value {
+        json!({
+            "timing_changed": timing_changed,
+            "native_fps": SMOOTH_FPS,
+            "states": REQUIRED_STATES.iter().map(|state| json!({
+                "name": state.as_str(),
+                "duration_ms": SHORT_ACTION_DURATION_MS
+            })).collect::<Vec<_>>()
+        })
+    }
+
+    #[test]
+    fn ai_edit_timing_is_applied_only_when_explicitly_marked_changed() {
+        let baseline = timing_form();
+
+        let unchanged = form_with_ai_timing(&baseline, Some(&timing_brief(false))).unwrap();
+        assert_eq!(unchanged.native_fps, baseline.native_fps);
+        assert_eq!(unchanged.state_durations_ms, baseline.state_durations_ms);
+
+        let changed = form_with_ai_timing(&baseline, Some(&timing_brief(true))).unwrap();
+        assert_eq!(changed.native_fps, SMOOTH_FPS);
+        assert!(changed
+            .state_durations_ms
+            .values()
+            .all(|duration| *duration == SHORT_ACTION_DURATION_MS));
+    }
+
+    #[test]
+    fn external_diversity_ignores_rgb_hidden_by_transparency() {
+        let temp = tempfile::tempdir().unwrap();
+        for (state_index, state) in REQUIRED_STATES.iter().enumerate() {
+            let state_dir = temp.path().join("assets/frames").join(state.as_str());
+            fs::create_dir_all(&state_dir).unwrap();
+            for frame_index in 0..2 {
+                let hidden = [
+                    (state_index * 17 + frame_index * 5) as u8,
+                    (state_index * 13 + frame_index * 7) as u8,
+                    (state_index * 11 + frame_index * 3) as u8,
+                    0,
+                ];
+                let mut frame = ImageBuffer::from_pixel(16, 16, Rgba(hidden));
+                frame.put_pixel(8, 8, Rgba([80, 120, 160, u8::MAX]));
+                frame
+                    .save(state_dir.join(format!("{frame_index:04}.png")))
+                    .unwrap();
+            }
+        }
+
+        let error = validate_external_frame_diversity(temp.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("state idle"), "{error}");
+        assert!(
+            error.contains("no visible frame-to-frame change"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reply_timing_starts_from_the_refreshed_manifest_before_ai_override() {
+        let original_job_form = timing_form();
+        let mut current_manifest = PetManifest::new(
+            "pet_currenttiming".to_string(),
+            "Current Timing".to_string(),
+            "test".to_string(),
+            QualityLevel::Standard,
+            now_rfc3339(),
+        );
+        current_manifest.native_fps = SMOOTH_FPS;
+        for state in &mut current_manifest.states {
+            state.duration_ms = match state.name {
+                PetStateName::Idle => SHORT_ACTION_DURATION_MS,
+                PetStateName::Start => LONG_ACTION_DURATION_MS,
+                _ => state.duration_ms,
+            };
+        }
+
+        let refreshed = form_with_manifest_timing(&original_job_form, &current_manifest).unwrap();
+        assert_eq!(refreshed.native_fps, SMOOTH_FPS);
+        assert_eq!(
+            refreshed.state_durations_ms[&PetStateName::Idle],
+            SHORT_ACTION_DURATION_MS
+        );
+        assert_eq!(
+            refreshed.state_durations_ms[&PetStateName::Start],
+            LONG_ACTION_DURATION_MS
+        );
+
+        let preserved = form_with_ai_timing(&refreshed, Some(&timing_brief(false))).unwrap();
+        assert_eq!(preserved.native_fps, refreshed.native_fps);
+        assert_eq!(preserved.state_durations_ms, refreshed.state_durations_ms);
+
+        let explicitly_changed =
+            form_with_ai_timing(&refreshed, Some(&timing_brief(true))).unwrap();
+        assert_eq!(explicitly_changed.native_fps, SMOOTH_FPS);
+        assert!(explicitly_changed
+            .state_durations_ms
+            .values()
+            .all(|duration| *duration == SHORT_ACTION_DURATION_MS));
+    }
+
+    #[test]
+    fn timing_gate_requires_real_10_to_20_intermediates_at_runtime_sample_positions() {
+        let before = (0..10)
+            .map(|index| format!("base-{index}"))
+            .collect::<Vec<_>>();
+        let mut after = (0..20)
+            .map(|index| format!("mid-{index}"))
+            .collect::<Vec<_>>();
+        let preserved = runtime_sample_indices(after.len(), before.len(), false);
+        assert_eq!(preserved, [0, 2, 4, 6, 8, 11, 13, 15, 17, 19]);
+        for (index, digest) in preserved.iter().zip(&before) {
+            after[*index] = digest.clone();
+        }
+        validate_timing_revision_state(
+            PetStateName::Done,
+            &before,
+            &after,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap();
+
+        after[1] = before[5].clone();
+        let error = validate_timing_revision_state(
+            PetStateName::Done,
+            &before,
+            &after,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("copied source pose"));
+
+        after[1] = after[0].clone();
+        let error = validate_timing_revision_state(
+            PetStateName::Done,
+            &before,
+            &after,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("real intermediate"));
+    }
+
+    #[test]
+    fn timing_gate_preserves_even_loop_samples_with_real_10_to_20_intermediates() {
+        let before = (0..20)
+            .map(|index| format!("base-{index}"))
+            .collect::<Vec<_>>();
+        let mut after = (0..40)
+            .map(|index| format!("mid-{index}"))
+            .collect::<Vec<_>>();
+        let preserved = runtime_sample_indices(after.len(), before.len(), true);
+        assert_eq!(preserved, (0..40).step_by(2).collect::<Vec<_>>());
+        for (index, digest) in preserved.iter().zip(&before) {
+            after[*index] = digest.clone();
+        }
+        validate_timing_revision_state(
+            PetStateName::Idle,
+            &before,
+            &after,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            LONG_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            true,
+        )
+        .unwrap();
+
+        after[39] = after[38].clone();
+        let error = validate_timing_revision_state(
+            PetStateName::Idle,
+            &before,
+            &after,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            LONG_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("real intermediate"));
+    }
+
+    #[test]
+    fn timing_gate_combines_duration_recomposition_with_exact_fps_conversion() {
+        let short_before = (0..10)
+            .map(|index| format!("idle-base-{index}"))
+            .collect::<Vec<_>>();
+        let recomposed_long = (0..40)
+            .map(|index| format!("idle-recomposed-{index}"))
+            .collect::<Vec<_>>();
+        validate_timing_revision_state(
+            PetStateName::Idle,
+            &short_before,
+            &recomposed_long,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            SHORT_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            true,
+        )
+        .unwrap();
+
+        let unchanged_duration_before = (0..20)
+            .map(|index| format!("tool-base-{index}"))
+            .collect::<Vec<_>>();
+        let mut exact_fps_conversion = (0..40)
+            .map(|index| format!("tool-mid-{index}"))
+            .collect::<Vec<_>>();
+        for (index, digest) in runtime_sample_indices(40, 20, true)
+            .iter()
+            .zip(&unchanged_duration_before)
+        {
+            exact_fps_conversion[*index] = digest.clone();
+        }
+        validate_timing_revision_state(
+            PetStateName::Tool,
+            &unchanged_duration_before,
+            &exact_fps_conversion,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            LONG_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            true,
+        )
+        .unwrap();
+
+        exact_fps_conversion[1] = exact_fps_conversion[0].clone();
+        assert!(validate_timing_revision_state(
+            PetStateName::Tool,
+            &unchanged_duration_before,
+            &exact_fps_conversion,
+            STANDARD_FPS,
+            SMOOTH_FPS,
+            LONG_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            true,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn timing_gate_requires_the_exact_runtime_20_to_10_sample() {
+        let before = (0..20)
+            .map(|index| format!("base-{index}"))
+            .collect::<Vec<_>>();
+        let looped = runtime_sample_indices(before.len(), 10, true)
+            .into_iter()
+            .map(|index| before[index].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            looped,
+            (0..20)
+                .step_by(2)
+                .map(|index| format!("base-{index}"))
+                .collect::<Vec<_>>()
+        );
+        validate_timing_revision_state(
+            PetStateName::Idle,
+            &before,
+            &looped,
+            SMOOTH_FPS,
+            STANDARD_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            true,
+        )
+        .unwrap();
+
+        let one_shot_indices = runtime_sample_indices(before.len(), 10, false);
+        assert_eq!(one_shot_indices, [0, 2, 4, 6, 8, 11, 13, 15, 17, 19]);
+        let mut one_shot = one_shot_indices
+            .into_iter()
+            .map(|index| before[index].clone())
+            .collect::<Vec<_>>();
+        validate_timing_revision_state(
+            PetStateName::Done,
+            &before,
+            &one_shot,
+            SMOOTH_FPS,
+            STANDARD_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap();
+
+        one_shot[1] = "recomposed-instead-of-runtime-sample".to_string();
+        let error = validate_timing_revision_state(
+            PetStateName::Done,
+            &before,
+            &one_shot,
+            SMOOTH_FPS,
+            STANDARD_FPS,
+            SHORT_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("runtime 10 FPS sample indices"));
+    }
+
+    #[test]
+    fn timing_gate_rejects_duration_padding_truncation_and_sampling() {
+        let short = (0..10)
+            .map(|index| format!("base-{index}"))
+            .collect::<Vec<_>>();
+        let repeated = short.iter().cloned().cycle().take(20).collect::<Vec<_>>();
+        let error = validate_timing_revision_state(
+            PetStateName::Start,
+            &short,
+            &repeated,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            SHORT_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("re-storyboard"));
+
+        let rotated_source = short[1..]
+            .iter()
+            .chain(short[..1].iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let rotated_repeat = rotated_source
+            .iter()
+            .cloned()
+            .cycle()
+            .take(20)
+            .collect::<Vec<_>>();
+        let error = validate_timing_revision_state(
+            PetStateName::Start,
+            &short,
+            &rotated_repeat,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            SHORT_ACTION_DURATION_MS,
+            LONG_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("re-storyboard"));
+
+        let long = (0..20)
+            .map(|index| format!("base-{index}"))
+            .collect::<Vec<_>>();
+        let sampled = runtime_sample_indices(long.len(), 10, false)
+            .into_iter()
+            .map(|index| long[index].clone())
+            .collect::<Vec<_>>();
+        let error = validate_timing_revision_state(
+            PetStateName::Start,
+            &long,
+            &sampled,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            LONG_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("re-storyboard"));
+
+        let truncated = long[..10].to_vec();
+        assert!(validate_timing_revision_state(
+            PetStateName::Start,
+            &long,
+            &truncated,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            LONG_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .is_err());
+
+        let middle_slice = long[5..15].to_vec();
+        let error = validate_timing_revision_state(
+            PetStateName::Start,
+            &long,
+            &middle_slice,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            LONG_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("re-storyboard"));
+
+        let recomposed = (0..10)
+            .map(|index| format!("recomposed-{index}"))
+            .collect::<Vec<_>>();
+        validate_timing_revision_state(
+            PetStateName::Start,
+            &long,
+            &recomposed,
+            STANDARD_FPS,
+            STANDARD_FPS,
+            LONG_ACTION_DURATION_MS,
+            SHORT_ACTION_DURATION_MS,
+            false,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn edit_context_reader_rejects_oversized_and_symlinked_files() {

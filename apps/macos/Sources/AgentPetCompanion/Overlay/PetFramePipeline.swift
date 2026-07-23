@@ -14,8 +14,14 @@ struct PetFrameAssetCatalog: Sendable {
 struct PetFrameLoadRequest: Sendable {
     var pet: PetSummary
     var stateName: String
-    var fps: Int
+    var requestedFPS: Int
+    var nativeFPS: Int
+    var durationMS: Int
     var loops: Bool
+
+    var effectiveFPS: Int {
+        nativeFPS == FpsProfile.standard.fps ? FpsProfile.standard.fps : requestedFPS
+    }
 
     var assetKey: String {
         [
@@ -25,7 +31,9 @@ struct PetFrameLoadRequest: Sendable {
             pet.createdAt,
             pet.quality.rawValue,
             stateName,
-            String(fps),
+            String(nativeFPS),
+            String(effectiveFPS),
+            String(durationMS),
             loops ? "loop" : "once"
         ].joined(separator: ":")
     }
@@ -85,6 +93,8 @@ struct PetDecodedFrame: @unchecked Sendable {
 struct PetPreparedFrames: @unchecked Sendable {
     let request: PetFrameLoadRequest
     let sourceKind: PetFrameSourceKind
+    let sourceFrameCount: Int
+    let sampledSourceIndices: [Int]
     let frameCount: Int
     let cacheFrameLimit: Int
     let canvasExtent: CGRect
@@ -160,37 +170,51 @@ actor PetFramePipeline {
 
     func prepare(_ request: PetFrameLoadRequest) async throws -> PetPreparedFrames {
         activeMemoryBudgetBytes = configuredMemoryBudgetBytes
-            ?? RendererBudget(quality: request.pet.quality, fpsProfile: request.fps >= 20 ? .smooth : .standard)
+            ?? RendererBudget(
+                quality: request.pet.quality,
+                fpsProfile: request.effectiveFPS >= 20 ? .smooth : .standard
+            )
                 .rendererBudgetMB * 1_024 * 1_024
         retainNamespaces([request.assetKey, request.assetKey + ":cover"])
         evictToBudget()
 
         try Task.checkCancellation()
         let assets = catalog(request.pet, request.stateName)
+        let samplingPlan = FrameSamplingPlan(
+            nativeFPS: request.nativeFPS,
+            requestedFPS: request.requestedFPS,
+            durationMS: request.durationMS,
+            loops: request.loops,
+            sourceFrameCount: assets.frameURLs.count
+        )
+        let sampledFrameURLs = samplingPlan.sourceIndices.map { assets.frameURLs[$0] }
         let fallback = try await decodedFrame(
             at: assets.coverURL,
             namespace: request.assetKey + ":cover"
         )
-        let sourceKind: PetFrameSourceKind = assets.frameURLs.isEmpty
+        let sourceKind: PetFrameSourceKind = sampledFrameURLs.isEmpty
             ? .empty
             : request.pet.quality == .original ? .ring : .eager
         let cacheLimit = sourceKind == .ring
-            ? min(assets.frameURLs.count, max(originalWindowSize, request.fps >= 20 ? 9 : 7))
-            : assets.frameURLs.count
+            ? min(sampledFrameURLs.count, max(
+                originalWindowSize,
+                request.effectiveFPS >= 20 ? 9 : 7
+            ))
+            : sampledFrameURLs.count
         let indices = sourceKind == .ring
             ? Self.ringIndices(
                 around: 0,
-                frameCount: assets.frameURLs.count,
+                frameCount: sampledFrameURLs.count,
                 limit: cacheLimit,
                 loops: request.loops
             )
-            : Array(assets.frameURLs.indices)
+            : Array(sampledFrameURLs.indices)
 
         var frames: [Int: PetDecodedFrame] = [:]
         for index in indices {
             try Task.checkCancellation()
             if let frame = try await decodedFrame(
-                at: assets.frameURLs[index],
+                at: sampledFrameURLs[index],
                 namespace: request.assetKey
             ) {
                 frames[index] = frame
@@ -202,7 +226,9 @@ actor PetFramePipeline {
         return PetPreparedFrames(
             request: request,
             sourceKind: sourceKind,
-            frameCount: assets.frameURLs.count,
+            sourceFrameCount: assets.frameURLs.count,
+            sampledSourceIndices: samplingPlan.sourceIndices,
+            frameCount: sampledFrameURLs.count,
             cacheFrameLimit: cacheLimit,
             canvasExtent: canvasExtent,
             visibleBounds: Self.canvasVisibleBounds(
@@ -211,7 +237,7 @@ actor PetFramePipeline {
                 canvasExtent: canvasExtent
             ),
             fallback: fallback,
-            frameURLs: assets.frameURLs,
+            frameURLs: sampledFrameURLs,
             readyFrames: frames
         )
     }
@@ -248,6 +274,8 @@ actor PetFramePipeline {
         return PetPreparedFrames(
             request: prepared.request,
             sourceKind: prepared.sourceKind,
+            sourceFrameCount: prepared.sourceFrameCount,
+            sampledSourceIndices: prepared.sampledSourceIndices,
             frameCount: prepared.frameCount,
             cacheFrameLimit: prepared.cacheFrameLimit,
             canvasExtent: canvasExtent,
@@ -503,6 +531,7 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
         var playback = FramePlaybackState(stateID: "idle", enteredAt: 0)
         var priorFrame: PetDecodedFrame?
         var lastFrame: PetDecodedFrame?
+        var holdsTerminalFrame = false
     }
 
     private let lock = NSLock()
@@ -519,7 +548,8 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             prepared: nil,
             playback: FramePlaybackState(stateID: stateID, enteredAt: enteredAt),
             priorFrame: prior,
-            lastFrame: nil
+            lastFrame: nil,
+            holdsTerminalFrame: false
         )
         lock.unlock()
     }
@@ -528,17 +558,20 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
         lock.lock()
         state.playback = FramePlaybackState(stateID: stateID, enteredAt: enteredAt)
         state.lastFrame = nil
+        state.holdsTerminalFrame = false
         lock.unlock()
     }
 
-    /// Changes the semantic owner of the already-presented one-shot frame
-    /// without rewinding its playback clock or discarding its final frame.
-    func relabelPlayback(stateID: String) {
+    /// Gives a previously entered one-shot a new semantic owner while forcing
+    /// the authored terminal pose instead of replaying or retaining an
+    /// unrelated intermediate frame.
+    func holdTerminalFrame(stateID: String) {
         lock.lock()
         state.playback = FramePlaybackState(
             stateID: stateID,
             enteredAt: state.playback.enteredAt
         )
+        state.holdsTerminalFrame = true
         lock.unlock()
     }
 
@@ -591,11 +624,14 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
         }
 
         let scheduler = FrameScheduler(
-            fps: prepared.request.fps,
+            fps: prepared.request.effectiveFPS,
             frameCount: prepared.frameCount,
+            durationMS: prepared.request.durationMS,
             loops: prepared.loops
         )
-        let index = state.playback.frameIndex(at: time, scheduler: scheduler)
+        let index = state.holdsTerminalFrame
+            ? max(0, prepared.frameCount - 1)
+            : state.playback.frameIndex(at: time, scheduler: scheduler)
         let exactFrame = prepared.readyFrame(at: index)
         let frame = exactFrame
             ?? state.lastFrame
@@ -610,7 +646,8 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             canvasExtent: prepared.canvasExtent,
             missingRingIndex: prepared.sourceKind == .ring && exactFrame == nil ? index : nil,
             shouldPauseAfterDraw: exactFrame != nil
-                && state.playback.hasCompleted(at: time, scheduler: scheduler),
+                && (state.holdsTerminalFrame
+                    || state.playback.hasCompleted(at: time, scheduler: scheduler)),
             generation: state.generation,
             stateEntryID: state.playback.stateID
         )
@@ -679,6 +716,10 @@ struct PetRendererTelemetry: Sendable {
     var state: String
     var fpsProfile: String
     var fps: Int
+    var nativeFPS: Int
+    var durationMS: Int
+    var sourceFrameCount: Int
+    var sampledFrameCount: Int
     var active: Bool
     var sourceKind: String
     var frameCount: Int
@@ -706,7 +747,11 @@ struct PetRendererTelemetry: Sendable {
         quality = prepared.request.pet.quality.rawValue
         state = prepared.request.stateName
         self.fpsProfile = fpsProfile.rawValue
-        fps = prepared.request.fps
+        fps = prepared.request.effectiveFPS
+        nativeFPS = prepared.request.nativeFPS
+        durationMS = prepared.request.durationMS
+        sourceFrameCount = prepared.sourceFrameCount
+        sampledFrameCount = prepared.frameCount
         self.active = active
         sourceKind = prepared.sourceKind.rawValue
         frameCount = prepared.frameCount
@@ -734,6 +779,10 @@ struct PetRendererTelemetry: Sendable {
             "state": state,
             "fps_profile": fpsProfile,
             "fps": fps,
+            "native_fps": nativeFPS,
+            "duration_ms": durationMS,
+            "source_frame_count": sourceFrameCount,
+            "sampled_frame_count": sampledFrameCount,
             "active": active,
             "source_kind": sourceKind,
             "frame_count": frameCount,
@@ -1080,7 +1129,25 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         var reduceMotion: Bool
 
         var loops: Bool {
-            stateName != "start" && stateName != "done"
+            PetAnimationContract.loops(stateName: stateName)
+        }
+
+        var durationMS: Int {
+            pet.durationMS(for: stateName)
+        }
+
+        var effectiveFPSProfile: FpsProfile {
+            pet.effectiveFPSProfile(fpsProfile)
+        }
+
+        var timelineIdentity: String {
+            [
+                pet.id,
+                pet.revisionID ?? pet.petpackPath,
+                stateName,
+                stateEntryID,
+                String(durationMS),
+            ].joined(separator: ":")
         }
 
         var assetKey: String {
@@ -1091,7 +1158,9 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 pet.createdAt,
                 pet.quality.rawValue,
                 stateName,
-                fpsProfile.rawValue,
+                String(pet.nativeFPS),
+                effectiveFPSProfile.rawValue,
+                String(durationMS),
                 reduceMotion ? "reduced-motion" : "motion"
             ].joined(separator: ":")
         }
@@ -1172,6 +1241,10 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             active: active,
             reduceMotion: reduceMotion
         )
+        let priorConfiguration = lastConfiguration
+        let preservesPlaybackTimeline = priorConfiguration?.timelineIdentity
+            == configuration.timelineIdentity
+        let previouslyPublishedCurrentEntry = hasPublishedCurrentEntry
         let isPresentationReconfiguration = lastConfiguration?.presentationIdentity
             != configuration.presentationIdentity
         if isPresentationReconfiguration {
@@ -1183,7 +1256,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         visualEnvelopeHandler = onVisualEnvelopeChanged
         lastConfiguration = configuration
         setFrameHitTestHandler(onFrameHitTestChanged)
-        view.preferredFramesPerSecond = fpsProfile.fps
+        view.preferredFramesPerSecond = configuration.effectiveFPSProfile.fps
 
         guard active else {
             suspended = true
@@ -1209,7 +1282,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 configuration,
                 in: view,
                 resetsPlayback: playbackTransition.shouldRestartPlayback
-                    || !hasPublishedCurrentEntry
+                    || !previouslyPublishedCurrentEntry
+                    || !preservesPlaybackTimeline
             )
             return
         }
@@ -1219,7 +1293,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             // that already-decoded frame the new semantic entry identity and
             // submit it once so the new epoch receives a real presented
             // callback without replaying the animation.
-            handoff.relabelPlayback(stateID: configuration.stateEntryID)
+            handoff.holdTerminalFrame(stateID: configuration.stateEntryID)
             activateFramePresentations(
                 generation: generation,
                 stateEntryID: configuration.stateEntryID
@@ -1389,7 +1463,9 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         let request = PetFrameLoadRequest(
             pet: configuration.pet,
             stateName: configuration.stateName,
-            fps: configuration.fpsProfile.fps,
+            requestedFPS: configuration.fpsProfile.fps,
+            nativeFPS: configuration.pet.nativeFPS,
+            durationMS: configuration.durationMS,
             loops: configuration.loops
         )
         if resetsPlayback {
@@ -1428,7 +1504,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 let cacheMetrics = await pipeline.cacheMetrics()
                 let telemetry = PetRendererTelemetry(
                     prepared: prepared,
-                    fpsProfile: configuration.fpsProfile,
+                    fpsProfile: configuration.effectiveFPSProfile,
                     active: configuration.active,
                     cacheMetrics: cacheMetrics
                 )

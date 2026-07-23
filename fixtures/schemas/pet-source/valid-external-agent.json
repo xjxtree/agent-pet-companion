@@ -8,14 +8,42 @@
   "style": "soft luminous storybook creature",
   "quality": "high",
   "visual_source": "image-generation",
-  "frames_per_state": 2,
+  "native_fps": 10,
+  "state_durations_ms": {
+    "idle": 2000,
+    "start": 1000,
+    "tool": 2000,
+    "waiting": 2000,
+    "review": 2000,
+    "done": 1000,
+    "failed": 2000
+  },
+  "state_frame_counts": {
+    "idle": 20,
+    "start": 10,
+    "tool": 20,
+    "waiting": 20,
+    "review": 20,
+    "done": 10,
+    "failed": 20
+  },
   "preview_only": false,
   "reference_visual_influence": true,
   "form": {
     "description": "A small violet fox with a starry tail.",
     "style": "soft luminous storybook creature",
     "quality": "high",
-    "reference_images": ["source/references/reference-00.png"]
+    "reference_images": ["source/references/reference-00.png"],
+    "native_fps": 10,
+    "state_durations_ms": {
+      "idle": 2000,
+      "start": 1000,
+      "tool": 2000,
+      "waiting": 2000,
+      "review": 2000,
+      "done": 1000,
+      "failed": 2000
+    }
   },
   "reference_files": ["source/references/reference-00.png"],
   "input_reference_count": 1,

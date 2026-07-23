@@ -77,7 +77,7 @@ struct OverlayRootView: View {
                         for: store.presentedActiveAgentState
                     ),
                     scale: store.overlayScale,
-                    fpsProfile: store.behavior.fpsProfile,
+                    fpsProfile: store.effectiveFPSProfile,
                     appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,

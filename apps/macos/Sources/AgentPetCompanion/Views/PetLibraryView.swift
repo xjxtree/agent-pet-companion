@@ -618,6 +618,10 @@ private struct PetHistorySheet: View {
                     InfoRow(title: APCLocalization.text(.libraryFieldStates), value: presentation.stateSummary)
                     InfoRow(title: APCLocalization.text(.libraryFieldFPS), value: presentation.fpsSummary)
                     InfoRow(
+                        title: APCLocalization.text(.libraryFieldDuration),
+                        value: presentation.durationSummary
+                    )
+                    InfoRow(
                         title: APCLocalization.text(.libraryFieldValidation),
                         value: selectedRevision.map {
                             $0.validated
@@ -1101,6 +1105,14 @@ private struct PetLibraryInspector: View {
                         InfoRow(
                             title: APCLocalization.text(.libraryFieldQuality),
                             value: "\(pet.renderSize.width)×\(pet.renderSize.height)"
+                        )
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldFPS),
+                            value: presentation.fpsSummary
+                        )
+                        InfoRow(
+                            title: APCLocalization.text(.libraryFieldDuration),
+                            value: presentation.durationSummary
                         )
                         InfoRow(
                             title: APCLocalization.text(.libraryFieldRevisionID),

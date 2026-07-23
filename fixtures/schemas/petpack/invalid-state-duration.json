@@ -1,0 +1,19 @@
+{
+  "schema_version": "apc.petpack.v1",
+  "id": "pet_badduration",
+  "name": "Bad Duration Pet",
+  "style": "semi-realistic",
+  "quality": "standard",
+  "render_size": { "width": 192, "height": 208 },
+  "native_fps": 10,
+  "states": [
+    { "name": "idle", "frames_dir": "assets/frames/idle", "loop": true, "duration_ms": 1500 },
+    { "name": "start", "frames_dir": "assets/frames/start", "loop": false, "duration_ms": 1000 },
+    { "name": "tool", "frames_dir": "assets/frames/tool", "loop": true, "duration_ms": 2000 },
+    { "name": "waiting", "frames_dir": "assets/frames/waiting", "loop": true, "duration_ms": 2000 },
+    { "name": "review", "frames_dir": "assets/frames/review", "loop": true, "duration_ms": 2000 },
+    { "name": "done", "frames_dir": "assets/frames/done", "loop": false, "duration_ms": 1000 },
+    { "name": "failed", "frames_dir": "assets/frames/failed", "loop": true, "duration_ms": 2000 }
+  ],
+  "created_at": "2026-07-10T00:00:00Z"
+}

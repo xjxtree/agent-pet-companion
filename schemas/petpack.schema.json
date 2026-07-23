@@ -11,8 +11,7 @@
     "style",
     "quality",
     "render_size",
-    "fps_profiles",
-    "default_fps_profile",
+    "native_fps",
     "states",
     "created_at"
   ],
@@ -31,37 +30,29 @@
         "height": { "type": "integer", "minimum": 1 }
       }
     },
-    "fps_profiles": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["standard", "smooth"],
-      "properties": {
-        "standard": { "const": 12 },
-        "smooth": { "const": 20 }
-      }
-    },
-    "default_fps_profile": { "const": "standard" },
+    "native_fps": { "enum": [10, 20] },
     "states": {
       "type": "array",
       "minItems": 7,
       "maxItems": 7,
       "allOf": [
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "idle" }, "frames_dir": { "const": "assets/frames/idle" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "start" }, "frames_dir": { "const": "assets/frames/start" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "tool" }, "frames_dir": { "const": "assets/frames/tool" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "waiting" }, "frames_dir": { "const": "assets/frames/waiting" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "review" }, "frames_dir": { "const": "assets/frames/review" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "done" }, "frames_dir": { "const": "assets/frames/done" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop"], "properties": { "name": { "const": "failed" }, "frames_dir": { "const": "assets/frames/failed" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 }
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "idle" }, "frames_dir": { "const": "assets/frames/idle" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "start" }, "frames_dir": { "const": "assets/frames/start" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "tool" }, "frames_dir": { "const": "assets/frames/tool" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "waiting" }, "frames_dir": { "const": "assets/frames/waiting" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "review" }, "frames_dir": { "const": "assets/frames/review" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "done" }, "frames_dir": { "const": "assets/frames/done" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "failed" }, "frames_dir": { "const": "assets/frames/failed" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 }
       ],
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "frames_dir", "loop"],
+        "required": ["name", "frames_dir", "loop", "duration_ms"],
         "properties": {
           "name": { "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"] },
           "frames_dir": { "type": "string", "minLength": 1 },
-          "loop": { "type": "boolean" }
+          "loop": { "type": "boolean" },
+          "duration_ms": { "enum": [1000, 2000] }
         }
       }
     },

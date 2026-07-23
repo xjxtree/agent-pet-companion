@@ -19,6 +19,8 @@ fn form() -> GenerationForm {
         style: "pixel".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
     }
 }
 
@@ -161,6 +163,8 @@ fn cancel_revision_preserves_existing_pet() {
             width: 256,
             height: 288,
         },
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
         petpack_path: package.display().to_string(),
         cover_path: cover.display().to_string(),
         origin: PetOrigin::GeneratedByPetcoreJob,
@@ -765,7 +769,7 @@ fn latest_generation_returns_durable_completed_result_metadata() {
             .jobs_dir
             .join("job-completed-metadata")
             .join("result.json"),
-        br#"{"result_pet_id":"pet-completed-metadata","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":2}}"#,
+        br#"{"result_pet_id":"pet-completed-metadata","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":2}}"#,
     )
     .unwrap();
     let state = CoreState::new(paths);
@@ -783,7 +787,7 @@ fn latest_generation_returns_durable_completed_result_metadata() {
         json!({
             "ok": true,
             "state_count": 7,
-            "frame_count": 168,
+            "frame_count": 120,
             "warning_count": 2
         })
     );
@@ -797,7 +801,7 @@ fn completed_result_rejects_symlink_leaf() {
     let outside = temp.path().join("outside-result.json");
     fs::write(
         &outside,
-        br#"{"result_pet_id":"pet-symlink","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":0}}"#,
+        br#"{"result_pet_id":"pet-symlink","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":0}}"#,
     )
     .unwrap();
     symlink(
@@ -853,6 +857,32 @@ fn completed_result_rejects_tampered_identity_and_shape() {
         .to_string();
 
     assert!(error.contains("pet id does not match"), "{error}");
+}
+
+#[test]
+fn completed_result_rejects_a_noncontract_total_frame_count() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(
+        &database,
+        &paths,
+        "job-invalid-frame-total",
+        "instance-current",
+    );
+    complete_job(&database, "job-invalid-frame-total", "pet-expected");
+    fs::write(
+        paths
+            .jobs_dir
+            .join("job-invalid-frame-total")
+            .join("result.json"),
+        br#"{"result_pet_id":"pet-expected","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":0}}"#,
+    )
+    .unwrap();
+
+    let error = generation::read_generation_result(&paths, &database, "job-invalid-frame-total")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("structural validation"), "{error}");
 }
 
 #[test]

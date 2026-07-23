@@ -65,5 +65,6 @@ docs/
 - Release bundles seed the local library with the validated `星雾团子` and `Bytebud 字节芽` petpacks. Bundled and user pets are identified by stable manifest ID, not display name: same-name/different-ID pets coexist, and seeding never overwrites an existing same-ID local pet.
 - Bundled pets are read-only defaults: they can be previewed, enabled, and exported, but not deleted or modified in place. Customization must use a new pet ID.
 - Display size is adjusted on the overlay with a bottom-right resize handle, not through a settings field.
+- The pet body remains mouse-interactive and draggable whenever the overlay is visible, including while a frame alpha mask is unavailable during launch or a state transition. A valid mask may pass transparent pixels through, but a missing mask must fall back to the geometric pet region instead of disabling pet interaction.
 - The fixed protocol and package states are `idle`, `start`, `tool`, `waiting`, `review`, `done`, and `failed`; UI copy may describe `start` as thinking and `tool` as working without changing the stored names.
-- Keep the implemented animation profiles at 12 FPS standard and 20 FPS smooth unless the user explicitly changes the performance target and the schemas/tests are updated together.
+- Animation playback has two fixed profiles: 10 FPS standard and 20 FPS smooth. A pet declares a package-wide native rate of 10 or 20 FPS; only a 20 FPS pet may use both playback profiles. Every state declares a fixed 1,000 or 2,000 ms duration, and runtime configuration must never retime the authored action.

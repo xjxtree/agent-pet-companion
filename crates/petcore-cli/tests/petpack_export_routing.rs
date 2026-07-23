@@ -16,7 +16,6 @@ fn installed_pet(home: &std::path::Path, fixture_root: &std::path::Path) -> Stri
         QualityLevel::Standard,
         "CLI Export Routing",
         "半写实",
-        2,
     )
     .unwrap();
     let paths = AppPaths::new(home.to_path_buf());

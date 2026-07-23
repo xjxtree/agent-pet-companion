@@ -52,7 +52,7 @@ Use `--operation modify` when appropriate. A missing `petcore-cli` is also a cap
      --workspace /absolute/workspace
    ```
 
-3. Generate a consistent character and genuinely animated transparent PNG frames for all seven fixed states. Inspect the generated images; correct identity drift, opaque backgrounds, wrong dimensions, duplicates, and unclear state actions.
+3. Generate a consistent character and genuinely animated transparent PNG frames for all seven fixed states. Creation defaults to native 10 FPS, with `start` and `done` lasting 1 second and the other states lasting 2 seconds, unless the user explicitly selects another allowed timing. Inspect the generated images; correct identity drift, opaque backgrounds, wrong dimensions, adjacent duplicates, unclear state actions, and loop seams.
 4. Write the required manifest, brief, previews, prompt, provider-neutral source metadata, and bounded lifecycle events under `/absolute/workspace/petpack-source`. Use only fields documented in `petpack-v1.md`; the strict producer schemas reject undeclared fields. Copy only user-supplied references into `source/references`.
 5. Finalize with the helper:
 
@@ -75,9 +75,10 @@ Use `--operation modify` when appropriate. A missing `petcore-cli` is also a cap
      --workspace /absolute/workspace
    ```
 
-3. Read `.agent-pet-maker/context.json`. Preserve the manifest ID and structural render contract. Use the existing character frames as visual references.
-4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
-5. Declare each changed state to the helper. It verifies the actual changed-state set against the base hashes:
+3. Read `.agent-pet-maker/context.json`. Preserve the manifest ID and immutable render contract. Use the existing character frames as visual references.
+4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. A native-FPS change necessarily changes all seven states; a duration change necessarily changes that state. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
+5. Apply timing edits as authored animation changes, not playback-speed changes. For 10 to 20 FPS at unchanged duration, preserve the original 10 FPS poses at the indices selected by runtime Standard playback and create genuinely new frames at every other index. Loop states use every second source frame; one-shot `start` and `done` use uniform endpoint-preserving indices so their final pose remains intact. Adjacent poses in that Standard sample, including the wrap pair for loops, must remain pixel-distinct. For 20 to 10 FPS, retain exactly that same runtime sample. When switching an action between one and two seconds, re-storyboard it and generate the new exact frame count; do not truncate, repeat, duplicate, speed up, or slow down the old sequence.
+6. Declare each changed state to the helper. It verifies the actual changed-state set, timing transition, and frame contract against the base hashes:
 
    ```bash
    python3 <skill-dir>/scripts/petpack_workspace.py finalize \
@@ -102,3 +103,7 @@ Add `--activate` only when the user explicitly asks to enable that pet. Installa
 ## Finish
 
 Return the absolute `.petpack` path and sidecar result path. State which states changed and whether validation passed. Do not import, enable, overwrite, or delete a user's library pet unless the user explicitly requests that separate action.
+
+A modification preserves the stable manifest ID but produces a new package that
+PetCore commits as a new immutable revision. Never replace or rewrite an earlier
+revision in place.

@@ -131,14 +131,7 @@ fn same_display_name_with_different_id_coexists_with_bundled_pet() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_store(&temp.path().join("home"));
     let source = temp.path().join("same-name-source");
-    write_sample_petpack_dir(
-        &source,
-        QualityLevel::Standard,
-        "星雾团子",
-        "用户同名资源",
-        2,
-    )
-    .unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "星雾团子", "用户同名资源").unwrap();
     let user_pet = import_petpack(&paths, &database, &source).unwrap();
     assert_ne!(user_pet.id, "pet_xingwutuanzi");
 
@@ -161,14 +154,7 @@ fn seed_never_replaces_an_existing_active_user_pet() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_store(&temp.path().join("home"));
     let source = temp.path().join("active-user-pet");
-    write_sample_petpack_dir(
-        &source,
-        QualityLevel::Standard,
-        "用户当前宠物",
-        "storybook",
-        2,
-    )
-    .unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "用户当前宠物", "storybook").unwrap();
     let user_pet = import_petpack(&paths, &database, &source).unwrap();
     assert!(user_pet.active);
 

@@ -205,7 +205,9 @@ let pet = PetSummary(
 let prepared = try await pipeline.prepare(PetFrameLoadRequest(
     pet: pet,
     stateName: "tool",
-    fps: 12,
+    requestedFPS: 10,
+    nativeFPS: 10,
+    durationMS: 2_000,
     loops: true
 ))
 precondition(prepared.sourceKind == .ring)
