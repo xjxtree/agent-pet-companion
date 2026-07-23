@@ -230,8 +230,6 @@ struct PetCoreTransportTests {
             .appendingPathComponent("bounded-process-cancel-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: processIdentifierFile) }
 
-        let clock = ContinuousClock()
-        let started = clock.now
         let process = Task {
             try await BoundedProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/bin/sh"),
@@ -253,9 +251,21 @@ struct PetCoreTransportTests {
         }
         let processIdentifiers = await waitForProcessIdentifiers(
             at: processIdentifierFile,
-            expectedCount: 2
+            expectedCount: 2,
+            // Starting the utility-QoS operation can be delayed while Swift
+            // Testing runs hundreds of cases concurrently on CI. Startup is
+            // not part of the cancellation bound exercised below.
+            timeout: .seconds(5)
         )
-        #expect(processIdentifiers.count == 2)
+        guard processIdentifiers.count == 2 else {
+            process.cancel()
+            _ = try? await process.value
+            Issue.record("Expected the process group fixture to start")
+            return
+        }
+
+        let clock = ContinuousClock()
+        let cancellationStarted = clock.now
         process.cancel()
 
         do {
@@ -264,7 +274,7 @@ struct PetCoreTransportTests {
         } catch is CancellationError {
             // Expected.
         }
-        #expect(started.duration(to: clock.now) < .seconds(2))
+        #expect(cancellationStarted.duration(to: clock.now) < .seconds(2))
         #expect(await waitForProcessesToExit(processIdentifiers))
         #expect(processIdentifiers.first.map(processGroupHasExited) == true)
     }
