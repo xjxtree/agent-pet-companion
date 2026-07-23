@@ -134,6 +134,22 @@ jobs:
           APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
         run: ./script/build_release.sh --github-release --arch all
 
+      - name: Stage exact three-file release candidate
+        env:
+          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
+        run: |
+          test ! -e release-assets
+          mkdir release-assets
+          assets=(
+            "AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip"
+            "AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip"
+            "AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
+          )
+          for asset in "${assets[@]}"; do
+            test -f "dist/$asset"
+            mv "dist/$asset" "release-assets/$asset"
+          done
+
       - name: Revalidate final local artifact set
         env:
           RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
@@ -141,7 +157,7 @@ jobs:
           RELEASE_COMMIT: ${{ steps.release_identity.outputs.commit }}
         run: |
           ./script/validate_github_release_artifacts.sh \
-            --directory dist \
+            --directory release-assets \
             --version "$RELEASE_VERSION" \
             --build "$RELEASE_BUILD" \
             --commit "$RELEASE_COMMIT"
@@ -155,9 +171,9 @@ jobs:
             shasum -a 256 "$1" | awk '{print $1}'
           }
           {
-            echo "arm64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip")"
-            echo "x86_64_zip_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip")"
-            echo "checksum_sha256=$(digest "dist/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
+            echo "arm64_zip_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip")"
+            echo "x86_64_zip_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip")"
+            echo "checksum_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
           } >>"$GITHUB_OUTPUT"
 
       - name: Upload immutable release candidate
@@ -167,9 +183,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64.zip
-            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64.zip
-            dist/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-SHA256SUMS.txt
+            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64.zip
+            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64.zip
+            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-SHA256SUMS.txt
 
   validate_arm64:
     name: Validate packaged arm64 App on native Apple silicon

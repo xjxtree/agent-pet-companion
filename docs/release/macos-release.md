@@ -147,6 +147,17 @@ official asset set.
 `SHA256SUMS.txt` 只包含上述两个 ZIP 的两行摘要，不校验自身，也不存在签名、公证
 sidecar。正式 GitHub Release 的资产清单必须恰好是这三个文件。
 
+The validator's input directory itself must contain exactly those three regular
+files. The workflow moves them from `dist/` into a fresh `release-assets/`
+directory before final validation, so development Apps produced by earlier
+gates cannot enter or invalidate the release candidate. For local revalidation,
+copy only the three named files into a clean directory and validate that
+directory.
+
+校验目录本身必须只包含这三个普通文件。工作流会在最终校验前将它们从 `dist/`
+移动到全新的 `release-assets/`，因此前序门禁生成的开发 App 不会进入或干扰正式
+候选。本地复验时，也应只把上述三个文件放入一个干净目录后再校验。
+
 For each archive, the build and validation path verifies:
 
 - the expected App-only top-level ZIP structure before extraction;

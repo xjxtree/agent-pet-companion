@@ -369,6 +369,18 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "run: ./script/build_release.sh --github-release --arch all",
             self.build,
         )
+        stage_index = self.build.index(
+            "- name: Stage exact three-file release candidate"
+        )
+        revalidate_index = self.build.index(
+            "- name: Revalidate final local artifact set"
+        )
+        self.assertLess(stage_index, revalidate_index)
+        stage_block = self.build[stage_index:revalidate_index]
+        self.assertIn("test ! -e release-assets", stage_block)
+        self.assertEqual(stage_block.count('mv "dist/$asset" "release-assets/$asset"'), 1)
+        self.assertIn("--directory release-assets", self.build)
+        self.assertNotIn("--directory dist", self.build)
         self.assertIn("validate_github_release_artifacts.sh", self.source)
         upload_start = self.build.index("- name: Upload immutable release candidate")
         upload_block = self.build[upload_start:]
