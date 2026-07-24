@@ -10,6 +10,12 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-24
+
+### Fixed / 修复
+
+- Restored release-runner compatibility for the App update lifecycle tests across the supported Swift toolchains; product behavior and the `0.2.0` feature set are unchanged. / 恢复 App 更新生命周期测试在受支持 Swift 工具链上的发行 runner 兼容性；产品行为及 `0.2.0` 功能集保持不变。
+
 ## [0.2.0] - 2026-07-24
 
 ### Added / 新增

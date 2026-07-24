@@ -212,7 +212,8 @@ struct AppUpdateControllerTests {
             now: { currentDate },
             diagnostics: .disabled
         )
-        weak let releasedController = controller
+        weak var releasedController: AppUpdateController?
+        releasedController = controller
 
         controller?.checkAutomaticallyIfDue()
         await gate.waitUntilRequested()
