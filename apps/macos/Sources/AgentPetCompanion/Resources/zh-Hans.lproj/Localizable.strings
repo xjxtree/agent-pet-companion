@@ -32,6 +32,12 @@
 "library.validation.verified" = "PetCore 已验证 manifest、七状态帧、透明 PNG、预览与来源元数据。";
 "library.validation.unverified_title" = "规格未完整报告";
 "library.validation.unverified" = "本次快照未报告损坏，但本地服务未提供完整资源规格，当前只能视为未经校验。";
+"asset_recovery.title" = "预览需要修复";
+"asset_recovery.detail" = "重新校验桌宠包，并重新提取封面与七状态动画资源。";
+"asset_recovery.repair" = "修复预览";
+"asset_recovery.repairing" = "正在修复预览…";
+"asset_recovery.failed" = "桌宠包仍无法生成有效预览。请在诊断中查看经过限制的失败详情。";
+"asset_recovery.diagnostics" = "查看诊断";
 "overlay.action.handle" = "去处理";
 "overlay.action.open" = "打开";
 "overlay.action.review" = "去查看";
@@ -59,6 +65,9 @@
 "overlay.status.done" = "已完成";
 "overlay.status.running" = "思考中";
 "overlay.status.tool" = "执行工具";
+"overlay.intent.busy" = "忙碌";
+"overlay.intent.needs_you" = "需要你";
+"overlay.intent.ended" = "已结束";
 "nav.ai_pet_maker" = "AI宠物制作";
 "nav.connections" = "Agent 连接";
 "nav.diagnostics" = "服务与诊断";
@@ -156,7 +165,7 @@
 "studio.page.modify_format" = "修改 %@";
 "studio.page.modify_session" = "AI 修改会话";
 "studio.subtitle.idle" = "先定义创作需求，再由本地 AI 会话生成并校验 .petpack";
-"studio.subtitle.succeeded" = "已完成校验并提交到本地宠物库";
+"studio.subtitle.succeeded" = "查看制作结果并决定下一步。";
 "studio.subtitle.failed" = "任务未完成，输入和当前宠物 revision 均已保留";
 "studio.subtitle.cancelled" = "任务已取消，未验证资产没有写入宠物库";
 "studio.brief.new_pet" = "新宠物";
@@ -220,6 +229,9 @@
 "studio.success.revision" = "新 revision";
 "studio.success.validation" = "校验摘要";
 "studio.success.validation_format" = "%d 个状态 · %d 帧 · %d 个警告";
+"studio.preview_repair.title" = "已生成 · 预览需要修复";
+"studio.preview_repair.detail" = "创作已完成，但在真实动画预览可用前，这只桌宠还不能启用。";
+"studio.preview_repair.missing_detail" = "创作已完成，但当前宠物库快照中没有结果桌宠。请先刷新或查看诊断，再启用它。";
 "studio.step.baseline" = "基线";
 "studio.step.brief" = "需求";
 "studio.step.revision" = "修订";
@@ -367,9 +379,10 @@
 "connections.action.uninstall" = "卸载连接";
 "connections.page.title" = "Agent 连接";
 "connections.page.subtitle" = "让每个 Agent 都能通过桌宠反馈状态；需要时再展开技术检查。";
+"connections.summary.not_checked" = "运行一次本机检查，确认此 Agent 是否可用。";
 "connections.summary.checking" = "正在检查此 Agent 连接。";
-"connections.summary.connected" = "此 Agent 已连接，可以向桌宠发送活动状态。";
-"connections.summary.needs_repair" = "此连接还需要一次修复或验证。";
+"connections.summary.connected" = "本机连接检查健康。";
+"connections.summary.needs_repair" = "当前有一项可执行的本机托管连接修复。";
 "connections.summary.unavailable" = "此 Agent 或其受支持连接当前不可用。";
 "connections.primary.accessibility_format" = "%@ %@";
 "connections.primary.connect_hint" = "先查看由 App 管理的连接改动，再确认安装。";
@@ -457,6 +470,8 @@
 "connections.check.description.generic" = "检查一个受支持的连接条件。请刷新检查；若仍需处理，请按受管连接指引操作。";
 "connections.check.detail_format" = "状态：%@。%@";
 "connections.verification.title" = "Agent 侧真实验证";
+"connections.verification.not_run_title" = "尚未运行真实任务";
+"connections.verification.not_run_detail" = "请先运行本机连接检查；真实任务证据会作为独立状态记录。";
 "connections.verification.verified_title" = "真实 Agent 活动已验证";
 "connections.verification.action_title" = "请运行真实 Agent 任务";
 "connections.verification.pending_title" = "等待真实 Agent 活动";
@@ -569,6 +584,7 @@
 "overlay.session.alias_title_format" = "%@ 会话 %@";
 "overlay.sessions.more_title" = "更多活跃会话";
 "overlay.sessions.more_detail_format" = "另有 %d 个会话，可在控制中心查看";
+"overlay.sessions.more_control_center_format" = "在控制中心查看其余 %d 个会话";
 "overlay.help.open_and_dismiss" = "打开会话并从列表收起";
 "overlay.help.dismiss" = "从列表收起";
 "overlay.help.open" = "打开会话";
@@ -742,8 +758,9 @@
 "product.attention.custom" = "自定义";
 "product.motion.standard" = "标准动效";
 "product.motion.smooth" = "流畅动效";
+"product.connection.not_checked" = "未检查";
 "product.connection.checking" = "正在检查";
-"product.connection.connected" = "已连接";
+"product.connection.connected" = "本机健康";
 "product.connection.needs_repair" = "需要修复";
 "product.connection.unavailable" = "不可用";
 "product.action.use_pet" = "使用这只宠物";
@@ -758,7 +775,10 @@
 "onboarding.choose.detail" = "从 App 内置的两只桌宠中选择一只。这里播放的是宠物包中的真实动作素材。";
 "onboarding.choose.confirm" = "使用这只桌宠";
 "onboarding.pets_unavailable.title" = "内置桌宠暂不可用";
-"onboarding.pets_unavailable.detail" = "跳过设置后，请在宠物库中修复或导入一只桌宠。";
+"onboarding.pets_unavailable.detail" = "恢复 App 随附的两只桌宠，然后选择一只继续。";
+"onboarding.pets_unavailable.restore" = "恢复随附桌宠";
+"onboarding.pets_unavailable.restoring" = "正在恢复随附桌宠…";
+"onboarding.pets_unavailable.restore_failed" = "无法恢复随附桌宠。请重试，或前往“服务与诊断”查看详情。";
 "onboarding.connect.title" = "连接你的 Agent";
 "onboarding.connect.detail" = "App 会检查这台 Mac 上支持的 Agent，只显示你可以处理的状态。项目目录从来不是连接设置。";
 "onboarding.connect.checking" = "正在检查支持的 Agent…";

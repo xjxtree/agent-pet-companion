@@ -110,28 +110,46 @@ struct OnboardingModelsTests {
     }
 
     @Test
-    func chooseSceneShowsOnlyTrustedBundledPetsAndRequiresASelection() {
+    func chooseSceneUsesStableIncludedIdentitiesWithoutGrantingBundledAuthority() {
         let bundled = bundledPet(
             id: "pet_xingwutuanzi",
             name: "星雾团子"
+        )
+        let preservedUpgradePet = pet(
+            id: "pet_bytebudcodex",
+            name: "Preserved Bytebud"
         )
         let custom = pet(id: "pet_custom", name: "Custom")
 
         let noSelection = presentation(
             stage: .choosePet,
-            pets: [custom, bundled],
+            pets: [custom, preservedUpgradePet, bundled],
             selectedPetID: custom.id
         )
-        #expect(noSelection.pets.map(\.id) == [bundled.id])
+        #expect(noSelection.pets.map(\.id) == [
+            bundled.id,
+            preservedUpgradePet.id,
+        ])
         #expect(noSelection.selectedPetID == nil)
         #expect(noSelection.primaryAction == nil)
+        #expect(!preservedUpgradePet.isBundled)
+        #expect(preservedUpgradePet.isIncludedCompanionCandidate)
 
         let selected = presentation(
             stage: .choosePet,
-            pets: [custom, bundled],
-            selectedPetID: bundled.id
+            pets: [custom, preservedUpgradePet, bundled],
+            selectedPetID: preservedUpgradePet.id
         )
         #expect(selected.primaryAction == .confirmPet)
+
+        let unavailable = presentation(
+            stage: .choosePet,
+            pets: [preservedUpgradePet, bundled],
+            selectedPetID: preservedUpgradePet.id,
+            unavailablePetIDs: [preservedUpgradePet.id]
+        )
+        #expect(unavailable.selectedPetID == nil)
+        #expect(unavailable.primaryAction == nil)
     }
 
     @Test
@@ -213,6 +231,7 @@ struct OnboardingModelsTests {
         availability: OnboardingFlowAvailability = .ready,
         pets: [PetSummary] = [],
         selectedPetID: String? = nil,
+        unavailablePetIDs: Set<String> = [],
         connectionState: OnboardingConnectionSceneState = .checking,
         demoSequence: OnboardingDemoSequence = .init()
     ) -> OnboardingFlowPresentation {
@@ -221,6 +240,7 @@ struct OnboardingModelsTests {
             availability: availability,
             pets: pets,
             selectedPetID: selectedPetID,
+            unavailablePetIDs: unavailablePetIDs,
             connectionState: connectionState,
             demoSequence: demoSequence
         )

@@ -73,6 +73,7 @@ pub struct PetAssetWarning {
     pub message: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PetAssetValidationOutcome {
     pub pet: PetSummary,
     pub warning: Option<PetAssetWarning>,
@@ -2689,6 +2690,96 @@ pub fn ensure_runtime_assets_cached(
     }
 
     match ensure_runtime_assets(paths, database, pet) {
+        Ok(repaired) => {
+            let repaired_fingerprint = pet_asset_fingerprint(paths, &repaired);
+            database.set_pet_asset_validation(&pet.id, &repaired_fingerprint, true, None)?;
+            Ok(PetAssetValidationOutcome {
+                pet: repaired,
+                warning: None,
+            })
+        }
+        Err(error) => {
+            let message = bounded_asset_error(&error.to_string());
+            database.set_pet_asset_validation(&pet.id, &fingerprint, false, Some(&message))?;
+            Ok(PetAssetValidationOutcome {
+                pet: pet.clone(),
+                warning: Some(PetAssetWarning {
+                    pet_id: pet.id.clone(),
+                    code: "pet_assets_invalid".to_string(),
+                    fingerprint,
+                    message,
+                }),
+            })
+        }
+    }
+}
+
+/// Explicit user recovery path. Unlike snapshot validation, this never trusts
+/// an unchanged cached failure: it validates the immutable package and
+/// atomically replaces both the cover and runtime-frame directory from that
+/// package before publishing a fresh cache result.
+pub fn repair_runtime_assets(
+    paths: &AppPaths,
+    database: &Database,
+    pet: &PetSummary,
+) -> Result<PetAssetValidationOutcome> {
+    let fingerprint = pet_asset_fingerprint(paths, pet);
+    let result = (|| -> Result<PetSummary> {
+        let _store_guard = PetStoreGuard::acquire(paths)?;
+        let petpack_path = Path::new(&pet.petpack_path);
+        let validation = validate_petpack_path(petpack_path)?;
+        if validation.manifest.id != pet.id {
+            return Err(PetCoreError::Validation(format!(
+                "installed petpack manifest id {} does not match library pet {}",
+                validation.manifest.id, pet.id
+            )));
+        }
+
+        let cover_path = cover_path_for_pet(paths, pet)?;
+        let frames_dir = runtime_frames_dir_for_pet(paths, pet)?;
+        let stage = tempfile::Builder::new()
+            .prefix(".apc-asset-repair-")
+            .tempdir_in(&paths.pets_dir)?;
+        let staged_cover = stage.path().join("cover.png");
+        let staged_frames = stage.path().join("frames");
+        write_cover_image(petpack_path, petpack_path, &staged_cover)?;
+        prepare_runtime_frames_to_dir(
+            petpack_path,
+            petpack_path,
+            &staged_frames,
+            &validation.manifest,
+        )?;
+        commit_asset_replacements(&[
+            AssetReplacement::file(
+                staged_cover,
+                cover_path.clone(),
+                stage.path().join("previous-cover.png"),
+            ),
+            AssetReplacement::dir(
+                staged_frames,
+                frames_dir.clone(),
+                stage.path().join("previous-frames"),
+            ),
+        ])?;
+
+        let mut repaired = pet.clone();
+        repaired.cover_path = cover_path.display().to_string();
+        if repaired.generator.is_none() || repaired.provenance.is_none() {
+            let (generator, provenance) =
+                read_petpack_generation_metadata(petpack_path, petpack_path);
+            if repaired.generator.is_none() {
+                repaired.generator = generator;
+            }
+            if repaired.provenance.is_none() {
+                repaired.provenance = provenance;
+            }
+        }
+        validate_runtime_frames_for_pet(&frames_dir, &repaired)?;
+        database.upsert_pet(&repaired)?;
+        Ok(repaired)
+    })();
+
+    match result {
         Ok(repaired) => {
             let repaired_fingerprint = pet_asset_fingerprint(paths, &repaired);
             database.set_pet_asset_validation(&pet.id, &repaired_fingerprint, true, None)?;

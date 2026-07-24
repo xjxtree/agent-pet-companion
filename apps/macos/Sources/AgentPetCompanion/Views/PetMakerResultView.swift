@@ -17,32 +17,47 @@ struct PetMakerResultView: View {
         )
     }
 
-    private var productPresentation: PetMakerProductPresentation {
-        PetMakerProductPresentation(
+    private var experience: MakerExperiencePresentation {
+        MakerExperiencePresentation(
             session: store.generationSession,
             resultPetAvailable: resultPet != nil,
+            resultPreviewAvailable: previewIsAvailable,
             referenceReselectionCount: store.referenceReselectionCount
+        )
+    }
+
+    private var resultWarning: PetAssetWarning? {
+        resultPet.flatMap { store.petAssetWarningIndex[$0.id] }
+    }
+
+    private var previewIsAvailable: Bool {
+        resultPet != nil && resultWarning == nil
+    }
+
+    private var primaryAction: ProductActionPresentation<PetMakerPrimaryAction>? {
+        guard experience.primaryAction == .usePet else { return nil }
+        return ProductActionPresentation(
+            action: .usePet,
+            title: APCLocalizedPresentation.primaryActionTitle(
+                PetMakerPrimaryAction.usePet
+            )
+                ?? APCLocalization.text(.libraryEnablePet),
+            systemImage: "checkmark.circle.fill"
         )
     }
 
     var body: some View {
         PrimaryExperienceCard(
             identity: identity,
-            title: resultPet?.name ?? APCLocalization.text(.studioSucceededTitle),
-            summary: APCLocalization.text(.studioSuccessGeneric),
-            status: ProductStatusPresentation(
-                appearance: .normal,
-                title: APCLocalization.text(.studioSucceededTitle)
-            ),
-            primaryAction: ProductActionPresentation(
-                action: productPresentation.primaryAction,
-                title: APCLocalizedPresentation.primaryActionTitle(
-                    productPresentation.primaryAction
-                )
-                    ?? APCLocalization.text(.libraryEnablePet),
-                systemImage: "checkmark.circle.fill",
-                isEnabled: productPresentation.primaryAction == .usePet
-            ),
+            title: resultPet?.name ?? APCLocalization.text(.libraryMissingPreview),
+            summary: previewIsAvailable
+                ? APCLocalization.text(.studioSuccessGeneric)
+                : APCLocalization.text(
+                    experience.resultReadiness == .missing
+                        ? .studioPreviewMissingDetail
+                        : .studioPreviewRepairDetail
+                ),
+            primaryAction: primaryAction,
             onPrimaryAction: { action in
                 guard action == .usePet else { return }
                 useResultPet()
@@ -64,21 +79,79 @@ struct PetMakerResultView: View {
 
     @ViewBuilder
     private var resultPreview: some View {
-        PetPreviewStage(
-            identity: identity,
-            accessibilityLabel: previewAccessibilityLabel,
-            minimumHeight: 280
-        ) {
-            if let resultPet {
+        if let resultPet, resultWarning != nil {
+            PetAssetRecoveryCard(
+                pet: resultPet,
+                state: store.petAssetRepairState(for: resultPet.id),
+                onRepair: { store.repairPetAssets(resultPet) },
+                onOpenDiagnostics: { store.selection = .diagnostics }
+            )
+        } else if let resultPet {
+            PetPreviewStage(
+                identity: identity,
+                accessibilityLabel: previewAccessibilityLabel,
+                minimumHeight: 280
+            ) {
                 PetLibraryAnimationPreview(
                     pet: resultPet,
-                    assetWarning: store.petAssetWarningIndex[resultPet.id]
+                    assetWarning: nil
                 )
-                    .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 360)
-            } else {
-                MissingPetCoverPlaceholder(scale: 0.5)
-                    .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 360)
+                .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 360)
             }
+        } else {
+            missingResultRecovery
+        }
+    }
+
+    private var missingResultRecovery: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "photo.badge.exclamationmark")
+                .font(.title2)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(APCLocalization.text(.studioPreviewRepairTitle))
+                    .font(.headline)
+                Text(APCLocalization.text(.studioPreviewMissingDetail))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { _ = await store.refresh() }
+                    } label: {
+                        Label(
+                            APCLocalization.text(.diagnosticsRefresh),
+                            systemImage: "arrow.clockwise"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("maker.result.refresh")
+
+                    Button {
+                        store.selection = .diagnostics
+                    } label: {
+                        Label(
+                            APCLocalization.text(.assetRecoveryDiagnostics),
+                            systemImage: "stethoscope"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("maker.result.diagnostics")
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
         }
     }
 
@@ -109,7 +182,7 @@ struct PetMakerResultView: View {
             )
         }
         .buttonStyle(.bordered)
-        .disabled(!productPresentation.secondaryActions.contains(.continueEditing))
+        .disabled(!experience.secondaryActions.contains(.continueEditing))
         .accessibilityIdentifier("maker.result.continue-editing")
     }
 
@@ -219,7 +292,7 @@ struct PetMakerResultView: View {
     }
 
     private var canContinueEditing: Bool {
-        resultPet != nil
+        previewIsAvailable
             && !continuationText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty

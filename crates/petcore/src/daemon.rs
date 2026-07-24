@@ -795,9 +795,11 @@ pub fn request(
 
 fn client_response_timeout(method: &str) -> Duration {
     match method {
-        "pet.history" | "petpack.import" | "petpack.seed_bundled" | "petpack.export" => {
-            UDS_PETPACK_RESPONSE_DEADLINE
-        }
+        "pet.history"
+        | "pet.assets.repair"
+        | "petpack.import"
+        | "petpack.seed_bundled"
+        | "petpack.export" => UDS_PETPACK_RESPONSE_DEADLINE,
         "connections.check"
         | "connections.repair"
         | "connections.refresh_installed"
@@ -983,6 +985,10 @@ mod tests {
         );
         assert_eq!(
             client_response_timeout("petpack.export"),
+            UDS_PETPACK_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("pet.assets.repair"),
             UDS_PETPACK_RESPONSE_DEADLINE
         );
         assert_eq!(

@@ -46,8 +46,13 @@ struct OnboardingView: View {
         OnboardingFlowPresentation(
             progress: progress,
             availability: store.onboardingAvailability,
-            pets: store.onboardingBundledPets,
+            pets: store.onboardingCompanionCandidates,
             selectedPetID: selectedPetID,
+            unavailablePetIDs: Set(
+                store.onboardingCompanionCandidates.compactMap { pet in
+                    store.petAssetWarningIndex[pet.id] == nil ? nil : pet.id
+                }
+            ),
             connectionState: connectionState,
             demoSequence: demoSequence
         )
@@ -86,7 +91,10 @@ struct OnboardingView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("onboarding.root")
         .onAppear(perform: synchronizePetSelection)
-        .onChange(of: store.onboardingBundledPets.map(\.id)) {
+        .onChange(of: store.onboardingCompanionCandidates.map(\.id)) {
+            synchronizePetSelection()
+        }
+        .onChange(of: flowPresentation.unavailablePetIDs) {
             synchronizePetSelection()
         }
         .onChange(of: progress.stage) {
@@ -171,7 +179,7 @@ struct OnboardingView: View {
             )
 
             if flowPresentation.pets.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     Label(
                         APCLocalization.text(.onboardingPetsUnavailableTitle),
                         systemImage: "shippingbox"
@@ -179,6 +187,24 @@ struct OnboardingView: View {
                     .font(.headline)
                     Text(APCLocalization.text(.onboardingPetsUnavailableDetail))
                         .foregroundStyle(.secondary)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            restoreIncludedCompanionsButton
+                            onboardingDiagnosticsButton
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            restoreIncludedCompanionsButton
+                            onboardingDiagnosticsButton
+                        }
+                    }
+
+                    if store.includedCompanionRestoreState == .failed {
+                        Text(APCLocalization.text(.onboardingPetsRestoreFailed))
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,41 +228,52 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboarding.scene.choose-pet")
     }
 
+    private var restoreIncludedCompanionsButton: some View {
+        Button {
+            store.restoreIncludedCompanions()
+        } label: {
+            Label(
+                APCLocalization.text(
+                    store.includedCompanionRestoreState == .restoring
+                        ? .onboardingPetsRestoring
+                        : .onboardingPetsRestore
+                ),
+                systemImage: "arrow.clockwise"
+            )
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(
+            store.includedCompanionRestoreState == .restoring
+                || store.onboardingAvailability != .ready
+        )
+        .accessibilityIdentifier("onboarding.pets.restore")
+    }
+
+    private var onboardingDiagnosticsButton: some View {
+        Button {
+            openDiagnosticsFromOnboarding()
+        } label: {
+            Label(
+                APCLocalization.text(.assetRecoveryDiagnostics),
+                systemImage: "stethoscope"
+            )
+        }
+        .buttonStyle(.bordered)
+        .accessibilityIdentifier("onboarding.pets.diagnostics")
+    }
+
+    @ViewBuilder
     private func bundledPetCard(_ pet: PetSummary) -> some View {
         let selected = pet.id == flowPresentation.selectedPetID
-        return Button {
-            selectedPetID = pet.id
-        } label: {
+        if store.petAssetWarningIndex[pet.id] != nil {
             VStack(alignment: .leading, spacing: 12) {
-                PetPreviewStage(
-                    identity: ProductComponentIdentity(
-                        scope: "onboarding-pet",
-                        instance: pet.id
-                    ),
-                    accessibilityLabel: pet.name,
-                    minimumHeight: 250
-                ) {
-                    PetLibraryAnimationPreview(
-                        pet: pet,
-                        assetWarning: store.petAssetWarningIndex[pet.id]
-                    )
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(pet.name)
-                            .font(.headline)
-                        Text(pet.style)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(APCDesign.accent)
-                            .accessibilityHidden(true)
-                    }
-                }
+                PetAssetRecoveryCard(
+                    pet: pet,
+                    state: store.petAssetRepairState(for: pet.id),
+                    onRepair: { store.repairPetAssets(pet) },
+                    onOpenDiagnostics: openDiagnosticsFromOnboarding
+                )
+                petIdentity(pet, selected: false)
             }
             .padding(14)
             .background(
@@ -245,20 +282,71 @@ struct OnboardingView: View {
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(
-                        selected ? APCDesign.accent : APCDesign.stroke,
-                        lineWidth: selected ? 2 : 1
-                    )
+                    .stroke(APCDesign.stroke, lineWidth: 1)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("onboarding.pet.\(pet.id)")
+        } else {
+            Button {
+                selectedPetID = pet.id
+            } label: {
+                VStack(alignment: .leading, spacing: 12) {
+                    PetPreviewStage(
+                        identity: ProductComponentIdentity(
+                            scope: "onboarding-pet",
+                            instance: pet.id
+                        ),
+                        accessibilityLabel: pet.name,
+                        minimumHeight: 250
+                    ) {
+                        PetLibraryAnimationPreview(pet: pet)
+                    }
+
+                    petIdentity(pet, selected: selected)
+                }
+                .padding(14)
+                .background(
+                    APCDesign.panel,
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(
+                            selected ? APCDesign.accent : APCDesign.stroke,
+                            lineWidth: selected ? 2 : 1
+                        )
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(pet.name)
+            .accessibilityValue(
+                selected
+                    ? APCLocalization.text(.controlSelected)
+                    : APCLocalization.text(.controlUnselected)
+            )
+            .accessibilityIdentifier("onboarding.pet.\(pet.id)")
+        }
+    }
+
+    private func petIdentity(
+        _ pet: PetSummary,
+        selected: Bool
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pet.name)
+                    .font(.headline)
+                Text(pet.style)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if selected {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(APCDesign.accent)
+                    .accessibilityHidden(true)
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(pet.name)
-        .accessibilityValue(
-            selected
-                ? APCLocalization.text(.controlSelected)
-                : APCLocalization.text(.controlUnselected)
-        )
-        .accessibilityIdentifier("onboarding.pet.\(pet.id)")
     }
 
     private var connectAgentsScene: some View {
@@ -323,6 +411,15 @@ struct OnboardingView: View {
             healthTitle: APCLocalizedPresentation.connectionHealthTitle(
                 presentation.health
             ),
+            taskVerification: presentation.taskVerification,
+            taskVerificationTitle:
+                AgentConnectionsPresentation.taskVerificationTitle(
+                    presentation.taskVerification
+                ),
+            taskVerificationDetail:
+                AgentConnectionsPresentation.taskVerificationDetail(
+                    presentation.taskVerification
+                ),
             primaryAction: AgentConnectionsPresentation.primaryActionPresentation(
                 for: presentation,
                 busy: !store.canStartConnectionOperation
@@ -538,12 +635,20 @@ struct OnboardingView: View {
     }
 
     private func synchronizePetSelection() {
-        let bundled = store.onboardingBundledPets
+        let candidates = store.onboardingCompanionCandidates.filter {
+            store.petAssetWarningIndex[$0.id] == nil
+        }
         if let selectedPetID,
-           bundled.contains(where: { $0.id == selectedPetID }) {
+           candidates.contains(where: { $0.id == selectedPetID }) {
             return
         }
-        selectedPetID = bundled.first(where: \.active)?.id ?? bundled.first?.id
+        selectedPetID = candidates.first(where: \.active)?.id
+            ?? candidates.first?.id
+    }
+
+    private func openDiagnosticsFromOnboarding() {
+        store.dismissOnboardingForCurrentLaunch()
+        store.selection = .diagnostics
     }
 
     private func performPrimaryAction(_ action: OnboardingPrimaryAction) {

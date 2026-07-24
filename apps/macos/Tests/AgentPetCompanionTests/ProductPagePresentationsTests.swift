@@ -108,6 +108,19 @@ struct ProductPagePresentationsTests {
         #expect(missingResult.primaryAction == .unavailable)
         #expect(missingResult.secondaryActions.isEmpty)
 
+        let previewNeedsRepair = PetMakerProductPresentation(
+            session: .init(
+                state: .succeeded,
+                jobID: "job",
+                resultPetID: "pet_result"
+            ),
+            resultPetAvailable: true,
+            resultPreviewAvailable: false
+        )
+        #expect(previewNeedsRepair.phase == .result)
+        #expect(previewNeedsRepair.primaryAction == .unavailable)
+        #expect(previewNeedsRepair.secondaryActions.isEmpty)
+
         let reselect = PetMakerProductPresentation(
             session: .init(
                 state: .failed,
@@ -188,7 +201,7 @@ struct ProductPagePresentationsTests {
 
         #expect(running.health == .checking)
         #expect(running.primaryAction == .unavailable)
-        #expect(failed.health == .unavailable)
+        #expect(failed.health == .notChecked)
         #expect(failed.primaryAction == .retry)
     }
 

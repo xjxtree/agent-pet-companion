@@ -24,9 +24,10 @@ struct SharedProductComponentsTests {
         #expect(
             AgentConnectionHealthState.allCases.map(
                 ProductStatusAppearance.init(connectionHealth:)
-            ) == [.checking, .normal, .attention, .error]
+            ) == [.neutral, .checking, .normal, .attention, .error]
         )
         #expect(Set(ProductStatusAppearance.allCases) == [
+            .neutral,
             .normal,
             .attention,
             .error,
@@ -196,11 +197,30 @@ struct SharedProductComponentsTests {
         #expect(overlaySource.contains("SessionBubbleRow(\n                    session: session,"))
 
         #expect(sharedSource.contains("if session.canOpen {"))
+        #expect(sharedSource.contains(".focused($focused)"))
+        #expect(sharedSource.contains(".opacity(hovered || focused ? 1 : 0)"))
+        #expect(!sharedSource.contains("Text(session.actionLabel)"))
         #expect(sharedSource.contains(".accessibilityIdentifier(\"overlay.session.\\(session.id)\")"))
         #expect(sharedSource.contains(".accessibilityLabel(session.accessibilityLabel)"))
         #expect(sharedSource.contains(
             "openLabel: session.canOpen ? session.actionLabel : nil"
         ))
+    }
+
+    @Test
+    func controlCenterComponentsUseSolidSurfacesAndSecondaryRowActions() throws {
+        let source = try String(
+            contentsOf: sharedComponentsURL,
+            encoding: .utf8
+        )
+
+        #expect(!source.contains(".background(.thinMaterial"))
+        #expect(!source.contains(".background(.regularMaterial"))
+        #expect(source.contains(
+            ".background(Color(nsColor: .textBackgroundColor), in: previewShape)"
+        ))
+        #expect(source.contains(".background(APCDesign.panel, in: shape)"))
+        #expect(source.contains("ProductSecondaryActionButton("))
     }
 
     @MainActor

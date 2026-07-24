@@ -186,14 +186,16 @@ struct LocalizationTests {
         }
 
         let healthEnglish: [AgentConnectionHealthState: String] = [
+            .notChecked: "Not Checked",
             .checking: "Checking",
-            .connected: "Connected",
+            .connected: "Local Healthy",
             .needsRepair: "Needs Repair",
             .unavailable: "Unavailable",
         ]
         let healthChinese: [AgentConnectionHealthState: String] = [
+            .notChecked: "未检查",
             .checking: "正在检查",
-            .connected: "已连接",
+            .connected: "本机健康",
             .needsRepair: "需要修复",
             .unavailable: "不可用",
         ]

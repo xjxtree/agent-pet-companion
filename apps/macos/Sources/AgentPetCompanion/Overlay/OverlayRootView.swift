@@ -115,11 +115,19 @@ struct OverlayRootView: View {
                     },
                     onDragChanged: { center, visibleFrame in
                         guard !store.overlayResizeInProgress else { return }
-                        store.moveOverlayPet(to: center, visibleFrame: visibleFrame, commit: false)
+                        store.presentOverlayPetDrag(
+                            at: center,
+                            visibleFrame: visibleFrame
+                        )
                     },
-                    onDragEnded: { center, visibleFrame in
+                    onDragEnded: { center, velocity, visibleFrame in
                         guard !store.overlayResizeInProgress else { return }
-                        store.moveOverlayPet(to: center, visibleFrame: visibleFrame, commit: true)
+                        store.settleOverlayPet(
+                            from: center,
+                            velocity: velocity,
+                            visibleFrame: visibleFrame,
+                            reduceMotion: reduceMotion
+                        )
                     }
                 )
                 .position(displayPetCenter)
@@ -272,6 +280,7 @@ struct BubbleOverlayRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var contents: [OverlayBubbleContent] {
         store.overlayBubbleContents
@@ -288,6 +297,9 @@ struct BubbleOverlayRootView: View {
         .apcAppearanceTheme(store.behavior.appearanceTheme)
         .onDisappear {
             controlPresentation.setHovered(.bubble, false)
+        }
+        .onChange(of: dynamicTypeSize) { _, _ in
+            store.updateOverlayLayout()
         }
     }
 
@@ -318,6 +330,10 @@ struct BubbleOverlayRootView: View {
                     onToggleGroup: {
                         guard let source = content.source else { return }
                         store.toggleOverlayAgentGroup(source)
+                    },
+                    onOpenControlCenter: {
+                        store.selection = .connections
+                        store.presentMainWindow()
                     },
                     onActivateSession: { session in
                         store.activateOverlaySession(session)
@@ -353,6 +369,7 @@ private struct ConversationBubble: View {
     var glassTransparency: Double
     var onClose: () -> Void
     var onToggleGroup: () -> Void
+    var onOpenControlCenter: () -> Void
     var onActivateSession: (OverlaySessionContent) -> Void
     var onDismissSession: (OverlaySessionContent) -> Void
 
@@ -413,7 +430,7 @@ private struct ConversationBubble: View {
                 )
 
                 Text(content.agentName)
-                    .font(.system(size: OverlayGeometry.bubbleHeaderFontSize, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(BubbleForegroundStyle.secondaryText)
                     .lineLimit(1)
                     .layoutPriority(2)
@@ -450,6 +467,8 @@ private struct ConversationBubble: View {
                 }
             }
             .frame(height: OverlayGeometry.bubbleGroupHeaderHeight)
+            .accessibilityElement(children: .contain)
+            .accessibilitySortPriority(100)
 
             Color.clear
                 .frame(height: OverlayGeometry.bubbleGroupHeaderSpacing)
@@ -467,6 +486,9 @@ private struct ConversationBubble: View {
                         : nil
                 )
                 .frame(height: rowHeights.indices.contains(index) ? rowHeights[index] : nil)
+                .accessibilitySortPriority(
+                    Double(content.visibleSessions.count - index) + 10
+                )
                 .transition(sessionTransition)
 
                 if index < content.visibleSessions.count - 1 {
@@ -475,6 +497,47 @@ private struct ConversationBubble: View {
                         .frame(height: OverlayGeometry.bubbleSessionDividerHeight)
                         .transition(.opacity)
                 }
+            }
+
+            if content.controlCenterSessionCount > 0 {
+                Divider()
+                    .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+                    .frame(height: OverlayGeometry.bubbleSessionDividerHeight)
+                    .transition(.opacity)
+
+                Button(action: onOpenControlCenter) {
+                    HStack(spacing: 6) {
+                        Text(APCLocalization.format(
+                            .overlayMoreSessionsControlCenterFormat,
+                            content.controlCenterSessionCount
+                        ))
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "arrow.up.forward.square")
+                            .font(.caption.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundStyle(Color.primary)
+                    .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: OverlayGeometry.bubbleMoreSessionsRowHeight,
+                        alignment: .leading
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("overlay.group.\(content.id).more")
+                .accessibilitySortPriority(1)
+                .help(APCLocalization.format(
+                    .overlayMoreSessionsControlCenterFormat,
+                    content.controlCenterSessionCount
+                ))
+                .transition(sessionTransition)
             }
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
@@ -515,9 +578,9 @@ private struct SessionCountButton: View {
                 Text("\(count)")
                     .monospacedDigit()
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 7.5, weight: .bold))
+                    .font(.caption2.weight(.bold))
             }
-            .font(.system(size: 9.5, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(BubbleForegroundStyle.text)
             .frame(minWidth: 28, minHeight: 17)
             .padding(.horizontal, 5)
@@ -588,7 +651,7 @@ private struct PetInteractionLayer: View {
     var onHoverChanged: (Bool) -> Void
     var onDragActiveChanged: (Bool) -> Void
     var onDragChanged: (CGPoint, CGRect?) -> Void
-    var onDragEnded: (CGPoint, CGRect?) -> Void
+    var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void
 
     var body: some View {
         ZStack {
@@ -600,6 +663,7 @@ private struct PetInteractionLayer: View {
                 bubbleVisible: bubbleVisible,
                 bubbleToggleAvailable: bubbleToggleAvailable,
                 petVisualEnvelope: petVisualEnvelope,
+                reduceMotion: reduceMotion,
                 onActivate: onActivate,
                 onToggleBubble: onToggleBubble,
                 onOpenMainWindow: onOpenMainWindow,
@@ -644,6 +708,7 @@ struct WindowDragRegion: NSViewRepresentable {
     var bubbleVisible: Bool
     var bubbleToggleAvailable: Bool
     var petVisualEnvelope: OverlayPetVisualEnvelope?
+    var reduceMotion: Bool
     var onActivate: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
@@ -651,7 +716,7 @@ struct WindowDragRegion: NSViewRepresentable {
     var onHoverChanged: (Bool) -> Void
     var onDragActiveChanged: (Bool) -> Void
     var onDragChanged: (CGPoint, CGRect?) -> Void
-    var onDragEnded: (CGPoint, CGRect?) -> Void
+    var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void
 
     func makeNSView(context: Context) -> DragView {
         let view = DragView()
@@ -662,6 +727,7 @@ struct WindowDragRegion: NSViewRepresentable {
         view.bubbleVisible = bubbleVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
+        view.reduceMotion = reduceMotion
         view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
@@ -681,6 +747,7 @@ struct WindowDragRegion: NSViewRepresentable {
         view.bubbleVisible = bubbleVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
+        view.reduceMotion = reduceMotion
         view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
@@ -701,6 +768,7 @@ struct WindowDragRegion: NSViewRepresentable {
         var bubbleVisible = true
         var bubbleToggleAvailable = true
         var petVisualEnvelope: OverlayPetVisualEnvelope?
+        var reduceMotion = false
         var onActivate: () -> Void = {}
         var onToggleBubble: () -> Void = {}
         var onOpenMainWindow: () -> Void = {}
@@ -708,9 +776,10 @@ struct WindowDragRegion: NSViewRepresentable {
         var onHoverChanged: (Bool) -> Void = { _ in }
         var onDragActiveChanged: (Bool) -> Void = { _ in }
         var onDragChanged: (CGPoint, CGRect?) -> Void = { _, _ in }
-        var onDragEnded: (CGPoint, CGRect?) -> Void = { _, _ in }
+        var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void = { _, _, _ in }
         private var dragStartMouseLocation: NSPoint?
         private var dragStartPetCenter: CGPoint?
+        private var motionSamples: [OverlayPetMotionSample] = []
         private var didDrag = false
         private var menuTarget: PetClickMenuTarget?
 
@@ -782,6 +851,12 @@ struct WindowDragRegion: NSViewRepresentable {
             guard let window else { return }
             dragStartMouseLocation = NSEvent.mouseLocation
             dragStartPetCenter = petScreenCenter
+            motionSamples = [
+                OverlayPetMotionSample(
+                    point: NSEvent.mouseLocation,
+                    timestamp: event.timestamp
+                ),
+            ]
             didDrag = false
             window.ignoresMouseEvents = false
             onDragActiveChanged(true)
@@ -795,6 +870,10 @@ struct WindowDragRegion: NSViewRepresentable {
             else { return }
 
             let currentMouseLocation = NSEvent.mouseLocation
+            recordMotionSample(
+                point: currentMouseLocation,
+                timestamp: event.timestamp
+            )
             guard OverlayPetPointerGesture.exceedsDragThreshold(
                 from: dragStartMouseLocation,
                 to: currentMouseLocation
@@ -815,20 +894,35 @@ struct WindowDragRegion: NSViewRepresentable {
                 screenFrame: screenFrame,
                 visibleFrame: visibleFrame
             )
-            let clampedCenter = OverlayGeometry.clampedPetScreenCenter(
-                proposedCenter,
-                scale: scale,
-                visibleFrame: movementFrame,
-                clickMenuEnabled: clickMenuEnabled,
-                petVisualEnvelope: petVisualEnvelope
-            )
-            petScreenCenter = clampedCenter
+            let presentationCenter = reduceMotion
+                ? OverlayGeometry.clampedPetScreenCenter(
+                    proposedCenter,
+                    scale: scale,
+                    visibleFrame: movementFrame,
+                    clickMenuEnabled: clickMenuEnabled,
+                    petVisualEnvelope: petVisualEnvelope
+                )
+                : OverlayPetDragMotion.rubberBandedCenter(
+                    proposedCenter,
+                    scale: scale,
+                    visibleFrame: movementFrame,
+                    clickMenuEnabled: clickMenuEnabled,
+                    petVisualEnvelope: petVisualEnvelope
+                )
+            petScreenCenter = presentationCenter
             window.ignoresMouseEvents = false
-            onDragChanged(clampedCenter, visibleFrame)
+            onDragChanged(presentationCenter, visibleFrame)
         }
 
         override func mouseUp(with event: NSEvent) {
+            recordMotionSample(
+                point: NSEvent.mouseLocation,
+                timestamp: event.timestamp
+            )
             let finalCenter = petScreenCenter
+            let velocity = reduceMotion
+                ? CGVector.zero
+                : OverlayPetDragMotion.estimatedVelocity(from: motionSamples)
             let visibleFrame = window.flatMap { window in
                 resolvedScreen(
                     forMouseLocation: NSEvent.mouseLocation,
@@ -838,12 +932,28 @@ struct WindowDragRegion: NSViewRepresentable {
             }
             dragStartMouseLocation = nil
             dragStartPetCenter = nil
+            motionSamples.removeAll(keepingCapacity: true)
             if didDrag {
-                onDragEnded(finalCenter, visibleFrame)
+                onDragEnded(finalCenter, velocity, visibleFrame)
             } else {
                 onActivate()
             }
             onDragActiveChanged(false)
+        }
+
+        private func recordMotionSample(
+            point: CGPoint,
+            timestamp: TimeInterval
+        ) {
+            motionSamples.append(OverlayPetMotionSample(
+                point: point,
+                timestamp: timestamp
+            ))
+            let cutoff = timestamp - OverlayPetDragMotion.velocityWindow
+            motionSamples.removeAll { $0.timestamp < cutoff }
+            if motionSamples.count > 8 {
+                motionSamples.removeFirst(motionSamples.count - 8)
+            }
         }
 
         override func rightMouseDown(with event: NSEvent) {
@@ -1181,7 +1291,7 @@ private struct BubbleIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 7.5, weight: .bold))
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(BubbleForegroundStyle.secondaryText)
                 .frame(
                     width: OverlayGeometry.bubbleHeaderButtonSize,

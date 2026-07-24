@@ -41,6 +41,7 @@ struct PetMakerProductPresentation: Equatable {
     init(
         session: GenerationSession,
         resultPetAvailable: Bool,
+        resultPreviewAvailable: Bool = true,
         referenceReselectionCount: Int = 0
     ) {
         switch session.state {
@@ -62,8 +63,12 @@ struct PetMakerProductPresentation: Equatable {
             secondaryActions = []
         case .succeeded:
             phase = .result
-            primaryAction = resultPetAvailable ? .usePet : .unavailable
-            secondaryActions = resultPetAvailable ? [.continueEditing] : []
+            primaryAction = resultPetAvailable && resultPreviewAvailable
+                ? .usePet
+                : .unavailable
+            secondaryActions = resultPetAvailable && resultPreviewAvailable
+                ? [.continueEditing]
+                : []
         case .failed, .cancelled:
             phase = .createTogether
             if !session.canRetry {
@@ -81,6 +86,7 @@ struct PetMakerProductPresentation: Equatable {
 struct AgentConnectionProductPresentation: Equatable {
     let source: AgentSource
     let health: AgentConnectionHealthState
+    let taskVerification: AgentTaskVerificationState
     let primaryAction: AgentConnectionPrimaryAction
     let technicalItems: [AgentConnectionTechnicalItem]
     let hasCurrentTypedSnapshot: Bool
@@ -105,6 +111,10 @@ struct AgentConnectionProductPresentation: Equatable {
             }
         canRepairManagedConnector = status?.hasRepairableConnectorIssue == true
             && everyBlockingItemAuthorizesManagedRepair
+        taskVerification = Self.taskVerificationState(
+            status: status,
+            hasCurrentTypedSnapshot: hasCurrentTypedSnapshot
+        )
 
         if case let .running(operation) = operationState,
            operation.sources.contains(source) {
@@ -115,19 +125,31 @@ struct AgentConnectionProductPresentation: Equatable {
 
         if case let .failed(failure) = operationState,
            failure.operation.sources.contains(source) {
-            health = status == nil ? .unavailable : .needsRepair
+            health = Self.localHealthState(
+                status: status,
+                hasCurrentTypedSnapshot: hasCurrentTypedSnapshot,
+                projectedItems: projectedItems,
+                blockingItems: blockingItems,
+                canRepairManagedConnector: canRepairManagedConnector
+            )
             primaryAction = .retry
             return
         }
 
         guard let status else {
-            health = .checking
-            primaryAction = .unavailable
+            health = .notChecked
+            primaryAction = .verify
             return
         }
 
         guard hasCurrentTypedSnapshot else {
-            health = .checking
+            health = .notChecked
+            primaryAction = .verify
+            return
+        }
+
+        if projectedItems.contains(where: { $0.code == .unknown }) {
+            health = .notChecked
             primaryAction = .verify
             return
         }
@@ -139,31 +161,57 @@ struct AgentConnectionProductPresentation: Equatable {
         }
 
         if !blockingItems.isEmpty {
-            health = .needsRepair
             if canRepairManagedConnector {
+                health = .needsRepair
                 primaryAction = status.hasInstalledConnectorArtifacts ? .repair : .connect
             } else {
+                health = .unavailable
                 primaryAction = .verify
             }
             return
         }
 
-        if status.verification.status.requiresUserAction {
-            health = .needsRepair
-            primaryAction = .verify
-            return
-        }
-
-        if projectedItems.contains(where: {
-            $0.status == .unverified || $0.code == .unknown
-        }) || status.verification.status == .unverified {
-            health = .needsRepair
-            primaryAction = .verify
-            return
-        }
-
         health = .connected
         primaryAction = .verify
+    }
+
+    private static func localHealthState(
+        status: AgentConnectionStatus?,
+        hasCurrentTypedSnapshot: Bool,
+        projectedItems: [AgentConnectionTechnicalItem],
+        blockingItems: [AgentConnectionTechnicalItem],
+        canRepairManagedConnector: Bool
+    ) -> AgentConnectionHealthState {
+        guard status != nil, hasCurrentTypedSnapshot else {
+            return .notChecked
+        }
+        if projectedItems.contains(where: { $0.code == .unknown }) {
+            return .notChecked
+        }
+        if agentIsUnavailable(in: projectedItems) {
+            return .unavailable
+        }
+        if !blockingItems.isEmpty {
+            return canRepairManagedConnector ? .needsRepair : .unavailable
+        }
+        return .connected
+    }
+
+    private static func taskVerificationState(
+        status: AgentConnectionStatus?,
+        hasCurrentTypedSnapshot: Bool
+    ) -> AgentTaskVerificationState {
+        guard let status, hasCurrentTypedSnapshot else {
+            return .notRun
+        }
+        return switch status.verification.status {
+        case .verified:
+            .verified
+        case .actionRequired, .unverified:
+            .awaitingTask
+        case .notRequired:
+            .notRun
+        }
     }
 
     private static func hasCurrentTypedSnapshot(

@@ -21,6 +21,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case onboardingChooseConfirm = "onboarding.choose.confirm"
     case onboardingPetsUnavailableTitle = "onboarding.pets_unavailable.title"
     case onboardingPetsUnavailableDetail = "onboarding.pets_unavailable.detail"
+    case onboardingPetsRestore = "onboarding.pets_unavailable.restore"
+    case onboardingPetsRestoring = "onboarding.pets_unavailable.restoring"
+    case onboardingPetsRestoreFailed = "onboarding.pets_unavailable.restore_failed"
     case onboardingConnectTitle = "onboarding.connect.title"
     case onboardingConnectDetail = "onboarding.connect.detail"
     case onboardingConnectChecking = "onboarding.connect.checking"
@@ -63,6 +66,12 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryValidationVerified = "library.validation.verified"
     case libraryValidationUnverifiedTitle = "library.validation.unverified_title"
     case libraryValidationUnverified = "library.validation.unverified"
+    case assetRecoveryTitle = "asset_recovery.title"
+    case assetRecoveryDetail = "asset_recovery.detail"
+    case assetRecoveryRepair = "asset_recovery.repair"
+    case assetRecoveryRepairing = "asset_recovery.repairing"
+    case assetRecoveryFailed = "asset_recovery.failed"
+    case assetRecoveryDiagnostics = "asset_recovery.diagnostics"
     case librarySpecificationVerifiedStates = "library.specification.verified_states"
     case librarySpecificationVerifiedFps = "library.specification.verified_fps"
     case librarySpecificationUnavailable = "library.specification.unavailable"
@@ -85,6 +94,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayStatusReview = "overlay.status.review"
     case overlayStatusDone = "overlay.status.done"
     case overlayStatusBlocked = "overlay.status.blocked"
+    case overlayIntentBusy = "overlay.intent.busy"
+    case overlayIntentNeedsYou = "overlay.intent.needs_you"
+    case overlayIntentEnded = "overlay.intent.ended"
     case overlayActivityThinking = "overlay.activity.thinking"
     case overlayActivityPlan = "overlay.activity.plan"
     case overlayActivityCommand = "overlay.activity.command"
@@ -222,6 +234,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case productAttentionCustom = "product.attention.custom"
     case productMotionStandard = "product.motion.standard"
     case productMotionSmooth = "product.motion.smooth"
+    case productConnectionNotChecked = "product.connection.not_checked"
     case productConnectionChecking = "product.connection.checking"
     case productConnectionConnected = "product.connection.connected"
     case productConnectionNeedsRepair = "product.connection.needs_repair"
@@ -346,6 +359,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case studioSuccessPetID = "studio.success.pet_id"
     case studioSuccessRevision = "studio.success.revision"
     case studioSuccessValidation = "studio.success.validation"
+    case studioPreviewRepairTitle = "studio.preview_repair.title"
+    case studioPreviewRepairDetail = "studio.preview_repair.detail"
+    case studioPreviewMissingDetail = "studio.preview_repair.missing_detail"
     case studioSuccessValidationFormat = "studio.success.validation_format"
     case studioStepBaseline = "studio.step.baseline"
     case studioStepBrief = "studio.step.brief"
@@ -495,6 +511,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsPageTitle = "connections.page.title"
     case connectionsPageSubtitle = "connections.page.subtitle"
     case connectionsSummaryChecking = "connections.summary.checking"
+    case connectionsSummaryNotChecked = "connections.summary.not_checked"
     case connectionsSummaryConnected = "connections.summary.connected"
     case connectionsSummaryNeedsRepair = "connections.summary.needs_repair"
     case connectionsSummaryUnavailable = "connections.summary.unavailable"
@@ -584,6 +601,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsCheckDescriptionGeneric = "connections.check.description.generic"
     case connectionsCheckDetailFormat = "connections.check.detail_format"
     case connectionsVerificationTitle = "connections.verification.title"
+    case connectionsVerificationNotRunTitle = "connections.verification.not_run_title"
+    case connectionsVerificationNotRunDetail = "connections.verification.not_run_detail"
     case connectionsVerificationVerifiedTitle = "connections.verification.verified_title"
     case connectionsVerificationActionTitle = "connections.verification.action_title"
     case connectionsVerificationPendingTitle = "connections.verification.pending_title"
@@ -696,6 +715,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlaySessionAliasTitleFormat = "overlay.session.alias_title_format"
     case overlayMoreSessionsTitle = "overlay.sessions.more_title"
     case overlayMoreSessionsDetailFormat = "overlay.sessions.more_detail_format"
+    case overlayMoreSessionsControlCenterFormat =
+        "overlay.sessions.more_control_center_format"
     case overlayHelpOpenAndDismiss = "overlay.help.open_and_dismiss"
     case overlayHelpDismiss = "overlay.help.dismiss"
     case overlayHelpOpen = "overlay.help.open"
@@ -1084,6 +1105,7 @@ enum APCLocalizedPresentation {
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
         let key: APCLocalizationKey = switch health {
+        case .notChecked: .productConnectionNotChecked
         case .checking: .productConnectionChecking
         case .connected: .productConnectionConnected
         case .needsRepair: .productConnectionNeedsRepair

@@ -41,10 +41,20 @@ public enum NavigationCapability: String, CaseIterable, Codable, Hashable, Senda
 
 /// Aggregate connection meaning used by the ordinary Agent Connections page.
 public enum AgentConnectionHealthState: String, CaseIterable, Hashable, Sendable {
+    case notChecked
     case checking
     case connected
     case needsRepair
     case unavailable
+}
+
+/// Evidence from a real Agent task is deliberately independent from local
+/// connector health. A healthy local installation must never be presented as
+/// broken merely because the user has not run a qualifying task yet.
+public enum AgentTaskVerificationState: String, CaseIterable, Hashable, Sendable {
+    case notRun
+    case awaitingTask
+    case verified
 }
 
 /// Product-level message policies. `custom` is derived when stored event

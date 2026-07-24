@@ -53,7 +53,7 @@ erDiagram
 | `suppressed_agent_sessions` | Source/session keys that must not appear in activity projections, with a bounded retention timestamp and reason. |
 | `agent_session_aliases` | PetCore-owned, content-free sequence for a retained source/session key. It supplies stable anonymous-session fallback identity, is removed when the session has no retained event, and is never reused. |
 | `privacy_migrations` | Recoverable phase marker for privacy scrubs and secure vacuum; it is migration state, not product history. |
-| `pet_asset_validation` | Cached package/frame fingerprint and valid/error result. It has no foreign key; pet deletion explicitly removes it. |
+| `pet_asset_validation` | Cached package/frame fingerprint and valid/error result used by ordinary snapshots. It has no foreign key; pet deletion explicitly removes it. Explicit `pet.assets.repair` bypasses this cache and rewrites it only after the forced archive/cover/frame validation result is known. |
 | `settings` | JSON value by key, update time, and per-setting revision. Durable keys include behavior, onboarding progress, overlay placement, and connector status data. Behavior keeps every supported Agent source enabled by default; the App derives the three exact attention presets or `Custom` from the event map. Serialized behavior and onboarding writes use an expected revision; conflicts restore the authoritative PetCore projection instead of creating an App-local durable copy. |
 | `product_convergence_receipt` | Singleton `apc.product-convergence-receipt.v1` receipt for the exact App/runtime build after all managed connectors complete. It stores a server timestamp, bounded source counts, the complete typed-report digest, and optional verified Codex Skills/content digests. It is independent of generic settings and diagnostic history. |
 | `state_revision` | Singleton monotonic revision. Triggers increment it when persisted state changes so snapshots and long-polls never combine two revisions. |
@@ -65,6 +65,19 @@ The authoritative schema and migration logic are in [db.rs](../../crates/petcore
 The `settings.onboarding_progress` value uses the closed `apc.onboarding-progress.v1` schema and the stages `choose_pet`, `connect_agents`, `demo`, `completed`, and `skipped`. A missing row derives `choose_pet` at revision `0`; it does not require a synthetic migration row or another database table. Updates use decimal-string `expected_revision` compare-and-swap and allow only the ordered forward transitions or an explicit skip. `completed` and `skipped` are terminal.
 
 Completing onboarding and enabling `behavior.enabled` share one database transaction, so a completed first run cannot durably leave the desktop pet disabled. The App projects the progress and revision through `state.snapshot`, but the four demo phases are pure View-local presentation state. Demo phases never enter Agent events, session aliases, suppression, receipts, retention counts, or diagnostics.
+
+Included-companion choice is an ordered stable-ID presentation rule, not a
+stored origin mutation. If upgrade seeding preserves an existing pet with one
+of the two included manifest IDs, onboarding may select it through the normal
+activation operation, while bundled read-only authority still requires the
+PetCore-assigned origin, generator, and provenance markers.
+
+`settings.overlay_placement` stores only the final hard-clamped pet center,
+screen, and scale. Rubber-band overshoot, sampled pointer velocity, and the
+critically damped release trajectory are transient App presentation state and
+never cross the RPC boundary. Starting a new drag cancels the current release
+trajectory at the presented center; reduced-motion presentation skips the
+trajectory and commits the same final placement contract directly.
 
 ## Pet identity and immutable revisions
 
@@ -88,6 +101,15 @@ Commit order is: write staging files, sync them, rename the immutable revision, 
 `pet.history` is the bounded read API for the library history sheet. Under the shared pet-store lock it revalidates at most 32 direct owned revisions, marks the active head, and exposes only validated revisions as edit baselines. Its newest-first job projection contains the job ID, status, operation, selected baseline revision, result revision/validation summary, and timestamps. It excludes forms, prompts, messages, private paths, provider sessions, ownership internals, and retry internals, and is never exported as pet metadata. An unavailable revision preview stays unavailable instead of borrowing the current cover.
 
 Bundled identity requires a fixed manifest ID plus PetCore-assigned origin/generator/provenance. A package cannot self-declare itself bundled. Seeding preserves an existing same-ID pet byte-for-byte, permits same-name/different-ID entries, and does not replace an existing active choice. Bundled pets are read-only; other pets may append a same-ID edit revision.
+
+Each owned active revision keeps the package, canonical cover, and a sibling
+runtime-frame directory with a closed completion marker and direct PNG files
+for `idle`, `start`, `tool`, `waiting`, `review`, `done`, and `failed`.
+Ordinary snapshot validation may reuse the matching
+`pet_asset_validation` fingerprint. Explicit repair instead revalidates the
+immutable archive, stages both cover and frame directory, atomically replaces
+them, validates the committed marker/counts/dimensions, and publishes the
+resulting warning or refreshed summary.
 
 Primary source: [pet revision transaction](../../crates/petcore/src/pet_revision.rs) and [petpack library logic](../../crates/petcore/src/petpack.rs).
 
@@ -115,7 +137,7 @@ The desktop App consumes a separate type-allowlisted projection serialized by Pe
 
 Navigation publishes the required closed `capability`: `exact_session`, `agent_host`, or `unavailable`. Exact-session requires a validated terminal URL or the dedicated canonical Codex routing field. Agent-host requires a specific structurally valid App or terminal target; missing, unknown, malformed, or closed targets are unavailable instead of opening an arbitrary terminal. When the same Agent has two or more sessions with neither title nor user context, PetCore adds `anonymous_session_alias` from the durable `agent_session_aliases` sequence. The alias is independent of activity/display order and contains no raw session ID or project data; the App converts it to localized human-facing labels rather than displaying the token. The explicit bounded `events.recent` audit RPC remains the separate stored-event interface. The closed summary vocabulary is `running`, `thinking`, `plan`, `command`, `file`, `file_change`, `tool`, `subagent`, `search`, `network`, `image`, `compaction`, `needs_input`, `review`, `done`, and `failed`.
 
-Ingest returns inserted, duplicate, or suppressed. Activity is derived rather than stored. The canonical pet state uses bounded activity leases for ordinary `start`, `tool`, and `done` activity (30 seconds for ordinary activity and 5 seconds for terminal activity, with explicit active-session/provider exceptions). `waiting`, `review`, and `failed` are persistent attention states with no advertised expiry; they remain canonical and visible until a newer event advances that session. Independently, the bubble projection contains at most eight concrete session rows and publishes an `active_agent_sessions_omitted_count` when additional sessions exist, so the App can expose a bounded Control Center summary instead of silently dropping them. The ordinary `behavior.session_message_timeout_minutes` window (15 minutes by default) applies only to start, tool, and done events. These protocol arbitration, suppression, and priority rules are rebuilt by PetCore after restart. Local group disclosure and per-session dismissal are App-only presentation state: dismissing/viewing an attention row makes the pet fall back to the next undismissed projected session or idle without writing Agent lifecycle state, and a newer reopen identity makes the session visible again. Retained diagnostic history for ordinary or superseded events does not imply a visible session.
+Ingest returns inserted, duplicate, or suppressed. Activity is derived rather than stored. The canonical pet state uses bounded activity leases for ordinary `start`, `tool`, and `done` activity (30 seconds for ordinary activity and 5 seconds for terminal activity, with explicit active-session/provider exceptions). `waiting`, `review`, and `failed` are persistent attention states with no advertised expiry; they remain canonical and visible until a newer event advances that session. Independently, the PetCore projection contains at most eight concrete session rows and publishes an `active_agent_sessions_omitted_count` when additional sessions exist. The App's daily bubble is tighter: a collapsed Agent group exposes one attention-prioritized/latest row, an expanded group exposes at most three, and the remainder is represented by a Control Center action. **Busy**, **Needs You**, and **Ended** are derived App presentation intents and are never stored as replacement protocol states. The ordinary `behavior.session_message_timeout_minutes` window (15 minutes by default) applies only to start, tool, and done events. These protocol arbitration, suppression, and priority rules are rebuilt by PetCore after restart. Local group disclosure and per-session dismissal are App-only presentation state: dismissing/viewing an attention row makes the pet fall back to the next undismissed projected session or idle without writing Agent lifecycle state, and a newer reopen identity makes the session visible again. Retained diagnostic history for ordinary or superseded events does not imply a visible session.
 
 Primary sources: [event envelope](../../crates/petcore/src/event_envelope.rs), [state projection](../../crates/petcore/src/agent_state.rs), [persisted event schema](../../schemas/agent-event.schema.json), and [Swift UI projection](../../apps/macos/Sources/AgentPetCompanionCore/AppModels.swift).
 

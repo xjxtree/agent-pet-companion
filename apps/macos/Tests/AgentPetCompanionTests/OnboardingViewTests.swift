@@ -16,6 +16,8 @@ struct OnboardingViewTests {
             "onboarding.skip",
             "onboarding.primary.",
             "onboarding.pet.",
+            "onboarding.pets.restore",
+            "onboarding.pets.diagnostics",
             "onboarding.service.retry",
             "onboarding.demo.local",
             "onboarding.demo.phase",
@@ -34,7 +36,7 @@ struct OnboardingViewTests {
             $0.rawValue.hasPrefix("onboarding.")
         }
 
-        #expect(keys.count == 36)
+        #expect(keys.count == 39)
         for key in keys {
             let english = APCLocalization.text(key, locale: "en")
             let chinese = APCLocalization.text(key, locale: "zh-Hans")
@@ -52,7 +54,7 @@ struct OnboardingViewTests {
         )
         #expect(
             APCLocalization.text(.onboardingPetsUnavailableDetail, locale: "zh-Hans")
-                == "跳过设置后，请在宠物库中修复或导入一只桌宠。"
+                == "恢复 App 随附的两只桌宠，然后选择一只继续。"
         )
         #expect(ControlCenterShellPolicy.supportedMinimumWindowWidth == 760)
         #expect(ControlCenterShellPolicy.supportedMinimumWindowHeight == 520)

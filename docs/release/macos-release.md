@@ -170,6 +170,19 @@ official asset set.
 `SHA256SUMS.txt` 只包含上述两个 ZIP 的两行摘要，不校验自身，也不存在签名、公证
 sidecar。正式 GitHub Release 的资产清单必须恰好是这三个文件。
 
+Native packaged validation starts the bundled PetCore and CLI against a clean
+isolated home, seeds exactly `星雾团子` and `Bytebud 字节芽`, and reads the
+same library projection consumed by the App. It rejects the archive unless
+both canonical covers and every exact-size PNG frame for all seven fixed
+states exist under the managed store with a matching runtime completion
+marker and authored frame count. Static bundled-resource digest checks and a
+database row alone are not sufficient.
+
+原生包内验收会在干净隔离目录中启动随包 PetCore 与 CLI，精确种入
+`星雾团子` 和 `Bytebud 字节芽`，并读取 App 使用的同一份宠物库投影。两只宠物的
+规范封面、七个固定状态的全部正确尺寸 PNG 帧、运行资源完成标记及制作帧数必须在
+受管目录中逐项匹配；仅有随包资源摘要或数据库记录不能通过发布门禁。
+
 The validator's input directory itself must contain exactly those three regular
 files. The workflow moves them from `dist/` into a fresh `release-assets/`
 directory before final validation, so development Apps produced by earlier

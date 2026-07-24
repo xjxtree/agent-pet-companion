@@ -616,7 +616,7 @@ struct UIModelTests {
         let session = try #require(content.sessions.first)
 
         #expect(session.messageText == "已恢复气泡消息内容。")
-        #expect(session.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
+        #expect(session.statusText == APCLocalization.text(.overlayIntentBusy))
         #expect(content.agentName == "Codex")
         #expect(session.sessionTitle == "保持会话消息持续显示")
         #expect(session.sessionID == "ses-projected-session-1")
@@ -1084,7 +1084,7 @@ struct UIModelTests {
     }
 
     @Test
-    func collapsedAgentGroupKeepsLatestFirstAndRetainsAttentionSessions() throws {
+    func collapsedAgentGroupShowsOneAttentionSessionAndExpandedShowsBoth() throws {
         let older = try animationState(
             source: .codex,
             eventID: "older-failure",
@@ -1117,7 +1117,7 @@ struct UIModelTests {
         #expect(collapsed.sessionCount == 2)
         #expect(
             collapsed.visibleSessions.map(\.sessionID)
-                == ["newer-session", "older-session"]
+                == ["older-session"]
         )
         #expect(
             collapsed.visibleSessions.filter { $0.sessionID == "older-session" }.count == 1
@@ -1136,13 +1136,11 @@ struct UIModelTests {
             in: CGSize(width: 1512, height: 934),
             content: expanded
         ).height
-        #expect(
-            abs(collapsedHeight - expandedHeight - collapsed.stackDecorationDepth) < 0.001
-        )
+        #expect(collapsedHeight < expandedHeight)
     }
 
     @Test
-    func collapsedAgentGroupDeduplicatesLatestAttentionAndCapsAtEight() throws {
+    func agentGroupCapsProjectionAndRoutesExpandedOverflowToControlCenter() throws {
         var states: [ActiveAgentState] = []
         for index in 0 ..< 10 {
             let eventType: AgentEventKind = if index == 0 {
@@ -1171,16 +1169,27 @@ struct UIModelTests {
             states: states,
             isExpanded: false
         )
+        let expanded = OverlayBubbleContent(
+            source: .codex,
+            states: states,
+            isExpanded: true
+        )
         let visibleIDs = content.visibleSessions.compactMap(\.sessionID)
+        let expandedIDs = expanded.visibleSessions.compactMap(\.sessionID)
 
         #expect(content.sessionCount == 8)
-        #expect(content.visibleSessions.count == 8)
+        #expect(content.visibleSessions.count == 1)
         #expect(visibleIDs.first == "session-0")
         #expect(visibleIDs.filter { $0 == "session-0" }.count == 1)
         #expect(Set(visibleIDs).count == visibleIDs.count)
-        #expect(content.visibleSessions.dropFirst().allSatisfy {
+        #expect(content.controlCenterSessionCount == 0)
+        #expect(expanded.visibleSessions.count == OverlayGeometry.maximumExpandedSessions)
+        #expect(expandedIDs.first == "session-0")
+        #expect(Set(expandedIDs).count == expandedIDs.count)
+        #expect(expanded.visibleSessions.dropFirst().allSatisfy {
             $0.eventType == .waiting || $0.eventType == .failed
         })
+        #expect(expanded.controlCenterSessionCount == 5)
     }
 
     @Test
@@ -1207,7 +1216,7 @@ struct UIModelTests {
         let content = OverlayBubbleContent(
             source: .pi,
             states: [first, second],
-            isExpanded: false
+            isExpanded: true
         )
 
         #expect(
@@ -1246,7 +1255,7 @@ struct UIModelTests {
     }
 
     @Test
-    func overlaySessionStatusCopyDistinguishesProtocolStates() {
+    func overlaySessionStatusCopyGroupsProtocolStatesIntoThreeDailyIntents() {
         func status(_ eventType: AgentEventKind) -> String {
             OverlaySessionContent(event: AgentEvent(
                 id: "status-\(eventType.rawValue)",
@@ -1258,13 +1267,18 @@ struct UIModelTests {
             )).statusText
         }
 
-        #expect(status(.start) == APCLocalizedPresentation.lifecycleTitle(.start))
-        #expect(status(.tool) == APCLocalizedPresentation.lifecycleTitle(.tool))
-        #expect(status(.waiting) == APCLocalizedPresentation.lifecycleTitle(.waiting))
-        #expect(status(.review) == APCLocalizedPresentation.lifecycleTitle(.review))
-        #expect(status(.done) == APCLocalizedPresentation.lifecycleTitle(.done))
-        #expect(status(.failed) == APCLocalizedPresentation.lifecycleTitle(.failed))
-        #expect(status(.review) != status(.done))
+        #expect(status(.start) == APCLocalization.text(.overlayIntentBusy))
+        #expect(status(.tool) == APCLocalization.text(.overlayIntentBusy))
+        #expect(status(.waiting) == APCLocalization.text(.overlayIntentNeedsYou))
+        #expect(status(.review) == APCLocalization.text(.overlayIntentNeedsYou))
+        #expect(status(.done) == APCLocalization.text(.overlayIntentEnded))
+        #expect(status(.failed) == APCLocalization.text(.overlayIntentEnded))
+        #expect(OverlaySessionIntent(eventType: .start) == .busy)
+        #expect(OverlaySessionIntent(eventType: .tool) == .busy)
+        #expect(OverlaySessionIntent(eventType: .waiting) == .needsYou)
+        #expect(OverlaySessionIntent(eventType: .review) == .needsYou)
+        #expect(OverlaySessionIntent(eventType: .done) == .ended)
+        #expect(OverlaySessionIntent(eventType: .failed) == .ended)
     }
 
     @Test
@@ -1506,6 +1520,47 @@ struct UIModelTests {
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
         #expect(!store.overlayPetDragInProgress)
         #expect(!store.overlayResizeInProgress)
+    }
+
+    @MainActor
+    @Test
+    func aNewDragInterruptsVelocityHandoffAtItsPresentedPosition() async throws {
+        let visibleFrame = try #require(NSScreen.main?.visibleFrame)
+        let store = makeStore()
+        let releaseStart = CGPoint(
+            x: visibleFrame.minX - 56,
+            y: visibleFrame.midY
+        )
+        store.presentOverlayPetDrag(
+            at: releaseStart,
+            visibleFrame: visibleFrame
+        )
+        store.settleOverlayPet(
+            from: releaseStart,
+            velocity: CGVector(dx: -640, dy: 120),
+            visibleFrame: visibleFrame,
+            reduceMotion: false
+        )
+
+        try await Task.sleep(for: .milliseconds(48))
+        let presentedAtInterruption = store.overlayPetScreenCenter
+        store.setOverlayPetDragInProgress(true)
+
+        #expect(
+            abs(store.overlayPetScreenCenter.x - presentedAtInterruption.x) < 0.01
+        )
+        #expect(
+            abs(store.overlayPetScreenCenter.y - presentedAtInterruption.y) < 0.01
+        )
+
+        try await Task.sleep(for: .milliseconds(96))
+        #expect(
+            abs(store.overlayPetScreenCenter.x - presentedAtInterruption.x) < 0.01
+        )
+        #expect(
+            abs(store.overlayPetScreenCenter.y - presentedAtInterruption.y) < 0.01
+        )
+        store.setOverlayPetDragInProgress(false)
     }
 
     @Test

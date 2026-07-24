@@ -628,16 +628,26 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
     /// Mirrors PetCore's closed bundled identity. A
     /// display name or package-declared marker alone never grants this status.
     public var isBundled: Bool {
-        Self.bundledPetIDs.contains(id)
+        Self.includedCompanionIDSet.contains(id)
             && origin == .verifiedSkillSource
             && generator == "agent-pet-companion.release-inventory"
             && provenance == "apc.bundled-pets.v1"
     }
 
-    private static let bundledPetIDs: Set<String> = [
+    /// Stable logical identities reserved for the two companions shipped with
+    /// the App. An existing same-ID pet remains user-owned and is never granted
+    /// bundled permissions, but it is still a valid first-run choice after an
+    /// upgrade because inventory seeding deliberately preserves it.
+    public static let includedCompanionIDs = [
         "pet_xingwutuanzi",
         "pet_bytebudcodex"
     ]
+
+    public var isIncludedCompanionCandidate: Bool {
+        Self.includedCompanionIDSet.contains(id)
+    }
+
+    private static let includedCompanionIDSet = Set(includedCompanionIDs)
 
     public var generationSourceTitle: String {
         if isBundled { return "App 内置" }
@@ -689,6 +699,16 @@ public struct PetAssetWarning: Codable, Hashable, Sendable {
         case code
         case fingerprint
         case message
+    }
+}
+
+public struct PetAssetRepairOutcome: Codable, Hashable, Sendable {
+    public var pet: PetSummary
+    public var warning: PetAssetWarning?
+
+    public init(pet: PetSummary, warning: PetAssetWarning?) {
+        self.pet = pet
+        self.warning = warning
     }
 }
 

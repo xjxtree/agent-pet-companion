@@ -814,6 +814,90 @@ struct OverlayGeometryTests {
     }
 
     @Test
+    func petDragRubberBandsPastEdgesWithoutChangingTheHardReleaseBoundary() {
+        let movementFrame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        let scale: CGFloat = 0.72
+        let inside = CGPoint(x: 600, y: 400)
+        #expect(OverlayPetDragMotion.rubberBandedCenter(
+            inside,
+            scale: scale,
+            visibleFrame: movementFrame
+        ) == inside)
+
+        let proposed = CGPoint(x: -600, y: 1_200)
+        let hard = OverlayGeometry.clampedPetScreenCenter(
+            proposed,
+            scale: scale,
+            visibleFrame: movementFrame
+        )
+        let presentation = OverlayPetDragMotion.rubberBandedCenter(
+            proposed,
+            scale: scale,
+            visibleFrame: movementFrame
+        )
+
+        #expect(presentation.x < hard.x)
+        #expect(presentation.x > proposed.x)
+        #expect(presentation.y > hard.y)
+        #expect(presentation.y < proposed.y)
+        #expect(abs(presentation.x - hard.x) < 64 * scale)
+        #expect(abs(presentation.y - hard.y) < 64 * scale)
+    }
+
+    @Test
+    func petReleaseUsesBoundedRecentVelocityAndCriticallyDampedSettling() {
+        let samples = [
+            OverlayPetMotionSample(
+                point: CGPoint(x: 0, y: 0),
+                timestamp: 1
+            ),
+            OverlayPetMotionSample(
+                point: CGPoint(x: 100, y: 0),
+                timestamp: 1.05
+            ),
+            OverlayPetMotionSample(
+                point: CGPoint(x: 240, y: 0),
+                timestamp: 1.10
+            ),
+        ]
+        let velocity = OverlayPetDragMotion.estimatedVelocity(from: samples)
+        #expect(abs(hypot(velocity.dx, velocity.dy) - 1_200) < 0.001)
+
+        let movementFrame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        let start = CGPoint(x: 500, y: 400)
+        let target = OverlayPetDragMotion.projectedReleaseTarget(
+            from: start,
+            velocity: velocity,
+            scale: 0.72,
+            visibleFrame: movementFrame
+        )
+        #expect(target.x > start.x)
+
+        let initial = OverlayPetDragMotion.criticallyDampedPosition(
+            from: start,
+            to: target,
+            initialVelocity: velocity,
+            elapsed: 0
+        )
+        let moving = OverlayPetDragMotion.criticallyDampedPosition(
+            from: start,
+            to: target,
+            initialVelocity: velocity,
+            elapsed: 0.04
+        )
+        let settled = OverlayPetDragMotion.criticallyDampedPosition(
+            from: start,
+            to: target,
+            initialVelocity: velocity,
+            elapsed: OverlayPetDragMotion.releaseSettlingDuration
+        )
+
+        #expect(initial == start)
+        #expect(moving.x > start.x)
+        #expect(hypot(settled.x - target.x, settled.y - target.y) < 1)
+    }
+
+    @Test
     func petActivationPrioritizesOpenSessionThenBubbleThenControlCenter() {
         let openSession = OverlaySessionContent(
             id: "session-open",
@@ -1094,7 +1178,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func bubbleLayoutSignatureTracksAttentionRowsAndDismissalReopen() {
+    func collapsedBubbleLayoutKeepsOneStableRowAcrossAttentionChanges() {
         let first = OverlaySessionContent(
             id: "first",
             source: .codex,
@@ -1141,8 +1225,8 @@ struct OverlayGeometryTests {
         let dismissed = OverlayBubbleLayoutSignature(contents: [], bubbleDismissed: true)
 
         #expect(running.groups[0].visibleSessionCount == 1)
-        #expect(attention.groups[0].visibleSessionCount == 2)
-        #expect(running != attention)
+        #expect(attention.groups[0].visibleSessionCount == 1)
+        #expect(running == attention)
         #expect(dismissed != attention)
     }
 

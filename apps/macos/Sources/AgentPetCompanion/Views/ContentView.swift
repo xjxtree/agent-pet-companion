@@ -179,6 +179,8 @@ private struct ControlCenterBrandTitle: View {
 private extension ProductStatusAppearance {
     var toolbarTint: Color {
         switch self {
+        case .neutral:
+            .secondary
         case .normal:
             .secondary
         case .attention:

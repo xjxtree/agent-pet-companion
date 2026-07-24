@@ -52,6 +52,7 @@ struct AgentConnectionsTests {
 
         let presentation = product(status)
         #expect(presentation.health == .connected)
+        #expect(presentation.taskVerification == .verified)
         #expect(presentation.primaryAction == .verify)
         #expect(presentation.hasCurrentTypedSnapshot)
 
@@ -65,6 +66,34 @@ struct AgentConnectionsTests {
         #expect(action.action == .verify)
         #expect(action.title == "Verify")
         #expect(action.isEnabled)
+    }
+
+    @Test
+    func realTaskEvidenceNeverDowngradesHealthyLocalChecksToNeedsRepair() {
+        for verification in [
+            AgentVerificationStatus.actionRequired,
+            .unverified,
+        ] {
+            let presentation = product(currentStatus(
+                items: [
+                    item(.ok, code: .managedConnector),
+                    item(.ok, code: .eventDelivery),
+                ],
+                verification: verification
+            ))
+
+            #expect(presentation.health == .connected)
+            #expect(presentation.taskVerification == .awaitingTask)
+            #expect(!presentation.canRepairManagedConnector)
+            #expect(presentation.primaryAction == .verify)
+        }
+
+        let notRequired = product(currentStatus(
+            items: [item(.ok, code: .managedConnector)],
+            verification: .notRequired
+        ))
+        #expect(notRequired.health == .connected)
+        #expect(notRequired.taskVerification == .notRun)
     }
 
     @Test
@@ -115,10 +144,11 @@ struct AgentConnectionsTests {
     }
 
     @Test
-    func checkingStateCoversMissingSnapshotRunningOperationAndLightCheck() {
+    func notCheckedAndCheckingRemainDistinct() {
         let noSnapshot = product(nil)
-        #expect(noSnapshot.health == .checking)
-        #expect(noSnapshot.primaryAction == .unavailable)
+        #expect(noSnapshot.health == .notChecked)
+        #expect(noSnapshot.taskVerification == .notRun)
+        #expect(noSnapshot.primaryAction == .verify)
 
         let operation = AgentConnectionOperation(kind: .check, sources: [.codex])
         let running = AgentConnectionProductPresentation(
@@ -142,7 +172,8 @@ struct AgentConnectionsTests {
                 canUninstall: true
             )
         ))
-        #expect(light.health == .checking)
+        #expect(light.health == .notChecked)
+        #expect(light.taskVerification == .notRun)
         #expect(light.primaryAction == .verify)
     }
 
@@ -162,7 +193,7 @@ struct AgentConnectionsTests {
             canUninstall: true
         ))
 
-        #expect(presentation.health == .needsRepair)
+        #expect(presentation.health == .unavailable)
         #expect(presentation.primaryAction == .verify)
         #expect(!presentation.canRepairManagedConnector)
         #expect(!presentation.canUninstall)
@@ -182,7 +213,7 @@ struct AgentConnectionsTests {
             installed: true,
             repairable: true
         ))
-        #expect(policyOnly.health == .needsRepair)
+        #expect(policyOnly.health == .unavailable)
         #expect(policyOnly.primaryAction == .verify)
         #expect(!policyOnly.canRepairManagedConnector)
 
@@ -204,6 +235,7 @@ struct AgentConnectionsTests {
             repairable: true
         ))
         #expect(policyAndConnector.primaryAction == .verify)
+        #expect(policyAndConnector.health == .unavailable)
         #expect(!policyAndConnector.canRepairManagedConnector)
     }
 
@@ -217,14 +249,14 @@ struct AgentConnectionsTests {
             verification: verification(.verified),
             capabilities: .empty
         ))
-        #expect(legacy.health == .checking)
+        #expect(legacy.health == .notChecked)
         #expect(legacy.primaryAction == .verify)
         #expect(!legacy.hasCurrentTypedSnapshot)
         #expect(!legacy.canRepairManagedConnector)
         #expect(!legacy.canUninstall)
 
         let incomplete = product(currentStatus(items: []))
-        #expect(incomplete.health == .checking)
+        #expect(incomplete.health == .notChecked)
         #expect(incomplete.primaryAction == .verify)
         #expect(!incomplete.hasCurrentTypedSnapshot)
     }
@@ -242,7 +274,7 @@ struct AgentConnectionsTests {
         ])
         let presentation = product(status)
 
-        #expect(presentation.health == .needsRepair)
+        #expect(presentation.health == .notChecked)
         #expect(presentation.primaryAction == .verify)
         #expect(!presentation.canRepairManagedConnector)
         #expect(
@@ -267,7 +299,8 @@ struct AgentConnectionsTests {
             operationState: operationState
         )
 
-        #expect(presentation.health == .needsRepair)
+        #expect(presentation.health == .connected)
+        #expect(presentation.taskVerification == .verified)
         #expect(presentation.primaryAction == .retry)
         #expect(
             AgentConnectionsPresentation.failure(

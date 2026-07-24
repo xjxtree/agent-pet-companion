@@ -263,10 +263,15 @@ struct PetLibraryView: View {
                         pet: featuredPet,
                         productPresentation: productPresentation,
                         assetWarning: store.petAssetWarningIndex[featuredPet.id],
+                        assetRepairState: store.petAssetRepairState(
+                            for: featuredPet.id
+                        ),
                         activeEvent: store.activeOverlayEvent,
                         isBusy: store.petOperationIDs.contains(featuredPet.id),
                         generationIsActive: store.generationSession.isActive,
                         onActivate: { store.activatePet(featuredPet) },
+                        onRepairAssets: { store.repairPetAssets(featuredPet) },
+                        onOpenDiagnostics: { store.selection = .diagnostics },
                         onCustomizeCopy: { store.preparePetCustomizationCopy(featuredPet) },
                         onRequestEdit: { requestEdit(featuredPet) },
                         onRequestHistory: { requestHistory(featuredPet) },
@@ -908,10 +913,13 @@ private struct PetLibraryHero: View {
     let pet: PetSummary
     let productPresentation: PetLibraryProductPresentation
     let assetWarning: PetAssetWarning?
+    let assetRepairState: PetAssetRepairState
     let activeEvent: AgentEvent?
     let isBusy: Bool
     let generationIsActive: Bool
     let onActivate: () -> Void
+    let onRepairAssets: () -> Void
+    let onOpenDiagnostics: () -> Void
     let onCustomizeCopy: () -> Void
     let onRequestEdit: () -> Void
     let onRequestHistory: () -> Void
@@ -949,7 +957,7 @@ private struct PetLibraryHero: View {
                 productPresentation.primaryAction
             ) ?? APCLocalization.text(.productActionUsePet),
             systemImage: "checkmark.circle",
-            isEnabled: true
+            isEnabled: !isBusy && assetWarning == nil
         )
     }
 
@@ -967,22 +975,32 @@ private struct PetLibraryHero: View {
                     }
                 }
             ) {
-                PetPreviewStage(
-                    identity: ProductComponentIdentity(
-                        scope: "pet-library",
-                        instance: "featured"
-                    ),
-                    accessibilityLabel: APCLocalization.format(
-                        .libraryAnimationAccessibilityFormat,
-                        pet.name
-                    ),
-                    minimumHeight: 280
-                ) {
-                    PetLibraryAnimationPreview(
+                if assetWarning != nil {
+                    PetAssetRecoveryCard(
                         pet: pet,
-                        assetWarning: assetWarning
+                        state: assetRepairState,
+                        onRepair: onRepairAssets,
+                        onOpenDiagnostics: onOpenDiagnostics
                     )
-                    .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 360)
+                } else {
+                    PetPreviewStage(
+                        identity: ProductComponentIdentity(
+                            scope: "pet-library",
+                            instance: "featured"
+                        ),
+                        accessibilityLabel: APCLocalization.format(
+                            .libraryAnimationAccessibilityFormat,
+                            pet.name
+                        ),
+                        minimumHeight: 280
+                    ) {
+                        PetLibraryAnimationPreview(pet: pet)
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: 280,
+                                maxHeight: 360
+                            )
+                    }
                 }
 
                 secondaryActions

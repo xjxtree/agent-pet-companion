@@ -96,6 +96,91 @@ struct OnboardingAppStoreTests {
 
     @MainActor
     @Test
+    func preservedSameIDUpgradePetRemainsSelectableWithoutBundledPermissions() async throws {
+        var pet = bundledPet(active: false)
+        pet.origin = .externalImport
+        pet.generator = nil
+        pet.provenance = nil
+        let probe = OnboardingRPCProbe(pets: [pet])
+        let store = try await makeOnlineStore(probe: probe)
+
+        #expect(!pet.isBundled)
+        #expect(pet.isIncludedCompanionCandidate)
+        #expect(store.onboardingCompanionCandidates.map(\.id) == [pet.id])
+        #expect(await store.confirmOnboardingPet(pet))
+        #expect(store.onboarding?.progress.stage == .connectAgents)
+    }
+
+    @MainActor
+    @Test
+    func explicitRestoreRequiresBothIncludedIDsInTheAuthoritativeSnapshot() async throws {
+        let probe = OnboardingRPCProbe()
+        let store = makeStore(
+            probe: probe,
+            bundledPetSeeder: {
+                probe.pets = [
+                    self.bundledPet(active: true),
+                    PetSummary(
+                        id: "pet_bytebudcodex",
+                        name: "Bytebud 字节芽",
+                        style: "像素",
+                        quality: .high,
+                        renderSize: QualityLevel.high.renderSize,
+                        petpackPath: "/tmp/pet_bytebudcodex.petpack",
+                        coverPath: "/tmp/pet_bytebudcodex-cover.png",
+                        nativeFPS: 10,
+                        active: false,
+                        createdAt: "2026-07-23T00:00:00Z"
+                    ),
+                ]
+                return true
+            }
+        )
+        await store.bootstrapIfNeeded()
+
+        #expect(store.onboardingCompanionCandidates.isEmpty)
+        #expect(await store.restoreIncludedCompanionsAndWait())
+        #expect(store.includedCompanionRestoreState == .restored)
+        #expect(store.onboardingCompanionCandidates.map(\.id)
+            == PetSummary.includedCompanionIDs)
+    }
+
+    @MainActor
+    @Test
+    func assetRepairUsesTypedAuthorityAndRefreshesTheAuthoritativeSnapshot() async throws {
+        let pet = bundledPet(active: true)
+        let probe = OnboardingRPCProbe(pets: [pet])
+        let store = try await makeOnlineStore(probe: probe)
+        probe.methods.removeAll()
+
+        #expect(await store.repairPetAssetsAndWait(pet))
+        #expect(probe.assetRepairPetIDs == [pet.id])
+        #expect(
+            probe.methods.filter {
+                $0 == "pet.assets.repair" || $0 == "state.snapshot"
+            } == ["pet.assets.repair", "state.snapshot"]
+        )
+        #expect(store.petAssetRepairState(for: pet.id) == .repaired)
+        #expect(!store.petOperationIDs.contains(pet.id))
+    }
+
+    @MainActor
+    @Test
+    func malformedAssetRepairResponseFailsClosedAndReleasesMutationState() async throws {
+        let pet = bundledPet(active: true)
+        let probe = OnboardingRPCProbe(pets: [pet])
+        probe.returnMalformedAssetRepairResponse = true
+        let store = try await makeOnlineStore(probe: probe)
+        probe.methods.removeAll()
+
+        #expect(!(await store.repairPetAssetsAndWait(pet)))
+        #expect(probe.assetRepairPetIDs == [pet.id])
+        #expect(store.petAssetRepairState(for: pet.id) == .failed)
+        #expect(!store.petOperationIDs.contains(pet.id))
+    }
+
+    @MainActor
+    @Test
     func serviceInterruptionKeepsTheCurrentRevisionAndDisablesMutation() async throws {
         let probe = OnboardingRPCProbe(stage: .connectAgents, revision: 4)
         let store = makeStore(probe: probe)
@@ -155,8 +240,8 @@ struct OnboardingAppStoreTests {
             pets: [pet]
         )
         let store = try await makeOnlineStore(probe: probe)
-        let expectedBundledIDs = store.onboardingBundledPets.map(\.id)
-        #expect(expectedBundledIDs == [pet.id])
+        let expectedCompanionIDs = store.onboardingCompanionCandidates.map(\.id)
+        #expect(expectedCompanionIDs == [pet.id])
         probe.methods.removeAll()
 
         store.dismissOnboardingForCurrentLaunch()
@@ -165,7 +250,7 @@ struct OnboardingAppStoreTests {
         #expect(!store.shouldPresentOnboarding)
         #expect(store.onboarding?.progress.stage == .connectAgents)
         #expect(store.onboarding?.revision == "6")
-        #expect(store.onboardingBundledPets.map(\.id) == expectedBundledIDs)
+        #expect(store.onboardingCompanionCandidates.map(\.id) == expectedCompanionIDs)
         #expect(store.activePet?.id == pet.id)
         #expect(probe.stage == .connectAgents)
         #expect(probe.revision == 6)
@@ -175,7 +260,7 @@ struct OnboardingAppStoreTests {
         #expect(rebuilt.shouldPresentOnboarding)
         #expect(rebuilt.onboarding?.progress.stage == .connectAgents)
         #expect(rebuilt.onboarding?.revision == "6")
-        #expect(rebuilt.onboardingBundledPets.map(\.id) == expectedBundledIDs)
+        #expect(rebuilt.onboardingCompanionCandidates.map(\.id) == expectedCompanionIDs)
         #expect(rebuilt.activePet?.id == pet.id)
     }
 
@@ -213,7 +298,14 @@ struct OnboardingAppStoreTests {
     }
 
     @MainActor
-    private func makeStore(probe: OnboardingRPCProbe) -> AppStore {
+    private func makeStore(
+        probe: OnboardingRPCProbe,
+        bundledPetSeeder: AppStore.BundledPetSeeder? = nil,
+        bundledPetSeedSleeper: @escaping AppStore.BundledPetSeedSleeper = {
+            duration in
+            try await Task.sleep(for: duration)
+        }
+    ) -> AppStore {
         AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
@@ -223,6 +315,8 @@ struct OnboardingAppStoreTests {
                 },
                 onReady: { _ in }
             ),
+            bundledPetSeeder: bundledPetSeeder,
+            bundledPetSeedSleeper: bundledPetSeedSleeper,
             applicationAppearanceApplier: { _ in },
             overlayPresenter: { _, _ in },
             petCoreRequestOverride: { method, params, _ in
@@ -258,8 +352,10 @@ private final class OnboardingRPCProbe {
     var pets: [PetSummary]
     var failPetActivation = false
     var conflictingRemoteStage: OnboardingStage?
+    var returnMalformedAssetRepairResponse = false
     var methods: [String] = []
     var expectedOnboardingRevisions: [String] = []
+    var assetRepairPetIDs: [String] = []
 
     var onboardingWorkflowMethods: [String] {
         methods.filter {
@@ -301,6 +397,15 @@ private final class OnboardingRPCProbe {
                 pets[petIndex].active = petIndex == index
             }
             return ["id": id]
+        case "pet.assets.repair":
+            let values = try #require(params as? [String: Any])
+            let id = try #require(values["id"] as? String)
+            assetRepairPetIDs.append(id)
+            if returnMalformedAssetRepairResponse {
+                return ["pet": ["id": id]]
+            }
+            let pet = try #require(pets.first(where: { $0.id == id }))
+            return try jsonObject(PetAssetRepairOutcome(pet: pet, warning: nil))
         case "state.snapshot":
             return try snapshot()
         case "onboarding.update":

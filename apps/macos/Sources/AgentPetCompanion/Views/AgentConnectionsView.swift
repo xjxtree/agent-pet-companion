@@ -48,10 +48,35 @@ enum AgentConnectionsPresentation {
         }
 
         let key: APCLocalizationKey = switch presentation.health {
+        case .notChecked: .connectionsSummaryNotChecked
         case .checking: .connectionsSummaryChecking
         case .connected: .connectionsSummaryConnected
         case .needsRepair: .connectionsSummaryNeedsRepair
         case .unavailable: .connectionsSummaryUnavailable
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func taskVerificationTitle(
+        _ state: AgentTaskVerificationState,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch state {
+        case .notRun: .connectionsVerificationNotRunTitle
+        case .awaitingTask: .connectionsVerificationPendingTitle
+        case .verified: .connectionsVerificationVerifiedTitle
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func taskVerificationDetail(
+        _ state: AgentTaskVerificationState,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch state {
+        case .notRun: .connectionsVerificationNotRunDetail
+        case .awaitingTask: .connectionsVerificationPendingDetail
+        case .verified: .connectionsVerificationVerifiedDetail
         }
         return APCLocalization.text(key, locale: locale)
     }
@@ -224,11 +249,18 @@ struct AgentConnectionsView: View {
                 alignment: .leading,
                 spacing: SharedProductComponentLayout.pageSpacing
             ) {
-                ProductPageHeader(
-                    identity: ProductComponentIdentity(scope: "connections"),
-                    title: APCLocalization.text(.connectionsPageTitle),
-                    summary: APCLocalization.text(.connectionsPageSubtitle)
-                )
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 16) {
+                        pageHeader
+                        Spacer(minLength: 12)
+                        checkAllButton
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        pageHeader
+                        checkAllButton
+                    }
+                }
 
                 ForEach(AgentConnectionsCatalog.sources) { source in
                     AgentConnectionSection(
@@ -245,6 +277,34 @@ struct AgentConnectionsView: View {
             .padding(24)
         }
         .accessibilityIdentifier("connections.root")
+    }
+
+    private var pageHeader: some View {
+        ProductPageHeader(
+            identity: ProductComponentIdentity(scope: "connections"),
+            title: APCLocalization.text(.connectionsPageTitle),
+            summary: APCLocalization.text(.connectionsPageSubtitle)
+        )
+    }
+
+    private var checkAllButton: some View {
+        Button {
+            store.checkAllConnections()
+        } label: {
+            Label(
+                APCLocalization.text(.connectionsCheckAll),
+                systemImage: "checkmark.circle"
+            )
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.regular)
+        .disabled(!store.canStartConnectionOperation)
+        .accessibilityHint(APCLocalization.text(
+            store.canStartConnectionOperation
+                ? .connectionsCheckAllHint
+                : .connectionsBusyHint
+        ))
+        .accessibilityIdentifier("connections.primary.check-all")
     }
 }
 
@@ -289,6 +349,15 @@ private struct AgentConnectionSection: View {
                 healthTitle: APCLocalizedPresentation.connectionHealthTitle(
                     presentation.health
                 ),
+                taskVerification: presentation.taskVerification,
+                taskVerificationTitle:
+                    AgentConnectionsPresentation.taskVerificationTitle(
+                        presentation.taskVerification
+                    ),
+                taskVerificationDetail:
+                    AgentConnectionsPresentation.taskVerificationDetail(
+                        presentation.taskVerification
+                    ),
                 primaryAction: AgentConnectionsPresentation.primaryActionPresentation(
                     for: presentation,
                     busy: busy

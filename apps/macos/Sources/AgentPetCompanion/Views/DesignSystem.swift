@@ -155,11 +155,32 @@ struct APCGlassGroup<Content: View>: View {
 }
 
 private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
     let shape: S
     let interactive: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background(APCDesign.panel, in: shape)
+                .overlay {
+                    accessibilityBorder(opacity: 0.72, lineWidth: 1)
+                }
+        } else {
+            glass(content)
+                .overlay {
+                    if colorSchemeContrast == .increased {
+                        accessibilityBorder(opacity: 0.58, lineWidth: 1.5)
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func glass(_ content: Content) -> some View {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             content.glassEffect(
@@ -172,6 +193,15 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 #else
         content.background(.regularMaterial, in: shape)
 #endif
+    }
+
+    private func accessibilityBorder(
+        opacity: Double,
+        lineWidth: CGFloat
+    ) -> some View {
+        shape
+            .stroke(Color.primary.opacity(opacity), lineWidth: lineWidth)
+            .allowsHitTesting(false)
     }
 }
 

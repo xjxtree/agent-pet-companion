@@ -466,11 +466,17 @@ public enum AgentPetCompanionUIValidationContract {
                 title: "arbitrary transport title",
                 createdAt: "2026-07-23T00:00:00Z"
             ))
+            let expectedStatus = switch OverlaySessionIntent(eventType: eventType) {
+            case .busy:
+                APCLocalization.text(.overlayIntentBusy)
+            case .needsYou:
+                APCLocalization.text(.overlayIntentNeedsYou)
+            case .ended:
+                APCLocalization.text(.overlayIntentEnded)
+            }
             try require(
-                content.statusText == APCLocalizedPresentation.lifecycleTitle(
-                    ProductLifecycleState(eventKind: eventType)
-                ),
-                "bubble status did not use the closed product lifecycle mapping for \(eventType)"
+                content.statusText == expectedStatus,
+                "bubble status did not use the closed daily intent mapping for \(eventType)"
             )
             let fallbackIsRedundant = eventType == .start
                 && content.statusText

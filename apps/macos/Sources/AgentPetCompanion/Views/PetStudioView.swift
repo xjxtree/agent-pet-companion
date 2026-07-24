@@ -10,12 +10,16 @@ struct AIPetMakerView: View {
     private let identity = ProductComponentIdentity(scope: "maker")
 
     private var experience: MakerExperiencePresentation {
-        MakerExperiencePresentation(
+        let resultPet = MakerResultPresentation.resultPet(
+            for: store.generationSession,
+            in: store.pets
+        )
+        return MakerExperiencePresentation(
             session: store.generationSession,
-            resultPetAvailable: MakerResultPresentation.resultPet(
-                for: store.generationSession,
-                in: store.pets
-            ) != nil,
+            resultPetAvailable: resultPet != nil,
+            resultPreviewAvailable: resultPet.map {
+                store.petAssetWarningIndex[$0.id] == nil
+            } ?? false,
             referenceReselectionCount: store.referenceReselectionCount
         )
     }
@@ -552,13 +556,17 @@ struct GenerationSessionView: View {
     @FocusState private var replyIsFocused: Bool
     @State private var completedSessionIsExpanded = false
 
-    private var productPresentation: PetMakerProductPresentation {
-        PetMakerProductPresentation(
+    private var experience: MakerExperiencePresentation {
+        let resultPet = MakerResultPresentation.resultPet(
+            for: store.generationSession,
+            in: store.pets
+        )
+        return MakerExperiencePresentation(
             session: store.generationSession,
-            resultPetAvailable: MakerResultPresentation.resultPet(
-                for: store.generationSession,
-                in: store.pets
-            ) != nil,
+            resultPetAvailable: resultPet != nil,
+            resultPreviewAvailable: resultPet.map {
+                store.petAssetWarningIndex[$0.id] == nil
+            } ?? false,
             referenceReselectionCount: store.referenceReselectionCount
         )
     }
@@ -622,11 +630,17 @@ struct GenerationSessionView: View {
                 .font(.title3.weight(.semibold))
             Spacer()
             StatusBadge(
-                title: APCLocalizedPresentation.generationStateTitle(
-                    store.generationSession.state,
-                    operation: store.generationSession.operation
-                ),
-                tone: PetStudioPresentation.statusTone(for: store.generationSession.state)
+                title: experience.resultReadiness.needsRecovery
+                    ? APCLocalization.text(.studioPreviewRepairTitle)
+                    : APCLocalizedPresentation.generationStateTitle(
+                        store.generationSession.state,
+                        operation: store.generationSession.operation
+                    ),
+                tone: experience.resultReadiness.needsRecovery
+                    ? .warning
+                    : PetStudioPresentation.statusTone(
+                        for: store.generationSession.state
+                    )
             )
         }
     }
@@ -793,9 +807,9 @@ struct GenerationSessionView: View {
     }
 
     private var recoveryAction: PetMakerPrimaryAction? {
-        switch productPresentation.primaryAction {
+        switch experience.primaryAction {
         case .retry, .reselectReferences:
-            productPresentation.primaryAction
+            experience.primaryAction
         default:
             nil
         }

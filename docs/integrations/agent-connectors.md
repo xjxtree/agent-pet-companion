@@ -54,13 +54,31 @@ to Agent Pet Companion; it does not silently connect a previously unmanaged
 Agent. Refresh returns typed per-Agent results, so one failed host becomes
 **Needs Update** without blocking healthy Agents or the core App.
 
-The page shows each Agent's identity, one aggregate health state, and one contextual primary action. Project directories, App/PetCore runtime details, renderer state, and diagnostics export do not belong on this page. Service state and archive export live under **Service & Diagnostics**. Individual CLI, managed connector, host verification, event delivery, and App Server checks remain typed support data behind Technical Details, alongside secondary recheck, local-channel test, and managed-only uninstall actions.
+The page shows each Agent's identity with two independent indicators. Local
+integration health is **Not Checked**, **Checking**, **Healthy**,
+**Needs Repair**, or **Unavailable**. Real-task verification is **Not Run**,
+**Awaiting Evidence**, or **Verified**. A healthy local adapter never implies
+that a provider task has run, and missing real-task evidence never makes the
+local integration unhealthy. The page has one prominent **Check All** action;
+per-Agent check, repair, test, and uninstall controls are contextual secondary
+actions. Project directories, App/PetCore runtime details, renderer state, and
+diagnostics export do not belong on this page. Service state and archive export
+live under **Service & Diagnostics**. Individual CLI, managed connector, host
+verification, event delivery, and App Server checks remain typed support data
+behind Technical Details.
 
 Check, test, repair, and uninstall share a typed App coordinator and a serialized PetCore mutation gate. A running operation disables conflicting actions, and failures remain inline with an explicit retry path.
 
-PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. The App never infers repair or uninstall authority from display text. Missing capability data denies mutation. Current check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. `project_directory` and `choose_project_directory` are decode-only compatibility values: PetCore does not emit or reproject them, and the App never presents or executes them.
+PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. The App never infers repair or uninstall authority from display text. **Needs Repair** is projected only when an executable typed repair authority is present; a failed check without that authority is **Unavailable**. Missing capability data denies mutation. Current check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. `project_directory` and `choose_project_directory` are decode-only compatibility values: PetCore does not emit or reproject them, and the App never presents or executes them.
 
 PetCore distinguishes ordinary, diagnostic, and full-task receipts against the current connector contract and install time. The page labels these proofs separately: a local-channel test proves only the on-device adapter round trip, while real Agent verification requires a qualifying event from an actual provider task. A local test does not prove provider authentication, model execution, or completion of a real Agent task.
+
+The desktop bubble keeps the same Agent → session boundary but exposes only the
+bounded daily return path: one row while collapsed, at most three while
+expanded, and a Control Center action for the remainder. The whole session row
+is the navigation target; a chevron is visual hover/focus affordance rather
+than repeated action copy. The row's **Busy**, **Needs You**, or **Ended**
+intent is a localized projection over the unchanged fixed lifecycle states.
 
 ## Security and privacy boundary
 

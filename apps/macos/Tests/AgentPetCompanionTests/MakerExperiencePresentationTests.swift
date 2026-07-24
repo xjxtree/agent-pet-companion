@@ -19,15 +19,25 @@ struct MakerExperiencePresentationTests {
 
         #expect(resultSource.contains("PetPreviewStage("))
         #expect(resultSource.contains(
-            "productPresentation.primaryAction == .usePet"
+            "experience.primaryAction == .usePet"
         ))
         #expect(resultSource.contains("PetMakerPrimaryAction.continueEditing"))
         #expect(resultSource.contains(".libraryExportAction"))
         #expect(resultSource.contains("result-technical"))
         #expect(studioSource.contains("action: experience.primaryAction"))
-        #expect(resultSource.contains("action: productPresentation.primaryAction"))
+        #expect(resultSource.contains("primaryAction: primaryAction"))
+        #expect(resultSource.contains("action: .usePet"))
+        #expect(resultSource.contains("PetAssetRecoveryCard("))
+        #expect(!resultSource.contains("status: statusPresentation"))
+        #expect(!resultSource.contains("private var statusPresentation"))
         #expect(resultSource.contains(
-            "assetWarning: store.petAssetWarningIndex[resultPet.id]"
+            "title: resultPet?.name ?? APCLocalization.text(.libraryMissingPreview)"
+        ))
+        #expect(!resultSource.contains(
+            "title: resultPet?.name ?? APCLocalization.text(.studioSucceededTitle)"
+        ))
+        #expect(resultSource.contains(
+            "resultPet.flatMap { store.petAssetWarningIndex[$0.id] }"
         ))
     }
 
@@ -79,6 +89,34 @@ struct MakerExperiencePresentationTests {
         #expect(result.showsResult)
         #expect(result.primaryAction == .usePet)
         #expect(result.secondaryActions == [.continueEditing])
+        #expect(result.resultReadiness == .ready)
+
+        let previewNeedsRepair = MakerExperiencePresentation(
+            session: GenerationSession(
+                state: .succeeded,
+                jobID: "job_repair",
+                resultPetID: "pet_repair",
+                resultRevisionID: "rev_repair"
+            ),
+            resultPetAvailable: true,
+            resultPreviewAvailable: false
+        )
+        #expect(previewNeedsRepair.resultReadiness == .previewNeedsRepair)
+        #expect(previewNeedsRepair.resultReadiness.needsRecovery)
+        #expect(previewNeedsRepair.primaryAction == .unavailable)
+
+        let missingResult = MakerExperiencePresentation(
+            session: GenerationSession(
+                state: .succeeded,
+                jobID: "job_missing",
+                resultPetID: "pet_missing",
+                resultRevisionID: "rev_missing"
+            ),
+            resultPetAvailable: false
+        )
+        #expect(missingResult.resultReadiness == .missing)
+        #expect(missingResult.resultReadiness.needsRecovery)
+        #expect(missingResult.primaryAction == .unavailable)
     }
 
     @Test

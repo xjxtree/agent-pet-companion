@@ -74,6 +74,7 @@ enum SharedProductComponentLayout {
 /// A closed visual vocabulary. Low-level check strings and arbitrary payloads
 /// never decide status color, progress, or action authority.
 enum ProductStatusAppearance: String, CaseIterable {
+    case neutral
     case normal
     case attention
     case error
@@ -94,6 +95,8 @@ enum ProductStatusAppearance: String, CaseIterable {
 
     init(connectionHealth: AgentConnectionHealthState) {
         switch connectionHealth {
+        case .notChecked:
+            self = .neutral
         case .checking:
             self = .checking
         case .connected:
@@ -359,7 +362,7 @@ struct PetPreviewStage<Content: View>: View {
                 minHeight: minimumHeight,
                 alignment: .center
             )
-            .background(.thinMaterial, in: previewShape)
+            .background(Color(nsColor: .textBackgroundColor), in: previewShape)
             .clipShape(previewShape)
             .overlay {
                 previewShape
@@ -387,6 +390,9 @@ struct AgentHealthRow: View {
     let agentSummary: String?
     let health: AgentConnectionHealthState
     let healthTitle: String
+    let taskVerification: AgentTaskVerificationState?
+    let taskVerificationTitle: String?
+    let taskVerificationDetail: String?
     let primaryAction: ProductActionPresentation<AgentConnectionPrimaryAction>?
     let onPrimaryAction: (AgentConnectionPrimaryAction) -> Void
 
@@ -396,6 +402,9 @@ struct AgentHealthRow: View {
         agentSummary: String? = nil,
         health: AgentConnectionHealthState,
         healthTitle: String,
+        taskVerification: AgentTaskVerificationState? = nil,
+        taskVerificationTitle: String? = nil,
+        taskVerificationDetail: String? = nil,
         primaryAction: ProductActionPresentation<AgentConnectionPrimaryAction>? = nil,
         onPrimaryAction: @escaping (AgentConnectionPrimaryAction) -> Void
     ) {
@@ -404,6 +413,9 @@ struct AgentHealthRow: View {
         self.agentSummary = agentSummary
         self.health = health
         self.healthTitle = healthTitle
+        self.taskVerification = taskVerification
+        self.taskVerificationTitle = taskVerificationTitle
+        self.taskVerificationDetail = taskVerificationDetail
         self.primaryAction = primaryAction
         self.onPrimaryAction = onPrimaryAction
     }
@@ -414,13 +426,13 @@ struct AgentHealthRow: View {
                 HStack(alignment: .center, spacing: SharedProductComponentLayout.rowSpacing) {
                     agentIdentity
                     Spacer(minLength: 12)
-                    healthIndicator
+                    statusIndicators
                     actionButton
                 }
 
                 VStack(alignment: .leading, spacing: SharedProductComponentLayout.rowSpacing) {
                     agentIdentity
-                    healthIndicator
+                    statusIndicators
                     actionButton
                 }
             }
@@ -454,12 +466,46 @@ struct AgentHealthRow: View {
         )
     }
 
+    private var statusIndicators: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            healthIndicator
+            taskVerificationIndicator
+        }
+    }
+
+    @ViewBuilder
+    private var taskVerificationIndicator: some View {
+        if let taskVerification, let taskVerificationTitle {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Image(systemName: taskVerification.systemImage)
+                    .foregroundStyle(taskVerification.color)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(taskVerificationTitle)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(taskVerification.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let taskVerificationDetail {
+                        Text(taskVerificationDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(taskVerificationTitle)
+            .accessibilityValue(taskVerificationDetail ?? "")
+        }
+    }
+
     @ViewBuilder
     private var actionButton: some View {
         if let primaryAction,
            primaryAction.action != .unavailable
         {
-            ProductPrimaryActionButton(
+            ProductSecondaryActionButton(
                 presentation: primaryAction,
                 accessibilityIdentifier: identity.accessibilityIdentifier(
                     for: .agentHealthRow,
@@ -471,16 +517,43 @@ struct AgentHealthRow: View {
     }
 }
 
+private extension AgentTaskVerificationState {
+    var color: Color {
+        switch self {
+        case .notRun:
+            APCDesign.textSecondary
+        case .awaitingTask:
+            APCDesign.warning
+        case .verified:
+            APCDesign.success
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .notRun:
+            "circle.dashed"
+        case .awaitingTask:
+            "clock.badge.questionmark"
+        case .verified:
+            "checkmark.seal.fill"
+        }
+    }
+}
+
 /// The single production session row used by the desktop conversation bubble.
 ///
 /// Navigation authority and accessibility copy come from the same validated
 /// `OverlaySessionContent`, so exact-session, Agent-host, and unavailable
 /// destinations cannot drift into separate visual and assistive behaviors.
 struct SessionBubbleRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var session: OverlaySessionContent
     var action: () -> Void
     var dismissAction: (() -> Void)?
     @State private var hovered = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         Group {
@@ -489,6 +562,7 @@ struct SessionBubbleRow: View {
                     rowContent
                 }
                 .buttonStyle(.plain)
+                .focused($focused)
             } else {
                 rowContent
             }
@@ -512,10 +586,7 @@ struct SessionBubbleRow: View {
         VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(session.sessionTitle)
-                    .font(.system(
-                        size: OverlayGeometry.bubbleSessionTitleFontSize,
-                        weight: .semibold
-                    ))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -524,7 +595,7 @@ struct SessionBubbleRow: View {
 
                 if !session.statusText.isEmpty {
                     Text(session.statusText)
-                        .font(.system(size: 9.5, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -540,47 +611,42 @@ struct SessionBubbleRow: View {
                                 .allowsHitTesting(false)
                         }
                 }
+
+                if session.canOpen {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 9)
+                        .opacity(hovered || focused ? 1 : 0)
+                        .animation(
+                            reduceMotion
+                                ? nil
+                                : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                            value: hovered || focused
+                        )
+                        .accessibilityHidden(true)
+                }
             }
 
             Text(session.messageText)
-                .font(.system(size: OverlayGeometry.bubbleDetailFontSize, weight: .medium))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(Color.primary)
                 .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
                 .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 4) {
-                Text(session.actionLabel)
-                    .font(.system(
-                        size: OverlayGeometry.bubbleSessionActionFontSize,
-                        weight: .semibold
-                    ))
-                    .foregroundStyle(
-                        session.canOpen
-                            ? Color.primary
-                            : Color.primary.opacity(0.62)
-                    )
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if session.canOpen {
-                    Image(systemName: "arrow.up.forward")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(Color.primary)
-                        .accessibilityHidden(true)
-                }
-            }
-            .padding(.top, OverlayGeometry.bubbleSessionActionSpacing
-                - OverlayGeometry.bubbleSessionTitleSpacing)
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
         .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(hovered && session.canOpen ? Color.primary.opacity(0.05) : .clear)
+                .fill(
+                    (hovered || focused) && session.canOpen
+                        ? Color.primary.opacity(0.05)
+                        : .clear
+                )
         )
     }
 
@@ -597,9 +663,9 @@ struct SessionBubbleRow: View {
 
     private var statusColor: Color {
         switch session.eventType {
-        case .waiting: .orange
+        case .waiting, .review: .orange
         case .failed: .red
-        case .done, .review: .green
+        case .done: .green
         case .start, .tool: .blue
         case nil: .secondary
         }
@@ -907,6 +973,29 @@ private struct ProductPrimaryActionButton<Action: Hashable>: View {
     }
 }
 
+private struct ProductSecondaryActionButton<Action: Hashable>: View {
+    let presentation: ProductActionPresentation<Action>
+    let accessibilityIdentifier: String
+    let perform: (Action) -> Void
+
+    var body: some View {
+        Button {
+            perform(presentation.action)
+        } label: {
+            ProductActionLabel(
+                title: presentation.title,
+                systemImage: presentation.systemImage
+            )
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .disabled(!presentation.isEnabled)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityHint(presentation.accessibilityHint ?? "")
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 private struct ProductStatusIndicator: View {
     let presentation: ProductStatusPresentation
 
@@ -958,7 +1047,7 @@ private struct ProductCardSurface<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(.regularMaterial, in: shape)
+            .background(APCDesign.panel, in: shape)
             .overlay {
                 shape
                     .stroke(
@@ -982,6 +1071,8 @@ private struct ProductCardSurface<Content: View>: View {
 private extension ProductStatusAppearance {
     var color: Color {
         switch self {
+        case .neutral:
+            APCDesign.textSecondary
         case .normal:
             APCDesign.textSecondary
         case .attention:
@@ -995,6 +1086,8 @@ private extension ProductStatusAppearance {
 
     var systemImage: String {
         switch self {
+        case .neutral:
+            "circle.dashed"
         case .normal:
             "checkmark.circle"
         case .attention:

@@ -96,6 +96,21 @@ struct ControlOverlayPanelTests {
         #expect(overlaySource.contains("ConversationBubbleAccessibilityActions("))
     }
 
+    @Test
+    func visibleOverlayTransitionsNeverCreateDeadInputWindows() throws {
+        let controllerSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/PetOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(!controllerSource.contains("ignoresMouseEvents = true"))
+        #expect(controllerSource.contains(
+            "Keep the panels interactive while they fade"
+        ))
+    }
+
     private func makePanel() -> ControlOverlayPanel {
         let frame = NSRect(origin: .zero, size: OverlayGeometry.menuHitSize)
         let panel = ControlOverlayPanel(

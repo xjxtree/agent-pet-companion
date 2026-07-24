@@ -2534,6 +2534,58 @@ fn snapshot_exposes_cached_pet_asset_repair_failure() {
 }
 
 #[test]
+fn explicit_asset_repair_rpc_clears_a_cached_warning() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+    let source = temp.path().join("rpc-explicit-repair-source");
+    write_sample_petpack_dir(&source, QualityLevel::High, "RPC Repair", "半写实").unwrap();
+    let request = |method: &str, params| RpcRequest {
+        jsonrpc: Some("2.0".to_string()),
+        id: Some(json!("rpc-explicit-repair")),
+        method: method.to_string(),
+        params,
+    };
+    let imported = handle_request(
+        &state,
+        request(
+            "petpack.import",
+            json!({"path": source.display().to_string()}),
+        ),
+    )
+    .unwrap();
+    let pet: PetSummary = serde_json::from_value(imported.clone()).unwrap();
+    handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+    let validation = state
+        .database
+        .pet_asset_validation(&pet.id)
+        .unwrap()
+        .unwrap();
+    state
+        .database
+        .set_pet_asset_validation(
+            &pet.id,
+            &validation.fingerprint,
+            false,
+            Some("cached warning"),
+        )
+        .unwrap();
+
+    let warned = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+    assert_eq!(warned["pet_asset_warnings"].as_array().unwrap().len(), 1);
+    let outcome =
+        handle_request(&state, request("pet.assets.repair", json!({"id": pet.id}))).unwrap();
+    assert_eq!(outcome["pet"]["id"], imported["id"]);
+    assert!(outcome["warning"].is_null());
+    let repaired = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+    assert!(repaired["pet_asset_warnings"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn daemon_does_not_remove_active_socket() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::new(temp.path().to_path_buf());

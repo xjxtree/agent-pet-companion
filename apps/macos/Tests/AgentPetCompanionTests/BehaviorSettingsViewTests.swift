@@ -129,7 +129,7 @@ struct BehaviorSettingsViewTests {
                 status: status,
                 operationState: .idle,
                 localeIdentifier: "en"
-            ) == "Connected"
+            ) == "Local Healthy"
         )
     }
 
@@ -145,14 +145,14 @@ struct BehaviorSettingsViewTests {
             operationState: .idle
         )
 
-        #expect(connection.health == .needsRepair)
+        #expect(connection.health == .notChecked)
         #expect(
             ConfigurationSourcePresentation.detail(
                 source: .codex,
                 status: status,
                 operationState: .idle,
                 localeIdentifier: "en"
-            ) == "Needs Repair"
+            ) == "Not Checked"
         )
     }
 

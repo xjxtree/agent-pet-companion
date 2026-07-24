@@ -584,6 +584,36 @@ fn unchanged_repair_failure_is_cached_and_exposed_without_retry() {
     assert_eq!(first_record, second_record);
 }
 
+#[test]
+fn explicit_asset_repair_bypasses_an_unchanged_invalid_cache_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("explicit-repair-cache");
+    write_sample_petpack_dir(&source, QualityLevel::High, "Explicit Repair", "半写实").unwrap();
+    let pet = import_petpack(&paths, &database, &source).unwrap();
+
+    let initial = petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
+    assert!(initial.warning.is_none());
+    let valid_record = database.pet_asset_validation(&pet.id).unwrap().unwrap();
+    database
+        .set_pet_asset_validation(
+            &pet.id,
+            &valid_record.fingerprint,
+            false,
+            Some("cached failure"),
+        )
+        .unwrap();
+
+    let cached = petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
+    assert!(cached.warning.is_some());
+    let repaired = petcore::petpack::repair_runtime_assets(&paths, &database, &pet).unwrap();
+    assert!(repaired.warning.is_none());
+    assert!(std::path::Path::new(&repaired.pet.cover_path).is_file());
+    let repaired_record = database.pet_asset_validation(&pet.id).unwrap().unwrap();
+    assert!(repaired_record.valid);
+    assert!(repaired_record.error.is_none());
+}
+
 fn revision_directories(pet_root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let revisions = pet_root.join("revisions");
     let mut entries = match fs::read_dir(revisions) {

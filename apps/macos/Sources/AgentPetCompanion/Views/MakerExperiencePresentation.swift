@@ -1,6 +1,35 @@
 import AgentPetCompanionCore
 import Foundation
 
+enum MakerResultReadiness: Equatable {
+    case notApplicable
+    case missing
+    case previewNeedsRepair
+    case ready
+
+    init(
+        session: GenerationSession,
+        resultPetAvailable: Bool,
+        resultPreviewAvailable: Bool
+    ) {
+        guard session.state == .succeeded else {
+            self = .notApplicable
+            return
+        }
+        if !resultPetAvailable {
+            self = .missing
+        } else if !resultPreviewAvailable {
+            self = .previewNeedsRepair
+        } else {
+            self = .ready
+        }
+    }
+
+    var needsRecovery: Bool {
+        self == .missing || self == .previewNeedsRepair
+    }
+}
+
 /// Layout decisions for the three product phases of AI Pet Maker.
 ///
 /// The view consumes this projection instead of inferring its hierarchy from
@@ -13,15 +42,18 @@ struct MakerExperiencePresentation: Equatable {
     let showsResult: Bool
     let primaryAction: PetMakerPrimaryAction
     let secondaryActions: [PetMakerPrimaryAction]
+    let resultReadiness: MakerResultReadiness
 
     init(
         session: GenerationSession,
         resultPetAvailable: Bool,
+        resultPreviewAvailable: Bool = true,
         referenceReselectionCount: Int = 0
     ) {
         let product = PetMakerProductPresentation(
             session: session,
             resultPetAvailable: resultPetAvailable,
+            resultPreviewAvailable: resultPreviewAvailable,
             referenceReselectionCount: referenceReselectionCount
         )
         phase = product.phase
@@ -31,6 +63,11 @@ struct MakerExperiencePresentation: Equatable {
         showsSession = phase != .describe
         showsBaselineInspector = session.operation == .modify && phase != .describe
         showsResult = phase == .result
+        resultReadiness = MakerResultReadiness(
+            session: session,
+            resultPetAvailable: resultPetAvailable,
+            resultPreviewAvailable: resultPreviewAvailable
+        )
     }
 }
 

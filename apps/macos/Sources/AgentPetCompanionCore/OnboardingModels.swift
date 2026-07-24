@@ -184,6 +184,7 @@ public struct OnboardingFlowPresentation: Equatable, Sendable {
     public var availability: OnboardingFlowAvailability
     public var pets: [PetSummary]
     public var selectedPetID: String?
+    public var unavailablePetIDs: Set<String>
     public var connectionState: OnboardingConnectionSceneState
     public var demoSequence: OnboardingDemoSequence
 
@@ -192,13 +193,30 @@ public struct OnboardingFlowPresentation: Equatable, Sendable {
         availability: OnboardingFlowAvailability,
         pets: [PetSummary],
         selectedPetID: String?,
+        unavailablePetIDs: Set<String> = [],
         connectionState: OnboardingConnectionSceneState,
         demoSequence: OnboardingDemoSequence
     ) {
         self.progress = progress
         self.availability = availability
-        self.pets = pets.filter(\.isBundled)
-        self.selectedPetID = self.pets.contains { $0.id == selectedPetID }
+        let candidates = Dictionary(
+            pets
+                .filter(\.isIncludedCompanionCandidate)
+                .map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let orderedCandidates = PetSummary.includedCompanionIDs.compactMap {
+            candidates[$0]
+        }
+        let normalizedUnavailablePetIDs = unavailablePetIDs.intersection(
+            Set(orderedCandidates.map(\.id))
+        )
+        self.pets = orderedCandidates
+        self.unavailablePetIDs = normalizedUnavailablePetIDs
+        self.selectedPetID = orderedCandidates.contains {
+            $0.id == selectedPetID
+                && !normalizedUnavailablePetIDs.contains($0.id)
+        }
             ? selectedPetID
             : nil
         self.connectionState = connectionState
@@ -210,7 +228,8 @@ public struct OnboardingFlowPresentation: Equatable, Sendable {
         switch progress.stage {
         case .choosePet:
             guard let selectedPetID,
-                  pets.contains(where: { $0.id == selectedPetID })
+                  pets.contains(where: { $0.id == selectedPetID }),
+                  !unavailablePetIDs.contains(selectedPetID)
             else {
                 return nil
             }

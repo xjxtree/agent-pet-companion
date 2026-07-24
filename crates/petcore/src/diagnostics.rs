@@ -649,6 +649,7 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "petpack.import" => "petpack.import",
         "petpack.seed_bundled" => "petpack.seed_bundled",
         "petpack.export" => "petpack.export",
+        "pet.assets.repair" => "pet.assets.repair",
         "generation.start" => "generation.start",
         "generation.retry" => "generation.retry",
         "generation.messages" => "generation.messages",
@@ -687,6 +688,7 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
             | "petpack.import"
             | "petpack.seed_bundled"
             | "petpack.export"
+            | "pet.assets.repair"
             | "generation.start"
             | "generation.retry"
             | "generation.edit"

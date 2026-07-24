@@ -448,6 +448,20 @@ enum OnboardingOperationFailure: Equatable {
     case requestRejected
 }
 
+enum IncludedCompanionRestoreState: Equatable {
+    case idle
+    case restoring
+    case restored
+    case failed
+}
+
+enum PetAssetRepairState: Equatable {
+    case idle
+    case repairing
+    case repaired
+    case failed
+}
+
 enum AppUpdateConvergenceAttention: Equatable {
     case bundledPets
     case connectors([AgentSource])
@@ -517,6 +531,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var onboardingMutationInFlight = false
     @Published private(set) var onboardingDismissedForCurrentLaunch = false
     @Published private(set) var onboardingOperationFailure: OnboardingOperationFailure?
+    @Published private(set) var includedCompanionRestoreState =
+        IncludedCompanionRestoreState.idle
+    @Published private(set) var petAssetRepairStates: [String: PetAssetRepairState] = [:]
     @Published private(set) var generationSession = GenerationSession()
     @Published var generationReplyText = ""
     @Published var statusText = "正在初始化"
@@ -580,6 +597,8 @@ final class AppStore: ObservableObject {
     private var isApplyingOverlayPlacement = false
     private var overlayPlacementSaveTask: Task<Void, Never>?
     private var overlayPlacementSaveSequence: UInt64 = 0
+    private var overlayPetReleaseTask: Task<Void, Never>?
+    private var overlayPetReleaseSequence: UInt64 = 0
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
     private var authoritativeBehavior = BehaviorSettings()
@@ -761,6 +780,7 @@ final class AppStore: ObservableObject {
             || pendingBehaviorMutationCount > 0
             || overlayPlacementSaveTask != nil
             || overlayPetDragInProgress
+            || overlayPetReleaseTask != nil
             || overlayResizeInProgress
             || runtimeBootstrap != nil
             || serviceRecovery != nil
@@ -784,8 +804,16 @@ final class AppStore: ObservableObject {
         }
     }
 
-    var onboardingBundledPets: [PetSummary] {
-        pets.filter(\.isBundled)
+    var onboardingCompanionCandidates: [PetSummary] {
+        let candidates = Dictionary(
+            pets
+                .filter(\.isIncludedCompanionCandidate)
+                .map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return PetSummary.includedCompanionIDs.compactMap {
+            candidates[$0]
+        }
     }
 
     var shouldPresentOnboarding: Bool {
@@ -3289,13 +3317,62 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func restoreIncludedCompanions() {
+        Task {
+            _ = await restoreIncludedCompanionsAndWait()
+        }
+    }
+
+    /// Re-runs the signed inventory ensure operation without replacing an
+    /// existing same-ID pet, then requires an authoritative snapshot proving
+    /// both stable companion identities are selectable.
+    @discardableResult
+    func restoreIncludedCompanionsAndWait() async -> Bool {
+        guard includedCompanionRestoreState != .restoring,
+              onboardingAvailability == .ready
+        else {
+            if onboardingAvailability != .ready {
+                includedCompanionRestoreState = .failed
+            }
+            return false
+        }
+
+        includedCompanionRestoreState = .restoring
+        let seeded = await performBundledPetSeed()
+        guard seeded, await refresh() else {
+            includedCompanionRestoreState = .failed
+            return false
+        }
+
+        let restoredIDs = Set(onboardingCompanionCandidates.map(\.id))
+        guard restoredIDs == Set(PetSummary.includedCompanionIDs) else {
+            diagnostics.log(
+                .error,
+                category: "library",
+                event: "included_companion_restore_incomplete",
+                metadata: [
+                    "restored_count": .integer(Int64(restoredIDs.count))
+                ]
+            )
+            includedCompanionRestoreState = .failed
+            return false
+        }
+
+        includedCompanionRestoreState = .restored
+        statusText = "已恢复 App 随附桌宠"
+        return true
+    }
+
     @discardableResult
     func confirmOnboardingPet(_ candidate: PetSummary) async -> Bool {
         guard !onboardingMutationInFlight,
               onboardingAvailability == .ready,
               let current = onboarding,
               current.progress.stage == .choosePet,
-              let pet = onboardingBundledPets.first(where: { $0.id == candidate.id })
+              let pet = onboardingCompanionCandidates.first(where: {
+                  $0.id == candidate.id
+              }),
+              petAssetWarningIndex[pet.id] == nil
         else {
             if onboardingAvailability != .ready {
                 onboardingOperationFailure = .serviceUnavailable
@@ -3315,6 +3392,78 @@ final class AppStore: ObservableObject {
             from: current,
             to: .connectAgents
         )
+    }
+
+    func petAssetRepairState(for petID: String) -> PetAssetRepairState {
+        petAssetRepairStates[petID] ?? .idle
+    }
+
+    func repairPetAssets(_ pet: PetSummary) {
+        Task {
+            _ = await repairPetAssetsAndWait(pet)
+        }
+    }
+
+    /// Forces package validation and atomic cover/frame re-extraction even
+    /// when PetCore has cached an unchanged invalid fingerprint.
+    @discardableResult
+    func repairPetAssetsAndWait(_ candidate: PetSummary) async -> Bool {
+        guard onboardingAvailability == .ready,
+              petAssetRepairState(for: candidate.id) != .repairing,
+              !petOperationIDs.contains(candidate.id),
+              let pet = pets.first(where: { $0.id == candidate.id })
+        else {
+            petAssetRepairStates[candidate.id] = .failed
+            return false
+        }
+
+        petAssetRepairStates[pet.id] = .repairing
+        petOperationIDs.insert(pet.id)
+        statusText = "正在重新校验并提取 \(pet.name) 的资源"
+        defer {
+            petOperationIDs.remove(pet.id)
+        }
+
+        do {
+            let value = try await requestPetCore(
+                method: "pet.assets.repair",
+                params: ["id": pet.id],
+                timeout: .seconds(120)
+            )
+            guard JSONSerialization.isValidJSONObject(value) else {
+                throw PetCoreClientError.invalidResponse
+            }
+            let outcome = try JSONDecoder().decode(
+                PetAssetRepairOutcome.self,
+                from: JSONSerialization.data(withJSONObject: value)
+            )
+            guard outcome.pet.id == pet.id,
+                  outcome.warning?.petId == nil
+                    || outcome.warning?.petId == pet.id
+            else {
+                throw PetCoreClientError.invalidResponse
+            }
+
+            try await refreshSnapshot()
+            let repaired = outcome.warning == nil
+                && petAssetWarningIndex[pet.id] == nil
+            petAssetRepairStates[pet.id] = repaired ? .repaired : .failed
+            statusText = repaired
+                ? "已恢复 \(pet.name) 的预览资源"
+                : "\(pet.name) 的资源仍需处理"
+            return repaired
+        } catch {
+            petAssetRepairStates[pet.id] = .failed
+            statusText = "资源恢复失败：\(error.localizedDescription)"
+            diagnostics.logFailure(
+                error,
+                category: "library",
+                event: "pet_asset_repair_failed",
+                metadata: ["pet_id": .string(pet.id)]
+            )
+            _ = await refresh()
+            return false
+        }
     }
 
     @discardableResult
@@ -4040,6 +4189,119 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Applies the direct-manipulation presentation position without changing
+    /// the persistent placement contract. The drag view already compresses
+    /// out-of-bounds movement, and release always converges to a hard-clamped
+    /// target before the placement is saved.
+    func presentOverlayPetDrag(
+        at presentationCenter: CGPoint,
+        visibleFrame: CGRect?
+    ) {
+        if overlayPetReleaseTask != nil {
+            cancelOverlayPetReleaseMotion()
+        }
+        if let visibleFrame, !visibleFrame.isEmpty {
+            overlayScreenVisibleFrame = visibleFrame
+        }
+        overlayPetScreenCenter = presentationCenter
+        overlayPetPositionInitialized = true
+        overlayController.updateLayoutDuringInteraction()
+    }
+
+    func settleOverlayPet(
+        from presentationCenter: CGPoint,
+        velocity: CGVector,
+        visibleFrame: CGRect?,
+        reduceMotion: Bool
+    ) {
+        cancelOverlayPetReleaseMotion()
+
+        let targetScreen = screen(matchingVisibleFrame: visibleFrame)
+            ?? screen(containing: presentationCenter)
+            ?? screen(containing: overlayPetScreenCenter)
+            ?? NSScreen.main
+        let targetVisibleFrame = targetScreen?.visibleFrame
+            ?? visibleFrame
+            ?? overlayScreenVisibleFrame
+        guard !targetVisibleFrame.isEmpty else {
+            moveOverlayPet(
+                to: presentationCenter,
+                visibleFrame: visibleFrame,
+                commit: true
+            )
+            return
+        }
+        let movementFrame = OverlayGeometry.petMovementFrame(
+            screenFrame: targetScreen?.frame ?? targetVisibleFrame,
+            visibleFrame: targetVisibleFrame
+        )
+        let target = OverlayPetDragMotion.projectedReleaseTarget(
+            from: presentationCenter,
+            velocity: velocity,
+            scale: overlayScale,
+            visibleFrame: movementFrame,
+            clickMenuEnabled: behavior.clickMenu,
+            petVisualEnvelope: overlayPetVisualEnvelope
+        )
+        let displacement = hypot(
+            presentationCenter.x - target.x,
+            presentationCenter.y - target.y
+        )
+        let speed = hypot(velocity.dx, velocity.dy)
+        guard !reduceMotion, displacement > 0.5 || speed > 8 else {
+            moveOverlayPet(
+                to: target,
+                visibleFrame: targetVisibleFrame,
+                commit: true
+            )
+            return
+        }
+
+        overlayPetReleaseSequence &+= 1
+        let sequence = overlayPetReleaseSequence
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        overlayPetReleaseTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+                guard elapsed < OverlayPetDragMotion.releaseSettlingDuration else {
+                    break
+                }
+                guard let self,
+                      self.overlayPetReleaseSequence == sequence else {
+                    return
+                }
+                self.overlayPetScreenCenter =
+                    OverlayPetDragMotion.criticallyDampedPosition(
+                        from: presentationCenter,
+                        to: target,
+                        initialVelocity: velocity,
+                        elapsed: elapsed
+                    )
+                self.overlayScreenVisibleFrame = targetVisibleFrame
+                self.overlayController.updateLayoutDuringInteraction()
+                do {
+                    try await Task.sleep(
+                        for: OverlayPetDragMotion.releaseFrameInterval
+                    )
+                } catch {
+                    return
+                }
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.overlayPetReleaseSequence == sequence else {
+                return
+            }
+            self.overlayPetReleaseTask = nil
+            self.moveOverlayPet(
+                to: target,
+                visibleFrame: targetVisibleFrame,
+                commit: true
+            )
+        }
+    }
+
     func ensureOverlayPetPosition(in visibleFrame: CGRect) {
         guard !visibleFrame.isEmpty else { return }
         if overlayPetPositionInitialized {
@@ -4240,6 +4502,9 @@ final class AppStore: ObservableObject {
     }
 
     func setOverlayPetDragInProgress(_ value: Bool) {
+        if value {
+            cancelOverlayPetReleaseMotion()
+        }
         if overlayPetDragInProgress != value {
             overlayPetDragInProgress = value
             overlayController.updateLayoutDuringInteraction()
@@ -4396,7 +4661,11 @@ final class AppStore: ObservableObject {
 
     private func shouldApplyRemoteOverlayPlacement(_ placement: OverlayPlacement) -> Bool {
         guard overlayPlacementLoaded, !isApplyingOverlayPlacement else { return false }
-        guard !overlayPetDragInProgress, !overlayResizeInProgress else { return false }
+        guard !overlayPetDragInProgress,
+              overlayPetReleaseTask == nil,
+              !overlayResizeInProgress else {
+            return false
+        }
 
         let current = currentOverlayPlacement()
         let positionChanged = abs(current.x - placement.x) > 0.5
@@ -4411,6 +4680,12 @@ final class AppStore: ObservableObject {
             currentOverlayPlacement(),
             delay: .milliseconds(250)
         )
+    }
+
+    private func cancelOverlayPetReleaseMotion() {
+        overlayPetReleaseSequence &+= 1
+        overlayPetReleaseTask?.cancel()
+        overlayPetReleaseTask = nil
     }
 
     private func enqueueOverlayPlacementSave(
@@ -4603,6 +4878,7 @@ final class AppStore: ObservableObject {
              "overlay.placement.update",
              "pet.activate",
              "pet.delete",
+             "pet.assets.repair",
              "petpack.import",
              "petpack.seed_bundled",
              "generation.start",

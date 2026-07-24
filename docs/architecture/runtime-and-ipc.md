@@ -169,7 +169,7 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 | Projection | snapshot, revision-based long-poll wait |
 | Configuration | behavior, versioned onboarding progress, overlay placement, client settings |
 | Events | normalized ingest, bounded recent events |
-| Pet library | list with validated native FPS, fixed state durations, and derived current revision metadata; bounded typed revision/job history; activate, delete, validate/import/seed/export `.petpack` |
+| Pet library | list with validated native FPS, fixed state durations, and derived current revision metadata; bounded typed revision/job history; activate, delete, validate/import/seed/export `.petpack`; forced runtime-asset repair |
 | Generation | create, edit from a validated current or older owned revision, retry, messages/wait/reply, cancel, latest private Maker-session recovery globally and by pet |
 | Connections | check, receipts, repair, refresh, test, uninstall |
 | Product convergence | optional receipt get, current-build receipt update, read-only replacement preflight |
@@ -177,7 +177,17 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 
 `state_revision` is serialized as a decimal string. A client reads a consistent snapshot, then calls `state.wait(after_revision, timeout_ms)`. Timeouts are bounded long-polls and do not indicate a state change or a disk-version poll.
 
-`onboarding.get` returns the closed `apc.onboarding-progress.v1` progress object plus its decimal-string revision. `onboarding.update(expected_revision, progress)` performs a compare-and-swap and accepts only the ordered next scene or explicit skip. Swift decodes the schema, fields, stage, and revision as a closed contract; malformed or future values fail closed. The choose scene awaits the existing `pet.activate` path before advancing, and connection actions consume the same typed aggregate presentation and AppStore operations as Agent Connections. Agent detection may continue in the background and never blocks the local demo; connection mutations retain their typed capability and explicit-confirmation requirements. Completing onboarding is published only with the authoritative snapshot that shows the desktop pet enabled.
+`onboarding.get` returns the closed `apc.onboarding-progress.v1` progress object plus its decimal-string revision. `onboarding.update(expected_revision, progress)` performs a compare-and-swap and accepts only the ordered next scene or explicit skip. Swift decodes the schema, fields, stage, and revision as a closed contract; malformed or future values fail closed. The choose scene awaits the existing `pet.activate` path before advancing. Its included-companion candidates use the fixed ordered manifest IDs, so an upgrade-preserved same-ID pet remains selectable without acquiring bundled origin/generator/provenance or read-only permissions. An empty inventory offers the ordinary bundled-seed retry and diagnostics; an asset-warning candidate offers forced repair and cannot advance until the authoritative warning clears. Connection actions consume the same typed presentation and AppStore operations as Agent Connections. Agent detection may continue in the background and never blocks the local demo; connection mutations retain their typed capability and explicit-confirmation requirements. Completing onboarding is published only with the authoritative snapshot that shows the desktop pet enabled.
+
+`pet.assets.repair(id)` is the explicit online recovery path for a library row
+already owned by PetCore. It ignores a previously cached invalid fingerprint,
+revalidates the exact immutable `.petpack`, verifies the manifest ID, stages
+the canonical cover and all seven runtime-frame states, atomically replaces
+both asset targets, validates the committed result, and then updates the
+database/cache. The typed result returns the refreshed `PetSummary` plus an
+optional bounded warning. Swift treats mismatched or malformed results as
+failure and refreshes `state.snapshot` before enabling preview-dependent
+actions.
 
 `pet.history(pet_id, limit)` accepts 1–32 records (16 by default), revalidates bounded `.petpack` archives, and uses the 120-second package-operation deadline. It is a privacy-minimized library projection, separate from private Maker recovery: `generation.for_pet` returns the newest job for a result pet, while `generation.latest` also covers terminal create jobs without a result pet.
 
@@ -187,7 +197,7 @@ Within `state.snapshot`, `onboarding` is the versioned durable first-run project
 
 The local onboarding demo is not an RPC or event source. Its thinking, working, needs-attention, and done phases live in a View-local reducer and select only pet animation assets. They cannot call Agent ingest or write event history, receipts, aliases, suppression, retention counts, or diagnostics.
 
-Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
+Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The App applies a tighter daily-surface bound per Agent: collapsed shows one row, expanded shows at most three, and any remainder opens Agent Connections. It derives only the presentation intents **Busy** (`start`/`tool`), **Needs You** (`waiting`/`review`), and **Ended** (`done`/`failed`); the stored protocol names do not change. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
 
 ### Capability-token loopback ingress
 

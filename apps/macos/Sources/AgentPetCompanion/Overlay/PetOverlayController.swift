@@ -396,19 +396,15 @@ final class PetOverlayController {
             return
         }
 
-        // Keep the panels alive just long enough for their SwiftUI opacity
-        // transition, but stop them intercepting input while they fade. The
-        // existing 300 ms hover-exit delay has already elapsed at this point.
-        menuPanel?.ignoresMouseEvents = true
-        resizePanel?.ignoresMouseEvents = true
+        // Keep the panels interactive while they fade. Re-entering a control
+        // can therefore cancel the transition instead of producing a brief
+        // dead region after the pointer returns.
         let hasVisibleControlPanel = menuPanel?.isVisible == true
             || resizePanel?.isVisible == true
         guard hasVisibleControlPanel, controlPanelFadeOutTask == nil else { return }
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             menuPanel?.orderOut(nil)
             resizePanel?.orderOut(nil)
-            menuPanel?.ignoresMouseEvents = false
-            resizePanel?.ignoresMouseEvents = false
             return
         }
         controlPanelFadeOutTask = Task { @MainActor [weak self] in
@@ -420,8 +416,6 @@ final class PetOverlayController {
             }
             self.menuPanel?.orderOut(nil)
             self.resizePanel?.orderOut(nil)
-            self.menuPanel?.ignoresMouseEvents = false
-            self.resizePanel?.ignoresMouseEvents = false
             self.controlPanelFadeOutTask = nil
         }
     }
@@ -522,12 +516,10 @@ final class PetOverlayController {
 
         bubbleAnimationGeneration &+= 1
         let generation = bubbleAnimationGeneration
-        (bubblePanel as? BubbleOverlayPanel)?.stopPointerTracking()
-        bubblePanel.ignoresMouseEvents = true
         guard animated else {
+            (bubblePanel as? BubbleOverlayPanel)?.stopPointerTracking()
             bubblePanel.orderOut(nil)
             bubblePanel.alphaValue = 1
-            bubblePanel.ignoresMouseEvents = false
             return
         }
 
@@ -547,9 +539,9 @@ final class PetOverlayController {
             try? await Task.sleep(for: delay)
             guard let self, let bubblePanel, !Task.isCancelled else { return }
             guard self.bubbleAnimationGeneration == generation else { return }
+            (bubblePanel as? BubbleOverlayPanel)?.stopPointerTracking()
             bubblePanel.orderOut(nil)
             bubblePanel.alphaValue = 1
-            bubblePanel.ignoresMouseEvents = false
         }
     }
 
@@ -559,7 +551,6 @@ final class PetOverlayController {
     private func crossfadeBubblePanel(_ bubblePanel: NSPanel, targetFrame: CGRect) {
         bubbleAnimationGeneration &+= 1
         let generation = bubbleAnimationGeneration
-        bubblePanel.ignoresMouseEvents = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = OverlayMotion.reducedMotionCrossfadeDuration / 2
             context.allowsImplicitAnimation = true
@@ -580,7 +571,6 @@ final class PetOverlayController {
             guard !Task.isCancelled else { return }
             guard self.bubbleAnimationGeneration == generation else { return }
             bubblePanel.alphaValue = 1
-            bubblePanel.ignoresMouseEvents = false
         }
     }
 

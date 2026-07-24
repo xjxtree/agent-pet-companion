@@ -478,6 +478,38 @@ class CodexPluginVersionTests(unittest.TestCase):
 
 
 class ValidationOrderTests(unittest.TestCase):
+    def test_packaged_bundled_seed_proves_renderable_cover_and_all_states(self) -> None:
+        source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
+        seed = source.index('"$PETCORE_CLI" petpack seed-bundled')
+        connector_repair = source.index(
+            '"$PETCORE_CLI" connections repair --source "$source"',
+            seed,
+        )
+        bundled_gate = source[seed:connector_repair]
+
+        self.assertIn(
+            'REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")',
+            bundled_gate,
+        )
+        self.assertIn('RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v2"', bundled_gate)
+        self.assertIn("def png_dimensions(path):", bundled_gate)
+        self.assertIn(
+            'cover_path = require_managed(\n'
+            '        pathlib.Path(pet.get("cover_path", "")),',
+            bundled_gate,
+        )
+        self.assertLess(
+            bundled_gate.index(
+                'cover_path = require_managed(\n'
+                '        pathlib.Path(pet.get("cover_path", "")),'
+            ),
+            bundled_gate.index("if cover_path != expected_cover_path:"),
+        )
+        self.assertIn('f"{pet_id}-frames"', bundled_gate)
+        self.assertIn('frames_root / ".apc-runtime-assets.json"', bundled_gate)
+        self.assertIn("expected_count = native_fps * duration // 1000", bundled_gate)
+        self.assertIn("for frame in frames:", bundled_gate)
+
     def test_adhoc_signature_gate_precedes_packaged_code_execution(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
         self.assertIn("grep -Fx 'Signature=adhoc'", source)

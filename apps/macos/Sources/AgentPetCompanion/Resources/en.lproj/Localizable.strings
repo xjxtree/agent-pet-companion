@@ -32,6 +32,12 @@
 "library.validation.verified" = "PetCore verified the manifest, seven-state frames, transparent PNGs, preview, and source metadata.";
 "library.validation.unverified_title" = "Incomplete specification";
 "library.validation.unverified" = "No damage was reported in this snapshot, but the local service did not provide a complete asset specification, so validation remains unavailable.";
+"asset_recovery.title" = "Preview needs repair";
+"asset_recovery.detail" = "Revalidate the pet package and re-extract its cover and seven-state animation assets.";
+"asset_recovery.repair" = "Repair Preview";
+"asset_recovery.repairing" = "Repairing Preview…";
+"asset_recovery.failed" = "The package still could not produce a valid preview. Review diagnostics for the bounded failure details.";
+"asset_recovery.diagnostics" = "View Diagnostics";
 "overlay.action.handle" = "Handle";
 "overlay.action.open" = "Open";
 "overlay.action.review" = "Review";
@@ -59,6 +65,9 @@
 "overlay.status.done" = "Completed";
 "overlay.status.running" = "Thinking";
 "overlay.status.tool" = "Using a tool";
+"overlay.intent.busy" = "Busy";
+"overlay.intent.needs_you" = "Needs You";
+"overlay.intent.ended" = "Ended";
 "nav.ai_pet_maker" = "AI Pet Maker";
 "nav.connections" = "Agent Connections";
 "nav.diagnostics" = "Service & Diagnostics";
@@ -156,7 +165,7 @@
 "studio.page.modify_format" = "Revise %@";
 "studio.page.modify_session" = "AI Revision Session";
 "studio.subtitle.idle" = "Define the brief, then create and validate a .petpack in a local AI session.";
-"studio.subtitle.succeeded" = "Validated and added to the local pet library.";
+"studio.subtitle.succeeded" = "Review the result and choose what happens next.";
 "studio.subtitle.failed" = "The task did not finish. Your input and current pet revision are preserved.";
 "studio.subtitle.cancelled" = "The task was cancelled. Unvalidated assets were not added to the library.";
 "studio.brief.new_pet" = "New Pet";
@@ -220,6 +229,9 @@
 "studio.success.revision" = "New revision";
 "studio.success.validation" = "Validation";
 "studio.success.validation_format" = "%d states · %d frames · %d warnings";
+"studio.preview_repair.title" = "Generated · Preview needs repair";
+"studio.preview_repair.detail" = "Creation finished, but the result is not ready to use until its real animation preview is available.";
+"studio.preview_repair.missing_detail" = "Creation finished, but the result pet is not present in the current library snapshot. Refresh or review diagnostics before using it.";
 "studio.step.baseline" = "Baseline";
 "studio.step.brief" = "Brief";
 "studio.step.revision" = "Revision";
@@ -367,9 +379,10 @@
 "connections.action.uninstall" = "Uninstall Connection";
 "connections.page.title" = "Agent Connections";
 "connections.page.subtitle" = "Connect each Agent to the desktop pet. Technical checks stay available when you need them.";
+"connections.summary.not_checked" = "Run a local check to see whether this Agent is available.";
 "connections.summary.checking" = "Checking this Agent connection.";
-"connections.summary.connected" = "The Agent is connected and can send activity to the desktop pet.";
-"connections.summary.needs_repair" = "The connection needs one repair or verification step.";
+"connections.summary.connected" = "Local connection checks are healthy.";
+"connections.summary.needs_repair" = "A managed local connection repair is available.";
 "connections.summary.unavailable" = "This Agent or its supported connection is not currently available.";
 "connections.primary.accessibility_format" = "%@ %@";
 "connections.primary.connect_hint" = "Reviews the app-managed connection change before installing it.";
@@ -457,6 +470,8 @@
 "connections.check.description.generic" = "Checks a supported connection condition. Refresh the check and follow the managed-connection guidance if it still needs attention.";
 "connections.check.detail_format" = "Status: %@. %@";
 "connections.verification.title" = "Real Agent Verification";
+"connections.verification.not_run_title" = "Real task not run";
+"connections.verification.not_run_detail" = "Run a local connection check first; real-task evidence is tracked separately.";
 "connections.verification.verified_title" = "Real agent activity verified";
 "connections.verification.action_title" = "Run a real agent task";
 "connections.verification.pending_title" = "Awaiting real agent activity";
@@ -569,6 +584,7 @@
 "overlay.session.alias_title_format" = "%@ session %@";
 "overlay.sessions.more_title" = "More active sessions";
 "overlay.sessions.more_detail_format" = "%d more sessions are available in Control Center";
+"overlay.sessions.more_control_center_format" = "View %d more in Control Center";
 "overlay.help.open_and_dismiss" = "Open session and collapse it from the list";
 "overlay.help.dismiss" = "Collapse from the list";
 "overlay.help.open" = "Open session";
@@ -742,8 +758,9 @@
 "product.attention.custom" = "Custom";
 "product.motion.standard" = "Standard Motion";
 "product.motion.smooth" = "Smooth Motion";
+"product.connection.not_checked" = "Not Checked";
 "product.connection.checking" = "Checking";
-"product.connection.connected" = "Connected";
+"product.connection.connected" = "Local Healthy";
 "product.connection.needs_repair" = "Needs Repair";
 "product.connection.unavailable" = "Unavailable";
 "product.action.use_pet" = "Use This Pet";
@@ -758,7 +775,10 @@
 "onboarding.choose.detail" = "Pick one of the two companions included with the App. Each preview uses the pet's real motion assets.";
 "onboarding.choose.confirm" = "Use This Companion";
 "onboarding.pets_unavailable.title" = "Included companions are unavailable";
-"onboarding.pets_unavailable.detail" = "Skip setup, then open Pet Library to repair or import a companion.";
+"onboarding.pets_unavailable.detail" = "Restore the two companions included with the App, then choose one to continue.";
+"onboarding.pets_unavailable.restore" = "Restore Included Companions";
+"onboarding.pets_unavailable.restoring" = "Restoring Companions…";
+"onboarding.pets_unavailable.restore_failed" = "The included companions could not be restored. Retry, or view Service & Diagnostics.";
 "onboarding.connect.title" = "Connect your Agents";
 "onboarding.connect.detail" = "The App checks supported Agents on this Mac and shows only what you can act on. Project folders are never connection settings.";
 "onboarding.connect.checking" = "Checking supported Agents…";

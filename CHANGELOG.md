@@ -10,6 +10,20 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+### Added / 新增
+
+- Added one typed pet-resource recovery path across first run, Pet Library, and AI Pet Maker. It revalidates the immutable package and atomically restores the cover plus all seven animation states before preview-dependent actions return. / 在首次体验、宠物库与 AI 宠物制作中新增统一的类型化资源恢复路径；恢复会重新校验不可变宠物包，并原子重建封面与全部七种动画状态，完成后才重新开放依赖预览的操作。
+
+### Changed / 变更
+
+- Agent Connections now separates local integration health from real-task verification, exposes **Needs Repair** only with executable typed authority, and keeps one page-level primary check action. / Agent 连接现在将本地集成健康度与真实任务验证分开；仅在存在可执行的类型化权限时显示“需要修复”，并保持页面级单一主检查操作。
+- Desktop bubbles now show one session per collapsed Agent and at most three when expanded, route overflow to Control Center, make the complete row the exact-session action, and reduce daily status language to **Busy**, **Needs You**, and **Ended** without changing protocol states. / 桌宠气泡现在每个折叠 Agent 只显示一个会话，展开后最多显示三个，超出部分进入控制中心；整行作为精确会话操作，并将日常状态收敛为“忙碌”“需要你”和“已结束”，不改变底层协议状态。
+- Refined the control center around solid content surfaces and one prominent action per context, with larger-text layout, VoiceOver reading order, reduced-transparency fallbacks, increased-contrast borders, and interruptible rubber-band/critically-damped pet dragging that honors Reduce Motion. / 控制中心改为实色内容层与每个上下文一个突出操作，并完善大字体布局、VoiceOver 阅读顺序、降低透明度回退、增强对比度边框，以及支持中断、遵循“减弱动态效果”的橡皮筋与临界阻尼桌宠拖拽。
+
+### Fixed / 修复
+
+- Upgrade-preserved pets with either included manifest ID remain selectable during first run without being granted bundled read-only authority; empty or damaged included-pet states now offer restore, repair, and diagnostics instead of false completion or import instructions. / 升级时保留下来的宠物只要具有任一内置 manifest ID，首次体验中仍可选择，但不会因此获得内置只读权限；内置宠物为空或资源损坏时现在提供恢复、修复与诊断，不再错误宣告完成或引导导入。
+
 ## [0.2.1] - 2026-07-24
 
 ### Fixed / 修复

@@ -325,6 +325,152 @@ enum OverlayPetPointerGesture {
     }
 }
 
+struct OverlayPetMotionSample: Equatable {
+    let point: CGPoint
+    let timestamp: TimeInterval
+}
+
+/// Presentation-only drag physics. Persistent placement always uses the hard
+/// clamped release target; elastic overshoot and velocity exist only while the
+/// user is directly manipulating the desktop pet or while it settles.
+enum OverlayPetDragMotion {
+    static let velocityWindow: TimeInterval = 0.12
+    static let maximumReleaseVelocity: CGFloat = 1_200
+    static let releaseProjectionDuration: TimeInterval = 0.08
+    static let releaseSettlingDuration: TimeInterval = 0.42
+    static let criticalAngularFrequency: CGFloat = 18
+    static let releaseFrameInterval = Duration.milliseconds(16)
+
+    static func rubberBandedCenter(
+        _ proposedCenter: CGPoint,
+        scale: CGFloat,
+        visibleFrame: CGRect,
+        clickMenuEnabled: Bool = true,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
+        let hardClamped = OverlayGeometry.clampedPetScreenCenter(
+            proposedCenter,
+            scale: scale,
+            visibleFrame: visibleFrame,
+            clickMenuEnabled: clickMenuEnabled,
+            petVisualEnvelope: petVisualEnvelope
+        )
+        let dimension = max(44, 64 * scale)
+        return CGPoint(
+            x: hardClamped.x + rubberBandedDistance(
+                proposedCenter.x - hardClamped.x,
+                dimension: dimension
+            ),
+            y: hardClamped.y + rubberBandedDistance(
+                proposedCenter.y - hardClamped.y,
+                dimension: dimension
+            )
+        )
+    }
+
+    static func projectedReleaseTarget(
+        from presentationCenter: CGPoint,
+        velocity: CGVector,
+        scale: CGFloat,
+        visibleFrame: CGRect,
+        clickMenuEnabled: Bool = true,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    ) -> CGPoint {
+        let limited = limitedVelocity(velocity)
+        let projected = CGPoint(
+            x: presentationCenter.x
+                + limited.dx * releaseProjectionDuration,
+            y: presentationCenter.y
+                + limited.dy * releaseProjectionDuration
+        )
+        return OverlayGeometry.clampedPetScreenCenter(
+            projected,
+            scale: scale,
+            visibleFrame: visibleFrame,
+            clickMenuEnabled: clickMenuEnabled,
+            petVisualEnvelope: petVisualEnvelope
+        )
+    }
+
+    static func estimatedVelocity(
+        from samples: [OverlayPetMotionSample]
+    ) -> CGVector {
+        guard let latest = samples.last else { return .zero }
+        let cutoff = latest.timestamp - velocityWindow
+        guard let first = samples.first(where: { $0.timestamp >= cutoff }) else {
+            return .zero
+        }
+        let elapsed = latest.timestamp - first.timestamp
+        guard elapsed >= 1.0 / 240.0 else { return .zero }
+        return limitedVelocity(CGVector(
+            dx: (latest.point.x - first.point.x) / elapsed,
+            dy: (latest.point.y - first.point.y) / elapsed
+        ))
+    }
+
+    static func criticallyDampedPosition(
+        from start: CGPoint,
+        to target: CGPoint,
+        initialVelocity: CGVector,
+        elapsed: TimeInterval
+    ) -> CGPoint {
+        let time = max(0, CGFloat(elapsed))
+        let velocity = limitedVelocity(initialVelocity)
+        return CGPoint(
+            x: criticallyDampedAxis(
+                start: start.x,
+                target: target.x,
+                initialVelocity: velocity.dx,
+                elapsed: time
+            ),
+            y: criticallyDampedAxis(
+                start: start.y,
+                target: target.y,
+                initialVelocity: velocity.dy,
+                elapsed: time
+            )
+        )
+    }
+
+    private static func rubberBandedDistance(
+        _ distance: CGFloat,
+        dimension: CGFloat
+    ) -> CGFloat {
+        guard distance != 0, dimension > 0 else { return 0 }
+        let magnitude = abs(distance)
+        let compressed = (
+            1 - (1 / ((magnitude * 0.55 / dimension) + 1))
+        ) * dimension
+        return distance < 0 ? -compressed : compressed
+    }
+
+    private static func limitedVelocity(_ velocity: CGVector) -> CGVector {
+        let speed = hypot(velocity.dx, velocity.dy)
+        guard speed > maximumReleaseVelocity, speed > 0 else { return velocity }
+        let multiplier = maximumReleaseVelocity / speed
+        return CGVector(
+            dx: velocity.dx * multiplier,
+            dy: velocity.dy * multiplier
+        )
+    }
+
+    private static func criticallyDampedAxis(
+        start: CGFloat,
+        target: CGFloat,
+        initialVelocity: CGFloat,
+        elapsed: CGFloat
+    ) -> CGFloat {
+        let displacement = start - target
+        let coefficient = initialVelocity
+            + criticalAngularFrequency * displacement
+        let decay = CGFloat(exp(
+            -Double(criticalAngularFrequency * elapsed)
+        ))
+        return target
+            + (displacement + coefficient * elapsed) * decay
+    }
+}
+
 enum OverlayPetActivationDestination: Equatable {
     case session(OverlaySessionContent)
     case bubble
@@ -423,22 +569,31 @@ enum OverlayGeometry {
     static let bubbleLeadingPadding: CGFloat = 8
     static let bubbleTrailingPadding: CGFloat = 8
     static let bubbleVerticalPadding: CGFloat = 7
-    static let bubbleGroupHeaderHeight: CGFloat = 17
+    static var bubbleGroupHeaderHeight: CGFloat {
+        max(
+            17,
+            ceil(lineHeight(for: NSFont.preferredFont(forTextStyle: .caption1))) + 2
+        )
+    }
     static let bubbleGroupHeaderSpacing: CGFloat = 4
     static let bubbleGroupToggleWidth: CGFloat = 44
     static let bubbleSessionHorizontalPadding: CGFloat = 8
     static let bubbleSessionVerticalPadding: CGFloat = 5
-    static let bubbleSessionTitleFontSize: CGFloat = 11.4
     static let bubbleSessionTitleSpacing: CGFloat = 2
-    static let bubbleSessionActionSpacing: CGFloat = 3
-    static let bubbleSessionActionFontSize: CGFloat = 10
     static let bubbleDetailLineLimit = 2
     static let bubbleSessionDividerHeight: CGFloat = 1
+    static var bubbleMoreSessionsRowHeight: CGFloat {
+        max(
+            30,
+            ceil(lineHeight(for: NSFont.preferredFont(forTextStyle: .caption1))) + 12
+        )
+    }
+    static let maximumExpandedSessions = 3
     static let bubbleHeaderAvatarWidth: CGFloat = 14
-    static let bubbleHeaderButtonSize: CGFloat = 15
+    static var bubbleHeaderButtonSize: CGFloat {
+        max(15, bubbleGroupHeaderHeight - 2)
+    }
     static let bubbleHeaderGap: CGFloat = 5
-    static let bubbleHeaderFontSize: CGFloat = 11.2
-    static let bubbleDetailFontSize: CGFloat = 11.8
     static let bubbleCollapsedStackDepth: CGFloat = 8
     static let bubbleCollapsedStackLayerCount = 2
     static let bubbleCollapsedStackLayerOffset: CGFloat = 4
@@ -1377,12 +1532,16 @@ enum OverlayGeometry {
     private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
         let rowHeights = bubbleSessionRowHeights(bubbleWidth: width, content: content)
         let dividers = CGFloat(max(0, rowHeights.count - 1)) * bubbleSessionDividerHeight
+        let controlCenterSummaryHeight = content.controlCenterSessionCount > 0
+            ? bubbleSessionDividerHeight + bubbleMoreSessionsRowHeight
+            : 0
         return ceil(
             bubbleVerticalPadding * 2
                 + bubbleGroupHeaderHeight
                 + bubbleGroupHeaderSpacing
                 + rowHeights.reduce(0, +)
                 + dividers
+                + controlCenterSummaryHeight
                 + content.stackDecorationDepth
         )
     }
@@ -1392,24 +1551,19 @@ enum OverlayGeometry {
         session _: OverlaySessionContent
     ) -> CGFloat {
         let titleHeight = lineHeight(
-            for: .systemFont(ofSize: bubbleSessionTitleFontSize, weight: .semibold)
+            for: NSFont.preferredFont(forTextStyle: .callout)
         )
-        let detailFont = NSFont.systemFont(ofSize: bubbleDetailFontSize, weight: .medium)
+        let detailFont = NSFont.preferredFont(forTextStyle: .caption1)
         let detailLineHeight = lineHeight(for: detailFont)
         // Reserve the full two-line detail region. Tool activity often changes
         // between one and two lines; allowing that to resize an NSPanel on
         // every hook makes the whole bubble stack visibly jump.
         let detailHeight = detailLineHeight * CGFloat(bubbleDetailLineLimit)
-        let actionHeight = lineHeight(
-            for: .systemFont(ofSize: bubbleSessionActionFontSize, weight: .semibold)
-        )
         return ceil(
             bubbleSessionVerticalPadding * 2
                 + titleHeight
                 + bubbleSessionTitleSpacing
                 + detailHeight
-                + bubbleSessionActionSpacing
-                + actionHeight
         )
     }
 
@@ -1476,6 +1630,20 @@ enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
     }
 }
 
+enum OverlaySessionIntent: String, CaseIterable, Equatable {
+    case busy
+    case needsYou
+    case ended
+
+    init(eventType: AgentEventKind?) {
+        self = switch eventType {
+        case .start, .tool, nil: .busy
+        case .waiting, .review: .needsYou
+        case .done, .failed: .ended
+        }
+    }
+}
+
 enum OverlayBubbleProjection {
     static func contents(
         states: [ActiveAgentState],
@@ -1517,6 +1685,14 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var messageText: String
     var statusText: String
     var navigation: AgentSessionNavigation
+
+    var intent: OverlaySessionIntent {
+        OverlaySessionIntent(eventType: eventType)
+    }
+
+    var needsUserAttention: Bool {
+        eventType == .waiting || eventType == .review || eventType == .failed
+    }
 
     var navigationCapability: NavigationCapability {
         AgentSessionRouter.validatedCapability(
@@ -1835,9 +2011,14 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     static func displayStatus(for eventType: AgentEventKind) -> String {
-        APCLocalizedPresentation.lifecycleTitle(
-            ProductLifecycleState(eventKind: eventType)
-        )
+        switch OverlaySessionIntent(eventType: eventType) {
+        case .busy:
+            APCLocalization.text(.overlayIntentBusy)
+        case .needsYou:
+            APCLocalization.text(.overlayIntentNeedsYou)
+        case .ended:
+            APCLocalization.text(.overlayIntentEnded)
+        }
     }
 
     private static func fallbackDetail(for eventType: AgentEventKind) -> String {
@@ -1862,18 +2043,33 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     var eventIDs: [String] { sessions.map(\.eventID) }
     var dismissalIDs: [String] { canDismiss ? sessions.map(\.id) : [] }
     var visibleSessions: [OverlaySessionContent] {
-        guard !isExpanded, sessions.count > 1 else { return sessions }
-        let latest = sessions[0]
-        let attention = sessions.dropFirst().filter {
-            $0.eventType == .waiting || $0.eventType == .review || $0.eventType == .failed
+        guard !sessions.isEmpty, !isOmittedSummary else { return sessions }
+        if !isExpanded {
+            return [
+                sessions.first(where: \.needsUserAttention) ?? sessions[0]
+            ]
         }
-        return [latest] + attention
+
+        var bounded = [sessions[0]]
+        let prioritized = sessions.dropFirst().filter(\.needsUserAttention)
+            + sessions.dropFirst().filter { !$0.needsUserAttention }
+        for session in prioritized where bounded.count < OverlayGeometry.maximumExpandedSessions {
+            guard !bounded.contains(where: { $0.id == session.id }) else {
+                continue
+            }
+            bounded.append(session)
+        }
+        return bounded
     }
     var sessionCount: Int { sessions.count }
     var representedSessionCount: Int {
         omittedSessionCount > 0 ? omittedSessionCount : sessionCount
     }
     var isOmittedSummary: Bool { omittedSessionCount > 0 }
+    var controlCenterSessionCount: Int {
+        guard isExpanded, !isOmittedSummary else { return 0 }
+        return max(0, sessionCount - visibleSessions.count)
+    }
     var canDismiss: Bool { !isOmittedSummary }
     var hasMultipleSessions: Bool { sessions.count > 1 }
     var isStacked: Bool { hasMultipleSessions && !isExpanded }

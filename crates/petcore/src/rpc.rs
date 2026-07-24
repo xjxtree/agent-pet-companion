@@ -1204,6 +1204,7 @@ fn known_rpc_method(method: &str) -> bool {
             | "pet.history"
             | "pet.activate"
             | "pet.delete"
+            | "pet.assets.repair"
             | "petpack.validate"
             | "petpack.import"
             | "petpack.seed_bundled"
@@ -1255,7 +1256,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "settings.update" => &["key", "value"],
         "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
         "events.recent" => &["limit"],
-        "pet.activate" | "pet.delete" => &["id"],
+        "pet.activate" | "pet.delete" | "pet.assets.repair" => &["id"],
         "pet.history" => &["pet_id", "limit"],
         "petpack.validate" => &["path"],
         "petpack.import" => &["path", "expect_absent"],
@@ -1796,6 +1797,18 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 "deleted_assets": deleted_assets,
                 "next_active_pet_id": next_active_pet_id
             }))
+        }
+        "pet.assets.repair" => {
+            let id = required_string(&request.params, "id")?;
+            let pet = state
+                .database
+                .get_pet(&id)?
+                .ok_or_else(|| PetCoreError::InvalidRequest(format!("pet not found: {id}")))?;
+            Ok(json!(petpack::repair_runtime_assets(
+                &state.paths,
+                &state.database,
+                &pet
+            )?))
         }
         "petpack.validate" => {
             let path = required_string(&request.params, "path")?;

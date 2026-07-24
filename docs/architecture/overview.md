@@ -43,6 +43,13 @@ First run is a three-scene root presentation, not a sixth navigation destination
 
 Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. The implementation, typed tests, and owning current-state documents enforce the page and bubble semantics.
 
+The bubble is intentionally a glanceable return surface rather than a second
+control center. A collapsed Agent group shows one highest-attention or latest
+session; an expanded group shows at most three, then routes the remainder to
+Agent Connections. Every row exposes one of the presentation intents **Busy**,
+**Needs You**, or **Ended** without changing the persisted lifecycle state, and
+the full row is the exact-session action when that typed capability exists.
+
 ## Main flows
 
 ### Startup and state delivery
@@ -51,13 +58,19 @@ Connections and bubbles use `Agent → session`; they do not introduce a project
 2. It accepts an existing PetCore only when health, RPC version, build identity, runtime manifest, and connector environment match the bundled runtime contract.
 3. Otherwise it stages and preflights the bundled PetCore/CLI runtime, replaces the old service, health-checks the candidate, and commits or rolls back the managed runtime.
 4. At bootstrap start, the App arms a short independent fallback that reveals system appearance if PetCore startup or the focused behavior read stalls or fails. Once PetCore is healthy, the App reads versioned behavior settings through PetCore and applies the persisted appearance before revealing the control-center and About windows; bundled-pet seeding cannot keep the windows invisible. The App does not mirror settings into App-local storage or read SQLite directly.
-5. The App seeds the fixed bundled-pet inventory without overwriting an existing same-ID pet.
+5. The App seeds the fixed bundled-pet inventory without overwriting an existing same-ID pet. A preserved same-ID pet remains an eligible included-companion choice during an upgrade, but stable ID eligibility never grants bundled read-only authority.
 6. The App reads `state.snapshot`, including versioned onboarding progress, and applies it as the final appearance/state authority. It presents the nonterminal first-run scene or the ordinary control center root, then presents the desktop overlay.
 7. The App subsequently waits on `state.wait`. State changes are keyed by the monotonic database revision; the App does not repeatedly reload SQLite or poll the bundle on a two-second timer.
 
 Dock reopen, second-instance activation, MenuBarExtra, and overlay actions target the registered control-center window identity. The About window is a separate scene and is never selected as the control center. Initial automatic retry and explicit user recovery coalesce onto one full bootstrap pipeline so behavior hydration, bundled-pet seeding, snapshot publication, and first overlay presentation cannot race each other.
 
 The desktop pet body remains hoverable and draggable whenever the overlay is visible. When the renderer has a valid frame alpha mask, transparent pixels may pass pointer events through; during launch, state transitions, or any interval without a mask, hit testing falls back to the geometric pet region so the pet never becomes non-interactive.
+
+Direct drag uses a bounded rubber-band presentation outside the usable screen
+region and a short critically damped velocity handoff on release. Only the
+hard-clamped final center is persisted. A new drag cancels the handoff at its
+current presentation position, reduced motion commits directly, and overlay
+transitions never disable the visible pet's pointer interaction.
 
 See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and compatibility details.
 
@@ -91,6 +104,14 @@ A successful result is committed as an immutable local pet revision. Any non-bun
 
 `.petpack` identity is the manifest ID, never the display name. Same-name/different-ID pets coexist. Imports and edits publish a staged, immutable revision, atomically update `active.json`, then commit the database row; failure restores the previous pointer and state. See [Data model](data-model.md) and the [`.petpack` V1 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md).
 
+PetCore reports bounded per-pet asset warnings in `state.snapshot`. An explicit
+repair request bypasses the cached fingerprint, revalidates the immutable
+archive, stages a fresh cover and all seven runtime-frame directories, and
+atomically replaces both runtime assets. Onboarding, Pet Library, and AI Pet
+Maker collapse an unavailable hero preview into the same compact recovery
+surface; no context presents activation or creation completion as successful
+until the refreshed authoritative snapshot has a real preview.
+
 ## Repository map
 
 ```text
@@ -114,6 +135,9 @@ logo/                       Approved reusable brand assets
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
 - Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
+- Native packaged validation seeds both included pets into a clean home and
+  proves their canonical cover plus every expected runtime frame for all seven
+  states before a release archive can pass.
 - Official V1 distribution uses explicit, fail-closed
   `build_release.sh --github-release --arch all` GitHub Release tooling. It
   emits exactly two ad-hoc-signed thin archives plus a two-entry checksum file,

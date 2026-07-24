@@ -12,15 +12,15 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
 - **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own.
-- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. Each supported concurrent session can appear in its Agent bubble, and a click opens the corresponding host or session when available.
+- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. A collapsed Agent bubble shows one session, an expanded bubble shows up to three, and overflow opens Agent Connections; the complete row opens the corresponding host or exact session when available.
 - **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file. AI Pet Maker contacts your configured Codex provider only when you start a creation or edit.
 
 ## Features
 
-- **Pet Library** — use the bundled `星雾团子` and `Bytebud 字节芽`, or import, preview, enable, export, and manage your own `.petpack` pets.
+- **Pet Library** — use the bundled `星雾团子` and `Bytebud 字节芽`, or import, preview, enable, export, and manage your own `.petpack` pets. A damaged local preview can be revalidated and rebuilt from its immutable package.
 - **AI Pet Maker** — describe a pet, choose its style and quality, add reference images, then create or refine it through Codex.
 - **Pet Configuration** — choose visibility, appearance, Standard/Smooth motion, and a message-attention preset; source, event, timeout, grouping, and interaction controls remain available under Advanced Settings.
-- **Agent Connections** — check, repair, test, or remove integrations for Codex, Claude Code, Pi Coding Agent, and OpenCode.
+- **Agent Connections** — separately shows local integration health and real-task verification, with typed check, repair, test, and managed-removal actions for Codex, Claude Code, Pi Coding Agent, and OpenCode.
 - **Service & Diagnostics** — confirm that the companion is working, recover unhealthy services, and export a privacy-filtered diagnostics ZIP when support needs more detail.
 - **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
 

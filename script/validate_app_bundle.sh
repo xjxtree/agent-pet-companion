@@ -502,6 +502,47 @@ import json
 import os
 import pathlib
 import sqlite3
+import struct
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v2"
+REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+
+
+def png_dimensions(path):
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(
+            f"app bundle validation failed: render asset is not a regular file: {path}"
+        )
+    with path.open("rb") as file:
+        header = file.read(24)
+    if (
+        len(header) != 24
+        or header[:8] != PNG_SIGNATURE
+        or header[12:16] != b"IHDR"
+    ):
+        raise SystemExit(
+            f"app bundle validation failed: render asset is not a structurally valid PNG: {path}"
+        )
+    width, height = struct.unpack(">II", header[16:24])
+    if width <= 0 or height <= 0:
+        raise SystemExit(
+            f"app bundle validation failed: render asset has invalid dimensions: {path}"
+        )
+    return width, height
+
+
+def require_managed(path, root, label, pet_id):
+    if path.is_symlink():
+        raise SystemExit(
+            f"app bundle validation failed: {label} must not be a symlink: {pet_id}"
+        )
+    resolved = path.resolve()
+    if root != resolved and root not in resolved.parents:
+        raise SystemExit(
+            f"app bundle validation failed: {label} is outside the managed pet store: {pet_id}"
+        )
+    return resolved
 
 seed = json.loads(os.environ["BUNDLED_SEED"])
 pets = json.loads(os.environ["BUNDLED_PETS"])
@@ -527,8 +568,98 @@ for pet_id in expected_ids:
     if pet.get("provenance") != "apc.bundled-pets.v1":
         raise SystemExit(f"app bundle validation failed: bundled provenance mismatch: {pet_id}")
     package_path = pathlib.Path(pet.get("petpack_path", ""))
-    if not package_path.is_file() or managed_pets_root not in package_path.resolve().parents:
+    if package_path.is_symlink() or not package_path.is_file():
         raise SystemExit(f"app bundle validation failed: installed bundled package is unavailable: {pet_id}")
+    package_path = require_managed(
+        package_path, managed_pets_root, "installed bundled package", pet_id
+    )
+
+    cover_path = require_managed(
+        pathlib.Path(pet.get("cover_path", "")),
+        managed_pets_root,
+        "bundled cover",
+        pet_id,
+    )
+    expected_cover_path = package_path.parent / f"{pet_id}-cover.png"
+    if cover_path != expected_cover_path:
+        raise SystemExit(
+            "app bundle validation failed: bundled cover path is not canonical: "
+            f"{pet_id}; got {cover_path}, expected {expected_cover_path}"
+        )
+    png_dimensions(cover_path)
+
+    render_size = pet.get("render_size")
+    native_fps = pet.get("native_fps")
+    durations = pet.get("state_durations_ms")
+    if (
+        not isinstance(render_size, dict)
+        or not isinstance(render_size.get("width"), int)
+        or not isinstance(render_size.get("height"), int)
+        or native_fps not in (10, 20)
+        or not isinstance(durations, dict)
+        or tuple(sorted(durations)) != tuple(sorted(REQUIRED_STATES))
+    ):
+        raise SystemExit(
+            f"app bundle validation failed: bundled render contract is malformed: {pet_id}"
+        )
+
+    frames_root = require_managed(
+        package_path.parent / f"{pet_id}-frames",
+        managed_pets_root,
+        "bundled runtime frames",
+        pet_id,
+    )
+    if frames_root.is_symlink() or not frames_root.is_dir():
+        raise SystemExit(
+            f"app bundle validation failed: bundled runtime frame directory is unavailable: {pet_id}"
+        )
+    marker_path = frames_root / ".apc-runtime-assets.json"
+    if marker_path.is_symlink() or not marker_path.is_file():
+        raise SystemExit(
+            f"app bundle validation failed: bundled runtime completion marker is unavailable: {pet_id}"
+        )
+    with marker_path.open("r", encoding="utf-8") as file:
+        marker = json.load(file)
+    if (
+        marker.get("schema_version") != RUNTIME_ASSET_SCHEMA
+        or marker.get("pet_id") != pet_id
+        or marker.get("render_size") != render_size
+        or marker.get("native_fps") != native_fps
+        or marker.get("state_durations_ms") != durations
+        or not isinstance(marker.get("states"), dict)
+        or tuple(sorted(marker["states"])) != tuple(sorted(REQUIRED_STATES))
+    ):
+        raise SystemExit(
+            f"app bundle validation failed: bundled runtime marker mismatch: {pet_id}"
+        )
+
+    expected_dimensions = (render_size["width"], render_size["height"])
+    for state in REQUIRED_STATES:
+        duration = durations[state]
+        if duration not in (1000, 2000):
+            raise SystemExit(
+                f"app bundle validation failed: bundled state duration is invalid: {pet_id}/{state}"
+            )
+        expected_count = native_fps * duration // 1000
+        state_dir = frames_root / state
+        if state_dir.is_symlink() or not state_dir.is_dir():
+            raise SystemExit(
+                f"app bundle validation failed: bundled runtime state is unavailable: {pet_id}/{state}"
+            )
+        frames = sorted(
+            path
+            for path in state_dir.iterdir()
+            if path.suffix.lower() == ".png"
+        )
+        if len(frames) != expected_count or marker["states"].get(state) != expected_count:
+            raise SystemExit(
+                f"app bundle validation failed: bundled runtime frame count mismatch: {pet_id}/{state}"
+            )
+        for frame in frames:
+            if png_dimensions(frame) != expected_dimensions:
+                raise SystemExit(
+                    f"app bundle validation failed: bundled runtime frame dimensions mismatch: {pet_id}/{state}"
+                )
 if by_id["pet_xingwutuanzi"].get("active") is not True:
     raise SystemExit("app bundle validation failed: first clean-home bundled pet is not active")
 if by_id["pet_bytebudcodex"].get("active") is not False:
