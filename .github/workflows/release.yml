@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Resolve immutable release identity
+      - name: Resolve release identity
         id: release_identity
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -80,6 +80,14 @@ jobs:
           )"
           test "$version" = "$source_version"
           grep -q "^## \\[$version\\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" CHANGELOG.md
+          previous_tag="$(
+            git describe \
+              --tags \
+              --match 'v[0-9]*.[0-9]*.[0-9]*' \
+              --abbrev=0 \
+              "$commit^"
+          )"
+          ./script/validate_codex_plugin_version.py --base-ref "$previous_tag"
           {
             echo "tag=$tag"
             echo "version=$version"
@@ -176,7 +184,7 @@ jobs:
             echo "checksum_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Upload immutable release candidate
+      - name: Upload release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: AgentPetCompanion-${{ steps.release_identity.outputs.version }}-github-release
@@ -323,19 +331,28 @@ jobs:
             --tag "$RELEASE_TAG" \
             --commit "$RELEASE_COMMIT"
 
-      - name: Create draft, download exact assets, and publish
+      - name: Create draft, download exact assets, and publish latest stable Release
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "GitHub Release already exists for $RELEASE_TAG; refusing mutable replacement" >&2
+            echo "GitHub Release already exists for $RELEASE_TAG; refusing replacement" >&2
             exit 1
           fi
 
           notes_file="$RUNNER_TEMP/apc-release-notes.md"
           {
             printf '# Agent Pet Companion %s\n\n' "$RELEASE_VERSION"
-            printf 'Download the archive matching your Mac: `arm64` for Apple silicon or `x86_64` for Intel.\n\n'
+            printf '## Update in three steps / 三步更新\n\n'
+            printf '1. Download and unzip the archive for this Mac.\n'
+            printf '2. Quit Agent Pet Companion, move the new App to Applications, and choose Replace.\n'
+            printf '3. Open the new App from Applications.\n\n'
+            printf '1. 下载并解压适用于这台 Mac 的归档。\n'
+            printf '2. 退出 Agent Pet Companion，将新版移入“应用程序”，并选择“替换”。\n'
+            printf '3. 从“应用程序”打开新版。\n\n'
+            printf 'Your pets, settings, history, and active work stay on this Mac and are preserved.\n\n'
+            printf '你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。\n\n'
+            printf 'Apple silicon uses `macos-arm64`; Intel uses `macos-x86_64`. Download `SHA256SUMS.txt` with the ZIP and verify the selected archive before replacing the App.\n\n'
+            printf 'Apple 芯片使用 `macos-arm64`，Intel 使用 `macos-x86_64`。请同时下载 `SHA256SUMS.txt`，并在替换 App 前核对所选归档。\n\n'
             printf '**First launch:** these Apps are ad-hoc signed, are not Developer ID signed, and are not Apple-notarized. If macOS blocks the App, Control-click it in Finder and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**. Only continue if you downloaded it from this GitHub Release and its SHA-256 matches the published checksum.\n\n'
-            printf '请选择与 Mac 匹配的归档：Apple 芯片使用 `arm64`，Intel 使用 `x86_64`。\n\n'
             printf '**首次打开：** 当前 App 使用 ad-hoc 签名，没有 Developer ID 签名，也未经过 Apple 公证。如果 macOS 阻止打开，请在 Finder 中按住 Control 点按 App 并选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。仅在文件来自本 GitHub Release 且 SHA-256 与校验和一致时继续。\n'
           } >"$notes_file"
 
@@ -350,9 +367,10 @@ jobs:
             --title "Agent Pet Companion $RELEASE_VERSION" \
             --notes-file "$notes_file"
 
-          draft_created=1
+          release_created=1
+          release_published=0
           cleanup_draft() {
-            if [[ "$draft_created" == "1" ]]; then
+            if [[ "$release_created" == "1" && "$release_published" == "0" ]]; then
               gh release delete "$RELEASE_TAG" --yes >/dev/null 2>&1 || true
             fi
           }
@@ -378,8 +396,30 @@ jobs:
           ./script/verify_remote_release_tag.sh \
             --tag "$RELEASE_TAG" \
             --commit "$RELEASE_COMMIT"
-          gh release edit "$RELEASE_TAG" --draft=false
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          release_published=1
           ./script/verify_remote_release_tag.sh \
             --tag "$RELEASE_TAG" \
             --commit "$RELEASE_COMMIT"
-          draft_created=0
+
+          published_json="$RUNNER_TEMP/apc-published-release.json"
+          latest_json="$RUNNER_TEMP/apc-latest-release.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            >"$published_json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/latest" \
+            >"$latest_json"
+          ./script/validate_github_release_api.py \
+            --release-json "$published_json" \
+            --latest-json "$latest_json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "$RELEASE_VERSION" \
+            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
+            --x86-64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+          release_created=0

@@ -26,6 +26,8 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Verify Apple Command Line Tools and Swift baseline
         run: |
@@ -76,6 +78,11 @@ jobs:
 
       - name: Check shell and Python syntax
         run: ./script/validate_source_syntax.sh
+
+      - name: Require a Codex plugin version bump for bundled content changes
+        env:
+          BASE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: ./script/validate_codex_plugin_version.py --base-ref "$BASE_COMMIT"
 
       - name: Build and validate development app bundle
         run: ./script/build_app_bundle.sh --configuration debug

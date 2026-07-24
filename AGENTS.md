@@ -8,28 +8,18 @@ Use sources in this order when changing behavior or architecture:
 
 1. The current user request.
 2. The implementation, typed schemas, runtime manifests, and tests in the touched area.
-3. The target [product experience contract](docs/product/experience-contract.md) and, for that refactor, the ordered [product refactor execution](docs/development/product-refactor-execution.md).
-4. Durable current-state implementation documentation indexed by `docs/README.md`, including architecture, data, integration, validation, format, and release contracts when relevant.
-5. `README.md` / `README.zh-CN.md` for the supported public product surface.
+3. Durable current-state implementation documentation indexed by `docs/README.md`, including architecture, data, integration, validation, format, and release contracts when relevant.
+4. `README.md` / `README.zh-CN.md` for the supported public product surface.
 
-The repository keeps exactly one durable target product contract and one dependency-ordered implementation task document for the current product refactor. Neither document is a progress ledger: do not add dates, milestones, completion percentages, checked task states, transient pass counts, or validation logs. Fresh command output, CI artifacts, commits, issues, and release notes are the evidence for a particular task, commit, or build. If current-state prose disagrees with code, schemas, or tests, investigate the implementation and update the owning durable document instead of recording the discrepancy as status.
+The repository keeps durable current-state documentation, not completed design proposals, task plans, progress ledgers, dated audits, or implementation diaries. Fresh command output, CI artifacts, commits, issues, and release notes are the evidence for a particular task, commit, or build. If current-state prose disagrees with code, schemas, or tests, investigate the implementation and update the owning durable document instead of recording the discrepancy as status.
 
 The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope.
 
 ## Architecture And Data
 
-Before a product-refactor task, read the [product experience contract](docs/product/experience-contract.md) and execute the matching task from [product refactor execution](docs/development/product-refactor-execution.md). Before a cross-component change, also read the current [system architecture](docs/architecture/overview.md), [runtime and IPC](docs/architecture/runtime-and-ipc.md), and [data model](docs/architecture/data-model.md). Connector work also uses [Agent connector contracts](docs/integrations/agent-connectors.md); pet format work uses the [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md).
+Before a cross-component change, read the current [system architecture](docs/architecture/overview.md), [runtime and IPC](docs/architecture/runtime-and-ipc.md), and [data model](docs/architecture/data-model.md). Connector work also uses [Agent connector contracts](docs/integrations/agent-connectors.md); pet format work uses the [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md).
 
 PetCore is the normal online state owner. Keep App/PetCore/CLI runtime identities synchronized, route external data through bounded typed validation, preserve ID-based immutable pet revisions, and do not read Agent credential stores. Do not restate the complete architecture in this instruction file; update the owning document and source together.
-
-## Product Refactor Execution
-
-- Execute `R01` through `R14` in the dependency order defined by `docs/development/product-refactor-execution.md`.
-- Before changing a task, compare its acceptance contract with the current implementation. If the implementation already satisfies it, run the relevant gate and continue without a no-op rewrite or status-only commit.
-- Work on one coherent task slice at a time. Parallel branches are allowed only when the task dependency graph permits them; merge order must preserve the graph.
-- Do not mark task progress in the execution document. Use issues, commits, pull requests, CI, and release evidence.
-- A task is not complete until implementation, typed contracts, migrations, fixtures, Swift/Rust mirrors, localization, tests, changelog, and the owning current-state document agree where applicable.
-- Current implementation and tests remain the runtime truth until a task is actually implemented; do not rewrite current-state architecture documents as if a future task had already shipped.
 
 ## Repository Layout
 

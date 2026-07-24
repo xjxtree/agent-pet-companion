@@ -75,7 +75,10 @@ public struct PetCoreClient: Sendable {
         switch method {
         case "pet.history", "petpack.import", "petpack.seed_bundled", "petpack.export", "diagnostics.export":
             .seconds(120)
-        case "connections.check", "connections.repair", "connections.uninstall":
+        case "connections.check",
+             "connections.repair",
+             "connections.refresh_installed",
+             "connections.uninstall":
             .seconds(180)
         default:
             .seconds(5)

@@ -43,6 +43,33 @@ Official archives are ad-hoc signed. They are not Developer ID signed or Apple-n
 
 This is direct distribution through GitHub Releases, not Mac App Store publication. Apple silicon Macs should use the `arm64` archive rather than running the `x86_64` build through Rosetta.
 
+### Updating an installed App
+
+Agent Pet Companion quietly checks GitHub's latest stable Release after a
+healthy launch and at most once per 24 hours. You can always run **Check for
+Updates…** from the App menu or About window. The App accepts only a newer
+stable `vX.Y.Z` Release with the exact official asset inventory and SHA-256
+metadata reported by GitHub; it does not automatically download or install the
+update. The repository does not require GitHub's Immutable Releases setting,
+so verify the downloaded ZIP before replacing the installed App.
+
+When an update is available:
+
+1. use **Download for This Mac** to download and unzip the exact architecture
+   ZIP;
+2. quit Agent Pet Companion, move the new App to `/Applications`, and choose
+   **Replace**;
+3. open the new App from Applications, using Finder **Open** or **System
+   Settings → Privacy & Security → Open Anyway** if macOS requests first-open
+   approval.
+
+The update guide appears next to the download action, at the top of the GitHub
+Release, and whenever a release App is opened outside Applications. After the
+new App starts, it preserves pets and settings while bringing PetCore, the CLI,
+managed Agent connectors, the Codex plugin, and bundled pet-making Skills to
+the versions shipped with that App. A problem with one Agent remains isolated
+to that connection.
+
 ### Build from source
 
 Requirements: macOS 14+, Apple Command Line Tools with Swift 6 and a macOS SDK, the Rust toolchain pinned by `rust-toolchain.toml`, and Python 3. Full Xcode is optional for this SwiftPM project.
@@ -93,8 +120,6 @@ The macOS App owns the control center, menu-bar entry, desktop overlay, and rend
 | Document | Purpose |
 |---|---|
 | [Documentation index](docs/README.md) | Durable technical documentation and maintenance rules |
-| [Product experience contract](docs/product/experience-contract.md) | Target product model and non-negotiable experience decisions |
-| [Product refactor execution](docs/development/product-refactor-execution.md) | Dependency-ordered implementation tasks without schedules or milestones |
 | [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet format and producer contract |
 | [Contributing](CONTRIBUTING.md) | Development workflow and validation entrypoints |
 | [Changelog](CHANGELOG.md) | Versioned user-visible changes for every GitHub Release |

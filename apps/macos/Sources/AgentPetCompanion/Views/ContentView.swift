@@ -6,7 +6,9 @@ struct ContentView: View {
     @State private var appliedShellMode: ControlCenterShellMode?
 
     var body: some View {
-        if store.shouldPresentOnboarding {
+        if store.shouldBlockForAppUpdateConvergence {
+            AppUpdateConvergenceBlockingView()
+        } else if store.shouldPresentOnboarding {
             OnboardingView()
         } else {
             GeometryReader { geometry in
@@ -21,6 +23,14 @@ struct ContentView: View {
                         )
                 } detail: {
                     VStack(spacing: 0) {
+                        AppUpdateConvergenceBanner()
+                            .padding(.horizontal, 24)
+                            .padding(.top, 14)
+                        AppUpdateAvailableBanner(updater: store.appUpdater) {
+                            store.appUpdater.presentAvailableUpdate()
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 14)
                         if let recoveryBanner,
                            store.selection != .diagnostics
                         {

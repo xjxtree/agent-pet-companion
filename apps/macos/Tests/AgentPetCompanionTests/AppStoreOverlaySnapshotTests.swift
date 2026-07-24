@@ -133,6 +133,54 @@ struct AppStoreOverlaySnapshotTests {
     }
 
     @MainActor
+    @Test
+    func debouncedOverlayPlacementBlocksHandoffUntilTheSaveFinishes() async throws {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, _, _ in
+                guard method == "overlay.placement.update" else {
+                    throw PetCoreClientError.rpcError(
+                        "Unexpected test RPC: \(method)"
+                    )
+                }
+                return [:]
+            }
+        )
+        try store.applyStateSnapshot([
+            "revision": "placement-1",
+            "behavior": try jsonObject(BehaviorSettings()),
+            "behavior_revision": "1",
+            "overlay_placement": try jsonObject(OverlayPlacement()),
+            "pets": [],
+            "events": [],
+            "connections": [],
+        ])
+
+        for _ in 0..<100 where !store.isSafeForAppUpdateHandoff {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(store.isSafeForAppUpdateHandoff)
+
+        store.moveOverlayPet(
+            to: CGPoint(x: 500, y: 400),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1_200, height: 800),
+            commit: true
+        )
+        #expect(!store.isSafeForAppUpdateHandoff)
+
+        for _ in 0..<100 where !store.isSafeForAppUpdateHandoff {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(store.isSafeForAppUpdateHandoff)
+    }
+
+    @MainActor
     private func makeStore() -> AppStore {
         AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(

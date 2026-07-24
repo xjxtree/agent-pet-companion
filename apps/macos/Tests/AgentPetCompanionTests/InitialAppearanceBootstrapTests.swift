@@ -185,6 +185,42 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
+    func managedRuntimeUpgradeUsesTheBrandedBlockingStateFromBootstrapStart() async {
+        let startupGate = InitialAppearanceReadyGate()
+        let defaults = UserDefaults(
+            suiteName: "InitialAppearanceBootstrapTests.\(UUID().uuidString)"
+        )!
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: {
+                    await startupGate.waitForRelease()
+                    return .alreadyHealthy
+                },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            productConvergenceNoticePreferences: ProductConvergenceNoticePreferences(
+                defaults: defaults
+            ),
+            productConvergenceManifest: Self.releaseManifest(),
+            productConvergenceUpgradeEvidence: { _ in true }
+        )
+
+        let bootstrap = Task { @MainActor in
+            await store.bootstrapIfNeeded()
+        }
+        await startupGate.waitUntilStarted()
+
+        #expect(store.appUpdateConvergenceState == .updating)
+        #expect(store.shouldBlockForAppUpdateConvergence)
+
+        await startupGate.release()
+        await bootstrap.value
+    }
+
+    @MainActor
+    @Test
     func concurrentSnapshotCannotPresentOverlayUntilInitialReadyPipelineFinishes() async throws {
         let seedGate = InitialAppearanceReadyGate()
         let probe = InitialAppearanceProbe()
@@ -399,6 +435,47 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
+    func bootstrapDoesNotBecomeReadyUntilAnAuthoritativeSnapshotLoads() async throws {
+        let probe = InitialAppearanceProbe()
+        let snapshot = try Self.stateSnapshotPayload(
+            behavior: BehaviorSettings(appearanceTheme: .system),
+            behaviorRevision: "1",
+            pets: []
+        )
+        var readyAttempts = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { store in
+                    readyAttempts += 1
+                    if readyAttempts == 2 {
+                        try? store.applyStateSnapshot(snapshot)
+                    }
+                },
+                requiresAuthoritativeSnapshotOnReady: true
+            ),
+            overlayPresenter: { _, _ in probe.overlayPresentations += 1 }
+        )
+
+        await store.bootstrapIfNeeded()
+
+        #expect(readyAttempts == 1)
+        #expect(!store.hasLoadedStateSnapshot)
+        #expect(store.petCoreOperationalState == .offline)
+        #expect(store.serviceStatusText == "PetCore 状态同步失败")
+        #expect(probe.overlayPresentations == 0)
+
+        #expect(await store.recoverServiceConnection())
+        #expect(readyAttempts == 2)
+        #expect(store.hasLoadedStateSnapshot)
+        #expect(store.petCoreOperationalState == .online)
+        #expect(probe.overlayPresentations == 1)
+    }
+
+    @MainActor
+    @Test
     func completeSnapshotFinallyArbitratesAppearanceAndOnlyThenPresentsOverlay() async throws {
         let probe = InitialAppearanceProbe()
         let prefetchedBehavior = BehaviorSettings(appearanceTheme: .dark)
@@ -505,6 +582,31 @@ struct InitialAppearanceBootstrapTests {
             "events": [],
             "connections": [],
         ]
+    }
+
+    private static func releaseManifest() -> RuntimeReleaseManifest {
+        RuntimeReleaseManifest(
+            schemaVersion: RuntimeReleaseManifest.schemaVersion,
+            releaseChannel: "release",
+            appVersion: "0.3.0",
+            appBuild: "1",
+            buildID: "build-new",
+            petCoreRPCProtocol: PetCoreRuntimeContract.requiredRPCProtocol,
+            petCoreBuildID: "build-new",
+            petCoreCLIBuildID: "build-new",
+            minimumDatabaseSchemaVersion: 1,
+            maximumDatabaseSchemaVersion: 6,
+            agentEventSchemaVersion: "apc.agent-event.v1",
+            petpackSchemaVersion: "apc.petpack.v1",
+            petpackReadVersions: ["apc.petpack.v1"],
+            petpackWriteVersion: "apc.petpack.v1",
+            connectorContracts: RuntimeConnectorContracts(
+                codex: "codex-hooks.v1",
+                claudeCode: "claude-hooks.v1",
+                pi: "pi-extension.v1",
+                opencode: "opencode-plugin.v1"
+            )
+        )
     }
 
     private static func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {

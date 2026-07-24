@@ -325,7 +325,7 @@ struct OnboardingView: View {
             ),
             primaryAction: AgentConnectionsPresentation.primaryActionPresentation(
                 for: presentation,
-                busy: store.connectionOperationState.isRunning
+                busy: !store.canStartConnectionOperation
                     || store.onboardingMutationInFlight
             )
         ) { action in
@@ -502,7 +502,7 @@ struct OnboardingView: View {
         case .connectAgents:
             guard store.onboardingAvailability == .ready,
                   store.connections.isEmpty,
-                  !store.connectionOperationState.isRunning
+                  store.canStartConnectionOperation
             else { return }
             store.checkAllConnections()
         case .demo:
@@ -579,7 +579,7 @@ struct OnboardingView: View {
             else { return }
             pendingRepairSource = presentation.source
         case .verify:
-            guard !store.connectionOperationState.isRunning else { return }
+            guard store.canStartConnectionOperation else { return }
             store.checkConnection(presentation.source)
         case .retry:
             store.retryConnectionOperation()

@@ -272,6 +272,43 @@ struct BehaviorSettingsViewTests {
 
     @MainActor
     @Test
+    func queuedBehaviorWriteBlocksAppHandoffUntilItIsPersisted() async throws {
+        let gate = BehaviorPersistenceGate()
+        var persisted = BehaviorSettings()
+        persisted.autoHide = true
+        let persistedObject = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(persisted)
+        )
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, _, _ in
+                guard method == "behavior.patch" else {
+                    throw PetCoreClientError.rpcError("Unexpected test RPC: \(method)")
+                }
+                await gate.wait()
+                return [
+                    "behavior": persistedObject,
+                    "revision": "1",
+                ]
+            }
+        )
+
+        store.updateBehavior(persisted)
+        await gate.waitUntilBlocked()
+        #expect(!store.isSafeForAppUpdateHandoff)
+
+        await gate.open()
+        await store.waitForBehaviorPersistence()
+        #expect(store.isSafeForAppUpdateHandoff)
+    }
+
+    @MainActor
+    @Test
     func revisionConflictRefreshesAndRetriesWithoutLosingTheLocalChoice() async throws {
         var remote = BehaviorSettings()
         remote.appearanceTheme = .dark
@@ -481,5 +518,34 @@ private final class BehaviorPersistenceProbe {
     private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {
         let data = try JSONEncoder().encode(value)
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+}
+
+private actor BehaviorPersistenceGate {
+    private var isOpen = false
+    private var operationContinuation: CheckedContinuation<Void, Never>?
+    private var blockedContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        let waiters = blockedContinuations
+        blockedContinuations.removeAll()
+        waiters.forEach { $0.resume() }
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            operationContinuation = continuation
+        }
+    }
+
+    func waitUntilBlocked() async {
+        guard operationContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            blockedContinuations.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        operationContinuation?.resume()
+        operationContinuation = nil
     }
 }

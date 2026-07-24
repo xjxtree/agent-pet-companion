@@ -105,6 +105,7 @@ BUNDLED_SKILL="$APP_RESOURCES/skills/agent-pet-studio/SKILL.md"
 SOURCE_SKILL="$ROOT_DIR/skills/agent-pet-studio/SKILL.md"
 BUNDLED_PORTABLE_SKILL="$APP_RESOURCES/skills/agent-pet-maker"
 SOURCE_PORTABLE_SKILL="$ROOT_DIR/skills/agent-pet-maker"
+SOURCE_CODEX_PLUGIN_MANIFEST="$ROOT_DIR/plugins/codex/.codex-plugin/plugin.json"
 LOCALIZATION_BUNDLE="$APP_RESOURCES/AgentPetCompanion_AgentPetCompanion.bundle"
 BUNDLE_ICON="$APP_RESOURCES/AgentPetCompanion.icns"
 SOURCE_ICON="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
@@ -545,8 +546,73 @@ PY
     APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null
   done
 
+  INSTALLED_CODEX_PLUGIN="$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion"
+  if ! python3 - \
+    "$SOURCE_CODEX_PLUGIN_MANIFEST" \
+    "$INSTALLED_CODEX_PLUGIN/.codex-plugin/plugin.json" <<'PY'
+import json
+import pathlib
+import sys
+
+MAX_PLUGIN_MANIFEST_BYTES = 64 * 1024
+
+
+def reject_duplicate_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key")
+        value[key] = item
+    return value
+
+
+def load_manifest(raw_path):
+    path = pathlib.Path(raw_path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("plugin manifest is not a regular file")
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_PLUGIN_MANIFEST_BYTES:
+        raise ValueError("plugin manifest has an invalid size")
+    return json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate_keys,
+    )
+
+
+try:
+    source = load_manifest(sys.argv[1])
+    installed = load_manifest(sys.argv[2])
+except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if source == installed else 1)
+PY
+  then
+    echo 'app bundle validation failed: packaged PetCore emitted a stale Codex plugin manifest' >&2
+    exit 1
+  fi
+  cmp -s \
+    "$BUNDLED_SKILL" \
+    "$INSTALLED_CODEX_PLUGIN/skills/agent-pet-studio/SKILL.md" || {
+      echo 'app bundle validation failed: packaged PetCore emitted a stale Studio Skill' >&2
+      exit 1
+    }
+  while IFS= read -r -d '' source_path; do
+    relative_path="${source_path#"$BUNDLED_PORTABLE_SKILL/"}"
+    cmp -s \
+      "$source_path" \
+      "$INSTALLED_CODEX_PLUGIN/skills/agent-pet-maker/$relative_path" || {
+        printf 'app bundle validation failed: packaged PetCore emitted stale Maker Skill file %s\n' \
+          "$relative_path" >&2
+        exit 1
+      }
+  done < <(
+    find "$BUNDLED_PORTABLE_SKILL" \
+      -type d -name __pycache__ -prune -o \
+      -type f ! -name '*.pyc' ! -name '*.pyo' -print0
+  )
+
   grep -qF "$PETCORE_CLI" \
-    "$TMP_DIR/agent-home/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
+    "$INSTALLED_CODEX_PLUGIN/hooks/hooks.json"
   CLAUDE_HELPER="$TMP_DIR/home/connectors/claude-code/agent-pet-companion-hook.sh"
   grep -qF "$CLAUDE_HELPER" "$TMP_DIR/agent-home/.claude/settings.json"
   grep -qF "$PETCORE_CLI" "$CLAUDE_HELPER"

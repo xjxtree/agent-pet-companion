@@ -67,4 +67,68 @@ struct BundledPetInventoryTests {
     func seedRPCUsesTheBoundedPetpackTimeout() {
         #expect(PetCoreClient.defaultTimeout(for: "petpack.seed_bundled") == .seconds(120))
     }
+
+    @Test
+    func seedResponseRequiresTheExactClosedInventory() throws {
+        let value = try seedResponseValue(
+            petIDs: BundledPetInventory.petIDs
+        )
+        let response = try BundledPetInventory.validatedSeedResponse(value)
+
+        #expect(response.inventory == BundledPetInventory.identifier)
+        #expect(response.outcomes.map(\.petID) == BundledPetInventory.petIDs)
+    }
+
+    @Test
+    func seedResponseRejectsMalformedPartialAndDuplicateOutcomes() throws {
+        #expect(throws: PetCoreClientError.self) {
+            try BundledPetInventory.validatedSeedResponse([
+                "inventory": BundledPetInventory.identifier,
+                "outcomes": "not-an-array",
+            ])
+        }
+        #expect(throws: PetCoreClientError.self) {
+            try BundledPetInventory.validatedSeedResponse(
+                try seedResponseValue(petIDs: ["pet_xingwutuanzi"])
+            )
+        }
+        #expect(throws: PetCoreClientError.self) {
+            try BundledPetInventory.validatedSeedResponse(
+                try seedResponseValue(
+                    petIDs: ["pet_xingwutuanzi", "pet_xingwutuanzi"]
+                )
+            )
+        }
+    }
+
+    private func seedResponseValue(petIDs: [String]) throws -> [String: Any] {
+        [
+            "inventory": BundledPetInventory.identifier,
+            "outcomes": try petIDs.map { petID in
+                [
+                    "pet_id": petID,
+                    "status": "preserved_existing_id",
+                    "pet": try jsonObject(PetSummary(
+                        id: petID,
+                        name: petID,
+                        style: "semi-realistic",
+                        quality: .standard,
+                        renderSize: RenderSize(width: 192, height: 208),
+                        petpackPath: "/tmp/\(petID).petpack",
+                        coverPath: "/tmp/\(petID).png",
+                        active: false,
+                        createdAt: "2026-07-24T00:00:00Z"
+                    )),
+                ] as [String: Any]
+            },
+        ]
+    }
+
+    private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {
+        try #require(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(value)
+            ) as? [String: Any]
+        )
+    }
 }

@@ -43,6 +43,26 @@ App 采用本地优先设计：宠物、设置、归一化 Agent 事件与诊断
 
 这是通过 GitHub Releases 进行的直接分发，不是发布到 Mac App Store。Apple 芯片 Mac 应直接使用 `arm64`，不要通过 Rosetta 运行 `x86_64` 包。
 
+### 更新已安装的 App
+
+Agent Pet Companion 会在健康启动后安静检查 GitHub 的 latest stable Release，
+每 24 小时至多一次。你也可以随时从 App 菜单或“关于”窗口选择**检查更新…**。
+App 只接受版本更高、资产清单以及 GitHub 返回的 SHA-256 元数据完全匹配的
+`vX.Y.Z` 正式版本；它不会自动下载或安装更新。仓库不要求开启 GitHub
+Immutable Releases，因此替换已安装 App 前仍需校验下载的 ZIP。
+
+发现更新后只需三步：
+
+1. 选择**下载适用于此 Mac 的新版**，下载并解压当前架构的精确 ZIP；
+2. 退出 Agent Pet Companion，将新版移入 `/Applications`，并选择**替换**；
+3. 从“应用程序”打开新版；如果 macOS 要求首次打开授权，使用 Finder 的**打开**
+   或**系统设置 → 隐私与安全性 → 仍要打开**。
+
+更新引导会出现在下载动作旁、GitHub Release 顶部，以及正式版 App 从非
+“应用程序”位置打开时。新版启动后会保留宠物与设置，并将 PetCore、CLI、此前已
+受管的 Agent 连接器、Codex 插件与宠物制作 Skills 收敛到随新版发布的版本。某个
+Agent 更新失败只影响该连接。
+
 ### 从源码构建
 
 需要 macOS 14+、包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。本 SwiftPM 项目不强制安装完整 Xcode。
@@ -93,8 +113,6 @@ macOS App 负责控制中心、状态栏入口、桌面悬浮层和渲染；PetC
 | 文档 | 用途 |
 |---|---|
 | [文档索引](docs/README.md) | 长期技术文档入口与维护规则 |
-| [产品体验合同](docs/product/experience-contract.md) | 目标产品模型与不可妥协的体验决策 |
-| [产品重构实施任务](docs/development/product-refactor-execution.md) | 不包含排期与里程碑、按依赖顺序执行的工程任务 |
 | [`.petpack` V1 规范](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | 可移植宠物格式与生产者契约 |
 | [参与贡献](CONTRIBUTING.md) | 开发流程与验证入口 |
 | [版本变更记录](CHANGELOG.md) | 每个 GitHub Release 对应的用户可见变更 |

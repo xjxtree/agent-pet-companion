@@ -987,24 +987,7 @@ fn run_connections(mut args: Vec<String>) -> Result<()> {
                     json!({}),
                 )?);
             }
-            let refreshed = [
-                AgentSource::Codex,
-                AgentSource::ClaudeCode,
-                AgentSource::Pi,
-                AgentSource::Opencode,
-            ]
-            .into_iter()
-            .map(|source| {
-                let result = connections::refresh_installed_source(&paths, source);
-                json!({
-                    "source": source,
-                    "refreshed": result.as_ref().copied().unwrap_or(false),
-                    "ok": result.is_ok(),
-                    "error": result.err().map(|error| error.to_string()),
-                })
-            })
-            .collect::<Vec<_>>();
-            print_json(json!({ "results": refreshed }))
+            print_json(json!(connections::refresh_installed_sources(&paths)))
         }
         "uninstall" => {
             let source = connection_source_arg(&mut args, "uninstall", true)?.ok_or_else(|| {

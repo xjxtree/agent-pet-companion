@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Testing
 @testable import AgentPetCompanion
@@ -501,6 +502,52 @@ struct PetCoreProcessManagerTests {
         #expect(AppActivationRequest(bundlePath: request.bundlePath, buildID: "\n") == nil)
     }
 
+    @Test
+    func runtimeReplacementDistinguishesProtectedRecoverableAndUnknownWork() {
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": ["job_id": "job-1", "status": "running"]
+        ]) == .protectedWork)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": ["job_id": "job-1", "status": "pending"]
+        ]) == .protectedWork)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": ["job_id": "job-1", "status": "waiting_for_user"]
+        ]) == .legacyConnectionStateNeedsProbe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": ["job_id": "job-1", "status": "waiting_for_user"],
+            "connection_operation_active": false
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": NSNull(),
+            "connection_operation_active": true
+        ]) == .protectedWork)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": NSNull(),
+            "connection_operation_active": false
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": NSNull()
+        ]) == .legacyConnectionStateNeedsProbe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [:]) == .unknown)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(
+            snapshotValue: "invalid"
+        ) == .unknown)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assessLegacyConnectionProbeError(
+            PetCoreClientError.rpcError(
+                "another Agent connection operation is already running; wait for it to finish"
+            )
+        ) == .protectedWork)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assessLegacyConnectionProbeError(
+            PetCoreClientError.rpcError("unknown method connections.test")
+        ) == .unknown)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSnapshotError(
+            PetCoreTransportError.timedOut
+        ))
+        #expect(!PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSnapshotError(
+            PetCoreTransportError.systemCall(operation: "connect", code: ECONNREFUSED)
+        ))
+    }
+
     @MainActor
     @Test
     func requestedBuildHandoffRequiresValidatedDifferentAppBuild() throws {
@@ -525,23 +572,308 @@ struct PetCoreProcessManagerTests {
             requestedBundleURL: bundle,
             expectedBundleIdentifier: "dev.agentpet.companion"
         ))
+        #expect(AppUpdateHandoffCoordinator.manualInstallationRequest(
+            launchedBuildID: "build-old",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion"
+        ) == nil)
+
+        let releasePlist = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "APCBuildID": "build-new",
+                "APCReleaseChannel": "release",
+                "CFBundleIdentifier": "dev.agentpet.companion",
+                "CFBundleShortVersionString": "0.1.0",
+                "CFBundleVersion": "1"
+            ],
+            format: .xml,
+            options: 0
+        )
+        try releasePlist.write(to: contents.appendingPathComponent("Info.plist"))
+        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        try JSONEncoder().encode(
+            runtimeManifest(buildID: "build-new", releaseChannel: "release")
+        ).write(to: resources.appendingPathComponent("runtime-manifest.json"))
+
+        #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-old",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion"
+        ))
+        #expect(AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-old",
+            requestedBuildID: "build-new",
+            requestedBundleURL: bundle,
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            canonicalBundleURL: bundle
+        ))
+        #expect(AppUpdateHandoffCoordinator.isStillValidHandoffTarget(
+            bundleURL: bundle,
+            expectedBuildID: "build-new",
+            expectedVersion: "0.1.0",
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            requiresRelease: true,
+            canonicalBundleURL: bundle
+        ))
+        let manualInstallation = try #require(
+            AppUpdateHandoffCoordinator.manualInstallationRequest(
+                launchedBuildID: "build-old",
+                requestedBuildID: "build-new",
+                requestedBundleURL: bundle,
+                expectedBundleIdentifier: "dev.agentpet.companion"
+            )
+        )
+        #expect(manualInstallation.origin == .secondaryDownloadedBuild)
+        #expect(manualInstallation.candidateBundleURL == bundle.standardizedFileURL)
         #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
             launchedBuildID: "build-new",
             requestedBuildID: "build-new",
             requestedBundleURL: bundle,
-            expectedBundleIdentifier: "dev.agentpet.companion"
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            canonicalBundleURL: bundle
         ))
         #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
             launchedBuildID: "build-old",
             requestedBuildID: "forged-build",
             requestedBundleURL: bundle,
-            expectedBundleIdentifier: "dev.agentpet.companion"
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            canonicalBundleURL: bundle
         ))
         #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
             launchedBuildID: "build-old",
             requestedBuildID: "build-new",
             requestedBundleURL: bundle,
-            expectedBundleIdentifier: "dev.agentpet.another-app"
+            expectedBundleIdentifier: "dev.agentpet.another-app",
+            canonicalBundleURL: bundle
+        ))
+
+        try Data("{}".utf8).write(
+            to: resources.appendingPathComponent("runtime-manifest.json")
+        )
+        #expect(!AppUpdateHandoffCoordinator.isStillValidHandoffTarget(
+            bundleURL: bundle,
+            expectedBuildID: "build-new",
+            expectedVersion: "0.1.0",
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            requiresRelease: true,
+            canonicalBundleURL: bundle
+        ))
+        let invalidRelease = try #require(
+            AppUpdateHandoffCoordinator.invalidReleaseBundleRequest(
+                requestedBuildID: "build-new",
+                requestedBundleURL: bundle,
+                expectedBundleIdentifier: "dev.agentpet.companion"
+            )
+        )
+        #expect(invalidRelease.origin == .invalidReleaseBundle)
+    }
+
+    @MainActor
+    @Test
+    func copiedCanonicalReleaseCanTakeOverTheSameNoncanonicalBuild() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let downloaded = root.appendingPathComponent("Downloaded.app", isDirectory: true)
+        let canonical = root.appendingPathComponent("Applications.app", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for bundle in [downloaded, canonical] {
+            let contents = bundle.appendingPathComponent("Contents", isDirectory: true)
+            let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: resources,
+                withIntermediateDirectories: true
+            )
+            let plist = try PropertyListSerialization.data(
+                fromPropertyList: [
+                    "APCBuildID": "build-new",
+                    "APCReleaseChannel": "release",
+                    "CFBundleIdentifier": "dev.agentpet.companion",
+                    "CFBundleShortVersionString": "0.1.0",
+                    "CFBundleVersion": "1"
+                ],
+                format: .xml,
+                options: 0
+            )
+            try plist.write(to: contents.appendingPathComponent("Info.plist"))
+            try JSONEncoder().encode(
+                runtimeManifest(buildID: "build-new", releaseChannel: "release")
+            ).write(to: resources.appendingPathComponent("runtime-manifest.json"))
+        }
+
+        #expect(AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-new",
+            requestedBuildID: "build-new",
+            requestedBundleURL: canonical,
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            launchedBundleURL: downloaded,
+            canonicalBundleURL: canonical
+        ))
+        #expect(!AppUpdateHandoffCoordinator.shouldHandoff(
+            launchedBuildID: "build-new",
+            requestedBuildID: "build-new",
+            requestedBundleURL: downloaded,
+            expectedBundleIdentifier: "dev.agentpet.companion",
+            launchedBundleURL: canonical,
+            canonicalBundleURL: canonical
+        ))
+    }
+
+    @Test
+    func primaryReleaseLaunchFailsClosedForMissingOrMismatchedManifest() {
+        let outside = URL(fileURLWithPath: "/tmp/AgentPetCompanion.app")
+        let canonical = AppInstallationPolicy.canonicalBundleURL
+        let valid = runtimeManifest(buildID: "build-new", releaseChannel: "release")
+
+        let outsideRequest = AppInstallationPolicy.primaryLaunchRequest(
+            bundleURL: outside,
+            manifest: valid,
+            infoBundleIdentifier: "dev.agentpet.companion",
+            infoReleaseChannel: "release",
+            infoBuildID: "build-new",
+            infoVersion: "0.1.0",
+            infoBuild: "1"
+        )
+        #expect(outsideRequest?.origin == .launchedOutsideApplications)
+
+        let missingManifest = AppInstallationPolicy.primaryLaunchRequest(
+            bundleURL: outside,
+            manifest: nil,
+            infoBundleIdentifier: "dev.agentpet.companion",
+            infoReleaseChannel: "release",
+            infoBuildID: "build-new",
+            infoVersion: "0.1.0",
+            infoBuild: "1"
+        )
+        #expect(missingManifest?.origin == .invalidReleaseBundle)
+
+        let mismatchedIdentity = AppInstallationPolicy.primaryLaunchRequest(
+            bundleURL: canonical,
+            manifest: valid,
+            infoBundleIdentifier: "dev.agentpet.companion",
+            infoReleaseChannel: "release",
+            infoBuildID: "forged",
+            infoVersion: "0.1.0",
+            infoBuild: "1"
+        )
+        #expect(mismatchedIdentity?.origin == .invalidReleaseBundle)
+
+        let canonicalValid = AppInstallationPolicy.primaryLaunchRequest(
+            bundleURL: canonical,
+            manifest: valid,
+            infoBundleIdentifier: "dev.agentpet.companion",
+            infoReleaseChannel: "release",
+            infoBuildID: "build-new",
+            infoVersion: "0.1.0",
+            infoBuild: "1"
+        )
+        #expect(canonicalValid == nil)
+
+        let wrongBundle = AppInstallationPolicy.primaryLaunchRequest(
+            bundleURL: canonical,
+            manifest: valid,
+            infoBundleIdentifier: "dev.agentpet.fake",
+            infoReleaseChannel: "release",
+            infoBuildID: "build-new",
+            infoVersion: "0.1.0",
+            infoBuild: "1"
+        )
+        #expect(wrongBundle?.origin == .invalidReleaseBundle)
+    }
+
+    @Test
+    func installationPolicyReadsOnlyTheBundleLocalManifestAndRejectsSymlinks() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let bundle = root.appendingPathComponent(
+            "AgentPetCompanion.app",
+            isDirectory: true
+        )
+        let resources = bundle.appendingPathComponent(
+            "Contents/Resources",
+            isDirectory: true
+        )
+        let symlink = root.appendingPathComponent(
+            "LinkedAgentPetCompanion.app",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: resources,
+            withIntermediateDirectories: true
+        )
+        let manifest = runtimeManifest(
+            buildID: "bundle-local",
+            releaseChannel: "release"
+        )
+        try JSONEncoder().encode(manifest).write(
+            to: resources.appendingPathComponent("runtime-manifest.json")
+        )
+        try FileManager.default.createSymbolicLink(
+            at: symlink,
+            withDestinationURL: bundle
+        )
+
+        #expect(
+            AppInstallationPolicy.bundleLocalManifest(bundleURL: bundle)
+                == manifest
+        )
+        #expect(AppInstallationPolicy.isCanonicalBundle(
+            bundle,
+            canonicalBundleURL: bundle
+        ))
+        #expect(!AppInstallationPolicy.isCanonicalBundle(
+            symlink,
+            canonicalBundleURL: symlink
+        ))
+    }
+
+    @Test
+    func managedRuntimePointersDistinguishUpgradeFromFreshInstallation() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtime = home.appendingPathComponent("runtime", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtime,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentURL = runtime.appendingPathComponent("current.json")
+        let previousURL = runtime.appendingPathComponent("last-known-good.json")
+        try JSONEncoder().encode(
+            InstalledPetCoreRuntime(buildID: "build-new")
+        ).write(to: currentURL)
+
+        #expect(!PetCoreRuntimeUpgradeEvidence.hasPriorManagedBuild(
+            currentBuildID: "build-new",
+            homeURL: home
+        ))
+        #expect(!PetCoreRuntimeUpgradeEvidence.hasManagedUpdateContext(
+            currentBuildID: "build-new",
+            homeURL: home
+        ))
+        #expect(PetCoreRuntimeUpgradeEvidence.hasManagedUpdateContext(
+            currentBuildID: "build-next",
+            homeURL: home
+        ))
+
+        try JSONEncoder().encode(
+            InstalledPetCoreRuntime(buildID: "build-old")
+        ).write(to: previousURL)
+        #expect(PetCoreRuntimeUpgradeEvidence.hasPriorManagedBuild(
+            currentBuildID: "build-new",
+            homeURL: home
+        ))
+        #expect(PetCoreRuntimeUpgradeEvidence.hasManagedUpdateContext(
+            currentBuildID: "build-new",
+            homeURL: home
+        ))
+        #expect(!PetCoreRuntimeUpgradeEvidence.hasPriorManagedBuild(
+            currentBuildID: "another-build",
+            homeURL: home
         ))
     }
 
@@ -663,6 +995,34 @@ struct PetCoreProcessManagerTests {
 
     @MainActor
     @Test
+    func deferredNestedRecoveryRetriesThroughTheFullBootstrapPipeline() async {
+        let probe = AppStoreBootstrapProbe(results: [
+            .deferred(reason: "正在等待当前宠物制作完成"),
+            .started,
+        ])
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { await probe.nextResult() },
+                refreshSnapshot: { _ in },
+                onReady: { _ in await probe.recordReady() }
+            )
+        )
+
+        #expect(!(await store.recoverServiceConnection()))
+        #expect(store.appUpdateConvergenceState == .waitingForActiveWork)
+        #expect(store.petCoreOperationalState == .checking)
+
+        #expect(await store.recoverServiceConnection())
+        let snapshot = await probe.snapshot()
+        #expect(snapshot.attempts == 2)
+        #expect(snapshot.readyCount == 1)
+        #expect(store.appUpdateConvergenceState == .updating)
+        #expect(store.petCoreOperationalState == .online)
+    }
+
+    @MainActor
+    @Test
     func appStoreTransportFailureRecoversAndRefreshesSnapshot() async {
         let probe = AppStoreRecoveryProbe(failFirstSnapshot: true)
         let store = AppStore(
@@ -749,6 +1109,7 @@ struct PetCoreProcessManagerTests {
 
     private func runtimeManifest(
         buildID: String,
+        releaseChannel: String = "develop",
         codexContract: String = "codex-hooks.v1",
         petpackSchemaVersion: String = "apc.petpack.v1",
         petpackReadVersions: [String] = ["apc.petpack.v1"],
@@ -756,7 +1117,7 @@ struct PetCoreProcessManagerTests {
     ) -> RuntimeReleaseManifest {
         RuntimeReleaseManifest(
             schemaVersion: RuntimeReleaseManifest.schemaVersion,
-            releaseChannel: "develop",
+            releaseChannel: releaseChannel,
             appVersion: "0.1.0",
             appBuild: "1",
             buildID: buildID,

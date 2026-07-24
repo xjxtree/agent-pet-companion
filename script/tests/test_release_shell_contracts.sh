@@ -118,7 +118,7 @@ if PATH="$SHIM_DIR:$PATH" \
   echo 'moved remote release tag unexpectedly passed' >&2
   exit 1
 fi
-grep -F 'no longer targets the immutable candidate commit' \
+grep -F 'no longer targets the protected candidate commit' \
   "$TMP_DIR/tag-moved.log" >/dev/null
 
 echo 'Release shell contract tests ok'

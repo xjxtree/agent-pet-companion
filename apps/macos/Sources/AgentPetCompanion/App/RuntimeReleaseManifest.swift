@@ -178,6 +178,109 @@ struct InstalledPetCoreRuntime: Codable, Equatable, Sendable {
     }
 }
 
+enum PetCoreRuntimeUpgradeEvidence {
+    static func hasManagedUpdateContext(
+        currentBuildID: String,
+        homeURL: URL = appSupportHomeURL()
+    ) -> Bool {
+        guard currentBuildID.range(
+            of: "^[A-Za-z0-9._+-]{1,128}$",
+            options: .regularExpression
+        ) != nil else { return false }
+        let runtimeRoot = homeURL.appendingPathComponent("runtime", isDirectory: true)
+        guard let installedBuildID = readPointer(
+            at: runtimeRoot.appendingPathComponent("current.json")
+        )?.buildID else { return false }
+        if installedBuildID != currentBuildID {
+            return true
+        }
+        guard let previousBuildID = readPointer(
+            at: runtimeRoot.appendingPathComponent("last-known-good.json")
+        )?.buildID else { return false }
+        return previousBuildID != currentBuildID
+    }
+
+    static func hasPriorManagedBuild(
+        currentBuildID: String,
+        homeURL: URL = appSupportHomeURL()
+    ) -> Bool {
+        guard currentBuildID.range(
+            of: "^[A-Za-z0-9._+-]{1,128}$",
+            options: .regularExpression
+        ) != nil else { return false }
+        let runtimeRoot = homeURL.appendingPathComponent("runtime", isDirectory: true)
+        guard readPointer(
+            at: runtimeRoot.appendingPathComponent("current.json")
+        )?.buildID == currentBuildID,
+        let previous = readPointer(
+            at: runtimeRoot.appendingPathComponent("last-known-good.json")
+        )?.buildID
+        else { return false }
+        return previous != currentBuildID
+    }
+
+    private static func appSupportHomeURL() -> URL {
+        if let override = ProcessInfo.processInfo.environment["APC_HOME"],
+           !override.isEmpty
+        {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base.appendingPathComponent("AgentPetCompanion", isDirectory: true)
+    }
+
+    private static func readPointer(at url: URL) -> InstalledPetCoreRuntime? {
+        var pathStatus = stat()
+        guard lstat(url.path, &pathStatus) == 0,
+              pathStatus.st_mode & S_IFMT == S_IFREG,
+              pathStatus.st_uid == getuid(),
+              pathStatus.st_nlink == 1,
+              pathStatus.st_size > 0,
+              pathStatus.st_size <= 4_096
+        else { return nil }
+
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+        var openedStatus = stat()
+        guard fstat(descriptor, &openedStatus) == 0,
+              openedStatus.st_dev == pathStatus.st_dev,
+              openedStatus.st_ino == pathStatus.st_ino,
+              openedStatus.st_size == pathStatus.st_size
+        else { return nil }
+        var data = Data(count: Int(openedStatus.st_size))
+        let count = data.withUnsafeMutableBytes { bytes -> Int in
+            guard let baseAddress = bytes.baseAddress else { return 0 }
+            var total = 0
+            while total < bytes.count {
+                let readCount = Darwin.read(
+                    descriptor,
+                    baseAddress.advanced(by: total),
+                    bytes.count - total
+                )
+                if readCount < 0, errno == EINTR { continue }
+                guard readCount > 0 else { break }
+                total += readCount
+            }
+            return total
+        }
+        guard count == data.count,
+              let pointer = try? JSONDecoder().decode(
+                InstalledPetCoreRuntime.self,
+                from: data
+              ),
+              pointer.buildID.range(
+                of: "^[A-Za-z0-9._+-]{1,128}$",
+                options: .regularExpression
+              ) != nil
+        else { return nil }
+        return pointer
+    }
+}
+
 struct PreparedPetCoreRuntime: Sendable {
     let executableURL: URL
     let cliURL: URL

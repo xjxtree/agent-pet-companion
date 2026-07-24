@@ -3,7 +3,18 @@ import Foundation
 public enum ServiceStartResult: Equatable, Sendable {
     case alreadyHealthy
     case started
+    case deferred(reason: String)
     case failed(reason: String)
+}
+
+public struct ServiceStartupDeferredError: LocalizedError, Sendable {
+    public let reason: String
+
+    public init(reason: String) {
+        self.reason = reason
+    }
+
+    public var errorDescription: String? { reason }
 }
 
 public actor PetCoreServiceStartupCoordinator {
@@ -69,6 +80,8 @@ public actor PetCoreServiceStartupCoordinator {
                 return .started
             }
             return .failed(reason: "LaunchAgent 已启动，但 PetCore 未在限定时间内就绪")
+        } catch let deferred as ServiceStartupDeferredError {
+            return .deferred(reason: deferred.reason)
         } catch {
             let launchAgentError = error.localizedDescription
             do {
@@ -77,6 +90,8 @@ public actor PetCoreServiceStartupCoordinator {
                     return .started
                 }
                 return .failed(reason: "PetCore 直接启动后未在限定时间内就绪；LaunchAgent：\(launchAgentError)")
+            } catch let deferred as ServiceStartupDeferredError {
+                return .deferred(reason: deferred.reason)
             } catch {
                 return .failed(
                     reason: "PetCore 启动失败：\(error.localizedDescription)；LaunchAgent：\(launchAgentError)"
@@ -171,7 +186,7 @@ public actor PetCoreAppBootstrapCoordinator {
             switch result {
             case .alreadyHealthy, .started:
                 completedResult = result
-            case .failed:
+            case .deferred, .failed:
                 completedResult = nil
             }
         }
@@ -185,6 +200,8 @@ public actor PetCoreAppBootstrapCoordinator {
             let result = await dependencies.ensureRunning()
             switch result {
             case .alreadyHealthy, .started:
+                return result
+            case .deferred:
                 return result
             case .failed:
                 lastResult = result

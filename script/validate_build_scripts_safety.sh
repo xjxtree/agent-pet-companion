@@ -23,6 +23,8 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_release_zip.py"
   "$ROOT_DIR/script/validate_release_identity.py"
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
+  "$ROOT_DIR/script/validate_github_release_api.py"
+  "$ROOT_DIR/script/validate_codex_plugin_version.py"
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
 )
@@ -67,7 +69,7 @@ if legacy_mode="$(rg -n -- '--(preview|public|public-signed)([=[:space:]]|$)' \
 fi
 
 # Local and GitHub Release Apps are ad-hoc signed. The official path is
-# explicit, dual-architecture, immutable-source-bound, and three-file-only.
+# explicit, dual-architecture, protected-source-bound, and three-file-only.
 rg -Fq 'codesign --force --sign - --timestamp=none' \
   "$ROOT_DIR/script/build_app_bundle.sh"
 rg -q -- '--github-release' "$ROOT_DIR/script/build_release.sh"
@@ -98,6 +100,13 @@ rg -q 'validate_github_release_signature_before_runtime' \
   "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -Fq "grep -Fx 'Signature=adhoc'" "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -q 'validate_macho_architectures.sh' "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q 'SOURCE_CODEX_PLUGIN_MANIFEST' "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q 'packaged PetCore emitted a stale Codex plugin manifest' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q 'packaged PetCore emitted a stale Studio Skill' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -q 'packaged PetCore emitted stale Maker Skill file' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
 if rg -q -- '--release([=[:space:]]|$)' "$ROOT_DIR/script/validate_app_bundle.sh"; then
   echo 'validate_app_bundle.sh must not retain the ambiguous --release alias' >&2
   exit 1
@@ -153,6 +162,21 @@ rg -q 'needs: \[build, validate_arm64, validate_x86_64\]' "$WORKFLOW"
 rg -q 'runs-on: macos-15$' "$WORKFLOW"
 rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
+rg -q 'validate_github_release_api.py' "$WORKFLOW"
+rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
+rg -Fq 'gh release edit "$RELEASE_TAG" --draft=false --latest' "$WORKFLOW"
+rg -Fq '"repos/$GITHUB_REPOSITORY/releases/latest"' "$WORKFLOW"
+if rg -q 'published_immutable|value[.]get[(]"immutable"|immutable-releases' "$WORKFLOW"; then
+  echo 'release workflow must not require GitHub Immutable Releases' >&2
+  exit 1
+fi
+rg -q 'Update in three steps / 三步更新' "$WORKFLOW"
+rg -q 'Your pets, settings, history, and active work stay on this Mac and are preserved[.]' \
+  "$WORKFLOW"
+rg -q '你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。' \
+  "$WORKFLOW"
+rg -q 'move the new App to Applications, and choose Replace' "$WORKFLOW"
+rg -q '将新版移入“应用程序”，并选择“替换”' "$WORKFLOW"
 rg -q 'Control-click' "$WORKFLOW"
 rg -q 'Open Anyway' "$WORKFLOW"
 rg -q 'ad-hoc signed' "$WORKFLOW"
@@ -190,7 +214,7 @@ official_build = build.index(
 )
 local_revalidation = build.index("Revalidate final local artifact set")
 digest_emission = build.index("Emit trusted digest for every candidate file")
-upload = build.index("Upload immutable release candidate")
+upload = build.index("Upload release candidate")
 if not source_gate < official_build < local_revalidation < digest_emission < upload:
     raise SystemExit("release build, revalidation, digest, and upload order is unsafe")
 
@@ -229,6 +253,8 @@ PY
 "$ROOT_DIR/script/validate_release_zip.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_identity.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_artifact_metadata.py" --help >/dev/null
+"$ROOT_DIR/script/validate_github_release_api.py" --help >/dev/null
+"$ROOT_DIR/script/validate_codex_plugin_version.py" --help >/dev/null
 "$ROOT_DIR/script/verify_release_candidate_digests.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_github_release_artifacts.sh" --help >/dev/null
 

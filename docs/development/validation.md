@@ -12,7 +12,7 @@ This document defines what each validation layer can prove. A listed command is 
 | `real agent connectors` | `validate_real_agent_connectors.sh` | Current managed connector commands can emit diagnostic events through the running local runtime without reading credentials. / 当前真实连接器本地事件链路。 | Provider authentication, real model execution, or a complete user task. / 不代表认证、模型执行或完整任务。 |
 | `real app server` | `validate_real_app_server.sh` | A real Codex App Server session through PetCore, including strict full-source generation, validation, build, import, and activation when required. / 真实 App Server 制作链路。 | Visible packaged-App interaction and rendering of the same artifact; those remain macOS runtime acceptance. / 不代表同一产物的可见 UI 与渲染验收。 |
 | `perf/nightly` | `validate_event_storm.sh`, renderer budget assertions, external profiling | Bounded event-storm and budget regressions; expanded runs may add Instruments. / 事件风暴与预算回归。 | Full CPU/GPU conclusions unless the matching profiler evidence was actually captured. / 未实际采集时不代表完整 CPU/GPU 结论。 |
-| `GitHub Release distribution` | `build_release.sh --github-release --arch all`, `validate_github_release_artifacts.sh --directory … --version … --build … --commit …` | Exact three-file inventory, two-entry checksum inventory, pre-extraction ZIP safety, full commit/build/runtime identity across both archives, strict ad-hoc signature integrity, every Mach-O's exact thin architecture, native packaged-functional validation, and download equality for the assets actually processed. / 实际处理产物的三文件清单、两项校验和、解压前 ZIP 安全、双归档完整 commit/build/runtime 身份、严格 ad-hoc 签名完整性、所有 Mach-O 精确 thin 架构、原生包内功能验收与下载摘要一致性。 | Developer identity, Apple notarization, stapling, default Gatekeeper acceptance, a release that was not downloaded and checked, a different commit/artifact, or visible behavior on an untested physical Mac. / 不代表开发者身份、Apple 公证、stapling、默认 Gatekeeper 接受、未下载复验的 Release、其他 commit/产物或未验收物理 Mac 上的可见行为。 |
+| `GitHub Release distribution` | `build_release.sh --github-release --arch all`, `validate_github_release_artifacts.sh --directory … --version … --build … --commit …`, `validate_github_release_api.py …` | Exact three-file inventory, two-entry checksum inventory, pre-extraction ZIP safety, full commit/build/runtime identity across both archives, strict ad-hoc signature integrity, every Mach-O's exact thin architecture, native packaged-functional validation, download equality, and a published latest stable GitHub API projection with the same asset digests. / 实际处理产物的三文件清单、两项校验和、解压前 ZIP 安全、双归档完整 commit/build/runtime 身份、严格 ad-hoc 签名完整性、所有 Mach-O 精确 thin 架构、原生包内功能验收、下载摘要一致性，以及具有相同资产摘要、已公开的 latest stable GitHub API 投影。 | Developer identity, Apple notarization, stapling, default Gatekeeper acceptance, GitHub Release immutability, a release that was not downloaded and checked, a different commit/artifact, or visible behavior on an untested physical Mac. / 不代表开发者身份、Apple 公证、stapling、默认 Gatekeeper 接受、GitHub Release 不可变性、未下载复验的 Release、其他 commit/产物或未验收物理 Mac 上的可见行为。 |
 
 ## Default host-safe gate / 默认宿主安全门禁
 
@@ -78,25 +78,38 @@ jobs to assert native architecture and run packaged-functional acceptance. A
 clean publish job downloads the exact three assets only after both pass. Every
 download compares three trusted build-job digests before ZIP inspection or
 extraction, then revalidates the complete three-file/two-checksum-entry set. An
-unavailable or mismatched native job leaves publication incomplete.
+unavailable or mismatched native job leaves publication incomplete. After
+publishing the draft, the final gate reads both the tag Release and
+`/releases/latest`, requires `draft == false` and `prerelease == false`, and
+matches all three API asset digests to the trusted build outputs. GitHub
+Release immutability is intentionally outside this gate.
 
 发布 CI 使用 GitHub 托管 `macos-15` arm64 与 `macos-15-intel` x86_64 任务断言
 原生架构并执行包内功能验收。两者通过后，干净的发布任务才会下载恰好三个资产；
 每次下载都先比对构建任务记录的三个可信摘要，再检查 ZIP 并完整复验三文件、两行
 校验和清单。任一原生任务不可用或架构不匹配，发布保持未完成。
 
-## Product-refactor acceptance / 产品重构验收
+发布草稿公开后，最终门禁同时读取对应 tag Release 与 `/releases/latest`，要求
+`draft == false`、`prerelease == false`，并将 API 返回的三个资产摘要与构建任务
+可信摘要逐项比对。GitHub Release 不可变性不属于本门禁。
 
-The [product refactor execution](product-refactor-execution.md) defines task-level acceptance without claiming that the current commit has passed. Use the existing profiles as follows:
+Codex plugin content/version validation is a separate deterministic release
+gate:
 
-| Product area / 产品区域 | Minimum deterministic proof / 最小确定性证明 | Additional acceptance / 补充验收 |
-|---|---|---|
-| Presentation models and presets | Swift unit/UI-model tests, localization consistency | Long English/Chinese copy at supported widths |
-| Session identity/navigation | Rust projection/database/RPC tests, schema/security fixtures, Swift decoding tests | Real-host navigation only through the explicit connector gate |
-| Desktop bubbles and pet interaction | Offline overlay validation and interaction model tests | Packaged visible UI with Computer Use first |
-| Library, Maker, Configuration, Connections, Diagnostics | Focused Swift/Rust tests plus `fast/core` | Packaged main-window acceptance; real App Server only when explicitly enabled |
-| First-run demo | Fresh isolated home and negative proof that demo data never enters PetCore events/diagnostics | Packaged visible UI with Computer Use first |
-| Performance and event pressure | Renderer budget and event-storm gates | Instruments or external profiling only when actually captured |
-| GitHub Release distribution | Exact three-file/two-checksum-entry inventory, ZIP safety, full runtime identity, ad-hoc signature, architecture, and package validation | Native arm64/x86_64 packaged-functional gates, GitHub Release download revalidation, and accurate first-open consent instructions |
+```bash
+./script/validate_codex_plugin_version.py --base-ref BASE_COMMIT_OR_TAG
+```
 
-Do not paste results into the task document or this file. Attach exact evidence to the matching commit, pull request, CI artifact, or GitHub Release.
+It compares `plugins/codex`, `skills/agent-pet-studio`, and
+`skills/agent-pet-maker` with the base and requires a strictly greater
+`plugin.json` version for any content change. It proves source/version
+discipline, not that a particular user's active Codex cache already converged;
+that requires the connector runtime tests.
+
+该门禁将 `plugins/codex`、`skills/agent-pet-studio` 与
+`skills/agent-pet-maker` 和基线比较；任意内容变化都要求 `plugin.json` 版本严格
+增加。它证明源码与版本纪律，不代表某位用户的 Codex 活跃缓存已经收敛；后者必须由
+连接器运行时测试证明。
+
+Do not paste results into this file. Attach exact evidence to the matching
+commit, pull request, CI artifact, or GitHub Release.

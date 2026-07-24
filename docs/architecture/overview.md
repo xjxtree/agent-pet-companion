@@ -1,6 +1,6 @@
 # System Architecture
 
-This document describes the current component boundaries and end-to-end flows. It is an orientation map, not a second copy of protocol or table definitions. Follow [Runtime and IPC](runtime-and-ipc.md), [Data model](data-model.md), and the linked source files for exact current contracts. The target user experience is owned by the [Product Experience Contract](../product/experience-contract.md), and its implementation order is owned by [Product Refactor Execution](../development/product-refactor-execution.md).
+This document describes the current component boundaries, product surface, and end-to-end flows. It is an orientation map, not a second copy of protocol or table definitions. Follow [Runtime and IPC](runtime-and-ipc.md), [Data model](data-model.md), and the linked source files for exact current contracts.
 
 ## Component map
 
@@ -41,7 +41,7 @@ The desktop pet and its Agent/session bubbles are the daily product surface. The
 
 First run is a three-scene root presentation, not a sixth navigation destination. PetCore owns only the versioned, compare-and-swap scene progress; the App reuses real pet activation and connection operations. The demo phase reducer is deliberately View-local and cannot become Agent lifecycle data.
 
-Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. The product experience contract defines the page and bubble semantics; the implementation, typed tests, and owning current-state documents enforce their runtime projection.
+Connections and bubbles use `Agent → session`; they do not introduce a project node. Explicit bounded session titles and current-turn display messages may cross the typed local projection, while project folders and paths never become connection settings or display identities. The implementation, typed tests, and owning current-state documents enforce the page and bubble semantics.
 
 ## Main flows
 
@@ -119,8 +119,20 @@ logo/                       Approved reusable brand assets
   emits exactly two ad-hoc-signed thin archives plus a two-entry checksum file,
   all bound to the same full commit and runtime identity. Publication requires
   ZIP-safety validation, native `arm64` and `x86_64` packaged validation, and
-  exact downloaded-asset revalidation. V1 does not use Apple signing or
-  notarization credentials and does not claim default Gatekeeper trust;
-  official installation documents the required first-open user consent.
+  exact downloaded-asset revalidation, then proves through GitHub's API that
+  the result is the latest stable Release with the same exact asset digests.
+  The repository does not require GitHub Immutable Releases. V1 does not use
+  Apple signing or notarization credentials, does not
+  claim default Gatekeeper trust, and never downloads or installs an App
+  update; official installation documents the manual replacement and required
+  first-open user consent.
+- The App alone checks for product updates. After the user replaces the App,
+  the bundled runtime transaction converges PetCore, CLI, missing bundled pets,
+  and previously managed Agent integrations. External components do not
+  independently update or report product versions.
+- The Codex plugin, its hook, `agent-pet-studio`, and `agent-pet-maker` are one
+  versioned capability bundle. Any content change requires a strictly greater
+  plugin version, and healthy connection state requires active-content
+  verification rather than installed/enabled flags alone.
 
 When changing one of these invariants, update the owning implementation, tests, runtime/schema version where required, and the corresponding document in the same change.

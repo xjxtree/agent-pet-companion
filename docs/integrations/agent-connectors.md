@@ -1,6 +1,6 @@
 # Agent Connectors
 
-Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode through host-native hooks, plugins, or extensions. These adapters emit a small local event contract; they do not turn third-party agents into in-app AI Pet Maker backends. The target connection and bubble experience is defined by the [Product Experience Contract](../product/experience-contract.md), while this document owns the current integration boundary.
+Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode through host-native hooks, plugins, or extensions. These adapters emit a small local event contract; they do not turn third-party agents into in-app AI Pet Maker backends. This document owns the current connection and event boundary.
 
 ## Integration matrix
 
@@ -48,7 +48,11 @@ The App exposes Agent-scoped operations:
 - **Test** emits a diagnostic event through the current local runtime.
 - **Uninstall** removes only App-managed integration artifacts.
 
-The managed runtime lifecycle separately refreshes installed references after replacement.
+The managed runtime lifecycle separately refreshes installed references after
+the user replaces the App. It refreshes only integrations already attributable
+to Agent Pet Companion; it does not silently connect a previously unmanaged
+Agent. Refresh returns typed per-Agent results, so one failed host becomes
+**Needs Update** without blocking healthy Agents or the core App.
 
 The page shows each Agent's identity, one aggregate health state, and one contextual primary action. Project directories, App/PetCore runtime details, renderer state, and diagnostics export do not belong on this page. Service state and archive export live under **Service & Diagnostics**. Individual CLI, managed connector, host verification, event delivery, and App Server checks remain typed support data behind Technical Details, alongside secondary recheck, local-channel test, and managed-only uninstall actions.
 
@@ -70,6 +74,27 @@ PetCore distinguishes ordinary, diagnostic, and full-task receipts against the c
 
 The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can create or modify a `.petpack` in another image-capable Agent host. That workflow remains outside the in-app AI Pet Maker. Import and activation require explicit user actions, and the package still crosses the standard PetCore validator.
 
+### Codex plugin and Skill convergence
+
+Codex receives one App-managed plugin bundle containing its hook plus the
+internal `agent-pet-studio` and portable `agent-pet-maker` Skills. There is no
+separate standalone Codex Skill installation. The repository plugin manifest
+owns a strict `X.Y.Z` version; CI and release validation require that version
+to increase whenever any of the plugin, Studio Skill, or Maker Skill content
+changes.
+
+Repair and post-App-update refresh atomically publish the complete owned source,
+invoke Codex's plugin installation path, and verify the expected manifest
+version and content against the active Codex plugin state. A marketplace source
+write and installed/enabled flags do not prove convergence when Codex still
+loads an older versioned cache. A stale or unverifiable active cache remains a
+typed repairable condition and cannot project `connected`.
+
+In-app Maker work uses the internal Studio Skill; portable user-invoked work
+uses the Maker Skill. They ship together but remain separate behavioral
+contracts. A running generation retains the version with which it started, and
+new work begins only with the newly verified capability.
+
 ## Adding or changing a connector
 
 1. Add a typed host adapter and a versioned connector contract.
@@ -78,4 +103,7 @@ The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can 
 4. Implement Agent-scoped check, repair, refresh, test, receipt, and uninstall behavior for App-managed artifacts.
 5. Point managed commands at `runtime/current/petcore-cli` and preserve local-only transport.
 6. Add simulated contract tests and keep real-host validation behind the explicit gate in [Validation profiles](../development/validation.md).
-7. Update the runtime manifest, this document, product experience contract when the target changes, public feature list, and root changelog if the supported user surface changes.
+7. When the Codex plugin or either bundled Skill changes, increase
+   `plugins/codex/.codex-plugin/plugin.json` and run
+   `validate_codex_plugin_version.py` against the intended base.
+8. Update the runtime manifest, this document, public feature list, and root changelog if the supported user surface changes.

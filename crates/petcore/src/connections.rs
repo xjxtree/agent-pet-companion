@@ -16,7 +16,9 @@ use petcore_types::{
     AgentVerificationStatus, CheckStatus, ConnectionCheckCode as CheckCode, ConnectionCheckItem,
     ConnectionCheckMode, ConnectionCheckRecoveryAction as RecoveryAction,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -103,6 +105,72 @@ enum CodexMarketplaceEntryState {
     Current,
     OwnedOutdated,
     Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstalledSourceRefreshStatus {
+    SkippedNotManaged,
+    Current,
+    Updated,
+    PendingHost,
+    Conflict,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledSourceRefreshResult {
+    pub source: AgentSource,
+    pub status: InstalledSourceRefreshStatus,
+    pub managed: bool,
+    pub refreshed: bool,
+    pub ok: bool,
+    pub verified: bool,
+    pub expected_version: Option<String>,
+    pub active_version: Option<String>,
+    pub expected_skills_sha256: Option<String>,
+    pub active_skills_sha256: Option<String>,
+    pub expected_content_sha256: Option<String>,
+    pub managed_source_content_sha256: Option<String>,
+    pub active_content_sha256: Option<String>,
+    pub detail: String,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledSourcesRefreshReport {
+    pub ok: bool,
+    pub results: Vec<InstalledSourceRefreshResult>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManagedInstallationState {
+    NotManaged,
+    Managed,
+    Conflict,
+}
+
+#[derive(Clone, Debug)]
+struct CodexActivePluginProbe {
+    expected_version: String,
+    active_version: Option<String>,
+    expected_skills_sha256: String,
+    active_skills_sha256: Option<String>,
+    expected_content_sha256: String,
+    managed_source_content_sha256: Option<String>,
+    active_content_sha256: Option<String>,
+    managed_source: bool,
+    exact: bool,
+    detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexPluginInstallAttempt {
+    InstalledAndVerified,
+    SkippedHermetic,
+    HostMissing,
 }
 
 // Codex uses two spellings for the same hook surface: hooks.json keys are
@@ -661,7 +729,7 @@ fn check_source_with_runtime_smoke(
                 marketplace_check,
             ]);
             let plugin_install_check = if runtime_processes_allowed {
-                check_codex_plugin_installed()
+                check_codex_plugin_installed(paths, &install_root)
             } else {
                 check_codex_plugin_installed_light(&install_root)
             };
@@ -2262,7 +2330,9 @@ pub fn repair_source_at(
     let root = install_root(paths, source);
     let cli_path = connector_cli_path(paths);
     match source {
-        AgentSource::Codex => repair_codex(&root, &cli_path)?,
+        AgentSource::Codex => {
+            repair_codex(&root, &cli_path)?;
+        }
         AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
         AgentSource::Pi => repair_pi(&root, &cli_path)?,
         AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
@@ -2270,19 +2340,313 @@ pub fn repair_source_at(
     Ok(check_source_at(paths, source, probe_cwd))
 }
 
-pub fn refresh_installed_source(paths: &AppPaths, source: AgentSource) -> Result<bool> {
-    if !connector_artifacts_present(paths, source) {
-        return Ok(false);
+pub fn refresh_installed_sources(paths: &AppPaths) -> InstalledSourcesRefreshReport {
+    let results = [
+        AgentSource::Codex,
+        AgentSource::ClaudeCode,
+        AgentSource::Pi,
+        AgentSource::Opencode,
+    ]
+    .into_iter()
+    .map(|source| refresh_installed_source(paths, source))
+    .collect::<Vec<_>>();
+    InstalledSourcesRefreshReport {
+        ok: results.iter().all(|result| result.ok),
+        results,
     }
+}
+
+pub fn refresh_installed_source(
+    paths: &AppPaths,
+    source: AgentSource,
+) -> InstalledSourceRefreshResult {
+    match refresh_managed_installation_state(paths, source) {
+        ManagedInstallationState::NotManaged => InstalledSourceRefreshResult {
+            source,
+            status: InstalledSourceRefreshStatus::SkippedNotManaged,
+            managed: false,
+            refreshed: false,
+            ok: true,
+            verified: false,
+            expected_version: None,
+            active_version: None,
+            expected_skills_sha256: None,
+            active_skills_sha256: None,
+            expected_content_sha256: None,
+            managed_source_content_sha256: None,
+            active_content_sha256: None,
+            detail: "未检测到由 Agent Pet Companion 管理的安装；保持现状".to_string(),
+            error: None,
+        },
+        ManagedInstallationState::Conflict => InstalledSourceRefreshResult {
+            source,
+            status: InstalledSourceRefreshStatus::Conflict,
+            managed: false,
+            refreshed: false,
+            ok: false,
+            verified: false,
+            expected_version: None,
+            active_version: None,
+            expected_skills_sha256: None,
+            active_skills_sha256: None,
+            expected_content_sha256: None,
+            managed_source_content_sha256: None,
+            active_content_sha256: None,
+            detail: "检测到未知所有者、符号链接或非受管固定路径；已保留且拒绝覆盖".to_string(),
+            error: Some("managed_path_conflict".to_string()),
+        },
+        ManagedInstallationState::Managed => refresh_managed_source(paths, source)
+            .unwrap_or_else(|error| failed_refresh_result(paths, source, error)),
+    }
+}
+
+fn failed_refresh_result(
+    paths: &AppPaths,
+    source: AgentSource,
+    error: PetCoreError,
+) -> InstalledSourceRefreshResult {
+    let codex_probe = if source == AgentSource::Codex {
+        codex_command_path().and_then(|codex| {
+            probe_codex_active_plugin(
+                &install_root(paths, source),
+                &connector_cli_path(paths),
+                &codex,
+            )
+            .ok()
+        })
+    } else {
+        None
+    };
+    let detail = codex_probe
+        .as_ref()
+        .map(|probe| {
+            format!(
+                "{} 托管集成未能更新；{}",
+                source.display_name(),
+                probe.detail
+            )
+        })
+        .unwrap_or_else(|| format!("{} 托管集成未能更新", source.display_name()));
+    InstalledSourceRefreshResult {
+        source,
+        status: if matches!(&error, PetCoreError::Conflict(_)) {
+            InstalledSourceRefreshStatus::Conflict
+        } else {
+            InstalledSourceRefreshStatus::Failed
+        },
+        managed: true,
+        refreshed: false,
+        ok: false,
+        verified: false,
+        expected_version: codex_probe
+            .as_ref()
+            .map(|probe| probe.expected_version.clone())
+            .or_else(|| {
+                (source == AgentSource::Codex)
+                    .then(expected_codex_plugin_version)
+                    .transpose()
+                    .ok()
+                    .flatten()
+            }),
+        active_version: codex_probe
+            .as_ref()
+            .and_then(|probe| probe.active_version.clone()),
+        expected_skills_sha256: codex_probe
+            .as_ref()
+            .map(|probe| probe.expected_skills_sha256.clone())
+            .or_else(|| (source == AgentSource::Codex).then(expected_codex_skill_bundle_sha256)),
+        active_skills_sha256: codex_probe
+            .as_ref()
+            .and_then(|probe| probe.active_skills_sha256.clone()),
+        expected_content_sha256: codex_probe
+            .as_ref()
+            .map(|probe| probe.expected_content_sha256.clone()),
+        managed_source_content_sha256: codex_probe
+            .as_ref()
+            .and_then(|probe| probe.managed_source_content_sha256.clone()),
+        active_content_sha256: codex_probe.and_then(|probe| probe.active_content_sha256),
+        detail,
+        error: Some(error.to_string()),
+    }
+}
+
+fn refresh_managed_source(
+    paths: &AppPaths,
+    source: AgentSource,
+) -> Result<InstalledSourceRefreshResult> {
     let root = install_root(paths, source);
     let cli_path = connector_cli_path(paths);
+    if source == AgentSource::Codex {
+        return refresh_managed_codex(paths, &root, &cli_path);
+    }
+
+    let was_current = managed_connector_artifacts_match_current_installation(paths, source);
+    if was_current {
+        return Ok(InstalledSourceRefreshResult {
+            source,
+            status: InstalledSourceRefreshStatus::Current,
+            managed: true,
+            refreshed: true,
+            ok: true,
+            verified: true,
+            expected_version: None,
+            active_version: None,
+            expected_skills_sha256: None,
+            active_skills_sha256: None,
+            expected_content_sha256: None,
+            managed_source_content_sha256: None,
+            active_content_sha256: None,
+            detail: format!("{} 托管集成已是当前版本", source.display_name()),
+            error: None,
+        });
+    }
+
     match source {
-        AgentSource::Codex => write_codex_connector(&root, &cli_path)?,
         AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
         AgentSource::Pi => repair_pi(&root, &cli_path)?,
         AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
+        AgentSource::Codex => unreachable!("handled above"),
     }
-    Ok(true)
+    if !managed_connector_artifacts_match_current_installation(paths, source) {
+        return Err(PetCoreError::Validation(format!(
+            "{} 更新后的受管文件未通过精确复检",
+            source.display_name()
+        )));
+    }
+    Ok(InstalledSourceRefreshResult {
+        source,
+        status: InstalledSourceRefreshStatus::Updated,
+        managed: true,
+        refreshed: true,
+        ok: true,
+        verified: true,
+        expected_version: None,
+        active_version: None,
+        expected_skills_sha256: None,
+        active_skills_sha256: None,
+        expected_content_sha256: None,
+        managed_source_content_sha256: None,
+        active_content_sha256: None,
+        detail: format!("{} 托管集成已更新并通过精确复检", source.display_name()),
+        error: None,
+    })
+}
+
+fn refresh_managed_codex(
+    paths: &AppPaths,
+    root: &Path,
+    cli_path: &Path,
+) -> Result<InstalledSourceRefreshResult> {
+    let expected_version = expected_codex_plugin_version()?;
+    let expected_skills_sha256 = expected_codex_skill_bundle_sha256();
+    let expected_content_sha256 = expected_codex_plugin_content_sha256(cli_path)?;
+    let source_was_current =
+        managed_connector_artifacts_match_current_installation(paths, AgentSource::Codex);
+
+    if source_was_current {
+        if let Some(codex) = codex_command_path() {
+            let probe = probe_codex_active_plugin(root, cli_path, &codex)?;
+            if probe.exact {
+                return Ok(codex_refresh_result(
+                    InstalledSourceRefreshStatus::Current,
+                    true,
+                    probe,
+                    "Codex 插件源、启用版本、活动缓存与宠物制作 Skills 均已是当前版本",
+                ));
+            }
+        }
+    }
+
+    let attempt = repair_codex(root, cli_path)?;
+    match attempt {
+        CodexPluginInstallAttempt::InstalledAndVerified => {
+            let codex = codex_command_path().ok_or_else(|| {
+                PetCoreError::Validation("Codex 安装后命令不可用，无法完成复检".to_string())
+            })?;
+            let probe = probe_codex_active_plugin(root, cli_path, &codex)?;
+            if !probe.exact {
+                return Err(PetCoreError::Validation(format!(
+                    "Codex plugin add 返回成功，但活动插件未收敛：{}",
+                    probe.detail
+                )));
+            }
+            Ok(codex_refresh_result(
+                InstalledSourceRefreshStatus::Updated,
+                true,
+                probe,
+                "Codex 插件源、活动缓存与宠物制作 Skills 已更新并通过摘要复检",
+            ))
+        }
+        CodexPluginInstallAttempt::SkippedHermetic => {
+            let source_verified =
+                managed_connector_artifacts_match_current_installation(paths, AgentSource::Codex);
+            Ok(InstalledSourceRefreshResult {
+                source: AgentSource::Codex,
+                status: if source_was_current {
+                    InstalledSourceRefreshStatus::Current
+                } else {
+                    InstalledSourceRefreshStatus::Updated
+                },
+                managed: true,
+                refreshed: true,
+                ok: source_verified,
+                verified: false,
+                expected_version: Some(expected_version),
+                active_version: None,
+                expected_skills_sha256: Some(expected_skills_sha256),
+                active_skills_sha256: None,
+                expected_content_sha256: Some(expected_content_sha256.clone()),
+                managed_source_content_sha256: codex_plugin_content_sha256(root).ok(),
+                active_content_sha256: None,
+                detail: "隔离配置环境已精确更新插件源；未调用 Codex，也未宣称活动缓存已验证"
+                    .to_string(),
+                error: (!source_verified)
+                    .then(|| "codex_managed_source_verification_failed".to_string()),
+            })
+        }
+        CodexPluginInstallAttempt::HostMissing => Ok(InstalledSourceRefreshResult {
+            source: AgentSource::Codex,
+            status: InstalledSourceRefreshStatus::PendingHost,
+            managed: true,
+            refreshed: true,
+            ok: false,
+            verified: false,
+            expected_version: Some(expected_version),
+            active_version: None,
+            expected_skills_sha256: Some(expected_skills_sha256),
+            active_skills_sha256: None,
+            expected_content_sha256: Some(expected_content_sha256),
+            managed_source_content_sha256: codex_plugin_content_sha256(root).ok(),
+            active_content_sha256: None,
+            detail: "插件源已更新；Codex 命令当前不可用，活动缓存尚未更新".to_string(),
+            error: Some("codex_host_unavailable".to_string()),
+        }),
+    }
+}
+
+fn codex_refresh_result(
+    status: InstalledSourceRefreshStatus,
+    refreshed: bool,
+    probe: CodexActivePluginProbe,
+    detail: &str,
+) -> InstalledSourceRefreshResult {
+    InstalledSourceRefreshResult {
+        source: AgentSource::Codex,
+        status,
+        managed: true,
+        refreshed,
+        ok: probe.exact,
+        verified: probe.exact,
+        expected_version: Some(probe.expected_version),
+        active_version: probe.active_version,
+        expected_skills_sha256: Some(probe.expected_skills_sha256),
+        active_skills_sha256: probe.active_skills_sha256,
+        expected_content_sha256: Some(probe.expected_content_sha256),
+        managed_source_content_sha256: probe.managed_source_content_sha256,
+        active_content_sha256: probe.active_content_sha256,
+        detail: detail.to_string(),
+        error: None,
+    }
 }
 
 pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentConnectionStatus> {
@@ -2341,11 +2705,10 @@ pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentCo
     Ok(status)
 }
 
-fn repair_codex(root: &Path, cli_path: &Path) -> Result<()> {
+fn repair_codex(root: &Path, cli_path: &Path) -> Result<CodexPluginInstallAttempt> {
     write_codex_connector(root, cli_path)?;
     ensure_codex_marketplace_entry()?;
-    install_codex_plugin_if_possible(root)?;
-    Ok(())
+    install_codex_plugin_if_possible(root, cli_path)
 }
 
 fn write_codex_connector(root: &Path, cli_path: &Path) -> Result<()> {
@@ -4009,7 +4372,331 @@ fn check_codex_hook_trust_light(install_root: &Path) -> ConnectionCheckItem {
     )
 }
 
-fn check_codex_plugin_installed() -> ConnectionCheckItem {
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodexPluginListing {
+    installed: bool,
+    enabled: bool,
+    version: Option<String>,
+    source_path: Option<String>,
+}
+
+fn expected_codex_plugin_version() -> Result<String> {
+    let manifest: Value = serde_json::from_str(CODEX_PLUGIN_JSON)?;
+    let version = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|version| {
+            !version.is_empty()
+                && *version != "."
+                && *version != ".."
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        })
+        .ok_or_else(|| {
+            PetCoreError::Validation("App 自带 Codex plugin.json 缺少安全的版本标识".to_string())
+        })?;
+    Ok(version.to_string())
+}
+
+fn codex_home() -> PathBuf {
+    absolute_env_path("CODEX_HOME").unwrap_or_else(|| agent_home().join(".codex"))
+}
+
+fn codex_active_cache_root(expected_version: &str) -> PathBuf {
+    codex_home()
+        .join("plugins")
+        .join("cache")
+        .join("personal")
+        .join("agent-pet-companion")
+        .join(expected_version)
+}
+
+fn update_codex_skill_digest(hasher: &mut Sha256, relative_path: &str, contents: &[u8]) {
+    hasher.update(relative_path.as_bytes());
+    hasher.update([0]);
+    hasher.update((contents.len() as u64).to_le_bytes());
+    hasher.update(contents);
+}
+
+fn expected_codex_skill_bundle_sha256() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-pet-companion/codex-skills/v1\0");
+    update_codex_skill_digest(
+        &mut hasher,
+        "skills/agent-pet-studio/SKILL.md",
+        PET_STUDIO_SKILL_MD.as_bytes(),
+    );
+    for (relative_path, contents) in AGENT_PET_MAKER_FILES {
+        update_codex_skill_digest(
+            &mut hasher,
+            &format!("skills/agent-pet-maker/{relative_path}"),
+            contents.as_bytes(),
+        );
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn codex_skill_bundle_sha256(root: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-pet-companion/codex-skills/v1\0");
+    let studio_path = root.join("skills/agent-pet-studio/SKILL.md");
+    if managed_regular_file_state(root, &studio_path) != ManagedPathState::Safe {
+        return Err(PetCoreError::Validation(
+            "Codex 活动缓存中的 agent-pet-studio 不是安全普通文件".to_string(),
+        ));
+    }
+    let studio = fs::read(&studio_path)?;
+    update_codex_skill_digest(&mut hasher, "skills/agent-pet-studio/SKILL.md", &studio);
+    for (relative_path, _) in AGENT_PET_MAKER_FILES {
+        let path = root.join("skills/agent-pet-maker").join(relative_path);
+        if managed_regular_file_state(root, &path) != ManagedPathState::Safe {
+            return Err(PetCoreError::Validation(format!(
+                "Codex 活动缓存中的 agent-pet-maker 文件不是安全普通文件：{relative_path}"
+            )));
+        }
+        let contents = fs::read(path)?;
+        update_codex_skill_digest(
+            &mut hasher,
+            &format!("skills/agent-pet-maker/{relative_path}"),
+            &contents,
+        );
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn expected_codex_plugin_content_sha256(connector_cli: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-pet-companion/codex-plugin-content/v1\0");
+    let plugin: Value = serde_json::from_str(CODEX_PLUGIN_JSON)?;
+    update_codex_skill_digest(
+        &mut hasher,
+        ".codex-plugin/plugin.json",
+        &serde_json::to_vec_pretty(&plugin)?,
+    );
+    update_codex_skill_digest(
+        &mut hasher,
+        "hooks/hooks.json",
+        &serde_json::to_vec_pretty(&rendered_codex_hooks(connector_cli)?)?,
+    );
+    update_codex_skill_digest(
+        &mut hasher,
+        "skills/agent-pet-studio/SKILL.md",
+        PET_STUDIO_SKILL_MD.as_bytes(),
+    );
+    for (relative_path, contents) in AGENT_PET_MAKER_FILES {
+        update_codex_skill_digest(
+            &mut hasher,
+            &format!("skills/agent-pet-maker/{relative_path}"),
+            contents.as_bytes(),
+        );
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub(crate) fn compiled_codex_plugin_identity(paths: &AppPaths) -> Result<(String, String, String)> {
+    Ok((
+        expected_codex_plugin_version()?,
+        expected_codex_skill_bundle_sha256(),
+        expected_codex_plugin_content_sha256(&connector_cli_path(paths))?,
+    ))
+}
+
+fn codex_plugin_content_sha256(root: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"agent-pet-companion/codex-plugin-content/v1\0");
+    for relative_path in [
+        ".codex-plugin/plugin.json",
+        "hooks/hooks.json",
+        "skills/agent-pet-studio/SKILL.md",
+    ] {
+        let path = root.join(relative_path);
+        if managed_regular_file_state(root, &path) != ManagedPathState::Safe {
+            return Err(PetCoreError::Validation(format!(
+                "Codex plugin 内容文件不是安全普通文件：{relative_path}"
+            )));
+        }
+        let contents = fs::read(path)?;
+        update_codex_skill_digest(&mut hasher, relative_path, &contents);
+    }
+    for (relative_path, _) in AGENT_PET_MAKER_FILES {
+        let digest_path = format!("skills/agent-pet-maker/{relative_path}");
+        let path = root.join(&digest_path);
+        if managed_regular_file_state(root, &path) != ManagedPathState::Safe {
+            return Err(PetCoreError::Validation(format!(
+                "Codex plugin 内容文件不是安全普通文件：{digest_path}"
+            )));
+        }
+        let contents = fs::read(path)?;
+        update_codex_skill_digest(&mut hasher, &digest_path, &contents);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn parse_codex_plugin_listing(stdout: &[u8]) -> Result<Option<CodexPluginListing>> {
+    let value: Value = serde_json::from_slice(stdout).map_err(|error| {
+        PetCoreError::Validation(format!("codex plugin list --json 返回了无效 JSON：{error}"))
+    })?;
+    let installed = value
+        .get("installed")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PetCoreError::Validation("codex plugin list --json 缺少 installed 数组".to_string())
+        })?;
+    Ok(installed.iter().find_map(|plugin| {
+        let id_matches =
+            plugin.get("pluginId").and_then(Value::as_str) == Some("agent-pet-companion@personal");
+        let name_matches = plugin.get("name").and_then(Value::as_str)
+            == Some("agent-pet-companion")
+            && plugin.get("marketplaceName").and_then(Value::as_str) == Some("personal");
+        (id_matches || name_matches).then(|| CodexPluginListing {
+            installed: plugin
+                .get("installed")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            enabled: plugin
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            version: plugin
+                .get("version")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            source_path: plugin
+                .pointer("/source/path")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        })
+    }))
+}
+
+fn read_codex_plugin_listing(codex: &Path) -> Result<Option<CodexPluginListing>> {
+    let output = run_bounded(ProcessSpec::connector(codex, ["plugin", "list", "--json"]))?;
+    if output.timed_out || !output.status.success() {
+        return Err(PetCoreError::Validation(format!(
+            "codex plugin list --json 未成功完成（timed_out={}, exit={:?}）",
+            output.timed_out,
+            output.status.code()
+        )));
+    }
+    parse_codex_plugin_listing(&output.stdout)
+}
+
+fn probe_codex_active_plugin(
+    source_root: &Path,
+    connector_cli: &Path,
+    codex: &Path,
+) -> Result<CodexActivePluginProbe> {
+    let expected_version = expected_codex_plugin_version()?;
+    let expected_skills_sha256 = expected_codex_skill_bundle_sha256();
+    let expected_content_sha256 = expected_codex_plugin_content_sha256(connector_cli)?;
+    let managed_source_content_sha256 = codex_plugin_content_sha256(source_root).ok();
+    let listing = read_codex_plugin_listing(codex)?;
+    let active_version = listing.as_ref().and_then(|plugin| plugin.version.clone());
+    let expected_source = source_root.display().to_string();
+    let source_matches = listing
+        .as_ref()
+        .and_then(|plugin| plugin.source_path.as_deref())
+        == Some(expected_source.as_str());
+    let installed_and_enabled = listing
+        .as_ref()
+        .is_some_and(|plugin| plugin.installed && plugin.enabled);
+    let version_matches = active_version.as_deref() == Some(expected_version.as_str());
+
+    let cache_root = codex_active_cache_root(&expected_version);
+    let cache_manifest_matches =
+        check_codex_plugin_manifest(&cache_root.join(".codex-plugin/plugin.json"), &cache_root)
+            .status
+            == CheckStatus::Ok;
+    let cache_hooks_match = check_codex_hooks(
+        &cache_root.join("hooks/hooks.json"),
+        connector_cli,
+        &cache_root,
+    )
+    .status
+        == CheckStatus::Ok;
+    let cache_studio_matches = check_codex_studio_skill(
+        &cache_root.join("skills/agent-pet-studio/SKILL.md"),
+        &cache_root,
+    )
+    .status
+        == CheckStatus::Ok;
+    let cache_maker_matches = check_codex_agent_pet_maker(&cache_root).status == CheckStatus::Ok;
+    let active_skills_sha256 = codex_skill_bundle_sha256(&cache_root).ok();
+    let active_content_sha256 = codex_plugin_content_sha256(&cache_root).ok();
+    let skill_digest_matches =
+        active_skills_sha256.as_deref() == Some(expected_skills_sha256.as_str());
+    let source_content_matches =
+        managed_source_content_sha256.as_deref() == Some(expected_content_sha256.as_str());
+    let active_content_matches = active_content_sha256.as_deref()
+        == managed_source_content_sha256.as_deref()
+        && active_content_sha256.as_deref() == Some(expected_content_sha256.as_str());
+    let exact = installed_and_enabled
+        && source_matches
+        && version_matches
+        && source_content_matches
+        && cache_manifest_matches
+        && cache_hooks_match
+        && cache_studio_matches
+        && cache_maker_matches
+        && skill_digest_matches
+        && active_content_matches;
+
+    let detail = if exact {
+        format!(
+            "Codex 已启用插件 {expected_version}，活动缓存与 Skills SHA-256 {} 一致",
+            &expected_skills_sha256[..12]
+        )
+    } else if listing.is_none() {
+        "Codex 未报告已安装的 Agent Pet Companion 插件".to_string()
+    } else if !installed_and_enabled {
+        "Codex 插件存在但未同时处于 installed/enabled 状态".to_string()
+    } else if !source_matches {
+        "Codex 同名插件来源不是 Agent Pet Companion 管理源；拒绝覆盖".to_string()
+    } else if !source_content_matches {
+        "Agent Pet Companion 管理的 Codex 插件源内容摘要不匹配".to_string()
+    } else if !version_matches {
+        format!(
+            "Codex 活动插件版本不匹配（期望 {expected_version}，实际 {}）",
+            active_version.as_deref().unwrap_or("unknown")
+        )
+    } else if !skill_digest_matches {
+        format!(
+            "Codex 活动缓存中的宠物制作 Skills 摘要不匹配（期望 {}，实际 {}）",
+            &expected_skills_sha256[..12],
+            active_skills_sha256
+                .as_deref()
+                .map(|digest| &digest[..12])
+                .unwrap_or("missing")
+        )
+    } else if !active_content_matches {
+        format!(
+            "Codex 活动缓存内容摘要不匹配（期望 {}，实际 {}）",
+            &expected_content_sha256[..12],
+            active_content_sha256
+                .as_deref()
+                .map(|digest| &digest[..12])
+                .unwrap_or("missing")
+        )
+    } else {
+        "Codex 活动缓存的 manifest、hooks 或 Skill 文件未通过精确复检".to_string()
+    };
+
+    Ok(CodexActivePluginProbe {
+        expected_version,
+        active_version,
+        expected_skills_sha256,
+        active_skills_sha256,
+        expected_content_sha256,
+        managed_source_content_sha256,
+        active_content_sha256,
+        managed_source: listing.is_none() || source_matches,
+        exact,
+        detail,
+    })
+}
+
+fn check_codex_plugin_installed(paths: &AppPaths, install_root: &Path) -> ConnectionCheckItem {
     let Some(codex) = codex_command_path() else {
         return ConnectionCheckItem::new(
             CheckCode::HostVerification,
@@ -4030,18 +4717,13 @@ fn check_codex_plugin_installed() -> ConnectionCheckItem {
         );
     }
 
-    let installed = run_bounded(ProcessSpec::connector(&codex, ["plugin", "list", "--json"]))
-        .ok()
-        .filter(|output| !output.timed_out && output.status.success())
-        .and_then(|output| codex_plugin_json_reports_installed(&output.stdout))
-        .unwrap_or_else(|| {
-            run_bounded(ProcessSpec::connector(codex, ["plugin", "list"]))
-                .ok()
-                .filter(|output| !output.timed_out && output.status.success())
-                .and_then(|output| String::from_utf8(output.stdout).ok())
-                .map(|stdout| codex_plugin_text_reports_installed(&stdout))
-                .unwrap_or(false)
-        });
+    let connector_cli = connector_cli_path(paths);
+    let probe = probe_codex_active_plugin(install_root, &connector_cli, &codex);
+    let installed = probe.as_ref().is_ok_and(|probe| probe.exact);
+    let detail = match probe {
+        Ok(probe) => probe.detail,
+        Err(error) => error.to_string(),
+    };
 
     ConnectionCheckItem::new(
         CheckCode::HostVerification,
@@ -4052,9 +4734,9 @@ fn check_codex_plugin_installed() -> ConnectionCheckItem {
             CheckStatus::NeedsFix
         },
         if installed {
-            "Codex 已安装并启用插件".to_string()
+            detail
         } else {
-            "待执行 codex plugin add agent-pet-companion@personal".to_string()
+            format!("{detail}；待更新并重新验证 Codex 插件")
         },
         Some(RecoveryAction::Recheck),
     )
@@ -4167,44 +4849,20 @@ fn check_codex_app_server_light() -> ConnectionCheckItem {
     )
 }
 
+#[cfg(test)]
 fn codex_plugin_json_reports_installed(stdout: &[u8]) -> Option<bool> {
-    let value: Value = serde_json::from_slice(stdout).ok()?;
-    let installed = value.get("installed")?.as_array()?;
-    Some(installed.iter().any(|plugin| {
-        let id_matches =
-            plugin.get("pluginId").and_then(Value::as_str) == Some("agent-pet-companion@personal");
-        let name_matches = plugin.get("name").and_then(Value::as_str)
-            == Some("agent-pet-companion")
-            && plugin.get("marketplaceName").and_then(Value::as_str) == Some("personal");
-        let installed = plugin
-            .get("installed")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let enabled = plugin
-            .get("enabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        (id_matches || name_matches) && installed && enabled
-    }))
+    parse_codex_plugin_listing(stdout)
+        .ok()
+        .map(|plugin| plugin.is_some_and(|plugin| plugin.installed && plugin.enabled))
 }
 
 fn codex_plugin_json_reports_present(stdout: &[u8]) -> Option<bool> {
-    let value: Value = serde_json::from_slice(stdout).ok()?;
-    let installed = value.get("installed")?.as_array()?;
-    Some(installed.iter().any(|plugin| {
-        let id_matches =
-            plugin.get("pluginId").and_then(Value::as_str) == Some("agent-pet-companion@personal");
-        let name_matches = plugin.get("name").and_then(Value::as_str)
-            == Some("agent-pet-companion")
-            && plugin.get("marketplaceName").and_then(Value::as_str) == Some("personal");
-        let installed = plugin
-            .get("installed")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        (id_matches || name_matches) && installed
-    }))
+    parse_codex_plugin_listing(stdout)
+        .ok()
+        .map(|plugin| plugin.is_some_and(|plugin| plugin.installed))
 }
 
+#[cfg(test)]
 fn codex_plugin_text_reports_installed(stdout: &str) -> bool {
     stdout.lines().any(|line| {
         line.contains("agent-pet-companion@personal")
@@ -5015,6 +5673,64 @@ fn connector_artifacts_present(paths: &AppPaths, source: AgentSource) -> bool {
     }
 }
 
+fn refresh_managed_installation_state(
+    paths: &AppPaths,
+    source: AgentSource,
+) -> ManagedInstallationState {
+    let root = install_root(paths, source);
+    match source {
+        AgentSource::Codex => {
+            let root_state = codex_managed_root_state(&root);
+            let marketplace_state = codex_marketplace_entry_state(&codex_marketplace_path());
+            if root_state == ManagedPathState::Conflict
+                || marketplace_state == CodexMarketplaceEntryState::Conflict
+            {
+                return ManagedInstallationState::Conflict;
+            }
+            if connector_artifacts_present(paths, source) {
+                return ManagedInstallationState::Managed;
+            }
+            if root_state == ManagedPathState::Safe && directory_has_entries(&root).unwrap_or(true)
+            {
+                return ManagedInstallationState::Conflict;
+            }
+            if let Some(codex) = codex_command_path() {
+                if let Ok(Some(plugin)) = read_codex_plugin_listing(&codex) {
+                    let expected_source = root.display().to_string();
+                    if plugin.source_path.as_deref() == Some(expected_source.as_str()) {
+                        return ManagedInstallationState::Managed;
+                    }
+                    return ManagedInstallationState::Conflict;
+                }
+            }
+            ManagedInstallationState::NotManaged
+        }
+        AgentSource::ClaudeCode => match claude_managed_root_state(&root) {
+            ManagedPathState::Conflict => ManagedInstallationState::Conflict,
+            ManagedPathState::Safe
+                if !connector_artifacts_present(paths, source)
+                    && directory_has_entries(&root).unwrap_or(true) =>
+            {
+                ManagedInstallationState::Conflict
+            }
+            _ if connector_artifacts_present(paths, source) => ManagedInstallationState::Managed,
+            _ => ManagedInstallationState::NotManaged,
+        },
+        AgentSource::Pi | AgentSource::Opencode => {
+            let path = match source {
+                AgentSource::Pi => root.join("agent-pet-companion.ts"),
+                AgentSource::Opencode => root.join("agent-pet-companion.js"),
+                AgentSource::Codex | AgentSource::ClaudeCode => unreachable!(),
+            };
+            match managed_connector_script_ownership(&path, source) {
+                ManagedConnectorScriptOwnership::Owned => ManagedInstallationState::Managed,
+                ManagedConnectorScriptOwnership::Missing => ManagedInstallationState::NotManaged,
+                ManagedConnectorScriptOwnership::Foreign => ManagedInstallationState::Conflict,
+            }
+        }
+    }
+}
+
 fn read_regular_json_config(path: &Path) -> Option<Value> {
     let metadata = fs::symlink_metadata(path).ok()?;
     if metadata.file_type().is_symlink()
@@ -5457,7 +6173,10 @@ fn atomic_temp_path(path: &Path) -> PathBuf {
     ))
 }
 
-fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
+fn install_codex_plugin_if_possible(
+    root: &Path,
+    connector_cli: &Path,
+) -> Result<CodexPluginInstallAttempt> {
     let result_path = root.join("codex-install-result.json");
     if absolute_env_path("APC_AGENT_CONFIG_HOME").is_some() {
         write_managed_file_atomic(
@@ -5468,7 +6187,7 @@ fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
             }))?,
             0o644,
         )?;
-        return Ok(());
+        return Ok(CodexPluginInstallAttempt::SkippedHermetic);
     }
 
     let Some(codex) = codex_command_path() else {
@@ -5480,40 +6199,105 @@ fn install_codex_plugin_if_possible(root: &Path) -> Result<()> {
             }))?,
             0o644,
         )?;
-        return Ok(());
+        return Ok(CodexPluginInstallAttempt::HostMissing);
     };
 
-    let output = run_bounded(ProcessSpec::connector(
-        codex,
+    let output = match run_bounded(ProcessSpec::connector(
+        &codex,
         ["plugin", "add", "agent-pet-companion@personal", "--json"],
-    ));
-
-    match output {
-        Ok(output) => {
-            write_managed_file_atomic(
-                &result_path,
-                &serde_json::to_vec_pretty(&json!({
-                    "status": if output.status.success() && !output.timed_out { "ok" } else { "failed" },
-                    "code": output.status.code(),
-                    "timed_out": output.timed_out,
-                    "stdout_truncated": output.stdout_truncated,
-                    "stderr_truncated": output.stderr_truncated
-                }))?,
-                0o644,
-            )?;
-        }
+    )) {
+        Ok(output) => output,
         Err(error) => {
             write_managed_file_atomic(
                 &result_path,
                 &serde_json::to_vec_pretty(&json!({
                     "status": "failed",
+                    "phase": "plugin_add",
                     "error": error.to_string()
                 }))?,
                 0o644,
             )?;
+            return Err(error);
         }
+    };
+    if output.timed_out || !output.status.success() {
+        write_managed_file_atomic(
+            &result_path,
+            &serde_json::to_vec_pretty(&json!({
+                "status": "failed",
+                "phase": "plugin_add",
+                "code": output.status.code(),
+                "timed_out": output.timed_out,
+                "stdout_truncated": output.stdout_truncated,
+                "stderr_truncated": output.stderr_truncated
+            }))?,
+            0o644,
+        )?;
+        return Err(PetCoreError::Validation(format!(
+            "codex plugin add 未成功完成（timed_out={}, exit={:?}）",
+            output.timed_out,
+            output.status.code()
+        )));
     }
-    Ok(())
+
+    let probe = match probe_codex_active_plugin(root, connector_cli, &codex) {
+        Ok(probe) => probe,
+        Err(error) => {
+            write_managed_file_atomic(
+                &result_path,
+                &serde_json::to_vec_pretty(&json!({
+                    "status": "failed",
+                    "phase": "active_cache_verification",
+                    "error": error.to_string()
+                }))?,
+                0o644,
+            )?;
+            return Err(error);
+        }
+    };
+    if !probe.exact {
+        write_managed_file_atomic(
+            &result_path,
+            &serde_json::to_vec_pretty(&json!({
+                "status": "failed",
+                "phase": "active_cache_verification",
+                "expected_version": probe.expected_version,
+                "active_version": probe.active_version,
+                "expected_skills_sha256": probe.expected_skills_sha256,
+                "active_skills_sha256": probe.active_skills_sha256,
+                "expected_content_sha256": probe.expected_content_sha256,
+                "managed_source_content_sha256": probe.managed_source_content_sha256,
+                "active_content_sha256": probe.active_content_sha256,
+                "detail": probe.detail
+            }))?,
+            0o644,
+        )?;
+        if !probe.managed_source {
+            return Err(PetCoreError::Conflict(
+                "Codex 同名插件来自非 Agent Pet Companion 管理源；已保留且拒绝覆盖".to_string(),
+            ));
+        }
+        return Err(PetCoreError::Validation(format!(
+            "codex plugin add 未激活当前插件缓存：{}",
+            probe.detail
+        )));
+    }
+    write_managed_file_atomic(
+        &result_path,
+        &serde_json::to_vec_pretty(&json!({
+            "status": "ok",
+            "phase": "active_cache_verified",
+            "expected_version": probe.expected_version,
+            "active_version": probe.active_version,
+            "expected_skills_sha256": probe.expected_skills_sha256,
+            "active_skills_sha256": probe.active_skills_sha256,
+            "expected_content_sha256": probe.expected_content_sha256,
+            "managed_source_content_sha256": probe.managed_source_content_sha256,
+            "active_content_sha256": probe.active_content_sha256
+        }))?,
+        0o644,
+    )?;
+    Ok(CodexPluginInstallAttempt::InstalledAndVerified)
 }
 
 fn codex_plugin_installation_state(codex: &Path) -> Option<bool> {
@@ -8215,6 +8999,197 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
         .unwrap();
         assert_eq!(codex_plugin_json_reports_installed(&disabled), Some(false));
         assert_eq!(codex_plugin_json_reports_present(&disabled), Some(true));
+    }
+
+    #[test]
+    fn codex_plugin_listing_preserves_version_and_managed_source_evidence() {
+        let source = "/Users/test/.agents/plugins/plugins/agent-pet-companion";
+        let output = serde_json::to_vec(&json!({
+            "installed": [{
+                "pluginId": "agent-pet-companion@personal",
+                "name": "agent-pet-companion",
+                "marketplaceName": "personal",
+                "version": "7.8.9",
+                "installed": true,
+                "enabled": true,
+                "source": {
+                    "source": "local",
+                    "path": source
+                }
+            }]
+        }))
+        .unwrap();
+
+        let listing = super::parse_codex_plugin_listing(&output)
+            .unwrap()
+            .expect("installed plugin");
+        assert!(listing.installed);
+        assert!(listing.enabled);
+        assert_eq!(listing.version.as_deref(), Some("7.8.9"));
+        assert_eq!(listing.source_path.as_deref(), Some(source));
+    }
+
+    #[test]
+    fn codex_skill_bundle_digest_covers_every_cached_skill_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("cache");
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+        std::fs::create_dir_all(studio.parent().unwrap()).unwrap();
+        std::fs::write(&studio, super::PET_STUDIO_SKILL_MD).unwrap();
+        let maker = root.join("skills/agent-pet-maker");
+        for (relative_path, contents) in super::AGENT_PET_MAKER_FILES {
+            let path = maker.join(relative_path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+
+        assert_eq!(
+            super::codex_skill_bundle_sha256(&root).unwrap(),
+            super::expected_codex_skill_bundle_sha256()
+        );
+
+        std::fs::write(
+            maker.join("SKILL.md"),
+            b"managed but stale Agent Pet Companion skill",
+        )
+        .unwrap();
+        assert_ne!(
+            super::codex_skill_bundle_sha256(&root).unwrap(),
+            super::expected_codex_skill_bundle_sha256()
+        );
+    }
+
+    #[test]
+    fn refresh_installed_source_preserves_foreign_fixed_connector_content() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config_home = temp.path().join("agent-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &config_home);
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        let root = pi_extensions_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent-pet-companion.ts");
+        let foreign = b"// user-owned connector\nexport const keep = true;\n";
+        std::fs::write(&path, foreign).unwrap();
+
+        let result = connections::refresh_installed_source(&paths, AgentSource::Pi);
+
+        assert_eq!(result.status, super::InstalledSourceRefreshStatus::Conflict);
+        assert!(!result.ok);
+        assert!(!result.managed);
+        assert_eq!(std::fs::read(path).unwrap(), foreign);
+    }
+
+    #[test]
+    fn refresh_installed_source_updates_owned_connector_and_returns_typed_result() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config_home = temp.path().join("agent-home");
+        let connector_cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(connector_cli.parent().unwrap()).unwrap();
+        std::fs::write(&connector_cli, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&connector_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &config_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &connector_cli);
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        super::repair_pi(&pi_extensions_dir(), &connector_cli).unwrap();
+        let path = pi_extensions_dir().join("agent-pet-companion.ts");
+        let mut old = std::fs::read_to_string(&path).unwrap();
+        old.push_str("\n// old APC revision\n");
+        std::fs::write(&path, old).unwrap();
+
+        let result = connections::refresh_installed_source(&paths, AgentSource::Pi);
+
+        assert_eq!(result.status, super::InstalledSourceRefreshStatus::Updated);
+        assert!(result.ok);
+        assert!(result.managed);
+        assert!(result.refreshed);
+        assert!(result.verified);
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            super::render_connector_script(super::PI_EXTENSION_TEMPLATE, &connector_cli)
+        );
+        let encoded = serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["status"], "updated");
+        assert_eq!(encoded["ok"], true);
+    }
+
+    #[test]
+    fn codex_refresh_requires_expected_version_and_exact_active_skill_cache() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = temp.path().join("home");
+        let connector_cli = temp.path().join("runtime/current/petcore-cli");
+        let codex = temp.path().join("codex");
+        let add_marker = temp.path().join("plugin-add-ran");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        std::fs::create_dir_all(connector_cli.parent().unwrap()).unwrap();
+        std::fs::write(&connector_cli, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&connector_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _home = EnvVarGuard::set("HOME", &fake_home);
+        let _agent_home = EnvVarGuard::unset("APC_AGENT_CONFIG_HOME");
+        let _codex_home = EnvVarGuard::unset("CODEX_HOME");
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &connector_cli);
+        let _codex_cli = EnvVarGuard::set("APC_CODEX_CLI_PATH", &codex);
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        let source_root = super::codex_plugin_source_root();
+        super::write_codex_connector(&source_root, &connector_cli).unwrap();
+        super::ensure_codex_marketplace_entry().unwrap();
+        let version = super::expected_codex_plugin_version().unwrap();
+        let cache_root = super::codex_active_cache_root(&version);
+        let listing = serde_json::to_string(&json!({
+            "installed": [{
+                "pluginId": "agent-pet-companion@personal",
+                "name": "agent-pet-companion",
+                "marketplaceName": "personal",
+                "version": version,
+                "installed": true,
+                "enabled": true,
+                "source": {
+                    "source": "local",
+                    "path": source_root.display().to_string()
+                }
+            }]
+        }))
+        .unwrap();
+        std::fs::write(
+            &codex,
+            format!(
+                "#!/bin/sh\nset -eu\nif [ \"${{1-}}\" = plugin ] && [ \"${{2-}}\" = add ]; then\n  mkdir -p '{}'\n  cp -R '{}' '{}'\n  printf ran > '{}'\n  printf '%s\\n' '{{\"status\":\"ok\"}}'\n  exit 0\nfi\nif [ \"${{1-}}\" = plugin ] && [ \"${{2-}}\" = list ] && [ \"${{3-}}\" = --json ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 9\n",
+                cache_root.parent().unwrap().display(),
+                source_root.display(),
+                cache_root.display(),
+                add_marker.display(),
+                listing
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = connections::refresh_installed_source(&paths, AgentSource::Codex);
+
+        assert_eq!(result.status, super::InstalledSourceRefreshStatus::Updated);
+        assert!(result.ok, "{result:?}");
+        assert!(result.verified);
+        assert_eq!(result.expected_version, result.active_version);
+        assert_eq!(result.expected_skills_sha256, result.active_skills_sha256);
+        assert_eq!(
+            result.expected_content_sha256,
+            result.managed_source_content_sha256
+        );
+        assert_eq!(
+            result.managed_source_content_sha256,
+            result.active_content_sha256
+        );
+        assert!(add_marker.is_file());
+        assert_eq!(
+            super::codex_skill_bundle_sha256(&cache_root).unwrap(),
+            super::expected_codex_skill_bundle_sha256()
+        );
     }
 
     #[test]

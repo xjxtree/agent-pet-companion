@@ -5,6 +5,9 @@ import SwiftUI
 
 private enum AppLaunchMode {
     static let runsUIValidation = CommandLine.arguments.contains("--run-ui-validation")
+    static let manualInstallationRequest = runsUIValidation
+        ? nil
+        : AppInstallationPolicy.primaryLaunchRequest()
 }
 
 @MainActor
@@ -63,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         guard !AppLaunchMode.runsUIValidation,
+              AppLaunchMode.manualInstallationRequest == nil,
               AppSingleInstanceCoordinator.shared.claim == .primary
         else { return }
         AppDiagnostics.shared.log(.debug, category: "lifecycle", event: "app_became_active")
@@ -116,16 +120,38 @@ struct AgentPetCompanionApp: App {
         _store = StateObject(wrappedValue: store)
         let isPrimary = AppLaunchMode.runsUIValidation || claim == .primary
         if !AppLaunchMode.runsUIValidation, isPrimary {
+            AppUpdateHandoffCoordinator.shared.configureSafety(
+                canRestart: { [weak store] in
+                    store?.isSafeForAppUpdateHandoff ?? true
+                },
+                onDeferred: { [weak store] in
+                    store?.presentDeferredAppUpdateHandoff()
+                },
+                onFailure: { [weak store] request in
+                    store?.presentFailedAppUpdateHandoff(request)
+                }
+            )
             AppSingleInstanceCoordinator.shared.setActivationHandler { [weak store] request in
-                guard !AppUpdateHandoffCoordinator.shared.restartForRequestedBuildIfNeeded(request)
-                else { return }
+                switch AppUpdateHandoffCoordinator.shared.handleRequestedBuild(request) {
+                case .restartScheduled:
+                    return
+                case .restartDeferred:
+                    return
+                case let .manualInstallation(installationRequest):
+                    store?.presentManualAppInstallation(installationRequest)
+                    return
+                case .ignored:
+                    break
+                }
                 guard !AppUpdateHandoffCoordinator.shared.restartIfInstalledBuildChanged() else {
                     return
                 }
                 store?.presentMainWindow()
             }
-            Task { @MainActor in
-                await store.bootstrapIfNeeded()
+            if AppLaunchMode.manualInstallationRequest == nil {
+                Task { @MainActor in
+                    await store.bootstrapIfNeeded()
+                }
             }
         }
     }
@@ -145,23 +171,34 @@ struct AgentPetCompanionApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
         .commands {
-            AboutWindowCommands()
-            ControlCenterCommands(store: store)
+            AboutWindowCommands(
+                store: store,
+                installationOnly: AppLaunchMode.manualInstallationRequest != nil
+            )
+            ControlCenterCommands(
+                store: store,
+                installationOnly: AppLaunchMode.manualInstallationRequest != nil
+            )
         }
 
         Window(APCLocalization.text(.appActionAbout), id: "about") {
             if AppLaunchMode.runsUIValidation {
                 EmptyView()
             } else {
-                AboutView(store: store)
+                AboutView(
+                    store: store,
+                    showsUpdateControls: AppLaunchMode.manualInstallationRequest == nil
+                )
                     .apcAppearanceTheme(store.behavior.appearanceTheme)
                     .background {
-                        InitialAppearanceWindowGateView(
-                            readiness: store.initialAppearanceReadiness,
-                            theme: store.behavior.appearanceTheme
-                        )
-                        .frame(width: 0, height: 0)
-                        .accessibilityHidden(true)
+                        if AppLaunchMode.manualInstallationRequest == nil {
+                            InitialAppearanceWindowGateView(
+                                readiness: store.initialAppearanceReadiness,
+                                theme: store.behavior.appearanceTheme
+                            )
+                            .frame(width: 0, height: 0)
+                            .accessibilityHidden(true)
+                        }
                     }
             }
         }
@@ -169,7 +206,11 @@ struct AgentPetCompanionApp: App {
         .windowResizability(.contentSize)
 
         MenuBarExtra {
-            AppStatusMenuContent(store: store)
+            if let request = AppLaunchMode.manualInstallationRequest {
+                AppInstallationStatusMenuContent(store: store, request: request)
+            } else {
+                AppStatusMenuContent(store: store)
+            }
         } label: {
             AppStatusItemLabel(store: store)
         }
@@ -183,6 +224,10 @@ struct AppStatusMenuContent: View {
 
     var body: some View {
         Group {
+            AppUpdateMenuSection(
+                updater: store.appUpdater,
+                presentUpdate: store.presentAvailableAppUpdate
+            )
             Text(APCLocalization.format(
                 .appMenuCurrentPet,
                 MenuBarSummary.short(
@@ -226,8 +271,13 @@ struct AppStatusMenuContent: View {
                 store.checkAllConnections()
                 store.presentMainWindow()
             }
-            .disabled(store.connectionOperationState.isRunning)
+            .disabled(!store.canStartConnectionOperation)
             .accessibilityIdentifier("menubar.check-connections")
+            Button(APCLocalization.text(.appUpdateCheckAction)) {
+                store.checkForAppUpdatesManually()
+            }
+            .disabled(store.appUpdater.isChecking)
+            .accessibilityIdentifier("menubar.check-for-updates")
             Divider()
             Button(APCLocalization.text(.appActionQuit)) {
                 if AppSingleInstanceCoordinator.shared.claim == .primary {
@@ -246,6 +296,8 @@ struct AppStatusMenuContent: View {
 
 private struct AboutWindowCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    let store: AppStore
+    let installationOnly: Bool
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -253,12 +305,20 @@ private struct AboutWindowCommands: Commands {
                 openWindow(id: "about")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            if !installationOnly {
+                Divider()
+                Button(APCLocalization.text(.appUpdateCheckAction)) {
+                    store.checkForAppUpdatesManually()
+                }
+                .disabled(store.appUpdater.isChecking)
+            }
         }
     }
 }
 
 private struct ControlCenterCommands: Commands {
     let store: AppStore
+    let installationOnly: Bool
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
@@ -267,36 +327,38 @@ private struct ControlCenterCommands: Commands {
             }
             .keyboardShortcut("0", modifiers: [.command])
 
-            Button(APCLocalization.text(.appActionTogglePet)) {
-                store.toggleOverlay()
-            }
-            .keyboardShortcut("p", modifiers: [.command, .shift])
+            if !installationOnly {
+                Button(APCLocalization.text(.appActionTogglePet)) {
+                    store.toggleOverlay()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
 
-            Button(APCLocalization.text(.appActionFocusPetSessions)) {
-                store.focusOverlayBubbleForKeyboardNavigation()
-            }
-            .keyboardShortcut("b", modifiers: [.command, .shift])
-            .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
+                Button(APCLocalization.text(.appActionFocusPetSessions)) {
+                    store.focusOverlayBubbleForKeyboardNavigation()
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
 
-            Button(APCLocalization.text(.appActionFocusPetResize)) {
-                store.focusOverlayResizeForKeyboardNavigation()
-            }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
+                Button(APCLocalization.text(.appActionFocusPetResize)) {
+                    store.focusOverlayResizeForKeyboardNavigation()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
 
-            Divider()
+                Divider()
 
-            Button(APCLocalization.text(.navigationDiagnostics)) {
-                store.selection = .diagnostics
-                store.presentMainWindow()
-            }
+                Button(APCLocalization.text(.navigationDiagnostics)) {
+                    store.selection = .diagnostics
+                    store.presentMainWindow()
+                }
 
-            Button(APCLocalization.text(.appActionCheckConnections)) {
-                store.selection = .connections
-                store.checkAllConnections()
-                store.presentMainWindow()
+                Button(APCLocalization.text(.appActionCheckConnections)) {
+                    store.selection = .connections
+                    store.checkAllConnections()
+                    store.presentMainWindow()
+                }
+                .disabled(!store.canStartConnectionOperation)
             }
-            .disabled(store.connectionOperationState.isRunning)
         }
     }
 }
@@ -321,6 +383,10 @@ private struct AppStatusItemLabel: View {
 
     var body: some View {
         APCBrandMark(size: 18)
+            .overlay(alignment: .topTrailing) {
+                AppUpdateStatusDot(updater: store.appUpdater)
+                    .offset(x: 2, y: -2)
+            }
             .onAppear {
                 store.setMainWindowPresenter {
                     openWindow(id: "main")
@@ -330,12 +396,78 @@ private struct AppStatusItemLabel: View {
     }
 }
 
-private struct MainWindowContent: View {
+private struct AppInstallationStatusMenuContent: View {
     @ObservedObject var store: AppStore
+    let request: AppManualInstallationRequest
 
     var body: some View {
-        ContentView()
-            .environmentObject(store)
+        Text(APCLocalization.text(.appUpdateInstallRequired))
+        Divider()
+        Button(APCLocalization.text(.appUpdateShowInstallGuide)) {
+            store.presentMainWindow()
+        }
+        Button(APCLocalization.text(
+            request.origin == .invalidReleaseBundle
+                ? .appUpdateRedownloadAction
+                : .appUpdateRevealNewApp
+        )) {
+            if request.origin == .invalidReleaseBundle {
+                AppManualInstallationActions.openLatestRelease()
+            } else {
+                AppManualInstallationActions.revealCandidate(request)
+            }
+        }
+        if request.origin != .invalidReleaseBundle {
+            Button(APCLocalization.text(.appUpdateOpenApplications)) {
+                AppManualInstallationActions.openApplications()
+            }
+        }
+        Divider()
+        Button(APCLocalization.text(.appActionQuit)) {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+
+private struct MainWindowContent: View {
+    @ObservedObject var store: AppStore
+    @ObservedObject private var updater: AppUpdateController
+
+    init(store: AppStore) {
+        self.store = store
+        _updater = ObservedObject(wrappedValue: store.appUpdater)
+    }
+
+    var body: some View {
+        Group {
+            if let request = AppLaunchMode.manualInstallationRequest {
+                AppManualInstallationGuideView(
+                    request: request,
+                    allowsDismissal: false
+                )
+            } else {
+                ContentView()
+                    .environmentObject(store)
+                    .sheet(isPresented: appModalSheetIsPresented) {
+                        if let request = store.manualAppInstallationRequest {
+                            AppManualInstallationGuideView(request: request) {
+                                store.dismissManualAppInstallation()
+                            }
+                        } else {
+                            AppUpdateSheetView(updater: updater) { release in
+                                store.beginManualAppUpdateDownload(release)
+                            }
+                        }
+                    }
+                    .onReceive(
+                        NotificationCenter.default.publisher(
+                            for: NSApplication.didBecomeActiveNotification
+                        )
+                    ) { _ in
+                        store.appUpdater.checkAutomaticallyIfDue()
+                    }
+            }
+        }
             .frame(
                 minWidth: ControlCenterShellPolicy.supportedMinimumWindowWidth,
                 minHeight: ControlCenterShellPolicy.supportedMinimumWindowHeight
@@ -343,15 +475,32 @@ private struct MainWindowContent: View {
             .apcAppearanceTheme(store.behavior.appearanceTheme)
             .background {
                 ZStack {
-                    InitialAppearanceWindowGateView(
-                        readiness: store.initialAppearanceReadiness,
-                        theme: store.behavior.appearanceTheme
-                    )
+                    if AppLaunchMode.manualInstallationRequest == nil {
+                        InitialAppearanceWindowGateView(
+                            readiness: store.initialAppearanceReadiness,
+                            theme: store.behavior.appearanceTheme
+                        )
+                    }
                     ControlCenterWindowRegistrationView(store: store)
                 }
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
             }
+    }
+
+    private var appModalSheetIsPresented: Binding<Bool> {
+        Binding(
+            get: {
+                store.manualAppInstallationRequest != nil
+                    || updater.isSheetPresented
+            },
+            set: { isPresented in
+                if !isPresented {
+                    store.dismissManualAppInstallation()
+                    updater.dismissSheet()
+                }
+            }
+        )
     }
 }
 

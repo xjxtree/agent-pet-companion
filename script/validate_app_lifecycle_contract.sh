@@ -70,10 +70,17 @@ checks = {
         is not None
         and '"app.action.open_control_center" = "打开控制中心";' in zh_hans
     ),
-    "every control-center presentation yields to an installed build handoff": (
+    "ordinary control-center presentation yields to an installed build handoff": (
         re.search(
             r'func presentMainWindow\(\)\s*\{\s*'
-            r'guard !runtimeHandoffIfNeeded\(\) else \{ return \}',
+            r'presentMainWindow\(checkRuntimeHandoff: true\)',
+            app_store,
+        )
+        is not None
+        and re.search(
+            r'private func presentMainWindow\(checkRuntimeHandoff: Bool\)\s*\{\s*'
+            r'guard !checkRuntimeHandoff \|\| !runtimeHandoffIfNeeded\(\) '
+            r'else \{ return \}',
             app_store,
         )
         is not None

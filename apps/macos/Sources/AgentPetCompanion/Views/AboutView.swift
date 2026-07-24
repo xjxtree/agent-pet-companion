@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AboutView: View {
     @ObservedObject var store: AppStore
+    var showsUpdateControls = true
 
     private let projectURL = URL(string: "https://github.com/xjxtree/agent-pet-companion")!
     private let privacyURL = URL(string: "https://github.com/xjxtree/agent-pet-companion/blob/main/docs/integrations/agent-connectors.md#security-and-privacy-boundary")!
@@ -35,12 +36,20 @@ struct AboutView: View {
             }
             .buttonStyle(.bordered)
 
+            if showsUpdateControls {
+                AppUpdateAboutSection(
+                    updater: store.appUpdater,
+                    checkForUpdates: store.checkForAppUpdatesManually,
+                    presentUpdate: store.presentAvailableAppUpdate
+                )
+            }
+
             Text(APCLocalization.text(.aboutCopyright))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
         .padding(32)
-        .frame(width: 440, height: 360)
+        .frame(width: 440, height: 420)
         .accessibilityIdentifier("about.window")
     }
 

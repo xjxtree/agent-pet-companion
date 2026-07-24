@@ -273,7 +273,7 @@ private struct AgentConnectionSection: View {
     }
 
     private var busy: Bool {
-        store.connectionOperationState.isRunning
+        !store.canStartConnectionOperation
     }
 
     var body: some View {

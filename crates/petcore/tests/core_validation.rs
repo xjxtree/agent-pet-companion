@@ -4832,7 +4832,7 @@ fn codex_repair_rejects_symlinked_maker_parents_and_targets() {
 }
 
 #[test]
-fn codex_repair_reports_plugin_install_failure_as_needs_fix() {
+fn codex_repair_returns_plugin_install_failure_without_hiding_it() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_home = temp.path().join("home");
@@ -4880,13 +4880,11 @@ exit 0
     let paths = AppPaths::new(temp.path().join("apc-home"));
     paths.ensure().unwrap();
 
-    let status = connections::repair_source(&paths, AgentSource::Codex).unwrap();
-    let install_item = status
-        .items
-        .iter()
-        .find(|item| item.name == "Codex 插件安装")
-        .expect("Codex plugin install item should exist");
-    assert_eq!(install_item.status, CheckStatus::NeedsFix);
+    let error = connections::repair_source(&paths, AgentSource::Codex).unwrap_err();
+    assert!(
+        error.to_string().contains("codex plugin add 未成功完成"),
+        "unexpected error: {error}"
+    );
 
     let result_path = fake_home
         .join(".agents")
@@ -4897,6 +4895,7 @@ exit 0
     let install_result: serde_json::Value =
         serde_json::from_slice(&std::fs::read(result_path).unwrap()).unwrap();
     assert_eq!(install_result["status"], "failed");
+    assert_eq!(install_result["phase"], "plugin_add");
     assert_eq!(install_result["code"], 42);
     assert_eq!(install_result["timed_out"], false);
     assert!(install_result.get("stdout").is_none());

@@ -2,7 +2,9 @@ use crate::agent_environment::connector_identity_environment;
 use crate::agent_state;
 use crate::connections;
 use crate::db::{
-    BehaviorSettingsPatch, Database, InsertEventOutcome, RevisionChecked, SessionMessageProjection,
+    BehaviorSettingsPatch, Database, InsertEventOutcome, ProductConvergenceConnectorSummary,
+    ProductConvergenceReceipt, RevisionChecked, SessionMessageProjection,
+    PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION,
 };
 use crate::diagnostics::{self, DiagnosticIngestOutcome, DiagnosticLogger, DiagnosticRejection};
 use crate::event_envelope::{
@@ -21,6 +23,7 @@ use petcore_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +39,10 @@ const FUTURE_EVENT_GRACE_SECONDS: i64 = 60;
 const MAX_RPC_BATCH_ITEMS: usize = 64;
 const MAX_RPC_ENCODED_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_RPC_ERROR_MESSAGE_BYTES: usize = 512;
+const MAX_PRODUCT_CONVERGENCE_REPORT_BYTES: usize = 64 * 1024;
+const MAX_PRODUCT_CONVERGENCE_DETAIL_BYTES: usize = 1024;
+const MAX_PRODUCT_CONVERGENCE_ERROR_BYTES: usize = 512;
+const MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES: usize = 128;
 pub use crate::runtime_manifest::{PETCORE_BUILD_ID, PETCORE_RPC_PROTOCOL_VERSION};
 const MIN_OVERLAY_SCALE: f64 = 0.10;
 const MAX_OVERLAY_SCALE: f64 = 1.8;
@@ -472,6 +479,16 @@ impl CoreState {
         self.agent_host_process_gate
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn ensure_generation_admission_open(&self) -> Result<()> {
+        if self.connection_operation_active.load(Ordering::Acquire) {
+            return Err(PetCoreError::Conflict(
+                "Agent capabilities are being updated; wait before starting new generation work"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn snapshot_connection_statuses(&self) -> Result<Vec<AgentConnectionStatus>> {
@@ -997,6 +1014,15 @@ pub struct RpcRequest {
     pub params: Value,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProductConvergenceUpdateParams {
+    schema_version: String,
+    build_id: String,
+    app_version: String,
+    connector_report: connections::InstalledSourcesRefreshReport,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RpcResponse {
     pub jsonrpc: &'static str,
@@ -1197,6 +1223,9 @@ fn known_rpc_method(method: &str) -> bool {
             | "connections.refresh_installed"
             | "connections.uninstall"
             | "connections.test"
+            | "product.convergence.get"
+            | "product.convergence.update"
+            | "product.convergence.preflight"
             | "renderer.budget"
             | "codex.app_server.probe"
             | "diagnostics.export"
@@ -1214,7 +1243,9 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         | "generation.latest"
         | "codex.app_server.probe"
         | "connections.receipts"
-        | "connections.refresh_installed" => &[],
+        | "connections.refresh_installed"
+        | "product.convergence.get"
+        | "product.convergence.preflight" => &[],
         "petcore.shutdown" => &["expected_instance_id"],
         "state.wait" => &["after_revision", "timeout_ms"],
         "behavior.patch" => &["expected_revision", "changes"],
@@ -1247,6 +1278,12 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "connections.check" => &["source", "cwd"],
         "connections.repair" => &["source", "cwd"],
         "connections.uninstall" | "connections.test" => &["source"],
+        "product.convergence.update" => &[
+            "schema_version",
+            "build_id",
+            "app_version",
+            "connector_report",
+        ],
         "renderer.budget" => &["quality", "fps_profile", "fps"],
         "diagnostics.export" => &["app_environment"],
         _ => return Ok(()),
@@ -1334,6 +1371,267 @@ fn encode_rpc_value(value: Value) -> String {
 fn internal_serialization_error() -> String {
     "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"serialization failed\"}}"
         .to_string()
+}
+
+fn validated_product_convergence_receipt(
+    state: &CoreState,
+    params: ProductConvergenceUpdateParams,
+) -> Result<ProductConvergenceReceipt> {
+    if params.schema_version != PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION {
+        return Err(invalid_params(format!(
+            "product convergence schema_version must be {PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION}"
+        )));
+    }
+    if params.build_id.is_empty()
+        || params.build_id.len() > MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES
+        || params.app_version.is_empty()
+        || params.app_version.len() > MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES
+    {
+        return Err(invalid_params(format!(
+            "product convergence build_id and app_version must each contain 1..={MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES} bytes"
+        )));
+    }
+
+    let runtime = RuntimeReleaseManifest::compiled();
+    if params.build_id != runtime.build_id || params.app_version != runtime.app_version {
+        return Err(PetCoreError::Conflict(format!(
+            "product convergence identity does not match the active runtime (expected build_id={} app_version={})",
+            runtime.build_id, runtime.app_version
+        )));
+    }
+
+    let encoded_report = serde_json::to_vec(&params.connector_report)?;
+    if encoded_report.len() > MAX_PRODUCT_CONVERGENCE_REPORT_BYTES {
+        return Err(invalid_params(format!(
+            "connector_report exceeds {MAX_PRODUCT_CONVERGENCE_REPORT_BYTES} encoded bytes"
+        )));
+    }
+    if !params.connector_report.ok {
+        return Err(invalid_params(
+            "connector_report must be successful before convergence can be recorded",
+        ));
+    }
+
+    let expected_sources = [
+        AgentSource::Codex,
+        AgentSource::ClaudeCode,
+        AgentSource::Pi,
+        AgentSource::Opencode,
+    ];
+    if params.connector_report.results.len() != expected_sources.len() {
+        return Err(invalid_params(
+            "connector_report must contain exactly four source results",
+        ));
+    }
+
+    let mut managed_sources = 0_u32;
+    let mut verified_sources = 0_u32;
+    let mut skipped_sources = 0_u32;
+    let mut codex_skills_sha256 = None;
+    let mut codex_content_sha256 = None;
+
+    for (index, (result, expected_source)) in params
+        .connector_report
+        .results
+        .iter()
+        .zip(expected_sources)
+        .enumerate()
+    {
+        if result.source != expected_source {
+            return Err(invalid_params(format!(
+                "connector_report result {index} must be for {}",
+                enum_name(expected_source)
+            )));
+        }
+        if result.detail.is_empty() || result.detail.len() > MAX_PRODUCT_CONVERGENCE_DETAIL_BYTES {
+            return Err(invalid_params(format!(
+                "{} connector detail must contain 1..={MAX_PRODUCT_CONVERGENCE_DETAIL_BYTES} bytes",
+                enum_name(result.source)
+            )));
+        }
+        if result
+            .error
+            .as_ref()
+            .is_some_and(|error| error.len() > MAX_PRODUCT_CONVERGENCE_ERROR_BYTES)
+        {
+            return Err(invalid_params(format!(
+                "{} connector error exceeds {MAX_PRODUCT_CONVERGENCE_ERROR_BYTES} bytes",
+                enum_name(result.source)
+            )));
+        }
+        for (name, value) in [
+            ("expected_version", result.expected_version.as_deref()),
+            ("active_version", result.active_version.as_deref()),
+        ] {
+            if value.is_some_and(|value| {
+                value.is_empty() || value.len() > MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES
+            }) {
+                return Err(invalid_params(format!(
+                    "{} connector {name} must contain 1..={MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES} bytes",
+                    enum_name(result.source)
+                )));
+            }
+        }
+        for (name, value) in [
+            (
+                "expected_skills_sha256",
+                result.expected_skills_sha256.as_deref(),
+            ),
+            (
+                "active_skills_sha256",
+                result.active_skills_sha256.as_deref(),
+            ),
+            (
+                "expected_content_sha256",
+                result.expected_content_sha256.as_deref(),
+            ),
+            (
+                "managed_source_content_sha256",
+                result.managed_source_content_sha256.as_deref(),
+            ),
+            (
+                "active_content_sha256",
+                result.active_content_sha256.as_deref(),
+            ),
+        ] {
+            if value.is_some_and(|digest| !is_lowercase_sha256(digest)) {
+                return Err(invalid_params(format!(
+                    "{} connector {name} must be a lowercase SHA-256 digest",
+                    enum_name(result.source)
+                )));
+            }
+        }
+
+        match result.status {
+            connections::InstalledSourceRefreshStatus::SkippedNotManaged => {
+                if result.managed
+                    || result.refreshed
+                    || !result.ok
+                    || result.verified
+                    || result.error.is_some()
+                    || connector_result_has_version_or_digest(result)
+                {
+                    return Err(invalid_params(format!(
+                        "{} skipped connector result is internally inconsistent",
+                        enum_name(result.source)
+                    )));
+                }
+                skipped_sources += 1;
+            }
+            connections::InstalledSourceRefreshStatus::Current
+            | connections::InstalledSourceRefreshStatus::Updated => {
+                if !result.managed
+                    || !result.refreshed
+                    || !result.ok
+                    || !result.verified
+                    || result.error.is_some()
+                {
+                    return Err(invalid_params(format!(
+                        "{} managed connector result is not completely verified",
+                        enum_name(result.source)
+                    )));
+                }
+                managed_sources += 1;
+                verified_sources += 1;
+            }
+            connections::InstalledSourceRefreshStatus::PendingHost
+            | connections::InstalledSourceRefreshStatus::Conflict
+            | connections::InstalledSourceRefreshStatus::Failed => {
+                return Err(invalid_params(format!(
+                    "{} connector result is incomplete",
+                    enum_name(result.source)
+                )));
+            }
+        }
+
+        if result.source == AgentSource::Codex && result.managed {
+            let (compiled_version, compiled_skills_sha256, compiled_content_sha256) =
+                connections::compiled_codex_plugin_identity(&state.paths)?;
+            let expected_version = result.expected_version.as_deref();
+            if expected_version.is_none() || expected_version != result.active_version.as_deref() {
+                return Err(invalid_params(
+                    "managed Codex connector versions must be present and equal",
+                ));
+            }
+            if expected_version != Some(compiled_version.as_str()) {
+                return Err(invalid_params(
+                    "managed Codex connector version does not match this runtime",
+                ));
+            }
+            let expected_skills = result.expected_skills_sha256.as_deref();
+            if expected_skills.is_none()
+                || expected_skills != result.active_skills_sha256.as_deref()
+            {
+                return Err(invalid_params(
+                    "managed Codex connector Skills digests must be present and equal",
+                ));
+            }
+            if expected_skills != Some(compiled_skills_sha256.as_str()) {
+                return Err(invalid_params(
+                    "managed Codex connector Skills digest does not match this runtime",
+                ));
+            }
+            let expected_content = result.expected_content_sha256.as_deref();
+            if expected_content.is_none()
+                || expected_content != result.managed_source_content_sha256.as_deref()
+                || expected_content != result.active_content_sha256.as_deref()
+            {
+                return Err(invalid_params(
+                    "managed Codex connector content digests must be present and equal",
+                ));
+            }
+            if expected_content != Some(compiled_content_sha256.as_str()) {
+                return Err(invalid_params(
+                    "managed Codex connector content digest does not match this runtime",
+                ));
+            }
+            codex_skills_sha256 = result.expected_skills_sha256.clone();
+            codex_content_sha256 = result.expected_content_sha256.clone();
+        } else if result.source != AgentSource::Codex
+            && connector_result_has_version_or_digest(result)
+        {
+            return Err(invalid_params(format!(
+                "{} connector must not report Codex-only version or digest fields",
+                enum_name(result.source)
+            )));
+        }
+    }
+
+    let report_sha256 = hex::encode(Sha256::digest(&encoded_report));
+    Ok(ProductConvergenceReceipt {
+        schema_version: PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION.to_string(),
+        build_id: runtime.build_id,
+        app_version: runtime.app_version,
+        completed_at: now_rfc3339(),
+        connector_report_summary: ProductConvergenceConnectorSummary {
+            total_sources: expected_sources.len() as u32,
+            managed_sources,
+            verified_sources,
+            skipped_sources,
+            report_sha256,
+            codex_skills_sha256,
+            codex_content_sha256,
+        },
+    })
+}
+
+fn connector_result_has_version_or_digest(
+    result: &connections::InstalledSourceRefreshResult,
+) -> bool {
+    result.expected_version.is_some()
+        || result.active_version.is_some()
+        || result.expected_skills_sha256.is_some()
+        || result.active_skills_sha256.is_some()
+        || result.expected_content_sha256.is_some()
+        || result.managed_source_content_sha256.is_some()
+        || result.active_content_sha256.is_some()
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn handle_request(state: &CoreState, request: RpcRequest) -> Result<Value> {
@@ -1545,6 +1843,8 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
         }
         "generation.start" => {
             let form: GenerationForm = serde_json::from_value(request.params)?;
+            let _admission_guard = state.agent_host_process_guard();
+            state.ensure_generation_admission_open()?;
             let job_id = generation::start_generation_for_instance(
                 &state.paths,
                 &state.database,
@@ -1561,6 +1861,8 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 .cloned()
                 .map(serde_json::from_value::<GenerationForm>)
                 .transpose()?;
+            let _admission_guard = state.agent_host_process_guard();
+            state.ensure_generation_admission_open()?;
             let job_id = generation::retry_generation_for_instance(
                 &state.paths,
                 &state.database,
@@ -1621,6 +1923,8 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             let instruction = required_string(&request.params, "instruction")?;
             let baseline_revision_id =
                 optional_string_param(&request.params, "baseline_revision_id")?;
+            let _admission_guard = state.agent_host_process_guard();
+            state.ensure_generation_admission_open()?;
             let job_id = generation::start_pet_edit_from_revision_for_instance(
                 &state.paths,
                 &state.database,
@@ -1782,28 +2086,40 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
         "connections.refresh_installed" => {
             let _operation = state.begin_connection_operation()?;
             let _host_guard = state.agent_host_process_guard();
+            if state.database.active_generation_job()?.is_some() {
+                return Err(PetCoreError::Conflict(
+                    "generation work is active; wait before updating Agent capabilities"
+                        .to_string(),
+                ));
+            }
             state.invalidate_connection_light_status_cache();
             state.invalidate_all_connection_evidence_projections();
-            let refreshed = [
-                AgentSource::Codex,
-                AgentSource::ClaudeCode,
-                AgentSource::Pi,
-                AgentSource::Opencode,
-            ]
-            .into_iter()
-            .map(|source| {
-                let result = connections::refresh_installed_source(&state.paths, source);
-                json!({
-                    "source": source,
-                    "refreshed": result.as_ref().copied().unwrap_or(false),
-                    "ok": result.is_ok(),
-                    "error": result.err().map(|error| error.to_string()),
-                })
-            })
-            .collect::<Vec<_>>();
+            let refreshed = connections::refresh_installed_sources(&state.paths);
             state.invalidate_connection_light_status_cache();
             state.invalidate_all_connection_evidence_projections();
-            Ok(json!({ "results": refreshed }))
+            Ok(json!(refreshed))
+        }
+        "product.convergence.get" => Ok(json!(state.database.product_convergence_receipt()?)),
+        "product.convergence.update" => {
+            let params: ProductConvergenceUpdateParams = serde_json::from_value(request.params)
+                .map_err(|error| {
+                    invalid_params(format!("invalid product convergence receipt: {error}"))
+                })?;
+            let receipt = validated_product_convergence_receipt(state, params)?;
+            state
+                .database
+                .upsert_product_convergence_receipt(&receipt)?;
+            Ok(json!(receipt))
+        }
+        "product.convergence.preflight" => {
+            let active_generation = state.database.active_generation_job()?.is_some();
+            let connection_operation_active =
+                state.connection_operation_active.load(Ordering::Acquire);
+            Ok(json!({
+                "safe": !active_generation && !connection_operation_active,
+                "active_generation": active_generation,
+                "connection_operation_active": connection_operation_active,
+            }))
         }
         "connections.uninstall" => {
             let source = required_source(&request.params)?;
@@ -2065,6 +2381,9 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             "recent_events": recent_event_projections,
             "connections": connections,
             "active_generation": active_generation,
+            "connection_operation_active": state
+                .connection_operation_active
+                .load(Ordering::Acquire),
         }));
     }
     Err(PetCoreError::Conflict(
@@ -3157,6 +3476,304 @@ mod tests {
         assert!(clone.agent_host_process_gate.try_lock().is_err());
         drop(host);
         assert!(clone.agent_host_process_gate.try_lock().is_ok());
+    }
+
+    fn skipped_refresh_result(source: AgentSource) -> connections::InstalledSourceRefreshResult {
+        connections::InstalledSourceRefreshResult {
+            source,
+            status: connections::InstalledSourceRefreshStatus::SkippedNotManaged,
+            managed: false,
+            refreshed: false,
+            ok: true,
+            verified: false,
+            expected_version: None,
+            active_version: None,
+            expected_skills_sha256: None,
+            active_skills_sha256: None,
+            expected_content_sha256: None,
+            managed_source_content_sha256: None,
+            active_content_sha256: None,
+            detail: "not managed".to_string(),
+            error: None,
+        }
+    }
+
+    fn complete_convergence_report(paths: &AppPaths) -> connections::InstalledSourcesRefreshReport {
+        let (version, skills_digest, content_digest) =
+            connections::compiled_codex_plugin_identity(paths).unwrap();
+        let codex = connections::InstalledSourceRefreshResult {
+            source: AgentSource::Codex,
+            status: connections::InstalledSourceRefreshStatus::Updated,
+            managed: true,
+            refreshed: true,
+            ok: true,
+            verified: true,
+            expected_version: Some(version.clone()),
+            active_version: Some(version),
+            expected_skills_sha256: Some(skills_digest.clone()),
+            active_skills_sha256: Some(skills_digest),
+            expected_content_sha256: Some(content_digest.clone()),
+            managed_source_content_sha256: Some(content_digest.clone()),
+            active_content_sha256: Some(content_digest),
+            detail: "updated and verified".to_string(),
+            error: None,
+        };
+        connections::InstalledSourcesRefreshReport {
+            ok: true,
+            results: vec![
+                codex,
+                skipped_refresh_result(AgentSource::ClaudeCode),
+                skipped_refresh_result(AgentSource::Pi),
+                skipped_refresh_result(AgentSource::Opencode),
+            ],
+        }
+    }
+
+    fn convergence_update_request(
+        connector_report: connections::InstalledSourcesRefreshReport,
+    ) -> RpcRequest {
+        let runtime = RuntimeReleaseManifest::compiled();
+        RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("product-convergence")),
+            method: "product.convergence.update".to_string(),
+            params: json!({
+                "schema_version": PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION,
+                "build_id": runtime.build_id,
+                "app_version": runtime.app_version,
+                "connector_report": connector_report,
+            }),
+        }
+    }
+
+    #[test]
+    fn product_convergence_update_persists_only_a_complete_current_runtime_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let empty = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("product-convergence-get-empty")),
+                method: "product.convergence.get".to_string(),
+                params: json!({}),
+            },
+        )
+        .unwrap();
+        assert_eq!(empty, Value::Null);
+
+        let updated = handle_request(
+            &state,
+            convergence_update_request(complete_convergence_report(&state.paths)),
+        )
+        .unwrap();
+        assert_eq!(
+            updated["schema_version"],
+            PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            updated["build_id"],
+            RuntimeReleaseManifest::compiled().build_id
+        );
+        assert_eq!(updated["connector_report_summary"]["total_sources"], 4);
+        assert_eq!(updated["connector_report_summary"]["managed_sources"], 1);
+        assert_eq!(updated["connector_report_summary"]["verified_sources"], 1);
+        assert_eq!(updated["connector_report_summary"]["skipped_sources"], 3);
+        assert_eq!(
+            updated["connector_report_summary"]["codex_skills_sha256"],
+            connections::compiled_codex_plugin_identity(&state.paths)
+                .unwrap()
+                .1
+        );
+        assert_eq!(
+            updated["connector_report_summary"]["codex_content_sha256"],
+            connections::compiled_codex_plugin_identity(&state.paths)
+                .unwrap()
+                .2
+        );
+
+        let loaded = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("product-convergence-get")),
+                method: "product.convergence.get".to_string(),
+                params: json!({}),
+            },
+        )
+        .unwrap();
+        assert_eq!(loaded, updated);
+    }
+
+    #[test]
+    fn product_convergence_update_rejects_stale_identity_and_incomplete_reports() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let mut stale = convergence_update_request(complete_convergence_report(&state.paths));
+        stale.params["build_id"] = json!("stale-build");
+        assert!(matches!(
+            handle_request(&state, stale),
+            Err(PetCoreError::Conflict(_))
+        ));
+
+        let mut wrong_digest = complete_convergence_report(&state.paths);
+        let forged = Some("d".repeat(64));
+        wrong_digest.results[0].expected_content_sha256 = forged.clone();
+        wrong_digest.results[0].managed_source_content_sha256 = forged.clone();
+        wrong_digest.results[0].active_content_sha256 = forged;
+        assert!(matches!(
+            handle_request(&state, convergence_update_request(wrong_digest)),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
+
+        let mut incomplete = complete_convergence_report(&state.paths);
+        incomplete.results[0].status = connections::InstalledSourceRefreshStatus::PendingHost;
+        incomplete.results[0].ok = false;
+        incomplete.results[0].verified = false;
+        incomplete.results[0].error = Some("host unavailable".to_string());
+        assert!(matches!(
+            handle_request(&state, convergence_update_request(incomplete)),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
+        assert_eq!(state.database.product_convergence_receipt().unwrap(), None);
+    }
+
+    #[test]
+    fn product_convergence_update_denies_unknown_nested_report_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let mut request = convergence_update_request(complete_convergence_report(&state.paths));
+        request.params["connector_report"]["results"][0]["unexpected"] = json!(true);
+        assert!(matches!(
+            handle_request(&state, request),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn product_convergence_preflight_reads_generation_and_connection_activity_without_host_gate() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let preflight = || {
+            handle_request(
+                &state,
+                RpcRequest {
+                    jsonrpc: Some("2.0".to_string()),
+                    id: Some(json!("product-convergence-preflight")),
+                    method: "product.convergence.preflight".to_string(),
+                    params: json!({}),
+                },
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            preflight(),
+            json!({
+                "safe": true,
+                "active_generation": false,
+                "connection_operation_active": false,
+            })
+        );
+
+        let host_guard = state.agent_host_process_guard();
+        assert_eq!(preflight()["safe"], true);
+        drop(host_guard);
+
+        let operation = state.begin_connection_operation().unwrap();
+        assert_eq!(
+            preflight(),
+            json!({
+                "safe": false,
+                "active_generation": false,
+                "connection_operation_active": true,
+            })
+        );
+        drop(operation);
+
+        let form = GenerationForm {
+            description: "preflight".to_string(),
+            style: "pixel".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: Vec::new(),
+            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+            state_durations_ms: petcore_types::default_state_durations_ms(),
+        };
+        let job_dir = state.paths.jobs_dir.join("preflight-active-generation");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        state
+            .database
+            .create_generation_job("preflight-active-generation", &form, &job_dir)
+            .unwrap();
+        assert_eq!(
+            preflight(),
+            json!({
+                "safe": false,
+                "active_generation": true,
+                "connection_operation_active": false,
+            })
+        );
+    }
+
+    #[test]
+    fn capability_refresh_and_new_generation_admission_are_mutually_exclusive() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let generation_request = || RpcRequest {
+            jsonrpc: Some("2.0".to_string()),
+            id: Some(json!("generation-during-refresh")),
+            method: "generation.start".to_string(),
+            params: json!({
+                "description": "admission gate",
+                "style": "pixel",
+                "quality": "standard",
+                "reference_images": [],
+                "native_fps": petcore_types::DEFAULT_NATIVE_FPS,
+                "state_durations_ms": petcore_types::default_state_durations_ms(),
+            }),
+        };
+
+        let connection_operation = state.begin_connection_operation().unwrap();
+        assert!(matches!(
+            handle_request(&state, generation_request()),
+            Err(PetCoreError::Conflict(_))
+        ));
+        drop(connection_operation);
+
+        let form = GenerationForm {
+            description: "active before refresh".to_string(),
+            style: "pixel".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: Vec::new(),
+            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+            state_durations_ms: petcore_types::default_state_durations_ms(),
+        };
+        let job_dir = state.paths.jobs_dir.join("active-before-refresh");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        state
+            .database
+            .create_generation_job("active-before-refresh", &form, &job_dir)
+            .unwrap();
+        assert!(matches!(
+            handle_request(
+                &state,
+                RpcRequest {
+                    jsonrpc: Some("2.0".to_string()),
+                    id: Some(json!("refresh-during-generation")),
+                    method: "connections.refresh_installed".to_string(),
+                    params: json!({}),
+                },
+            ),
+            Err(PetCoreError::Conflict(_))
+        ));
     }
 
     #[test]

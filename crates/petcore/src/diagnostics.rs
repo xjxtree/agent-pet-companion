@@ -664,6 +664,9 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "connections.refresh_installed" => "connections.refresh_installed",
         "connections.uninstall" => "connections.uninstall",
         "connections.test" => "connections.test",
+        "product.convergence.get" => "product.convergence.get",
+        "product.convergence.update" => "product.convergence.update",
+        "product.convergence.preflight" => "product.convergence.preflight",
         "renderer.budget" => "renderer.budget",
         "codex.app_server.probe" => "codex.app_server.probe",
         "diagnostics.export" => "diagnostics.export",
@@ -694,6 +697,7 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
             | "connections.refresh_installed"
             | "connections.uninstall"
             | "connections.test"
+            | "product.convergence.update"
             | "diagnostics.export"
     )
 }

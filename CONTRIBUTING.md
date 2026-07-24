@@ -28,9 +28,9 @@ V1 的主要性能目标是 Apple Silicon。正式分发显式使用 fail-closed
 
 ## Before changing behavior / 修改行为前
 
-Start with [AGENTS.md](AGENTS.md). Product-refactor work also reads the [product experience contract](docs/product/experience-contract.md) and executes the matching task from [product refactor execution](docs/development/product-refactor-execution.md) in dependency order. Then inspect the implementation, schemas, manifests, tests, and current-state owning document in the area being changed. The repository does not use a rolling status document; verification claims must come from a fresh run for the exact commit or artifact.
+Start with [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and current-state owning document in the area being changed. The repository does not use a rolling status document; verification claims must come from a fresh run for the exact commit or artifact.
 
-修改前先阅读 [AGENTS.md](AGENTS.md)。产品重构还必须阅读[产品体验合同](docs/product/experience-contract.md)，并按[产品重构实施任务](docs/development/product-refactor-execution.md)的依赖顺序执行对应任务；随后检查相关实现、schema、manifest、测试和负责当前事实的文档。仓库不维护滚动状态文档；验收结论必须来自对当前 commit 或产物的实际运行。
+修改前先阅读 [AGENTS.md](AGENTS.md)，随后检查相关实现、schema、manifest、测试和负责当前事实的文档。仓库不维护滚动状态文档；验收结论必须来自对当前 commit 或产物的实际运行。
 
 Do not add cloud accounts, public galleries, sharing/community features, Petdex import, Codex built-in pet export, Windows UI, or a mission-control platform unless the project scope is explicitly changed.
 
@@ -69,14 +69,12 @@ For live macOS UI verification, use Computer Use first and prefer Accessibility 
 ## Documentation and changelog / 文档与变更记录
 
 - Keep the public READMEs human-facing. Put durable implementation knowledge in the owning `docs/` subdirectory and link to source rather than copying it.
-- Keep the approved target design only in `docs/product/experience-contract.md` and its dependency-ordered tasks only in `docs/development/product-refactor-execution.md`.
-- Do not add other rolling status, dated audits, implementation diaries, validation logs, or pending-work documents. Do not mark progress in the execution document; use issues, commits, pull requests, CI, and GitHub Release notes.
+- Do not retain completed design proposals, task plans, rolling status, dated audits, implementation diaries, validation logs, or pending-work documents. Use issues, commits, pull requests, CI, and GitHub Release notes for transient work.
 - Add every user-visible change to `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). A GitHub Release is not complete until its tag and version section match one-to-one.
 - Update schemas, runtime manifests, fixtures, Swift/Rust mirrors, tests, and the owning document together when a contract changes.
 
 - README 面向普通用户；长期实现信息进入对应 `docs/` 子目录，并通过链接指向源码。
-- 已批准的目标设计只保存在 `docs/product/experience-contract.md`，其依赖顺序任务只保存在 `docs/development/product-refactor-execution.md`。
-- 不新增其他滚动状态、按日期审计、实现过程、验证日志或待办文档，也不在任务文档中标记进度；执行状态使用 issue、commit、PR、CI 与 GitHub Release notes。
+- 不保留已实施的设计提案、任务规划、滚动状态、按日期审计、实现过程、验证日志或待办文档；临时工作状态使用 issue、commit、PR、CI 与 GitHub Release notes。
 - 所有用户可见变化写入 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]`；GitHub Release、tag 与版本段必须一一对应。
 - 契约变化时同步 schema、runtime manifest、fixtures、Swift/Rust 镜像、测试与对应文档。
 

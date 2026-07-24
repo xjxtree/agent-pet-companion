@@ -10,6 +10,27 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
+### Added / 新增
+
+- Added quiet, ETag-aware automatic checks for GitHub's latest stable Release plus manual **Check for Updates…** actions in the App menu and About window. Update discovery validates a strict `vX.Y.Z` Release, exact dual-architecture asset inventory, official download URL, size, and GitHub SHA-256 metadata without downloading or installing the App. / 新增安静且支持 ETag 的 GitHub latest stable Release 自动检查，以及 App 菜单和“关于”窗口中的手动“检查更新…”操作。更新发现会校验严格的 `vX.Y.Z` 正式版本、精确双架构资产清单、官方下载地址、大小与 GitHub SHA-256 元数据，但不会自动下载或安装 App。
+- Added one bilingual three-step manual replacement guide beside the update action, at the top of every Release, and when a release App is opened outside Applications: download and unzip, quit and replace in Applications, then open from Applications. / 在更新操作旁、每个 Release 顶部，以及正式版从非“应用程序”位置启动时，新增同一份中英双语三步手动替换引导：下载并解压、退出旧版并在“应用程序”中替换、最后从“应用程序”打开。
+
+### Changed / 变更
+
+- After a manual App replacement, the new bundled identity now drives one resumable convergence across PetCore, `petcore-cli`, the runtime manifest, missing bundled pets, previously managed Agent connectors, the Codex plugin, and both pet-making Skills. Core failure restores the compatible last-known-good runtime, while one failed Agent remains isolated and repairable. / 用户手动替换 App 后，新版随包身份会通过同一套可恢复流程收敛 PetCore、`petcore-cli`、runtime manifest、缺失的内置宠物、此前已受管的 Agent 连接器、Codex 插件与两个宠物制作 Skills。核心失败会恢复上一套兼容运行时，单个 Agent 失败则保持隔离且可修复。
+- Bumped the bundled Codex plugin to `0.3.0` and made plugin, `agent-pet-studio`, and `agent-pet-maker` content changes require a strict plugin version increase from the comparison base. / 将随包 Codex 插件提升至 `0.3.0`，并要求插件、`agent-pet-studio` 或 `agent-pet-maker` 内容变化时，相对比较基线严格提升插件版本。
+- Removed the repository-level GitHub Immutable Releases requirement while retaining protected release tags, exact stable-version and asset validation, downloaded-asset revalidation, and published SHA-256 checks. / 移除仓库级 GitHub Immutable Releases 要求，同时保留受保护的发布 tag、严格稳定版本与资产校验、下载后复验及公开 SHA-256 校验。
+
+### Fixed / 修复
+
+- App replacement handoff now waits for pending settings and overlay-placement writes, revalidates the canonical candidate immediately before quitting, and keeps the old App open with recovery actions if download opening, validation, or relaunch scheduling fails. Bundled-pet convergence also rejects malformed, partial, duplicate, or mismatched seed results instead of recording a false success. / App 替换交接现在会等待尚未完成的设置与桌宠位置写入，在退出前重新校验正式安装位置中的候选包，并在下载地址打开、校验或重启安排失败时保留旧版运行及恢复操作。内置宠物收敛也会拒绝格式错误、不完整、重复或 ID 不匹配的返回，不再记录虚假成功。
+
+### Security / 安全
+
+- GitHub Release publication now fails closed unless the published result is the latest non-prerelease Release and all three API asset digests match the trusted build outputs; the Release notes lead with the exact bilingual replacement guidance consumed by the App experience. / GitHub Release 发布现在会安全失败，除非公开结果是 latest 非预发布版本，且三个 API 资产摘要都与可信构建输出一致；Release notes 顶部也会提供与 App 体验一致的中英双语替换引导。
+
 ## [0.1.1] - 2026-07-23
 
 ### Changed / 变更

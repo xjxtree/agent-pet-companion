@@ -121,7 +121,7 @@ State array order is not semantic, but writers use the table order for determini
 
 ### Product presentation boundary
 
-The package contract stays technical and exact; the ordinary product UI does not need to lead with it. The [Product Experience Contract](../product/experience-contract.md) presents the two playback profiles as Standard Motion and Smooth Motion, keeps exact native FPS and per-state duration in advanced/technical surfaces, and never offers runtime duration control. AI Pet Maker may change authored timing only through a new validated immutable revision under this specification.
+The package contract stays technical and exact; the ordinary product UI does not need to lead with it. The App presents the two playback profiles as Standard Motion and Smooth Motion, keeps exact native FPS and per-state duration in advanced/technical surfaces, and never offers runtime duration control. AI Pet Maker may change authored timing only through a new validated immutable revision under this specification.
 
 ### Producer visual contract
 

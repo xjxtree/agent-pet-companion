@@ -8,6 +8,7 @@ import pathlib
 import plistlib
 import re
 import stat
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -30,6 +31,12 @@ artifact_metadata = load_module(
 )
 release_identity = load_module(
     "apc_release_identity", "script/validate_release_identity.py"
+)
+release_api = load_module(
+    "apc_release_api", "script/validate_github_release_api.py"
+)
+plugin_version = load_module(
+    "apc_plugin_version", "script/validate_codex_plugin_version.py"
 )
 
 
@@ -268,6 +275,208 @@ class ReleaseMetadataAndIdentityTests(unittest.TestCase):
             artifact_metadata.validate(self.artifact_dir, self.VERSION)
 
 
+class PublishedReleaseAPITests(unittest.TestCase):
+    VERSION = "1.2.3"
+    REPOSITORY = "xjxtree/agent-pet-companion"
+
+    def release_fixture(self) -> tuple[dict, dict[str, str]]:
+        digests = {
+            "arm64": "a" * 64,
+            "x86_64": "b" * 64,
+            "checksums": "c" * 64,
+        }
+        release = {
+            "id": 42,
+            "tag_name": f"v{self.VERSION}",
+            "draft": False,
+            "prerelease": False,
+            "immutable": True,
+            "published_at": "2026-07-24T00:00:00Z",
+            "body": "\n".join(release_api.REQUIRED_GUIDANCE),
+            "assets": [],
+        }
+        for name, kind in release_api.expected_assets(self.VERSION).items():
+            release["assets"].append(
+                {
+                    "name": name,
+                    "state": "uploaded",
+                    "size": 1024,
+                    "digest": f"sha256:{digests[kind]}",
+                    "browser_download_url": (
+                        f"https://github.com/{self.REPOSITORY}/releases/download/"
+                        f"v{self.VERSION}/{name}"
+                    ),
+                }
+            )
+        return release, digests
+
+    def test_latest_stable_exact_asset_contract_passes(self) -> None:
+        release, digests = self.release_fixture()
+        release_api.validate(
+            release,
+            json.loads(json.dumps(release)),
+            repository=self.REPOSITORY,
+            version=self.VERSION,
+            trusted_digests=digests,
+        )
+
+    def test_mutable_release_is_accepted(self) -> None:
+        release, digests = self.release_fixture()
+        release["immutable"] = False
+        release_api.validate(
+            release,
+            json.loads(json.dumps(release)),
+            repository=self.REPOSITORY,
+            version=self.VERSION,
+            trusted_digests=digests,
+        )
+
+    def test_prerelease_wrong_digest_and_nonlatest_fail_closed(self) -> None:
+        mutations = (
+            lambda release: release.__setitem__("prerelease", True),
+            lambda release: release["assets"][0].__setitem__("digest", "sha256:" + "d" * 64),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                release, digests = self.release_fixture()
+                mutate(release)
+                with self.assertRaises(ValueError):
+                    release_api.validate(
+                        release,
+                        json.loads(json.dumps(release)),
+                        repository=self.REPOSITORY,
+                        version=self.VERSION,
+                        trusted_digests=digests,
+                    )
+
+        release, digests = self.release_fixture()
+        latest = json.loads(json.dumps(release))
+        latest["id"] = 43
+        with self.assertRaises(ValueError):
+            release_api.validate(
+                release,
+                latest,
+                repository=self.REPOSITORY,
+                version=self.VERSION,
+                trusted_digests=digests,
+            )
+
+    def test_missing_replacement_guidance_or_extra_asset_fails_closed(self) -> None:
+        release, digests = self.release_fixture()
+        release["body"] = "ordinary changelog"
+        with self.assertRaises(ValueError):
+            release_api.validate_release(
+                release,
+                repository=self.REPOSITORY,
+                version=self.VERSION,
+                trusted_digests=digests,
+            )
+
+        release, digests = self.release_fixture()
+        release["assets"].append(
+            {
+                "name": "source.zip",
+                "state": "uploaded",
+                "size": 1,
+                "digest": "sha256:" + "e" * 64,
+                "browser_download_url": "https://example.invalid/source.zip",
+            }
+        )
+        with self.assertRaises(ValueError):
+            release_api.validate_release(
+                release,
+                repository=self.REPOSITORY,
+                version=self.VERSION,
+                trusted_digests=digests,
+            )
+
+
+class CodexPluginVersionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temporary.name)
+        for relative in (
+            "plugins/codex/.codex-plugin",
+            "plugins/codex/hooks",
+            "skills/agent-pet-maker",
+            "skills/agent-pet-studio",
+        ):
+            (self.root / relative).mkdir(parents=True)
+        self.manifest = self.root / "plugins/codex/.codex-plugin/plugin.json"
+        self.write_manifest("1.2.3")
+        (self.root / "plugins/codex/hooks/hooks.json.tpl").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        (self.root / "skills/agent-pet-maker/SKILL.md").write_text(
+            "maker\n", encoding="utf-8"
+        )
+        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
+            "studio\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.name", "Release Test"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "config",
+                "user.email",
+                "release-test@example.invalid",
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "baseline"],
+            check=True,
+        )
+        self.previous_root = plugin_version.ROOT
+        plugin_version.ROOT = self.root
+
+    def tearDown(self) -> None:
+        plugin_version.ROOT = self.previous_root
+        self.temporary.cleanup()
+
+    def write_manifest(self, version: str) -> None:
+        self.manifest.write_text(
+            json.dumps(
+                {
+                    "name": "agent-pet-companion",
+                    "version": version,
+                    "hooks": "./hooks/hooks.json",
+                    "skills": "./skills/",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_bundle_change_requires_strict_version_increase(self) -> None:
+        (self.root / "skills/agent-pet-maker/SKILL.md").write_text(
+            "changed\n", encoding="utf-8"
+        )
+        with self.assertRaises(ValueError):
+            plugin_version.validate("HEAD")
+
+        self.write_manifest("1.2.4")
+        self.assertEqual(
+            plugin_version.validate("HEAD"),
+            ("1.2.3", "1.2.4", True),
+        )
+
+    def test_unchanged_bundle_passes_and_version_decrease_fails(self) -> None:
+        self.assertEqual(
+            plugin_version.validate("HEAD"),
+            ("1.2.3", "1.2.3", False),
+        )
+        self.write_manifest("1.2.2")
+        with self.assertRaises(ValueError):
+            plugin_version.validate("HEAD")
+
+
 class ValidationOrderTests(unittest.TestCase):
     def test_adhoc_signature_gate_precedes_packaged_code_execution(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
@@ -313,6 +522,28 @@ class ValidationOrderTests(unittest.TestCase):
                 cursor = extraction + 1
             self.assertGreater(extraction_count, 0)
 
+    def test_packaged_connector_output_matches_manifest_and_bundled_skills(self) -> None:
+        source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
+        repair = source.index('"$PETCORE_CLI" connections repair --source "$source"')
+        manifest_compare = source.index(
+            '"$SOURCE_CODEX_PLUGIN_MANIFEST" \\\n'
+            '    "$INSTALLED_CODEX_PLUGIN/.codex-plugin/plugin.json"',
+            repair,
+        )
+        studio_compare = source.index(
+            '"$INSTALLED_CODEX_PLUGIN/skills/agent-pet-studio/SKILL.md"',
+            manifest_compare,
+        )
+        maker_compare = source.index(
+            '"$INSTALLED_CODEX_PLUGIN/skills/agent-pet-maker/$relative_path"',
+            studio_compare,
+        )
+        self.assertIn("reject_duplicate_keys", source[manifest_compare:studio_compare])
+        self.assertIn("source == installed", source[manifest_compare:studio_compare])
+        self.assertLess(repair, manifest_compare)
+        self.assertLess(manifest_compare, studio_compare)
+        self.assertLess(studio_compare, maker_compare)
+
 
 class ReleaseWorkflowContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -353,6 +584,36 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("System Settings → Privacy & Security → Open Anyway", self.publish)
         self.assertIn("按住 Control 点按", self.publish)
         self.assertIn("系统设置 → 隐私与安全性 → 仍要打开", self.publish)
+        guidance_start = self.publish.index("## Update in three steps / 三步更新")
+        disclosure = self.publish.index("**First launch:**")
+        self.assertLess(guidance_start, disclosure)
+        for line in release_api.REQUIRED_GUIDANCE:
+            with self.subTest(line=line):
+                self.assertIn(line, self.publish)
+
+    def test_publication_is_explicit_latest_stable_and_api_verified(self) -> None:
+        go_live = self.publish.index(
+            'gh release edit "$RELEASE_TAG" --draft=false --latest'
+        )
+        release_api_download = self.publish.index(
+            '"repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"',
+            go_live,
+        )
+        latest_api_download = self.publish.index(
+            '"repos/$GITHUB_REPOSITORY/releases/latest"',
+            release_api_download,
+        )
+        contract_validation = self.publish.index(
+            "./script/validate_github_release_api.py",
+            latest_api_download,
+        )
+        self.assertLess(go_live, release_api_download)
+        self.assertLess(release_api_download, latest_api_download)
+        self.assertLess(latest_api_download, contract_validation)
+        self.assertIn("release_published=0", self.publish)
+        self.assertIn("release_published=1", self.publish)
+        self.assertNotIn('value.get("immutable") is True', self.publish)
+        self.assertNotIn("--prerelease", self.publish)
 
     def test_official_build_and_exact_three_file_candidate_are_explicit(self) -> None:
         self.assertIn("Prepare pinned Python validation environment", self.build)
@@ -382,7 +643,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("--directory release-assets", self.build)
         self.assertNotIn("--directory dist", self.build)
         self.assertIn("validate_github_release_artifacts.sh", self.source)
-        upload_start = self.build.index("- name: Upload immutable release candidate")
+        upload_start = self.build.index("- name: Upload release candidate")
         upload_block = self.build[upload_start:]
         expected_assets = (
             "macos-arm64.zip",
@@ -412,6 +673,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn(
             'git merge-base --is-ancestor "$commit" refs/remotes/origin/main',
+            self.build,
+        )
+        self.assertIn(
+            "./script/validate_codex_plugin_version.py --base-ref \"$previous_tag\"",
             self.build,
         )
 

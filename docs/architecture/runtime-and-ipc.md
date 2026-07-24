@@ -1,6 +1,6 @@
 # Runtime and IPC
 
-This document defines the current process lifecycle, compatibility contract, transport boundaries, and diagnostics behavior. Exact method and field allowlists remain in source. Product-level visibility and copy are governed by the [Product Experience Contract](../product/experience-contract.md).
+This document defines the current process lifecycle, compatibility contract, transport boundaries, update behavior, and diagnostics behavior. Exact method and field allowlists remain in source.
 
 ## Process topology
 
@@ -54,9 +54,106 @@ Initial startup, automatic retry, and explicit recovery coalesce onto one behavi
 
 The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. Service & Diagnostics projects one aggregate state from these values, the toolbar appears only for attention or recovery, and the local RPC and event-channel rows stay in Technical Details. Desktop-pet rendering remains an independent App-side status. No presentation infers recovery authority from localized text.
 
-There is no periodic two-second disk or bundle updater. Bundle identity is re-evaluated only on lifecycle events such as activation, opening the control center, or a second-instance request. If a different valid bundle is explicitly opened, the current App can perform a normal handoff. This mechanism is not a background update service.
+There is no periodic disk or bundle updater and V1 never downloads or installs
+an App update. Bundle identity is re-evaluated only on lifecycle events such as
+activation, opening the control center, or a second-instance request. A
+different valid development bundle may request the existing explicit handoff
+path. A release-channel bundle outside canonical
+`/Applications/AgentPetCompanion.app` is never a handoff candidate: the
+canonical running App presents the manual-installation guide, while a primary
+noncanonical launch presents the same guide without starting or replacing
+PetCore.
 
-Primary sources: [App runtime lifecycle](../../apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift), [PetCore process manager](../../apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift), [Swift runtime manifest and store](../../apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift), [Rust runtime manifest](../../crates/petcore/src/runtime_manifest.rs), and [development run script](../../script/build_and_run.sh).
+Primary sources: [App runtime lifecycle](../../apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift), [GitHub Release update checker](../../apps/macos/Sources/AgentPetCompanion/App/GitHubReleaseUpdateChecker.swift), [manual installation policy](../../apps/macos/Sources/AgentPetCompanion/App/AppManualInstallation.swift), [PetCore process manager](../../apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift), [Swift runtime manifest and store](../../apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift), [Rust runtime manifest](../../crates/petcore/src/runtime_manifest.rs), and [development run script](../../script/build_and_run.sh).
+
+## Update discovery and convergence
+
+The App is the only update coordinator. PetCore, `petcore-cli`, connector
+templates, plugins, and Skills never check the network or advertise independent
+updates.
+
+Automatic and manual checks call GitHub's public
+`/repos/xjxtree/agent-pet-companion/releases/latest` endpoint. The decoder is
+closed over a strict stable `vX.Y.Z` tag, `draft == false`,
+`prerelease == false`, the exact three-asset inventory, and one uploaded,
+nonempty architecture ZIP with a GitHub-provided SHA-256 digest and exact
+official download URL. GitHub Release immutability is not required. The client
+sends an ETag when one has
+been cached. Only a successful response changes update availability; automatic
+transport or validation failures are not PetCore operational failures.
+
+The App-facing coordinator owns the automatic 24-hour throttle and manual
+bypass. It starts automatic work only after healthy bootstrap and may repeat an
+expired check on activation. The App menu and About window call the same
+coordinator for manual checks. Download and release-note actions open only URLs
+already accepted by the closed decoder; the App never downloads or executes
+the asset. If macOS cannot hand the validated asset URL to the browser, the
+verified release remains available and the manual surface offers both a retry
+and the matching Release page instead of pretending that a download started.
+
+Release-channel installation identity is derived only from the running or
+candidate bundle's own `Info.plist` and
+`Contents/Resources/runtime-manifest.json`. Test-only environment overrides
+used by runtime development cannot make a release handoff candidate valid. The
+primary release bundle must have the official bundle identifier and be the
+real, non-symlinked canonical `/Applications/AgentPetCompanion.app`.
+
+A copied replacement is validated when discovered and revalidated immediately
+before the old App schedules its quit-and-relaunch helper. The handoff waits
+while product convergence, an RPC mutation, a queued behavior write, or an
+overlay drag, resize, or debounced placement save still owns user work. If the
+candidate changes, becomes invalid, or cannot be scheduled, the old App stays
+open and presents the manual recovery guide; it never quits on stale evidence.
+
+Opening a replaced App whose bundled build differs from the last converged
+build first calls the read-only `product.convergence.preflight`. That query
+reads only the active-generation row and the in-process connection-operation
+flag; it never waits for or acquires the Agent-host mutex. An active operation
+defers replacement instead of interrupting user work. A safe result starts the
+ordinary runtime-replacement transaction, then refreshes only previously
+managed integration artifacts. For a legacy managed runtime whose snapshot
+predates the connection-operation flag, the App performs one bounded
+compatibility probe through the legacy connection admission gate. A conflict
+is protected work and any ambiguous result defers replacement; absence is
+never assumed safe. Core convergence is:
+
+```text
+validate bundled manifest and database range
+→ stage PetCore and petcore-cli
+→ instance-bound shutdown
+→ start and verify the exact candidate
+→ atomically commit runtime/current
+→ seed missing bundled pets
+→ refresh and verify previously managed integrations
+→ record the converged build
+```
+
+Core failure restores the compatible last-known-good runtime. Connector
+refresh has typed per-Agent results: one failed external integration does not
+roll back an otherwise healthy App/runtime commit, but it cannot remain
+`connected`. The affected Agent becomes repairable until its managed source,
+installed version, and active runtime evidence match. A failed or incomplete
+report is never recorded as convergence, so a later launch retries it safely.
+`product.convergence.update` accepts only the active runtime's exact build ID
+and App version plus the complete four-source typed report. It stores the
+server-generated completion time, report digest, and verified Codex
+Skills/content digests in the dedicated singleton receipt table; it does not
+reuse generic diagnostic settings.
+
+Bundled-pet seeding is also fail-closed: the App accepts only a typed response
+whose outcome count and unique pet IDs exactly match the closed bundled
+inventory, with every returned pet matching its requested ID. A malformed,
+partial, duplicate, or mismatched result leaves convergence unrecorded and
+retryable.
+
+For Codex, the App-managed plugin source, `plugin.json` version, internal
+`agent-pet-studio`, portable `agent-pet-maker`, and the actual active Codex
+cache form one verified capability bundle. Content changes require a strict
+plugin version increase. Refresh rewrites the complete owned source, activates
+that version through Codex, and checks the active manifest and content digests;
+installed/enabled flags alone are insufficient. A running Maker job retains
+the capability it started with, while later jobs use the newly verified
+bundle.
 
 ## Transports
 
@@ -75,6 +172,7 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 | Pet library | list with validated native FPS, fixed state durations, and derived current revision metadata; bounded typed revision/job history; activate, delete, validate/import/seed/export `.petpack` |
 | Generation | create, edit from a validated current or older owned revision, retry, messages/wait/reply, cancel, latest private Maker-session recovery globally and by pet |
 | Connections | check, receipts, repair, refresh, test, uninstall |
+| Product convergence | optional receipt get, current-build receipt update, read-only replacement preflight |
 | Support | renderer budget, Codex App Server probe, diagnostics export |
 
 `state_revision` is serialized as a decimal string. A client reads a consistent snapshot, then calls `state.wait(after_revision, timeout_ms)`. Timeouts are bounded long-polls and do not indicate a state change or a disk-version poll.
@@ -118,4 +216,4 @@ When changing lifecycle or IPC:
 3. preserve bounded framing, permissions, instance-bound shutdown, and rollback;
 4. test older/newer database compatibility before changing the supported range;
 5. keep connector installs pointed at the managed `runtime/current/petcore-cli` path;
-6. update this document, the product experience contract when the target changes, the matching ordered task when its contract changes, and the release acceptance gate when user-visible lifecycle behavior changes.
+6. update this document and the release acceptance gate when user-visible lifecycle behavior changes.

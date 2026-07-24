@@ -16,19 +16,23 @@ struct AppStoreBootstrapHooks {
     let fetchInitialBehavior: FetchInitialBehavior?
     let refreshSnapshot: RefreshSnapshot
     let onReady: OnReady
+    let requiresAuthoritativeSnapshotOnReady: Bool
 
     init(
         ensureRunning: @escaping EnsureRunning,
         recover: @escaping Recover,
         fetchInitialBehavior: FetchInitialBehavior? = nil,
         refreshSnapshot: @escaping RefreshSnapshot,
-        onReady: @escaping OnReady
+        onReady: @escaping OnReady,
+        requiresAuthoritativeSnapshotOnReady: Bool = false
     ) {
         self.ensureRunning = ensureRunning
         self.recover = recover
         self.fetchInitialBehavior = fetchInitialBehavior
         self.refreshSnapshot = refreshSnapshot
         self.onReady = onReady
+        self.requiresAuthoritativeSnapshotOnReady =
+            requiresAuthoritativeSnapshotOnReady
     }
 }
 
@@ -444,11 +448,37 @@ enum OnboardingOperationFailure: Equatable {
     case requestRejected
 }
 
+enum AppUpdateConvergenceAttention: Equatable {
+    case bundledPets
+    case connectors([AgentSource])
+    case service
+
+    var sources: [AgentSource] {
+        if case let .connectors(sources) = self {
+            sources
+        } else {
+            []
+        }
+    }
+}
+
+enum AppUpdateConvergenceState: Equatable {
+    case idle
+    case waitingForActiveWork
+    case updating
+    case completed(version: String)
+    case needsAttention(AppUpdateConvergenceAttention)
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     typealias BundledPetSeeder = @MainActor () async -> Bool
     typealias BundledPetSeedSleeper = @Sendable (Duration) async throws -> Void
     typealias InitialAppearanceFallbackSleeper = @Sendable (Duration) async throws -> Void
+    typealias ProductConvergenceSleeper = @Sendable (Duration) async throws -> Void
+    typealias ProductConvergenceUpgradeEvidence = @MainActor (
+        RuntimeReleaseManifest
+    ) -> Bool
     typealias RuntimeHandoffCheck = @MainActor () -> Bool
     typealias ApplicationAppearanceApplier = @MainActor (AppearanceTheme) -> Void
     typealias OverlayPresenter = @MainActor (PetOverlayController, AppStore) -> Void
@@ -523,6 +553,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var petLibraryNotice: PetLibraryNotice?
     @Published private(set) var diagnosticsExportState = DiagnosticsExportState.idle
     @Published private(set) var connectionOperationState = AgentConnectionOperationState.idle
+    @Published private(set) var manualAppInstallationRequest: AppManualInstallationRequest?
+    @Published private(set) var appUpdateConvergenceState = AppUpdateConvergenceState.idle
 
     private let client: PetCoreClient
     private let overlayController: PetOverlayController
@@ -536,12 +568,18 @@ final class AppStore: ObservableObject {
     private let overlayPresenter: OverlayPresenter
     private let overlayKeyboardFocusHandler: OverlayKeyboardFocusHandler
     private let petCoreRequestOverride: PetCoreRequestOverride?
+    let appUpdater: AppUpdateController
+    private let productConvergenceSleeper: ProductConvergenceSleeper
+    private let productConvergenceNoticePreferences: ProductConvergenceNoticePreferences
+    private let productConvergenceManifest: RuntimeReleaseManifest?
+    private let productConvergenceUpgradeEvidence: ProductConvergenceUpgradeEvidence
     private var refreshTask: Task<Void, Never>?
     private var petpackImportTask: Task<Void, Never>?
     private var overlayPetPositionInitialized = false
     private var overlayPlacementLoaded = false
     private var isApplyingOverlayPlacement = false
     private var overlayPlacementSaveTask: Task<Void, Never>?
+    private var overlayPlacementSaveSequence: UInt64 = 0
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
     private var authoritativeBehavior = BehaviorSettings()
@@ -549,9 +587,11 @@ final class AppStore: ObservableObject {
     private var overlayAwaitingVisibilityRestore = false
     private var behaviorMutationTask: Task<Void, Never>?
     private var behaviorMutationSequence: UInt64 = 0
+    private var pendingBehaviorMutationCount = 0
     private var mainWindowPresenter: (() -> Void)?
     private weak var controlCenterWindow: NSWindow?
     private var pendingMainWindowPresentation = false
+    private var pendingMainWindowPresentationChecksRuntimeHandoff = true
     private var generationMessagesTask: Task<Void, Never>?
     private var latestGenerationRestoreAttemptState = LatestGenerationRestoreAttemptState.notAttempted
     private var latestGenerationRestoreAttemptSequence: UInt64 = 0
@@ -572,6 +612,9 @@ final class AppStore: ObservableObject {
     private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
     private var connectionOperationGate = AgentConnectionOperationGate()
     private var hasPresentedOverlay = false
+    private var productConvergenceTask: Task<Void, Never>?
+    private var productConvergenceVisibilityTask: Task<Void, Never>?
+    private var inFlightProtectedMutationCount = 0
 
     static let bundledPetSeedRetryDelays: [Duration] = [
         .seconds(2),
@@ -617,6 +660,17 @@ final class AppStore: ObservableObject {
         }
         overlayKeyboardFocusHandler = Self.defaultOverlayKeyboardFocusHandler
         petCoreRequestOverride = nil
+        appUpdater = AppUpdateController(diagnostics: diagnostics)
+        productConvergenceSleeper = { duration in
+            try await Task.sleep(for: duration)
+        }
+        productConvergenceNoticePreferences = ProductConvergenceNoticePreferences()
+        productConvergenceManifest = PetCoreRuntimeContract.requiredManifest
+        productConvergenceUpgradeEvidence = { manifest in
+            PetCoreRuntimeUpgradeEvidence.hasManagedUpdateContext(
+                currentBuildID: manifest.buildID
+            )
+        }
         bootstrapHooks = AppStoreBootstrapHooks(
             ensureRunning: { await bootstrapCoordinator.ensureRunning() },
             recover: { await bootstrapCoordinator.recover() },
@@ -624,7 +678,8 @@ final class AppStore: ObservableObject {
                 try await store.requestPetCore(method: "behavior.get")
             },
             refreshSnapshot: { store in try await store.refreshSnapshot() },
-            onReady: { store in await store.completeRuntimeBootstrap() }
+            onReady: { store in await store.completeRuntimeBootstrap() },
+            requiresAuthoritativeSnapshotOnReady: true
         )
     }
 
@@ -647,7 +702,21 @@ final class AppStore: ObservableObject {
             controller.show(store: store)
         },
         overlayKeyboardFocusHandler: OverlayKeyboardFocusHandler? = nil,
-        petCoreRequestOverride: PetCoreRequestOverride? = nil
+        petCoreRequestOverride: PetCoreRequestOverride? = nil,
+        appUpdater: AppUpdateController? = nil,
+        productConvergenceSleeper: @escaping ProductConvergenceSleeper = { duration in
+            try await Task.sleep(for: duration)
+        },
+        productConvergenceNoticePreferences: ProductConvergenceNoticePreferences =
+            ProductConvergenceNoticePreferences(),
+        productConvergenceManifest: RuntimeReleaseManifest? =
+            PetCoreRuntimeContract.requiredManifest,
+        productConvergenceUpgradeEvidence: @escaping ProductConvergenceUpgradeEvidence = {
+            manifest in
+            PetCoreRuntimeUpgradeEvidence.hasPriorManagedBuild(
+                currentBuildID: manifest.buildID
+            )
+        }
     ) {
         self.client = client
         overlayController = PetOverlayController()
@@ -662,10 +731,57 @@ final class AppStore: ObservableObject {
         self.overlayKeyboardFocusHandler = overlayKeyboardFocusHandler
             ?? Self.defaultOverlayKeyboardFocusHandler
         self.petCoreRequestOverride = petCoreRequestOverride
+        self.appUpdater = appUpdater ?? AppUpdateController(
+            automaticChecksEnabled: false,
+            diagnostics: diagnostics
+        )
+        self.productConvergenceSleeper = productConvergenceSleeper
+        self.productConvergenceNoticePreferences = productConvergenceNoticePreferences
+        self.productConvergenceManifest = productConvergenceManifest
+        self.productConvergenceUpgradeEvidence = productConvergenceUpgradeEvidence
     }
 
     var activePet: PetSummary? {
         pets.first(where: \.active)
+    }
+
+    private var hasProtectedUserWork: Bool {
+        let diagnosticsBusy = switch diagnosticsExportState {
+        case .exporting, .saving:
+            true
+        case .idle, .ready, .succeeded, .failed, .saveFailed:
+            false
+        }
+        return generationSession.isActive
+            || connectionOperationState.isRunning
+            || isImportingPetpack
+            || !petOperationIDs.isEmpty
+            || diagnosticsBusy
+            || inFlightProtectedMutationCount > 0
+            || pendingBehaviorMutationCount > 0
+            || overlayPlacementSaveTask != nil
+            || overlayPetDragInProgress
+            || overlayResizeInProgress
+            || runtimeBootstrap != nil
+            || serviceRecovery != nil
+    }
+
+    private var isSafeForProductConvergence: Bool {
+        !hasProtectedUserWork
+    }
+
+    var isSafeForAppUpdateHandoff: Bool {
+        isSafeForProductConvergence && productConvergenceTask == nil
+    }
+
+    var shouldBlockForAppUpdateConvergence: Bool {
+        guard !hasLoadedStateSnapshot else { return false }
+        return switch appUpdateConvergenceState {
+        case .waitingForActiveWork, .updating:
+            true
+        case .idle, .completed, .needsAttention:
+            false
+        }
     }
 
     var onboardingBundledPets: [PetSummary] {
@@ -693,6 +809,10 @@ final class AppStore: ObservableObject {
     /// remains the single source of truth for serialization and failure UI.
     var connectionOperationSources: Set<AgentSource> {
         Set(connectionOperationState.runningOperation?.sources ?? [])
+    }
+
+    var canStartConnectionOperation: Bool {
+        !connectionOperationState.isRunning && productConvergenceTask == nil
     }
 
     var activeOverlayEvent: AgentEvent? {
@@ -779,8 +899,23 @@ final class AppStore: ObservableObject {
     }
 
     var canStartGeneration: Bool {
-        !generationSession.isActive
+        canStartNewGenerationWork
+            && !generationSession.isActive
             && GenerationPromptPolicy.isValid(descriptionText)
+    }
+
+    var canStartNewGenerationWork: Bool {
+        guard productConvergenceTask == nil else { return false }
+        return switch appUpdateConvergenceState {
+        case .idle, .completed:
+            true
+        case let .needsAttention(.connectors(sources)):
+            !sources.contains(.codex)
+        case .needsAttention(.bundledPets), .needsAttention(.service):
+            false
+        case .waitingForActiveWork, .updating:
+            false
+        }
     }
 
     var canClearStudioForm: Bool {
@@ -841,8 +976,10 @@ final class AppStore: ObservableObject {
     func setMainWindowPresenter(_ presenter: @escaping () -> Void) {
         mainWindowPresenter = presenter
         guard pendingMainWindowPresentation else { return }
+        let checksRuntimeHandoff = pendingMainWindowPresentationChecksRuntimeHandoff
         pendingMainWindowPresentation = false
-        guard !runtimeHandoffIfNeeded() else { return }
+        pendingMainWindowPresentationChecksRuntimeHandoff = true
+        guard !checksRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }
         presenter()
         NSApp?.activate(ignoringOtherApps: true)
     }
@@ -852,22 +989,109 @@ final class AppStore: ObservableObject {
         controlCenterWindow = window
     }
 
+    func presentManualAppInstallation(_ request: AppManualInstallationRequest) {
+        manualAppInstallationRequest = request
+        appUpdater.dismissSheet()
+        presentMainWindow(checkRuntimeHandoff: false)
+    }
+
+    func dismissManualAppInstallation() {
+        manualAppInstallationRequest = nil
+    }
+
+    func presentDeferredAppUpdateHandoff() {
+        appUpdateConvergenceState = .waitingForActiveWork
+        presentMainWindow(checkRuntimeHandoff: false)
+    }
+
+    func presentFailedAppUpdateHandoff(_ request: AppManualInstallationRequest) {
+        if appUpdateConvergenceState == .waitingForActiveWork {
+            appUpdateConvergenceState = .idle
+        }
+        presentManualAppInstallation(request)
+    }
+
+    func dismissAppUpdateConvergenceNotice() {
+        if let buildID = productConvergenceManifest?.buildID {
+            productConvergenceNoticePreferences.acknowledge(buildID: buildID)
+        }
+        appUpdateConvergenceState = .idle
+    }
+
+    func retryProductConvergence() {
+        guard productConvergenceTask == nil,
+              let manifest = productConvergenceManifest
+        else { return }
+        appUpdateConvergenceState = .updating
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let bundledPetsReady = await self.performBundledPetSeed()
+            if bundledPetsReady {
+                _ = await self.refresh()
+            }
+            await self.performProductConvergence(
+                manifest: manifest,
+                force: true,
+                bundledPetsReady: bundledPetsReady
+            )
+            self.productConvergenceTask = nil
+        }
+        productConvergenceTask = task
+    }
+
+    func beginManualAppUpdateDownload(_ release: AppReleaseUpdate) {
+        guard NSWorkspace.shared.open(release.asset.downloadURL) else {
+            diagnostics.log(
+                .error,
+                category: "update",
+                event: "release_download_open_failed",
+                metadata: ["version": .string(release.version.description)]
+            )
+            appUpdater.reportDownloadOpenFailure()
+            return
+        }
+        let installationRequest = AppManualInstallationRequest(
+            origin: .updateDownload,
+            version: release.version.description,
+            candidateBundlePath: nil
+        )
+        manualAppInstallationRequest = installationRequest
+        appUpdater.dismissSheet()
+    }
+
+    func checkForAppUpdatesManually() {
+        appUpdater.checkManually()
+        presentMainWindow()
+    }
+
+    func presentAvailableAppUpdate() {
+        appUpdater.presentAvailableUpdate()
+        presentMainWindow()
+    }
+
     func presentMainWindow() {
-        guard !runtimeHandoffIfNeeded() else { return }
+        presentMainWindow(checkRuntimeHandoff: true)
+    }
+
+    private func presentMainWindow(checkRuntimeHandoff: Bool) {
+        guard !checkRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }
         if frontExistingMainWindow() {
             pendingMainWindowPresentation = false
+            pendingMainWindowPresentationChecksRuntimeHandoff = true
             NSApp?.activate(ignoringOtherApps: true)
             return
         }
 
         if let mainWindowPresenter {
             pendingMainWindowPresentation = false
+            pendingMainWindowPresentationChecksRuntimeHandoff = true
             mainWindowPresenter()
         } else {
             // A secondary launch or Dock reopen can arrive before either scene
             // has installed its openWindow presenter. Replay exactly once when
             // the first presenter becomes available.
             pendingMainWindowPresentation = true
+            pendingMainWindowPresentationChecksRuntimeHandoff = checkRuntimeHandoff
         }
         NSApp?.activate(ignoringOtherApps: true)
     }
@@ -998,6 +1222,15 @@ final class AppStore: ObservableObject {
         startMode: RuntimeBootstrapStartMode
     ) async -> Bool {
         diagnostics.log(.info, category: "service", event: "petcore_bootstrap_started")
+        if let manifest = productConvergenceManifest,
+           manifest.releaseChannel == "release",
+           productConvergenceUpgradeEvidence(manifest),
+           !productConvergenceNoticePreferences.hasAcknowledged(
+               buildID: manifest.buildID
+           )
+        {
+            appUpdateConvergenceState = .updating
+        }
         setServiceChecking()
         // Bound the invisible window gate from bootstrap start. Runtime
         // replacement and rollback can take much longer than appearance
@@ -1012,12 +1245,36 @@ final class AppStore: ObservableObject {
         switch startResult {
         case .alreadyHealthy, .started:
             diagnostics.log(.notice, category: "service", event: "petcore_bootstrap_ready")
+            if appUpdateConvergenceState == .waitingForActiveWork {
+                appUpdateConvergenceState = .updating
+            }
             setServiceOnline()
             runtimeBootstrapRetryTask?.cancel()
             runtimeBootstrapRetryTask = nil
             runtimeBootstrapRetryDelaySeconds = 2
             await prepareInitialAppearance()
             await bootstrapHooks.onReady(self)
+            if bootstrapHooks.requiresAuthoritativeSnapshotOnReady,
+               (!hasLoadedStateSnapshot || petCoreOperationalState != .online)
+            {
+                diagnostics.log(
+                    .error,
+                    category: "service",
+                    event: "petcore_bootstrap_snapshot_not_ready",
+                    throttleKey: "petcore_bootstrap_snapshot_not_ready",
+                    minimumInterval: 30
+                )
+                runtimeBootstrapCompleted = false
+                runtimeBootstrapRequiresFullRecovery = true
+                setServiceFailure(
+                    "本地服务尚未返回完整状态",
+                    status: "PetCore 状态同步失败",
+                    operationalState: .offline
+                )
+                resolveInitialAppearanceAsUnavailable()
+                scheduleRuntimeBootstrapRetry()
+                return false
+            }
             // Prefer the first authoritative snapshot when behavior.get could
             // not provide a theme, but never hold the window beyond the
             // bounded appearance fallback scheduled above.
@@ -1028,6 +1285,20 @@ final class AppStore: ObservableObject {
             runtimeBootstrapRequiresFullRecovery = false
             presentOverlayAfterFirstSnapshotIfNeeded()
             return true
+        case let .deferred(reason):
+            diagnostics.log(
+                .notice,
+                category: "update",
+                event: "runtime_update_deferred_for_active_work"
+            )
+            appUpdateConvergenceState = .waitingForActiveWork
+            setServiceChecking()
+            setServiceStatusText(reason)
+            runtimeBootstrapRequiresFullRecovery = false
+            runtimeBootstrapRetryDelaySeconds = 2
+            resolveInitialAppearanceAsUnavailable()
+            scheduleRuntimeBootstrapRetry()
+            return false
         case let .failed(reason):
             let failureCode = PetCoreServiceFailureClassifier.classify(reason)
             diagnostics.log(
@@ -1172,12 +1443,252 @@ final class AppStore: ObservableObject {
         if !bundledPetsReady {
             scheduleBundledPetSeedRetry()
         }
+        guard snapshotReady else {
+            return
+        }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.waitForStateChange()
             }
         }
+        scheduleProductConvergence(bundledPetsReady: bundledPetsReady)
+        appUpdater.checkAutomaticallyIfDue()
+    }
+
+    @discardableResult
+    func scheduleProductConvergence(
+        force: Bool = false,
+        bundledPetsReady: Bool = true
+    ) -> Task<Void, Never>? {
+        guard productConvergenceTask == nil,
+              let manifest = productConvergenceManifest
+        else { return productConvergenceTask }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performProductConvergence(
+                manifest: manifest,
+                force: force,
+                bundledPetsReady: bundledPetsReady
+            )
+            self.productConvergenceTask = nil
+        }
+        productConvergenceTask = task
+        return task
+    }
+
+    private func performProductConvergence(
+        manifest: RuntimeReleaseManifest,
+        force: Bool,
+        bundledPetsReady: Bool
+    ) async {
+        guard bundledPetsReady else {
+            finishProductConvergenceAttention(
+                attention: .bundledPets,
+                failure: "bundled_pet_verification_incomplete"
+            )
+            return
+        }
+        scheduleProductConvergenceVisibility()
+        do {
+            let priorReceipt = try await productConvergenceReceipt()
+            if !force, priorReceipt?.exactlyMatches(manifest: manifest) == true {
+                finishProductConvergenceSuccess(
+                    manifest: manifest,
+                    presentsCompletion: productConvergenceUpgradeEvidence(manifest)
+                )
+                return
+            }
+            let presentsCompletion = (
+                priorReceipt.map { $0.buildID != manifest.buildID } ?? false
+            ) || productConvergenceUpgradeEvidence(manifest)
+
+            try await waitForProductConvergenceSafePoint()
+            if appUpdateConvergenceState == .waitingForActiveWork {
+                appUpdateConvergenceState = .updating
+            }
+            let refreshValue = try await requestPetCore(
+                method: "connections.refresh_installed",
+                timeout: .seconds(180)
+            )
+            let report: ProductConnectorRefreshReport = try decodeProductConvergenceValue(
+                refreshValue
+            )
+            guard report.isExactlyConverged else {
+                finishProductConvergenceAttention(
+                    attention: .connectors(report.attentionSources),
+                    failure: "managed_connector_verification_incomplete"
+                )
+                _ = await refreshSnapshotAfterProductConvergence()
+                return
+            }
+
+            let reportValue = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(report)
+            )
+            let receiptValue = try await requestPetCore(
+                method: "product.convergence.update",
+                params: [
+                    "schema_version": ProductConvergenceReceipt.schemaVersion,
+                    "build_id": manifest.buildID,
+                    "app_version": manifest.appVersion,
+                    "connector_report": reportValue,
+                ]
+            )
+            let receipt: ProductConvergenceReceipt = try decodeProductConvergenceValue(
+                receiptValue
+            )
+            guard receipt.exactlyMatches(manifest: manifest, report: report) else {
+                throw PetCoreClientError.invalidResponse
+            }
+
+            guard await refreshSnapshotAfterProductConvergence() else {
+                finishProductConvergenceAttention(
+                    attention: .service,
+                    failure: "authoritative_snapshot_refresh_failed"
+                )
+                return
+            }
+            finishProductConvergenceSuccess(
+                manifest: manifest,
+                presentsCompletion: presentsCompletion
+            )
+        } catch is CancellationError {
+            productConvergenceVisibilityTask?.cancel()
+            productConvergenceVisibilityTask = nil
+        } catch {
+            finishProductConvergenceAttention(
+                attention: .service,
+                failure: "convergence_rpc_failed",
+                error: error
+            )
+        }
+    }
+
+    private func productConvergenceReceipt() async throws -> ProductConvergenceReceipt? {
+        let value = try await requestPetCore(method: "product.convergence.get")
+        guard !(value is NSNull) else { return nil }
+        return try decodeProductConvergenceValue(value)
+    }
+
+    private func waitForProductConvergenceSafePoint() async throws {
+        while !Task.isCancelled {
+            if !isSafeForProductConvergence {
+                publishProductConvergenceWaiting()
+                try await productConvergenceSleeper(.seconds(1))
+                continue
+            }
+            let value = try await requestPetCore(method: "product.convergence.preflight")
+            let preflight: ProductConvergencePreflight = try decodeProductConvergenceValue(value)
+            guard !preflight.safe else { return }
+            publishProductConvergenceWaiting()
+            try await productConvergenceSleeper(.seconds(1))
+        }
+        throw CancellationError()
+    }
+
+    private func scheduleProductConvergenceVisibility() {
+        productConvergenceVisibilityTask?.cancel()
+        let sleeper = productConvergenceSleeper
+        productConvergenceVisibilityTask = Task { @MainActor [weak self] in
+            do {
+                try await sleeper(.seconds(1))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  self.productConvergenceTask != nil,
+                  self.appUpdateConvergenceState != .waitingForActiveWork
+            else { return }
+            self.appUpdateConvergenceState = .updating
+        }
+    }
+
+    private func publishProductConvergenceWaiting() {
+        productConvergenceVisibilityTask?.cancel()
+        productConvergenceVisibilityTask = nil
+        appUpdateConvergenceState = .waitingForActiveWork
+    }
+
+    private func finishProductConvergenceSuccess(
+        manifest: RuntimeReleaseManifest,
+        presentsCompletion: Bool
+    ) {
+        productConvergenceVisibilityTask?.cancel()
+        productConvergenceVisibilityTask = nil
+        if presentsCompletion,
+           manifest.releaseChannel == "release",
+           !productConvergenceNoticePreferences.hasAcknowledged(
+               buildID: manifest.buildID
+           )
+        {
+            appUpdateConvergenceState = .completed(version: manifest.appVersion)
+        } else {
+            appUpdateConvergenceState = .idle
+        }
+        diagnostics.log(
+            .notice,
+            category: "update",
+            event: "product_convergence_completed",
+            metadata: [
+                "build_id": .string(manifest.buildID),
+                "version": .string(manifest.appVersion)
+            ]
+        )
+    }
+
+    private func finishProductConvergenceAttention(
+        attention: AppUpdateConvergenceAttention,
+        failure: String,
+        error: Error? = nil
+    ) {
+        productConvergenceVisibilityTask?.cancel()
+        productConvergenceVisibilityTask = nil
+        appUpdateConvergenceState = .needsAttention(attention)
+        var metadata: [String: AppDiagnosticMetadataValue] = [
+            "failure": .string(failure),
+            "sources": .string(attention.sources.map(\.rawValue).joined(separator: ","))
+        ]
+        if let error {
+            metadata["error_type"] = .string(String(describing: type(of: error)))
+        }
+        diagnostics.log(
+            .error,
+            category: "update",
+            event: "product_convergence_needs_attention",
+            metadata: metadata,
+            throttleKey: "product_convergence_needs_attention",
+            minimumInterval: 30
+        )
+    }
+
+    private func refreshSnapshotAfterProductConvergence() async -> Bool {
+        do {
+            try await bootstrapHooks.refreshSnapshot(self)
+            return true
+        } catch {
+            diagnostics.logFailure(
+                error,
+                category: "update",
+                event: "product_convergence_snapshot_refresh_failed",
+                throttleKey: "product_convergence_snapshot_refresh_failed",
+                minimumInterval: 30
+            )
+            return false
+        }
+    }
+
+    private func decodeProductConvergenceValue<Value: Decodable>(
+        _ value: Any
+    ) throws -> Value {
+        guard JSONSerialization.isValidJSONObject(value) else {
+            throw PetCoreClientError.invalidResponse
+        }
+        return try JSONDecoder().decode(
+            Value.self,
+            from: JSONSerialization.data(withJSONObject: value)
+        )
     }
 
     /// Seeds the closed, content-pinned App inventory before the first state
@@ -1201,9 +1712,9 @@ final class AppStore: ObservableObject {
                 method: "petpack.seed_bundled",
                 params: BundledPetInventory.rpcParameters
             )
-            let outcomes = (result as? [String: Any])?["outcomes"] as? [[String: Any]] ?? []
-            let installedCount = outcomes.lazy.filter {
-                $0["status"] as? String == "installed"
+            let response = try BundledPetInventory.validatedSeedResponse(result)
+            let installedCount = response.outcomes.lazy.filter {
+                $0.status == .installed
             }.count
             diagnostics.log(
                 .info,
@@ -1260,6 +1771,9 @@ final class AppStore: ObservableObject {
                 let snapshotReady = await refresh()
                 if snapshotReady, Self.isBundledPetSeedFailureStatus(statusText) {
                     statusText = "App 内置宠物已加载"
+                }
+                if snapshotReady {
+                    scheduleProductConvergence(bundledPetsReady: true)
                 }
                 return snapshotReady
             }
@@ -1366,6 +1880,15 @@ final class AppStore: ObservableObject {
                 )
                 return false
             }
+        case let .deferred(reason):
+            appUpdateConvergenceState = .waitingForActiveWork
+            setServiceChecking()
+            setServiceStatusText(reason)
+            runtimeBootstrapCompleted = false
+            runtimeBootstrapRequiresFullRecovery = true
+            runtimeBootstrapRetryDelaySeconds = 2
+            scheduleRuntimeBootstrapRetry()
+            return false
         case let .failed(reason):
             let failureCode = PetCoreServiceFailureClassifier.classify(reason)
             diagnostics.log(
@@ -1931,6 +2454,10 @@ final class AppStore: ObservableObject {
     }
 
     func startGeneration() {
+        guard canStartNewGenerationWork else {
+            statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
         guard canStartGeneration else {
             statusText = generationSession.isActive ? generationStateTitle : "请先填写宠物描述"
             return
@@ -1963,6 +2490,10 @@ final class AppStore: ObservableObject {
         baselineRevisionID: String? = nil,
         instruction: String
     ) {
+        guard canStartNewGenerationWork else {
+            statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
         guard !pet.isBundled else {
             statusText = "App 内置宠物不可原地修改；请导出并使用新的宠物 ID 创建副本"
             return
@@ -2125,6 +2656,10 @@ final class AppStore: ObservableObject {
     }
 
     func retryGeneration() {
+        guard canStartNewGenerationWork else {
+            statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
         guard generationSession.submittedForm != nil else {
             startGeneration()
             return
@@ -2198,6 +2733,10 @@ final class AppStore: ObservableObject {
         resultPetID: String? = nil,
         baselineRevisionID: String? = nil
     ) {
+        guard canStartNewGenerationWork else {
+            statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
         let initialUserMessage = GenerationMessage(
             role: "user",
             content: initialMessage,
@@ -2558,12 +3097,17 @@ final class AppStore: ObservableObject {
         mutationSequence: UInt64
     ) {
         let predecessor = behaviorMutationTask
+        pendingBehaviorMutationCount += 1
         behaviorMutationTask = Task { [weak self] in
             _ = await predecessor?.value
             guard let self else { return }
             await persistBehaviorPatch(
                 patch,
                 mutationSequence: mutationSequence
+            )
+            pendingBehaviorMutationCount = max(
+                0,
+                pendingBehaviorMutationCount - 1
             )
         }
     }
@@ -3239,6 +3783,7 @@ final class AppStore: ObservableObject {
     }
 
     private func launchConnectionOperation(_ operation: AgentConnectionOperation) {
+        guard productConvergenceTask == nil else { return }
         guard let permit = connectionOperationGate.begin(operation) else { return }
         connectionOperationState = .running(operation)
         statusText = connectionOperationStartedStatus(operation)
@@ -3843,9 +4388,10 @@ final class AppStore: ObservableObject {
         overlayController.updateScale(targetScale)
 
         let normalizedPlacement = currentOverlayPlacement()
-        Task { [weak self] in
-            await self?.saveOverlayPlacement(normalizedPlacement)
-        }
+        enqueueOverlayPlacementSave(
+            normalizedPlacement,
+            delay: nil
+        )
     }
 
     private func shouldApplyRemoteOverlayPlacement(_ placement: OverlayPlacement) -> Bool {
@@ -3861,15 +4407,31 @@ final class AppStore: ObservableObject {
 
     private func scheduleOverlayPlacementSave() {
         guard overlayPlacementLoaded && !isApplyingOverlayPlacement else { return }
-        let placement = currentOverlayPlacement()
+        enqueueOverlayPlacementSave(
+            currentOverlayPlacement(),
+            delay: .milliseconds(250)
+        )
+    }
+
+    private func enqueueOverlayPlacementSave(
+        _ placement: OverlayPlacement,
+        delay: Duration?
+    ) {
         overlayPlacementSaveTask?.cancel()
-        overlayPlacementSaveTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                return
+        overlayPlacementSaveSequence &+= 1
+        let sequence = overlayPlacementSaveSequence
+        overlayPlacementSaveTask = Task { @MainActor [weak self] in
+            if let delay {
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
             }
-            await self?.saveOverlayPlacement(placement)
+            guard !Task.isCancelled, let self else { return }
+            await self.saveOverlayPlacement(placement)
+            guard self.overlayPlacementSaveSequence == sequence else { return }
+            self.overlayPlacementSaveTask = nil
         }
     }
 
@@ -3957,6 +4519,18 @@ final class AppStore: ObservableObject {
         params: Any = [:],
         timeout: Duration? = nil
     ) async throws -> Any {
+        let protectsHandoff = Self.isProtectedMutationRPC(method)
+        if protectsHandoff {
+            inFlightProtectedMutationCount += 1
+        }
+        defer {
+            if protectsHandoff {
+                inFlightProtectedMutationCount = max(
+                    0,
+                    inFlightProtectedMutationCount - 1
+                )
+            }
+        }
         if let petCoreRequestOverride {
             return try await petCoreRequestOverride(method, params, timeout)
         }
@@ -4019,6 +4593,31 @@ final class AppStore: ObservableObject {
             || method == "onboarding.update"
             || method == "overlay.placement.update"
             || method == "diagnostics.export"
+            || method == "product.convergence.update"
+    }
+
+    private static func isProtectedMutationRPC(_ method: String) -> Bool {
+        switch method {
+        case "behavior.patch",
+             "onboarding.update",
+             "overlay.placement.update",
+             "pet.activate",
+             "pet.delete",
+             "petpack.import",
+             "petpack.seed_bundled",
+             "generation.start",
+             "generation.retry",
+             "generation.edit",
+             "generation.reply",
+             "generation.cancel",
+             "connections.repair",
+             "connections.uninstall",
+             "connections.refresh_installed",
+             "product.convergence.update":
+            true
+        default:
+            false
+        }
     }
 
     private static func isPollingRPC(_ method: String) -> Bool {

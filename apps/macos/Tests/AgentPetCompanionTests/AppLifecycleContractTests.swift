@@ -90,6 +90,63 @@ struct AppLifecycleContractTests {
         #expect(presentations == 0)
     }
 
+    @MainActor
+    @Test
+    func deferredHandoffPublishesItsWindowWithoutRecursingIntoAnotherCheck() {
+        var handoffChecks = 0
+        var presentations = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            runtimeHandoffIfNeeded: {
+                handoffChecks += 1
+                return true
+            }
+        )
+        store.setMainWindowPresenter {
+            presentations += 1
+        }
+
+        store.presentDeferredAppUpdateHandoff()
+
+        #expect(handoffChecks == 0)
+        #expect(presentations == 1)
+        #expect(store.appUpdateConvergenceState == .waitingForActiveWork)
+    }
+
+    @MainActor
+    @Test
+    func failedDeferredHandoffReturnsToTheProductBehindItsRecoveryGuide() {
+        var presentations = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
+        )
+        store.setMainWindowPresenter {
+            presentations += 1
+        }
+        store.presentDeferredAppUpdateHandoff()
+        let request = AppManualInstallationRequest(
+            origin: .restartFailed,
+            version: "1.2.3",
+            candidateBundlePath: "/Applications/AgentPetCompanion.app"
+        )
+
+        store.presentFailedAppUpdateHandoff(request)
+
+        #expect(store.appUpdateConvergenceState == .idle)
+        #expect(store.manualAppInstallationRequest == request)
+        #expect(presentations == 2)
+    }
+
     @Test
     func controlCenterUsesOneSystemManagedWindowAndAllReopenSurfacesShareItsPresenter() throws {
         let appSource = try LifecycleSource.read(
@@ -131,9 +188,15 @@ struct AppLifecycleContractTests {
             in: overlaySource
         ))
         #expect(overlaySource.contains("onOpenMainWindow: { store.presentMainWindow() }"))
-        #expect(LifecycleSource.matches(
-            #"func presentMainWindow\(\) \{\s*guard !runtimeHandoffIfNeeded\(\) else \{ return \}"#,
-            in: appStoreSource
+        #expect(appStoreSource.contains(
+            "private func presentMainWindow(checkRuntimeHandoff: Bool)"
+        ))
+        #expect(appStoreSource.contains(
+            "guard !checkRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }"
+        ))
+        #expect(appSource.components(separatedBy: ".sheet(").count - 1 == 1)
+        #expect(appSource.contains(
+            "if AppLaunchMode.manualInstallationRequest == nil"
         ))
         #expect(!runtimeSource.contains("AppInstalledBuildMonitor"))
         #expect(!appSource.contains("installedBuildMonitor"))

@@ -30,6 +30,29 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GENERATION_HISTORY_QUERY_LIMIT: usize = 33;
 const ONBOARDING_PROGRESS_SETTING_KEY: &str = "onboarding_progress";
+pub const PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION: &str = "apc.product-convergence-receipt.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductConvergenceConnectorSummary {
+    pub total_sources: u32,
+    pub managed_sources: u32,
+    pub verified_sources: u32,
+    pub skipped_sources: u32,
+    pub report_sha256: String,
+    pub codex_skills_sha256: Option<String>,
+    pub codex_content_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductConvergenceReceipt {
+    pub schema_version: String,
+    pub build_id: String,
+    pub app_version: String,
+    pub completed_at: String,
+    pub connector_report_summary: ProductConvergenceConnectorSummary,
+}
 
 #[derive(Debug, Clone)]
 pub struct GenerationJobRecord {
@@ -269,6 +292,11 @@ impl Default for EventRetentionPolicy {
 // Schema 6 adds the smallest durable authority needed for content-free,
 // stable anonymous-session aliases. Runtime replacement preflight blocks a
 // schema-5 daemon from opening the upgraded database.
+//
+// `product_convergence_receipt` is an additive singleton table and
+// intentionally remains compatible with schema-6 last-known-good runtimes:
+// an older runtime ignores it, so a failed binary replacement can still roll
+// back without turning a successful receipt write into a downgrade blocker.
 pub const DATABASE_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_STATE_DURATIONS_JSON: &str = r#"{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}"#;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
@@ -472,6 +500,39 @@ impl Database {
               value_json TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS product_convergence_receipt (
+              singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+              schema_version TEXT NOT NULL
+                CHECK(schema_version = 'apc.product-convergence-receipt.v1'),
+              build_id TEXT NOT NULL CHECK(length(build_id) BETWEEN 1 AND 128),
+              app_version TEXT NOT NULL CHECK(length(app_version) BETWEEN 1 AND 128),
+              completed_at TEXT NOT NULL CHECK(length(completed_at) BETWEEN 20 AND 64),
+              connector_total_sources INTEGER NOT NULL
+                CHECK(connector_total_sources BETWEEN 0 AND 4),
+              connector_managed_sources INTEGER NOT NULL
+                CHECK(connector_managed_sources BETWEEN 0 AND connector_total_sources),
+              connector_verified_sources INTEGER NOT NULL
+                CHECK(connector_verified_sources BETWEEN 0 AND connector_total_sources),
+              connector_skipped_sources INTEGER NOT NULL
+                CHECK(connector_skipped_sources BETWEEN 0 AND connector_total_sources),
+              connector_report_sha256 TEXT NOT NULL
+                CHECK(length(connector_report_sha256) = 64 AND
+                      connector_report_sha256 NOT GLOB '*[^0-9a-f]*'),
+              codex_skills_sha256 TEXT
+                CHECK(codex_skills_sha256 IS NULL OR
+                      (length(codex_skills_sha256) = 64 AND
+                       codex_skills_sha256 NOT GLOB '*[^0-9a-f]*')),
+              codex_content_sha256 TEXT
+                CHECK(codex_content_sha256 IS NULL OR
+                      (length(codex_content_sha256) = 64 AND
+                       codex_content_sha256 NOT GLOB '*[^0-9a-f]*')),
+              CHECK(connector_managed_sources + connector_skipped_sources =
+                    connector_total_sources),
+              CHECK(connector_verified_sources = connector_managed_sources),
+              CHECK((codex_skills_sha256 IS NULL) =
+                    (codex_content_sha256 IS NULL))
             );
 
             CREATE TABLE IF NOT EXISTS state_revision (
@@ -1011,6 +1072,102 @@ impl Database {
             "#,
             params![key, serde_json::to_string_pretty(value)?, now_rfc3339()],
         )?;
+        Ok(())
+    }
+
+    pub fn product_convergence_receipt(&self) -> Result<Option<ProductConvergenceReceipt>> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                r#"
+                SELECT schema_version,
+                       build_id,
+                       app_version,
+                       completed_at,
+                       connector_total_sources,
+                       connector_managed_sources,
+                       connector_verified_sources,
+                       connector_skipped_sources,
+                       connector_report_sha256,
+                       codex_skills_sha256,
+                       codex_content_sha256
+                FROM product_convergence_receipt
+                WHERE singleton = 1
+                "#,
+                [],
+                |row| {
+                    Ok(ProductConvergenceReceipt {
+                        schema_version: row.get(0)?,
+                        build_id: row.get(1)?,
+                        app_version: row.get(2)?,
+                        completed_at: row.get(3)?,
+                        connector_report_summary: ProductConvergenceConnectorSummary {
+                            total_sources: row.get(4)?,
+                            managed_sources: row.get(5)?,
+                            verified_sources: row.get(6)?,
+                            skipped_sources: row.get(7)?,
+                            report_sha256: row.get(8)?,
+                            codex_skills_sha256: row.get(9)?,
+                            codex_content_sha256: row.get(10)?,
+                        },
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn upsert_product_convergence_receipt(
+        &self,
+        receipt: &ProductConvergenceReceipt,
+    ) -> Result<()> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            r#"
+            INSERT INTO product_convergence_receipt (
+              singleton,
+              schema_version,
+              build_id,
+              app_version,
+              completed_at,
+              connector_total_sources,
+              connector_managed_sources,
+              connector_verified_sources,
+              connector_skipped_sources,
+              connector_report_sha256,
+              codex_skills_sha256,
+              codex_content_sha256
+            )
+            VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(singleton) DO UPDATE SET
+              schema_version = excluded.schema_version,
+              build_id = excluded.build_id,
+              app_version = excluded.app_version,
+              completed_at = excluded.completed_at,
+              connector_total_sources = excluded.connector_total_sources,
+              connector_managed_sources = excluded.connector_managed_sources,
+              connector_verified_sources = excluded.connector_verified_sources,
+              connector_skipped_sources = excluded.connector_skipped_sources,
+              connector_report_sha256 = excluded.connector_report_sha256,
+              codex_skills_sha256 = excluded.codex_skills_sha256,
+              codex_content_sha256 = excluded.codex_content_sha256
+            "#,
+            params![
+                receipt.schema_version,
+                receipt.build_id,
+                receipt.app_version,
+                receipt.completed_at,
+                receipt.connector_report_summary.total_sources,
+                receipt.connector_report_summary.managed_sources,
+                receipt.connector_report_summary.verified_sources,
+                receipt.connector_report_summary.skipped_sources,
+                receipt.connector_report_summary.report_sha256,
+                receipt.connector_report_summary.codex_skills_sha256,
+                receipt.connector_report_summary.codex_content_sha256,
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -4000,6 +4157,102 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn product_convergence_receipt(build_id: &str) -> ProductConvergenceReceipt {
+        ProductConvergenceReceipt {
+            schema_version: PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION.to_string(),
+            build_id: build_id.to_string(),
+            app_version: "1.2.3".to_string(),
+            completed_at: "2026-07-24T10:30:00Z".to_string(),
+            connector_report_summary: ProductConvergenceConnectorSummary {
+                total_sources: 4,
+                managed_sources: 2,
+                verified_sources: 2,
+                skipped_sources: 2,
+                report_sha256: "a".repeat(64),
+                codex_skills_sha256: Some("b".repeat(64)),
+                codex_content_sha256: Some("c".repeat(64)),
+            },
+        }
+    }
+
+    #[test]
+    fn product_convergence_receipt_is_optional_and_atomically_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("product-convergence.sqlite"));
+        database.init().unwrap();
+
+        assert_eq!(database.product_convergence_receipt().unwrap(), None);
+
+        let first = product_convergence_receipt("release-build-1");
+        database.upsert_product_convergence_receipt(&first).unwrap();
+        assert_eq!(database.product_convergence_receipt().unwrap(), Some(first));
+
+        let mut replacement = product_convergence_receipt("release-build-2");
+        replacement.completed_at = "2026-07-24T10:31:00Z".to_string();
+        replacement.connector_report_summary.report_sha256 = "d".repeat(64);
+        database
+            .upsert_product_convergence_receipt(&replacement)
+            .unwrap();
+        assert_eq!(
+            database.product_convergence_receipt().unwrap(),
+            Some(replacement)
+        );
+
+        let connection = Connection::open(database.path()).unwrap();
+        let receipt_rows: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM product_convergence_receipt",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let generic_setting_rows: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'diagnostic.%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_rows, 1);
+        assert_eq!(generic_setting_rows, 0);
+    }
+
+    #[test]
+    fn product_convergence_table_is_a_schema_six_compatible_addition() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("schema-six-addition.sqlite"));
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute("DROP TABLE product_convergence_receipt", [])
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)
+            .unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        let schema_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let table_exists: bool = connection
+            .query_row(
+                r#"
+                SELECT EXISTS(
+                  SELECT 1
+                  FROM sqlite_master
+                  WHERE type = 'table' AND name = 'product_convergence_receipt'
+                )
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, DATABASE_SCHEMA_VERSION);
+        assert!(table_exists);
+    }
 
     fn message_event(id: &str, role: &str, content: &str, created_at: &str) -> AgentEvent {
         AgentEvent {

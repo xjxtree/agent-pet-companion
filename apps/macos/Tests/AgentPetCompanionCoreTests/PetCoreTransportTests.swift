@@ -10,6 +10,10 @@ struct PetCoreTransportTests {
         #expect(PetCoreClient.defaultTimeout(for: "state.snapshot") == .seconds(5))
         #expect(PetCoreClient.defaultTimeout(for: "connections.check") == .seconds(180))
         #expect(PetCoreClient.defaultTimeout(for: "connections.repair") == .seconds(180))
+        #expect(
+            PetCoreClient.defaultTimeout(for: "connections.refresh_installed")
+                == .seconds(180)
+        )
         #expect(PetCoreClient.defaultTimeout(for: "connections.uninstall") == .seconds(180))
         #expect(PetCoreClient.defaultTimeout(for: "petpack.export") == .seconds(120))
         #expect(PetCoreClient.defaultTimeout(for: "pet.history") == .seconds(120))
@@ -208,6 +212,35 @@ struct PetCoreTransportTests {
         #expect(retryResult == .started)
         let snapshot = await probe.snapshot()
         #expect(snapshot.attempts == 3)
+    }
+
+    @Test
+    func appBootstrapDefersWithoutRetryingOrCachingActiveWork() async {
+        let probe = BootstrapProbe(results: [
+            .deferred(reason: "active generation"),
+            .started
+        ])
+        let coordinator = PetCoreAppBootstrapCoordinator(
+            ensureRunning: { await probe.nextResult() },
+            policy: ServiceBootstrapRetryPolicy(
+                maximumAttempts: 5,
+                initialDelay: .milliseconds(10),
+                maximumDelay: .milliseconds(20)
+            ),
+            sleep: { duration in await probe.recordSleep(duration) }
+        )
+
+        #expect(
+            await coordinator.ensureRunning()
+                == .deferred(reason: "active generation")
+        )
+        var snapshot = await probe.snapshot()
+        #expect(snapshot.attempts == 1)
+        #expect(snapshot.delays.isEmpty)
+
+        #expect(await coordinator.ensureRunning() == .started)
+        snapshot = await probe.snapshot()
+        #expect(snapshot.attempts == 2)
     }
 
     @Test

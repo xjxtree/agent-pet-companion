@@ -85,8 +85,8 @@ resolved_commit="$(
   exit 1
 }
 [[ "$resolved_commit" == "$COMMIT" ]] || {
-  echo "remote release tag no longer targets the immutable candidate commit" >&2
+  echo "remote release tag no longer targets the protected candidate commit" >&2
   exit 1
 }
 
-echo "Remote release tag matches immutable candidate: $TAG"
+echo "Remote release tag matches protected candidate: $TAG"

@@ -317,6 +317,78 @@ enum PetCoreLaunchAgentMigrationPolicy {
     }
 }
 
+enum PetCoreRuntimeReplacementSafetyPolicy {
+    enum Assessment: Equatable {
+        case safe
+        case protectedWork
+        case legacyConnectionStateNeedsProbe
+        case unknown
+    }
+
+    static func assess(snapshotValue: Any) -> Assessment {
+        guard let snapshot = snapshotValue as? [String: Any],
+              let activeGeneration = snapshot["active_generation"]
+        else { return .unknown }
+
+        let generationProtected: Bool
+        if activeGeneration is NSNull {
+            generationProtected = false
+        } else if let generation = activeGeneration as? [String: Any],
+                  let status = generation["status"] as? String
+        {
+            switch status {
+            case "pending", "running":
+                generationProtected = true
+            case "waiting_for_user":
+                // Waiting input is durable PetCore state. Replacing the runtime
+                // lets the new App restore the prompt; deferring here would
+                // deadlock because no UI is connected to answer it.
+                generationProtected = false
+            default:
+                return .unknown
+            }
+        } else {
+            return .unknown
+        }
+
+        if generationProtected {
+            return .protectedWork
+        }
+        guard let connectionOperation = snapshot["connection_operation_active"]
+        else {
+            // Released v0.1.x runtimes already serialized connection
+            // operations, but did not project that gate into state.snapshot.
+            // Never silently treat the missing field as idle: the launcher
+            // performs a compatible gated diagnostic probe before shutdown.
+            return .legacyConnectionStateNeedsProbe
+        }
+        guard let connectionOperation = connectionOperation as? Bool else {
+            return .unknown
+        }
+        return connectionOperation ? .protectedWork : .safe
+    }
+
+    static func assessLegacyConnectionProbeError(_ error: Error) -> Assessment {
+        guard case let PetCoreClientError.rpcError(message) = error,
+              message.contains("another Agent connection operation is already running")
+        else { return .unknown }
+        return .protectedWork
+    }
+
+    static func shouldDeferAfterSnapshotError(_ error: Error) -> Bool {
+        guard let transportError = error as? PetCoreTransportError,
+              case let .systemCall(operation, code) = transportError,
+              operation == "connect",
+              code == ENOENT || code == ECONNREFUSED
+        else {
+            // Timeouts, malformed responses, RPC errors, and failures after a
+            // successful connect mean a prior runtime may still own work.
+            return true
+        }
+        return false
+    }
+}
+
 actor PetCoreProcessManager {
     typealias HealthCheck = PetCoreServiceStartupCoordinator.HealthCheck
     typealias ServiceRunner = PetCoreServiceStartupCoordinator.ServiceRunner
@@ -416,7 +488,6 @@ private actor PetCoreServiceLauncher {
     func recordHealthyCurrentRuntime() async throws {
         let candidate = try await prepareCandidate()
         try await runtimeStore.commitHealthy(candidate)
-        await refreshInstalledConnectorReferences(using: candidate)
     }
 
     func requiresLegacyLaunchOutputMigration() -> Bool {
@@ -525,6 +596,9 @@ private actor PetCoreServiceLauncher {
         mode: LaunchMode,
         allowsRollback: Bool
     ) async throws {
+        // A protected deferral is not a candidate failure and must never enter
+        // the rollback transaction below. The prior runtime remains untouched.
+        try await deferRuntimeReplacementWhileProtectedWorkIsActive(candidate)
         do {
             // A loaded KeepAlive job would immediately respawn the old binary after shutdown.
             // Explicit direct/isolated validation mode must never touch the user's global
@@ -546,7 +620,6 @@ private actor PetCoreServiceLauncher {
                 throw PetCoreServiceLauncherError.message("候选 PetCore 启动后未通过版本与健康检查")
             }
             try await runtimeStore.commitHealthy(candidate)
-            await refreshInstalledConnectorReferences(using: candidate)
         } catch {
             guard allowsRollback, let previous = candidate.previous else { throw error }
             let original = error.localizedDescription
@@ -571,14 +644,81 @@ private actor PetCoreServiceLauncher {
         }
     }
 
-    private func refreshInstalledConnectorReferences(using runtime: PreparedPetCoreRuntime) async {
-        guard runtime.isManaged else { return }
-        _ = try? await BoundedProcessRunner.run(
-            executableURL: runtime.cliURL,
-            arguments: ["connections", "refresh-installed"],
-            timeout: .seconds(10),
-            outputLimit: 16 * 1_024
+    private func deferRuntimeReplacementWhileProtectedWorkIsActive(
+        _ candidate: PreparedPetCoreRuntime
+    ) async throws {
+        guard candidate.isManaged else { return }
+        let socketPath = homeURL
+            .appendingPathComponent("run", isDirectory: true)
+            .appendingPathComponent("petcore.sock")
+            .path
+        let client = PetCoreClient(socketPath: socketPath)
+        do {
+            let response = try await client.requestData(
+                method: "state.snapshot",
+                timeout: .milliseconds(500)
+            )
+            let snapshot = try PetCoreClient.decodeResult(from: response)
+            switch PetCoreRuntimeReplacementSafetyPolicy.assess(
+                snapshotValue: snapshot
+            ) {
+            case .safe:
+                return
+            case .protectedWork:
+                throw ServiceStartupDeferredError(
+                    reason: "正在等待当前任务完成，再继续更新本地服务"
+                )
+            case .legacyConnectionStateNeedsProbe:
+                try await requireLegacyConnectionOperationsAreIdle(client: client)
+            case .unknown:
+                throw ServiceStartupDeferredError(
+                    reason: "暂时无法确认当前任务状态，稍后会自动重试本地服务更新"
+                )
+            }
+        } catch let deferred as ServiceStartupDeferredError {
+            throw deferred
+        } catch {
+            guard PetCoreRuntimeReplacementSafetyPolicy
+                .shouldDeferAfterSnapshotError(error)
+            else {
+                // No process accepted the Unix-domain connection. A stale or
+                // absent socket cannot own active work, so replacement may
+                // continue through the bounded transaction.
+                return
+            }
+            throw ServiceStartupDeferredError(
+                reason: "暂时无法确认当前任务状态，稍后会自动重试本地服务更新"
+            )
+        }
+    }
+
+    private func requireLegacyConnectionOperationsAreIdle(
+        client: PetCoreClient
+    ) async throws {
+        let params = try JSONSerialization.data(
+            withJSONObject: ["source": "codex"]
         )
+        do {
+            let response = try await client.requestData(
+                method: "connections.test",
+                paramsJSONData: params,
+                timeout: .seconds(2)
+            )
+            _ = try PetCoreClient.decodeResult(from: response)
+        } catch {
+            switch PetCoreRuntimeReplacementSafetyPolicy
+                .assessLegacyConnectionProbeError(error)
+            {
+            case .protectedWork:
+                throw ServiceStartupDeferredError(
+                    reason: "正在等待当前 Agent 连接操作完成，再继续更新本地服务"
+                )
+            case .safe, .legacyConnectionStateNeedsProbe, .unknown:
+                throw ServiceStartupDeferredError(
+                    reason: "暂时无法确认旧版服务的连接操作状态，稍后会自动重试更新"
+                )
+            }
+        }
     }
 
     private func performLaunchAgentStart(_ candidate: PreparedPetCoreRuntime) async throws {
