@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v7";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v8";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered
@@ -56,6 +56,7 @@ export const APC_PI_FORWARDED_EVENTS = Object.freeze([
   "tool_execution_end",
   "session_before_compact",
   "session_compact",
+  "session_info_changed",
   "agent_settled",
   "session_shutdown",
 ]);
@@ -189,7 +190,11 @@ async function forward(event, ctx) {
     remember(finalAgentErrors, id, false);
     finalAssistantMessages.delete(id);
     pendingInputTexts.delete(id);
-  } else if (id && !activeTurnIds.has(id) && !["session_start", "session_shutdown"].includes(event?.type)) {
+  } else if (
+    id
+    && !activeTurnIds.has(id)
+    && !["session_start", "session_info_changed", "session_shutdown"].includes(event?.type)
+  ) {
     remember(activeTurnIds, id, randomUUID());
   }
 
@@ -256,7 +261,7 @@ export default function agentPetCompanion(pi) {
   pi.on("project_trust", async () => ({ trusted: "undecided" }));
   pi.on("resources_discover", observeOnly);
   pi.on("session_start", async () => sendConnectorProbeOnce());
-  pi.on("session_info_changed", observeOnly);
+  pi.on("session_info_changed", async (event, ctx) => forward(event, ctx));
   pi.on("session_before_switch", observeOnly);
   pi.on("session_before_fork", observeOnly);
   pi.on("session_before_compact", async (event, ctx) => forward(event, ctx));

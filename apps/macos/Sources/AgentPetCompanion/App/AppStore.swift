@@ -1719,10 +1719,10 @@ final class AppStore: ObservableObject {
         )
     }
 
-    /// Seeds the closed, content-pinned App inventory before the first state
-    /// snapshot is presented. PetCore resolves conflicts by stable manifest ID:
-    /// matching IDs are preserved, while equal display names with distinct IDs
-    /// coexist in the library.
+    /// Converges the closed, content-pinned App inventory before the first
+    /// state snapshot is presented. PetCore preserves ordinary same-ID pets
+    /// and appends a revision only for an identity it previously marked as
+    /// bundled when the release digest changes.
     private func seedBundledPets() async -> Bool {
         guard BundledPetInventory.hasCompleteResources() else {
             diagnostics.log(
@@ -1744,13 +1744,17 @@ final class AppStore: ObservableObject {
             let installedCount = response.outcomes.lazy.filter {
                 $0.status == .installed
             }.count
+            let revisedCount = response.outcomes.lazy.filter {
+                $0.status == .installedNewRevision
+            }.count
             diagnostics.log(
                 .info,
                 category: "library",
                 event: "bundled_pet_seed_completed",
                 metadata: [
                     "inventory_count": .integer(Int64(BundledPetInventory.fileNames.count)),
-                    "installed_count": .integer(Int64(installedCount))
+                    "installed_count": .integer(Int64(installedCount)),
+                    "revised_count": .integer(Int64(revisedCount))
                 ]
             )
             return true

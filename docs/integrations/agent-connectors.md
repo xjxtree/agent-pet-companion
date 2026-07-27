@@ -59,9 +59,13 @@ integration health is **Not Checked**, **Checking**, **Healthy**,
 **Needs Repair**, or **Unavailable**. Real-task verification is **Not Run**,
 **Awaiting Evidence**, or **Verified**. A healthy local adapter never implies
 that a provider task has run, and missing real-task evidence never makes the
-local integration unhealthy. The page has one prominent **Check All** action;
-per-Agent check, repair, test, and uninstall controls are contextual secondary
-actions. Project directories, App/PetCore runtime details, renderer state, and
+local integration unhealthy. The page keeps **Check All** prominent and keeps a
+typed **Set Up or Repair All** entry whenever at least one managed connector can
+be safely installed or reapplied, including after a successful repair. Per-Agent
+check, local-channel test, managed install/repair, and uninstall controls remain
+available in Technical Details according to explicit capabilities. An
+unavailable Agent uses **View Fix** to reveal typed recovery guidance instead of
+repeating a check with no explanation. Project directories, App/PetCore runtime details, renderer state, and
 diagnostics export do not belong on this page. Service state and archive export
 live under **Service & Diagnostics**. Individual CLI, managed connector, host
 verification, event delivery, and App Server checks remain typed support data
@@ -69,9 +73,38 @@ behind Technical Details.
 
 Check, test, repair, and uninstall share a typed App coordinator and a serialized PetCore mutation gate. A running operation disables conflicting actions, and failures remain inline with an explicit retry path.
 
-PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `managed_path_conflict`, and `can_uninstall_managed_connector`. The App never infers repair or uninstall authority from display text. **Needs Repair** is projected only when an executable typed repair authority is present; a failed check without that authority is **Unavailable**. Missing capability data denies mutation. Current check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. `project_directory` and `choose_project_directory` are decode-only compatibility values: PetCore does not emit or reproject them, and the App never presents or executes them.
+PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `can_repair_managed_connector`, `managed_path_conflict`, and `can_uninstall_managed_connector`. `repairable_connector_issue` authorizes issue-specific **Connect/Repair** presentation; `can_repair_managed_connector` independently keeps the safe managed install/reapply entry available after that issue clears. The App never infers repair or uninstall authority from display text. **Needs Repair** is projected only when an executable typed repair authority is present; a failed check without that authority is **Unavailable**. Missing capability data denies mutation. Current check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. `project_directory` and `choose_project_directory` are decode-only compatibility values: PetCore does not emit or reproject them, and the App never presents or executes them.
 
-PetCore distinguishes ordinary, diagnostic, and full-task receipts against the current connector contract and install time. The page labels these proofs separately: a local-channel test proves only the on-device adapter round trip, while real Agent verification requires a qualifying event from an actual provider task. A local test does not prove provider authentication, model execution, or completion of a real Agent task.
+A current light snapshot may authorize only an explicitly typed managed
+installation or repair. It cannot claim **Healthy** or **Verified**, and policy
+restrictions, missing Agent/runtime dependencies, unknown checks, and managed
+path conflicts still deny mutation. A full runtime check remains required for
+healthy integration and real-task verification presentation.
+
+PetCore distinguishes ordinary, diagnostic, and full-task receipts against the current connector contract and install time. The page labels these proofs separately: a local-channel test proves only the on-device adapter round trip, while real Agent verification requires a qualifying event from an actual provider task. A local test does not prove provider authentication, model execution, or completion of a real Agent task. Every single-Agent operation produces a persistent, dismissible success or failure notice in that Agent section, so Test Channel and managed writes have visible feedback.
+
+Technical Details projects only bounded, typed evidence needed to act on a
+failed check. Agent-version rows show the detected semantic version and the
+closed supported version set; the Codex host-verification row may show bounded
+disabled, modified, and untrusted hook counts. Arbitrary diagnostic prose,
+paths, identifiers, and credential-like values never cross into ordinary or
+accessibility presentation.
+
+Runtime version checks fail closed outside the protocol surfaces audited by the
+current connector: Codex accepts only `0.144.5`, `0.145.0-alpha.18`, and the
+ChatGPT-bundled `0.146.0-alpha.3.1`; Claude Code accepts
+`2.1.212`–`2.1.215`; Pi requires exactly `0.80.10`; and OpenCode accepts
+`1.18.0`–`1.18.4`. The Codex `0.146.0-alpha.3.1` App Server notification schema
+is an exact 70-method match to the recorded inventory, and the OpenCode
+`1.18.4` plugin hook plus v1/v2 event inventories are exact matches to the
+managed adapter. Pi `0.79.x` is intentionally not treated as compatible:
+although it has the older task lifecycle events, its ExtensionAPI does not
+expose the required `session_info_changed` and `agent_settled` boundaries.
+
+Technical Details and the other shared advanced-detail cards use a full-width
+header button with expanded/collapsed accessibility state. The complete rounded
+header area toggles the section; controls inside expanded content remain
+independently interactive.
 
 The desktop bubble keeps the same Agent → session boundary but exposes only the
 bounded daily return path: one row while collapsed, at most three while
@@ -84,7 +117,7 @@ intent is a localized projection over the unchanged fixed lifecycle states.
 
 - Never read or export Agent auth, token, cookie, API key, or secret files.
 - Do not forward arbitrary command/tool payloads, hidden reasoning, complete transcript archives, arbitrary environment variables, or unbounded host payloads as event structure.
-- Explicit, bounded session titles and latest user/assistant display messages are product data and remain available to the desktop bubble.
+- Explicit, bounded session titles plus first/latest user and latest assistant display messages are product data and remain available to the desktop bubble. Each Agent connector forwards later generated-title metadata without inventing activity; PetCore uses the first user message only until that explicit title arrives.
 - Project paths and session IDs are normalized for local correlation and removed or redacted from diagnostics.
 - Internal Codex suggestion/Pet Studio sessions are suppressed from ordinary desktop activity.
 - Connector files must be attributable to Agent Pet Companion, updated atomically, and removed without changing unrelated user configuration or projects.

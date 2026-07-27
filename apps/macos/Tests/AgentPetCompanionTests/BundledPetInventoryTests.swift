@@ -20,9 +20,9 @@ struct BundledPetInventoryTests {
 
         let expectedDigests = [
             "pet_xingwutuanzi.petpack":
-                "9a67254a1ee3f1a2afd599f376fd0cc0ee9935e137426924a99c20a24bdb49c2",
+                "886988991cc8c40a0fdc0a997430474de28c0c26ddf83df428cae3db06307864",
             "pet_bytebudcodex.petpack":
-                "a0b64b46054ed5a73abeefc7c0f734cfaa2d92878f5c097ca85bdcb06d547d6f"
+                "b936e8bda84a7a6d140b8f7629a7c111b07e4d78b0674bdc1e24eee0c8bd2d3d"
         ]
         for entry in entries {
             let data = try Data(contentsOf: entry)
@@ -80,6 +80,17 @@ struct BundledPetInventoryTests {
     }
 
     @Test
+    func seedResponseAcceptsATrustedBundledRevisionUpgrade() throws {
+        let value = try seedResponseValue(
+            petIDs: BundledPetInventory.petIDs,
+            status: "installed_new_revision"
+        )
+        let response = try BundledPetInventory.validatedSeedResponse(value)
+
+        #expect(response.outcomes.allSatisfy { $0.status == .installedNewRevision })
+    }
+
+    @Test
     func seedResponseRejectsMalformedPartialAndDuplicateOutcomes() throws {
         #expect(throws: PetCoreClientError.self) {
             try BundledPetInventory.validatedSeedResponse([
@@ -101,13 +112,16 @@ struct BundledPetInventoryTests {
         }
     }
 
-    private func seedResponseValue(petIDs: [String]) throws -> [String: Any] {
+    private func seedResponseValue(
+        petIDs: [String],
+        status: String = "preserved_existing_id"
+    ) throws -> [String: Any] {
         [
             "inventory": BundledPetInventory.identifier,
             "outcomes": try petIDs.map { petID in
                 [
                     "pet_id": petID,
-                    "status": "preserved_existing_id",
+                    "status": status,
                     "pet": try jsonObject(PetSummary(
                         id: petID,
                         name: petID,

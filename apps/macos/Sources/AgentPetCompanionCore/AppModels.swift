@@ -1886,6 +1886,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
     public var mappedInformation: [String]
     public var privacyExclusions: [String]
     public var repairableConnectorIssue: Bool?
+    public var canRepairManagedConnector: Bool?
     public var managedPathConflict: Bool?
     public var canUninstallManagedConnector: Bool?
 
@@ -1896,6 +1897,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         mappedInformation: [String],
         privacyExclusions: [String],
         repairableConnectorIssue: Bool? = nil,
+        canRepairManagedConnector: Bool? = nil,
         managedPathConflict: Bool? = nil,
         canUninstallManagedConnector: Bool? = nil
     ) {
@@ -1905,6 +1907,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         self.mappedInformation = mappedInformation
         self.privacyExclusions = privacyExclusions
         self.repairableConnectorIssue = repairableConnectorIssue
+        self.canRepairManagedConnector = canRepairManagedConnector
         self.managedPathConflict = managedPathConflict
         self.canUninstallManagedConnector = canUninstallManagedConnector
     }
@@ -1924,6 +1927,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
             || !mappedInformation.isEmpty
             || !privacyExclusions.isEmpty
             || repairableConnectorIssue != nil
+            || canRepairManagedConnector != nil
             || managedPathConflict != nil
             || canUninstallManagedConnector != nil
     }
@@ -1935,6 +1939,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         case mappedInformation = "mapped_information"
         case privacyExclusions = "privacy_exclusions"
         case repairableConnectorIssue = "repairable_connector_issue"
+        case canRepairManagedConnector = "can_repair_managed_connector"
         case managedPathConflict = "managed_path_conflict"
         case canUninstallManagedConnector = "can_uninstall_managed_connector"
     }
@@ -1947,6 +1952,10 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         mappedInformation = try container.decodeIfPresent([String].self, forKey: .mappedInformation) ?? []
         privacyExclusions = try container.decodeIfPresent([String].self, forKey: .privacyExclusions) ?? []
         repairableConnectorIssue = try container.decodeIfPresent(Bool.self, forKey: .repairableConnectorIssue)
+        canRepairManagedConnector = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .canRepairManagedConnector
+        )
         managedPathConflict = try container.decodeIfPresent(Bool.self, forKey: .managedPathConflict)
         canUninstallManagedConnector = try container.decodeIfPresent(
             Bool.self,
@@ -2020,6 +2029,11 @@ public struct AgentConnectionStatus: Codable, Identifiable, Hashable, Sendable {
 
     public var hasManagedPathConflict: Bool {
         capabilities.managedPathConflict == true
+    }
+
+    public var canRepairManagedConnector: Bool {
+        capabilities.canRepairManagedConnector == true
+            && capabilities.managedPathConflict == false
     }
 
     public var canUninstallManagedConnector: Bool {

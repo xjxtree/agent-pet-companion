@@ -516,13 +516,27 @@ wait "$helper_pid"
     let _exit_file = EnvGuard::set("APC_TEST_HELPER_EXIT_FILE", helper_exit_file.as_os_str());
     let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
 
-    let result = probe_codex_app_server();
-    assert_eq!(result["initialized"], false, "{result}");
-    assert_eq!(
-        result.pointer("/error_info/kind").and_then(|v| v.as_str()),
-        Some("timeout"),
-        "{result}"
-    );
+    // On a saturated integration-test host the shell may not reach its helper
+    // fork before the probe's own three-second response timeout. Establish the
+    // descendant precondition with a bounded retry; every attempt must still
+    // exercise the real timeout path.
+    for attempt in 1..=3 {
+        let result = probe_codex_app_server();
+        assert_eq!(result["initialized"], false, "{result}");
+        assert_eq!(
+            result.pointer("/error_info/kind").and_then(|v| v.as_str()),
+            Some("timeout"),
+            "{result}"
+        );
+        if helper_pid_file.is_file() {
+            break;
+        }
+        assert!(
+            attempt < 3,
+            "fake App Server did not publish its helper PID after {attempt} timeout attempts"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let helper_pid = std::fs::read_to_string(&helper_pid_file)
         .unwrap()
@@ -567,8 +581,12 @@ fn stdout_eof_fails_immediately_with_exit_diagnostics() {
     let result = probe_codex_app_server();
     let elapsed = started.elapsed();
 
+    // The typed stdout_eof result below is the authoritative assertion that
+    // this did not become a probe timeout. Keep only a broad wall-clock guard
+    // here so temporary CI scheduler pressure cannot make the transport test
+    // flaky.
     assert!(
-        elapsed < Duration::from_millis(700),
+        elapsed < Duration::from_secs(5),
         "EOF was treated as a timeout and took {elapsed:?}: {result}"
     );
     assert_eq!(
@@ -612,6 +630,10 @@ done
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    // Bound the failure case independently of the production 25-minute image
+    // turn while still letting the typed stdout_eof assertion distinguish EOF
+    // from the synthetic five-second timeout.
+    let _turn_timeout = EnvGuard::set("APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS", "5000");
     let paths = AppPaths::new(temp.path().join("home"));
     paths.ensure().unwrap();
     let form = GenerationForm {
@@ -627,7 +649,7 @@ done
     let result = petcore::app_server::run_pet_studio_session(&paths, "job_eof", &form);
     let elapsed = started.elapsed();
 
-    assert!(elapsed < Duration::from_secs(1), "{elapsed:?}: {result}");
+    assert!(elapsed < Duration::from_secs(8), "{elapsed:?}: {result}");
     assert_eq!(
         result.pointer("/error_info/kind").and_then(|v| v.as_str()),
         Some("stdout_eof"),
@@ -661,6 +683,7 @@ while IFS= read -r request; do
     *\"method\":\"turn/start\"*)
       printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_delayed","status":"inProgress"}}}'
       printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_delayed","turnId":"turn_delayed","item":{"type":"agentMessage","id":"message_delayed","text":"{\"name\":\"Delayed Pet\"}"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_delayed","turn":{"id":"turn_delayed","status":"completed"}}}'
       ;;
   esac
 done
@@ -734,4 +757,282 @@ done
         "{result}"
     );
     assert_eq!(result["error"], serde_json::Value::Null, "{result}");
+}
+
+#[test]
+fn generation_waits_through_transient_app_server_reconnects() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("transient-reconnect.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"transient-reconnect-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_reconnect","sessionId":"thread_reconnect"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_reconnect","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"error","params":{"error":{"message":"Reconnecting... 1/5"},"threadId":"thread_reconnect","turnId":"turn_reconnect","willRetry":true}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_reconnect","turnId":"turn_reconnect","item":{"type":"agentMessage","id":"message_reconnect","text":"{\"name\":\"Recovered Pet\"}"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_reconnect","turn":{"id":"turn_reconnect","status":"completed"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Transient reconnect pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
+    };
+    let mut updates = Vec::new();
+
+    let result = petcore::app_server::run_pet_studio_session_with_updates(
+        &paths,
+        "job_transient_reconnect",
+        &form,
+        |update| updates.push(update.content),
+    );
+
+    assert_eq!(result["completed"], true, "{result}");
+    assert_eq!(result["ai_brief"]["name"], "Recovered Pet", "{result}");
+    assert_eq!(result["error"], serde_json::Value::Null, "{result}");
+    assert!(
+        updates.iter().any(|message| message.contains("自动重连")),
+        "{updates:?}"
+    );
+}
+
+#[test]
+fn generation_waits_past_intermediate_agent_message_for_turn_completion() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("intermediate-agent-message.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"intermediate-message-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_intermediate","sessionId":"thread_intermediate"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_intermediate","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_intermediate","turnId":"turn_intermediate","item":{"type":"agentMessage","id":"message_progress","text":"{\"name\":\"Too Early\"}"}}}'
+      sleep 1
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_intermediate","turnId":"turn_intermediate","item":{"type":"agentMessage","id":"message_final","text":"{\"name\":\"Finished Pet\"}"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_intermediate","turn":{"id":"turn_intermediate","status":"completed"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Intermediate Agent message pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
+    };
+
+    let started = Instant::now();
+    let result = run_pet_studio_session(&paths, "job_intermediate_message", &form);
+
+    assert!(started.elapsed() >= Duration::from_millis(900), "{result}");
+    assert_eq!(result["completed"], true, "{result}");
+    assert_eq!(result["ai_brief"]["name"], "Finished Pet", "{result}");
+    assert_eq!(result["error"], serde_json::Value::Null, "{result}");
+}
+
+#[test]
+fn generation_does_not_start_helper_turn_after_permanent_error() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("permanent-turn-error.sh");
+    let count_file = temp.path().join("turn-count");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"permanent-error-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_permanent","sessionId":"thread_permanent"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      count=0
+      [ ! -f "$APC_TEST_TURN_COUNT_FILE" ] || count=$(cat "$APC_TEST_TURN_COUNT_FILE")
+      count=$((count + 1))
+      printf '%s' "$count" > "$APC_TEST_TURN_COUNT_FILE"
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_permanent","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"turn/error","params":{"error":{"message":"Permanent failure"},"threadId":"thread_permanent","turnId":"turn_permanent","willRetry":false}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let _strict = EnvGuard::set("APC_REQUIRE_EXTERNAL_SKILL_SOURCE", "1");
+    let _count = EnvGuard::set("APC_TEST_TURN_COUNT_FILE", count_file.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Permanent failure pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
+    };
+
+    let result = run_pet_studio_session(&paths, "job_permanent_error", &form);
+
+    assert_eq!(result["completed"], false, "{result}");
+    assert!(result["error"]
+        .as_str()
+        .unwrap()
+        .contains("Permanent failure"));
+    assert_eq!(std::fs::read_to_string(count_file).unwrap(), "1");
+    assert_eq!(result["helper_turn_started"], false, "{result}");
+}
+
+#[test]
+fn external_generation_interrupts_timed_out_turn_and_resumes_from_checkpoint() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("checkpoint-resume.sh");
+    let turn_count_file = temp.path().join("turn-count");
+    let interrupt_count_file = temp.path().join("interrupt-count");
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let job_id = "job_checkpoint_resume";
+    let job_dir = paths.jobs_dir.join(job_id);
+
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+turn_count=0
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"checkpoint-resume-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_checkpoint","sessionId":"thread_checkpoint"}}}'
+      ;;
+    *\"method\":\"turn/interrupt\"*)
+      interrupt_count=0
+      [ ! -f "$APC_TEST_INTERRUPT_COUNT_FILE" ] || interrupt_count=$(cat "$APC_TEST_INTERRUPT_COUNT_FILE")
+      interrupt_count=$((interrupt_count + 1))
+      printf '%s' "$interrupt_count" > "$APC_TEST_INTERRUPT_COUNT_FILE"
+      printf '%s\n' '{"jsonrpc":"2.0","id":102,"result":{}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      turn_count=$((turn_count + 1))
+      printf '%s' "$turn_count" > "$APC_TEST_TURN_COUNT_FILE"
+      if [ "$turn_count" = 1 ]; then
+        printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_checkpoint_0","status":"inProgress"}}}'
+        continue
+      fi
+
+      source_dir="$APC_TEST_JOB_DIR/petpack-source"
+      mkdir -p "$source_dir/build" "$source_dir/assets/frames" \
+        "$APC_TEST_JOB_DIR/motion-qa"
+      printf '%s\n' '{"id":"checkpoint-pet","name":"Checkpoint Pet","native_fps":10,"states":[{"name":"idle","duration_ms":2000},{"name":"start","duration_ms":1000},{"name":"tool","duration_ms":2000},{"name":"waiting","duration_ms":2000},{"name":"review","duration_ms":2000},{"name":"done","duration_ms":1000},{"name":"failed","duration_ms":2000}]}' > "$source_dir/manifest.json"
+      for state_count in idle:20 start:10 tool:20 waiting:20 review:20 done:10 failed:20; do
+        state=${state_count%%:*}
+        count=${state_count##*:}
+        state_dir="$source_dir/assets/frames/$state"
+        mkdir -p "$state_dir"
+        index=1
+        while [ "$index" -le "$count" ]; do
+          touch "$state_dir/$(printf '%03d' "$index").png"
+          index=$((index + 1))
+        done
+      done
+      printf '%s\n' '{"ok":true}' > "$source_dir/build/validation.json"
+      printf '%s\n' '{"ok":true}' > "$APC_TEST_JOB_DIR/motion-qa/report.json"
+      printf '%s\n' '{"status":"approved"}' > "$APC_TEST_JOB_DIR/motion-review.json"
+
+      printf '%s\n' '{"jsonrpc":"2.0","id":103,"result":{"turn":{"id":"turn_checkpoint_1","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_1","item":{"type":"agentMessage","id":"message_checkpoint","text":"{\"petpack_source\":\"petpack-source\",\"mode\":\"external_full_source\",\"native_fps\":10}"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_checkpoint","turn":{"id":"turn_checkpoint_1","status":"completed"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let _strict = EnvGuard::set("APC_REQUIRE_EXTERNAL_SKILL_SOURCE", "1");
+    let _timeout = EnvGuard::set("APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS", "200");
+    let _job = EnvGuard::set("APC_TEST_JOB_DIR", job_dir.as_os_str());
+    let _turn_count = EnvGuard::set("APC_TEST_TURN_COUNT_FILE", turn_count_file.as_os_str());
+    let _interrupt_count = EnvGuard::set(
+        "APC_TEST_INTERRUPT_COUNT_FILE",
+        interrupt_count_file.as_os_str(),
+    );
+    let form = GenerationForm {
+        description: "Checkpoint resume pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
+        state_durations_ms: petcore_types::default_state_durations_ms(),
+    };
+    let mut updates = Vec::new();
+
+    let result =
+        petcore::app_server::run_pet_studio_session_with_updates(&paths, job_id, &form, |update| {
+            updates.push(update.content)
+        });
+
+    assert_eq!(result["completed"], true, "{result}");
+    assert_eq!(result["error"], serde_json::Value::Null, "{result}");
+    assert_eq!(result["checkpoint_turns_started"], 1, "{result}");
+    assert_eq!(
+        result["checkpoint_turn_ids"],
+        json!(["turn_checkpoint_1"]),
+        "{result}"
+    );
+    assert_eq!(result["helper_turn_started"], false, "{result}");
+    assert_eq!(std::fs::read_to_string(turn_count_file).unwrap(), "2");
+    assert_eq!(std::fs::read_to_string(interrupt_count_file).unwrap(), "1");
+    assert!(
+        updates.iter().any(|message| message.contains("保存进度")),
+        "{updates:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|message| message.contains("只处理尚未通过")),
+        "{updates:?}"
+    );
 }

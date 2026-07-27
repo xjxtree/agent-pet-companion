@@ -199,8 +199,8 @@ const CODEX_APP_SERVER_HOOK_EVENTS: &[&str] = &[
     "subagentStop",
     "stop",
 ];
-// Generated and diffed from Codex CLI 0.144.5 and the ChatGPT desktop bundled
-// Codex CLI 0.145.0-alpha.18 with
+// Generated and diffed from Codex CLI 0.144.5 plus the ChatGPT desktop bundled
+// Codex CLI 0.145.0-alpha.18 and 0.146.0-alpha.3.1 with
 // `codex app-server generate-json-schema --experimental`. These are audited
 // notification methods, not fields that Agent Pet Companion persists.
 const CODEX_APP_SERVER_NOTIFICATION_EVENTS: &[&str] = &[
@@ -923,8 +923,17 @@ fn check_source_with_runtime_smoke(
     };
     let connector_installed =
         connector_artifacts_present(paths, source) || host_connector_installed;
+    let has_independent_mutation_blocker = items.iter().any(|item| {
+        item.status.is_blocking()
+            && matches!(
+                item.code,
+                CheckCode::AgentCli | CheckCode::EventCli | CheckCode::ClaudeHooksPolicy
+            )
+    });
     let mut capabilities = capabilities_for_source(source);
     capabilities.repairable_connector_issue = Some(repairable_connector_issue);
+    capabilities.can_repair_managed_connector =
+        Some(!managed_path_conflict && !has_independent_mutation_blocker);
     capabilities.managed_path_conflict = Some(managed_path_conflict);
     capabilities.can_uninstall_managed_connector =
         Some(connector_installed && !managed_path_conflict);
@@ -2174,7 +2183,7 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 subscribed_events,
                 mapped_information: strings(&[
                     "10 个官方 Hook 提供任务开始/完成、工具、权限、压缩与子 Agent 生命周期",
-                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
+                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
                     "有界的用户提示与最终助手消息",
                 ]),
                 privacy_exclusions: strings(&[
@@ -5420,9 +5429,9 @@ fn check_agent_cli_version(
     }
     let (minimum, audited_maximum) = match source {
         AgentSource::Codex => unreachable!("Codex uses an exact audited version allowlist"),
-        AgentSource::ClaudeCode => ((2, 1, 212), (2, 1, 212)),
+        AgentSource::ClaudeCode => ((2, 1, 212), (2, 1, 215)),
         AgentSource::Pi => ((0, 80, 10), (0, 80, 10)),
-        AgentSource::Opencode => ((1, 18, 0), (1, 18, 0)),
+        AgentSource::Opencode => ((1, 18, 0), (1, 18, 4)),
     };
     let parsed = text
         .as_deref()
@@ -5476,7 +5485,7 @@ fn check_agent_cli_version(
 
 fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionCheckItem {
     const MINIMUM: (u64, u64, u64) = (0, 144, 5);
-    const AUDITED: &[&str] = &["0.144.5", "0.145.0-alpha.18"];
+    const AUDITED: &[&str] = &["0.144.5", "0.145.0-alpha.18", "0.146.0-alpha.3.1"];
     let audited = text.as_deref().is_some_and(|output| {
         AUDITED
             .iter()
@@ -5492,13 +5501,13 @@ fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionChe
     };
     let detail = match (text.as_deref(), status) {
         (Some(text), CheckStatus::Ok) => format!(
-            "检测到 {text}；命中精确审计版本 0.144.5 / 0.145.0-alpha.18"
+            "检测到 {text}；命中精确审计版本 0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1"
         ),
         (Some(text), CheckStatus::NeedsFix) => {
             format!("检测到 {text}，低于当前连接器最低版本 0.144.5")
         }
         (Some(text), _) => format!(
-            "检测到 {text}，不在精确审计版本 0.144.5 / 0.145.0-alpha.18 中；不会把其他 alpha 或正式版自动视为兼容"
+            "检测到 {text}，不在精确审计版本 0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1 中；不会把其他 alpha 或正式版自动视为兼容"
         ),
         (None, _) => "Codex CLI 未返回可解析的 --version 输出".to_string(),
     };
@@ -6919,6 +6928,11 @@ mod tests {
             Some(true),
             "missing connector-owned files remain repairable"
         );
+        assert_eq!(
+            status.capabilities.can_repair_managed_connector,
+            Some(false),
+            "a blocked hooks policy must not expose a connector rewrite as the fix"
+        );
         assert_eq!(status.capabilities.managed_path_conflict, Some(false));
 
         let connector_row = status
@@ -6993,6 +7007,10 @@ mod tests {
             status.capabilities.repairable_connector_issue,
             Some(false),
             "a policy restriction that repair preserves must not authorize repair"
+        );
+        assert_eq!(
+            status.capabilities.can_repair_managed_connector,
+            Some(false)
         );
 
         let settings_row = status
@@ -7101,6 +7119,11 @@ mod tests {
             Some(true)
         );
         assert_eq!(
+            missing_connector.capabilities.can_repair_managed_connector,
+            Some(false),
+            "installing a connector cannot repair a missing Agent CLI"
+        );
+        assert_eq!(
             missing_connector.capabilities.managed_path_conflict,
             Some(false)
         );
@@ -7130,6 +7153,12 @@ mod tests {
         assert_eq!(installed_connector.items[0].status, CheckStatus::Missing);
         assert_eq!(
             installed_connector.capabilities.repairable_connector_issue,
+            Some(false)
+        );
+        assert_eq!(
+            installed_connector
+                .capabilities
+                .can_repair_managed_connector,
             Some(false)
         );
         assert_eq!(
@@ -7311,6 +7340,14 @@ mod tests {
             "codex-cli 0.145.0",
             "0.145.0-alpha.18"
         ));
+        assert!(version_token_present(
+            "codex-cli 0.146.0-alpha.3.1",
+            "0.146.0-alpha.3.1"
+        ));
+        assert!(!version_token_present(
+            "codex-cli 0.146.0-alpha.3.10",
+            "0.146.0-alpha.3.1"
+        ));
     }
 
     #[test]
@@ -7326,7 +7363,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_full_capability_claim_requires_the_exact_audited_version() {
+    fn stable_agent_full_capability_claim_requires_an_audited_range() {
         let temp = tempfile::tempdir().unwrap();
         let claude = temp.path().join("claude");
         std::fs::write(&claude, "#!/bin/sh\necho '2.1.211 (Claude Code)'\n").unwrap();
@@ -7337,7 +7374,26 @@ mod tests {
         std::fs::write(&claude, "#!/bin/sh\necho '2.1.212 (Claude Code)'\n").unwrap();
         let audited = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
         assert_eq!(audited.status, CheckStatus::Ok);
-        assert!(audited.detail.contains("精确审计版本 2.1.212"));
+        assert!(audited.detail.contains("已审计范围 2.1.212–2.1.215"));
+
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.215 (Claude Code)'\n").unwrap();
+        let current = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
+        assert_eq!(current.status, CheckStatus::Ok);
+
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.216 (Claude Code)'\n").unwrap();
+        let future = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
+        assert_eq!(future.status, CheckStatus::Unverified);
+
+        let opencode = temp.path().join("opencode");
+        std::fs::write(&opencode, "#!/bin/sh\necho 'opencode 1.18.4'\n").unwrap();
+        std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let current = check_agent_cli_version(AgentSource::Opencode, Some(&opencode), true);
+        assert_eq!(current.status, CheckStatus::Ok);
+        assert!(current.detail.contains("已审计范围 1.18.0–1.18.4"));
+
+        std::fs::write(&opencode, "#!/bin/sh\necho 'opencode 1.18.5'\n").unwrap();
+        let future = check_agent_cli_version(AgentSource::Opencode, Some(&opencode), true);
+        assert_eq!(future.status, CheckStatus::Unverified);
     }
 
     #[test]
@@ -7543,6 +7599,10 @@ mod tests {
             }));
             assert_eq!(status.capabilities.managed_path_conflict, Some(true));
             assert_eq!(status.capabilities.repairable_connector_issue, Some(false));
+            assert_eq!(
+                status.capabilities.can_repair_managed_connector,
+                Some(false)
+            );
             assert_eq!(
                 status.capabilities.can_uninstall_managed_connector,
                 Some(false)
@@ -8821,6 +8881,11 @@ mod tests {
         assert!(pi_status
             .install_paths
             .contains(&pi_root.join("extensions").display().to_string()));
+        assert_eq!(
+            pi_status.capabilities.can_repair_managed_connector,
+            Some(true),
+            "a healthy managed connector keeps a safe reapply entry"
+        );
 
         let opencode_status = connections::repair_source(&paths, AgentSource::Opencode).unwrap();
         let opencode_plugin = opencode_root.join("plugins/agent-pet-companion.js");
@@ -8828,6 +8893,11 @@ mod tests {
         assert!(opencode_status
             .install_paths
             .contains(&opencode_root.join("plugins").display().to_string()));
+        assert_eq!(
+            opencode_status.capabilities.can_repair_managed_connector,
+            Some(true),
+            "a healthy managed connector keeps a safe reapply entry"
+        );
 
         connections::uninstall_source(&paths, AgentSource::Pi).unwrap();
         connections::uninstall_source(&paths, AgentSource::Opencode).unwrap();

@@ -140,11 +140,15 @@ server-generated completion time, report digest, and verified Codex
 Skills/content digests in the dedicated singleton receipt table; it does not
 reuse generic diagnostic settings.
 
-Bundled-pet seeding is also fail-closed: the App accepts only a typed response
-whose outcome count and unique pet IDs exactly match the closed bundled
-inventory, with every returned pet matching its requested ID. A malformed,
-partial, duplicate, or mismatched result leaves convergence unrecorded and
-retryable.
+Bundled-pet seeding is also fail-closed: PetCore compares the active archive of
+an already trusted bundled identity with the current pinned release digest. A
+digest change appends and activates a new immutable revision while preserving
+the user's active-pet selection; an ordinary same-ID pet remains byte-for-byte
+untouched and never acquires bundled authority. The App accepts only a typed
+response whose outcome count and unique pet IDs exactly match the closed
+bundled inventory, with every returned pet matching its requested ID. A
+malformed, partial, duplicate, or mismatched result leaves convergence
+unrecorded and retryable.
 
 For Codex, the App-managed plugin source, `plugin.json` version, internal
 `agent-pet-studio`, portable `agent-pet-maker`, and the actual active Codex
@@ -175,6 +179,28 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 | Product convergence | optional receipt get, current-build receipt update, read-only replacement preflight |
 | Support | renderer budget, Codex App Server probe, diagnostics export |
 
+Pet Studio turn collection distinguishes terminal protocol failures from
+transient App Server errors with an explicit `willRetry: true`. A transient
+error keeps the current bounded turn alive and reports reconnect progress; a
+permanent error ends that turn and must never trigger the same session's
+external-source helper turn. The helper turn is reserved for a successfully
+completed response that still omitted the required external source. Complete
+Agent-message items are progress, not turn boundaries: PetCore keeps waiting
+until the authoritative `turn/completed` notification. The in-app Skill also
+keeps state-row generation serial in the owning turn, so no worker completion
+can strand a half-written source tree at the import boundary. Every serial row
+must already contain its exact timing-derived number of deliberately authored
+cells; the Skill and PetCore independently reject repeated synthetic
+crossfade/interpolation filler before strict import. Strict external generation
+uses up to six bounded 25-minute turns in the same App Server thread. At each
+timeout PetCore first checks the durable source tree, safely interrupts the
+active turn when work remains, and resumes from the earliest state without an
+exact frame inventory and passing incremental motion QA. Completed state rows
+and the canonical production base stay on disk and are never regenerated merely
+because the turn budget ended. A complete source is accepted only after all
+seven frame inventories, final motion QA/review, and `build/validation.json`
+agree.
+
 `state_revision` is serialized as a decimal string. A client reads a consistent snapshot, then calls `state.wait(after_revision, timeout_ms)`. Timeouts are bounded long-polls and do not indicate a state change or a disk-version poll.
 
 `onboarding.get` returns the closed `apc.onboarding-progress.v1` progress object plus its decimal-string revision. `onboarding.update(expected_revision, progress)` performs a compare-and-swap and accepts only the ordered next scene or explicit skip. Swift decodes the schema, fields, stage, and revision as a closed contract; malformed or future values fail closed. The choose scene awaits the existing `pet.activate` path before advancing. Its included-companion candidates use the fixed ordered manifest IDs, so an upgrade-preserved same-ID pet remains selectable without acquiring bundled origin/generator/provenance or read-only permissions. An empty inventory offers the ordinary bundled-seed retry and diagnostics; an asset-warning candidate offers forced repair and cannot advance until the authoritative warning clears. Connection actions consume the same typed presentation and AppStore operations as Agent Connections. Agent detection may continue in the background and never blocks the local demo; connection mutations retain their typed capability and explicit-confirmation requirements. Completing onboarding is published only with the authoritative snapshot that shows the desktop pet enabled.
@@ -193,7 +219,7 @@ actions.
 
 Maker recovery returns only validated reference copies under the matching private job directory. Missing or unsafe staging becomes an empty reference list plus bounded `reference_reselection_count`; it does not expose the original selected paths. An edit-start receipt exposes the accepted baseline revision ID plus that baseline's native FPS and fixed state durations so the App can immediately reconcile a historical selection; recovery responses carry the same timing in the bounded form projection. Neither path exposes private context paths or instructions. The App resolves the revision ID through `pet.history` and does not substitute the current cover for an unavailable revision preview.
 
-Within `state.snapshot`, `onboarding` is the versioned durable first-run projection. `events`, `recent_events`, `active_agent_state`, and `active_agent_sessions` are typed App projections rather than event-history records. Active rows deliberately include the bounded `session_title`, latest user `session_user_message`, and current-turn Agent `session_message` so desktop bubbles show the conversation context users need; these display fields are first-class local UI data. External title/detail aliases, arbitrary raw payloads, activity detail, and separate structured command/file fields are not copied into the projection. Stable domain-separated opaque IDs preserve UI grouping. Ambiguous same-Agent sessions may carry a PetCore-owned content-free `anonymous_session_alias`; it is stable across activity reordering and restart while the session is retained.
+Within `state.snapshot`, `onboarding` is the versioned durable first-run projection. `events`, `recent_events`, `active_agent_state`, and `active_agent_sessions` are typed App projections rather than event-history records. Active rows deliberately include the bounded `session_title`, latest user `session_user_message`, and current-turn Agent `session_message` so desktop bubbles show the conversation context users need; these display fields are first-class local UI data. `session_title` uses the latest explicit title persisted for that Agent session, falling back to the bounded first user message until an explicit title arrives. Later prompts update `session_user_message` without renaming the session. External title/detail aliases, arbitrary raw payloads, activity detail, and separate structured command/file fields are not copied into the projection. Stable domain-separated opaque IDs preserve UI grouping. Ambiguous same-Agent sessions may carry a PetCore-owned content-free `anonymous_session_alias`; it is stable across activity reordering and restart while the session is retained.
 
 The local onboarding demo is not an RPC or event source. Its thinking, working, needs-attention, and done phases live in a View-local reducer and select only pet animation assets. They cannot call Agent ingest or write event history, receipts, aliases, suppression, retention counts, or diagnostics.
 

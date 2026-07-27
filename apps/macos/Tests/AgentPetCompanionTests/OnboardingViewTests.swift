@@ -19,6 +19,7 @@ struct OnboardingViewTests {
             "onboarding.pets.restore",
             "onboarding.pets.diagnostics",
             "onboarding.service.retry",
+            "onboarding.connections.setup-all",
             "onboarding.demo.local",
             "onboarding.demo.phase",
             "onboarding.demo.restart",
@@ -114,6 +115,10 @@ struct OnboardingViewTests {
             "current.primaryAction == .connect || current.primaryAction == .repair"
         ))
         #expect(source.contains("store.repairConnection(source)"))
+        #expect(source.contains("store.repairConnections(sources)"))
+        #expect(source.contains(
+            "AgentConnectionsPresentation.repairableStatuses("
+        ))
         #expect(!source.contains("contains(\"repair\")"))
         #expect(!source.contains("contains(\"修复\")"))
     }

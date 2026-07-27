@@ -69,6 +69,7 @@ struct BundledPetSeedResponse: Decodable, Equatable {
 struct BundledPetSeedOutcome: Decodable, Equatable {
     enum Status: String, Decodable {
         case installed
+        case installedNewRevision = "installed_new_revision"
         case preservedExistingID = "preserved_existing_id"
     }
 

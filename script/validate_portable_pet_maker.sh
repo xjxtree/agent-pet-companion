@@ -3,12 +3,41 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-portable-pet-maker.XXXXXX")"
+PET_MAKER_RUNTIME_HOME="${HOME:-}"
 . "$ROOT_DIR/script/validation_helpers.sh"
 apc_use_isolated_home "$TMP_DIR"
 
 PETCORE_PID=""
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPYCACHEPREFIX="$TMP_DIR/python-cache"
+
+resolve_pet_maker_python() {
+  local candidate
+  local -a candidates=()
+  if [[ -n "${APC_PET_MAKER_PYTHON:-}" ]]; then
+    candidates+=("$APC_PET_MAKER_PYTHON")
+  fi
+  shopt -s nullglob
+  candidates+=(
+    "$PET_MAKER_RUNTIME_HOME"/.cache/codex-runtimes/*/dependencies/python/bin/python3*
+  )
+  shopt -u nullglob
+  for executable_name in python3.13 python3.12 python3.11 python3; do
+    if candidate="$(command -v "$executable_name" 2>/dev/null)"; then
+      candidates+=("$candidate")
+    fi
+  done
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" && "$candidate" != *-config ]] || continue
+    if "$candidate" -I -c 'from PIL import Image; assert Image.__version__' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf 'Portable pet maker validation requires a Python runtime with Pillow PNG/WebP support\n' >&2
+  return 1
+}
 
 cleanup() {
   if [[ -n "$PETCORE_PID" ]]; then
@@ -22,7 +51,7 @@ trap cleanup EXIT
 assert_json() {
   local json="$1"
   local expression="$2"
-  JSON="$json" python3 -B - "$expression" <<'PY'
+  JSON="$json" "$PET_MAKER_PYTHON" -B - "$expression" <<'PY'
 import json
 import os
 import sys
@@ -46,28 +75,29 @@ PY
 
 cd "$ROOT_DIR"
 cargo build --locked -p petcore -p petcore-cli >/dev/null
+PET_MAKER_PYTHON="$(resolve_pet_maker_python)"
 
 HELPER="$ROOT_DIR/skills/agent-pet-maker/scripts/petpack_workspace.py"
 CLI="$ROOT_DIR/target/debug/petcore-cli"
 PETCORE="$ROOT_DIR/target/debug/petcore"
 
-python3 -B -m unittest discover \
+"$PET_MAKER_PYTHON" -B -m unittest discover \
   -s "$ROOT_DIR/skills/agent-pet-maker/tests" \
   -p 'test_*.py' >/dev/null
 
-PREFLIGHT="$(python3 -B "$HELPER" preflight --cli "$CLI")"
+PREFLIGHT="$("$PET_MAKER_PYTHON" -B "$HELPER" preflight --cli "$CLI")"
 assert_json "$PREFLIGHT" 'data["ok"] is True and data["image_codecs"]["png"] is True and data["image_codecs"]["animated_webp"] is True'
 
 CREATE_WORKSPACE="$TMP_DIR/create-workspace"
 CREATE_OUTPUT="$TMP_DIR/portable-fixture.petpack"
 CREATE_RESULT="$TMP_DIR/portable-fixture.result.json"
-CREATE_PREPARE="$(python3 -B "$HELPER" prepare \
+CREATE_PREPARE="$("$PET_MAKER_PYTHON" -B "$HELPER" prepare \
   --operation create \
   --workspace "$CREATE_WORKSPACE" \
   --cli "$CLI")"
 assert_json "$CREATE_PREPARE" 'data["ok"] is True and data["status"] == "prepared" and data["operation"] == "create"'
 
-python3 -B - "$CREATE_WORKSPACE/petpack-source" <<'PY'
+"$PET_MAKER_PYTHON" -B - "$CREATE_WORKSPACE/petpack-source" <<'PY'
 import json
 import math
 import sys
@@ -268,13 +298,48 @@ with session.open("a", encoding="utf-8") as handle:
     )
 PY
 
-CREATE_FINALIZE="$(python3 -B "$HELPER" finalize \
+"$PET_MAKER_PYTHON" -B - "$TMP_DIR/moving-mask.png" <<'PY'
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+path = Path(sys.argv[1])
+mask = Image.new("L", (192, 208), 0)
+ImageDraw.Draw(mask).ellipse((24, 18, 168, 142), fill=255)
+mask.save(path, format="PNG")
+PY
+
+CREATE_MOTION_LOCK="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-lock \
+  --source "$CREATE_WORKSPACE/petpack-source" \
+  --state idle \
+  --moving-mask "$TMP_DIR/moving-mask.png" \
+  --output-dir "$TMP_DIR/locked-idle" \
+  --feather-px 0)"
+assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 20'
+
+CREATE_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
+  --workspace "$CREATE_WORKSPACE")"
+assert_json "$CREATE_MOTION_QA" 'data["status"] == "completed" and data["capability"] == "motion-qa" and data["audited_states"] == ["idle", "start", "tool", "waiting", "review", "done", "failed"]'
+
+CREATE_MOTION_REVIEW="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
+  --workspace "$CREATE_WORKSPACE" \
+  --state-note "idle=Fixture body and baseline remain stable through the complete idle loop." \
+  --state-note "start=Fixture start pose advances smoothly and ends on a readable final pose." \
+  --state-note "tool=Fixture tool action stays attached and the body anchor remains stable." \
+  --state-note "waiting=Fixture waiting action reads clearly and returns through a clean loop seam." \
+  --state-note "review=Fixture review action stays coherent without scale or silhouette popping." \
+  --state-note "done=Fixture completion action has a readable success pose and clean settle." \
+  --state-note "failed=Fixture failure action remains identifiable and returns without a seam pop.")"
+assert_json "$CREATE_MOTION_REVIEW" 'data["status"] == "completed" and data["capability"] == "motion-review" and len(data["audited_states"]) == 7'
+
+CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --operation create \
   --workspace "$CREATE_WORKSPACE" \
   --output "$CREATE_OUTPUT" \
   --result "$CREATE_RESULT" \
   --cli "$CLI")"
-assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 120 and data["changed_states"] == []'
+assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 120 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 7'
 
 CREATE_VALIDATION="$("$CLI" petpack validate "$CREATE_OUTPUT")"
 assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
@@ -282,14 +347,14 @@ assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] 
 MODIFY_WORKSPACE="$TMP_DIR/modify-workspace"
 MODIFY_OUTPUT="$TMP_DIR/portable-fixture-revised.petpack"
 MODIFY_RESULT="$TMP_DIR/portable-fixture-revised.result.json"
-MODIFY_PREPARE="$(python3 -B "$HELPER" prepare \
+MODIFY_PREPARE="$("$PET_MAKER_PYTHON" -B "$HELPER" prepare \
   --operation modify \
   --input "$CREATE_OUTPUT" \
   --workspace "$MODIFY_WORKSPACE" \
   --cli "$CLI")"
 assert_json "$MODIFY_PREPARE" 'data["ok"] is True and data["status"] == "prepared" and data["operation"] == "modify" and data["base"]["pet_id"] == "pet_portablefixture"'
 
-python3 -B - "$MODIFY_WORKSPACE/petpack-source" <<'PY'
+"$PET_MAKER_PYTHON" -B - "$MODIFY_WORKSPACE/petpack-source" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -422,19 +487,28 @@ with session.open("a", encoding="utf-8") as handle:
     )
 PY
 
-MODIFY_FINALIZE="$(python3 -B "$HELPER" finalize \
+MODIFY_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
+  --workspace "$MODIFY_WORKSPACE")"
+assert_json "$MODIFY_MOTION_QA" 'data["status"] == "completed" and data["audited_states"] == ["tool"]'
+
+MODIFY_MOTION_REVIEW="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
+  --workspace "$MODIFY_WORKSPACE" \
+  --state-note "tool=Revised tool motion preserves the body anchor and keeps the prop continuous.")"
+assert_json "$MODIFY_MOTION_REVIEW" 'data["status"] == "completed" and data["audited_states"] == ["tool"]'
+
+MODIFY_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --operation modify \
   --workspace "$MODIFY_WORKSPACE" \
   --changed-state tool \
   --output "$MODIFY_OUTPUT" \
   --result "$MODIFY_RESULT" \
   --cli "$CLI")"
-assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True'
+assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True and data["motion_quality"]["human_reviewed"] is True and data["motion_quality"]["audited_states"] == ["tool"]'
 
 MODIFY_VALIDATION="$("$CLI" petpack validate "$MODIFY_OUTPUT")"
 assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
 
-python3 -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
+"$PET_MAKER_PYTHON" -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
 import hashlib
 import sys
 import zipfile
@@ -482,7 +556,7 @@ assert_json "$HEALTH" 'data["ok"] is True'
 "$CLI" behavior set-json --value-json '{"enabled":false}' >/dev/null
 
 INSTALL_RESULT="$TMP_DIR/portable-fixture.install-result.json"
-INSTALL="$(python3 -B "$HELPER" install \
+INSTALL="$("$PET_MAKER_PYTHON" -B "$HELPER" install \
   --input "$MODIFY_OUTPUT" \
   --activate \
   --result "$INSTALL_RESULT" \

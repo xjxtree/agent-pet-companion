@@ -39,7 +39,7 @@ struct AIPetMakerView: View {
             }
         }
         .toolbar {
-            ToolbarItemGroup(placement: .secondaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 toolbarActions
             }
         }

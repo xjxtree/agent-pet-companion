@@ -1396,7 +1396,11 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         // A successful command-buffer completion only means the GPU work
         // finished. Publish from the drawable's presented callback so pointer
         // geometry follows the frame that actually reached the display.
-        drawable.addPresentedHandler { [weak self] presentedDrawable in
+        // Keep this explicitly Sendable instead of relying on the SDK import.
+        // The macOS 15 release SDK does not annotate this callback, so an
+        // unannotated closure inherits MainActor here and traps when
+        // CoreAnimation invokes it on CAMetalLayerEventListenerQueue.
+        drawable.addPresentedHandler { @Sendable [weak self] presentedDrawable in
             self?.enqueueFramePresentationResolution(
                 presentedDrawable.presentedTime > 0
                     ? .presented(presentedFrameHitTest)

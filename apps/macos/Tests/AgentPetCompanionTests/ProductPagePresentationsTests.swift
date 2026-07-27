@@ -286,6 +286,7 @@ struct ProductPagePresentationsTests {
                 mappedInformation: [],
                 privacyExclusions: [],
                 repairableConnectorIssue: repairable,
+                canRepairManagedConnector: conflict == false,
                 managedPathConflict: conflict,
                 canUninstallManagedConnector: false
             )

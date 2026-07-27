@@ -790,21 +790,56 @@ struct AdvancedDetailsDisclosure<Content: View>: View {
 
     var body: some View {
         ProductCardSurface(padding: SharedProductComponentLayout.compactPadding) {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                content
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 10)
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.headline)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let summary {
-                        Text(summary)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isExpanded.toggle()
                     }
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .frame(width: 12, height: 20)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(title)
+                                .font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let summary {
+                                Text(summary)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(APCLocalization.text(
+                    isExpanded ? .commonExpanded : .commonCollapsed
+                ))
+                .accessibilityHint(APCLocalization.text(
+                    isExpanded
+                        ? .commonCollapseDisclosureHint
+                        : .commonExpandDisclosureHint
+                ))
+
+                if isExpanded {
+                    Divider()
+                        .padding(.top, 10)
+
+                    content
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 10)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }

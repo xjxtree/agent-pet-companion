@@ -163,7 +163,12 @@ while IFS= read -r request; do
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"thread":{{"id":"{thread_id}","sessionId":"{thread_id}","ephemeral":false,"status":{{"type":"idle"}},"cwd":"/tmp","turns":[{{"id":"turn_fake_pet_studio","status":"completed"}}]}},"model":"fake-model","modelProvider":"fake","cwd":"/tmp","approvalPolicy":"never","sandbox":{{"type":"readOnly"}}}}}}'
       ;;
     *turn/start*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"turn":{{"id":"turn_fake_pet_studio","items":[],"itemsView":"notLoaded","status":"inProgress","error":null}}}}}}'
+      request_id="${{request#*\"id\":}}"
+      request_id="${{request_id%%,*}}"
+      case "$request_id" in
+        ''|*[!0-9]*) request_id=3 ;;
+      esac
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$request_id"',"result":{{"turn":{{"id":"turn_fake_pet_studio","items":[],"itemsView":"notLoaded","status":"inProgress","error":null}}}}}}'
       printf '%s\n' '{{"method":"turn/started","params":{{"threadId":"{thread_id}","turn":{{"id":"turn_fake_pet_studio","status":"inProgress"}}}}}}'
       printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"{thread_id}","turnId":"turn_fake_pet_studio","itemId":"msg_fake","delta":"{{\"name\":\"AI 云袖\",\"visual_brief\":\"AI brief\",\"palette\":[\"pearl\",\"ink\",\"cyan\"],\"states\":[{{\"name\":\"idle\",\"motion\":\"breathing\"}}],\"render_notes\":\"transparent PNG\"}}"}}}}'
       if [ -n "${{APC_FAKE_APP_SERVER_WAIT_FILE:-}}" ]; then
@@ -172,6 +177,7 @@ while IFS= read -r request; do
         done
       fi
       printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"{thread_id}","turnId":"turn_fake_pet_studio","item":{{"type":"agentMessage","id":"msg_fake","text":"{{\"name\":\"AI 云袖\",\"visual_brief\":\"AI brief\",\"palette\":[\"pearl\",\"ink\",\"cyan\"],\"states\":[{{\"name\":\"idle\",\"motion\":\"breathing\"}}],\"render_notes\":\"transparent PNG\"}}","phase":"final_answer"}}}}}}'
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{thread_id}","turn":{{"id":"turn_fake_pet_studio","status":"completed"}}}}}}'
       ;;
   esac
 done
@@ -210,6 +216,7 @@ while IFS= read -r request; do
       else
         printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"{thread_id}","turnId":"turn_fake_pet_studio","item":{{"type":"agentMessage","id":"msg_fake","text":"{{\"needs_input\":true,\"question\":\"请补充这个桌宠的主体外观。\"}}","phase":"final_answer"}}}}}}'
       fi
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{thread_id}","turn":{{"id":"turn_fake_pet_studio","status":"completed"}}}}}}'
       ;;
   esac
 done
@@ -2976,10 +2983,9 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
         .unwrap();
         let failed = messages.as_array().unwrap().iter().any(|message| {
             message["kind"].as_str() == Some("generation_failed")
-                && message["content"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("external full source mode")
+                && message["content"].as_str().unwrap_or("").contains(
+                    "external full source remained incomplete after 6 bounded checkpoint turns",
+                )
         });
         if failed {
             break messages;
@@ -2997,7 +3003,13 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
             && message["content"]
                 .as_str()
                 .unwrap_or("")
-                .contains("不会使用内置 Pet Studio materializer")
+                .contains("external full source remained incomplete")
+    }));
+    assert!(!messages.as_array().unwrap().iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("内置 Pet Studio Skill 写出完整 petpack-source")
     }));
     let source_dir = state.paths.jobs_dir.join(job_id).join("petpack-source");
     assert!(!source_dir.join("manifest.json").exists());
@@ -3695,7 +3707,9 @@ fn generation_waits_for_user_input_and_resumes_after_reply() {
                 .contains("粉白长裙")
     }));
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // The resumed turn still performs a full seven-state materialization. It can
+    // share the runner with other image-heavy integration tests.
+    let deadline = Instant::now() + Duration::from_secs(240);
     loop {
         let messages = handle_request(
             &state,
@@ -3831,7 +3845,9 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
             .join("input/references/reference-00.png"),
     );
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Full seven-state materialization decodes and repacks every animation while
+    // other image-heavy integration tests may be running on the same host.
+    let deadline = Instant::now() + Duration::from_secs(240);
     loop {
         let messages = handle_request(
             &state,
@@ -3949,7 +3965,13 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
         message["content"]
             .as_str()
             .unwrap()
-            .contains("已收到 Codex 回复")
+            .contains("已收到 Codex 阶段性回复")
+    }));
+    assert!(final_items.iter().any(|message| {
+        message["content"]
+            .as_str()
+            .unwrap()
+            .contains("Codex turn 已完成")
     }));
     assert!(final_items.iter().any(|message| {
         message["content"]
@@ -4210,9 +4232,10 @@ fn generation_imports_codex_skill_petpack_source_when_present() {
     std::fs::write(&wait_file, "ok").unwrap();
 
     // A strict skill-full-source import decodes every PNG and the animated
-    // preview before publishing. Keep enough debug-build headroom to test the
-    // result instead of racing the validation work.
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // preview before publishing. A standalone debug import is close to two
+    // minutes on the largest supported fixture, so retain real headroom when
+    // the full suite concurrently validates both bundled petpacks.
+    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         let messages = handle_request(
             &state,

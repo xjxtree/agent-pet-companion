@@ -20,6 +20,7 @@ struct AgentConnectionStatusTests {
         #expect(status.capabilities.auditedEvents.isEmpty)
         #expect(status.capabilities.subscribedEvents.isEmpty)
         #expect(status.capabilities.repairableConnectorIssue == nil)
+        #expect(status.capabilities.canRepairManagedConnector == nil)
         #expect(status.capabilities.managedPathConflict == nil)
         #expect(status.capabilities.canUninstallManagedConnector == nil)
     }
@@ -51,6 +52,7 @@ struct AgentConnectionStatusTests {
                 "mapped_information": ["会话生命周期", "工具名称与执行状态"],
                 "privacy_exclusions": ["工具输入与输出", "认证信息"],
                 "repairable_connector_issue": true,
+                "can_repair_managed_connector": true,
                 "managed_path_conflict": false,
                 "can_uninstall_managed_connector": true
               }
@@ -73,9 +75,11 @@ struct AgentConnectionStatusTests {
         #expect(status.capabilities.mappedInformation == ["会话生命周期", "工具名称与执行状态"])
         #expect(status.capabilities.privacyExclusions == ["工具输入与输出", "认证信息"])
         #expect(status.capabilities.repairableConnectorIssue == true)
+        #expect(status.capabilities.canRepairManagedConnector == true)
         #expect(status.capabilities.managedPathConflict == false)
         #expect(status.capabilities.canUninstallManagedConnector == true)
         #expect(status.hasRepairableConnectorIssue)
+        #expect(status.canRepairManagedConnector)
         #expect(!status.hasManagedPathConflict)
         #expect(status.canUninstallManagedConnector)
         #expect(status.capabilities.hasReportedCapabilities)
@@ -102,6 +106,7 @@ struct AgentConnectionStatusTests {
                 mappedInformation: ["会话状态"],
                 privacyExclusions: ["工具输出"],
                 repairableConnectorIssue: false,
+                canRepairManagedConnector: false,
                 managedPathConflict: true,
                 canUninstallManagedConnector: false
             )
@@ -120,6 +125,7 @@ struct AgentConnectionStatusTests {
         #expect((capabilities["audited_events"] as? [String]) == ["session_start", "context"])
         #expect((capabilities["subscribed_events"] as? [String]) == ["session_start"])
         #expect(capabilities["repairable_connector_issue"] as? Bool == false)
+        #expect(capabilities["can_repair_managed_connector"] as? Bool == false)
         #expect(capabilities["managed_path_conflict"] as? Bool == true)
         #expect(capabilities["can_uninstall_managed_connector"] as? Bool == false)
     }
@@ -256,6 +262,7 @@ struct AgentConnectionStatusTests {
                 mappedInformation: [],
                 privacyExclusions: [],
                 repairableConnectorIssue: true,
+                canRepairManagedConnector: true,
                 managedPathConflict: true,
                 canUninstallManagedConnector: true
             )
@@ -279,6 +286,7 @@ struct AgentConnectionStatusTests {
                 mappedInformation: [],
                 privacyExclusions: [],
                 repairableConnectorIssue: true,
+                canRepairManagedConnector: true,
                 managedPathConflict: nil,
                 canUninstallManagedConnector: true
             )
@@ -308,6 +316,7 @@ struct AgentConnectionStatusTests {
                     mappedInformation: [],
                     privacyExclusions: [],
                     repairableConnectorIssue: false,
+                    canRepairManagedConnector: true,
                     managedPathConflict: false,
                     canUninstallManagedConnector: true
                 )

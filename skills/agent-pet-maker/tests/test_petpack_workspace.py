@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -521,6 +522,46 @@ class MetadataContractTests(unittest.TestCase):
                 workspace_helper.verify_image_codecs()
         self.assertEqual(raised.exception.code, "capability_missing")
 
+    def test_pillow_runtime_locator_uses_only_a_verified_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-python-") as temporary:
+            missing = Path(temporary) / "missing-python"
+            verified = Path(temporary) / "python3.12"
+            verified.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            verified.chmod(0o755)
+            with mock.patch.object(
+                workspace_helper,
+                "pillow_python_candidates",
+                return_value=[missing, verified],
+            ), mock.patch.object(
+                workspace_helper,
+                "interpreter_has_pillow",
+                side_effect=lambda candidate: candidate == verified.resolve(),
+            ):
+                self.assertEqual(
+                    workspace_helper.locate_pillow_python(),
+                    verified.resolve(),
+                )
+
+    def test_pillow_runtime_refuses_to_create_a_local_shim(self) -> None:
+        with mock.patch.object(
+            workspace_helper,
+            "current_interpreter_has_pillow",
+            return_value=False,
+        ), mock.patch.object(
+            workspace_helper,
+            "locate_pillow_python",
+            return_value=None,
+        ), mock.patch.dict(
+            os.environ,
+            {workspace_helper.PILLOW_REEXEC_MARKER: ""},
+        ):
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.ensure_pillow_runtime(
+                    "motion-qa",
+                    ["motion-qa", "--source", "petpack-source"],
+                )
+        self.assertEqual(raised.exception.code, "capability_missing")
+
     def test_cli_contract_probe_reaches_petpack_validate(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-cli-contract-") as temporary:
             cli = Path(temporary) / "petcore-cli"
@@ -1013,6 +1054,463 @@ class TimingContractTests(unittest.TestCase):
         )
 
 
+class MotionQualityTests(unittest.TestCase):
+    def make_workspace(self, root: Path) -> tuple[Path, Path]:
+        from PIL import Image, ImageDraw
+
+        workspace = root / "workspace"
+        source = workspace / "petpack-source"
+        control = workspace / ".agent-pet-maker"
+        control.mkdir(parents=True)
+        manifest = {
+            "schema_version": workspace_helper.PETPACK_SCHEMA,
+            "id": "pet_motion_test",
+            "name": "Motion Test",
+            "style": "storybook",
+            "quality": "standard",
+            "render_size": {"width": 32, "height": 32},
+            "native_fps": 10,
+            "states": [
+                {
+                    "name": state,
+                    "frames_dir": f"assets/frames/{state}",
+                    "loop": state not in workspace_helper.ONE_SHOT_STATES,
+                    "duration_ms": 1000,
+                }
+                for state in workspace_helper.STATES
+            ],
+        }
+        (source / "manifest.json").parent.mkdir(parents=True)
+        (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        for state_index, state in enumerate(workspace_helper.STATES):
+            state_dir = source / "assets" / "frames" / state
+            state_dir.mkdir(parents=True)
+            for frame_index in range(10):
+                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(frame)
+                offset = frame_index if state == "start" else frame_index % 3
+                draw.ellipse(
+                    (8 + offset, 7, 22 + offset, 27),
+                    fill=(40 + state_index * 10, 100, 160, 255),
+                )
+                frame.save(state_dir / f"frame-{frame_index:03d}.png")
+        (control / "context.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": workspace_helper.WORKSPACE_SCHEMA,
+                    "operation": "create",
+                    "source_dir": str(source),
+                    "base": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return workspace, source
+
+    def test_motion_qa_writes_in_app_previews_and_bound_review(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, _ = self.make_workspace(Path(temporary))
+            qa = workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    source=None,
+                    output_dir=None,
+                    state=["idle"],
+                )
+            )
+            report_path = Path(qa["report_path"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema_version"], workspace_helper.MOTION_QA_SCHEMA)
+            self.assertEqual(report["audited_states"], ["idle"])
+            preview = report_path.parent / report["states"]["idle"]["previews"]["standard_10_fps"]
+            with Image.open(preview) as decoded:
+                self.assertEqual(decoded.size, workspace_helper.MOTION_PREVIEW_SIZE)
+                self.assertEqual(decoded.n_frames, 10)
+
+            review = workspace_helper.motion_review(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    report=None,
+                    output=None,
+                    state_note=[
+                        "idle=Face and torso stay locked while the small loop returns cleanly."
+                    ],
+                )
+            )
+            self.assertTrue(Path(review["review_path"]).is_file())
+            evidence = workspace_helper.verify_motion_review(
+                workspace,
+                workspace / "petpack-source",
+                json.loads(
+                    (workspace / "petpack-source" / "manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                ["idle"],
+            )
+            self.assertTrue(evidence["human_reviewed"])
+            self.assertEqual(evidence["audited_states"], ["idle"])
+
+    def test_motion_qa_can_audit_one_completed_state_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            for state in workspace_helper.STATES:
+                if state != "tool":
+                    shutil.rmtree(source / "assets" / "frames" / state)
+
+            qa = workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    source=None,
+                    output_dir=None,
+                    state=["tool"],
+                )
+            )
+
+            report = json.loads(Path(qa["report_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(report["audited_states"], ["tool"])
+            self.assertEqual(report["states"]["tool"]["frame_count"], 10)
+
+    def test_motion_qa_rejects_synthetic_crossfade_filler(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "start"
+            first = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+            last = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+            ImageDraw.Draw(first).ellipse(
+                (3, 8, 17, 25),
+                fill=(40, 100, 160, 255),
+            )
+            ImageDraw.Draw(last).ellipse(
+                (14, 8, 28, 25),
+                fill=(220, 100, 80, 255),
+            )
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index in range(10):
+                Image.blend(first, last, index / 9).save(
+                    state_dir / f"frame-{index:03d}.png"
+                )
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=["start"],
+                    )
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                "invalid_frame_interpolation",
+            )
+            self.assertIn("crossfade", raised.exception.message)
+
+    def test_motion_qa_rejects_whole_subject_scale_and_anchor_pop(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "start"
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index in range(10):
+                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                if index == 5:
+                    bounds = (10, 14, 22, 28)
+                else:
+                    offset = index % 2
+                    bounds = (5 + offset, 7, 26 + offset, 30)
+                ImageDraw.Draw(frame).rounded_rectangle(
+                    bounds,
+                    radius=3,
+                    fill=(40 + index, 100, 160, 255),
+                )
+                frame.save(state_dir / f"frame-{index:03d}.png")
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=["start"],
+                    )
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                "invalid_motion_registration",
+            )
+            self.assertIn("fixed cell bounds", raised.exception.message)
+
+    def test_motion_qa_rejects_action_clipped_at_runtime_frame_edge(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "start"
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index in range(10):
+                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(frame)
+                draw.rounded_rectangle(
+                    (8, 6, 31, 27),
+                    radius=4,
+                    fill=(70, 140, 220, 255),
+                )
+                draw.ellipse(
+                    (11 + index % 3, 11, 15 + index % 3, 15),
+                    fill=(245, 210, 80, 255),
+                )
+                frame.save(state_dir / f"frame-{index:03d}.png")
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=["start"],
+                    )
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                "invalid_motion_registration",
+            )
+            self.assertIn("action is clipped", raised.exception.message)
+            self.assertIn("transparent pixel", raised.exception.message)
+
+    def test_motion_qa_rejects_disappearing_attachment_and_broken_loop(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "waiting"
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index in range(10):
+                frame = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(frame)
+                draw.rounded_rectangle(
+                    (18, 10, 44, 54),
+                    radius=6,
+                    fill=(80, 150, 220, 255),
+                )
+                if index < 5:
+                    draw.rounded_rectangle(
+                        (45, 31, 61, 39),
+                        radius=4,
+                        fill=(80, 150, 220, 255),
+                    )
+                frame.save(state_dir / f"frame-{index:03d}.png")
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=["waiting"],
+                    )
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                "invalid_motion_registration",
+            )
+            self.assertIn("tail", raised.exception.message)
+            self.assertIn("loop closure", raised.exception.message)
+
+    def test_motion_registration_allows_an_authored_one_shot_height_change(self) -> None:
+        metrics = {
+            "maximum_bbox_width_step": 0.026,
+            "maximum_bbox_height_step": 0.1394,
+            "maximum_visible_area_step_ratio": 0.1779,
+            "maximum_centroid_step": 0.0758,
+            "maximum_baseline_step": 0.0096,
+            "loop_seam_delta": None,
+            "adjacent_delta": {"median": 0.056737},
+        }
+
+        workspace_helper.reject_severe_motion_registration("done", metrics)
+
+    def test_motion_lock_preserves_explicit_non_moving_pixels(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            _, source = self.make_workspace(Path(temporary))
+            moving_mask = Image.new("L", (32, 32), 0)
+            ImageDraw.Draw(moving_mask).rectangle((0, 0, 31, 15), fill=255)
+            mask_path = Path(temporary) / "start-moving-mask.png"
+            moving_mask.save(mask_path)
+            output_dir = Path(temporary) / "locked-start"
+
+            result = workspace_helper.motion_lock(
+                workspace_helper.argparse.Namespace(
+                    source=str(source),
+                    state="start",
+                    moving_mask=str(mask_path),
+                    output_dir=str(output_dir),
+                    report=None,
+                    reference_frame=0,
+                    feather_px=0,
+                )
+            )
+
+            self.assertEqual(result["frame_count"], 10)
+            with Image.open(
+                source / "assets" / "frames" / "start" / "frame-000.png"
+            ) as reference, Image.open(
+                source / "assets" / "frames" / "start" / "frame-005.png"
+            ) as original, Image.open(
+                output_dir / "frame-005.png"
+            ) as locked:
+                self.assertEqual(locked.getpixel((13, 24)), reference.getpixel((13, 24)))
+                self.assertNotEqual(locked.getpixel((13, 10)), reference.getpixel((13, 10)))
+                self.assertEqual(locked.getpixel((13, 10)), original.getpixel((13, 10)))
+            report = json.loads(
+                Path(result["report_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["schema_version"], workspace_helper.MOTION_LOCK_SCHEMA
+            )
+            self.assertTrue(report["review_required"])
+
+    def test_motion_lock_can_stabilize_a_local_action_without_unlocking_the_body(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            _, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "start"
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index in range(10):
+                frame = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+                bounds = (4, 5, 27, 30) if index != 5 else (9, 11, 22, 27)
+                ImageDraw.Draw(frame).rounded_rectangle(
+                    bounds,
+                    radius=4,
+                    fill=(40, 100, 160, 255),
+                )
+                ImageDraw.Draw(frame).rectangle(
+                    (13, 12, 18, 17),
+                    fill=(220, 120 + index, 80, 255),
+                )
+                frame.save(state_dir / f"frame-{index:03d}.png")
+
+            mask = Image.new("L", (32, 32), 0)
+            ImageDraw.Draw(mask).rectangle((12, 11, 19, 18), fill=255)
+            mask_path = Path(temporary) / "local-action-mask.png"
+            mask.save(mask_path)
+            output_dir = Path(temporary) / "locked-local-action"
+
+            workspace_helper.motion_lock(
+                workspace_helper.argparse.Namespace(
+                    source=str(source),
+                    state="start",
+                    moving_mask=str(mask_path),
+                    output_dir=str(output_dir),
+                    report=None,
+                    reference_frame=0,
+                    feather_px=0,
+                )
+            )
+
+            frames = [
+                workspace_helper.normalized_motion_frame(path)
+                for path in sorted(output_dir.glob("*.png"))
+            ]
+            metrics, _ = workspace_helper.motion_metrics(frames, False)
+            workspace_helper.reject_severe_motion_registration("start", metrics)
+            self.assertLess(metrics["maximum_bbox_width_step"], 0.12)
+            self.assertLess(metrics["maximum_bbox_height_step"], 0.12)
+
+    def test_motion_review_requires_a_note_for_every_audited_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, _ = self.make_workspace(Path(temporary))
+            workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    source=None,
+                    output_dir=None,
+                    state=["idle", "tool"],
+                )
+            )
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_review(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        report=None,
+                        output=None,
+                        state_note=[
+                            "idle=The idle loop keeps the face and baseline stable throughout."
+                        ],
+                    )
+                )
+            self.assertEqual(raised.exception.code, "motion_review_incomplete")
+
+    def test_frame_edit_after_review_is_rejected_as_stale(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    source=None,
+                    output_dir=None,
+                    state=["idle"],
+                )
+            )
+            workspace_helper.motion_review(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    report=None,
+                    output=None,
+                    state_note=[
+                        "idle=The inspected body remains stable and the loop seam is clean."
+                    ],
+                )
+            )
+            changed = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+            ImageDraw.Draw(changed).rectangle(
+                (2, 2, 28, 30),
+                fill=(220, 40, 80, 255),
+            )
+            changed.save(source / "assets" / "frames" / "idle" / "frame-004.png")
+            manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.verify_motion_review(
+                    workspace,
+                    source,
+                    manifest,
+                    ["idle"],
+                )
+            self.assertEqual(raised.exception.code, "stale_motion_qa")
+
+    def test_finalize_reports_missing_motion_qa_as_a_specific_gate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.verify_motion_review(
+                    workspace,
+                    source,
+                    manifest,
+                    ["idle"],
+                )
+            self.assertEqual(raised.exception.code, "motion_qa_required")
+
+
 class FinalizeSafetyTests(unittest.TestCase):
     def make_finalize_case(self, root: Path) -> tuple[Path, object]:
         workspace = root / "workspace"
@@ -1086,6 +1584,17 @@ class FinalizeSafetyTests(unittest.TestCase):
             mock.patch.object(workspace_helper, "validate_text_metadata"),
             mock.patch.object(workspace_helper, "validate_session"),
             mock.patch.object(workspace_helper, "append_session_event"),
+            mock.patch.object(
+                workspace_helper,
+                "verify_motion_review",
+                return_value={
+                    "human_reviewed": True,
+                    "audited_states": list(workspace_helper.STATES),
+                    "report_path": "/motion/report.json",
+                    "review_path": "/motion/review.json",
+                    "warning_codes": [],
+                },
+            ),
         )
 
     def test_finalize_rejects_a_result_sidecar_symlink(self) -> None:
@@ -1120,7 +1629,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                 return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
                 workspace_helper, "run_cli", side_effect=fail_build
             ):
                 with self.assertRaises(workspace_helper.MakerError):
@@ -1151,7 +1660,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                 return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
                 workspace_helper, "run_cli", side_effect=reject_staged
             ):
                 with self.assertRaises(workspace_helper.MakerError):
@@ -1206,7 +1715,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                 return {"ok": True, "frame_count": 120, "warnings": []}
 
             patches = self.finalize_patches()
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], mock.patch.object(
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
                 workspace_helper, "run_cli", side_effect=successful_cli
             ):
                 result = workspace_helper.finalize(args)

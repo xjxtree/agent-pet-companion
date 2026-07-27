@@ -83,6 +83,7 @@ pub struct PetAssetValidationOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum BundledPetSeedStatus {
     Installed,
+    InstalledNewRevision,
     PreservedExistingId,
 }
 
@@ -107,12 +108,12 @@ const BUNDLED_PET_DESCRIPTORS: [BundledPetDescriptor; 2] = [
     BundledPetDescriptor {
         file_name: "pet_xingwutuanzi.petpack",
         pet_id: "pet_xingwutuanzi",
-        sha256: "9a67254a1ee3f1a2afd599f376fd0cc0ee9935e137426924a99c20a24bdb49c2",
+        sha256: "886988991cc8c40a0fdc0a997430474de28c0c26ddf83df428cae3db06307864",
     },
     BundledPetDescriptor {
         file_name: "pet_bytebudcodex.petpack",
         pet_id: "pet_bytebudcodex",
-        sha256: "a0b64b46054ed5a73abeefc7c0f734cfaa2d92878f5c097ca85bdcb06d547d6f",
+        sha256: "b936e8bda84a7a6d140b8f7629a7c111b07e4d78b0674bdc1e24eee0c8bd2d3d",
     },
 ];
 
@@ -126,6 +127,13 @@ struct ValidatedBundledPet {
 enum ImportIdentityPolicy {
     PackageDeclared(PetOrigin),
     BundledInventory,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExistingIdPolicy {
+    ExpectAbsent,
+    AppendNonBundledRevision,
+    AppendTrustedBundledRevision,
 }
 
 /// Returns true only for an identity that PetCore itself can assign while
@@ -2090,24 +2098,27 @@ fn write_petpack_zip(input_dir: &Path, output_path: &Path) -> Result<PetpackVali
     Ok(validation)
 }
 
-/// Installs the two release-bundled pets without replacing any logical pet
-/// already present under the same stable manifest ID.
+/// Converges the two release-bundled pets without overwriting any immutable
+/// revision or claiming an ordinary same-ID pet as bundled.
 ///
 /// Names are deliberately not part of conflict resolution. A user pet with
 /// the same display name and a different ID remains visible beside the
-/// bundled pet; an existing matching ID always wins and is left byte-for-byte
-/// untouched. Re-running this function is therefore deterministic and safe on
-/// first launch, upgrade, and App bootstrap against an already healthy daemon.
+/// bundled pet. An ordinary existing matching ID always wins and is left
+/// byte-for-byte untouched. An identity already assigned by the trusted
+/// bundled inventory advances to a new immutable revision only when its active
+/// archive digest differs from the current content-pinned release resource.
+/// Re-running this function is therefore deterministic and safe on first
+/// launch, upgrade, and App bootstrap against an already healthy daemon.
 pub fn seed_bundled_pet_inventory(
     paths: &AppPaths,
     database: &Database,
     inventory_root: &Path,
 ) -> Result<Vec<BundledPetSeedOutcome>> {
-    // The steady-state App launch must not unzip and decode both packages.
-    // While holding the same mutation lock used by imports/deletes, first
-    // establish whether both stable IDs already exist. No resource bytes are
-    // trusted or written on this fast path, so validating the bundle again
-    // would add latency without improving conflict safety.
+    // The steady-state App launch must not unzip and decode both resources.
+    // Hash only active, structurally owned archives that already carry trusted
+    // bundled identity. If they match the pinned release digests, the App
+    // resource directory is not read at all. Ordinary same-ID pets need no
+    // digest comparison because seeding must preserve them byte-for-byte.
     {
         let _store_guard = PetStoreGuard::acquire(paths)?;
         let existing = BUNDLED_PET_DESCRIPTORS
@@ -2118,7 +2129,24 @@ pub fn seed_bundled_pet_inventory(
                     .map(|pet| (descriptor, pet))
             })
             .collect::<Result<Vec<_>>>()?;
-        if existing.iter().all(|(_, pet)| pet.is_some()) {
+        let mut converged = true;
+        for (descriptor, pet) in &existing {
+            match pet {
+                None => {
+                    converged = false;
+                    break;
+                }
+                Some(pet)
+                    if is_bundled_pet(pet)
+                        && !installed_bundled_pet_matches_descriptor(paths, pet, **descriptor)? =>
+                {
+                    converged = false;
+                    break;
+                }
+                Some(_) => {}
+            }
+        }
+        if converged {
             return Ok(existing
                 .into_iter()
                 .filter_map(|(descriptor, pet)| pet.map(|pet| (descriptor, pet)))
@@ -2137,10 +2165,30 @@ pub fn seed_bundled_pet_inventory(
 
     for item in inventory {
         if let Some(existing) = database.get_pet(item.descriptor.pet_id)? {
+            if !is_bundled_pet(&existing)
+                || installed_bundled_pet_matches_descriptor(paths, &existing, item.descriptor)?
+            {
+                outcomes.push(BundledPetSeedOutcome {
+                    pet_id: item.descriptor.pet_id.to_string(),
+                    status: BundledPetSeedStatus::PreservedExistingId,
+                    pet: existing,
+                });
+                continue;
+            }
+
+            let pet = import_petpack_with_origin_policy_guarded(
+                paths,
+                database,
+                &item.path,
+                ImportIdentityPolicy::BundledInventory,
+                ExistingIdPolicy::AppendTrustedBundledRevision,
+                Some(item.expected_digest),
+                &store_guard,
+            )?;
             outcomes.push(BundledPetSeedOutcome {
                 pet_id: item.descriptor.pet_id.to_string(),
-                status: BundledPetSeedStatus::PreservedExistingId,
-                pet: existing,
+                status: BundledPetSeedStatus::InstalledNewRevision,
+                pet,
             });
             continue;
         }
@@ -2150,7 +2198,7 @@ pub fn seed_bundled_pet_inventory(
             database,
             &item.path,
             ImportIdentityPolicy::BundledInventory,
-            false,
+            ExistingIdPolicy::ExpectAbsent,
             Some(item.expected_digest),
             &store_guard,
         )?;
@@ -2162,6 +2210,31 @@ pub fn seed_bundled_pet_inventory(
     }
 
     Ok(outcomes)
+}
+
+fn installed_bundled_pet_matches_descriptor(
+    paths: &AppPaths,
+    pet: &PetSummary,
+    descriptor: BundledPetDescriptor,
+) -> Result<bool> {
+    if !is_bundled_pet(pet) || revision_pet_root(paths, pet)?.is_none() {
+        return Ok(false);
+    }
+
+    let package_path = Path::new(&pet.petpack_path);
+    let metadata = match fs::symlink_metadata(package_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_file()
+        || metadata.nlink() != 1
+        || metadata.len() > MAX_PETPACK_ARCHIVE_BYTES
+    {
+        return Ok(false);
+    }
+
+    Ok(hex::encode(sha256_file(package_path)?) == descriptor.sha256)
 }
 
 fn validate_bundled_pet_inventory(inventory_root: &Path) -> Result<Vec<ValidatedBundledPet>> {
@@ -2266,7 +2339,7 @@ pub fn import_petpack_expecting_absent(
         database,
         source_path,
         ImportIdentityPolicy::PackageDeclared(PetOrigin::ExternalImport),
-        false,
+        ExistingIdPolicy::ExpectAbsent,
         None,
         &store_guard,
     )
@@ -2298,7 +2371,7 @@ pub(crate) fn import_petpack_with_origin_guarded(
         database,
         source_path,
         ImportIdentityPolicy::PackageDeclared(origin),
-        true,
+        ExistingIdPolicy::AppendNonBundledRevision,
         None,
         store_guard,
     )
@@ -2309,10 +2382,31 @@ fn import_petpack_with_origin_policy_guarded(
     database: &Database,
     source_path: &Path,
     identity_policy: ImportIdentityPolicy,
-    allow_existing_id_revision: bool,
+    existing_id_policy: ExistingIdPolicy,
     expected_source_digest: Option<[u8; 32]>,
     _store_guard: &PetStoreGuard,
 ) -> Result<PetSummary> {
+    let valid_policy_pair = matches!(
+        (identity_policy, existing_id_policy),
+        (
+            ImportIdentityPolicy::PackageDeclared(_),
+            ExistingIdPolicy::ExpectAbsent | ExistingIdPolicy::AppendNonBundledRevision
+        ) | (
+            ImportIdentityPolicy::BundledInventory,
+            ExistingIdPolicy::ExpectAbsent | ExistingIdPolicy::AppendTrustedBundledRevision
+        )
+    );
+    let valid_digest_policy = matches!(
+        (identity_policy, expected_source_digest),
+        (ImportIdentityPolicy::PackageDeclared(_), None)
+            | (ImportIdentityPolicy::BundledInventory, Some(_))
+    );
+    if !valid_policy_pair || !valid_digest_policy {
+        return Err(PetCoreError::Validation(
+            "invalid internal pet import identity policy".to_string(),
+        ));
+    }
+
     let prepared = prepare_import_assets(paths, source_path, expected_source_digest)?;
     let PreparedImport {
         validation,
@@ -2333,9 +2427,45 @@ fn import_petpack_with_origin_policy_guarded(
         ),
     };
     let existing_pet = database.get_pet(&validation.manifest.id)?;
-    if existing_pet.as_ref().is_some_and(is_bundled_pet) {
+    if let Some(existing) = existing_pet.as_ref() {
+        let appending_trusted_bundled_revision = matches!(
+            (identity_policy, existing_id_policy, expected_source_digest),
+            (
+                ImportIdentityPolicy::BundledInventory,
+                ExistingIdPolicy::AppendTrustedBundledRevision,
+                Some(_)
+            )
+        ) && is_bundled_pet(existing);
+        if is_bundled_pet(existing) && !appending_trusted_bundled_revision {
+            return Err(PetCoreError::Conflict(format!(
+                "bundled pet id is read-only: {}",
+                validation.manifest.id
+            )));
+        }
+        match existing_id_policy {
+            ExistingIdPolicy::ExpectAbsent => {
+                return Err(PetCoreError::Conflict(format!(
+                    "pet id already exists: {}",
+                    validation.manifest.id
+                )));
+            }
+            ExistingIdPolicy::AppendNonBundledRevision => {}
+            ExistingIdPolicy::AppendTrustedBundledRevision
+                if !appending_trusted_bundled_revision =>
+            {
+                return Err(PetCoreError::Conflict(format!(
+                    "existing pet id is not trusted bundled inventory: {}",
+                    validation.manifest.id
+                )));
+            }
+            ExistingIdPolicy::AppendTrustedBundledRevision => {}
+        }
+    } else if matches!(
+        existing_id_policy,
+        ExistingIdPolicy::AppendTrustedBundledRevision
+    ) {
         return Err(PetCoreError::Conflict(format!(
-            "bundled pet id is read-only: {}",
+            "bundled pet revision no longer exists: {}",
             validation.manifest.id
         )));
     }
@@ -2363,12 +2493,6 @@ fn import_petpack_with_origin_policy_guarded(
         return Err(PetCoreError::Validation(
             "bundled pet identity marker is reserved for the App release inventory".to_string(),
         ));
-    }
-    if existing_pet.is_some() && !allow_existing_id_revision {
-        return Err(PetCoreError::Conflict(format!(
-            "pet id already exists: {}",
-            validation.manifest.id
-        )));
     }
     let was_active = existing_pet.as_ref().is_some_and(|pet| pet.active);
     let pet = PetSummary {

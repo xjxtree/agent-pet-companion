@@ -10,6 +10,7 @@ struct OnboardingView: View {
     @State private var demoSequence = OnboardingDemoSequence()
     @State private var demoRunID = 0
     @State private var pendingRepairSource: AgentSource?
+    @State private var confirmingRepairAll = false
 
     private var progress: OnboardingProgress {
         store.onboarding?.progress ?? OnboardingProgress()
@@ -120,6 +121,23 @@ struct OnboardingView: View {
             }
         } message: {
             Text(APCLocalization.text(.onboardingRepairConfirmationDetail))
+        }
+        .confirmationDialog(
+            APCLocalization.text(.connectionsConfirmRepairAll),
+            isPresented: $confirmingRepairAll,
+            titleVisibility: .visible
+        ) {
+            Button(APCLocalization.format(
+                .connectionsRepairCountFormat,
+                repairableSources.count
+            )) {
+                confirmRepairAll()
+            }
+            Button(APCLocalization.text(.commonCancel), role: .cancel) {}
+        } message: {
+            Text(AgentConnectionsPresentation.managedRepairConfirmationMessage(
+                for: repairableStatuses
+            ))
         }
     }
 
@@ -378,6 +396,34 @@ struct OnboardingView: View {
                         Text(APCLocalization.text(.onboardingNoAgentsDetail))
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !repairableSources.isEmpty {
+                    HStack {
+                        Spacer()
+                        Button {
+                            confirmingRepairAll = true
+                        } label: {
+                            Label(
+                                APCLocalization.text(.connectionsRepairAll),
+                                systemImage: "wand.and.stars"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(
+                            !store.canStartConnectionOperation
+                                || store.onboardingMutationInFlight
+                        )
+                        .accessibilityHint(APCLocalization.text(
+                            store.canStartConnectionOperation
+                                && !store.onboardingMutationInFlight
+                                ? .connectionsPrimaryRepairHint
+                                : .connectionsBusyHint
+                        ))
+                        .accessibilityIdentifier(
+                            "onboarding.connections.setup-all"
+                        )
                     }
                 }
 
@@ -705,6 +751,26 @@ struct OnboardingView: View {
               current.primaryAction == .connect || current.primaryAction == .repair
         else { return }
         store.repairConnection(source)
+    }
+
+    private func confirmRepairAll() {
+        let sources = repairableSources
+        guard !sources.isEmpty,
+              store.canStartConnectionOperation,
+              !store.onboardingMutationInFlight else {
+            return
+        }
+        store.repairConnections(sources)
+    }
+
+    private var repairableStatuses: [AgentConnectionStatus] {
+        AgentConnectionsPresentation.repairableStatuses(
+            from: store.connections
+        )
+    }
+
+    private var repairableSources: [AgentSource] {
+        repairableStatuses.map(\.source)
     }
 
     private var repairConfirmationPresented: Binding<Bool> {

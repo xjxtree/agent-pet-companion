@@ -286,11 +286,11 @@ root = pathlib.Path(sys.argv[1])
 expected = {
     "pet_xingwutuanzi.petpack": (
         "pet_xingwutuanzi",
-        "9a67254a1ee3f1a2afd599f376fd0cc0ee9935e137426924a99c20a24bdb49c2",
+        "886988991cc8c40a0fdc0a997430474de28c0c26ddf83df428cae3db06307864",
     ),
     "pet_bytebudcodex.petpack": (
         "pet_bytebudcodex",
-        "a0b64b46054ed5a73abeefc7c0f734cfaa2d92878f5c097ca85bdcb06d547d6f",
+        "b936e8bda84a7a6d140b8f7629a7c111b07e4d78b0674bdc1e24eee0c8bd2d3d",
     ),
 }
 for name, (pet_id, digest) in expected.items():

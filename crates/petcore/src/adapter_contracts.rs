@@ -10,8 +10,8 @@ use std::path::Path;
 
 pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-17-schema-v6";
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-17-activity-v5";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v7";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.0-activity-v8";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v8";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v9";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -311,6 +311,9 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
         "agent_settled" => (AgentEventType::Done, "settled", false),
         "session_before_compact" => (AgentEventType::Start, "started", true),
         "session_compact" => (AgentEventType::Start, "completed", true),
+        // Pi publishes a later human-readable session name independently of
+        // the first prompt. Persist it without changing the pet lifecycle.
+        "session_info_changed" => (AgentEventType::Start, "metadata_updated", false),
         "session_shutdown" => (AgentEventType::Done, "session_closed", false),
         "connector.probe" => (AgentEventType::Start, "observed", false),
         _ => return Ok(None),
@@ -326,7 +329,7 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
     );
     contract.turn_id = bounded_string_at(input, &[&["turn_id"], &["turnId"]], MAX_IDENTITY_BYTES);
     contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
-    contract.affects_activity = event != "connector.probe";
+    contract.affects_activity = !matches!(event, "connector.probe" | "session_info_changed");
     contract.session_title = session_title(input);
     contract.session_open = Some(event != "session_shutdown");
     contract.activity_kind = match event {
@@ -490,8 +493,9 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         "session.compaction.ended" => (AgentEventType::Start, "completed".to_string(), true),
         "session.plan.updated" => (AgentEventType::Start, "observed".to_string(), true),
         "connector.probe" => (AgentEventType::Start, "observed".to_string(), false),
-        // Metadata-only updates do not prove that work started or completed.
-        "session.updated" => return Ok(None),
+        // OpenCode publishes a generated session title after the first prompt.
+        // Persist the bounded title without changing the pet lifecycle.
+        "session.updated" => (AgentEventType::Start, "metadata_updated".to_string(), false),
         _ => return Ok(None),
     };
 
@@ -552,7 +556,10 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         // remain activity-affecting so it supersedes older work in that same
         // session; canonical projection suppresses close-only sessions that
         // never had a user activation.
-        affects_activity: !matches!(event, "connector.probe" | "session.created"),
+        affects_activity: !matches!(
+            event,
+            "connector.probe" | "session.created" | "session.updated"
+        ),
         session_active,
         turn_id: bounded_string_at(input, &[&["turn_id"], &["turnID"]], MAX_IDENTITY_BYTES),
         message_role,

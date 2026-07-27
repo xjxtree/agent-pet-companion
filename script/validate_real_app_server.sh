@@ -8,13 +8,53 @@ REAL_USER_HOME="${HOME:-}"
 apc_use_isolated_home "$TMP_DIR"
 JOB_ID=""
 PETCORE_PID=""
+ARTIFACTS_PRESERVED=0
+GENERATION_POLL_SECONDS="${APC_REAL_APP_SERVER_POLL_SECONDS:-0.5}"
+GENERATION_POLL_COUNT="${APC_REAL_APP_SERVER_POLL_COUNT:-18600}"
+ARTIFACT_CHECKPOINT_EVERY="${APC_REAL_APP_SERVER_ARTIFACT_CHECKPOINT_EVERY:-600}"
+
+checkpoint_artifacts() {
+  if [[ -z "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]]; then
+    return 0
+  fi
+
+  local artifact_dir="$APC_REAL_APP_SERVER_ARTIFACT_DIR"
+  mkdir -p "$artifact_dir"
+  if [[ -n "$JOB_ID" && -d "$TMP_DIR/home/generation-jobs/$JOB_ID" ]]; then
+    ditto "$TMP_DIR/home/generation-jobs/$JOB_ID" "$artifact_dir/job"
+    APC_HOME="$TMP_DIR/home" \
+      "$ROOT_DIR/target/debug/petcore-cli" generation status \
+      --job-id "$JOB_ID" --include-messages \
+      >"$artifact_dir/in-progress-status.json" 2>/dev/null || true
+  fi
+  if [[ -s "$TMP_DIR/probe.err" ]]; then
+    cp "$TMP_DIR/probe.err" "$artifact_dir/probe.err"
+  fi
+}
+
+preserve_artifacts() {
+  if [[ -z "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]] \
+    || [[ "$ARTIFACTS_PRESERVED" == "1" ]]; then
+    return 0
+  fi
+
+  checkpoint_artifacts
+  ARTIFACTS_PRESERVED=1
+  printf 'Preserved real App Server validation artifacts: %s\n' \
+    "$APC_REAL_APP_SERVER_ARTIFACT_DIR"
+}
 
 cleanup() {
+  local status="$?"
+  if ((status != 0)); then
+    preserve_artifacts || true
+  fi
   if [[ -n "$PETCORE_PID" ]]; then
     kill "$PETCORE_PID" >/dev/null 2>&1 || true
     wait "$PETCORE_PID" >/dev/null 2>&1 || true
   fi
   rm -rf "$TMP_DIR"
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -102,6 +142,30 @@ if reason="$(app_server_skip_reason)"; then
   skip "$reason"
 fi
 
+python3 - "$GENERATION_POLL_SECONDS" "$GENERATION_POLL_COUNT" \
+  "$ARTIFACT_CHECKPOINT_EVERY" <<'PY'
+import sys
+
+try:
+    interval = float(sys.argv[1])
+    count = int(sys.argv[2])
+    checkpoint_every = int(sys.argv[3])
+except ValueError as error:
+    raise SystemExit(
+        "real App Server validation poll settings must be numeric"
+    ) from error
+if interval <= 0 or count <= 0 or checkpoint_every <= 0:
+    raise SystemExit(
+        "real App Server validation poll settings must all be positive"
+    )
+if interval * count < 9_300:
+    raise SystemExit(
+        "real App Server validation must allow at least 155 minutes so its "
+        "acceptance window covers six bounded 25-minute checkpoint turns "
+        "plus final import and validation"
+    )
+PY
+
 if truthy "${APC_VALIDATE_REAL_APP_SERVER:-0}" && [[ -z "${CODEX_APP_SERVER_CMD:-}" ]]; then
   if ! command -v codex >/dev/null 2>&1; then
     fail "APC_VALIDATE_REAL_APP_SERVER is forced but CODEX_APP_SERVER_CMD is unset and codex CLI was not found"
@@ -150,8 +214,11 @@ PY
 )"
 
 REPLIED_TO_INPUT_REQUEST=0
-for _ in {1..1500}; do
+for ((attempt = 0; attempt < GENERATION_POLL_COUNT; attempt += 1)); do
   STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$JOB_ID" --include-messages)"
+  if ((attempt % ARTIFACT_CHECKPOINT_EVERY == 0)); then
+    checkpoint_artifacts
+  fi
   if grep -q '"status"[[:space:]]*:[[:space:]]*"failed"' <<<"$STATUS"; then
     fail "generation job entered failed status"
   fi
@@ -164,7 +231,7 @@ for _ in {1..1500}; do
       --content "主体是一只蓝白云朵猫，圆眼、轻盈尾巴，待机时呼吸漂浮，工具执行时尾巴发光。" >/dev/null
     REPLIED_TO_INPUT_REQUEST=1
   fi
-  sleep 0.5
+  sleep "$GENERATION_POLL_SECONDS"
 done
 
 FINAL_STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$JOB_ID" --include-messages)"
@@ -248,12 +315,11 @@ if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
 fi
 
 if [[ -n "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]]; then
-  ARTIFACT_DIR="$APC_REAL_APP_SERVER_ARTIFACT_DIR"
-  mkdir -p "$ARTIFACT_DIR"
-  ditto "$TMP_DIR/home/generation-jobs/$JOB_ID" "$ARTIFACT_DIR/job"
-  printf '%s\n' "$FINAL_STATUS" >"$ARTIFACT_DIR/final-status.json"
-  printf '%s\n' "$SNAPSHOT" >"$ARTIFACT_DIR/snapshot.json"
-  printf 'Preserved real App Server validation artifacts: %s\n' "$ARTIFACT_DIR"
+  preserve_artifacts
+  printf '%s\n' "$FINAL_STATUS" \
+    >"$APC_REAL_APP_SERVER_ARTIFACT_DIR/final-status.json"
+  printf '%s\n' "$SNAPSHOT" \
+    >"$APC_REAL_APP_SERVER_ARTIFACT_DIR/snapshot.json"
 fi
 
 echo "Real Codex App Server validation ok"

@@ -48,6 +48,11 @@ enum AgentConnectionOperationState: Equatable, Sendable {
         return failure
     }
 
+    var succeededOperation: AgentConnectionOperation? {
+        guard case let .succeeded(operation) = self else { return nil }
+        return operation
+    }
+
     var isRunning: Bool { runningOperation != nil }
 }
 

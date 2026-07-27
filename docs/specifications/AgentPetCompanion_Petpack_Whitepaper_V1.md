@@ -56,7 +56,7 @@ The archive is the portable exchange unit. A directory is only a trusted local b
     └── validation.json
 ```
 
-All listed files and directories are required; `source/references/` may be empty. State directories are flat and may not contain nested directories. Files with a case-insensitive `.png` suffix are frames; other direct files are ignored by the current runtime and therefore must not carry required semantics.
+All listed files and directories are required; `source/references/` may be empty. At the untrusted in-app Skill boundary, PetCore may materialize this empty container only when the submitted form has no reference images; it never uses that normalization to conceal a missing referenced asset. State directories are flat and may not contain nested directories. Files with a case-insensitive `.png` suffix are frames; other direct files are ignored by the current runtime and therefore must not carry required semantics.
 
 The runtime permits unknown root data files except explicit compatibility-package names such as `.codex-plugin`, `hooks`, `skills`, `codex-pet.json`, `codex_pet.json`, and `pet.json`, which are rejected. Conforming producers must not add undeclared root files. Extension data belongs under `extensions/<reverse-dns>/` and remains non-executable data.
 
@@ -126,12 +126,18 @@ The package contract stays technical and exact; the ordinary product UI does not
 ### Producer visual contract
 
 - Frame PNGs have an alpha channel, transparent background, and a visible subject fully inside the canvas.
+- Production begins from one canonical identity lock: silhouette, face landmarks, anatomy/proportions, outfit/accessories, palette, rendering treatment, lighting, scale, baseline, crop, and camera. A state names the parts allowed to move; unrelated regions remain stable.
+- Each state directs exactly one primary action with anticipation, a readable apex, and recovery/settle. A one-second state may not hide a multi-step prop routine behind pose cuts.
+- Frames for one state are generated/edited as a coherent sequence from the canonical base, not independently invented cells. Props preserve shape, orientation, position, and visible contact throughout their lifecycle.
 - Every adjacent authored frame in a full visual source is visually distinct; duplicating a frame does not create a higher native rate or a longer action.
+- The exact timing-derived count is authored as distinct ordered sprite cells. Multiple coherent sheets may sum to that count, but a smaller key-pose storyboard may not be expanded with crossfade, morph, optical flow, transformed duplicates, or procedural interpolation.
 - The seven states may not reuse one identical visual sequence. The strict Studio path requires at least four states to have different first-frame decoded digests.
 - For native 20 FPS output, the 10 FPS sample must remain a coherent action and the additional source frames must be real intermediate motion. Extending a state from one to two seconds requires authored continuation rather than replaying or slowing the original second.
 - `cover.png` identifies the same character without animation; the animated preview may not depict assets absent from the package.
 
-Ordinary runtime import verifies decodability, dimensions, structure, and budgets. It does not certify motion quality, anchor stability, alpha visibility, or cross-state artistic distinction. Do not present a normal import result as Verified visual source evidence.
+Portable finalization and strict external Studio generation render a private 192 × 208 keyframe sheet plus actual-speed Standard playback, with Smooth playback for native 20 FPS. Automated measurements identify visible runtime-edge contact, abrupt transitions, shape/scale changes, anchor movement, near-inert motion, loop seams, and repeated linear-blend filler. Every strict full-source frame must retain at least one transparent pixel on all four sides at runtime size; visible edge contact means the subject, moving part, prop, or effect is clipped. Edge clipping, obvious whole-subject scale/anchor jumps, abrupt attachment-silhouette loss in localized or looping actions, broken loop closure, and synthetic blended filler fail motion QA; smaller warnings still require state-by-state inspection of identity/locked-region stability, semantics, props, timing, and loop/settle quality. PetCore independently reruns these integrity gates before strict external-source import. The review is bound to the report hash and decoded state-frame digests, and becomes stale after a frame edit. These QA artifacts are producer/job evidence outside the closed package tree.
+
+Ordinary runtime import of an existing archive verifies decodability, dimensions, structure, and budgets. It does not recreate or certify the producer's motion review, anchor stability, or cross-state artistic distinction. Do not present a normal import result as Verified visual source evidence.
 
 ## 6. Metadata and privacy
 
@@ -206,9 +212,9 @@ The pet-store lock serializes imports, edits, deletion, and explicit offline mai
 - A normal same-ID import appends a new immutable revision and preserves the pet's active flag and original creation time.
 - Callers that require a new identity use the explicit `expect_absent` guard, which rejects an existing ID.
 - App-generated edits pin the base digest and revision; commit fails if the active base changed while the edit was running.
-- Bundled inventory seeding preserves an existing same-ID pet byte-for-byte, is idempotent, and never selects by name.
+- Bundled inventory seeding preserves an ordinary existing same-ID pet byte-for-byte and never selects by name. For an identity already carrying PetCore-assigned bundled markers, a changed pinned release digest appends the current package as a new immutable revision while retaining older revisions, creation time, and active-pet selection; an unchanged digest is idempotent.
 - Bundled read-only identity requires both a fixed inventory ID and PetCore-assigned identity markers. Package metadata cannot impersonate a bundled pet.
-- Bundled pets may be previewed, enabled, and exported, but not deleted or modified under the reserved same ID.
+- Bundled pets may be previewed, enabled, and exported, but not deleted or modified under the reserved same ID by ordinary user/import/edit operations. Only the closed content-pinned release inventory may advance an already trusted bundled identity.
 
 ### Export and round trip
 
@@ -220,12 +226,16 @@ The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) supp
 
 - `create`: generate a new package identity;
 - `modify`: safely unpack a validated package, preserve its ID and contract, and verify every state not requested for change is byte-identical;
+- `motion-qa`: render actual-size keyframes and Standard/Smooth playback previews, plus deterministic review targets;
+- `motion-qa --state`: audit one exact completed state before the other frame directories exist;
+- `motion-lock`: optionally preserve explicitly locked pixels from one generated reference frame through a reviewed white-moving/black-locked mask, writing a separate result that must be inspected and re-QA'd;
+- `motion-review`: bind one concrete visual inspection note per audited state to the current report and decoded frames;
 - optional `install`: import only after explicit user authorization;
 - optional activation: a second explicit user choice, never implied by generation or install.
 
 Creation defaults to native 10 FPS, with one-second `start`/`done` states and two-second loop states. A request may select either closed FPS tier and either closed duration for an individual state. Modification preserves timing unless requested otherwise. Changing 10→20 FPS requires newly authored intermediate frames for all seven states; changing 20→10 uses deterministic temporal sampling. The sampled Standard sequence must keep adjacent poses—and loop wrap poses—pixel-distinct. Changing duration requires recomposing every affected action without runtime speed adjustment or repeated-frame padding. The result is a new immutable revision.
 
-The Skill requires real image understanding/generation/editing for visual work. When unavailable, it returns `capability_missing` instead of fabricating a package. All output still crosses `petcore-cli petpack validate` and the normal PetCore import boundary.
+The Skill requires real image understanding/generation/editing for visual work. When unavailable, it returns `capability_missing` instead of fabricating a package. `finalize` rejects missing or stale motion QA/review evidence before output crosses `petcore-cli petpack validate` and the normal PetCore import boundary.
 
 The in-app AI Pet Maker uses Codex App Server and the internal [agent-pet-studio Skill](../../skills/agent-pet-studio/). Connecting Claude Code, Pi, or OpenCode does not make those hosts in-app generation backends.
 
@@ -275,6 +285,8 @@ Run `./script/validate_schema_fixtures.sh`, relevant PetCore tests, portable Ski
 - [ ] Quality, canvas, seven states, directories, loop flags, native 10/20 FPS, and 1,000/2,000 ms durations match.
 - [ ] Every state has the exact derived frame count; frames and previews decode within budgets, and transparent visual assets are coherent and visibly animated when claiming full-source provenance.
 - [ ] Native 20 FPS output remains coherent when sampled at 10 FPS; no higher-rate or longer action is fabricated through duplicate frames or speed changes.
+- [ ] One canonical identity, fixed scale/baseline/camera, moving and locked regions, one primary action, beat timing, and prop continuity are explicit for every generated state.
+- [ ] Current 192 × 208 keyframes and all available Standard/Smooth previews were inspected; every strict full-source frame keeps transparent padding on all four sides, and every audited state has a concrete review note bound to the report and decoded frames.
 - [ ] Baseline metadata is complete; tagged metadata passes all schemas and cross-file checks.
 - [ ] References and natural-language text are intentionally included and sanitized.
 - [ ] No credentials, local paths, runtime identifiers, transcripts, commands, tool data, hidden reasoning, or executable content are present.

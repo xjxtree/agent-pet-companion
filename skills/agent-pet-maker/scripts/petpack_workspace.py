@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare and finalize provider-neutral Agent Pet Companion petpack workspaces.
+"""Prepare, motion-review, and finalize Agent Pet Companion petpack workspaces.
 
-This helper never creates visual assets. It provides deterministic archive safety,
-base-revision bookkeeping, PetCore CLI discovery, validation, and packaging.
+This helper never invents source artwork. It provides deterministic archive safety,
+base-revision bookkeeping, motion QA previews, PetCore CLI discovery, validation,
+and packaging.
 """
 
 from __future__ import annotations
@@ -11,9 +12,11 @@ import argparse
 import functools
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,9 @@ SOURCE_SCHEMA = "apc.pet-source.v1"
 SOURCE_EVENT_SCHEMA = "apc.pet-source-event.v1"
 VALIDATION_SCHEMA = "apc.pet-validation.v1"
 PETPACK_SCHEMA = "apc.petpack.v1"
+MOTION_QA_SCHEMA = "apc.pet-motion-qa.v1"
+MOTION_REVIEW_SCHEMA = "apc.pet-motion-review.v1"
+MOTION_LOCK_SCHEMA = "apc.pet-motion-lock.v1"
 STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
 ONE_SHOT_STATES = frozenset({"start", "done"})
 VALID_NATIVE_FPS = (10, 20)
@@ -61,6 +67,15 @@ TRANSPARENT_ALPHA_THRESHOLD = 239
 MIN_VISUAL_PIXEL_PERCENT = 1
 COPY_CHUNK_BYTES = 1024 * 1024
 CLI_TIMEOUT_SECONDS = 300
+MOTION_PREVIEW_SIZE = (192, 208)
+MOTION_KEYFRAME_COUNT = 5
+MAX_MOTION_REVIEW_NOTE_CHARACTERS = 500
+MIN_MOTION_REVIEW_NOTE_CHARACTERS = 12
+PILLOW_REQUIRED_COMMANDS = frozenset(
+    {"preflight", "prepare", "motion-qa", "motion-lock", "finalize", "install"}
+)
+PILLOW_REEXEC_MARKER = "APC_PET_MAKER_PILLOW_REEXEC"
+PILLOW_PYTHON_OVERRIDE = "APC_PET_MAKER_PYTHON"
 
 SOURCE_ALLOWED_KEYS = {
     "schema_version",
@@ -241,7 +256,12 @@ def canonical_premultiplied_rgba(image: Any) -> bytes:
     rgba = image.convert("RGBA")
     canonical = bytearray(rgba.width * rgba.height * 4)
     offset = 0
-    for red, green, blue, alpha in rgba.getdata():
+    pixels = (
+        rgba.get_flattened_data()
+        if hasattr(rgba, "get_flattened_data")
+        else rgba.getdata()
+    )
+    for red, green, blue, alpha in pixels:
         if alpha < VISIBLE_ALPHA_THRESHOLD:
             canonical[offset : offset + 4] = b"\x00\x00\x00\x00"
         else:
@@ -386,6 +406,102 @@ def first_executable(candidates: Iterable[Path]) -> Path | None:
         if is_executable_file(candidate):
             return candidate
     return None
+
+
+def bundled_runtime_python_candidates() -> list[Path]:
+    """Return bounded Python candidates from Codex's managed local runtimes."""
+
+    runtime_root = Path.home() / ".cache" / "codex-runtimes"
+    if not runtime_root.is_dir():
+        return []
+    return [
+        candidate
+        for candidate in sorted(
+            runtime_root.glob("*/dependencies/python/bin/python3*")
+        )[:32]
+        if not candidate.name.endswith("-config")
+    ]
+
+
+def pillow_python_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    override = os.environ.get(PILLOW_PYTHON_OVERRIDE, "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+    candidates.extend(bundled_runtime_python_candidates())
+    for executable_name in ("python3.13", "python3.12", "python3.11", "python3"):
+        if path := shutil.which(executable_name):
+            candidates.append(Path(path))
+    return candidates
+
+
+def interpreter_has_pillow(candidate: Path) -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                str(candidate),
+                "-I",
+                "-c",
+                "from PIL import Image; assert Image.__version__",
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def locate_pillow_python() -> Path | None:
+    seen: set[str] = set()
+    for raw_candidate in pillow_python_candidates():
+        try:
+            candidate = raw_candidate.resolve(strict=True)
+        except OSError:
+            continue
+        key = str(candidate)
+        if key in seen or not is_executable_file(candidate):
+            continue
+        seen.add(key)
+        if interpreter_has_pillow(candidate):
+            return candidate
+    return None
+
+
+def current_interpreter_has_pillow() -> bool:
+    try:
+        from PIL import Image
+    except (ImportError, OSError):
+        return False
+    return getattr(Image, "__version__", None) is not None
+
+
+def ensure_pillow_runtime(command: str, argv: list[str]) -> None:
+    """Re-exec with a real managed Pillow runtime instead of accepting shims."""
+
+    if command not in PILLOW_REQUIRED_COMMANDS or current_interpreter_has_pillow():
+        return
+    if os.environ.get(PILLOW_REEXEC_MARKER) == "1":
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow with PNG and animated WebP support is required",
+        )
+    interpreter = locate_pillow_python()
+    if interpreter is None:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow with PNG and animated WebP support is required; no supported local interpreter was found",
+        )
+    environment = dict(os.environ)
+    environment[PILLOW_REEXEC_MARKER] = "1"
+    os.execve(
+        str(interpreter),
+        [str(interpreter), str(Path(__file__).resolve()), *argv],
+        environment,
+    )
 
 
 def locate_cli(explicit: str | None = None) -> Path:
@@ -901,6 +1017,23 @@ def collect_state_files(source_dir: Path, manifest: dict[str, Any]) -> tuple[dic
                 state_hashes[child.name] = decoded_png_digest(child)
         if not state_hashes:
             raise MakerError("invalid_assets", f"State {state} requires at least one PNG frame")
+        hashes[state] = state_hashes
+        counts[state] = len(state_hashes)
+    return hashes, counts
+
+
+def collect_selected_state_files(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    states: Iterable[str],
+) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+    hashes: dict[str, dict[str, str]] = {}
+    counts: dict[str, int] = {}
+    for state in states:
+        state_hashes = {
+            path.name: decoded_png_digest(path)
+            for path in ordered_state_frame_paths(source_dir, manifest, state)
+        }
         hashes[state] = state_hashes
         counts[state] = len(state_hashes)
     return hashes, counts
@@ -1673,6 +1806,1085 @@ def validate_portable_visual_assets(source_dir: Path, manifest: dict[str, Any]) 
         ) from error
 
 
+def ordered_state_frame_paths(
+    source_dir: Path, manifest: dict[str, Any], state: str
+) -> list[Path]:
+    relative = manifest_state_paths(manifest)[state]
+    state_dir = source_dir / relative
+    if state_dir.is_symlink() or not state_dir.is_dir():
+        raise MakerError("invalid_assets", f"Missing safe frame directory for state {state}")
+    paths = sorted(
+        (
+            child
+            for child in state_dir.iterdir()
+            if child.is_file() and not child.is_symlink() and child.suffix.lower() == ".png"
+        ),
+        key=lambda path: NATURAL_FRAME_NAME_KEY(path.name),
+    )
+    if not paths:
+        raise MakerError("invalid_assets", f"State {state} requires at least one PNG frame")
+    return paths
+
+
+def state_motion_digest(
+    source_dir: Path, manifest: dict[str, Any], state: str
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"{MOTION_QA_SCHEMA}\0{state}\0".encode())
+    for path in ordered_state_frame_paths(source_dir, manifest, state):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(decoded_png_digest(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def motion_frame_set_digest(state_digests: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for state in STATES:
+        if state in state_digests:
+            digest.update(state.encode("ascii"))
+            digest.update(b"\0")
+            digest.update(state_digests[state].encode("ascii"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def normalized_motion_frame(path: Path) -> Any:
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except (ImportError, OSError) as error:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow is required to inspect generated pet motion",
+            bounded(str(error)),
+        ) from error
+    try:
+        with Image.open(path) as decoded:
+            if decoded.format != "PNG":
+                raise MakerError("invalid_assets", f"Frame {path.name} is not a PNG")
+            rgba = decoded.convert("RGBA")
+            if rgba.size != MOTION_PREVIEW_SIZE:
+                resampling = getattr(Image, "Resampling", Image).LANCZOS
+                rgba = rgba.resize(MOTION_PREVIEW_SIZE, resampling)
+            return Image.frombytes(
+                "RGBA",
+                MOTION_PREVIEW_SIZE,
+                canonical_premultiplied_rgba(rgba),
+            )
+    except MakerError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise MakerError(
+            "invalid_assets",
+            f"Frame {path.name} could not be decoded for motion QA",
+            bounded(str(error)),
+        ) from error
+
+
+def motion_frame_signature(frame: Any) -> dict[str, float]:
+    alpha = frame.getchannel("A")
+    flattened = (
+        alpha.get_flattened_data()
+        if hasattr(alpha, "get_flattened_data")
+        else alpha.getdata()
+    )
+    width, height = frame.size
+    weight_total = 0
+    weighted_x = 0
+    weighted_y = 0
+    for index, alpha_value in enumerate(flattened):
+        if alpha_value < VISIBLE_ALPHA_THRESHOLD:
+            continue
+        x = index % width
+        y = index // width
+        weight_total += alpha_value
+        weighted_x += x * alpha_value
+        weighted_y += y * alpha_value
+    mask = alpha.point(lambda value: 255 if value >= VISIBLE_ALPHA_THRESHOLD else 0)
+    box = mask.getbbox() or (0, 0, 0, 0)
+    left, top, right, bottom = box
+    if weight_total:
+        centroid_x = weighted_x / weight_total / width
+        centroid_y = weighted_y / weight_total / height
+    else:
+        centroid_x = centroid_y = 0.0
+    return {
+        "visible_area": weight_total / (255 * width * height),
+        "centroid_x": centroid_x,
+        "centroid_y": centroid_y,
+        "bbox_width": (right - left) / width,
+        "bbox_height": (bottom - top) / height,
+        "bbox_bottom": bottom / height,
+        "bbox_left_margin": left / width,
+        "bbox_top_margin": top / height,
+        "bbox_right_margin": (width - right) / width,
+        "bbox_bottom_margin": (height - bottom) / height,
+    }
+
+
+def normalized_frame_delta(left: Any, right: Any) -> float:
+    from PIL import ImageChops, ImageStat
+
+    difference = ImageChops.difference(left, right)
+    return sum(ImageStat.Stat(difference).mean) / (4 * 255)
+
+
+def linear_blend_fit(left: Any, middle: Any, right: Any) -> dict[str, float] | None:
+    left_bytes = left.tobytes()
+    middle_bytes = middle.tobytes()
+    right_bytes = right.tobytes()
+    if not (len(left_bytes) == len(middle_bytes) == len(right_bytes)):
+        return None
+
+    pixel_count = len(left_bytes) // 4
+    stride = max(1, pixel_count // 50_000)
+    denominator = 0.0
+    numerator = 0.0
+    channel_count = 0
+    for pixel_index in range(0, pixel_count, stride):
+        offset = pixel_index * 4
+        for channel in range(4):
+            start = float(left_bytes[offset + channel])
+            delta = float(right_bytes[offset + channel]) - start
+            observed = float(middle_bytes[offset + channel]) - start
+            denominator += delta * delta
+            numerator += observed * delta
+            channel_count += 1
+    if denominator <= 0 or channel_count == 0:
+        return None
+
+    motion_rms = math.sqrt(denominator / channel_count)
+    blend_weight = numerator / denominator
+    if motion_rms < 2.0 or not 0.05 <= blend_weight <= 0.95:
+        return None
+
+    residual = 0.0
+    for pixel_index in range(0, pixel_count, stride):
+        offset = pixel_index * 4
+        for channel in range(4):
+            start = float(left_bytes[offset + channel])
+            delta = float(right_bytes[offset + channel]) - start
+            observed = float(middle_bytes[offset + channel]) - start
+            error = observed - blend_weight * delta
+            residual += error * error
+    relative_residual = math.sqrt(residual / denominator)
+    if relative_residual > 0.06:
+        return None
+    return {
+        "weight": round(blend_weight, 4),
+        "relative_residual": round(relative_residual, 6),
+        "motion_rms": round(motion_rms / 255, 6),
+    }
+
+
+def maximum_adjacent_step(values: list[float], relative: bool = False) -> float:
+    steps: list[float] = []
+    for previous, current in zip(values, values[1:]):
+        difference = abs(current - previous)
+        if relative:
+            difference /= max(abs(previous), 0.000_001)
+        steps.append(difference)
+    return max(steps, default=0.0)
+
+
+def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    signatures = [motion_frame_signature(frame) for frame in frames]
+    adjacent_deltas = [
+        normalized_frame_delta(previous, current)
+        for previous, current in zip(frames, frames[1:])
+    ]
+    median_delta = statistics.median(adjacent_deltas) if adjacent_deltas else 0.0
+    max_delta = max(adjacent_deltas, default=0.0)
+    max_delta_index = adjacent_deltas.index(max_delta) + 1 if adjacent_deltas else 0
+    seam_delta = normalized_frame_delta(frames[-1], frames[0]) if loops and len(frames) > 1 else 0.0
+    centroid_steps = [
+        math.hypot(
+            current["centroid_x"] - previous["centroid_x"],
+            current["centroid_y"] - previous["centroid_y"],
+        )
+        for previous, current in zip(signatures, signatures[1:])
+    ]
+    area_step = maximum_adjacent_step(
+        [signature["visible_area"] for signature in signatures],
+        relative=True,
+    )
+    bbox_width_step = maximum_adjacent_step(
+        [signature["bbox_width"] for signature in signatures]
+    )
+    bbox_height_step = maximum_adjacent_step(
+        [signature["bbox_height"] for signature in signatures]
+    )
+    baseline_step = maximum_adjacent_step(
+        [signature["bbox_bottom"] for signature in signatures]
+    )
+    edge_contact_frames = []
+    for index, signature in enumerate(signatures):
+        sides = [
+            side
+            for side, margin_key in (
+                ("left", "bbox_left_margin"),
+                ("top", "bbox_top_margin"),
+                ("right", "bbox_right_margin"),
+                ("bottom", "bbox_bottom_margin"),
+            )
+            if signature[margin_key] <= 0
+        ]
+        if sides:
+            edge_contact_frames.append(
+                {
+                    "frame": index,
+                    "sides": sides,
+                }
+            )
+    minimum_edge_margin = min(
+        (
+            signature[margin_key]
+            for signature in signatures
+            for margin_key in (
+                "bbox_left_margin",
+                "bbox_top_margin",
+                "bbox_right_margin",
+                "bbox_bottom_margin",
+            )
+        ),
+        default=0.0,
+    )
+    blend_candidates = [
+        {"frame": index, **fit}
+        for index in range(1, len(frames) - 1)
+        if (
+            fit := linear_blend_fit(
+                frames[index - 1],
+                frames[index],
+                frames[index + 1],
+            )
+        )
+        is not None
+    ]
+    metrics = {
+        "adjacent_delta": {
+            "median": round(median_delta, 6),
+            "maximum": round(max_delta, 6),
+            "maximum_arrival_frame": max_delta_index,
+            "maximum_to_median_ratio": round(
+                max_delta / max(median_delta, 0.000_001), 3
+            ),
+        },
+        "maximum_visible_area_step_ratio": round(area_step, 4),
+        "maximum_bbox_width_step": round(bbox_width_step, 4),
+        "maximum_bbox_height_step": round(bbox_height_step, 4),
+        "maximum_centroid_step": round(max(centroid_steps, default=0.0), 4),
+        "maximum_baseline_step": round(baseline_step, 4),
+        "minimum_edge_margin": round(minimum_edge_margin, 6),
+        "edge_contact_frame_count": len(edge_contact_frames),
+        "edge_contact_frames": edge_contact_frames[:8],
+        "linear_blend_candidate_count": len(blend_candidates),
+        "linear_blend_candidates": blend_candidates[:8],
+        "loop_seam_delta": round(seam_delta, 6) if loops else None,
+        "preview_width": MOTION_PREVIEW_SIZE[0],
+        "preview_height": MOTION_PREVIEW_SIZE[1],
+    }
+    warnings: list[dict[str, Any]] = []
+
+    def warn(code: str, message: str, evidence: dict[str, Any]) -> None:
+        warnings.append(
+            {
+                "code": code,
+                "severity": "review",
+                "message": message,
+                "evidence": evidence,
+            }
+        )
+
+    spike_ratio = max_delta / max(median_delta, 0.000_001)
+    if max_delta >= 0.004 and spike_ratio >= 3.5:
+        warn(
+            "abrupt_motion_spike",
+            "One frame transition is much larger than the typical transition; inspect for a pose cut or prop teleport.",
+            {
+                "arrival_frame": max_delta_index,
+                "delta": round(max_delta, 6),
+                "ratio_to_median": round(spike_ratio, 3),
+            },
+        )
+    if area_step >= 0.1 or bbox_width_step >= 0.08 or bbox_height_step >= 0.08:
+        warn(
+            "shape_or_scale_pop",
+            "The occupied silhouette changes abruptly; inspect locked body regions, character scale, and prop continuity.",
+            {
+                "visible_area_step_ratio": round(area_step, 4),
+                "bbox_width_step": round(bbox_width_step, 4),
+                "bbox_height_step": round(bbox_height_step, 4),
+            },
+        )
+    if max(centroid_steps, default=0.0) >= 0.035 or baseline_step >= 0.035:
+        warn(
+            "anchor_jump",
+            "The pet anchor moves abruptly; inspect feet/baseline and non-moving body regions for drift.",
+            {
+                "centroid_step": round(max(centroid_steps, default=0.0), 4),
+                "baseline_step": round(baseline_step, 4),
+            },
+        )
+    if loops and seam_delta >= 0.004 and seam_delta >= max(median_delta * 2, 0.004):
+        warn(
+            "loop_seam_pop",
+            "The last-to-first loop seam is harsher than the typical motion; inspect the return beat.",
+            {
+                "seam_delta": round(seam_delta, 6),
+                "ratio_to_median": round(
+                    seam_delta / max(median_delta, 0.000_001), 3
+                ),
+            },
+        )
+    if max_delta < 0.0008:
+        warn(
+            "near_inert_motion",
+            "The sequence has very little visible change at in-app size; confirm that the action reads without relying on micro-jitter.",
+            {"maximum_delta": round(max_delta, 6)},
+        )
+    if len(blend_candidates) >= 2:
+        warn(
+            "synthetic_frame_blending",
+            "Multiple frames are near-linear blends of their neighbors; reject crossfade, morph, optical-flow, or interpolated filler and render genuine poses.",
+            {"candidates": blend_candidates[:8]},
+        )
+    return metrics, warnings
+
+
+def reject_severe_motion_registration(state: str, metrics: dict[str, Any]) -> None:
+    """Fail obvious crop, attachment-loss, anchor, and loop-continuity defects."""
+
+    edge_contact_count = int(metrics.get("edge_contact_frame_count", 0))
+    if edge_contact_count:
+        evidence = metrics.get("edge_contact_frames", [])
+        raise MakerError(
+            "invalid_motion_registration",
+            f"State {state} has visible pixels touching the 192 × 208 runtime frame edge "
+            f"in {edge_contact_count} frame(s) ({evidence}); the action is clipped. "
+            "Regenerate or recompose the coherent row with fixed cell bounds and at least "
+            "one transparent pixel of padding on every side before using motion-lock or "
+            "generating another state",
+        )
+
+    width_step = float(metrics["maximum_bbox_width_step"])
+    height_step = float(metrics["maximum_bbox_height_step"])
+    visible_area_step = float(metrics["maximum_visible_area_step_ratio"])
+    centroid_step = float(metrics["maximum_centroid_step"])
+    baseline_step = float(metrics["maximum_baseline_step"])
+    seam_delta = metrics.get("loop_seam_delta")
+    median_delta = float(metrics["adjacent_delta"]["median"])
+    severe_scale_pop = min(width_step, height_step) >= 0.12
+    severe_anchor_jump = centroid_step >= 0.09 and baseline_step >= 0.055
+    abrupt_attachment_loss = (
+        state not in ONE_SHOT_STATES
+        and max(width_step, height_step) >= 0.10
+        and visible_area_step >= 0.04
+    )
+    broken_loop_closure = (
+        isinstance(seam_delta, (int, float))
+        and seam_delta >= 0.06
+        and seam_delta >= median_delta * 1.5
+    )
+    if (
+        severe_scale_pop
+        or severe_anchor_jump
+        or abrupt_attachment_loss
+        or broken_loop_closure
+    ):
+        raise MakerError(
+            "invalid_motion_registration",
+            f"State {state} has an unstable crop, anchor, attachment silhouette, or loop closure "
+            f"(bbox steps {width_step:.4f}/{height_step:.4f}, "
+            f"visible area {visible_area_step:.4f}, centroid {centroid_step:.4f}, "
+            f"baseline {baseline_step:.4f}, seam {float(seam_delta or 0):.4f}); "
+            "repair the coherent row with fixed cell bounds and locked "
+            "non-moving regions; regenerate when a moving limb, tail, or prop "
+            "shrinks, disappears, detaches, or fails to return before generating another state",
+        )
+
+
+def keyframe_indices(frame_count: int, count: int = MOTION_KEYFRAME_COUNT) -> list[int]:
+    if frame_count <= 0:
+        return []
+    count = min(frame_count, max(1, count))
+    if count == 1:
+        return [0]
+    return [
+        round(index * (frame_count - 1) / (count - 1))
+        for index in range(count)
+    ]
+
+
+def checkerboard(size: tuple[int, int]) -> Any:
+    from PIL import Image, ImageDraw
+
+    background = Image.new("RGBA", size, (235, 235, 235, 255))
+    draw = ImageDraw.Draw(background)
+    tile = 12
+    for y in range(0, size[1], tile):
+        for x in range(0, size[0], tile):
+            if (x // tile + y // tile) % 2:
+                draw.rectangle(
+                    (x, y, min(x + tile - 1, size[0] - 1), min(y + tile - 1, size[1] - 1)),
+                    fill=(210, 210, 210, 255),
+                )
+    return background
+
+
+def save_motion_preview(path: Path, frames: list[Any], frame_duration_ms: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.stem}.", suffix=".webp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary)
+    try:
+        frames[0].save(
+            temporary_path,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=[frame_duration_ms] * len(frames),
+            loop=0,
+            lossless=True,
+            exact=True,
+            method=6,
+        )
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def save_motion_keyframes(
+    path: Path, rows: list[tuple[str, list[Any], list[int]]]
+) -> None:
+    from PIL import Image, ImageDraw
+
+    cell_width, cell_height = MOTION_PREVIEW_SIZE
+    header_height = 28
+    sheet = Image.new(
+        "RGB",
+        (cell_width * MOTION_KEYFRAME_COUNT, (cell_height + header_height) * len(rows)),
+        (32, 32, 36),
+    )
+    draw = ImageDraw.Draw(sheet)
+    for row, (state, frames, indices) in enumerate(rows):
+        y = row * (cell_height + header_height)
+        draw.text((8, y + 7), f"{state} · frames {', '.join(map(str, indices))}", fill="white")
+        for column, (frame, frame_index) in enumerate(zip(frames, indices)):
+            cell = checkerboard(MOTION_PREVIEW_SIZE)
+            cell.alpha_composite(frame)
+            x = column * cell_width
+            sheet.paste(cell.convert("RGB"), (x, y + header_height))
+            draw.text(
+                (x + 6, y + header_height + 6),
+                str(frame_index),
+                fill=(20, 20, 20),
+                stroke_width=2,
+                stroke_fill=(255, 255, 255),
+            )
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.stem}.", suffix=".png", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary)
+    try:
+        sheet.save(temporary_path, format="PNG")
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def resolve_motion_workspace(
+    workspace_value: str | None,
+    source_value: str | None,
+    output_value: str | None,
+) -> tuple[Path | None, Path, Path, dict[str, Any] | None]:
+    if bool(workspace_value) == bool(source_value):
+        raise MakerError(
+            "invalid_request",
+            "Use exactly one of --workspace or --source for motion QA",
+        )
+    if workspace_value:
+        workspace = Path(workspace_value).expanduser().resolve()
+        context = read_json(
+            workspace / ".agent-pet-maker" / "context.json",
+            "workspace context",
+        )
+        if context.get("schema_version") != WORKSPACE_SCHEMA:
+            raise MakerError("invalid_workspace", "Workspace context is incompatible")
+        source_dir = Path(context.get("source_dir", "")).resolve()
+        if source_dir != (workspace / "petpack-source").resolve() or not source_dir.is_dir():
+            raise MakerError("invalid_workspace", "Workspace petpack-source is missing or redirected")
+        output_dir = (
+            Path(output_value).expanduser().resolve()
+            if output_value
+            else workspace / ".agent-pet-maker" / "motion-qa"
+        )
+        return workspace, source_dir, output_dir, context
+
+    source_dir = Path(source_value or "").expanduser().resolve()
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise MakerError("invalid_input", "Motion QA source must be a safe petpack-source directory")
+    if not output_value:
+        raise MakerError(
+            "invalid_request",
+            "Standalone motion QA requires --output-dir outside petpack-source",
+        )
+    output_dir = Path(output_value).expanduser().resolve()
+    return None, source_dir, output_dir, None
+
+
+def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
+    workspace, source_dir, output_dir, context = resolve_motion_workspace(
+        args.workspace,
+        args.source,
+        args.output_dir,
+    )
+    ensure_outside(output_dir, source_dir, "Motion QA output")
+    if output_dir.exists() and (output_dir.is_symlink() or not output_dir.is_dir()):
+        raise MakerError("unsafe_output", "Motion QA output must be a safe directory")
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    manifest = read_json(source_dir / "manifest.json", "manifest.json")
+    if manifest.get("schema_version") != PETPACK_SCHEMA:
+        raise MakerError("invalid_manifest", "manifest.schema_version must be apc.petpack.v1")
+    timing = manifest_timing_contract(manifest)
+    selected = sorted(set(args.state or []), key=STATES.index)
+    if selected:
+        current_files, state_counts = collect_selected_state_files(
+            source_dir, manifest, selected
+        )
+        for state in selected:
+            actual = state_counts.get(state)
+            expected = timing["state_frame_counts"][state]
+            if actual != expected:
+                raise MakerError(
+                    "invalid_assets",
+                    f"State {state} has {actual or 0} PNG frames; expected exactly {expected} "
+                    f"for {timing['native_fps']} FPS and "
+                    f"{timing['state_durations_ms'][state]} ms",
+                )
+    else:
+        current_files, state_counts = collect_state_files(source_dir, manifest)
+        validate_exact_state_counts(state_counts, timing)
+
+    if not selected and context and context.get("operation") == "modify":
+        base = context.get("base")
+        if not isinstance(base, dict):
+            raise MakerError("invalid_workspace", "Modify workspace has no base package context")
+        selected = compare_modified_states(base.get("state_files", {}), current_files)
+        if not selected:
+            raise MakerError(
+                "no_visual_changes",
+                "Modify produced no changed states to inspect",
+            )
+    if not selected:
+        selected = list(STATES)
+
+    state_entries = {
+        entry.get("name"): entry
+        for entry in manifest.get("states", [])
+        if isinstance(entry, dict)
+    }
+    report_states: dict[str, Any] = {}
+    keyframe_rows: list[tuple[str, list[Any], list[int]]] = []
+    state_digests: dict[str, str] = {}
+    all_warnings: list[dict[str, Any]] = []
+    previews_dir = output_dir / "previews"
+
+    for state in selected:
+        paths = ordered_state_frame_paths(source_dir, manifest, state)
+        frames = [normalized_motion_frame(path) for path in paths]
+        loops = bool(state_entries[state].get("loop"))
+        metrics, warnings = motion_metrics(frames, loops)
+        reject_severe_motion_registration(state, metrics)
+        if metrics["linear_blend_candidate_count"] >= 2:
+            candidate_frames = ", ".join(
+                str(candidate["frame"])
+                for candidate in metrics["linear_blend_candidates"]
+            )
+            raise MakerError(
+                "invalid_frame_interpolation",
+                f"State {state} contains synthetic blended filler near frames "
+                f"{candidate_frames}; render the exact authored frame count as genuine poses "
+                "instead of crossfade, morph, optical flow, or interpolation",
+            )
+        for warning in warnings:
+            all_warnings.append({"state": state, **warning})
+        digest = state_motion_digest(source_dir, manifest, state)
+        state_digests[state] = digest
+
+        standard_indices = standard_sample_indices(
+            state,
+            len(frames),
+            timing["state_durations_ms"][state],
+        )
+        standard_path = previews_dir / f"{state}-standard.webp"
+        save_motion_preview(
+            standard_path,
+            [frames[index] for index in standard_indices],
+            100,
+        )
+        profiles: dict[str, str] = {
+            "standard_10_fps": str(standard_path.relative_to(output_dir))
+        }
+        if timing["native_fps"] == 20:
+            smooth_path = previews_dir / f"{state}-smooth.webp"
+            save_motion_preview(smooth_path, frames, 50)
+            profiles["smooth_20_fps"] = str(smooth_path.relative_to(output_dir))
+
+        indices = keyframe_indices(len(frames))
+        keyframe_rows.append(
+            (state, [frames[index] for index in indices], indices)
+        )
+        report_states[state] = {
+            "frame_count": len(frames),
+            "duration_ms": timing["state_durations_ms"][state],
+            "loops": loops,
+            "motion_digest": digest,
+            "keyframe_indices": indices,
+            "previews": profiles,
+            "metrics": metrics,
+            "warnings": warnings,
+        }
+
+    keyframes_path = output_dir / "keyframes.png"
+    save_motion_keyframes(keyframes_path, keyframe_rows)
+    report = {
+        "schema_version": MOTION_QA_SCHEMA,
+        "generated_at": utc_now(),
+        "manifest_id": manifest.get("id"),
+        "native_fps": timing["native_fps"],
+        "preview_size": {
+            "width": MOTION_PREVIEW_SIZE[0],
+            "height": MOTION_PREVIEW_SIZE[1],
+        },
+        "audited_states": selected,
+        "frame_set_digest": motion_frame_set_digest(state_digests),
+        "keyframes": str(keyframes_path.relative_to(output_dir)),
+        "states": report_states,
+        "warnings": all_warnings,
+        "warning_count": len(all_warnings),
+        "measurement_note": (
+            "Heuristics identify review targets only. A visual reviewer must still verify "
+            "identity lock, non-moving-region stability, action readability, prop continuity, "
+            "timing, and loop/settle quality in every generated preview."
+        ),
+    }
+    report_path = output_dir / "report.json"
+    write_json_atomic(report_path, report)
+    return {
+        "schema_version": HELPER_SCHEMA,
+        "ok": True,
+        "status": "completed",
+        "capability": "motion-qa",
+        "workspace": str(workspace) if workspace else None,
+        "report_path": str(report_path),
+        "keyframes_path": str(keyframes_path),
+        "audited_states": selected,
+        "warning_count": len(all_warnings),
+    }
+
+
+def motion_lock(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        from PIL import Image, ImageFilter, UnidentifiedImageError
+    except (ImportError, OSError) as error:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow is required to lock generated motion regions",
+            bounded(str(error)),
+        ) from error
+
+    source_dir = Path(args.source).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    mask_path = Path(args.moving_mask).expanduser().resolve()
+    report_path = (
+        Path(args.report).expanduser().resolve()
+        if args.report
+        else output_dir.with_name(f"{output_dir.name}.motion-lock.json")
+    )
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise MakerError(
+            "invalid_input",
+            "Motion lock source must be a safe petpack-source directory",
+        )
+    ensure_outside(output_dir, source_dir, "Motion lock output")
+    ensure_outside(report_path, source_dir, "Motion lock report")
+    if output_dir.is_symlink() or report_path.is_symlink() or mask_path.is_symlink():
+        raise MakerError(
+            "unsafe_output",
+            "Motion lock paths must not be symbolic links",
+        )
+    if output_dir.exists():
+        if not output_dir.is_dir() or any(output_dir.iterdir()):
+            raise MakerError(
+                "output_exists",
+                "Motion lock output directory must be absent or empty",
+            )
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not mask_path.is_file():
+        raise MakerError(
+            "invalid_input",
+            "Motion lock requires a safe moving-region mask PNG",
+        )
+
+    manifest = read_json(source_dir / "manifest.json", "manifest.json")
+    if manifest.get("schema_version") != PETPACK_SCHEMA:
+        raise MakerError(
+            "invalid_manifest",
+            "manifest.schema_version must be apc.petpack.v1",
+        )
+    timing = manifest_timing_contract(manifest)
+    frame_paths = ordered_state_frame_paths(source_dir, manifest, args.state)
+    expected_count = timing["state_frame_counts"][args.state]
+    if len(frame_paths) != expected_count:
+        raise MakerError(
+            "invalid_assets",
+            f"State {args.state} has {len(frame_paths)} PNG frames; "
+            f"expected exactly {expected_count}",
+        )
+    reference_index = args.reference_frame
+    if reference_index < 0 or reference_index >= len(frame_paths):
+        raise MakerError(
+            "invalid_request",
+            f"--reference-frame must be between 0 and {len(frame_paths) - 1}",
+        )
+    feather_px = args.feather_px
+    if feather_px < 0 or feather_px > 24:
+        raise MakerError(
+            "invalid_request",
+            "--feather-px must be between 0 and 24",
+        )
+
+    render_size = manifest.get("render_size")
+    width = render_size.get("width") if isinstance(render_size, dict) else None
+    height = render_size.get("height") if isinstance(render_size, dict) else None
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        raise MakerError(
+            "invalid_manifest",
+            "manifest.render_size must contain positive integer width and height",
+        )
+    expected_size = (width, height)
+
+    try:
+        with Image.open(mask_path) as decoded_mask:
+            if decoded_mask.format != "PNG":
+                raise MakerError(
+                    "invalid_input",
+                    "Motion lock moving-region mask must be a PNG",
+                )
+            moving_mask = decoded_mask.convert("L")
+        if moving_mask.size != expected_size:
+            raise MakerError(
+                "invalid_input",
+                f"Motion lock mask is {moving_mask.size[0]}x{moving_mask.size[1]}; "
+                f"expected {width}x{height}",
+            )
+        histogram = moving_mask.histogram()
+        moving_pixels = sum(histogram[128:])
+        total_pixels = width * height
+        moving_ratio = moving_pixels / total_pixels
+        if moving_ratio < 0.01 or moving_ratio > 0.65:
+            raise MakerError(
+                "invalid_input",
+                "Motion lock mask must keep most of the frame locked while leaving a "
+                "meaningful moving region",
+            )
+        if feather_px:
+            moving_mask = moving_mask.filter(
+                ImageFilter.MaxFilter(feather_px * 2 + 1)
+            ).filter(ImageFilter.GaussianBlur(max(0.5, feather_px / 2)))
+
+        with Image.open(frame_paths[reference_index]) as decoded_reference:
+            if decoded_reference.format != "PNG":
+                raise MakerError(
+                    "invalid_assets",
+                    f"Frame {frame_paths[reference_index].name} is not a PNG",
+                )
+            reference = decoded_reference.convert("RGBA")
+        if reference.size != expected_size:
+            raise MakerError(
+                "invalid_assets",
+                "Motion lock reference frame does not match manifest.render_size",
+            )
+
+        output_digests: dict[str, str] = {}
+        for frame_path in frame_paths:
+            with Image.open(frame_path) as decoded_frame:
+                if decoded_frame.format != "PNG":
+                    raise MakerError(
+                        "invalid_assets",
+                        f"Frame {frame_path.name} is not a PNG",
+                    )
+                frame = decoded_frame.convert("RGBA")
+            if frame.size != expected_size:
+                raise MakerError(
+                    "invalid_assets",
+                    f"Frame {frame_path.name} does not match manifest.render_size",
+                )
+            locked = Image.composite(frame, reference, moving_mask)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{frame_path.stem}.",
+                suffix=".png",
+                dir=output_dir,
+            )
+            os.close(descriptor)
+            temporary_path = Path(temporary)
+            output_path = output_dir / frame_path.name
+            try:
+                locked.save(temporary_path, format="PNG")
+                os.chmod(temporary_path, 0o600)
+                os.replace(temporary_path, output_path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+            output_digests[frame_path.name] = decoded_png_digest(output_path)
+    except MakerError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise MakerError(
+            "invalid_assets",
+            "Motion lock inputs could not be decoded",
+            bounded(str(error)),
+        ) from error
+
+    output_digest = hashlib.sha256()
+    for name, digest in output_digests.items():
+        output_digest.update(name.encode("utf-8"))
+        output_digest.update(b"\0")
+        output_digest.update(digest.encode("ascii"))
+        output_digest.update(b"\0")
+    report = {
+        "schema_version": MOTION_LOCK_SCHEMA,
+        "generated_at": utc_now(),
+        "state": args.state,
+        "frame_count": len(frame_paths),
+        "reference_frame": reference_index,
+        "moving_mask_sha256": sha256_file(mask_path),
+        "moving_region_ratio": round(moving_ratio, 6),
+        "feather_px": feather_px,
+        "source_motion_digest": state_motion_digest(
+            source_dir, manifest, args.state
+        ),
+        "output_motion_digest": output_digest.hexdigest(),
+        "review_required": (
+            "Inspect the complete locked output for mask seams, attachment errors, and "
+            "action clipping. Locked pixels are stabilized; this operation cannot repair "
+            "misregistered moving parts, bad anatomy, or bad action direction."
+        ),
+    }
+    write_json_atomic(report_path, report)
+    return {
+        "schema_version": HELPER_SCHEMA,
+        "ok": True,
+        "status": "completed",
+        "capability": "motion-lock",
+        "state": args.state,
+        "output_dir": str(output_dir),
+        "report_path": str(report_path),
+        "frame_count": len(frame_paths),
+        "moving_region_ratio": round(moving_ratio, 6),
+    }
+
+
+def parse_state_notes(values: list[str] | None) -> dict[str, str]:
+    notes: dict[str, str] = {}
+    for raw in values or []:
+        state, separator, note = raw.partition("=")
+        state = state.strip()
+        note = note.strip()
+        if not separator or state not in STATES:
+            raise MakerError(
+                "invalid_request",
+                "Each --state-note must use STATE=concrete visual inspection note",
+            )
+        if state in notes:
+            raise MakerError("invalid_request", f"Duplicate motion review note for {state}")
+        if not (
+            MIN_MOTION_REVIEW_NOTE_CHARACTERS
+            <= len(note)
+            <= MAX_MOTION_REVIEW_NOTE_CHARACTERS
+        ):
+            raise MakerError(
+                "invalid_request",
+                f"Motion review note for {state} must be {MIN_MOTION_REVIEW_NOTE_CHARACTERS}-"
+                f"{MAX_MOTION_REVIEW_NOTE_CHARACTERS} characters",
+            )
+        notes[state] = note
+    return notes
+
+
+def motion_review(args: argparse.Namespace) -> dict[str, Any]:
+    workspace = Path(args.workspace).expanduser().resolve() if args.workspace else None
+    if workspace:
+        report_path = (
+            Path(args.report).expanduser().resolve()
+            if args.report
+            else workspace / ".agent-pet-maker" / "motion-qa" / "report.json"
+        )
+        output_path = (
+            Path(args.output).expanduser().resolve()
+            if args.output
+            else workspace / ".agent-pet-maker" / "motion-review.json"
+        )
+    else:
+        if not args.report or not args.output:
+            raise MakerError(
+                "invalid_request",
+                "Standalone motion review requires --report and --output",
+            )
+        report_path = Path(args.report).expanduser().resolve()
+        output_path = Path(args.output).expanduser().resolve()
+    if output_path.is_symlink():
+        raise MakerError("unsafe_output", "Motion review output must not be a symbolic link")
+
+    report = read_json(report_path, "motion QA report")
+    if report.get("schema_version") != MOTION_QA_SCHEMA:
+        raise MakerError("invalid_motion_qa", "Motion QA report is incompatible")
+    audited_states = report.get("audited_states")
+    if (
+        not isinstance(audited_states, list)
+        or not audited_states
+        or any(state not in STATES for state in audited_states)
+        or len(set(audited_states)) != len(audited_states)
+    ):
+        raise MakerError("invalid_motion_qa", "Motion QA report has invalid audited states")
+    notes = parse_state_notes(args.state_note)
+    missing = [state for state in audited_states if state not in notes]
+    extra = [state for state in notes if state not in audited_states]
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise MakerError(
+            "motion_review_incomplete",
+            "Motion review notes must cover every audited state exactly (" + "; ".join(detail) + ")",
+        )
+    review = {
+        "schema_version": MOTION_REVIEW_SCHEMA,
+        "reviewed_at": utc_now(),
+        "report_sha256": sha256_file(report_path),
+        "frame_set_digest": report.get("frame_set_digest"),
+        "audited_states": audited_states,
+        "status": "approved",
+        "review_contract": (
+            "Reviewer inspected keyframes plus every reported playback profile for identity "
+            "lock, non-moving-region stability, one readable action, prop continuity, timing, "
+            "and loop/settle quality."
+        ),
+        "states": {
+            state: {
+                "status": "approved",
+                "note": notes[state],
+                "reviewed_profiles": sorted(
+                    report.get("states", {}).get(state, {}).get("previews", {})
+                ),
+                "warning_codes": [
+                    warning.get("code")
+                    for warning in report.get("states", {}).get(state, {}).get("warnings", [])
+                    if isinstance(warning, dict)
+                ],
+            }
+            for state in audited_states
+        },
+    }
+    write_json_atomic(output_path, review)
+    return {
+        "schema_version": HELPER_SCHEMA,
+        "ok": True,
+        "status": "completed",
+        "capability": "motion-review",
+        "review_path": str(output_path),
+        "audited_states": audited_states,
+    }
+
+
+def verify_motion_review(
+    workspace: Path,
+    source_dir: Path,
+    manifest: dict[str, Any],
+    required_states: list[str],
+) -> dict[str, Any]:
+    report_path = workspace / ".agent-pet-maker" / "motion-qa" / "report.json"
+    review_path = workspace / ".agent-pet-maker" / "motion-review.json"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise MakerError(
+            "motion_qa_required",
+            "Run motion-qa and inspect its previews before finalize",
+        )
+    if review_path.is_symlink() or not review_path.is_file():
+        raise MakerError(
+            "motion_review_required",
+            "Run motion-review after inspecting every motion QA preview",
+        )
+    report = read_json(report_path, "motion QA report")
+    review = read_json(review_path, "motion review")
+    if report.get("schema_version") != MOTION_QA_SCHEMA:
+        raise MakerError("motion_qa_required", "Run current motion-qa before finalize")
+    if review.get("schema_version") != MOTION_REVIEW_SCHEMA:
+        raise MakerError("motion_review_required", "Run motion-review before finalize")
+    if review.get("status") != "approved":
+        raise MakerError("motion_review_required", "Motion review is not approved")
+    if review.get("report_sha256") != sha256_file(report_path):
+        raise MakerError(
+            "stale_motion_review",
+            "Motion QA changed after review; inspect the new previews and review again",
+        )
+    report_states = report.get("states")
+    review_states = review.get("states")
+    if not isinstance(report_states, dict) or not isinstance(review_states, dict):
+        raise MakerError("invalid_motion_qa", "Motion QA evidence is incomplete")
+    missing = [
+        state
+        for state in required_states
+        if state not in report_states
+        or state not in review_states
+        or review_states[state].get("status") != "approved"
+    ]
+    if missing:
+        raise MakerError(
+            "motion_review_incomplete",
+            "Motion QA and review must cover finalized states: " + ", ".join(missing),
+        )
+    current_state_digests = {
+        state: state_motion_digest(source_dir, manifest, state)
+        for state in required_states
+    }
+    stale = [
+        state
+        for state, digest in current_state_digests.items()
+        if report_states[state].get("motion_digest") != digest
+    ]
+    if stale:
+        raise MakerError(
+            "stale_motion_qa",
+            "Frames changed after motion QA; rerun QA and review for: " + ", ".join(stale),
+        )
+    warning_codes = sorted(
+        {
+            warning.get("code")
+            for state in required_states
+            for warning in report_states[state].get("warnings", [])
+            if isinstance(warning, dict) and isinstance(warning.get("code"), str)
+        }
+    )
+    return {
+        "human_reviewed": True,
+        "audited_states": required_states,
+        "report_path": str(report_path),
+        "review_path": str(review_path),
+        "warning_codes": warning_codes,
+    }
+
+
 def validate_text_metadata(
     source_dir: Path,
     manifest: dict[str, Any],
@@ -1907,6 +3119,12 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         validate_native_frame_semantics(current_files, STATES, timing)
 
     validate_portable_visual_assets(source_dir, manifest)
+    motion_quality = verify_motion_review(
+        workspace,
+        source_dir,
+        manifest,
+        changed_states if args.operation == "modify" else list(STATES),
+    )
 
     source_metadata = normalize_source_metadata(
         source_dir, args.operation, context, changed_states, state_counts, manifest
@@ -2004,6 +3222,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "frame_count": validation.get("frame_count"),
             "warnings": validation.get("warnings", []),
         },
+        "motion_quality": motion_quality,
         "result_path": str(result_path),
     }
     write_json_atomic(result_path, result)
@@ -2319,6 +3538,41 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--input", help="Base .petpack for modify")
     prepare_parser.add_argument("--cli", help="Explicit petcore-cli path")
 
+    motion_qa_parser = subparsers.add_parser(
+        "motion-qa",
+        help="Render in-app-size motion previews and deterministic review targets",
+    )
+    motion_qa_parser.add_argument("--workspace")
+    motion_qa_parser.add_argument("--source")
+    motion_qa_parser.add_argument("--output-dir")
+    motion_qa_parser.add_argument("--state", action="append", choices=STATES)
+
+    motion_review_parser = subparsers.add_parser(
+        "motion-review",
+        help="Record a visual review bound to the current motion QA evidence",
+    )
+    motion_review_parser.add_argument("--workspace")
+    motion_review_parser.add_argument("--report")
+    motion_review_parser.add_argument("--output")
+    motion_review_parser.add_argument(
+        "--state-note",
+        action="append",
+        required=True,
+        help="Concrete inspection note in STATE=note form; repeat for every audited state",
+    )
+
+    motion_lock_parser = subparsers.add_parser(
+        "motion-lock",
+        help="Preserve explicit non-moving pixels from one generated reference frame",
+    )
+    motion_lock_parser.add_argument("--source", required=True)
+    motion_lock_parser.add_argument("--state", required=True, choices=STATES)
+    motion_lock_parser.add_argument("--moving-mask", required=True)
+    motion_lock_parser.add_argument("--output-dir", required=True)
+    motion_lock_parser.add_argument("--report")
+    motion_lock_parser.add_argument("--reference-frame", type=int, default=0)
+    motion_lock_parser.add_argument("--feather-px", type=int, default=4)
+
     finalize_parser = subparsers.add_parser("finalize", help="Validate and build a petpack")
     finalize_parser.add_argument("--operation", choices=("create", "modify"), required=True)
     finalize_parser.add_argument("--workspace", required=True)
@@ -2351,9 +3605,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(raw_argv)
     try:
+        ensure_pillow_runtime(args.command, raw_argv)
         if args.command == "locate-cli":
             cli = locate_cli(args.cli)
             result = {
@@ -2376,6 +3632,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             }
         elif args.command == "prepare":
             result = prepare(args)
+        elif args.command == "motion-qa":
+            result = motion_qa(args)
+        elif args.command == "motion-review":
+            result = motion_review(args)
+        elif args.command == "motion-lock":
+            result = motion_lock(args)
         elif args.command == "finalize":
             result = finalize(args)
         elif args.command == "install":

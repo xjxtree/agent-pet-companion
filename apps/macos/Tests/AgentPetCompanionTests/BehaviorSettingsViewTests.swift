@@ -399,6 +399,7 @@ struct BehaviorSettingsViewTests {
                 mappedInformation: [],
                 privacyExclusions: [],
                 repairableConnectorIssue: false,
+                canRepairManagedConnector: true,
                 managedPathConflict: false,
                 canUninstallManagedConnector: false
             )

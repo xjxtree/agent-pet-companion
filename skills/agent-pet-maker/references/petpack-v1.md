@@ -93,12 +93,29 @@ the canonical 10 FPS sequence. Loop states sample every second frame. One-shot
 final authored poses. Adjacent poses in that canonical sequence, including the
 wrap pair for loop states, must remain pixel-distinct. Every non-sampled frame
 is genuine intermediate motion; runtime never speeds up or slows down the
-action.
+action. Author the exact derived count as distinct ordered sprite cells.
+Multiple coherent sheets may sum to that count, but never expand a smaller
+key-pose storyboard with crossfade, morph, optical flow, transformed
+duplicates, or procedural interpolation.
 
 ## Visual requirements
 
 - Preserve transparent surroundings; do not place the pet on an opaque rectangular canvas.
-- Keep character identity, proportions, palette, lighting, and outline treatment consistent across all states.
+- Lock a canonical identity: character silhouette, face landmarks, proportions,
+  anatomy, outfit/accessories, palette, lighting, outline/texture, scale,
+  baseline, and camera remain stable unless the action explicitly moves or
+  deforms that part.
+- Direct exactly one primary action per state. Use anticipation, a readable
+  apex, and recovery/settle; simplify multi-step business instead of squeezing
+  it into one second.
+- Declare moving and non-moving regions while planning. Generate/edit each
+  state as one coherent sequence from the canonical base rather than
+  independently inventing each frame.
+- Keep props continuous in shape, orientation, position, and attachment. Props
+  enter and leave through visible motion rather than appearing between frames.
+- A moving limb, tail, costume part, or prop must remain anatomically attached
+  and may not shrink or disappear between adjacent frames or across a loop
+  boundary.
 - Make every adjacent frame visibly animate rather than duplicating one still.
 - For loops, make the final-to-first seam continuous without duplicating the
   first frame as a terminal hold.
@@ -107,6 +124,11 @@ action.
 - Make the seven state actions distinguishable at desktop-pet size.
 - Use the exact manifest dimensions for every frame.
 - Provide a useful still `cover.png` and an actual animated WebP preview. Prefer 384 × 416 for previews.
+- Before finalization, inspect the helper's 192 × 208 keyframe sheet and every
+  Standard/Smooth playback preview. Automated drift and seam warnings are
+  advisory only when no visible defect is present; a visible snap,
+  disappearing attachment, prop teleport, or broken loop must be repaired. A
+  bound per-state visual review is required.
 
 ## Provider-neutral metadata
 

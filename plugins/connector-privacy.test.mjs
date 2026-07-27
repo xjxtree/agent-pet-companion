@@ -55,7 +55,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v7");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v8");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
 
     const piHandlers = new Map();
@@ -86,6 +86,14 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     );
     await piHandlers.get("before_provider_headers")(
       { type: "before_provider_headers", headers: { authorization: "secret-header" } },
+      piContext,
+    );
+    await piHandlers.get("session_info_changed")(
+      {
+        type: "session_info_changed",
+        name: "Generated Pi title",
+        privateMetadata: "secret-session-metadata",
+      },
       piContext,
     );
     await piHandlers.get("message_update")(
@@ -146,6 +154,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     for (const secret of [
       "secret-context",
       "secret-header",
+      "secret-session-metadata",
       "secret-reasoning",
       "secret-partial-output",
       "secret-system-prompt",
@@ -159,6 +168,11 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     assert.ok(piPayloads.every((payload) => payload.diagnostic === true));
     assert.equal(piPayloads.at(-1).type, "agent_settled");
     assert.equal(piPayloads.at(-1).message_content, "Visible Pi answer");
+    assert.ok(piPayloads.some((payload) => (
+      payload.type === "session_info_changed"
+      && payload.session_title === "Generated Pi title"
+      && payload.message_content === undefined
+    )));
 
     const productionOpenCode = await importTemplate(
       "./opencode/agent-pet-companion.js.tpl",
@@ -179,7 +193,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
         "APC_OPENCODE_EVENT_INVENTORY",
       ],
     );
-    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.0-activity-v8");
+    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v9");
     assert.equal(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.length, 21);
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("tool.definition"));
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("dispose"));
@@ -222,6 +236,18 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     assert.deepEqual(new Set(Object.keys(hooks)), new Set(expectedOpenCodeHooks));
     assert.equal(hooks["tool.definition"], undefined, "tool.definition must remain unregistered");
 
+    await hooks.event({
+      event: {
+        type: "session.updated",
+        properties: {
+          info: {
+            id: "opencode-session",
+            title: "Generated OpenCode title",
+            privateMetadata: "secret-opencode-session-metadata",
+          },
+        },
+      },
+    });
     await hooks.event({
       event: {
         type: "permission.asked",
@@ -403,6 +429,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
       "secret-v2-question-event-id",
       "secret-prompt-admitted-event-id",
       "secret-prompt-message-id",
+      "secret-opencode-session-metadata",
       "secret-chat-message-id",
       "secret-provider-error",
       "secret-response-body",
@@ -453,6 +480,11 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "message.user"
       && /^[0-9a-f]{64}$/.test(payload.turn_id)
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "session.updated"
+      && payload.properties?.session_title === "Generated OpenCode title"
+      && payload.properties?.privateMetadata === undefined
     )));
     assert.ok(opencodePayloads.filter((payload) => payload.input?.callID).every((payload) => (
       /^[0-9a-f]{64}$/.test(payload.input.callID)

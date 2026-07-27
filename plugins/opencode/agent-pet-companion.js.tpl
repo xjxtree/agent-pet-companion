@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
-const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.0-activity-v8";
+const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-activity-v9";
 
-// OpenCode 1.18 plugin hooks. Agent Pet Companion implements only observation
+// OpenCode 1.18.0–1.18.4 plugin hooks. Agent Pet Companion implements only observation
 // hooks; configuration, auth, headers, environment, prompts, and tool payloads
 // are intentionally never inspected or modified.
 const APC_OPENCODE_PLUGIN_HOOK_INVENTORY = Object.freeze([
@@ -838,7 +838,18 @@ function compatibleEvent(event) {
   if (typeof type === "string" && type.startsWith("session.next.")) {
     return compatibleNextEvent(type, properties, id);
   }
-  if (type === "session.updated") return undefined;
+  if (type === "session.updated") {
+    const title = sessions.get(id);
+    if (!id || !title) return undefined;
+    return {
+      type,
+      properties: {
+        sessionID: id,
+        session_title: title,
+        diagnostic: diagnostic(properties?.diagnostic, properties?.info?.diagnostic),
+      },
+    };
+  }
   if (type === "message.updated") {
     const info = properties?.info ?? {};
     const messageID = info?.id;

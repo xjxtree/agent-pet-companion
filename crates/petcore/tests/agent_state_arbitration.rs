@@ -2664,18 +2664,22 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             json!({"role": "user", "content": "完成后发送的新问题"}),
             "source={source}"
         );
-        assert_eq!(
-            session["session_title"], "完成后发送的新问题",
-            "source={source}"
-        );
+        assert_eq!(session["session_title"], "第一条问题", "source={source}");
         assert_eq!(session["session_message"], Value::Null, "source={source}");
     }
 }
 
 #[test]
-fn cli_overlay_projection_uses_latest_user_context_as_the_session_title() {
+fn every_agent_uses_first_user_message_until_an_explicit_title_arrives() {
     let (_temp, state) = ready();
     for (source, session_id, first_message, later_message, terminal_source_event) in [
+        (
+            "codex",
+            "codex-title-fallback",
+            "Codex 第一条用户消息",
+            "Codex 后续用户消息",
+            "Stop",
+        ),
         (
             "pi",
             "pi-title-fallback",
@@ -2747,15 +2751,20 @@ fn cli_overlay_projection_uses_latest_user_context_as_the_session_title() {
     let current = snapshot(&state);
     let sessions = current["active_agent_sessions"].as_array().unwrap();
     for (session_id, expected_title, expected_latest_user_message) in [
-        ("pi-title-fallback", "Pi 后续用户消息", "Pi 后续用户消息"),
+        (
+            "codex-title-fallback",
+            "Codex 第一条用户消息",
+            "Codex 后续用户消息",
+        ),
+        ("pi-title-fallback", "Pi 第一条用户消息", "Pi 后续用户消息"),
         (
             "claude-title-fallback",
-            "Claude 后续用户消息",
+            "Claude 第一条用户消息",
             "Claude 后续用户消息",
         ),
         (
             "opencode-title-fallback",
-            "OpenCode 后续用户消息",
+            "OpenCode 第一条用户消息",
             "OpenCode 后续用户消息",
         ),
     ] {
@@ -2771,35 +2780,58 @@ fn cli_overlay_projection_uses_latest_user_context_as_the_session_title() {
         assert_eq!(session["session_message"], Value::Null);
     }
 
-    handle_request(
-        &state,
-        request(
-            "agent.ingest",
-            json!({
-                "id": "pi-native-title",
-                "source": "pi",
-                "session_id": "pi-title-fallback",
-                "event_type": "done",
-                "created_at": timestamp(0),
-                "payload": {
-                    "source_event": "agent_settled",
-                    "session_active": false,
-                    "session_title": "Pi 原生会话标题",
-                    "diagnostic": false
-                }
-            }),
+    for (source, session_id, title) in [
+        ("codex", "codex-title-fallback", "Codex 原生会话标题"),
+        ("pi", "pi-title-fallback", "Pi 原生会话标题"),
+        (
+            "claude_code",
+            "claude-title-fallback",
+            "Claude 原生会话标题",
         ),
-    )
-    .unwrap();
-    let updated = snapshot(&state);
-    let pi_session = updated["active_agent_sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|session| session["session_id"] == projected_session_id("pi-title-fallback"))
+        (
+            "opencode",
+            "opencode-title-fallback",
+            "OpenCode 原生会话标题",
+        ),
+    ] {
+        handle_request(
+            &state,
+            request(
+                "agent.ingest",
+                json!({
+                    "id": format!("{session_id}-native-title"),
+                    "source": source,
+                    "session_id": session_id,
+                    "event_type": "start",
+                    "created_at": timestamp(0),
+                    "payload": {
+                        "source_event": "session.updated",
+                        "session_active": false,
+                        "session_title": title,
+                        "affects_activity": false,
+                        "diagnostic": false
+                    }
+                }),
+            ),
+        )
         .unwrap();
-    assert_eq!(pi_session["session_title"], "Pi 原生会话标题");
-    assert_eq!(pi_session["overlay_display"]["summary_kind"], "done");
+    }
+    let updated = snapshot(&state);
+    for (session_id, expected_title) in [
+        ("codex-title-fallback", "Codex 原生会话标题"),
+        ("pi-title-fallback", "Pi 原生会话标题"),
+        ("claude-title-fallback", "Claude 原生会话标题"),
+        ("opencode-title-fallback", "OpenCode 原生会话标题"),
+    ] {
+        let session = updated["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["session_id"] == projected_session_id(session_id))
+            .unwrap();
+        assert_eq!(session["session_title"], expected_title);
+        assert_eq!(session["overlay_display"]["summary_kind"], "done");
+    }
 }
 
 #[test]

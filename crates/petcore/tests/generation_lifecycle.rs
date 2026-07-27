@@ -64,6 +64,7 @@ while IFS= read -r request; do
         done
       fi
       printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"{thread_id}","turnId":"turn_fake_pet_studio","item":{{"type":"agentMessage","id":"msg_fake","text":"{{\"name\":\"生命周期宠物\",\"visual_brief\":\"stable lifecycle pet brief\",\"palette\":[\"pearl\",\"ink\",\"cyan\"],\"states\":[{{\"name\":\"idle\",\"motion\":\"breathing\"}}],\"render_notes\":\"transparent PNG\"}}","phase":"final_answer"}}}}}}'
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"{thread_id}","turn":{{"id":"turn_fake_pet_studio","status":"completed"}}}}}}'
       ;;
   esac
 done

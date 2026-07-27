@@ -278,6 +278,7 @@ pub(crate) struct SessionMessageProjection {
     pub(crate) latest_assistant: Option<SequencedAgentEvent>,
     pub(crate) latest_user: Option<SequencedAgentEvent>,
     pub(crate) first_user: Option<AgentEvent>,
+    pub(crate) latest_title: Option<AgentEvent>,
 }
 
 impl Default for EventRetentionPolicy {
@@ -3461,6 +3462,11 @@ fn session_message_projection_in_connection(
     let mut projection = SessionMessageProjection::default();
     for row in rows {
         let sequenced = row?;
+        if projection.latest_title.is_none()
+            && event_has_nonempty_payload_text(&sequenced.event, "session_title")
+        {
+            projection.latest_title = Some(sequenced.event.clone());
+        }
         if !event_has_nonempty_message_content(&sequenced.event) {
             continue;
         }
@@ -3575,9 +3581,13 @@ fn agent_event_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Res
 }
 
 fn event_has_nonempty_message_content(event: &AgentEvent) -> bool {
+    event_has_nonempty_payload_text(event, "message_content")
+}
+
+fn event_has_nonempty_payload_text(event: &AgentEvent, key: &str) -> bool {
     event
         .payload_json
-        .get("message_content")
+        .get(key)
         .and_then(Value::as_str)
         .is_some_and(|message| !message.trim().is_empty())
 }
@@ -4276,6 +4286,27 @@ mod tests {
         }
     }
 
+    fn session_title_event(id: &str, title: &str, created_at: &str) -> AgentEvent {
+        AgentEvent {
+            id: id.to_string(),
+            source: AgentSource::Opencode,
+            project_path: Some("/tmp/project".to_string()),
+            session_id: Some("session-atomic-display".to_string()),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": id,
+                "source_event": "session.updated",
+                "session_title": title,
+                "diagnostic": false,
+                "affects_activity": false
+            }),
+            created_at: created_at.to_string(),
+        }
+    }
+
     fn connector_event(
         id: &str,
         session_id: Option<&str>,
@@ -4344,6 +4375,11 @@ mod tests {
                 "latest answer",
                 "2026-07-20T00:00:04Z",
             ),
+            session_title_event(
+                "title-latest",
+                "Generated session title",
+                "2026-07-20T00:00:05Z",
+            ),
         ] {
             assert_eq!(
                 database.insert_event(&event).unwrap(),
@@ -4367,6 +4403,7 @@ mod tests {
         );
         assert_eq!(projection.latest_user.unwrap().event.id, "user-latest");
         assert_eq!(projection.first_user.unwrap().id, "user-first");
+        assert_eq!(projection.latest_title.unwrap().id, "title-latest");
 
         match database.recent_events_at_revision(revision, 3).unwrap() {
             RevisionChecked::Matched {
@@ -4379,7 +4416,7 @@ mod tests {
                         .iter()
                         .map(|event| event.id.as_str())
                         .collect::<Vec<_>>(),
-                    ["assistant-latest", "assistant-empty", "user-latest"]
+                    ["title-latest", "assistant-latest", "assistant-empty"]
                 );
             }
             RevisionChecked::Mismatch { .. } => panic!("revision unexpectedly changed"),

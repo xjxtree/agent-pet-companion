@@ -390,6 +390,43 @@ fn passive_session_open_and_activity_affecting_close_edges_are_distinct() {
 }
 
 #[test]
+fn generated_session_titles_are_metadata_only_for_pi_and_opencode() {
+    let pi = parse_contract_event(
+        AgentSource::Pi,
+        &serde_json::json!({
+            "type": "session_info_changed",
+            "session_id": "pi-title-update",
+            "session_title": "Generated Pi title"
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    let opencode = parse_contract_event(
+        AgentSource::Opencode,
+        &serde_json::json!({
+            "type": "session.updated",
+            "properties": {
+                "sessionID": "opencode-title-update",
+                "session_title": "Generated OpenCode title"
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
+
+    for (event, expected_title) in [
+        (pi, "Generated Pi title"),
+        (opencode, "Generated OpenCode title"),
+    ] {
+        assert_eq!(event.kind, AgentEventType::Start);
+        assert_eq!(event.outcome.as_deref(), Some("metadata_updated"));
+        assert!(!event.session_active);
+        assert!(!event.affects_activity);
+        assert_eq!(event.session_title.as_deref(), Some(expected_title));
+    }
+}
+
+#[test]
 fn opencode_terminal_events_close_work_without_misclassifying_host_disposal() {
     for (input, expected_kind, expected_open) in [
         (
@@ -932,7 +969,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-activity-v7"));
+    assert!(pi.contains("pi-extension-0.80.10-activity-v8"));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
     assert!(pi.contains("pi.on(\"input\""));
@@ -950,7 +987,7 @@ fn versioned_templates_only_claim_supported_contracts() {
 
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
-    assert!(opencode.contains("opencode-v1.18.0-activity-v8"));
+    assert!(opencode.contains("opencode-v1.18.4-activity-v9"));
     assert!(opencode.contains("APC_OPENCODE_EVENT_INVENTORY"));
     assert!(opencode.contains("event?.properties"));
     assert!(opencode.contains("input?.sessionID"));

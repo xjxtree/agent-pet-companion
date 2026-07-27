@@ -181,6 +181,7 @@ struct PersistedSessionDisplay {
     latest_message: Option<agent_state::SequencedAgentEvent>,
     latest_user_message: Option<agent_state::SequencedAgentEvent>,
     first_user_message: Option<AgentEvent>,
+    latest_title: Option<AgentEvent>,
 }
 
 #[derive(Debug)]
@@ -255,6 +256,7 @@ impl SnapshotPersistedDisplayCache {
                 latest_message: value.latest_assistant,
                 latest_user_message: value.latest_user,
                 first_user_message: value.first_user,
+                latest_title: value.latest_title,
             },
             RevisionChecked::Matched { .. } | RevisionChecked::Mismatch { .. } => {
                 return Ok(None);
@@ -2426,6 +2428,7 @@ fn hydrate_agent_session_display(
     let latest_message = persisted.latest_message;
     let latest_user_message = persisted.latest_user_message;
     let first_user_message = persisted.first_user_message;
+    let latest_title = persisted.latest_title;
     let latest_message = latest_message.filter(|message| {
         if let Some(user) = latest_user_message.as_ref() {
             sequenced_event_happened_after(message, user)
@@ -2437,30 +2440,10 @@ fn hydrate_agent_session_display(
     });
     active.latest_message = latest_message.map(|sequenced| sequenced.event);
     active.latest_user_message = latest_user_message.map(|sequenced| sequenced.event);
-    active.session_title = event_payload_text(&active.event, "session_title")
-        .or_else(|| {
-            active
-                .latest_user_message
-                .as_ref()
-                .and_then(|event| event_payload_text(event, "session_title"))
-        })
-        .or_else(|| {
-            active
-                .latest_message
-                .as_ref()
-                .and_then(|event| event_payload_text(event, "session_title"))
-        })
-        .or_else(|| {
-            first_user_message
-                .as_ref()
-                .and_then(|event| event_payload_text(event, "session_title"))
-        })
-        .or_else(|| {
-            active
-                .latest_user_message
-                .as_ref()
-                .and_then(fallback_session_title)
-        });
+    active.session_title = latest_title
+        .as_ref()
+        .and_then(|event| event_payload_text(event, "session_title"))
+        .or_else(|| first_user_message.as_ref().and_then(fallback_session_title));
     active.session_message = active
         .latest_message
         .as_ref()

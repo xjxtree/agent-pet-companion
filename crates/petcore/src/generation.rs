@@ -49,6 +49,10 @@ const GENERATION_RESULT_FILENAME: &str = "result.json";
 const MAX_GENERATION_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_STAGED_GENERATION_FORM_BYTES: u64 = 64 * 1024;
 const MAX_EDIT_CONTEXT_BYTES: u64 = 512 * 1024;
+const MAX_MOTION_EVIDENCE_JSON_BYTES: u64 = 512 * 1024;
+const MAX_MOTION_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+const MOTION_QA_SCHEMA: &str = "apc.pet-motion-qa.v1";
+const MOTION_REVIEW_SCHEMA: &str = "apc.pet-motion-review.v1";
 const EDIT_BASELINE_SNAPSHOT_FILENAME: &str = "baseline-input.petpack";
 pub const DEFAULT_PET_HISTORY_LIMIT: usize = 16;
 pub const MAX_PET_HISTORY_LIMIT: usize = 32;
@@ -1726,11 +1730,14 @@ fn run_local_petpack_generation(
                 }
                 SkillPetpackImport::Canceled => return Ok(()),
                 SkillPetpackImport::Invalid(error) => {
+                    let detail = app_server_failure_detail(&app_server_session);
                     fail_generation(
                         paths,
                         database,
                         job_id,
-                        &format!("Pet Studio Skill 已写出 petpack-source，但校验失败：{error}。"),
+                        &format!(
+                            "Codex App Server 制作未完成：{detail}。已保留未完成的 petpack-source 供诊断，但它也未通过校验：{error}。"
+                        ),
                     )?;
                     return Ok(());
                 }
@@ -2088,11 +2095,14 @@ fn run_reply_revision(
                 }
                 SkillPetpackImport::Canceled => return Ok(()),
                 SkillPetpackImport::Invalid(error) => {
+                    let detail = app_server_failure_detail(&app_server_session);
                     fail_generation(
                         paths,
                         database,
                         job_id,
-                        &format!("Pet Studio Skill 已写出调整版 petpack-source，但校验失败：{error}。已保留当前版本。"),
+                        &format!(
+                            "Codex App Server 调整未完成：{detail}。已保留未完成的调整版 petpack-source 供诊断，但它也未通过校验：{error}。当前宠物版本保持不变。"
+                        ),
                     )?;
                     return Ok(());
                 }
@@ -3218,7 +3228,352 @@ fn validate_skill_source_identity(source_dir: &Path) -> Result<()> {
                 ));
             }
         }
+        validate_external_motion_evidence(source_dir)?;
         validate_external_frame_diversity(source_dir)?;
+    }
+    Ok(())
+}
+
+fn safe_motion_evidence_file(
+    job_dir: &Path,
+    path: &Path,
+    label: &str,
+    maximum_bytes: u64,
+) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        PetCoreError::Validation(format!(
+            "external full source requires current {label} motion evidence"
+        ))
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > maximum_bytes
+    {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} motion evidence is unsafe or exceeds its size limit"
+        )));
+    }
+    let canonical_job = fs::canonicalize(job_dir)?;
+    let canonical_path = fs::canonicalize(path)?;
+    if !canonical_path.starts_with(&canonical_job) {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} motion evidence escapes the generation workspace"
+        )));
+    }
+    Ok(canonical_path)
+}
+
+fn read_motion_evidence_json(job_dir: &Path, path: &Path, label: &str) -> Result<(Value, Vec<u8>)> {
+    let safe_path =
+        safe_motion_evidence_file(job_dir, path, label, MAX_MOTION_EVIDENCE_JSON_BYTES)?;
+    let bytes = fs::read(safe_path)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        PetCoreError::Validation(format!(
+            "external full source {label} motion evidence is invalid JSON: {error}"
+        ))
+    })?;
+    if !value.is_object() {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} motion evidence must be a JSON object"
+        )));
+    }
+    Ok((value, bytes))
+}
+
+fn safe_motion_artifact(
+    job_dir: &Path,
+    motion_root: &Path,
+    relative: &str,
+    label: &str,
+) -> Result<PathBuf> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} uses an unsafe motion artifact path"
+        )));
+    }
+    let path = motion_root.join(relative_path);
+    let safe_path = safe_motion_evidence_file(job_dir, &path, label, MAX_MOTION_ARTIFACT_BYTES)?;
+    let canonical_root = fs::canonicalize(motion_root)?;
+    if !safe_path.starts_with(canonical_root) {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} escapes the motion QA directory"
+        )));
+    }
+    Ok(safe_path)
+}
+
+fn portable_motion_frame_digest(path: &Path) -> Result<String> {
+    let mut image = image::open(path)?.to_rgba8();
+    normalize_visible_pixels(&mut image);
+    Ok(hex::encode(Sha256::digest(image.as_raw())))
+}
+
+fn portable_motion_state_digest(source_dir: &Path, state: &str) -> Result<String> {
+    let state_dir = source_dir.join("assets/frames").join(state);
+    let mut frames = fs::read_dir(&state_dir)?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        })
+        .collect::<Vec<_>>();
+    frames.sort_by(|left, right| natural_frame_path_cmp(left, right));
+    let mut digest = Sha256::new();
+    digest.update(MOTION_QA_SCHEMA.as_bytes());
+    digest.update(b"\0");
+    digest.update(state.as_bytes());
+    digest.update(b"\0");
+    for frame in frames {
+        let filename = frame.file_name().ok_or_else(|| {
+            PetCoreError::Validation(format!("motion QA state {state} has an invalid frame name"))
+        })?;
+        digest.update(filename.as_encoded_bytes());
+        digest.update(b"\0");
+        digest.update(portable_motion_frame_digest(&frame)?.as_bytes());
+        digest.update(b"\0");
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn external_motion_required_states(source_dir: &Path) -> Result<Vec<&'static str>> {
+    let job_dir = source_dir.parent().ok_or_else(|| {
+        PetCoreError::Validation("petpack-source has no generation workspace".to_string())
+    })?;
+    let baseline_dir = job_dir.join("base-petpack-source");
+    if !baseline_dir.join("manifest.json").is_file() {
+        return Ok(REQUIRED_STATES.iter().map(|state| state.as_str()).collect());
+    }
+    let mut changed = Vec::new();
+    for state in REQUIRED_STATES {
+        let relative = Path::new("assets/frames").join(state.as_str());
+        let baseline = decoded_state_frame_digests(&baseline_dir.join(&relative))?;
+        let current = decoded_state_frame_digests(&source_dir.join(&relative))?;
+        if baseline != current {
+            changed.push(state.as_str());
+        }
+    }
+    if changed.is_empty() {
+        return Err(PetCoreError::Validation(
+            "external full source revision has no changed motion state to review".to_string(),
+        ));
+    }
+    Ok(changed)
+}
+
+fn evidence_state_names(value: &Value, label: &str) -> Result<Vec<String>> {
+    let states = value
+        .get("audited_states")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PetCoreError::Validation(format!(
+                "external full source {label} is missing audited_states"
+            ))
+        })?;
+    let mut names = Vec::with_capacity(states.len());
+    for state in states {
+        let name = state.as_str().ok_or_else(|| {
+            PetCoreError::Validation(format!(
+                "external full source {label} has a non-string audited state"
+            ))
+        })?;
+        if !REQUIRED_STATES
+            .iter()
+            .any(|required| required.as_str() == name)
+            || names.iter().any(|existing| existing == name)
+        {
+            return Err(PetCoreError::Validation(format!(
+                "external full source {label} has invalid audited states"
+            )));
+        }
+        names.push(name.to_string());
+    }
+    if names.is_empty() {
+        return Err(PetCoreError::Validation(format!(
+            "external full source {label} audits no states"
+        )));
+    }
+    Ok(names)
+}
+
+fn validate_external_motion_evidence(source_dir: &Path) -> Result<()> {
+    let job_dir = source_dir.parent().ok_or_else(|| {
+        PetCoreError::Validation("petpack-source has no generation workspace".to_string())
+    })?;
+    let motion_root = job_dir.join("motion-qa");
+    let report_path = motion_root.join("report.json");
+    let review_path = job_dir.join("motion-review.json");
+    let (report, report_bytes) =
+        read_motion_evidence_json(job_dir, &report_path, "motion QA report")?;
+    let (review, _) = read_motion_evidence_json(job_dir, &review_path, "motion review")?;
+    if report.get("schema_version").and_then(Value::as_str) != Some(MOTION_QA_SCHEMA) {
+        return Err(PetCoreError::Validation(
+            "external full source motion QA report has an incompatible schema".to_string(),
+        ));
+    }
+    if review.get("schema_version").and_then(Value::as_str) != Some(MOTION_REVIEW_SCHEMA)
+        || review.get("status").and_then(Value::as_str) != Some("approved")
+    {
+        return Err(PetCoreError::Validation(
+            "external full source motion review is missing or not approved".to_string(),
+        ));
+    }
+    let report_sha256 = hex::encode(Sha256::digest(&report_bytes));
+    if review.get("report_sha256").and_then(Value::as_str) != Some(report_sha256.as_str()) {
+        return Err(PetCoreError::Validation(
+            "external full source motion review is stale for the current QA report".to_string(),
+        ));
+    }
+
+    let audited = evidence_state_names(&report, "motion QA report")?;
+    if evidence_state_names(&review, "motion review")? != audited {
+        return Err(PetCoreError::Validation(
+            "external full source motion QA and review audit different states".to_string(),
+        ));
+    }
+    let required = external_motion_required_states(source_dir)?;
+    if audited
+        != required
+            .iter()
+            .map(|state| state.to_string())
+            .collect::<Vec<_>>()
+    {
+        return Err(PetCoreError::Validation(format!(
+            "external full source motion evidence must audit exactly the changed states: {}",
+            required.join(", ")
+        )));
+    }
+
+    let manifest: Value = serde_json::from_slice(&fs::read(source_dir.join("manifest.json"))?)?;
+    let native_fps = manifest.get("native_fps").and_then(Value::as_u64);
+    if report.get("native_fps").and_then(Value::as_u64) != native_fps {
+        return Err(PetCoreError::Validation(
+            "external full source motion QA native_fps does not match manifest.json".to_string(),
+        ));
+    }
+    let keyframes = report
+        .get("keyframes")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "external full source motion QA is missing its keyframe sheet".to_string(),
+            )
+        })?;
+    safe_motion_artifact(job_dir, &motion_root, keyframes, "keyframe sheet")?;
+
+    let report_states = report
+        .get("states")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "external full source motion QA is missing state evidence".to_string(),
+            )
+        })?;
+    let review_states = review
+        .get("states")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "external full source motion review is missing state notes".to_string(),
+            )
+        })?;
+    let mut current_digests = Vec::new();
+    for state in &required {
+        let state_report = report_states
+            .get(*state)
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "external full source motion QA is missing state {state}"
+                ))
+            })?;
+        let current_digest = portable_motion_state_digest(source_dir, state)?;
+        if state_report.get("motion_digest").and_then(Value::as_str)
+            != Some(current_digest.as_str())
+        {
+            return Err(PetCoreError::Validation(format!(
+                "external full source frames changed after motion QA for state {state}"
+            )));
+        }
+        current_digests.push((*state, current_digest));
+
+        let state_review = review_states
+            .get(*state)
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "external full source motion review is missing state {state}"
+                ))
+            })?;
+        let note_length = state_review
+            .get("note")
+            .and_then(Value::as_str)
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or_default();
+        if state_review.get("status").and_then(Value::as_str) != Some("approved")
+            || !(12..=500).contains(&note_length)
+        {
+            return Err(PetCoreError::Validation(format!(
+                "external full source motion review for state {state} needs a concrete approved note"
+            )));
+        }
+
+        let previews = state_report
+            .get("previews")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "external full source motion QA is missing previews for state {state}"
+                ))
+            })?;
+        let standard = previews
+            .get("standard_10_fps")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "external full source motion QA lacks Standard preview for state {state}"
+                ))
+            })?;
+        safe_motion_artifact(job_dir, &motion_root, standard, "Standard preview")?;
+        if native_fps == Some(u64::from(SMOOTH_FPS)) {
+            let smooth = previews
+                .get("smooth_20_fps")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    PetCoreError::Validation(format!(
+                        "external full source motion QA lacks Smooth preview for state {state}"
+                    ))
+                })?;
+            safe_motion_artifact(job_dir, &motion_root, smooth, "Smooth preview")?;
+        }
+    }
+
+    let mut frame_set_digest = Sha256::new();
+    for (state, digest) in &current_digests {
+        frame_set_digest.update(state.as_bytes());
+        frame_set_digest.update(b"\0");
+        frame_set_digest.update(digest.as_bytes());
+        frame_set_digest.update(b"\0");
+    }
+    let expected_frame_set_digest = hex::encode(frame_set_digest.finalize());
+    if report.get("frame_set_digest").and_then(Value::as_str)
+        != Some(expected_frame_set_digest.as_str())
+        || review.get("frame_set_digest").and_then(Value::as_str)
+            != Some(expected_frame_set_digest.as_str())
+    {
+        return Err(PetCoreError::Validation(
+            "external full source motion evidence has a stale frame-set digest".to_string(),
+        ));
     }
     Ok(())
 }
@@ -3257,6 +3612,38 @@ fn validate_external_frame_diversity(source_dir: &Path) -> Result<()> {
                 state.as_str()
             )));
         }
+        let blend_candidates = synthetic_blend_candidate_indices(&frames)?;
+        if blend_candidates.len() >= 2 {
+            return Err(PetCoreError::Validation(format!(
+                "external full source state {} contains synthetic blended filler near frames {}; render genuine authored poses instead of crossfade, morph, optical flow, or interpolation",
+                state.as_str(),
+                blend_candidates
+                    .iter()
+                    .take(8)
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        let registration = maximum_registration_steps(&frames)?;
+        let loop_discontinuity = if matches!(state, PetStateName::Start | PetStateName::Done) {
+            None
+        } else {
+            loop_discontinuity(&frames)?
+        };
+        if motion_registration_is_unstable(state, &registration, loop_discontinuity) {
+            return Err(PetCoreError::Validation(format!(
+                "external full source state {} has an unstable crop, anchor, attachment silhouette, or loop closure (edge-contact frames {}, bbox steps {:.4}/{:.4}, visible area {:.4}, centroid {:.4}, baseline {:.4}, seam {:.4}); keep at least one transparent pixel on every runtime-frame edge, repair fixed cell bounds and locked non-moving regions, or regenerate a disappearing/detached moving limb, tail, or prop",
+                state.as_str(),
+                registration.edge_contact_frames,
+                registration.bbox_width,
+                registration.bbox_height,
+                registration.visible_area_ratio,
+                registration.centroid,
+                registration.baseline,
+                loop_discontinuity.map_or(0.0, |value| value.0)
+            )));
+        }
         state_first_frames.insert(first);
     }
     if state_first_frames.len() < 4 {
@@ -3265,6 +3652,239 @@ fn validate_external_frame_diversity(source_dir: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct RegistrationSteps {
+    edge_contact_frames: usize,
+    bbox_width: f64,
+    bbox_height: f64,
+    visible_area_ratio: f64,
+    centroid: f64,
+    baseline: f64,
+}
+
+#[derive(Clone, Copy)]
+struct RegistrationSignature {
+    touches_edge: bool,
+    bbox_width: f64,
+    bbox_height: f64,
+    visible_area: f64,
+    centroid_x: f64,
+    centroid_y: f64,
+    baseline: f64,
+}
+
+fn maximum_registration_steps(frame_paths: &[PathBuf]) -> Result<RegistrationSteps> {
+    let mut steps = RegistrationSteps::default();
+    let mut previous: Option<RegistrationSignature> = None;
+    for path in frame_paths {
+        let image = image::open(path)?.to_rgba8();
+        let signature = registration_signature(&image).ok_or_else(|| {
+            PetCoreError::Validation(format!(
+                "external full source frame has no visible subject: {}",
+                path.display()
+            ))
+        })?;
+        if signature.touches_edge {
+            steps.edge_contact_frames = steps.edge_contact_frames.saturating_add(1);
+        }
+        if let Some(previous) = previous {
+            steps.bbox_width = steps
+                .bbox_width
+                .max(f64::abs(signature.bbox_width - previous.bbox_width));
+            steps.bbox_height = steps
+                .bbox_height
+                .max(f64::abs(signature.bbox_height - previous.bbox_height));
+            steps.visible_area_ratio = steps.visible_area_ratio.max(
+                f64::abs(signature.visible_area - previous.visible_area)
+                    / previous.visible_area.max(0.000_001),
+            );
+            steps.centroid = steps.centroid.max(f64::hypot(
+                signature.centroid_x - previous.centroid_x,
+                signature.centroid_y - previous.centroid_y,
+            ));
+            steps.baseline = steps
+                .baseline
+                .max(f64::abs(signature.baseline - previous.baseline));
+        }
+        previous = Some(signature);
+    }
+    Ok(steps)
+}
+
+fn registration_signature(image: &image::RgbaImage) -> Option<RegistrationSignature> {
+    if image.width() == 0 || image.height() == 0 {
+        return None;
+    }
+    let mut alpha_total = 0u64;
+    let mut weighted_x = 0u64;
+    let mut weighted_y = 0u64;
+    let mut left = image.width();
+    let mut top = image.height();
+    let mut right = 0u32;
+    let mut bottom = 0u32;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let alpha = u64::from(pixel[3]);
+        if alpha < 16 {
+            continue;
+        }
+        alpha_total = alpha_total.checked_add(alpha)?;
+        weighted_x = weighted_x.checked_add(u64::from(x).checked_mul(alpha)?)?;
+        weighted_y = weighted_y.checked_add(u64::from(y).checked_mul(alpha)?)?;
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
+    }
+    if alpha_total == 0 {
+        return None;
+    }
+    let width = f64::from(image.width());
+    let height = f64::from(image.height());
+    Some(RegistrationSignature {
+        touches_edge: left == 0
+            || top == 0
+            || right.saturating_add(1) == image.width()
+            || bottom.saturating_add(1) == image.height(),
+        bbox_width: f64::from(right - left + 1) / width,
+        bbox_height: f64::from(bottom - top + 1) / height,
+        visible_area: alpha_total as f64 / (255.0 * width * height),
+        centroid_x: weighted_x as f64 / alpha_total as f64 / width,
+        centroid_y: weighted_y as f64 / alpha_total as f64 / height,
+        baseline: f64::from(bottom + 1) / height,
+    })
+}
+
+fn motion_registration_is_unstable(
+    state: PetStateName,
+    registration: &RegistrationSteps,
+    loop_discontinuity: Option<(f64, f64)>,
+) -> bool {
+    let clipped_action = registration.edge_contact_frames > 0;
+    let severe_scale_pop = registration.bbox_width.min(registration.bbox_height) >= 0.12;
+    let severe_anchor_jump = registration.centroid >= 0.09 && registration.baseline >= 0.055;
+    let abrupt_attachment_loss = !matches!(state, PetStateName::Start | PetStateName::Done)
+        && registration.bbox_width.max(registration.bbox_height) >= 0.10
+        && registration.visible_area_ratio >= 0.04;
+    let broken_loop_closure =
+        loop_discontinuity.is_some_and(|(seam, median)| seam >= 0.06 && seam >= median * 1.5);
+    clipped_action
+        || severe_scale_pop
+        || severe_anchor_jump
+        || abrupt_attachment_loss
+        || broken_loop_closure
+}
+
+fn loop_discontinuity(frame_paths: &[PathBuf]) -> Result<Option<(f64, f64)>> {
+    if frame_paths.len() < 2 {
+        return Ok(None);
+    }
+    let mut frames = Vec::with_capacity(frame_paths.len());
+    for path in frame_paths {
+        let mut frame = image::open(path)?.to_rgba8();
+        normalize_visible_pixels(&mut frame);
+        frames.push(frame);
+    }
+    let mut adjacent = frames
+        .windows(2)
+        .map(|pair| normalized_rgba_delta(&pair[0], &pair[1]))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "external full source motion frames have inconsistent dimensions".to_string(),
+            )
+        })?;
+    adjacent.sort_by(f64::total_cmp);
+    let median = if adjacent.len() % 2 == 0 {
+        (adjacent[adjacent.len() / 2 - 1] + adjacent[adjacent.len() / 2]) / 2.0
+    } else {
+        adjacent[adjacent.len() / 2]
+    };
+    let seam = normalized_rgba_delta(frames.last().unwrap(), &frames[0]).ok_or_else(|| {
+        PetCoreError::Validation(
+            "external full source motion frames have inconsistent dimensions".to_string(),
+        )
+    })?;
+    Ok(Some((seam, median)))
+}
+
+fn normalized_rgba_delta(left: &image::RgbaImage, right: &image::RgbaImage) -> Option<f64> {
+    if left.dimensions() != right.dimensions() || left.as_raw().is_empty() {
+        return None;
+    }
+    let total = left
+        .as_raw()
+        .iter()
+        .zip(right.as_raw())
+        .map(|(left, right)| f64::from(u8::abs_diff(*left, *right)))
+        .sum::<f64>();
+    Some(total / (left.as_raw().len() as f64 * 255.0))
+}
+
+fn synthetic_blend_candidate_indices(frame_paths: &[PathBuf]) -> Result<Vec<usize>> {
+    if frame_paths.len() < 3 {
+        return Ok(Vec::new());
+    }
+    let mut candidates = Vec::new();
+    let mut left = image::open(&frame_paths[0])?.to_rgba8();
+    let mut middle = image::open(&frame_paths[1])?.to_rgba8();
+    for (index, path) in frame_paths.iter().enumerate().skip(2) {
+        let right = image::open(path)?.to_rgba8();
+        if linear_blend_fit(&left, &middle, &right).is_some() {
+            candidates.push(index - 1);
+        }
+        left = middle;
+        middle = right;
+    }
+    Ok(candidates)
+}
+
+fn linear_blend_fit(
+    left: &image::RgbaImage,
+    middle: &image::RgbaImage,
+    right: &image::RgbaImage,
+) -> Option<(f64, f64)> {
+    if left.dimensions() != middle.dimensions() || left.dimensions() != right.dimensions() {
+        return None;
+    }
+    let pixel_count = u64::from(left.width()).checked_mul(u64::from(left.height()))?;
+    let stride = usize::try_from((pixel_count / 50_000).max(1)).ok()?;
+    let mut denominator = 0.0;
+    let mut numerator = 0.0;
+    let mut channel_count = 0usize;
+    for pixel_index in (0..usize::try_from(pixel_count).ok()?).step_by(stride) {
+        let offset = pixel_index.checked_mul(4)?;
+        for channel in 0..4 {
+            let start = f64::from(left.as_raw()[offset + channel]);
+            let delta = f64::from(right.as_raw()[offset + channel]) - start;
+            let observed = f64::from(middle.as_raw()[offset + channel]) - start;
+            denominator += delta * delta;
+            numerator += observed * delta;
+            channel_count += 1;
+        }
+    }
+    if denominator <= 0.0 || channel_count == 0 {
+        return None;
+    }
+    let motion_rms = (denominator / channel_count as f64).sqrt();
+    let blend_weight = numerator / denominator;
+    if motion_rms < 2.0 || !(0.05..=0.95).contains(&blend_weight) {
+        return None;
+    }
+    let mut residual = 0.0;
+    for pixel_index in (0..usize::try_from(pixel_count).ok()?).step_by(stride) {
+        let offset = pixel_index.checked_mul(4)?;
+        for channel in 0..4 {
+            let start = f64::from(left.as_raw()[offset + channel]);
+            let delta = f64::from(right.as_raw()[offset + channel]) - start;
+            let observed = f64::from(middle.as_raw()[offset + channel]) - start;
+            let error = observed - blend_weight * delta;
+            residual += error * error;
+        }
+    }
+    let relative_residual = (residual / denominator).sqrt();
+    (relative_residual <= 0.06).then_some((blend_weight, relative_residual))
 }
 
 fn decoded_frame_digest(path: &Path) -> Result<String> {
@@ -3293,6 +3913,7 @@ fn ensure_skill_full_source_metadata(
     // its first write; in particular, never let provider-created symlinks turn
     // metadata writes into writes outside the job directory.
     validate_source_tree_budgets(&source_dir)?;
+    ensure_optional_empty_reference_directory(&source_dir, form)?;
     if skill_full_source_required() {
         validate_petpack_path(&source_dir)?;
     } else {
@@ -3401,6 +4022,27 @@ fn ensure_skill_full_source_metadata(
     // privacy-unsafe nested metadata is rejected before it reaches import.
     validate_petpack_path(&source_dir)?;
 
+    Ok(())
+}
+
+fn ensure_optional_empty_reference_directory(
+    source_dir: &Path,
+    form: &GenerationForm,
+) -> Result<()> {
+    if !form.reference_images.is_empty() {
+        return Ok(());
+    }
+    let metadata_dir = source_dir.join("source");
+    let references_dir = metadata_dir.join("references");
+    if references_dir.is_dir() || !metadata_dir.is_dir() {
+        return Ok(());
+    }
+    match fs::symlink_metadata(&references_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&references_dir)?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -3920,12 +4562,22 @@ fn should_retry_revision_with_new_session(session: &Value) -> bool {
         || error.contains("no rollout found")
 }
 
-fn app_server_failure_detail(session: &Value) -> &str {
-    session
+fn app_server_failure_detail(session: &Value) -> String {
+    let raw = session
         .get("error")
         .or_else(|| session.get("detail"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("Codex App Server 暂不可用")
+        .unwrap_or("Codex App Server 暂不可用");
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .or_else(|| value.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| raw.to_string())
 }
 
 fn app_server_completed(session: &Value) -> bool {
@@ -4244,6 +4896,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn app_server_failure_detail_extracts_nested_provider_message() {
+        let session = json!({
+            "error": r#"{"error":{"codexErrorInfo":"usageLimitExceeded","message":"Usage limit reached; retry later."},"willRetry":false}"#
+        });
+
+        assert_eq!(
+            app_server_failure_detail(&session),
+            "Usage limit reached; retry later."
+        );
+    }
+
+    #[test]
+    fn app_server_failure_detail_preserves_non_json_errors() {
+        let session = json!({"error": "App Server stopped unexpectedly"});
+
+        assert_eq!(
+            app_server_failure_detail(&session),
+            "App Server stopped unexpectedly"
+        );
+    }
+
     fn timing_brief(timing_changed: bool) -> Value {
         json!({
             "timing_changed": timing_changed,
@@ -4253,6 +4927,96 @@ mod tests {
                 "duration_ms": SHORT_ACTION_DURATION_MS
             })).collect::<Vec<_>>()
         })
+    }
+
+    fn write_motion_evidence_fixture(job_dir: &Path) -> PathBuf {
+        let source_dir = job_dir.join("petpack-source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({"native_fps": STANDARD_FPS})).unwrap(),
+        )
+        .unwrap();
+
+        let motion_root = job_dir.join("motion-qa");
+        let previews_dir = motion_root.join("previews");
+        fs::create_dir_all(&previews_dir).unwrap();
+        fs::write(motion_root.join("keyframes.png"), b"keyframes").unwrap();
+
+        let mut report_states = serde_json::Map::new();
+        let mut review_states = serde_json::Map::new();
+        let mut state_digests = Vec::new();
+        for (state_index, state) in REQUIRED_STATES.iter().enumerate() {
+            let state_name = state.as_str();
+            let state_dir = source_dir.join("assets/frames").join(state_name);
+            fs::create_dir_all(&state_dir).unwrap();
+            for frame_index in 0..2 {
+                let mut frame = ImageBuffer::from_pixel(16, 16, Rgba([0, 0, 0, 0]));
+                frame.put_pixel(
+                    4 + frame_index,
+                    6 + state_index as u32,
+                    Rgba([40 + state_index as u8, 100, 160, u8::MAX]),
+                );
+                frame
+                    .save(state_dir.join(format!("{frame_index:04}.png")))
+                    .unwrap();
+            }
+            let preview = format!("previews/{state_name}-standard.webp");
+            fs::write(motion_root.join(&preview), b"animated-preview").unwrap();
+            let motion_digest = portable_motion_state_digest(&source_dir, state_name).unwrap();
+            state_digests.push((state_name, motion_digest.clone()));
+            report_states.insert(
+                state_name.to_string(),
+                json!({
+                    "motion_digest": motion_digest,
+                    "previews": {"standard_10_fps": preview},
+                    "warnings": []
+                }),
+            );
+            review_states.insert(
+                state_name.to_string(),
+                json!({
+                    "status": "approved",
+                    "note": format!("{state_name} identity and anchor remain stable through playback.")
+                }),
+            );
+        }
+        let mut frame_set = Sha256::new();
+        for (state, digest) in &state_digests {
+            frame_set.update(state.as_bytes());
+            frame_set.update(b"\0");
+            frame_set.update(digest.as_bytes());
+            frame_set.update(b"\0");
+        }
+        let frame_set_digest = hex::encode(frame_set.finalize());
+        let audited_states = REQUIRED_STATES
+            .iter()
+            .map(|state| state.as_str())
+            .collect::<Vec<_>>();
+        let report = json!({
+            "schema_version": MOTION_QA_SCHEMA,
+            "native_fps": STANDARD_FPS,
+            "audited_states": audited_states,
+            "frame_set_digest": frame_set_digest,
+            "keyframes": "keyframes.png",
+            "states": report_states
+        });
+        let report_bytes = serde_json::to_vec_pretty(&report).unwrap();
+        fs::write(motion_root.join("report.json"), &report_bytes).unwrap();
+        let review = json!({
+            "schema_version": MOTION_REVIEW_SCHEMA,
+            "status": "approved",
+            "report_sha256": hex::encode(Sha256::digest(&report_bytes)),
+            "frame_set_digest": frame_set_digest,
+            "audited_states": audited_states,
+            "states": review_states
+        });
+        fs::write(
+            job_dir.join("motion-review.json"),
+            serde_json::to_vec_pretty(&review).unwrap(),
+        )
+        .unwrap();
+        source_dir
     }
 
     #[test]
@@ -4301,6 +5065,181 @@ mod tests {
             error.contains("no visible frame-to-frame change"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn synthetic_blend_detection_rejects_crossfade_fillers_not_translated_poses() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = ImageBuffer::from_pixel(16, 16, Rgba([20, 40, 180, u8::MAX]));
+        let last = ImageBuffer::from_pixel(16, 16, Rgba([220, 160, 40, u8::MAX]));
+        let mut blended_paths = Vec::new();
+        for index in 0..5 {
+            let weight = index as f64 / 4.0;
+            let mut frame = first.clone();
+            for (pixel, target) in frame.pixels_mut().zip(last.pixels()) {
+                for channel in 0..4 {
+                    pixel[channel] = ((1.0 - weight) * f64::from(pixel[channel])
+                        + weight * f64::from(target[channel]))
+                    .round() as u8;
+                }
+            }
+            let path = temp.path().join(format!("blend-{index}.png"));
+            frame.save(&path).unwrap();
+            blended_paths.push(path);
+        }
+        assert_eq!(
+            synthetic_blend_candidate_indices(&blended_paths).unwrap(),
+            vec![1, 2, 3]
+        );
+
+        let mut translated = Vec::new();
+        for offset in 0..5 {
+            let mut frame = ImageBuffer::from_pixel(16, 16, Rgba([0, 0, 0, 0]));
+            for y in 5..10 {
+                for x in (2 + offset)..(6 + offset) {
+                    frame.put_pixel(x, y, Rgba([40, 100, 160, u8::MAX]));
+                }
+            }
+            let path = temp.path().join(format!("pose-{offset}.png"));
+            frame.save(&path).unwrap();
+            translated.push(path);
+        }
+        assert!(synthetic_blend_candidate_indices(&translated)
+            .unwrap()
+            .is_empty());
+
+        let mut unstable = Vec::new();
+        for index in 0..5 {
+            let mut frame = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+            let (left, top, right, bottom) = if index == 2 {
+                (10, 14, 21, 27)
+            } else {
+                (5, 7, 26, 30)
+            };
+            for y in top..=bottom {
+                for x in left..=right {
+                    frame.put_pixel(x, y, Rgba([40, 100, 160, u8::MAX]));
+                }
+            }
+            let path = temp.path().join(format!("unstable-{index}.png"));
+            frame.save(&path).unwrap();
+            unstable.push(path);
+        }
+        let registration = maximum_registration_steps(&unstable).unwrap();
+        assert!(registration.bbox_width >= 0.12);
+        assert!(registration.bbox_height >= 0.12);
+    }
+
+    #[test]
+    fn motion_registration_rejects_a_disappearing_attachment_and_broken_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for index in 0..10 {
+            let mut frame = ImageBuffer::from_pixel(64, 64, Rgba([0, 0, 0, 0]));
+            for y in 10..=54 {
+                for x in 18..=44 {
+                    frame.put_pixel(x, y, Rgba([80, 150, 220, u8::MAX]));
+                }
+            }
+            if index < 5 {
+                for y in 31..=39 {
+                    for x in 45..=61 {
+                        frame.put_pixel(x, y, Rgba([80, 150, 220, u8::MAX]));
+                    }
+                }
+            }
+            let path = temp.path().join(format!("attachment-{index}.png"));
+            frame.save(&path).unwrap();
+            paths.push(path);
+        }
+
+        let registration = maximum_registration_steps(&paths).unwrap();
+        let discontinuity = loop_discontinuity(&paths).unwrap();
+
+        assert!(registration.bbox_width >= 0.10);
+        assert!(registration.visible_area_ratio >= 0.04);
+        assert!(motion_registration_is_unstable(
+            PetStateName::Waiting,
+            &registration,
+            discontinuity
+        ));
+        let authored_one_shot = RegistrationSteps {
+            edge_contact_frames: 0,
+            bbox_width: 0.026,
+            bbox_height: 0.1394,
+            visible_area_ratio: 0.1779,
+            centroid: 0.0758,
+            baseline: 0.0096,
+        };
+        assert!(!motion_registration_is_unstable(
+            PetStateName::Done,
+            &authored_one_shot,
+            None
+        ));
+    }
+
+    #[test]
+    fn motion_registration_rejects_runtime_edge_clipping() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for index in 0..5 {
+            let mut frame = ImageBuffer::from_pixel(32, 32, Rgba([0, 0, 0, 0]));
+            for y in 7..=25 {
+                for x in 9..=31 {
+                    frame.put_pixel(x, y, Rgba([60 + index as u8, 130, 210, u8::MAX]));
+                }
+            }
+            let path = temp.path().join(format!("clipped-{index}.png"));
+            frame.save(&path).unwrap();
+            paths.push(path);
+        }
+
+        let registration = maximum_registration_steps(&paths).unwrap();
+
+        assert_eq!(registration.edge_contact_frames, paths.len());
+        assert!(motion_registration_is_unstable(
+            PetStateName::Start,
+            &registration,
+            None
+        ));
+    }
+
+    #[test]
+    fn external_motion_evidence_is_bound_to_current_decoded_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = write_motion_evidence_fixture(temp.path());
+
+        validate_external_motion_evidence(&source_dir).unwrap();
+
+        let changed = ImageBuffer::from_pixel(16, 16, Rgba([220, 40, 80, u8::MAX]));
+        changed
+            .save(source_dir.join("assets/frames/idle/0001.png"))
+            .unwrap();
+        let error = validate_external_motion_evidence(&source_dir)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed after motion QA"), "{error}");
+        assert!(error.contains("idle"), "{error}");
+    }
+
+    #[test]
+    fn skill_source_materializes_only_an_optional_empty_reference_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = temp.path().join("petpack-source");
+        fs::create_dir_all(source_dir.join("source")).unwrap();
+        let form = timing_form();
+
+        ensure_optional_empty_reference_directory(&source_dir, &form).unwrap();
+
+        assert!(source_dir.join("source/references").is_dir());
+
+        let referenced_source = temp.path().join("referenced-petpack-source");
+        fs::create_dir_all(referenced_source.join("source")).unwrap();
+        let mut referenced_form = timing_form();
+        referenced_form.reference_images = vec!["input/references/reference.png".to_string()];
+        ensure_optional_empty_reference_directory(&referenced_source, &referenced_form).unwrap();
+
+        assert!(!referenced_source.join("source/references").exists());
     }
 
     #[test]

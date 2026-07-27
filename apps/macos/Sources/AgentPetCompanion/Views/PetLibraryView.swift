@@ -83,7 +83,7 @@ struct PetLibraryView: View {
     var body: some View {
         searchConfiguredSurface
             .toolbar {
-                ToolbarItemGroup(placement: .secondaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
                     Button {
                         store.importPetpacks()
                     } label: {

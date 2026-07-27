@@ -91,6 +91,7 @@ struct AgentConnectionProductPresentation: Equatable {
     let technicalItems: [AgentConnectionTechnicalItem]
     let hasCurrentTypedSnapshot: Bool
     let canRepairManagedConnector: Bool
+    let canManageManagedConnector: Bool
     let canUninstall: Bool
 
     init(
@@ -99,18 +100,34 @@ struct AgentConnectionProductPresentation: Equatable {
         operationState: AgentConnectionOperationState
     ) {
         self.source = source
-        let projectedItems = Self.projectedTechnicalItems(status?.items ?? [])
+        let projectedItems = Self.projectedTechnicalItems(
+            status?.items ?? [],
+            source: source
+        )
         technicalItems = projectedItems
         hasCurrentTypedSnapshot = status.map(Self.hasCurrentTypedSnapshot) ?? false
+        canManageManagedConnector = status?.canRepairManagedConnector == true
         canUninstall = status?.canUninstallManagedConnector == true
 
         let blockingItems = projectedItems.filter(\.status.isBlocking)
-        let everyBlockingItemAuthorizesManagedRepair = !blockingItems.isEmpty
-            && blockingItems.allSatisfy {
-                $0.recoveryAction == .confirmManagedRepair
+        let hasExecutableManagedRepair = blockingItems.contains {
+            $0.code == .managedConnector
+                && $0.recoveryAction == .confirmManagedRepair
+        }
+        let hasIndependentManagedMutationBlocker =
+            Self.agentIsUnavailable(in: projectedItems)
+            || projectedItems.contains(where: { $0.code == .unknown })
+            || blockingItems.contains {
+                switch $0.code {
+                case .agentCLI, .eventCLI, .claudeHooksPolicy:
+                    true
+                default:
+                    false
+                }
             }
         canRepairManagedConnector = status?.hasRepairableConnectorIssue == true
-            && everyBlockingItemAuthorizesManagedRepair
+            && hasExecutableManagedRepair
+            && !hasIndependentManagedMutationBlocker
         taskVerification = Self.taskVerificationState(
             status: status,
             hasCurrentTypedSnapshot: hasCurrentTypedSnapshot
@@ -143,8 +160,13 @@ struct AgentConnectionProductPresentation: Equatable {
         }
 
         guard hasCurrentTypedSnapshot else {
-            health = .notChecked
-            primaryAction = .verify
+            if canRepairManagedConnector {
+                health = .needsRepair
+                primaryAction = status.hasInstalledConnectorArtifacts ? .repair : .connect
+            } else {
+                health = .notChecked
+                primaryAction = .verify
+            }
             return
         }
 
@@ -221,9 +243,13 @@ struct AgentConnectionProductPresentation: Equatable {
             && status.connectorInstalled != nil
             && !status.capabilities.contractVersion.isEmpty
             && status.capabilities.repairableConnectorIssue != nil
+            && status.capabilities.canRepairManagedConnector != nil
             && status.capabilities.managedPathConflict != nil
             && status.capabilities.canUninstallManagedConnector != nil
-            && !projectedTechnicalItems(status.items).isEmpty
+            && !projectedTechnicalItems(
+                status.items,
+                source: status.source
+            ).isEmpty
     }
 
     private static func agentIsUnavailable(
@@ -243,7 +269,8 @@ struct AgentConnectionProductPresentation: Equatable {
     }
 
     private static func projectedTechnicalItems(
-        _ items: [ConnectionCheckItem]
+        _ items: [ConnectionCheckItem],
+        source: AgentSource
     ) -> [AgentConnectionTechnicalItem] {
         // Compatibility-only project checks have no product or accessibility
         // projection. A legacy Agent-host runtime probe is retained only as
@@ -267,7 +294,8 @@ struct AgentConnectionProductPresentation: Equatable {
             let projected = AgentConnectionTechnicalItem(
                 code: item.code == .hostRuntime ? .hostVerification : item.code,
                 status: item.status,
-                recoveryAction: item.recoveryAction
+                recoveryAction: item.recoveryAction,
+                evidence: safeTechnicalEvidence(for: item, source: source)
             )
             guard groupedCodes.contains(projected.code) else {
                 result.append(projected)
@@ -286,27 +314,103 @@ struct AgentConnectionProductPresentation: Equatable {
         }
         return result
     }
+
+    private static func safeTechnicalEvidence(
+        for item: ConnectionCheckItem,
+        source: AgentSource
+    ) -> AgentConnectionTechnicalEvidence? {
+        if item.code == .agentVersion {
+            return .agentVersion(
+                source: source,
+                detected: firstVersionToken(in: item.detail)
+            )
+        }
+
+        guard source == .codex,
+              item.code == .hostVerification,
+              item.detail.hasPrefix("Codex hooks/list 精确检测："),
+              let counts = codexHookTrustCounts(in: item.detail) else {
+            return nil
+        }
+        return .codexHookTrust(
+            disabled: counts[0],
+            modified: counts[1],
+            untrusted: counts[2],
+            total: counts[3]
+        )
+    }
+
+    private static func firstVersionToken(in detail: String) -> String? {
+        let bounded = String(detail.prefix(512))
+        guard let expression = try? NSRegularExpression(
+            pattern: #"(?<![A-Za-z0-9])([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)"#
+        ),
+        let match = expression.firstMatch(
+            in: bounded,
+            range: NSRange(bounded.startIndex..., in: bounded)
+        ),
+        let range = Range(match.range(at: 1), in: bounded) else {
+            return nil
+        }
+        return String(bounded[range])
+    }
+
+    private static func codexHookTrustCounts(
+        in detail: String
+    ) -> [Int]? {
+        let bounded = String(detail.prefix(512))
+        guard let expression = try? NSRegularExpression(
+            pattern: #"未启用 ([0-9]{1,3})、已修改 ([0-9]{1,3})、未信任 ([0-9]{1,3})（共 ([0-9]{1,3})）"#
+        ),
+        let match = expression.firstMatch(
+            in: bounded,
+            range: NSRange(bounded.startIndex..., in: bounded)
+        ) else {
+            return nil
+        }
+        let values = (1...4).compactMap { index -> Int? in
+            guard let range = Range(match.range(at: index), in: bounded) else {
+                return nil
+            }
+            return Int(bounded[range])
+        }
+        return values.count == 4 ? values : nil
+    }
+}
+
+enum AgentConnectionTechnicalEvidence: Equatable {
+    case agentVersion(source: AgentSource, detected: String?)
+    case codexHookTrust(
+        disabled: Int,
+        modified: Int,
+        untrusted: Int,
+        total: Int
+    )
 }
 
 struct AgentConnectionTechnicalItem: Equatable {
     let code: ConnectionCheckCode
     let status: CheckStatus
     let recoveryAction: ConnectionCheckRecoveryKind?
+    let evidence: AgentConnectionTechnicalEvidence?
 
     init(_ item: ConnectionCheckItem) {
         code = item.code
         status = item.status
         recoveryAction = item.recoveryAction
+        evidence = nil
     }
 
     init(
         code: ConnectionCheckCode,
         status: CheckStatus,
-        recoveryAction: ConnectionCheckRecoveryKind?
+        recoveryAction: ConnectionCheckRecoveryKind?,
+        evidence: AgentConnectionTechnicalEvidence? = nil
     ) {
         self.code = code
         self.status = status
         self.recoveryAction = recoveryAction
+        self.evidence = evidence
     }
 }
 

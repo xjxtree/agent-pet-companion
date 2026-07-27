@@ -105,6 +105,77 @@ fn repeated_seed_uses_idempotent_fast_path_without_reading_resources() {
 }
 
 #[test]
+fn changed_release_digest_appends_a_trusted_bundled_revision_without_changing_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = CoreState::new(AppPaths::new(temp.path().join("home")));
+    state.ensure_ready().unwrap();
+    seed_bundled_pet_inventory(&state.paths, &state.database, &inventory_root()).unwrap();
+    state.database.activate_pet("pet_bytebudcodex").unwrap();
+
+    let before = state.database.get_pet("pet_xingwutuanzi").unwrap().unwrap();
+    let previous_revision_path = PathBuf::from(&before.petpack_path);
+    let mut previous_revision = fs::OpenOptions::new()
+        .append(true)
+        .open(&previous_revision_path)
+        .unwrap();
+    previous_revision
+        .write_all(b"legacy-bundled-revision")
+        .unwrap();
+    drop(previous_revision);
+    assert_ne!(
+        Sha256::digest(fs::read(&previous_revision_path).unwrap()),
+        Sha256::digest(fs::read(inventory_root().join("pet_xingwutuanzi.petpack")).unwrap())
+    );
+
+    let outcomes =
+        seed_bundled_pet_inventory(&state.paths, &state.database, &inventory_root()).unwrap();
+
+    let revised = outcomes
+        .iter()
+        .find(|outcome| outcome.pet_id == "pet_xingwutuanzi")
+        .unwrap();
+    assert_eq!(revised.status, BundledPetSeedStatus::InstalledNewRevision);
+    let current = state.database.get_pet("pet_xingwutuanzi").unwrap().unwrap();
+    assert_ne!(current.petpack_path, before.petpack_path);
+    assert_eq!(current.created_at, before.created_at);
+    assert!(!current.active);
+    assert!(previous_revision_path.is_file());
+    assert_eq!(
+        Sha256::digest(fs::read(&current.petpack_path).unwrap()),
+        Sha256::digest(fs::read(inventory_root().join("pet_xingwutuanzi.petpack")).unwrap())
+    );
+    assert!(
+        state
+            .database
+            .get_pet("pet_bytebudcodex")
+            .unwrap()
+            .unwrap()
+            .active
+    );
+
+    let listed = response_result(
+        &handle_json_line(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "list-after-bundled-upgrade",
+                "method": "pet.list",
+                "params": {}
+            })
+            .to_string(),
+        )
+        .unwrap(),
+    );
+    let listed_pet = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pet| pet["id"] == "pet_xingwutuanzi")
+        .unwrap();
+    assert_eq!(listed_pet["revision_count"], 2);
+}
+
+#[test]
 fn existing_same_id_is_preserved_while_missing_bundled_pet_is_installed() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_store(&temp.path().join("home"));

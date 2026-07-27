@@ -814,6 +814,11 @@ pub struct AgentConnectorCapabilities {
     /// legacy status that predates this typed management contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repairable_connector_issue: Option<bool>,
+    /// Whether the current Agent/runtime prerequisites and managed paths allow
+    /// the App to install or reapply its owned connector, even when the latest
+    /// managed-file check is already healthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_repair_managed_connector: Option<bool>,
     /// Whether a foreign, symlinked, or otherwise unsafe managed path blocks
     /// connector mutation. `None` identifies a legacy status.
     #[serde(default, skip_serializing_if = "Option::is_none")]

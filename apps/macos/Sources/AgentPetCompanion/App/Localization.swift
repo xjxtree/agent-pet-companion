@@ -122,6 +122,10 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case commonClear = "common.clear"
     case commonChoose = "common.choose"
     case commonNotReported = "common.not_reported"
+    case commonExpanded = "common.expanded"
+    case commonCollapsed = "common.collapsed"
+    case commonExpandDisclosureHint = "common.disclosure.expand_hint"
+    case commonCollapseDisclosureHint = "common.disclosure.collapse_hint"
     case commonRecommended = "common.recommended"
     case commonMinutesFormat = "common.minutes.format"
     case commonImagesFormat = "common.images.format"
@@ -520,6 +524,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsPrimaryRepairHint = "connections.primary.repair_hint"
     case connectionsPrimaryVerifyHint = "connections.primary.verify_hint"
     case connectionsPrimaryRetryHint = "connections.primary.retry_hint"
+    case connectionsTroubleshoot = "connections.action.troubleshoot"
+    case connectionsTroubleshootHint = "connections.hint.troubleshoot"
     case connectionsTechnicalTitle = "connections.technical.title"
     case connectionsTechnicalSummary = "connections.technical.summary"
     case connectionsValidationBoundary = "connections.validation.boundary"
@@ -527,6 +533,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsLocalChannelDetail = "connections.local_channel.detail"
     case connectionsManagedArtifactsTitle = "connections.managed_artifacts.title"
     case connectionsManagedArtifactsCountFormat = "connections.managed_artifacts.count_format"
+    case connectionsManagedActionsTitle = "connections.managed_actions.title"
+    case connectionsManagedActionsDetail = "connections.managed_actions.detail"
     case connectionsCheckAll = "connections.action.check_all"
     case connectionsBusyHint = "connections.hint.busy"
     case connectionsCheckAllHint = "connections.hint.check_all"
@@ -543,6 +551,10 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsOperationRepair = "connections.operation.repair"
     case connectionsOperationUninstall = "connections.operation.uninstall"
     case connectionsOperationTitleFormat = "connections.operation.title_format"
+    case connectionsSuccessCheck = "connections.success.check"
+    case connectionsSuccessTest = "connections.success.test"
+    case connectionsSuccessRepair = "connections.success.repair"
+    case connectionsSuccessUninstall = "connections.success.uninstall"
     case connectionsFailureTransport = "connections.failure.transport"
     case connectionsFailureRejected = "connections.failure.rejected"
     case connectionsFailurePartial = "connections.failure.partial"
@@ -569,6 +581,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsRepairHintPreview = "connections.hint.repair_preview"
     case connectionsRepairHintNone = "connections.hint.repair_none"
     case connectionsRepairHintManual = "connections.hint.repair_manual"
+    case connectionsRepairAgainHint = "connections.hint.repair_again"
     case connectionsRecheck = "connections.action.recheck"
     case connectionsRecheckHint = "connections.hint.recheck"
     case connectionsTestChannel = "connections.action.test_channel"
@@ -600,6 +613,24 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsCheckDescriptionHostServer = "connections.check.description.host_server"
     case connectionsCheckDescriptionGeneric = "connections.check.description.generic"
     case connectionsCheckDetailFormat = "connections.check.detail_format"
+    case connectionsEvidenceVersionSupportedFormat =
+        "connections.check.evidence.version_supported_format"
+    case connectionsEvidenceVersionUpdateFormat =
+        "connections.check.evidence.version_update_format"
+    case connectionsEvidenceVersionUnverifiedFormat =
+        "connections.check.evidence.version_unverified_format"
+    case connectionsEvidenceVersionMissingFormat =
+        "connections.check.evidence.version_missing_format"
+    case connectionsEvidenceCodexTrustFormat =
+        "connections.check.evidence.codex_trust_format"
+    case connectionsVersionSupportCodex =
+        "connections.check.version_support.codex"
+    case connectionsVersionSupportClaude =
+        "connections.check.version_support.claude"
+    case connectionsVersionSupportPi =
+        "connections.check.version_support.pi"
+    case connectionsVersionSupportOpencode =
+        "connections.check.version_support.opencode"
     case connectionsVerificationTitle = "connections.verification.title"
     case connectionsVerificationNotRunTitle = "connections.verification.not_run_title"
     case connectionsVerificationNotRunDetail = "connections.verification.not_run_detail"

@@ -124,6 +124,65 @@ struct AgentConnectionsTests {
     }
 
     @Test
+    func managedSetupEntryPersistsAfterTheConnectorIsHealthy() {
+        let healthy = currentStatus(
+            source: .codex,
+            items: [
+                item(.ok, code: .managedConnector),
+                item(.ok, code: .eventDelivery),
+            ],
+            installPaths: ["/managed/codex"],
+            installed: true,
+            repairable: false,
+            canManage: true,
+            canUninstall: true
+        )
+        let presentation = product(healthy)
+
+        #expect(presentation.health == .connected)
+        #expect(!presentation.canRepairManagedConnector)
+        #expect(presentation.canManageManagedConnector)
+        #expect(
+            AgentConnectionsPresentation.repairableStatuses(from: [healthy])
+                .isEmpty
+        )
+        #expect(
+            AgentConnectionsPresentation.manageableStatuses(from: [healthy])
+                .map(\.source) == [.codex]
+        )
+    }
+
+    @Test
+    func hostVerificationAndVersionFollowUpDoNotHideManagedRepair() {
+        let presentation = product(currentStatus(
+            source: .pi,
+            items: [
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+                item(
+                    .needsFix,
+                    code: .agentVersion,
+                    recovery: .recheck
+                ),
+                item(
+                    .needsFix,
+                    code: .hostVerification,
+                    recovery: .recheck
+                ),
+            ],
+            installed: false,
+            repairable: true
+        ))
+
+        #expect(presentation.health == .needsRepair)
+        #expect(presentation.primaryAction == .connect)
+        #expect(presentation.canRepairManagedConnector)
+    }
+
+    @Test
     func unavailableAgentDependencyDoesNotOfferManagedMutation() {
         let presentation = product(currentStatus(
             items: [
@@ -135,12 +194,40 @@ struct AgentConnectionsTests {
                 ),
             ],
             installed: false,
-            repairable: true
+            repairable: true,
+            canManage: false
         ))
 
         #expect(presentation.health == .unavailable)
         #expect(presentation.primaryAction == .verify)
         #expect(!presentation.canRepairManagedConnector)
+        #expect(!presentation.canManageManagedConnector)
+    }
+
+    @Test
+    func missingEventCLIBlocksManagedMutation() {
+        let presentation = product(currentStatus(
+            items: [
+                item(
+                    .missing,
+                    code: .eventCLI,
+                    recovery: .recheck
+                ),
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+            ],
+            installed: false,
+            repairable: true,
+            canManage: false
+        ))
+
+        #expect(presentation.health == .unavailable)
+        #expect(presentation.primaryAction == .verify)
+        #expect(!presentation.canRepairManagedConnector)
+        #expect(!presentation.canManageManagedConnector)
     }
 
     @Test
@@ -178,6 +265,40 @@ struct AgentConnectionsTests {
     }
 
     @Test
+    func typedLightSnapshotCanOfferManagedSetupWithoutClaimingRuntimeVerification() {
+        let presentation = product(AgentConnectionStatus(
+            source: .codex,
+            items: [
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+                item(
+                    .needsFix,
+                    code: .hostVerification,
+                    recovery: .recheck
+                ),
+            ],
+            installPaths: ["/managed/codex"],
+            connectorInstalled: false,
+            checkMode: .light,
+            verification: verification(.verified),
+            capabilities: capabilities(
+                repairable: true,
+                conflict: false,
+                canUninstall: false
+            )
+        ))
+
+        #expect(!presentation.hasCurrentTypedSnapshot)
+        #expect(presentation.taskVerification == .notRun)
+        #expect(presentation.health == .needsRepair)
+        #expect(presentation.primaryAction == .connect)
+        #expect(presentation.canRepairManagedConnector)
+    }
+
+    @Test
     func managedPathConflictFailsClosedToVerify() {
         let presentation = product(currentStatus(
             items: [
@@ -189,6 +310,7 @@ struct AgentConnectionsTests {
             ],
             installed: true,
             repairable: true,
+            canManage: false,
             conflict: true,
             canUninstall: true
         ))
@@ -211,7 +333,8 @@ struct AgentConnectionsTests {
                 ),
             ],
             installed: true,
-            repairable: true
+            repairable: true,
+            canManage: false
         ))
         #expect(policyOnly.health == .unavailable)
         #expect(policyOnly.primaryAction == .verify)
@@ -232,11 +355,122 @@ struct AgentConnectionsTests {
                 ),
             ],
             installed: true,
-            repairable: true
+            repairable: true,
+            canManage: false
         ))
         #expect(policyAndConnector.primaryAction == .verify)
         #expect(policyAndConnector.health == .unavailable)
         #expect(!policyAndConnector.canRepairManagedConnector)
+    }
+
+    @Test
+    func oneClickSetupUsesTheSameTypedPerAgentRepairBoundary() {
+        let repairable = currentStatus(
+            source: .codex,
+            items: [
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+                item(
+                    .needsFix,
+                    code: .hostVerification,
+                    recovery: .recheck
+                ),
+            ],
+            installPaths: ["/managed/codex"],
+            installed: false,
+            repairable: true
+        )
+        let policyBlocked = currentStatus(
+            source: .claudeCode,
+            items: [
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+                item(
+                    .needsFix,
+                    code: .claudeHooksPolicy,
+                    recovery: .recheck
+                ),
+            ],
+            installPaths: ["/managed/claude"],
+            installed: false,
+            repairable: true,
+            canManage: false
+        )
+
+        let eligible = AgentConnectionsPresentation.repairableStatuses(
+            from: [policyBlocked, repairable]
+        )
+        #expect(eligible.map(\.source) == [.codex])
+
+        let message = AgentConnectionsPresentation.managedRepairConfirmationMessage(
+            for: eligible,
+            locale: "en"
+        )
+        #expect(message.contains("Codex"))
+        #expect(message.contains("/managed/codex"))
+        #expect(!message.contains("Claude"))
+        #expect(!message.contains("/managed/claude"))
+    }
+
+    @Test
+    func singleAgentSuccessFeedbackIsSpecificAndDoesNotLeakAcrossRows() {
+        for (kind, expected) in [
+            (
+                AgentConnectionOperationKind.check,
+                "Connection check finished. The local health and real-task evidence above are up to date."
+            ),
+            (
+                .test,
+                "Local channel test passed. This proves only the on-device CLI, RPC, and event path—not a real Agent task."
+            ),
+            (
+                .repair,
+                "The managed connector was installed or repaired and checked again."
+            ),
+            (
+                .uninstall,
+                "The App-managed connector files were removed. The Agent itself was not uninstalled."
+            ),
+        ] {
+            let operation = AgentConnectionOperation(
+                kind: kind,
+                sources: [.codex]
+            )
+            let state = AgentConnectionOperationState.succeeded(operation)
+            #expect(
+                AgentConnectionsPresentation.success(
+                    for: .codex,
+                    in: state
+                ) == operation
+            )
+            #expect(
+                AgentConnectionsPresentation.success(for: .pi, in: state)
+                    == nil
+            )
+            #expect(
+                AgentConnectionsPresentation.operationSuccessDetail(
+                    operation,
+                    locale: "en"
+                ) == expected
+            )
+        }
+
+        let bulk = AgentConnectionOperation(
+            kind: .repair,
+            sources: [.codex, .pi]
+        )
+        #expect(
+            AgentConnectionsPresentation.success(
+                for: .codex,
+                in: .succeeded(bulk)
+            ) == nil
+        )
     }
 
     @Test
@@ -408,6 +642,71 @@ struct AgentConnectionsTests {
     }
 
     @Test
+    func technicalProjectionShowsActionableEvidenceWithoutRawDiagnosticCopy() throws {
+        let pi = product(currentStatus(
+            source: .pi,
+            items: [
+                ConnectionCheckItem(
+                    code: .agentVersion,
+                    name: "Pi version /Users/alice/private",
+                    status: .needsFix,
+                    detail: "检测到 pi 0.79.9，低于当前连接器最低版本 0.80.10 /Users/alice/private --token secret",
+                    recoveryAction: .recheck
+                ),
+            ]
+        ))
+        let piItem = try #require(pi.technicalItems.first)
+        #expect(
+            piItem.evidence
+                == .agentVersion(source: .pi, detected: "0.79.9")
+        )
+        let piCopy = try #require(
+            AgentConnectionsPresentation.itemEvidenceDetail(
+                for: piItem,
+                locale: "zh-Hans"
+            )
+        )
+        #expect(piCopy.contains("0.79.9"))
+        #expect(piCopy.contains("0.80.10"))
+        #expect(piCopy.contains("更新 Pi Coding Agent"))
+        #expect(!piCopy.contains("/Users/"))
+        #expect(!piCopy.contains("token"))
+        #expect(!piCopy.contains("secret"))
+
+        let codex = product(currentStatus(
+            source: .codex,
+            items: [
+                ConnectionCheckItem(
+                    code: .hostVerification,
+                    name: "Codex Hook Trust",
+                    status: .needsFix,
+                    detail: "Codex hooks/list 精确检测：未启用 0、已修改 0、未信任 10（共 10）；/Users/alice/private",
+                    recoveryAction: .recheck
+                ),
+            ]
+        ))
+        let codexItem = try #require(codex.technicalItems.first)
+        #expect(
+            codexItem.evidence
+                == .codexHookTrust(
+                    disabled: 0,
+                    modified: 0,
+                    untrusted: 10,
+                    total: 10
+                )
+        )
+        let codexCopy = try #require(
+            AgentConnectionsPresentation.itemEvidenceDetail(
+                for: codexItem,
+                locale: "zh-Hans"
+            )
+        )
+        #expect(codexCopy.contains("未信任 10"))
+        #expect(codexCopy.contains("Codex"))
+        #expect(!codexCopy.contains("/Users/"))
+    }
+
+    @Test
     func ordinaryAndAccessibilityCopyExcludeRuntimeRendererDiagnosticsAndProjectData() throws {
         let status = currentStatus(
             items: [
@@ -520,6 +819,7 @@ struct AgentConnectionsTests {
         installed: Bool = true,
         verification: AgentVerificationStatus = .verified,
         repairable: Bool? = false,
+        canManage: Bool? = true,
         conflict: Bool? = false,
         canUninstall: Bool? = false
     ) -> AgentConnectionStatus {
@@ -532,6 +832,7 @@ struct AgentConnectionsTests {
             verification: self.verification(verification),
             capabilities: capabilities(
                 repairable: repairable,
+                canManage: canManage,
                 conflict: conflict,
                 canUninstall: canUninstall
             )
@@ -554,6 +855,7 @@ struct AgentConnectionsTests {
 
     private func capabilities(
         repairable: Bool?,
+        canManage: Bool? = true,
         conflict: Bool?,
         canUninstall: Bool?
     ) -> AgentConnectorCapabilities {
@@ -563,6 +865,7 @@ struct AgentConnectionsTests {
             mappedInformation: [],
             privacyExclusions: [],
             repairableConnectorIssue: repairable,
+            canRepairManagedConnector: canManage,
             managedPathConflict: conflict,
             canUninstallManagedConnector: canUninstall
         )
