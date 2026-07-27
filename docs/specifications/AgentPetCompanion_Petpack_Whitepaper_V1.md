@@ -116,7 +116,8 @@ State array order is not semantic, but writers use the table order for determini
 - A native 10 FPS package supports Standard playback only. A native 20 FPS package supports both Standard and Smooth playback.
 - Playback profile selection changes presentation cadence and decoded-frame demand only. It never changes the declared state duration, accelerates motion, or slows motion.
 - A native 20 FPS loop sampled at 10 FPS uses every second source frame. A one-shot sample preserves the authored first and final poses while selecting ten uniformly distributed presentation frames per second.
-- A loop begins its next cycle exactly at `duration_ms`. A one-shot completes exactly at `duration_ms` and then holds its final frame until the runtime state changes.
+- A loop begins its next cycle exactly at `duration_ms`. A one-shot completes exactly at `duration_ms` and normally holds its final frame until the runtime state changes.
+- The desktop `start` presentation is the deliberate runtime exception: it completes the authored forward one-shot first, then alternates reverse and forward traversals while the same `start` state remains active. Each traversal keeps the declared `duration_ms` and source cadence, avoiding both a frozen thinking pose and a hard final-to-first seam without changing the package's `loop: false` contract. `done` remains a terminal one-shot and holds its final frame.
 - The animated preview is a non-authoritative display asset. Its codec timing must not be used to infer package timing.
 
 ### Product presentation boundary

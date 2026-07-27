@@ -1,5 +1,6 @@
 import AgentPetCompanionCore
 import Foundation
+import SwiftUI
 
 enum APCLocalizationKey: String, CaseIterable, Sendable {
     case appActionOpenControlCenter = "app.action.open_control_center"
@@ -262,6 +263,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case appearanceSystem = "appearance.system"
     case appearanceLight = "appearance.light"
     case appearanceDark = "appearance.dark"
+    case interfaceLanguageSystem = "interface_language.system"
+    case interfaceLanguageEnglish = "interface_language.english"
+    case interfaceLanguageSimplifiedChinese = "interface_language.simplified_chinese"
     case sessionGroupStacked = "session_group.stacked"
     case sessionGroupExpanded = "session_group.expanded"
     case checkStatusOK = "check_status.ok"
@@ -434,6 +438,9 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configPersistenceNote = "config.persistence_note"
     case configSessionDisplay = "config.session_display"
     case configMessagePreview = "config.message_preview"
+    case configLanguagePicker = "config.language_picker"
+    case configLanguageAccessibility = "config.language_accessibility"
+    case configLanguageDetail = "config.language_detail"
     case configThemePicker = "config.theme_picker"
     case configThemeAccessibility = "config.theme_accessibility"
     case configThemeDetail = "config.theme_detail"
@@ -908,10 +915,54 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case aboutLocalBuild = "about.local_build"
 }
 
+private final class APCLocalizationPreference: @unchecked Sendable {
+    private let lock = NSLock()
+    private var language: InterfaceLanguage = .system
+
+    func read() -> InterfaceLanguage {
+        lock.lock()
+        defer { lock.unlock() }
+        return language
+    }
+
+    func write(_ next: InterfaceLanguage) {
+        lock.lock()
+        language = next
+        lock.unlock()
+    }
+}
+
 enum APCLocalization {
     static let requiredV1Keys = APCLocalizationKey.allCases
+    private static let preference = APCLocalizationPreference()
+
+    static var interfaceLanguage: InterfaceLanguage {
+        preference.read()
+    }
+
     static var interfaceLocaleIdentifier: String {
-        resolvedInterfaceLocaleIdentifier(preferredLanguages: Locale.preferredLanguages)
+        resolvedInterfaceLocaleIdentifier(
+            interfaceLanguage: interfaceLanguage,
+            preferredLanguages: Locale.preferredLanguages
+        )
+    }
+
+    static func applyInterfaceLanguage(_ language: InterfaceLanguage) {
+        preference.write(language)
+    }
+
+    static func resolvedInterfaceLocaleIdentifier(
+        interfaceLanguage: InterfaceLanguage,
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> String {
+        switch interfaceLanguage {
+        case .system:
+            resolvedInterfaceLocaleIdentifier(preferredLanguages: preferredLanguages)
+        case .english:
+            "en"
+        case .simplifiedChinese:
+            "zh-Hans"
+        }
     }
 
     static func resolvedInterfaceLocaleIdentifier(
@@ -1037,6 +1088,25 @@ enum APCLocalization {
         struct StringUnit: Decodable, Sendable {
             var value: String
         }
+    }
+}
+
+private struct APCInterfaceLanguageModifier: ViewModifier {
+    @ObservedObject var store: AppStore
+
+    func body(content: Content) -> some View {
+        content
+            .environment(
+                \.locale,
+                Locale(identifier: store.interfaceLocaleIdentifier)
+            )
+            .id(store.behavior.interfaceLanguage)
+    }
+}
+
+extension View {
+    func apcInterfaceLanguage(_ store: AppStore) -> some View {
+        modifier(APCInterfaceLanguageModifier(store: store))
     }
 }
 
@@ -1266,6 +1336,18 @@ enum APCLocalizedPresentation {
         case .system: .appearanceSystem
         case .light: .appearanceLight
         case .dark: .appearanceDark
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func interfaceLanguageTitle(
+        _ language: InterfaceLanguage,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch language {
+        case .system: .interfaceLanguageSystem
+        case .english: .interfaceLanguageEnglish
+        case .simplifiedChinese: .interfaceLanguageSimplifiedChinese
         }
         return APCLocalization.text(key, locale: locale)
     }

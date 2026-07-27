@@ -36,6 +36,33 @@ struct FrameSchedulerTests {
     }
 
     @Test
+    func autoreversingStateCompletesTheForwardActionBeforeReturningSmoothly() {
+        let scheduler = FrameScheduler(
+            fps: 10,
+            frameCount: 10,
+            durationMS: 1_000,
+            playbackMode: .autoreverse
+        )
+
+        #expect(scheduler.frameIndex(elapsedSeconds: 0) == 0)
+        #expect(scheduler.frameIndex(elapsedSeconds: 0.9) == 9)
+        #expect(scheduler.frameIndex(elapsedSeconds: 1) == 9)
+        #expect(scheduler.frameIndex(elapsedSeconds: 1.1) == 8)
+        #expect(scheduler.frameIndex(elapsedSeconds: 1.9) == 0)
+        #expect(scheduler.frameIndex(elapsedSeconds: 2) == 0)
+        #expect(scheduler.frameIndex(elapsedSeconds: 2.1) == 1)
+        #expect(!scheduler.hasCompleted(elapsedSeconds: 10))
+    }
+
+    @Test
+    func animationContractAutoreversesStartButKeepsDoneTerminal() {
+        #expect(PetAnimationContract.loops(stateName: "start") == false)
+        #expect(PetAnimationContract.playbackMode(stateName: "start") == .autoreverse)
+        #expect(PetAnimationContract.playbackMode(stateName: "tool") == .loop)
+        #expect(PetAnimationContract.playbackMode(stateName: "done") == .oneShot)
+    }
+
+    @Test
     func stateChangeResetsFrame() {
         let scheduler = FrameScheduler(
             fps: 10,

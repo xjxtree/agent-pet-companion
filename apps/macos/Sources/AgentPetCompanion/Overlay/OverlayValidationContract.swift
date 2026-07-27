@@ -677,7 +677,8 @@ public enum AgentPetCompanionUIValidationContract {
             requestedFPS: 10,
             nativeFPS: 20,
             durationMS: 2_000,
-            loops: true
+            authoredLoops: true,
+            playbackMode: .loop
         )
         let prepared = try await Task { @MainActor in
             try await pipeline.prepare(request)

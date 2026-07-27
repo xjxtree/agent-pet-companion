@@ -476,10 +476,16 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
-    func completeSnapshotFinallyArbitratesAppearanceAndOnlyThenPresentsOverlay() async throws {
+    func completeSnapshotFinallyArbitratesPresentationAndOnlyThenPresentsOverlay() async throws {
         let probe = InitialAppearanceProbe()
-        let prefetchedBehavior = BehaviorSettings(appearanceTheme: .dark)
-        let snapshotBehavior = BehaviorSettings(appearanceTheme: .light)
+        let prefetchedBehavior = BehaviorSettings(
+            interfaceLanguage: .english,
+            appearanceTheme: .dark
+        )
+        let snapshotBehavior = BehaviorSettings(
+            interfaceLanguage: .simplifiedChinese,
+            appearanceTheme: .light
+        )
         let pet = PetSummary(
             id: "pet_snapshot",
             name: "Snapshot Pet",
@@ -506,6 +512,16 @@ struct InitialAppearanceBootstrapTests {
                 probe.appearanceApplications += 1
                 probe.appearanceObservation = AppearanceApplicationObservation(
                     theme: theme,
+                    behavior: store.behavior,
+                    revision: store.behaviorRevision,
+                    readiness: store.initialAppearanceReadiness
+                )
+            },
+            applicationLanguageApplier: { language in
+                guard let store = probe.store else { return }
+                probe.languageApplications += 1
+                probe.languageObservation = LanguageApplicationObservation(
+                    language: language,
                     behavior: store.behavior,
                     revision: store.behaviorRevision,
                     readiness: store.initialAppearanceReadiness
@@ -539,6 +555,13 @@ struct InitialAppearanceBootstrapTests {
         #expect(probe.appearanceApplications == 2)
         #expect(probe.appearanceObservation == AppearanceApplicationObservation(
             theme: .light,
+            behavior: snapshotBehavior,
+            revision: "8",
+            readiness: .authoritative
+        ))
+        #expect(probe.languageApplications == 2)
+        #expect(probe.languageObservation == LanguageApplicationObservation(
+            language: .simplifiedChinese,
             behavior: snapshotBehavior,
             revision: "8",
             readiness: .authoritative
@@ -625,9 +648,11 @@ private final class InitialAppearanceProbe {
     weak var store: AppStore?
     var events: [String] = []
     var appearanceObservation: AppearanceApplicationObservation?
+    var languageObservation: LanguageApplicationObservation?
     var overlayObservation: OverlayPresentationObservation?
     var readinessObservedByOnReady: InitialAppearanceReadiness?
     var appearanceApplications = 0
+    var languageApplications = 0
     var overlayPresentations = 0
     var initialBehaviorRequests = 0
     var readyCallbacks = 0
@@ -635,6 +660,13 @@ private final class InitialAppearanceProbe {
 
 private struct AppearanceApplicationObservation: Equatable {
     let theme: AppearanceTheme
+    let behavior: BehaviorSettings
+    let revision: String
+    let readiness: InitialAppearanceReadiness
+}
+
+private struct LanguageApplicationObservation: Equatable {
+    let language: InterfaceLanguage
     let behavior: BehaviorSettings
     let revision: String
     let readiness: InitialAppearanceReadiness

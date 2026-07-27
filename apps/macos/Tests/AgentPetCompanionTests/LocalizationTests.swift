@@ -22,6 +22,18 @@ struct LocalizationTests {
         #expect(APCLocalization.resolvedInterfaceLocaleIdentifier(
             preferredLanguages: []
         ) == "en")
+        #expect(APCLocalization.resolvedInterfaceLocaleIdentifier(
+            interfaceLanguage: .english,
+            preferredLanguages: ["zh-Hans"]
+        ) == "en")
+        #expect(APCLocalization.resolvedInterfaceLocaleIdentifier(
+            interfaceLanguage: .simplifiedChinese,
+            preferredLanguages: ["en-US"]
+        ) == "zh-Hans")
+        #expect(APCLocalization.resolvedInterfaceLocaleIdentifier(
+            interfaceLanguage: .system,
+            preferredLanguages: ["zh-CN"]
+        ) == "zh-Hans")
     }
 
     @Test
@@ -44,6 +56,18 @@ struct LocalizationTests {
             == "聚焦桌宠会话")
         #expect(APCLocalization.text(.appActionFocusPetResize, locale: "en")
             == "Focus Pet Resize Handle")
+        #expect(APCLocalizedPresentation.interfaceLanguageTitle(
+            .system,
+            locale: "en"
+        ) == "Follow System")
+        #expect(APCLocalizedPresentation.interfaceLanguageTitle(
+            .english,
+            locale: "zh-Hans"
+        ) == "English")
+        #expect(APCLocalizedPresentation.interfaceLanguageTitle(
+            .simplifiedChinese,
+            locale: "en"
+        ) == "简体中文")
     }
 
     @Test

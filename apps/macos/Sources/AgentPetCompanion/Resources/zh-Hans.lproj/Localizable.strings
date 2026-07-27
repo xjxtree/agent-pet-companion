@@ -131,6 +131,9 @@
 "appearance.system" = "系统";
 "appearance.light" = "浅色";
 "appearance.dark" = "深色";
+"interface_language.system" = "跟随系统";
+"interface_language.english" = "English";
+"interface_language.simplified_chinese" = "简体中文";
 "session_group.stacked" = "堆叠";
 "session_group.expanded" = "展开";
 "check_status.ok" = "正常";
@@ -303,6 +306,9 @@
 "config.persistence_note" = "等待确认和失败会话始终保持显示，不受普通消息收起时间影响。";
 "config.session_display" = "会话显示";
 "config.message_preview" = "消息预览";
+"config.language_picker" = "语言";
+"config.language_accessibility" = "App 语言";
+"config.language_detail" = "立即切换控制中心、桌宠、菜单和无障碍文字的语言。";
 "config.theme_picker" = "外观";
 "config.theme_accessibility" = "外观主题";
 "config.theme_detail" = "同时应用于控制中心、状态气泡、操作按钮和右击菜单。";

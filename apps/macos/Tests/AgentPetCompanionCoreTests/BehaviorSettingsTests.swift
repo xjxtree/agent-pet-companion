@@ -27,6 +27,7 @@ struct BehaviorSettingsTests {
         let previous = BehaviorSettings()
         var next = previous
         next.autoHide = true
+        next.interfaceLanguage = .simplifiedChinese
         next.appearanceTheme = .dark
         next.bubbleTransparency = 0.75
         next.sessionMessageTimeoutMinutes = 30
@@ -42,6 +43,7 @@ struct BehaviorSettingsTests {
 
         #expect(!patch.isEmpty)
         #expect(object["auto_hide"] as? Bool == true)
+        #expect(object["interface_language"] as? String == "simplified_chinese")
         #expect(object["appearance_theme"] as? String == "dark")
         #expect(object["bubble_transparency"] as? Double == 0.75)
         #expect(object["session_message_timeout_minutes"] as? Int == 30)
@@ -68,6 +70,7 @@ struct BehaviorSettingsTests {
         )
 
         #expect(legacy.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
+        #expect(legacy.interfaceLanguage == .system)
         #expect(legacy.appearanceTheme == .system)
         #expect(legacy.sessionGroupDisplay == .stacked)
         #expect(tooTransparent.bubbleTransparency == 1)
@@ -75,8 +78,9 @@ struct BehaviorSettingsTests {
     }
 
     @Test
-    func appearanceAndSessionGroupingRoundTripWithoutChangingTransparency() throws {
+    func languageAppearanceAndSessionGroupingRoundTripWithoutChangingTransparency() throws {
         let behavior = BehaviorSettings(
+            interfaceLanguage: .english,
             appearanceTheme: .light,
             bubbleTransparency: 0.35,
             sessionGroupDisplay: .expanded
@@ -84,6 +88,7 @@ struct BehaviorSettingsTests {
         let data = try JSONEncoder().encode(behavior)
         let decoded = try JSONDecoder().decode(BehaviorSettings.self, from: data)
 
+        #expect(decoded.interfaceLanguage == .english)
         #expect(decoded.appearanceTheme == .light)
         #expect(decoded.bubbleTransparency == 0.35)
         #expect(decoded.sessionGroupDisplay == .expanded)

@@ -2892,6 +2892,35 @@ fn appearance_theme_patch_is_typed_and_persisted() {
 }
 
 #[test]
+fn interface_language_patch_is_typed_and_persisted() {
+    let (_temp, state) = ready();
+    let current = snapshot(&state);
+    let revision = current["behavior_revision"].as_str().unwrap();
+    let updated = patch(
+        &state,
+        revision,
+        json!({ "interface_language": "simplified_chinese" }),
+    )
+    .unwrap();
+    assert_eq!(
+        updated["behavior"]["interface_language"],
+        "simplified_chinese"
+    );
+
+    let current = snapshot(&state);
+    assert_eq!(
+        current["behavior"]["interface_language"],
+        "simplified_chinese"
+    );
+    assert!(patch(
+        &state,
+        current["behavior_revision"].as_str().unwrap(),
+        json!({ "interface_language": "esperanto" }),
+    )
+    .is_err());
+}
+
+#[test]
 fn session_group_display_patch_is_typed_and_persisted() {
     let (_temp, state) = ready();
     let initial = snapshot(&state);

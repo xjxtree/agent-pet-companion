@@ -19,12 +19,21 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
 enum BehaviorSettingsCatalog {
     static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
     static let events: [AgentEventKind] = [.start, .tool, .waiting, .review, .done, .failed]
+    static let interfaceLanguages: [InterfaceLanguage] = [
+        .system,
+        .english,
+        .simplifiedChinese,
+    ]
     static let appearanceThemes: [AppearanceTheme] = [.system, .light, .dark]
     static let fpsProfiles: [FpsProfile] = [.standard, .smooth]
     static let groupDisplays: [SessionGroupDisplay] = [.stacked, .expanded]
 
     static func title(for theme: AppearanceTheme) -> String {
         APCLocalizedPresentation.appearanceTitle(theme)
+    }
+
+    static func title(for language: InterfaceLanguage) -> String {
+        APCLocalizedPresentation.interfaceLanguageTitle(language)
     }
 
     static func supportedFPSProfiles(for pet: PetSummary?) -> [FpsProfile] {
@@ -223,6 +232,7 @@ struct BehaviorSettingsView: View {
                     updateBehavior(\.statusBubble, value: value)
                 }
 
+                interfaceLanguageSetting
                 appearanceThemeSetting
                 fpsSetting
             } header: {
@@ -410,6 +420,34 @@ struct BehaviorSettingsView: View {
             .help(APCLocalization.text(.configThemeDetail))
             .accessibilityHint(APCLocalization.text(.configThemeDetail))
             .accessibilityIdentifier("configuration.appearance.theme")
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var interfaceLanguageSetting: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker(
+                APCLocalization.text(.configLanguagePicker),
+                selection: behaviorBinding(\.interfaceLanguage)
+            ) {
+                ForEach(BehaviorSettingsCatalog.interfaceLanguages) { language in
+                    Text(BehaviorSettingsCatalog.title(for: language))
+                        .tag(language)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityLabel(APCLocalization.text(.configLanguageAccessibility))
+            .accessibilityValue(
+                BehaviorSettingsCatalog.title(for: store.behavior.interfaceLanguage)
+            )
+            .help(APCLocalization.text(.configLanguageDetail))
+            .accessibilityHint(APCLocalization.text(.configLanguageDetail))
+            .accessibilityIdentifier("configuration.appearance.language")
+
+            Text(APCLocalization.text(.configLanguageDetail))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
     }

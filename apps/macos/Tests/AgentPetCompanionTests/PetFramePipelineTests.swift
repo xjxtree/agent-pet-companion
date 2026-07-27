@@ -283,6 +283,30 @@ struct PetFramePipelineTests {
     }
 
     @Test
+    func originalQualityAutoreverseKeepsTheReverseSideOfTheRingReady() async throws {
+        let probe = FrameDecoderProbe()
+        let pipeline = makePipeline(
+            probe: probe,
+            frameCount: 20,
+            originalWindowSize: 7
+        )
+
+        let prepared = try await pipeline.prepare(request(
+            quality: .original,
+            stateName: "start",
+            nativeFPS: 20,
+            requestedFPS: 20,
+            durationMS: 1_000
+        ))
+        let atTerminalPose = try await pipeline.prefetch(prepared, around: 19)
+
+        #expect(atTerminalPose.readyFrameCount <= prepared.cacheFrameLimit)
+        #expect(atTerminalPose.readyFrame(at: 19) != nil)
+        #expect(atTerminalPose.readyFrame(at: 18) != nil)
+        #expect(atTerminalPose.readyFrame(at: 17) != nil)
+    }
+
+    @Test
     func standardPlaybackOfSmoothPetDecodesOnlyTheSampledFrames() async throws {
         let standardProbe = FrameDecoderProbe()
         let standardPipeline = makePipeline(probe: standardProbe, frameCount: 40)
@@ -339,6 +363,41 @@ struct PetFramePipelineTests {
         let terminal = handoff.lookup(at: 10)
         #expect(terminal.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
         #expect(terminal.shouldPauseAfterDraw)
+    }
+
+    @Test
+    func persistentStartAutoreversesWithoutChangingOneShotSampling() async throws {
+        let probe = FrameDecoderProbe()
+        let pipeline = makePipeline(probe: probe, frameCount: 20)
+        let prepared = try await pipeline.prepare(request(
+            quality: .high,
+            stateName: "start",
+            nativeFPS: 20,
+            requestedFPS: 10,
+            durationMS: 1_000
+        ))
+
+        #expect(prepared.sampledSourceIndices.first == 0)
+        #expect(prepared.sampledSourceIndices.last == 19)
+        #expect(prepared.playbackMode == .autoreverse)
+
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "start:first", enteredAt: 10)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        let forwardStart = handoff.lookup(at: 10)
+        let forwardEnd = handoff.lookup(at: 10.9)
+        let reverseStart = handoff.lookup(at: 11)
+        let reverseNext = handoff.lookup(at: 11.1)
+        let nextCycle = handoff.lookup(at: 12)
+
+        #expect(forwardStart.frame?.hitTestIdentity == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        #expect(forwardEnd.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
+        #expect(reverseStart.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
+        #expect(reverseNext.frame?.hitTestIdentity == prepared.readyFrame(at: 8)?.hitTestIdentity)
+        #expect(nextCycle.frame?.hitTestIdentity == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        #expect(!nextCycle.shouldPauseAfterDraw)
     }
 
     @Test
@@ -408,13 +467,13 @@ struct PetFramePipelineTests {
     @Test
     func testOneShotPlaybackDoesNotReplayAfterCanonicalABARotation() {
         var history = PetPlaybackEntryHistory(capacity: 8)
-        let sessionA = "start:codex:session-a:activation-1"
-        let sessionB = "start:codex:session-b:activation-1"
+        let sessionA = "done:codex:session-a:activation-1"
+        let sessionB = "done:codex:session-b:activation-1"
 
-        #expect(history.transition(to: sessionA, loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: sessionB, loops: false).shouldRestartPlayback)
+        #expect(history.transition(to: sessionA, playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: sessionB, playbackMode: .oneShot).shouldRestartPlayback)
 
-        let rotatedBack = history.transition(to: sessionA, loops: false)
+        let rotatedBack = history.transition(to: sessionA, playbackMode: .oneShot)
         #expect(rotatedBack.isNewEntry)
         #expect(!rotatedBack.shouldRestartPlayback)
     }
@@ -422,36 +481,63 @@ struct PetFramePipelineTests {
     @Test
     func testOneShotPlaybackReplaysForGenuineNewActivation() {
         var history = PetPlaybackEntryHistory(capacity: 8)
-        let firstActivation = "start:codex:session-a:activation-1"
-        let otherSession = "start:codex:session-b:activation-1"
-        let nextActivation = "start:codex:session-a:activation-2"
+        let firstActivation = "done:codex:session-a:activation-1"
+        let otherSession = "done:codex:session-b:activation-1"
+        let nextActivation = "done:codex:session-a:activation-2"
 
-        #expect(history.transition(to: firstActivation, loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: otherSession, loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: firstActivation, loops: false).isNewEntry)
-        #expect(history.transition(to: nextActivation, loops: false).shouldRestartPlayback)
+        #expect(history.transition(
+            to: firstActivation,
+            playbackMode: .oneShot
+        ).shouldRestartPlayback)
+        #expect(history.transition(
+            to: otherSession,
+            playbackMode: .oneShot
+        ).shouldRestartPlayback)
+        #expect(history.transition(to: firstActivation, playbackMode: .oneShot).isNewEntry)
+        #expect(history.transition(
+            to: nextActivation,
+            playbackMode: .oneShot
+        ).shouldRestartPlayback)
     }
 
     @Test
     func testLoopingPlaybackRetainsCurrentEntryRestartSemantics() {
         var history = PetPlaybackEntryHistory(capacity: 8)
 
-        #expect(history.transition(to: "tool", loops: true).shouldRestartPlayback)
-        let duplicate = history.transition(to: "tool", loops: true)
+        #expect(history.transition(to: "tool", playbackMode: .loop).shouldRestartPlayback)
+        let duplicate = history.transition(to: "tool", playbackMode: .loop)
         #expect(!duplicate.isNewEntry)
         #expect(!duplicate.shouldRestartPlayback)
-        #expect(history.transition(to: "waiting", loops: true).shouldRestartPlayback)
-        #expect(history.transition(to: "tool", loops: true).shouldRestartPlayback)
+        #expect(history.transition(to: "waiting", playbackMode: .loop).shouldRestartPlayback)
+        #expect(history.transition(to: "tool", playbackMode: .loop).shouldRestartPlayback)
+    }
+
+    @Test
+    func testAutoreversingStartRetainsRepeatingEntrySemantics() {
+        var history = PetPlaybackEntryHistory(capacity: 8)
+
+        #expect(history.transition(
+            to: "start:session-a",
+            playbackMode: .autoreverse
+        ).shouldRestartPlayback)
+        #expect(history.transition(
+            to: "start:session-b",
+            playbackMode: .autoreverse
+        ).shouldRestartPlayback)
+        #expect(history.transition(
+            to: "start:session-a",
+            playbackMode: .autoreverse
+        ).shouldRestartPlayback)
     }
 
     @Test
     func testOneShotPlaybackHistoryIsBounded() {
         var history = PetPlaybackEntryHistory(capacity: 2)
 
-        #expect(history.transition(to: "start:a:1", loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: "start:b:1", loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: "start:c:1", loops: false).shouldRestartPlayback)
-        #expect(history.transition(to: "start:a:1", loops: false).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: "done:b:1", playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: "done:c:1", playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .oneShot).shouldRestartPlayback)
     }
 
     @Test
@@ -657,7 +743,8 @@ struct PetFramePipelineTests {
             requestedFPS: requestedFPS,
             nativeFPS: nativeFPS,
             durationMS: resolvedDurationMS,
-            loops: stateName != "start" && stateName != "done"
+            authoredLoops: PetAnimationContract.loops(stateName: stateName),
+            playbackMode: PetAnimationContract.playbackMode(stateName: stateName)
         )
     }
 

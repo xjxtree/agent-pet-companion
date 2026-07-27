@@ -149,8 +149,22 @@ public enum PetAnimationContract {
         "failed": 2_000,
     ]
 
+    /// V1 package authoring topology. Runtime presentation may continue a
+    /// persistent state without changing this manifest-level contract.
     public static func loops(stateName: String) -> Bool {
         stateName != "start" && stateName != "done"
+    }
+
+    /// App playback while one projected state remains active.
+    public static func playbackMode(stateName: String) -> FramePlaybackMode {
+        switch stateName {
+        case "start":
+            .autoreverse
+        case "done":
+            .oneShot
+        default:
+            .loop
+        }
     }
 
     public static func hasValidStateDurations(_ durations: [String: Int]) -> Bool {
@@ -227,6 +241,14 @@ public enum AppearanceTheme: String, CaseIterable, Identifiable, Codable, Sendab
     }
 }
 
+public enum InterfaceLanguage: String, CaseIterable, Identifiable, Codable, Sendable {
+    case system
+    case english
+    case simplifiedChinese = "simplified_chinese"
+
+    public var id: String { rawValue }
+}
+
 public enum SessionGroupDisplay: String, CaseIterable, Identifiable, Codable, Sendable {
     case stacked
     case expanded
@@ -246,6 +268,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
 
     public var enabled: Bool
     public var statusBubble: Bool
+    public var interfaceLanguage: InterfaceLanguage
     public var appearanceTheme: AppearanceTheme
     public var bubbleTransparency: Double
     public var clickMenu: Bool
@@ -260,6 +283,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public init(
         enabled: Bool = true,
         statusBubble: Bool = true,
+        interfaceLanguage: InterfaceLanguage = .system,
         appearanceTheme: AppearanceTheme = .system,
         bubbleTransparency: Double = BehaviorSettings.defaultBubbleTransparency,
         clickMenu: Bool = true,
@@ -273,6 +297,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     ) {
         self.enabled = enabled
         self.statusBubble = statusBubble
+        self.interfaceLanguage = interfaceLanguage
         self.appearanceTheme = appearanceTheme
         self.bubbleTransparency = Self.clampedBubbleTransparency(bubbleTransparency)
         self.clickMenu = clickMenu
@@ -288,6 +313,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case statusBubble = "status_bubble"
+        case interfaceLanguage = "interface_language"
         case appearanceTheme = "appearance_theme"
         case bubbleTransparency = "bubble_transparency"
         case clickMenu = "click_menu"
@@ -305,6 +331,10 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         let defaults = BehaviorSettings()
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
         statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble) ?? defaults.statusBubble
+        interfaceLanguage = try container.decodeIfPresent(
+            InterfaceLanguage.self,
+            forKey: .interfaceLanguage
+        ) ?? defaults.interfaceLanguage
         appearanceTheme = try container.decodeIfPresent(AppearanceTheme.self, forKey: .appearanceTheme)
             ?? defaults.appearanceTheme
         bubbleTransparency = Self.clampedBubbleTransparency(
@@ -339,6 +369,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(statusBubble, forKey: .statusBubble)
+        try container.encode(interfaceLanguage, forKey: .interfaceLanguage)
         try container.encode(appearanceTheme, forKey: .appearanceTheme)
         try container.encode(bubbleTransparency, forKey: .bubbleTransparency)
         try container.encode(clickMenu, forKey: .clickMenu)
@@ -369,6 +400,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
 public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var enabled: Bool?
     public var statusBubble: Bool?
+    public var interfaceLanguage: InterfaceLanguage?
     public var appearanceTheme: AppearanceTheme?
     public var bubbleTransparency: Double?
     public var clickMenu: Bool?
@@ -383,6 +415,9 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public init(from previous: BehaviorSettings, to next: BehaviorSettings) {
         enabled = previous.enabled == next.enabled ? nil : next.enabled
         statusBubble = previous.statusBubble == next.statusBubble ? nil : next.statusBubble
+        interfaceLanguage = previous.interfaceLanguage == next.interfaceLanguage
+            ? nil
+            : next.interfaceLanguage
         appearanceTheme = previous.appearanceTheme == next.appearanceTheme ? nil : next.appearanceTheme
         bubbleTransparency = previous.bubbleTransparency == next.bubbleTransparency
             ? nil
@@ -408,6 +443,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var isEmpty: Bool {
         enabled == nil
             && statusBubble == nil
+            && interfaceLanguage == nil
             && appearanceTheme == nil
             && bubbleTransparency == nil
             && clickMenu == nil
@@ -423,6 +459,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case enabled
         case statusBubble = "status_bubble"
+        case interfaceLanguage = "interface_language"
         case appearanceTheme = "appearance_theme"
         case bubbleTransparency = "bubble_transparency"
         case clickMenu = "click_menu"
@@ -439,6 +476,10 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
         statusBubble = try container.decodeIfPresent(Bool.self, forKey: .statusBubble)
+        interfaceLanguage = try container.decodeIfPresent(
+            InterfaceLanguage.self,
+            forKey: .interfaceLanguage
+        )
         appearanceTheme = try container.decodeIfPresent(AppearanceTheme.self, forKey: .appearanceTheme)
         bubbleTransparency = try container.decodeIfPresent(Double.self, forKey: .bubbleTransparency)
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
@@ -471,6 +512,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(enabled, forKey: .enabled)
         try container.encodeIfPresent(statusBubble, forKey: .statusBubble)
+        try container.encodeIfPresent(interfaceLanguage, forKey: .interfaceLanguage)
         try container.encodeIfPresent(appearanceTheme, forKey: .appearanceTheme)
         try container.encodeIfPresent(bubbleTransparency, forKey: .bubbleTransparency)
         try container.encodeIfPresent(clickMenu, forKey: .clickMenu)

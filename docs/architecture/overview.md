@@ -57,9 +57,9 @@ the full row is the exact-session action when that typed capability exists.
 1. The App claims its single-instance lock and starts App diagnostics.
 2. It accepts an existing PetCore only when health, RPC version, build identity, runtime manifest, and connector environment match the bundled runtime contract.
 3. Otherwise it stages and preflights the bundled PetCore/CLI runtime, replaces the old service, health-checks the candidate, and commits or rolls back the managed runtime.
-4. At bootstrap start, the App arms a short independent fallback that reveals system appearance if PetCore startup or the focused behavior read stalls or fails. Once PetCore is healthy, the App reads versioned behavior settings through PetCore and applies the persisted appearance before revealing the control-center and About windows; bundled-pet seeding cannot keep the windows invisible. The App does not mirror settings into App-local storage or read SQLite directly.
+4. At bootstrap start, the App arms a short independent fallback that reveals the system language and appearance if PetCore startup or the focused behavior read stalls or fails. Once PetCore is healthy, the App reads versioned behavior settings through PetCore and applies the persisted interface language and appearance before revealing the control-center and About windows; bundled-pet seeding cannot keep the windows invisible. The App does not mirror settings into App-local storage or read SQLite directly.
 5. The App converges the fixed bundled-pet inventory by stable ID and pinned package digest. A missing ID is installed; an ordinary same-ID pet is preserved byte-for-byte and remains an eligible included-companion choice without gaining bundled authority. Only an identity already marked as trusted bundled inventory may advance to the current package as a new immutable revision, preserving the active pet selection and every older revision.
-6. The App reads `state.snapshot`, including versioned onboarding progress, and applies it as the final appearance/state authority. It presents the nonterminal first-run scene or the ordinary control center root, then presents the desktop overlay.
+6. The App reads `state.snapshot`, including versioned onboarding progress, and applies it as the final presentation/state authority. It presents the nonterminal first-run scene or the ordinary control center root, then presents the desktop overlay.
 7. The App subsequently waits on `state.wait`. State changes are keyed by the monotonic database revision; the App does not repeatedly reload SQLite or poll the bundle on a two-second timer.
 
 Dock reopen, second-instance activation, MenuBarExtra, and overlay actions target the registered control-center window identity. The About window is a separate scene and is never selected as the control center. Initial automatic retry and explicit user recovery coalesce onto one full bootstrap pipeline so behavior hydration, bundled-pet seeding, snapshot publication, and first overlay presentation cannot race each other.
@@ -93,6 +93,12 @@ sequenceDiagram
 ```
 
 The persisted event set is `start`, `tool`, `waiting`, `review`, `done`, and `failed`; `idle` is the no-activity pet state. Display aliases such as “thinking” or “working” must not replace protocol names.
+
+The App preserves the package's authored sampling and fixed duration while
+applying state-lifetime presentation. A `start` action completes once in the
+authored direction, then autoreverses while the same thinking state remains
+active so it neither freezes nor jumps across a mismatched final/first seam.
+`done` remains a one-shot and holds its final pose until the state changes.
 
 ### Pet creation and editing
 

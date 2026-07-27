@@ -11,11 +11,12 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
     BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    OnboardingProgress, OnboardingStage, OverlayPlacement, PetOrigin, PetStateName, PetSummary,
-    QualityLevel, RenderSize, SessionGroupDisplay, LONG_ACTION_DURATION_MS,
-    MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
-    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
-    SHORT_ACTION_DURATION_MS, SMOOTH_FPS, STANDARD_FPS,
+    InterfaceLanguage, OnboardingProgress, OnboardingStage, OverlayPlacement, PetOrigin,
+    PetStateName, PetSummary, QualityLevel, RenderSize, SessionGroupDisplay,
+    LONG_ACTION_DURATION_MS, MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    MIN_BUBBLE_TRANSPARENCY, MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES, SHORT_ACTION_DURATION_MS, SMOOTH_FPS,
+    STANDARD_FPS,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
@@ -143,6 +144,7 @@ fn task_evidence_event_matches(
 pub struct BehaviorSettingsPatch {
     pub enabled: Option<bool>,
     pub status_bubble: Option<bool>,
+    pub interface_language: Option<InterfaceLanguage>,
     pub appearance_theme: Option<AppearanceTheme>,
     pub bubble_transparency: Option<f64>,
     pub click_menu: Option<bool>,
@@ -159,6 +161,7 @@ impl BehaviorSettingsPatch {
     fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.status_bubble.is_none()
+            && self.interface_language.is_none()
             && self.appearance_theme.is_none()
             && self.bubble_transparency.is_none()
             && self.click_menu.is_none()
@@ -177,6 +180,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.status_bubble {
             behavior.status_bubble = value;
+        }
+        if let Some(value) = self.interface_language {
+            behavior.interface_language = value;
         }
         if let Some(value) = self.appearance_theme {
             behavior.appearance_theme = value;

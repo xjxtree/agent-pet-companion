@@ -495,6 +495,7 @@ final class AppStore: ObservableObject {
     ) -> Bool
     typealias RuntimeHandoffCheck = @MainActor () -> Bool
     typealias ApplicationAppearanceApplier = @MainActor (AppearanceTheme) -> Void
+    typealias ApplicationLanguageApplier = @MainActor (InterfaceLanguage) -> Void
     typealias OverlayPresenter = @MainActor (PetOverlayController, AppStore) -> Void
     typealias OverlayKeyboardFocusHandler = @MainActor (
         _ controller: PetOverlayController,
@@ -582,6 +583,7 @@ final class AppStore: ObservableObject {
     private let initialAppearanceFallbackSleeper: InitialAppearanceFallbackSleeper
     private let runtimeHandoffIfNeeded: RuntimeHandoffCheck
     private let applicationAppearanceApplier: ApplicationAppearanceApplier
+    private let applicationLanguageApplier: ApplicationLanguageApplier
     private let overlayPresenter: OverlayPresenter
     private let overlayKeyboardFocusHandler: OverlayKeyboardFocusHandler
     private let petCoreRequestOverride: PetCoreRequestOverride?
@@ -674,6 +676,9 @@ final class AppStore: ObservableObject {
         applicationAppearanceApplier = { theme in
             APCApplicationAppearance.apply(theme)
         }
+        applicationLanguageApplier = { language in
+            APCLocalization.applyInterfaceLanguage(language)
+        }
         overlayPresenter = { controller, store in
             controller.show(store: store)
         }
@@ -717,6 +722,9 @@ final class AppStore: ObservableObject {
         applicationAppearanceApplier: @escaping ApplicationAppearanceApplier = { theme in
             APCApplicationAppearance.apply(theme)
         },
+        applicationLanguageApplier: @escaping ApplicationLanguageApplier = { language in
+            APCLocalization.applyInterfaceLanguage(language)
+        },
         overlayPresenter: @escaping OverlayPresenter = { controller, store in
             controller.show(store: store)
         },
@@ -746,6 +754,7 @@ final class AppStore: ObservableObject {
         self.initialAppearanceFallbackSleeper = initialAppearanceFallbackSleeper
         self.runtimeHandoffIfNeeded = runtimeHandoffIfNeeded
         self.applicationAppearanceApplier = applicationAppearanceApplier
+        self.applicationLanguageApplier = applicationLanguageApplier
         self.overlayPresenter = overlayPresenter
         self.overlayKeyboardFocusHandler = overlayKeyboardFocusHandler
             ?? Self.defaultOverlayKeyboardFocusHandler
@@ -762,6 +771,12 @@ final class AppStore: ObservableObject {
 
     var activePet: PetSummary? {
         pets.first(where: \.active)
+    }
+
+    var interfaceLocaleIdentifier: String {
+        APCLocalization.resolvedInterfaceLocaleIdentifier(
+            interfaceLanguage: behavior.interfaceLanguage
+        )
     }
 
     private var hasProtectedUserWork: Bool {
@@ -1402,7 +1417,7 @@ final class AppStore: ObservableObject {
             authoritativeBehavior = versioned.behavior
             behavior = versioned.behavior
             behaviorRevision = versioned.revision
-            applyCurrentAppearance()
+            applyCurrentPresentation()
             resolveInitialAppearanceAsAuthoritative()
         } catch {
             diagnostics.logFailure(
@@ -2069,6 +2084,7 @@ final class AppStore: ObservableObject {
         }
         let previousSessionGroupDisplay = behavior.sessionGroupDisplay
         let previousAppearanceTheme = behavior.appearanceTheme
+        let previousInterfaceLanguage = behavior.interfaceLanguage
         let behaviorChanged = behavior != snapshot.behavior
         if behaviorChanged {
             behavior = snapshot.behavior
@@ -2081,6 +2097,11 @@ final class AppStore: ObservableObject {
             || initialAppearanceReadiness != .authoritative
         {
             applyCurrentAppearance()
+        }
+        if behavior.interfaceLanguage != previousInterfaceLanguage
+            || initialAppearanceReadiness != .authoritative
+        {
+            applyCurrentLanguage()
         }
         let activeStateChanged = switch (activeAgentState, snapshot.activeAgentState) {
         case (nil, nil):
@@ -3198,11 +3219,15 @@ final class AppStore: ObservableObject {
 
     private func applyBehaviorProjection(_ next: BehaviorSettings) {
         let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme
+        let languageChanged = behavior.interfaceLanguage != next.interfaceLanguage
         let sessionGroupDisplayChanged = behavior.sessionGroupDisplay
             != next.sessionGroupDisplay
         behavior = next
         if appearanceChanged {
             applyCurrentAppearance()
+        }
+        if languageChanged {
+            applyCurrentLanguage()
         }
         if sessionGroupDisplayChanged {
             overlayAgentGroupExpansionOverrides.removeAll()
@@ -3234,6 +3259,15 @@ final class AppStore: ObservableObject {
     private func applyCurrentAppearance() {
         applicationAppearanceApplier(behavior.appearanceTheme)
         overlayController.updateAppearance(behavior.appearanceTheme)
+    }
+
+    private func applyCurrentLanguage() {
+        applicationLanguageApplier(behavior.interfaceLanguage)
+    }
+
+    private func applyCurrentPresentation() {
+        applyCurrentLanguage()
+        applyCurrentAppearance()
     }
 
     func setSource(_ source: AgentSource, enabled: Bool) {

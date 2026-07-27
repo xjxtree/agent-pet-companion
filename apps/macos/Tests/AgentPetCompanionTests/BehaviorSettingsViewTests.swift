@@ -30,6 +30,11 @@ struct BehaviorSettingsViewTests {
 
     @Test
     func appearanceCatalogKeepsTheClosedThemeAndFpsProfiles() {
+        #expect(BehaviorSettingsCatalog.interfaceLanguages == [
+            .system,
+            .english,
+            .simplifiedChinese,
+        ])
         #expect(BehaviorSettingsCatalog.appearanceThemes == [.system, .light, .dark])
         #expect(BehaviorSettingsCatalog.fpsProfiles == [.standard, .smooth])
         #expect(BehaviorSettingsCatalog.fpsProfiles.map(\.fps) == [10, 20])
@@ -204,6 +209,7 @@ struct BehaviorSettingsViewTests {
         #expect(!source.contains("navigationWidth"))
         #expect(!source.contains("configuration.preview.resize-handle"))
         #expect(source.contains("Text(APCLocalization.text(.configSizeFooter))"))
+        #expect(source.contains("\"configuration.appearance.language\""))
     }
 
     @MainActor
@@ -268,6 +274,33 @@ struct BehaviorSettingsViewTests {
         #expect(probe.serverBehavior.appearanceTheme == .dark)
         #expect(store.behavior == probe.serverBehavior)
         #expect(store.behaviorRevision == "2")
+    }
+
+    @MainActor
+    @Test
+    func languageChoiceAppliesImmediatelyAndPersistsThroughBehaviorSettings() async throws {
+        let probe = BehaviorPersistenceProbe()
+        var appliedLanguages: [InterfaceLanguage] = []
+        let store = makeStore(
+            probe: probe,
+            applicationLanguageApplier: { language in
+                appliedLanguages.append(language)
+            }
+        )
+        var next = store.behavior
+        next.interfaceLanguage = .simplifiedChinese
+
+        store.updateBehavior(next)
+
+        #expect(appliedLanguages == [.simplifiedChinese])
+        #expect(store.behavior.interfaceLanguage == .simplifiedChinese)
+        #expect(store.interfaceLocaleIdentifier == "zh-Hans")
+
+        await store.waitForBehaviorPersistence()
+
+        #expect(probe.serverBehavior.interfaceLanguage == .simplifiedChinese)
+        #expect(store.behavior == probe.serverBehavior)
+        #expect(store.behaviorRevision == "1")
     }
 
     @MainActor
@@ -356,7 +389,10 @@ struct BehaviorSettingsViewTests {
     }
 
     @MainActor
-    private func makeStore(probe: BehaviorPersistenceProbe) -> AppStore {
+    private func makeStore(
+        probe: BehaviorPersistenceProbe,
+        applicationLanguageApplier: @escaping AppStore.ApplicationLanguageApplier = { _ in }
+    ) -> AppStore {
         AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
@@ -365,6 +401,7 @@ struct BehaviorSettingsViewTests {
                 onReady: { _ in }
             ),
             applicationAppearanceApplier: { _ in },
+            applicationLanguageApplier: applicationLanguageApplier,
             petCoreRequestOverride: { method, params, _ in
                 try probe.handle(method: method, params: params)
             }

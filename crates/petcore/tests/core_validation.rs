@@ -12,7 +12,8 @@ use petcore::petpack::{build_petpack, validate_petpack_path, write_sample_petpac
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::{
     AgentEvent, AgentEventType, AgentSource, BehaviorSettings, CheckStatus, FpsProfileName,
-    GenerationForm, GenerationJobStatus, PetSummary, QualityLevel, SessionGroupDisplay,
+    GenerationForm, GenerationJobStatus, InterfaceLanguage, PetSummary, QualityLevel,
+    SessionGroupDisplay,
 };
 use rustix::io::Errno;
 use rustix::process::{getpgrp, test_kill_process_group, Pid};
@@ -1342,9 +1343,14 @@ fn agent_event_ingest_accepts_payload_json_alias() {
 }
 
 #[test]
-fn behavior_settings_default_serializes_stacked_session_group_display() {
+fn behavior_settings_default_serializes_system_language_and_stacked_session_group_display() {
     let behavior = BehaviorSettings::default();
+    assert_eq!(behavior.interface_language, InterfaceLanguage::System);
     assert_eq!(behavior.session_group_display, SessionGroupDisplay::Stacked);
+    assert_eq!(
+        serde_json::to_value(&behavior).unwrap()["interface_language"],
+        "system"
+    );
     assert_eq!(
         serde_json::to_value(behavior).unwrap()["session_group_display"],
         "stacked"
@@ -1368,6 +1374,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
         decoded.appearance_theme,
         petcore_types::AppearanceTheme::System
     );
+    assert_eq!(decoded.interface_language, InterfaceLanguage::System);
     assert!(decoded.status_bubble);
     assert!(decoded.click_menu);
     assert!(decoded.mouse_passthrough);
@@ -1391,6 +1398,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
         stored.appearance_theme,
         petcore_types::AppearanceTheme::System
     );
+    assert_eq!(stored.interface_language, InterfaceLanguage::System);
     assert!(stored.mouse_passthrough);
     assert_eq!(stored.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(stored.sources.get(&AgentSource::Codex), Some(&false));

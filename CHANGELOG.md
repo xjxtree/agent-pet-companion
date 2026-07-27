@@ -12,6 +12,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Added / 新增
 
+- Added an in-App language preference with Follow System, English, and Simplified Chinese choices. The typed PetCore setting persists across launches and updates the Control Center, desktop pet, menus, and accessibility presentation immediately. / 新增 App 内语言设置，支持跟随系统、English 与简体中文；该类型化 PetCore 设置会跨启动持久化，并立即切换控制中心、桌宠、菜单及无障碍呈现。
 - Added one typed pet-resource recovery path across first run, Pet Library, and AI Pet Maker. It revalidates the immutable package and atomically restores the cover plus all seven animation states before preview-dependent actions return. / 在首次体验、宠物库与 AI 宠物制作中新增统一的类型化资源恢复路径；恢复会重新校验不可变宠物包，并原子重建封面与全部七种动画状态，完成后才重新开放依赖预览的操作。
 
 ### Changed / 变更
@@ -25,6 +26,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Fixed / 修复
 
+- Thinking (`start`) animations now complete their authored forward action and continue with seamless reverse/forward playback for as long as the Agent remains in that state, instead of freezing on the final frame. Successful completion (`done`) still plays once and holds its terminal pose, and neither behavior retimes the pet's authored action. / 思考（`start`）动画现在会先完整播放作者制作的正向动作，并在 Agent 仍处于该状态时无缝正反往返，不再停死在末帧；成功完成（`done`）仍只播放一次并保持终止姿态，两者都不会重定时宠物原始动作。
 - Rebuilt all seven authored state animations for bundled `星雾团子` and `Bytebud 字节芽` with crisp independent poses, stable character identity and connected props, removing optical-flow, crossfade, blur, and ghosting artifacts while preserving their native frame rates and fixed durations. App upgrades now install changed trusted bundled assets as a new immutable revision, so an existing library actually receives the rebuilt frames without replacing ordinary same-ID pets or changing the active selection. / 重新制作内置 `星雾团子` 与 `Bytebud 字节芽` 的全部七种状态动画，以清晰独立姿势、稳定角色身份及连续道具取代光流、交叉淡化、模糊与重影伪影，同时保留各自原生帧率和固定时长。App 升级时会把有变化且已受信任的内置资源安装为新的不可变修订，使现有宠物库真正获得重制帧，同时不替换普通同 ID 宠物，也不改变当前选择。
 - Agent sessions now keep the bounded first user message as their display-title fallback until a later explicit title arrives, then update to that title across Codex, Claude Code, Pi, and OpenCode without replacing the latest-message context. / Agent 会话现在会在显式标题到达前使用有界的首条用户消息作为显示标题；之后 Codex、Claude Code、Pi 与 OpenCode 都会更新为显式标题，同时保留独立的最新消息上下文。
 - Long Pet Studio turns now wait through App Server errors that explicitly promise an automatic retry and never start a second helper turn after a permanent failure, preventing a recoverable reconnect from discarding an in-progress image-generation run. / 长时间运行的宠物制作任务现在会在 App Server 明确承诺自动重试时继续等待，并且永久失败后不会再提前启动第二个辅助 turn，避免可恢复的重连中断正在进行的图像生成。

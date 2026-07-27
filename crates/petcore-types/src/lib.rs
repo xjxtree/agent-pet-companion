@@ -105,6 +105,15 @@ pub enum AppearanceTheme {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum InterfaceLanguage {
+    #[default]
+    System,
+    English,
+    SimplifiedChinese,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionGroupDisplay {
     #[default]
     Stacked,
@@ -287,6 +296,7 @@ pub struct PetState {
 pub struct BehaviorSettings {
     pub enabled: bool,
     pub status_bubble: bool,
+    pub interface_language: InterfaceLanguage,
     pub appearance_theme: AppearanceTheme,
     pub bubble_transparency: f64,
     pub click_menu: bool,
@@ -308,6 +318,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         struct RawBehaviorSettings {
             enabled: Option<bool>,
             status_bubble: Option<bool>,
+            interface_language: Option<InterfaceLanguage>,
             appearance_theme: Option<AppearanceTheme>,
             bubble_transparency: Option<f64>,
             click_menu: Option<bool>,
@@ -338,6 +349,9 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         Ok(Self {
             enabled: raw.enabled.unwrap_or(defaults.enabled),
             status_bubble: raw.status_bubble.unwrap_or(defaults.status_bubble),
+            interface_language: raw
+                .interface_language
+                .unwrap_or(defaults.interface_language),
             appearance_theme: raw.appearance_theme.unwrap_or(defaults.appearance_theme),
             bubble_transparency: raw
                 .bubble_transparency
@@ -387,6 +401,7 @@ impl Default for BehaviorSettings {
         Self {
             enabled: true,
             status_bubble: true,
+            interface_language: InterfaceLanguage::System,
             appearance_theme: AppearanceTheme::System,
             bubble_transparency: DEFAULT_BUBBLE_TRANSPARENCY,
             click_menu: true,

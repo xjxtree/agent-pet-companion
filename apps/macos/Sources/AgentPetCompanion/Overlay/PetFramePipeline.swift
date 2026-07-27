@@ -17,7 +17,8 @@ struct PetFrameLoadRequest: Sendable {
     var requestedFPS: Int
     var nativeFPS: Int
     var durationMS: Int
-    var loops: Bool
+    var authoredLoops: Bool
+    var playbackMode: FramePlaybackMode
 
     var effectiveFPS: Int {
         nativeFPS == FpsProfile.standard.fps ? FpsProfile.standard.fps : requestedFPS
@@ -34,7 +35,8 @@ struct PetFrameLoadRequest: Sendable {
             String(nativeFPS),
             String(effectiveFPS),
             String(durationMS),
-            loops ? "loop" : "once"
+            authoredLoops ? "authored-loop" : "authored-once",
+            playbackMode.rawValue
         ].joined(separator: ":")
     }
 }
@@ -104,7 +106,8 @@ struct PetPreparedFrames: @unchecked Sendable {
     fileprivate let readyFrames: [Int: PetDecodedFrame]
 
     var readyFrameCount: Int { readyFrames.count }
-    var loops: Bool { request.loops }
+    var authoredLoops: Bool { request.authoredLoops }
+    var playbackMode: FramePlaybackMode { request.playbackMode }
     var visualEnvelope: OverlayPetVisualEnvelope? {
         guard !canvasExtent.isEmpty, !visibleBounds.isEmpty else { return nil }
         return OverlayPetVisualEnvelope(
@@ -184,7 +187,7 @@ actor PetFramePipeline {
             nativeFPS: request.nativeFPS,
             requestedFPS: request.requestedFPS,
             durationMS: request.durationMS,
-            loops: request.loops,
+            loops: request.authoredLoops,
             sourceFrameCount: assets.frameURLs.count
         )
         let sampledFrameURLs = samplingPlan.sourceIndices.map { assets.frameURLs[$0] }
@@ -206,7 +209,7 @@ actor PetFramePipeline {
                 around: 0,
                 frameCount: sampledFrameURLs.count,
                 limit: cacheLimit,
-                loops: request.loops
+                playbackMode: request.playbackMode
             )
             : Array(sampledFrameURLs.indices)
 
@@ -248,7 +251,7 @@ actor PetFramePipeline {
             around: index,
             frameCount: prepared.frameCount,
             limit: prepared.cacheFrameLimit,
-            loops: prepared.loops
+            playbackMode: prepared.playbackMode
         )
         var frames: [Int: PetDecodedFrame] = [:]
 
@@ -349,16 +352,23 @@ actor PetFramePipeline {
         around center: Int,
         frameCount: Int,
         limit: Int,
-        loops: Bool
+        playbackMode: FramePlaybackMode
     ) -> [Int] {
         guard frameCount > 0, limit > 0 else { return [] }
         let count = min(frameCount, limit)
-        if loops {
+        if playbackMode == .loop {
             let normalized = (center % frameCount + frameCount) % frameCount
             return (0..<count).map { (normalized + $0) % frameCount }
         }
 
         let normalized = min(max(0, center), frameCount - 1)
+        if playbackMode == .autoreverse {
+            let start = min(
+                max(0, normalized - count / 2),
+                max(0, frameCount - count)
+            )
+            return Array(start..<(start + count))
+        }
         let start = min(normalized, max(0, frameCount - count))
         return Array(start..<(start + count))
     }
@@ -627,7 +637,7 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             fps: prepared.request.effectiveFPS,
             frameCount: prepared.frameCount,
             durationMS: prepared.request.durationMS,
-            loops: prepared.loops
+            playbackMode: prepared.playbackMode
         )
         let index = state.holdsTerminalFrame
             ? max(0, prepared.frameCount - 1)
@@ -1064,8 +1074,9 @@ final class PetFramePresentationCoordinator: @unchecked Sendable {
 }
 
 /// Remembers recently entered one-shot animations so canonical A/B/A session
-/// rotation does not replay A's animation. Looping states intentionally retain
-/// the renderer's current-entry behavior and are never suppressed by history.
+/// rotation does not replay A's animation. Repeating states (looping or
+/// autoreversing) retain the renderer's current-entry behavior and are never
+/// suppressed by history.
 struct PetPlaybackEntryHistory: Sendable {
     private let capacity: Int
     private(set) var currentEntryID: String?
@@ -1078,7 +1089,7 @@ struct PetPlaybackEntryHistory: Sendable {
 
     mutating func transition(
         to entryID: String,
-        loops: Bool
+        playbackMode: FramePlaybackMode
     ) -> PetPlaybackEntryTransition {
         guard entryID != currentEntryID else {
             return PetPlaybackEntryTransition(
@@ -1088,7 +1099,7 @@ struct PetPlaybackEntryHistory: Sendable {
         }
         currentEntryID = entryID
 
-        guard !loops else {
+        guard playbackMode == .oneShot else {
             return PetPlaybackEntryTransition(
                 isNewEntry: true,
                 shouldRestartPlayback: true
@@ -1128,8 +1139,12 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         var active: Bool
         var reduceMotion: Bool
 
-        var loops: Bool {
+        var authoredLoops: Bool {
             PetAnimationContract.loops(stateName: stateName)
+        }
+
+        var playbackMode: FramePlaybackMode {
+            PetAnimationContract.playbackMode(stateName: stateName)
         }
 
         var durationMS: Int {
@@ -1268,7 +1283,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         let isNewAsset = configuration.assetKey != currentAssetKey
         let playbackTransition = playbackEntryHistory.transition(
             to: configuration.stateEntryID,
-            loops: configuration.loops
+            playbackMode: configuration.playbackMode
         )
         guard isNewAsset || playbackTransition.isNewEntry || suspended else { return }
         currentAssetKey = configuration.assetKey
@@ -1303,9 +1318,9 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             return
         }
 
-        // The same visual state may receive many hook events. Restart one-shot
-        // playback when its semantic entry changes, but keep decoded frames and
-        // the visual envelope in place so the pet and bubble do not jump.
+        // The same visual state may receive many hook events. Restart playback
+        // when its semantic entry changes, but keep decoded frames and the
+        // visual envelope in place so the pet and bubble do not jump.
         playbackEnteredAt = CACurrentMediaTime()
         handoff.restartPlayback(
             stateID: configuration.stateEntryID,
@@ -1470,7 +1485,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             requestedFPS: configuration.fpsProfile.fps,
             nativeFPS: configuration.pet.nativeFPS,
             durationMS: configuration.durationMS,
-            loops: configuration.loops
+            authoredLoops: configuration.authoredLoops,
+            playbackMode: configuration.playbackMode
         )
         if resetsPlayback {
             playbackEnteredAt = CACurrentMediaTime()

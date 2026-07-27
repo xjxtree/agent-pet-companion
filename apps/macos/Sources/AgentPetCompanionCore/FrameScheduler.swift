@@ -1,10 +1,21 @@
 import Foundation
 
+public enum FramePlaybackMode: String, Equatable, Sendable {
+    case oneShot
+    case loop
+    case autoreverse
+}
+
 public struct FrameScheduler: Equatable, Sendable {
     public var fps: Int
     public var frameCount: Int
     public var durationMS: Int
-    public var loops: Bool
+    public var playbackMode: FramePlaybackMode
+
+    public var loops: Bool {
+        get { playbackMode != .oneShot }
+        set { playbackMode = newValue ? .loop : .oneShot }
+    }
 
     public init(
         fps: Int,
@@ -16,16 +27,39 @@ public struct FrameScheduler: Equatable, Sendable {
         self.fps = max(1, fps)
         self.frameCount = max(1, frameCount)
         self.durationMS = durationMS
-        self.loops = loops
+        playbackMode = loops ? .loop : .oneShot
+    }
+
+    public init(
+        fps: Int,
+        frameCount: Int,
+        durationMS: Int,
+        playbackMode: FramePlaybackMode
+    ) {
+        precondition(PetAnimationContract.supportedDurationsMS.contains(durationMS))
+        self.fps = max(1, fps)
+        self.frameCount = max(1, frameCount)
+        self.durationMS = durationMS
+        self.playbackMode = playbackMode
     }
 
     public func frameIndex(elapsedSeconds: TimeInterval) -> Int {
         let elapsed = max(0, elapsedSeconds)
         let duration = Double(durationMS) / 1_000
-        if !loops, elapsed >= duration {
+        if playbackMode == .oneShot, elapsed >= duration {
             return frameCount - 1
         }
-        let phase = loops ? elapsed.truncatingRemainder(dividingBy: duration) : elapsed
+        if playbackMode == .autoreverse {
+            let cycleDuration = duration * 2
+            let phase = elapsed.truncatingRemainder(dividingBy: cycleDuration)
+            if phase >= duration {
+                let reverseFrame = Int(floor((phase - duration) * Double(fps) + 1e-9))
+                return max(0, frameCount - 1 - min(reverseFrame, frameCount - 1))
+            }
+        }
+        let phase = playbackMode == .loop
+            ? elapsed.truncatingRemainder(dividingBy: duration)
+            : elapsed.truncatingRemainder(dividingBy: duration * 2)
         // Display-link timestamps commonly land a few ulps below an exact
         // frame boundary (for example 2.05 at 20 FPS). A nanosecond-scale
         // tolerance keeps those mathematical boundaries deterministic
@@ -35,7 +69,7 @@ public struct FrameScheduler: Equatable, Sendable {
     }
 
     public func hasCompleted(elapsedSeconds: TimeInterval) -> Bool {
-        guard !loops else { return false }
+        guard playbackMode == .oneShot else { return false }
         return max(0, elapsedSeconds) >= Double(durationMS) / 1_000
     }
 }

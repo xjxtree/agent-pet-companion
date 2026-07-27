@@ -131,6 +131,9 @@
 "appearance.system" = "System";
 "appearance.light" = "Light";
 "appearance.dark" = "Dark";
+"interface_language.system" = "Follow System";
+"interface_language.english" = "English";
+"interface_language.simplified_chinese" = "简体中文";
 "session_group.stacked" = "Stacked";
 "session_group.expanded" = "Expanded";
 "check_status.ok" = "OK";
@@ -303,6 +306,9 @@
 "config.persistence_note" = "Sessions awaiting confirmation or in failure remain visible regardless of the normal message timeout.";
 "config.session_display" = "Session Display";
 "config.message_preview" = "Message Preview";
+"config.language_picker" = "Language";
+"config.language_accessibility" = "App language";
+"config.language_detail" = "Changes the Control Center, desktop pet, menus, and accessibility text immediately.";
 "config.theme_picker" = "Appearance";
 "config.theme_accessibility" = "Appearance theme";
 "config.theme_detail" = "Applies to the Control Center, status bubble, action buttons, and context menu.";

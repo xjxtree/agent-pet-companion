@@ -33,6 +33,7 @@ final class PetOverlayController {
         let root = OverlayRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .apcInterfaceLanguage(store)
         let hostingView = PassthroughOverlayHostingView(rootView: root, store: store, includeBubble: false)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -40,6 +41,7 @@ final class PetOverlayController {
         let bubbleRoot = BubbleOverlayRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .apcInterfaceLanguage(store)
         let bubbleHostingView = PassthroughBubbleHostingView(rootView: bubbleRoot, store: store)
         bubbleHostingView.wantsLayer = true
         bubbleHostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -47,6 +49,7 @@ final class PetOverlayController {
         let menuRoot = OverlayMenuControlRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .apcInterfaceLanguage(store)
         let menuHostingView = FirstMouseHostingView(rootView: menuRoot)
         menuHostingView.wantsLayer = true
         menuHostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -54,6 +57,7 @@ final class PetOverlayController {
         let resizeRoot = OverlayResizeControlRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .apcInterfaceLanguage(store)
         let resizeHostingView = FirstMouseHostingView(rootView: resizeRoot)
         resizeHostingView.wantsLayer = true
         resizeHostingView.layer?.backgroundColor = NSColor.clear.cgColor

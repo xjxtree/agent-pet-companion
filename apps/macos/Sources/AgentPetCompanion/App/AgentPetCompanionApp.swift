@@ -190,6 +190,7 @@ struct AgentPetCompanionApp: App {
                     showsUpdateControls: AppLaunchMode.manualInstallationRequest == nil
                 )
                     .apcAppearanceTheme(store.behavior.appearanceTheme)
+                    .apcInterfaceLanguage(store)
                     .background {
                         if AppLaunchMode.manualInstallationRequest == nil {
                             InitialAppearanceWindowGateView(
@@ -206,13 +207,17 @@ struct AgentPetCompanionApp: App {
         .windowResizability(.contentSize)
 
         MenuBarExtra {
-            if let request = AppLaunchMode.manualInstallationRequest {
-                AppInstallationStatusMenuContent(store: store, request: request)
-            } else {
-                AppStatusMenuContent(store: store)
+            Group {
+                if let request = AppLaunchMode.manualInstallationRequest {
+                    AppInstallationStatusMenuContent(store: store, request: request)
+                } else {
+                    AppStatusMenuContent(store: store)
+                }
             }
+            .apcInterfaceLanguage(store)
         } label: {
             AppStatusItemLabel(store: store)
+                .apcInterfaceLanguage(store)
         }
     }
 }
@@ -473,6 +478,7 @@ private struct MainWindowContent: View {
                 minHeight: ControlCenterShellPolicy.supportedMinimumWindowHeight
             )
             .apcAppearanceTheme(store.behavior.appearanceTheme)
+            .apcInterfaceLanguage(store)
             .background {
                 ZStack {
                     if AppLaunchMode.manualInstallationRequest == nil {

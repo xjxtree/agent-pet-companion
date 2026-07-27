@@ -30,8 +30,8 @@ flowchart TD
     Start --> Exact["Exact health and connector-environment check"]
     Exact -->|"pass"| Commit
     Exact -->|"fail"| Rollback["Restore last-known-good runtime when compatible"]
-    Commit --> Appearance["behavior.get and apply persisted appearance"]
-    Appearance --> Seed["Seed bundled pets"]
+    Commit --> Presentation["behavior.get and apply language and appearance"]
+    Presentation --> Seed["Seed bundled pets"]
     Seed --> Snapshot["state.snapshot"]
     Snapshot --> FirstRun["Resume first-run scene or show control center"]
     FirstRun --> Wait["state.wait"]
@@ -48,7 +48,7 @@ The packaged `runtime-manifest.json` uses `apc.runtime-manifest.v1` and binds:
 
 The App accepts health only when the runtime protocol, build IDs, manifest, and service connector environment match. A database newer than the candidate supports is rejected before replacement. Candidate failure restores the last-known-good runtime when its manifest and database range remain compatible.
 
-At bootstrap, the App applies the persisted `behavior` projection before presenting its windows. An independent 500 ms fallback reveals system appearance if startup stalls. The first complete `state.snapshot` is the final authority for behavior, onboarding progress, pets, placement, connections, and active sessions; the desktop overlay is not presented before that snapshot. A nonterminal onboarding projection presents the three first-run scenes at the content root, outside the five-entry navigation. Explicit close is launch-local and resumes the same durable scene later; explicit skip is a terminal PetCore write.
+At bootstrap, the App applies the persisted `behavior` projection, including interface language and appearance, before presenting its windows. An independent 500 ms fallback reveals the system language and appearance if startup stalls. The first complete `state.snapshot` is the final authority for behavior, onboarding progress, pets, placement, connections, and active sessions; the desktop overlay is not presented before that snapshot. A nonterminal onboarding projection presents the three first-run scenes at the content root, outside the five-entry navigation. Explicit close is launch-local and resumes the same durable scene later; explicit skip is a terminal PetCore write.
 
 Initial startup, automatic retry, and explicit recovery coalesce onto one behavior → seed → snapshot → overlay pipeline so partial bootstrap work cannot race.
 
@@ -222,6 +222,13 @@ Maker recovery returns only validated reference copies under the matching privat
 Within `state.snapshot`, `onboarding` is the versioned durable first-run projection. `events`, `recent_events`, `active_agent_state`, and `active_agent_sessions` are typed App projections rather than event-history records. Active rows deliberately include the bounded `session_title`, latest user `session_user_message`, and current-turn Agent `session_message` so desktop bubbles show the conversation context users need; these display fields are first-class local UI data. `session_title` uses the latest explicit title persisted for that Agent session, falling back to the bounded first user message until an explicit title arrives. Later prompts update `session_user_message` without renaming the session. External title/detail aliases, arbitrary raw payloads, activity detail, and separate structured command/file fields are not copied into the projection. Stable domain-separated opaque IDs preserve UI grouping. Ambiguous same-Agent sessions may carry a PetCore-owned content-free `anonymous_session_alias`; it is stable across activity reordering and restart while the session is retained.
 
 The local onboarding demo is not an RPC or event source. Its thinking, working, needs-attention, and done phases live in a View-local reducer and select only pet animation assets. They cannot call Agent ingest or write event history, receipts, aliases, suppression, retention counts, or diagnostics.
+
+For both projected sessions and that local demo, App playback keeps the
+package's native sampling and fixed state duration. If `start` outlives its
+first authored traversal, the renderer alternates reverse and forward
+traversals until another state arrives; this avoids a frozen thinking pose and
+does not reinterpret the V1 manifest's `loop: false` authoring flag. `done`
+still completes once and holds its final frame.
 
 Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The App applies a tighter daily-surface bound per Agent: collapsed shows one row, expanded shows at most three, and any remainder opens Agent Connections. It derives only the presentation intents **Busy** (`start`/`tool`), **Needs You** (`waiting`/`review`), and **Ended** (`done`/`failed`); the stored protocol names do not change. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
 
