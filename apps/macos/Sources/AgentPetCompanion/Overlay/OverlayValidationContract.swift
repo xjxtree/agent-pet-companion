@@ -309,8 +309,8 @@ public enum AgentPetCompanionUIValidationContract {
             "active bubble did not render the bounded assistant display message"
         )
         try require(
-            session.activityText == APCLocalization.text(.overlayActivityThinking),
-            "active bubble did not render the safe current activity summary"
+            session.activityText == "Verifying live activity synchronization",
+            "active bubble did not render the bounded current activity detail"
         )
         try require(
             session.detailText.contains(session.activityText)
@@ -327,9 +327,8 @@ public enum AgentPetCompanionUIValidationContract {
             "active bubble did not render the bounded session title"
         )
         try require(
-            !session.detailText.contains("Verifying live activity synchronization")
-                && !session.detailText.contains("Keep the current conversation message visible."),
-            "active bubble fell back to raw event or activity content"
+            !session.detailText.contains("Keep the current conversation message visible."),
+            "active bubble fell back to the user prompt"
         )
         try require(!session.statusText.isEmpty, "active bubble omitted its run status")
         try require(!session.actionLabel.isEmpty, "active bubble omitted its interaction action")
@@ -483,13 +482,10 @@ public enum AgentPetCompanionUIValidationContract {
                 "bubble status did not match the authored pet action for \(eventType)"
             )
             try require(
-                !content.activityText.isEmpty,
-                "bubble omitted the safe activity summary for \(eventType)"
-            )
-            try require(
                 content.sessionTitle != content.statusText
-                    && content.activityText != content.sessionTitle,
-                "bubble repeated its title as lifecycle or activity copy for \(eventType)"
+                    && content.activityText.isEmpty
+                    && content.messageText.isEmpty,
+                "bubble inserted placeholder detail copy for \(eventType)"
             )
         }
     }
@@ -567,11 +563,11 @@ public enum AgentPetCompanionUIValidationContract {
                 "Codex",
                 "Session exact",
                 APCLocalizedPresentation.lifecycleTitle(.waiting),
-                APCLocalization.text(.overlayDetailNeedsInput),
                 "A response is required",
+                APCLocalization.text(.overlayDetailNeedsInput),
                 exact.actionLabel,
             ],
-            "VoiceOver order was not Agent, session, status, activity, message, action"
+            "VoiceOver order was not Agent, session, status, message, activity, action"
         )
     }
 

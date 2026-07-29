@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/agent-event.schema.json",
   "title": "Agent Pet Companion Normalized Persisted Event",
-  "description": "The complete normalized event record exposed by PetCore and persisted in SQLite. Display copy and payload metadata use closed vocabularies. Bounded user/assistant display messages are explicit; raw hook input, commands, tool output, and transcripts are never represented by this schema.",
+  "description": "The complete normalized event record exposed by PetCore and persisted in SQLite. Display copy and payload metadata use closed vocabularies. Bounded user/assistant messages plus session-scoped reasoning, commands, tool input/output, errors, and raw activity details are explicit through activity_content. Complete transcripts, credential stores, auth headers, environment dumps, and arbitrary host envelopes are not represented.",
   "type": "object",
   "required": [
     "id",

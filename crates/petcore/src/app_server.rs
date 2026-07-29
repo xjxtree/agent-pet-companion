@@ -1,9 +1,12 @@
+use crate::adapter_contracts::display_activity_value;
 use crate::agent_environment::{
     absolute_env_path, command_search_dirs as shared_command_search_dirs, find_executable,
     is_executable_file,
 };
 use crate::agent_session_filters::is_codex_internal_suggestions_prompt;
-use crate::event_envelope::{MAX_EVENT_TITLE_BYTES, MAX_MESSAGE_CONTENT_BYTES};
+use crate::event_envelope::{
+    MAX_ACTIVITY_CONTENT_BYTES, MAX_EVENT_TITLE_BYTES, MAX_MESSAGE_CONTENT_BYTES,
+};
 use crate::paths::AppPaths;
 use crate::{now_rfc3339, PetCoreError, Result};
 use petcore_types::{
@@ -189,12 +192,20 @@ struct CachedCodexThreadActivity {
 #[derive(Debug, Default)]
 pub struct CodexRecentThreadActivityCache {
     entries: BTreeMap<String, CachedCodexThreadActivity>,
+    listed_thread_ids: BTreeSet<String>,
+}
+
+impl CodexRecentThreadActivityCache {
+    pub fn listed_thread_ids(&self) -> BTreeSet<String> {
+        self.listed_thread_ids.clone()
+    }
 }
 
 /// Reads a bounded set of recent interactive Codex tasks through the official
 /// App Server protocol. `thread/list` is constrained to the state database and
-/// only recent candidates are followed by `thread/read`; paths, tool inputs,
-/// tool outputs, and full transcripts never leave this module.
+/// only recent candidates are followed by `thread/read`; paths and full
+/// transcripts never leave this module, while bounded current activity
+/// (including commands and tool input/output) may enter the local UI projection.
 pub fn read_codex_recent_thread_activities(
     max_age: Duration,
     limit: usize,
@@ -294,6 +305,7 @@ pub fn read_codex_recent_thread_activities_cached(
         .iter()
         .map(|candidate| candidate.thread_id.clone())
         .collect::<BTreeSet<_>>();
+    cache.listed_thread_ids = retained_thread_ids.clone();
     cache
         .entries
         .retain(|thread_id, _| retained_thread_ids.contains(thread_id));
@@ -554,10 +566,10 @@ fn codex_activity_session_surface(source: &Value) -> &'static str {
 }
 
 /// Reads display-only metadata for one explicit Codex thread. This does not
-/// enumerate threads, persist transcript history, or expose tool inputs and
-/// outputs. Only the user-facing title plus the latest user and assistant text
-/// items are retained, all through the same bounded display-text policy as hook
-/// events.
+/// enumerate threads or persist transcript history. It retains only the
+/// user-facing title, latest user/assistant text, and newest bounded
+/// host-exposed reasoning or command/tool activity through the same recursive
+/// redaction and display-text policy as hook events.
 pub fn read_codex_thread_display(thread_id: &str) -> Result<CodexThreadDisplay> {
     if !is_codex_thread_id(thread_id) {
         return Err(PetCoreError::InvalidRequest(
@@ -702,12 +714,24 @@ fn codex_display_activity(item: &Value) -> Option<CodexThreadDisplayActivity> {
         ),
         "commandExecution" => (
             codex_command_activity_kind(item),
-            None,
+            codex_activity_value(item.get("command")).or_else(|| codex_tool_activity_detail(item)),
             codex_status_is_in_progress(item),
         ),
-        "fileChange" => ("file_change", None, codex_status_is_in_progress(item)),
-        "mcpToolCall" | "dynamicToolCall" => ("tool", None, codex_status_is_in_progress(item)),
-        "collabAgentToolCall" => ("subagent", None, codex_status_is_in_progress(item)),
+        "fileChange" => (
+            "file_change",
+            codex_activity_value(item.get("changes")),
+            codex_status_is_in_progress(item),
+        ),
+        "mcpToolCall" | "dynamicToolCall" => (
+            "tool",
+            codex_tool_activity_detail(item),
+            codex_status_is_in_progress(item),
+        ),
+        "collabAgentToolCall" => (
+            "subagent",
+            codex_tool_activity_detail(item),
+            codex_status_is_in_progress(item),
+        ),
         // These status-less items are durable history, not proof that the
         // operation is still running in a separately spawned App Server.
         "subAgentActivity" => ("subagent", None, false),
@@ -723,6 +747,28 @@ fn codex_display_activity(item: &Value) -> Option<CodexThreadDisplayActivity> {
         content,
         is_current,
     })
+}
+
+fn codex_tool_activity_detail(item: &Value) -> Option<String> {
+    let input = ["arguments", "args", "input", "params", "request"]
+        .iter()
+        .find_map(|key| codex_activity_value(item.get(*key)));
+    let output = ["output", "result", "response", "error"]
+        .iter()
+        .find_map(|key| codex_activity_value(item.get(*key)));
+    match (input, output) {
+        (Some(input), Some(output)) => sanitized_display_text(
+            &format!("input: {input} · output: {output}"),
+            MAX_ACTIVITY_CONTENT_BYTES,
+        ),
+        (Some(input), None) => Some(input),
+        (None, Some(output)) => Some(output),
+        (None, None) => None,
+    }
+}
+
+fn codex_activity_value(value: Option<&Value>) -> Option<String> {
+    display_activity_value(value?)
 }
 
 fn codex_command_activity_kind(item: &Value) -> &'static str {
@@ -812,11 +858,39 @@ mod codex_display_tests {
         let shell = codex_display_activity(&json!({
             "type": "commandExecution",
             "status": "inProgress",
+            "command": "swift test --package-path apps/macos",
             "commandActions": [{"type": "read"}, {"type": "unknown"}]
         }))
         .expect("shell activity");
         assert_eq!(shell.kind, "command");
         assert!(shell.is_current);
+        assert_eq!(
+            shell.content.as_deref(),
+            Some("swift test --package-path apps/macos")
+        );
+    }
+
+    #[test]
+    fn tool_activity_exposes_bounded_input_and_output() {
+        let activity = codex_display_activity(&json!({
+            "type": "mcpToolCall",
+            "status": "inProgress",
+            "arguments": {
+                "path": "README.md",
+                "authorization": "Bearer private"
+            },
+            "result": {
+                "lines": 120,
+                "headers": {"x-api-key": "private"}
+            }
+        }))
+        .expect("tool activity");
+
+        assert_eq!(activity.kind, "tool");
+        assert_eq!(
+            activity.content.as_deref(),
+            Some(r#"input: {"path":"README.md"} · output: {"lines":120}"#)
+        );
     }
 
     #[test]

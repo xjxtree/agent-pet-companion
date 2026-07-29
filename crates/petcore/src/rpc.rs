@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,7 +47,7 @@ pub use crate::runtime_manifest::{PETCORE_BUILD_ID, PETCORE_RPC_PROTOCOL_VERSION
 const MIN_OVERLAY_SCALE: f64 = 0.10;
 const MAX_OVERLAY_SCALE: f64 = 1.8;
 const CODEX_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 30;
-const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 3;
+const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 1;
 const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
 const CODEX_ACTIVITY_REFRESH_SECONDS: u64 = 1;
 const CONNECTION_LIGHT_STATUS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -75,6 +75,7 @@ pub struct CoreState {
     pub diagnostics: DiagnosticLogger,
     instance_id: String,
     codex_thread_display_cache: Arc<Mutex<CodexThreadDisplayCache>>,
+    codex_display_epoch: Arc<AtomicU64>,
     codex_activity_sync_enabled: bool,
     codex_activity_sync: Arc<Mutex<CodexActivitySyncState>>,
     codex_recent_activity_cache: Arc<Mutex<app_server::CodexRecentThreadActivityCache>>,
@@ -424,6 +425,7 @@ impl CoreState {
             diagnostics,
             instance_id: new_id("embedded_instance"),
             codex_thread_display_cache: Arc::new(Mutex::new(CodexThreadDisplayCache::default())),
+            codex_display_epoch: Arc::new(AtomicU64::new(0)),
             codex_activity_sync_enabled: false,
             codex_activity_sync: Arc::new(Mutex::new(CodexActivitySyncState::default())),
             codex_recent_activity_cache: Arc::new(Mutex::new(
@@ -631,16 +633,14 @@ impl CoreState {
         });
         if needs_refresh && cache.in_flight.insert(session_id.to_string()) {
             let shared_cache = Arc::clone(&self.codex_thread_display_cache);
-            let agent_host_process_gate = Arc::clone(&self.agent_host_process_gate);
+            let display_epoch = Arc::clone(&self.codex_display_epoch);
             let session_id = session_id.to_string();
             let event_marker = event_marker.to_string();
             thread::spawn(move || {
-                let fetched = {
-                    let _host_guard = agent_host_process_gate
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    app_server::read_codex_thread_display(&session_id).ok()
-                };
+                // This is a bounded read-only display hydration. It must not
+                // queue behind a background recent-thread scan or an unrelated
+                // connection check that owns the mutation/admission gate.
+                let fetched = app_server::read_codex_thread_display(&session_id).ok();
                 let Ok(mut cache) = shared_cache.lock() else {
                     return;
                 };
@@ -650,6 +650,8 @@ impl CoreState {
                     .get(&session_id)
                     .filter(|entry| entry.event_marker == event_marker)
                     .and_then(|entry| entry.display.clone());
+                let next_display = fetched.or_else(|| previous.clone());
+                let display_changed = next_display != previous;
                 if cache.entries.len() >= MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES
                     && !cache.entries.contains_key(&session_id)
                 {
@@ -667,9 +669,13 @@ impl CoreState {
                     CachedCodexThreadDisplay {
                         event_marker,
                         fetched_at: Instant::now(),
-                        display: fetched.or(previous),
+                        display: next_display,
                     },
                 );
+                drop(cache);
+                if display_changed {
+                    display_epoch.fetch_add(1, Ordering::Release);
+                }
             });
         }
         cached
@@ -712,32 +718,40 @@ impl CoreState {
             u64::from(behavior.session_message_timeout_minutes).saturating_mul(60),
         );
         thread::spawn(move || {
-            let mut activities = {
+            let activity_round = {
                 let _host_guard = agent_host_process_gate
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let mut cache = recent_activity_cache
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                app_server::read_codex_recent_thread_activities_cached(
+                let result = app_server::read_codex_recent_thread_activities_cached(
                     maximum_age,
                     app_server::MAX_RECENT_CODEX_ACTIVITY_THREADS,
                     &mut cache,
-                )
-                .unwrap_or_default()
+                );
+                result.map(|activities| (activities, cache.listed_thread_ids()))
+            };
+            let Ok((mut activities, listed_threads)) = activity_round else {
+                if let Ok(mut sync) = shared_sync.lock() {
+                    sync.in_flight = false;
+                }
+                return;
             };
             let Ok(mut sync) = shared_sync.lock() else {
                 return;
             };
-            let observed_threads = activities
-                .iter()
-                .map(|activity| activity.thread_id.clone())
-                .collect::<BTreeSet<_>>();
             for activity in &mut activities {
                 reconcile_codex_activity_observation(&mut sync.observations, activity);
             }
+            let closed_at_unix = OffsetDateTime::now_utc().unix_timestamp();
+            let disappeared_events = disappeared_codex_activity_events(
+                &sync.observations,
+                &listed_threads,
+                closed_at_unix,
+            );
             sync.observations
-                .retain(|thread_id, _| observed_threads.contains(thread_id));
+                .retain(|thread_id, _| listed_threads.contains(thread_id));
             sync.in_flight = false;
             drop(sync);
 
@@ -747,6 +761,9 @@ impl CoreState {
             )
             .map(|snapshot| snapshot.events)
             .unwrap_or_default();
+            for event in disappeared_events {
+                let _ = database.upsert_codex_activity_event(&event);
+            }
             for activity in activities {
                 let preserve_exact_state =
                     should_preserve_exact_codex_state(existing.as_slice(), &activity);
@@ -799,9 +816,17 @@ fn reconcile_codex_activity_observation(
     let inferred_activity = if running && visible_clock_advanced {
         // A separately spawned App Server sees the thread timestamp advance,
         // but persisted turns intentionally omit some live interactions (most
-        // notably command executions). Do not keep showing the preceding
-        // reasoning/file-change item as if it were still current.
-        Some(hidden_codex_activity(raw_activity.as_ref()))
+        // notably command executions). Keep the newest concrete host-exposed
+        // detail until a newer one arrives; a content-free inferred category
+        // must not erase useful reasoning or tool information from the bubble.
+        Some(latest_known_codex_activity(
+            raw_activity.as_ref(),
+            if raw_activity.is_none() {
+                "thinking"
+            } else {
+                "tool"
+            },
+        ))
     } else if running && same_visible_revision {
         previous.and_then(|previous| previous.inferred_activity.clone())
     } else if running
@@ -810,11 +835,13 @@ fn reconcile_codex_activity_observation(
             .as_ref()
             .is_some_and(|candidate| !candidate.is_current)
     {
-        // A newly persisted completed operation proves the previous public
-        // activity ended. Use a neutral processing state until App Server
-        // persists the following reasoning/message, rather than reviving an
-        // older assistant reply.
-        Some(generic_codex_activity("thinking"))
+        // A completed operation remains the latest useful activity detail
+        // while the turn continues. Keep concrete host text, but use a neutral
+        // category when the lossy persisted item has no displayable content.
+        Some(latest_known_codex_activity(
+            raw_activity.as_ref(),
+            "thinking",
+        ))
     } else {
         None
     };
@@ -849,15 +876,56 @@ fn reconcile_codex_activity_observation(
     );
 }
 
-fn hidden_codex_activity(
-    previous_visible: Option<&app_server::CodexThreadDisplayActivity>,
-) -> app_server::CodexThreadDisplayActivity {
-    let kind = if previous_visible.is_none() {
-        "thinking"
-    } else {
-        "tool"
+fn disappeared_codex_activity_events(
+    observations: &BTreeMap<String, CodexActivityObservation>,
+    observed_threads: &BTreeSet<String>,
+    closed_at_unix: i64,
+) -> Vec<AgentEvent> {
+    let Some(created_at) = unix_timestamp_rfc3339(closed_at_unix) else {
+        return Vec::new();
     };
-    generic_codex_activity(kind)
+    observations
+        .iter()
+        .filter(|(thread_id, _)| !observed_threads.contains(*thread_id))
+        .map(|(thread_id, observation)| {
+            let turn_marker = observation.turn_id.as_deref().unwrap_or("thread");
+            AgentEvent {
+                id: format!("evt_codex_app_server_status_{}_{}", thread_id, turn_marker),
+                source: AgentSource::Codex,
+                project_path: None,
+                session_id: Some(thread_id.clone()),
+                event_type: AgentEventType::Done,
+                title: AgentEventType::Done.zh_label().to_string(),
+                detail: None,
+                payload_json: json!({
+                    "source_event": "app_server_activity",
+                    "outcome": "session_closed",
+                    "turn_id": observation.turn_id.as_deref(),
+                    "session_active": false,
+                    "session_open": false,
+                    "diagnostic": false
+                }),
+                created_at: created_at.clone(),
+            }
+        })
+        .collect()
+}
+
+fn latest_known_codex_activity(
+    candidate: Option<&app_server::CodexThreadDisplayActivity>,
+    fallback_kind: &str,
+) -> app_server::CodexThreadDisplayActivity {
+    if let Some(candidate) = candidate.filter(|candidate| {
+        candidate
+            .content
+            .as_deref()
+            .is_some_and(|content| !content.trim().is_empty())
+    }) {
+        let mut activity = candidate.clone();
+        activity.is_current = true;
+        return activity;
+    }
+    generic_codex_activity(fallback_kind)
 }
 
 fn generic_codex_activity(kind: &str) -> app_server::CodexThreadDisplayActivity {
@@ -910,6 +978,25 @@ fn should_preserve_exact_codex_state(
         && activity.turn_id.is_some()
         && exact_turn.as_deref() != activity.turn_id.as_deref()
     {
+        return false;
+    }
+    let current_public_activity_supersedes_running_hook =
+        matches!(
+            exact.event.event_type,
+            AgentEventType::Start | AgentEventType::Tool
+        ) && activity.latest_activity.as_ref().is_some_and(|candidate| {
+            candidate.is_current
+                && candidate
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| !content.trim().is_empty())
+        });
+    if current_public_activity_supersedes_running_hook {
+        // `thread/read` is a later observation of the same live turn. Once it
+        // exposes concrete content, that current reasoning/tool item is more
+        // recent than the hook-backed running edge. Content-free inferred
+        // activity still preserves the exact hook, and waiting/terminal hooks
+        // remain authoritative.
         return false;
     }
     let Ok(exact_at) = OffsetDateTime::parse(&exact.event.created_at, &Rfc3339) else {
@@ -2469,10 +2556,7 @@ fn hydrate_agent_session_display(
         .latest_user_message
         .as_ref()
         .and_then(event_display_message);
-    if event_payload_text(&active.event, "source_event").as_deref() == Some("app_server_activity") {
-        return Ok(true);
-    }
-    if active.source != AgentSource::Codex {
+    if !should_hydrate_codex_thread_display(active.source, active.session_id.as_deref()) {
         return Ok(true);
     }
     let Some(session_id) = active.session_id.as_deref() else {
@@ -2520,14 +2604,7 @@ fn hydrate_agent_session_display(
         .latest_activity
         .filter(|activity| activity.is_current)
     {
-        let fills_missing_public_summary =
-            active.session_activity.as_ref().is_some_and(|current| {
-                current.content.is_none()
-                    && activity.content.is_some()
-                    && current.kind == activity.kind
-                    && matches!(current.kind.as_str(), "thinking" | "plan")
-            });
-        if active.session_activity.is_none() || fills_missing_public_summary {
+        if should_replace_hydrated_codex_activity(active.session_activity.as_ref(), &activity) {
             if matches!(
                 active.event.event_type,
                 AgentEventType::Start | AgentEventType::Tool
@@ -2545,6 +2622,21 @@ fn hydrate_agent_session_display(
         }
     }
     Ok(true)
+}
+
+fn should_hydrate_codex_thread_display(source: AgentSource, session_id: Option<&str>) -> bool {
+    source == AgentSource::Codex && session_id.is_some()
+}
+
+fn should_replace_hydrated_codex_activity(
+    current: Option<&agent_state::SessionActivity>,
+    incoming: &app_server::CodexThreadDisplayActivity,
+) -> bool {
+    current.is_none()
+        || incoming
+            .content
+            .as_deref()
+            .is_some_and(|content| !content.trim().is_empty())
 }
 
 fn event_payload_text(event: &AgentEvent, key: &str) -> Option<String> {
@@ -2706,11 +2798,13 @@ fn wait_for_state_change(state: &CoreState, params: &Value) -> Result<Value> {
     let poll_interval = Duration::from_millis(120);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let behavior = state.database.behavior()?;
+    let starting_display_epoch = state.codex_display_epoch.load(Ordering::Acquire);
 
     loop {
         state.refresh_codex_activity(&behavior);
         let current_revision = state.database.state_revision()?.to_string();
-        if current_revision != after_revision {
+        let current_display_epoch = state.codex_display_epoch.load(Ordering::Acquire);
+        if current_revision != after_revision || current_display_epoch != starting_display_epoch {
             return state_snapshot(state, true);
         }
         if Instant::now() >= deadline {
@@ -2984,6 +3078,31 @@ fn read_http_port(paths: &AppPaths) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static APP_SERVER_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct RpcEnvGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl RpcEnvGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for RpcEnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     fn empty_sequenced_event_snapshot(state_revision: u64) -> SnapshotSequencedEvents {
         SnapshotSequencedEvents {
@@ -3491,6 +3610,97 @@ mod tests {
         assert!(clone.agent_host_process_gate.try_lock().is_ok());
     }
 
+    #[test]
+    fn live_codex_display_read_does_not_wait_behind_background_host_work() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _environment = APP_SERVER_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("live-display.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"live-display-test"}}}'
+      ;;
+    *\"method\":\"thread/read\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"name":"Live task","turns":[{"items":[{"type":"reasoning","summary":["Fresh reasoning"]}]}]}}}'
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _command = RpcEnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+
+        let background_host_work = state.agent_host_process_guard();
+        assert!(state
+            .codex_thread_display("019f5a6f-0c52-75e1-b652-004d4487c4ae", "turn-1", 0,)
+            .is_none());
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut completed_while_background_work_was_blocked = false;
+        while Instant::now() < deadline {
+            completed_while_background_work_was_blocked = state
+                .codex_thread_display_cache
+                .lock()
+                .unwrap()
+                .entries
+                .get("019f5a6f-0c52-75e1-b652-004d4487c4ae")
+                .and_then(|entry| entry.display.as_ref())
+                .is_some_and(|display| {
+                    display.latest_activity.as_ref().is_some_and(|activity| {
+                        activity.content.as_deref() == Some("Fresh reasoning")
+                    })
+                });
+            if completed_while_background_work_was_blocked {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(background_host_work);
+        assert!(
+            completed_while_background_work_was_blocked,
+            "live session display was serialized behind unrelated background App Server work"
+        );
+    }
+
+    #[test]
+    fn state_wait_wakes_immediately_for_a_completed_display_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let after_revision = state.database.state_revision().unwrap().to_string();
+        let display_epoch = Arc::clone(&state.codex_display_epoch);
+        let refresh = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            display_epoch.fetch_add(1, Ordering::Release);
+        });
+
+        let started_at = Instant::now();
+        let result = wait_for_state_change(
+            &state,
+            &json!({
+                "after_revision": after_revision,
+                "timeout_ms": 600
+            }),
+        )
+        .unwrap();
+        let elapsed = started_at.elapsed();
+        refresh.join().unwrap();
+
+        assert_eq!(result["changed"], true);
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "display refresh remained hidden until the state wait timeout: {elapsed:?}"
+        );
+    }
+
     fn skipped_refresh_result(source: AgentSource) -> connections::InstalledSourceRefreshResult {
         connections::InstalledSourceRefreshResult {
             source,
@@ -3959,7 +4169,72 @@ mod tests {
     }
 
     #[test]
-    fn lossy_codex_updates_replace_stale_reasoning_with_generic_tool_activity() {
+    fn current_concrete_reasoning_supersedes_an_older_same_turn_tool_hook() {
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.event_type = AgentEventType::Start;
+        activity.latest_activity = Some(app_server::CodexThreadDisplayActivity {
+            kind: "thinking".to_string(),
+            content: Some("Planning hover-based visibility control".to_string()),
+            is_current: true,
+        });
+        activity.display_revision = "turn-1:reasoning-2:inProgress".to_string();
+        let mut command = exact_codex_state(AgentEventType::Tool, "2025-07-13T12:27:00Z");
+        command.event.payload_json = json!({
+            "source_event": "PreToolUse",
+            "turn_id": "turn-1",
+            "activity_kind": "command",
+            "activity_content": "{\"command\":\"swift test\"}",
+            "session_active": true
+        });
+
+        assert!(!should_preserve_exact_codex_state(&[command], &activity));
+    }
+
+    #[test]
+    fn app_server_status_still_requires_direct_live_display_hydration() {
+        let mut active = exact_codex_state(AgentEventType::Start, "2025-07-13T12:27:00Z");
+        active.event.payload_json = json!({
+            "source_event": "app_server_activity",
+            "turn_id": "turn-1",
+            "session_active": true
+        });
+
+        assert!(should_hydrate_codex_thread_display(
+            active.event.source,
+            active.event.session_id.as_deref()
+        ));
+        assert_eq!(CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS, 1);
+    }
+
+    #[test]
+    fn hydrated_current_reasoning_replaces_older_tool_but_not_with_empty_inference() {
+        let current = agent_state::SessionActivity {
+            kind: "tool".to_string(),
+            content: Some("swift test".to_string()),
+        };
+        let concrete_reasoning = app_server::CodexThreadDisplayActivity {
+            kind: "thinking".to_string(),
+            content: Some("Planning hover-based visibility control".to_string()),
+            is_current: true,
+        };
+        let inferred_reasoning = app_server::CodexThreadDisplayActivity {
+            kind: "thinking".to_string(),
+            content: None,
+            is_current: true,
+        };
+
+        assert!(should_replace_hydrated_codex_activity(
+            Some(&current),
+            &concrete_reasoning
+        ));
+        assert!(!should_replace_hydrated_codex_activity(
+            Some(&current),
+            &inferred_reasoning
+        ));
+    }
+
+    #[test]
+    fn lossy_codex_updates_preserve_the_latest_concrete_activity_detail() {
         let mut observations = BTreeMap::new();
         let mut activity = inferred_codex_tool(1_752_409_560);
         activity.event_type = AgentEventType::Start;
@@ -3987,16 +4262,16 @@ mod tests {
                 .latest_activity
                 .as_ref()
                 .map(|value| value.kind.as_str()),
-            Some("tool")
+            Some("thinking")
         );
         assert_eq!(
             activity
                 .latest_activity
                 .as_ref()
                 .and_then(|value| value.content.as_ref()),
-            None
+            Some(&"Assessing manual length and detail".to_string())
         );
-        assert_eq!(activity.event_type, AgentEventType::Tool);
+        assert_eq!(activity.event_type, AgentEventType::Start);
 
         reconcile_codex_activity_observation(&mut observations, &mut activity);
         assert_eq!(
@@ -4004,7 +4279,7 @@ mod tests {
                 .latest_activity
                 .as_ref()
                 .map(|value| value.kind.as_str()),
-            Some("tool")
+            Some("thinking")
         );
     }
 
@@ -4057,5 +4332,50 @@ mod tests {
             .id
             .clone();
         assert_eq!(tool_id, thinking_id);
+    }
+
+    #[test]
+    fn disappearing_unarchived_codex_thread_closes_its_stale_active_projection() {
+        let mut observations = BTreeMap::new();
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+
+        let events =
+            disappeared_codex_activity_events(&observations, &BTreeSet::new(), 1_752_409_600);
+
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_type, AgentEventType::Done);
+        assert_eq!(
+            event.session_id.as_deref(),
+            Some("00000000-0000-0000-0000-000000000001")
+        );
+        assert_eq!(
+            event
+                .payload_json
+                .get("session_active")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            event
+                .payload_json
+                .get("session_open")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn listed_codex_thread_is_not_closed_when_its_detail_refresh_is_partial() {
+        let mut observations = BTreeMap::new();
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        reconcile_codex_activity_observation(&mut observations, &mut activity);
+        let listed_threads = BTreeSet::from([activity.thread_id]);
+
+        let events =
+            disappeared_codex_activity_events(&observations, &listed_threads, 1_752_409_600);
+
+        assert!(events.is_empty());
     }
 }

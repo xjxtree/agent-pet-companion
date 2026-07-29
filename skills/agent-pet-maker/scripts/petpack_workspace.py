@@ -2473,8 +2473,9 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
         "warning_count": len(all_warnings),
         "measurement_note": (
             "Heuristics identify review targets only. A visual reviewer must still verify "
-            "identity lock, non-moving-region stability, action readability, prop continuity, "
-            "timing, and loop/settle quality in every generated preview."
+            "identity and spatial-anchor stability, runtime-size intent readability, causal "
+            "primary/supporting/secondary motion, prop continuity, timing, and loop/settle "
+            "quality in every generated preview."
         ),
     }
     report_path = output_dir / "report.json"
@@ -2777,8 +2778,9 @@ def motion_review(args: argparse.Namespace) -> dict[str, Any]:
         "status": "approved",
         "review_contract": (
             "Reviewer inspected keyframes plus every reported playback profile for identity "
-            "lock, non-moving-region stability, one readable action, prop continuity, timing, "
-            "and loop/settle quality."
+            "and spatial-anchor stability without freezing responsive parts, one runtime-size "
+            "readable intent, causal primary/supporting/secondary motion, prop continuity, "
+            "timing, and loop/settle quality."
         ),
         "states": {
             state: {

@@ -17,7 +17,7 @@ async function importTemplate(relativePath, cacheKey = "default", testExports = 
   return import(`data:text/javascript;base64,${encoded}#${cacheKey}`);
 }
 
-test("Pi and OpenCode connectors expose audited events without leaking raw payloads", async () => {
+test("Pi and OpenCode expose bounded local activity without leaking host-private context", async () => {
   const captured = [];
   const originalSpawn = childProcess.spawn;
   const originalDiagnostic = process.env.APC_CONNECTOR_DIAGNOSTIC;
@@ -55,7 +55,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v8");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v9");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
 
     const piHandlers = new Map();
@@ -158,8 +158,6 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
       "secret-reasoning",
       "secret-partial-output",
       "secret-system-prompt",
-      "TOKEN=secret-command",
-      "secret-tool-output",
       "secret-agent-tool-result",
       "/secret/project",
     ]) {
@@ -168,6 +166,14 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     assert.ok(piPayloads.every((payload) => payload.diagnostic === true));
     assert.equal(piPayloads.at(-1).type, "agent_settled");
     assert.equal(piPayloads.at(-1).message_content, "Visible Pi answer");
+    assert.ok(piPayloads.some((payload) => (
+      payload.type === "tool_call"
+      && payload.activity_content === "{\"command\":\"TOKEN=secret-command\"}"
+    )));
+    assert.ok(piPayloads.some((payload) => (
+      payload.type === "tool_execution_end"
+      && payload.activity_content === "secret-tool-output"
+    )));
     assert.ok(piPayloads.some((payload) => (
       payload.type === "session_info_changed"
       && payload.session_title === "Generated Pi title"
@@ -193,7 +199,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
         "APC_OPENCODE_EVENT_INVENTORY",
       ],
     );
-    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v9");
+    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v10");
     assert.equal(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.length, 21);
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("tool.definition"));
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("dispose"));
@@ -431,24 +437,15 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
       "secret-prompt-message-id",
       "secret-opencode-session-metadata",
       "secret-chat-message-id",
-      "secret-provider-error",
       "secret-response-body",
-      "secret-todo-content",
       "secret-hidden-reasoning",
       "secret-tool-input",
-      "TOKEN=secret-v2-command",
       "secret-provider-metadata",
       "secret-v2-tool-error",
-      "secret-v2-tool-output",
       "opaque-open-call",
       "secret-compaction-text",
       "secret-direct-permission",
       "secret-direct-metadata",
-      "secret-command-name",
-      "secret-command-arguments",
-      "secret-command-parts",
-      "TOKEN=secret-direct-command",
-      "secret-direct-output",
       "opaque-direct-call",
       "secret-tool-metadata",
       "secret-compact-context",
@@ -463,6 +460,24 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     )));
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "tool.execute.after" && payload.is_error === true
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "session.error"
+      && payload.properties?.activity_content === "secret-provider-error"
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "tool.execute.before"
+      && payload.activity_content?.includes("TOKEN=secret-direct-command")
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "tool.execute.after"
+      && payload.activity_content?.includes("secret-direct-output")
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "command.execute.before"
+      && payload.activity_content?.includes("secret-command-name")
+      && payload.activity_content?.includes("secret-command-arguments")
+      && payload.activity_content?.includes("secret-command-parts")
     )));
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "session.compaction.started"
@@ -623,7 +638,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
       || payload.input?.sessionID === "opencode-error-order"
     ));
     assert.deepEqual(errorPayloads.map((payload) => payload.type), ["message.user", "session.error"]);
-    assert.equal(JSON.stringify(errorPayloads).includes("raw-error-must-not-cross"), false);
+    assert.equal(JSON.stringify(errorPayloads).includes("raw-error-must-not-cross"), true);
     assert.equal(JSON.stringify(errorPayloads).includes("must-not-flush-after-error"), false);
     assert.equal(JSON.stringify(errorPayloads).includes("must-not-forward-direct-tail"), false);
     assert.equal(adversarialPayloads.some((payload) => (
@@ -657,7 +672,7 @@ test("Pi and OpenCode connectors expose audited events without leaking raw paylo
     assert.equal(adversarialPayloads.filter((payload) => (
       payload.type === "session.next.step.failed"
     )).length, 1);
-    assert.equal(JSON.stringify(adversarialPayloads).includes("raw-step-error"), false);
+    assert.equal(JSON.stringify(adversarialPayloads).includes("raw-step-error"), true);
     assert.equal(adversarialPayloads.filter((payload) => (
       payload.type === "message.assistant"
       && payload.properties?.sessionID === "opencode-assistant-dedup"

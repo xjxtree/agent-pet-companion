@@ -64,9 +64,10 @@ pub struct ActiveAgentState {
 }
 
 /// Closed structural projection consumed by the desktop overlay. The
-/// separately hydrated, bounded session title and user/assistant messages
-/// intentionally carry the conversation context rendered in the local bubble;
-/// arbitrary raw event fields are not duplicated into this projection.
+/// separately hydrated, bounded session title, user/assistant messages, and
+/// provider-visible activity summary intentionally carry the two-line context
+/// rendered in the local bubble; arbitrary raw event fields are not duplicated
+/// into this projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OverlaySessionDisplay {
     pub summary_kind: OverlaySummaryKind,
@@ -135,7 +136,7 @@ impl Serialize for ActiveAgentState {
     {
         let session_id = self.session_id.as_deref().map(opaque_session_id);
         let event = overlay_event_projection(&self.event);
-        let mut state = serializer.serialize_struct("ActiveAgentState", 16)?;
+        let mut state = serializer.serialize_struct("ActiveAgentState", 17)?;
         state.serialize_field("state", &self.state)?;
         state.serialize_field("official_status", &self.official_status)?;
         state.serialize_field("source", &self.source)?;
@@ -150,6 +151,7 @@ impl Serialize for ActiveAgentState {
         state.serialize_field("session_title", &self.session_title)?;
         state.serialize_field("session_message", &self.session_message)?;
         state.serialize_field("session_user_message", &self.session_user_message)?;
+        state.serialize_field("session_activity", &self.session_activity)?;
         state.serialize_field("event", &event)?;
         state.serialize_field("overlay_display", &self.overlay_display)?;
         state.end()

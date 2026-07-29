@@ -348,8 +348,9 @@ steered = [
 ]
 assert all(event.get("event_type") != "done" for event in steered), steered
 serialized = json.dumps(events, ensure_ascii=False)
-for forbidden in ["TOKEN=secret-command", "secret-output", "secret-error", "secret-step-error", "secret-barrier-error", "secret-call"]:
-    assert forbidden not in serialized, forbidden
+for expected in ["TOKEN=secret-command", "secret-output", "secret-error", "secret-step-error", "secret-barrier-error"]:
+    assert expected in serialized, expected
+assert "secret-call" not in serialized, "raw invocation identity crossed the connector boundary"
 PY
 else
   echo "Skipping Pi/OpenCode Node connector runtime smoke; node is not available"

@@ -1975,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_hook_request_keeps_only_allowlisted_state_fields() {
+    fn contract_hook_request_keeps_bounded_local_activity_without_raw_identity() {
         let input = json!({
             "type": "tool.execute.before",
             "input": {
@@ -1997,13 +1997,15 @@ mod tests {
         assert_eq!(contract.tool_name.as_deref(), Some("bash"));
         assert_eq!(contract.kind, AgentEventType::Tool);
         assert_eq!(contract.activity_kind.as_deref(), Some("command"));
-        assert_eq!(contract.activity_content, None);
+        assert_eq!(
+            contract.activity_content.as_deref(),
+            Some(r#"{"command":"TOKEN=secret-command"}"#)
+        );
         assert!(contract
             .external_event_id
             .as_deref()
             .is_some_and(|id| id.starts_with("evt_hook_")));
         let forwarded = serde_json::to_string(&contract).unwrap();
-        assert!(!forwarded.contains("secret"));
         assert!(!forwarded.contains("args"));
         assert!(!forwarded.contains("callID"));
     }
@@ -2081,9 +2083,12 @@ mod tests {
         assert_eq!(request["payload_json"]["tool_name"], "shell");
         assert_eq!(request["payload_json"]["outcome"], "started");
         assert_eq!(request["payload_json"]["session_active"], true);
+        assert_eq!(
+            request["payload_json"]["activity_content"],
+            r#"{"command":"RAW_COMMAND_MUST_NOT_CROSS"}"#
+        );
         let encoded = serde_json::to_string(&request).unwrap();
         assert!(!encoded.contains("RAW_CALL_ID_MUST_NOT_CROSS"));
-        assert!(!encoded.contains("RAW_COMMAND_MUST_NOT_CROSS"));
     }
 
     #[test]
@@ -2114,11 +2119,7 @@ mod tests {
         assert_eq!(first["payload_json"]["external_event_id"], first["id"]);
 
         let encoded = serde_json::to_string(&[first, first_retry, second]).unwrap();
-        for forbidden in [
-            "RAW_CALL_ONE_MUST_NOT_CROSS",
-            "RAW_CALL_TWO_MUST_NOT_CROSS",
-            "RAW_COMMAND_MUST_NOT_CROSS",
-        ] {
+        for forbidden in ["RAW_CALL_ONE_MUST_NOT_CROSS", "RAW_CALL_TWO_MUST_NOT_CROSS"] {
             assert!(!encoded.contains(forbidden));
         }
     }

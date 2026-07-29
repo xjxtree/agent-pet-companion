@@ -1,15 +1,18 @@
 ---
 name: agent-pet-maker
-description: Create or modify portable Agent Pet Companion .petpack desktop pets from text and optional reference images, with motion direction, identity locking, visual motion QA, and validated packaging. Use when a user asks to make a new Agent Pet Companion pet, revise an exported .petpack, improve or change pet actions, or produce a validated package for Agent Pet Companion.
+description: Create or modify portable Agent Pet Companion .petpack desktop pets from text and optional reference images, with layered motion direction, stable identity anchors, runtime-size readability review, visual motion QA, and validated packaging. Use when a user asks to make a new Agent Pet Companion pet, revise an exported .petpack, improve or change pet actions, or produce a validated package for Agent Pet Companion.
 ---
 
 # Agent Pet Maker
 
-Create a coherent character performance, not a collection of loosely related
-stills. Use the bundled helper to prepare a safe workspace, render in-app motion
-QA, bind a visual review to the current frames, and validate/build the
-`.petpack`. Keep the workflow provider-neutral: use the real image-capable tools
-available to the current agent and record their real names in source metadata.
+Create a coherent, layered character performance, not a collection of loosely
+related stills or one moving feature pasted onto a frozen body. Keep identity,
+camera, scale, and contact anchors stable while allowing small causal responses
+through the character's other available features. Use the bundled helper to
+prepare a safe workspace, render in-app motion QA, bind a visual review to the
+current frames, and validate/build the `.petpack`. Keep the workflow
+provider-neutral: use the real image-capable tools available to the current
+agent and record their real names in source metadata.
 
 ## Read the relevant references
 
@@ -96,9 +99,15 @@ source.
    ```
 
 3. Lock a canonical character base, reduce it to a production base that already
-   reads cleanly in the 192 × 208 runtime crop, then direct one readable action per state.
-   Record moving parts, locked parts, prop continuity, and a short beat sheet
-   before rendering. Generate each state as one coherent sequence from the
+   reads cleanly in the 192 × 208 runtime crop, then direct one readable intent
+   per state. For every generated state, write an action card with the primary
+   action, causal supporting motion, delayed or settling secondary motion,
+   stable spatial anchors, moving regions, prop continuity, normalized beats,
+   runtime-size readability cue, and loop/final-pose contract. Stable anchors
+   are not frozen bodies: preserve identity, camera, scale, baseline, and
+   essential contact points while allowing anatomy-appropriate breathing,
+   weight response, appendage motion, glow, particles, cloth, or another
+   restrained response. Generate each state as one coherent sequence from the
    canonical base; do not invent frames independently. Creation defaults to
    native 10 FPS, with `start` and `done` lasting 1 second and the other states
    lasting 2 seconds, unless the user explicitly selects another allowed
@@ -111,7 +120,11 @@ source.
    task workers for pet rows because an in-app App Server turn can finalize
    when a worker reports completion, leaving the package half-written.
    Request the exact authored frame count as distinct sprite cells from the
-   image tool; multiple sheets may sum to that count. Compose every cell so
+   image tool; multiple sheets may sum to that count. When a state spans
+   multiple generations, ground each later batch with one or two accepted
+   closing poses from the preceding batch, and ground the closing loop batch
+   with the opening pose. These guide poses do not become duplicate output
+   frames. Review every batch boundary before continuing. Compose every cell so
    the complete subject, moving limbs, tail, props, and effects retain at least
    one transparent runtime pixel on every side after normalization to
    192 × 208; visible edge contact is action clipping, not a valid anchor.
@@ -140,8 +153,16 @@ source.
    registration failure comes from the moving region, attachment geometry, or
    a full-body action, regenerate the coherent row instead. Never use the
    helper to conceal a bad pose sequence or action direction.
-   Never shadow, patch, or replace the helper or its Pillow dependency with a
-   compatibility shim. Locate a real supported interpreter or return
+   Reject a sequence that communicates only when enlarged, moves only one
+   isolated feature without a causal body/form response, freezes every region
+   outside the primary action, or moves the whole subject as one rigid layer.
+   Judge supporting motion relative to the pet's actual anatomy: a minimal
+   creature may use body mass, ears, tail, light, particles, or another native
+   feature instead of human gestures. Record rejected batch reasons in working
+   notes outside `petpack-source` and carry them into the next generation as
+   bounded negative constraints. Never shadow, patch, or replace the helper or
+   its Pillow dependency with a compatibility shim. Locate a real supported
+   interpreter or return
    `capability_missing`.
 7. After all rows pass incrementally, render final combined motion evidence at the App's 192 × 208 display size:
 
@@ -152,25 +173,30 @@ source.
 
    Inspect `keyframes.png` and every generated Standard preview. For a native
    20 FPS pet, inspect both Standard and Smooth previews. Fix identity drift,
-   non-moving-region wobble, scale/baseline jumps, abrupt pose cuts, prop
+   anchor-region wobble, unintended frozen areas, scale/baseline jumps, abrupt pose cuts, prop
    teleporting, unclear action semantics, stiff timing, and poor loop/settle
-   beats. Rerun `motion-qa` after every frame change. Heuristic warnings are
-   review targets, not automatic failures by themselves; a warning that
-   corresponds to a visible snap, disappearing attachment, prop teleport, or
-   broken loop must be repaired and may not be waived by a generic review note.
+   beats. At 192 × 208, confirm that the state intent remains readable without
+   zooming, the primary action receives at least one visible supporting
+   response, stable anchors do not drift, and the subject still reads as one
+   connected performance. Rerun `motion-qa` after every frame change.
+   Heuristic warnings are review targets, not automatic failures by themselves;
+   a warning that corresponds to a visible snap, disappearing attachment, prop
+   teleport, or broken loop must be repaired and may not be waived by a generic
+   review note.
 8. After the current previews pass visual inspection, bind one concrete note to
-   every audited state:
+   every audited state. Each note must cover the readable intent, primary and
+   supporting motion, stable anchors, and loop return or one-shot settle:
 
    ```bash
    python3 <skill-dir>/scripts/petpack_workspace.py motion-review \
      --workspace /absolute/workspace \
-     --state-note "idle=<what stayed locked and how the loop returns>" \
-     --state-note "start=<what was inspected>" \
-     --state-note "tool=<what was inspected>" \
-     --state-note "waiting=<what was inspected>" \
-     --state-note "review=<what was inspected>" \
-     --state-note "done=<what was inspected>" \
-     --state-note "failed=<what was inspected>"
+     --state-note "idle=<intent, motion layers, stable anchors, and loop return>" \
+     --state-note "start=<intent, primary/supporting response, anchors, and settle>" \
+     --state-note "tool=<intent, primary/supporting response, anchors, and loop>" \
+     --state-note "waiting=<intent, primary/supporting response, anchors, and loop>" \
+     --state-note "review=<intent, primary/supporting response, anchors, and loop>" \
+     --state-note "done=<intent, primary/supporting response, anchors, and settle>" \
+     --state-note "failed=<intent, primary/supporting response, anchors, and loop>"
    ```
 
 9. Finalize with the helper. Finalization rejects missing or stale motion
@@ -196,12 +222,15 @@ source.
    ```
 
 3. Read `.agent-pet-maker/context.json`. Preserve the manifest ID and immutable render contract. Use the existing character frames as visual references.
-4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. A native-FPS change necessarily changes all seven states; a duration change necessarily changes that state. Apply the same native frame resolution and per-image early QA gate to every newly generated or edited source image. Use the strongest unchanged baseline frame as the canonical identity reference and repair the complete changed sequence rather than patching one isolated final frame. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
+4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. A native-FPS change necessarily changes all seven states; a duration change necessarily changes that state. Apply the same native frame resolution and per-image early QA gate to every newly generated or edited source image. Use the strongest unchanged baseline frame as the canonical identity reference, write a fresh layered action card for every changed state, and repair the complete changed sequence rather than patching one isolated final frame. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
 5. Apply timing edits as authored animation changes, not playback-speed changes. For 10 to 20 FPS at unchanged duration, preserve the original 10 FPS poses at the indices selected by runtime Standard playback and create genuinely new frames at every other index. Loop states use every second source frame; one-shot `start` and `done` use uniform endpoint-preserving indices so their final pose remains intact. Adjacent poses in that Standard sample, including the wrap pair for loops, must remain pixel-distinct. For 20 to 10 FPS, retain exactly that same runtime sample. When switching an action between one and two seconds, re-storyboard it and generate the new exact frame count; do not truncate, repeat, duplicate, speed up, or slow down the old sequence.
 6. Run `motion-qa --workspace /absolute/workspace`; in a modify workspace it
    automatically audits the actual changed states. Inspect and repair the
-   previews, then run `motion-review` with exactly one concrete `--state-note`
-   for each audited state.
+   previews at actual runtime size, then run `motion-review` with exactly one
+   concrete `--state-note` for each audited state. A technically stable edit
+   still fails review when its intent depends on zoomed micro-detail, its
+   primary action lacks a connected supporting response, or stability was
+   achieved by freezing the rest of the character.
 7. Declare each changed state to the helper. It verifies the actual changed-state set, timing transition, motion review freshness, and frame contract against the base hashes:
 
    ```bash

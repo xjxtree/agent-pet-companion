@@ -1,5 +1,7 @@
 use crate::{
-    event_envelope::{MAX_PROJECT_LABEL_BYTES, MAX_SESSION_TITLE_BYTES},
+    event_envelope::{
+        MAX_ACTIVITY_CONTENT_BYTES, MAX_PROJECT_LABEL_BYTES, MAX_SESSION_TITLE_BYTES,
+    },
     PetCoreError, Result,
 };
 use petcore_types::{AgentEventType, AgentSource};
@@ -8,17 +10,18 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-17-schema-v6";
-pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-17-activity-v5";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v8";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v9";
+pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-29-activity-v7";
+pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-29-activity-v6";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v9";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v10";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
-/// The complete set of adapter fields allowed to cross into PetCore. Raw hook
-/// payloads, tool arguments, commands, tool output, transcripts, and errors are
-/// intentionally absent. User prompts and final assistant messages are copied
-/// only through the bounded, display-only fields below.
+/// The complete set of adapter fields allowed to cross into PetCore. Commands,
+/// tool input/output, provider-visible reasoning, and raw activity details are
+/// normalized into the bounded display-only `activity_content` field. Complete
+/// transcripts, credential stores, auth headers, and environment dumps remain
+/// outside the event contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContractEvent {
     pub source: AgentSource,
@@ -125,6 +128,7 @@ fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEven
         "SubagentStart" => Some("subagent".to_string()),
         _ => None,
     };
+    contract.activity_content = activity_content(event, input);
     match event {
         "UserPromptSubmit" => {
             contract.message_role = Some("user".to_string());
@@ -252,6 +256,7 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
         "SubagentStart" | "TaskCreated" => Some("subagent".to_string()),
         _ => None,
     };
+    contract.activity_content = activity_content(event, input);
     match event {
         "UserPromptSubmit" => {
             contract.message_role = Some("user".to_string());
@@ -341,6 +346,7 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
         "session_before_compact" => Some("compaction".to_string()),
         _ => None,
     };
+    contract.activity_content = activity_content(event, input);
     match event {
         "input" | "before_agent_start" => {
             contract.message_role = Some("user".to_string());
@@ -565,7 +571,7 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         message_role,
         message_content,
         activity_kind,
-        activity_content: None,
+        activity_content: activity_content(event, input),
         interaction_kind: match event {
             "question.asked" | "question.v2.asked" => Some("input_required".to_string()),
             _ if kind == AgentEventType::Waiting => Some("approval_required".to_string()),
@@ -750,6 +756,166 @@ fn display_message_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
         .collect::<String>();
     let trimmed = sanitized.trim();
     (!trimmed.is_empty()).then(|| truncate_utf8(trimmed, MAX_MESSAGE_BYTES))
+}
+
+fn activity_content(source_event: &str, value: &Value) -> Option<String> {
+    const EXPLICIT_OR_REASONING_PATHS: &[&[&str]] = &[
+        &["activity_content"],
+        &["reasoning_summary"],
+        &["reasoning"],
+        &["summary"],
+        &["detail"],
+        &["reason"],
+        &["properties", "activity_content"],
+        &["properties", "reasoning_summary"],
+        &["properties", "reasoning"],
+        &["properties", "summary"],
+        &["properties", "detail"],
+        &["properties", "reason"],
+    ];
+    const TOOL_INPUT_PATHS: &[&[&str]] = &[
+        &["activity_content"],
+        &["tool_input"],
+        &["input", "args"],
+        &["output", "args"],
+        &["input", "command"],
+        &["command"],
+        &["arguments"],
+        &["properties", "input"],
+        &["properties", "command"],
+        &["properties", "arguments"],
+    ];
+    const TOOL_OUTPUT_PATHS: &[&[&str]] = &[
+        &["activity_content"],
+        &["tool_response"],
+        &["tool_output"],
+        &["result"],
+        &["output", "output"],
+        &["output", "content"],
+        &["error", "message"],
+        &["error"],
+        &["properties", "tool_output"],
+        &["properties", "result"],
+        &["properties", "output"],
+        &["properties", "error", "message"],
+        &["properties", "error"],
+    ];
+
+    let paths = if matches!(
+        source_event,
+        "PreToolUse"
+            | "tool_call"
+            | "tool_execution_start"
+            | "tool.execute.before"
+            | "command.execute.before"
+            | "session.next.tool.input.started"
+            | "session.next.tool.called"
+            | "session.next.shell.started"
+    ) {
+        TOOL_INPUT_PATHS
+    } else if matches!(
+        source_event,
+        "PostToolUse"
+            | "PostToolUseFailure"
+            | "tool_execution_end"
+            | "tool.execute.after"
+            | "command.execute.after"
+            | "session.next.tool.success"
+            | "session.next.tool.failed"
+            | "session.next.shell.ended"
+    ) {
+        TOOL_OUTPUT_PATHS
+    } else {
+        EXPLICIT_OR_REASONING_PATHS
+    };
+
+    paths
+        .iter()
+        .find_map(|path| value_at(value, path))
+        .and_then(display_activity_value)
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+pub(crate) fn display_activity_value(value: &Value) -> Option<String> {
+    let raw = match value {
+        Value::Null => return None,
+        Value::String(value) => value.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            let display_value = activity_value_without_credentials(value);
+            if matches!(&display_value, Value::Array(values) if values.is_empty())
+                || matches!(&display_value, Value::Object(values) if values.is_empty())
+            {
+                return None;
+            }
+            serde_json::to_string(&display_value).ok()?
+        }
+    };
+    let sanitized = raw
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character,
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim();
+    (!trimmed.is_empty()).then(|| truncate_utf8(trimmed, MAX_ACTIVITY_CONTENT_BYTES))
+}
+
+fn activity_value_without_credentials(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(activity_value_without_credentials)
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .filter(|(key, _)| !is_credential_field(key))
+                .map(|(key, value)| (key.clone(), activity_value_without_credentials(value)))
+                .collect(),
+        ),
+        value => value.clone(),
+    }
+}
+
+fn is_credential_field(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "auth"
+            | "authorization"
+            | "cookie"
+            | "cookies"
+            | "credential"
+            | "credentials"
+            | "env"
+            | "environment"
+            | "headers"
+            | "password"
+            | "secret"
+            | "secrets"
+            | "token"
+            | "tokens"
+            | "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+    )
 }
 
 fn project_label(value: &Value) -> Option<String> {

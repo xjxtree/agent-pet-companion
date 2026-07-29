@@ -146,7 +146,30 @@ struct PetLibrarySourceBadgePresentation: Equatable {
 }
 
 enum PetLibraryNoticeKind: Equatable {
+    case importSuccess
     case importFailure
+}
+
+enum PetLibraryImportPhase: Equatable {
+    case importing
+    case refreshingLibrary
+}
+
+struct PetLibraryImportProgress: Equatable {
+    let phase: PetLibraryImportPhase
+    let totalCount: Int
+    let completedCount: Int
+    let importedCount: Int
+    let currentFileName: String?
+
+    var currentOrdinal: Int {
+        min(max(completedCount + 1, 1), max(totalCount, 1))
+    }
+
+    var completedFraction: Double {
+        guard totalCount > 0 else { return 0 }
+        return min(max(Double(completedCount) / Double(totalCount), 0), 1)
+    }
 }
 
 struct PetLibraryImportFailure: Equatable {
@@ -177,6 +200,8 @@ struct PetLibraryNotice: Equatable, Identifiable {
 
     var id: String {
         switch kind {
+        case .importSuccess:
+            "pet-library-import-success"
         case .importFailure:
             "pet-library-import-failure"
         }
@@ -184,9 +209,29 @@ struct PetLibraryNotice: Equatable, Identifiable {
 
     var systemImage: String {
         switch kind {
+        case .importSuccess:
+            "checkmark.circle.fill"
         case .importFailure:
             "exclamationmark.triangle.fill"
         }
+    }
+
+    static func importSuccess(
+        importedCount: Int,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> Self {
+        Self(
+            kind: .importSuccess,
+            title: APCLocalization.text(
+                .libraryImportSuccessTitle,
+                locale: localeIdentifier
+            ),
+            message: APCLocalization.format(
+                .libraryImportSuccessCountFormat,
+                locale: localeIdentifier,
+                importedCount
+            )
+        )
     }
 
     static func importFailure(

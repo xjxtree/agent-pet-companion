@@ -95,6 +95,44 @@ else:
 '''
 
 
+class SkillDirectionContractTests(unittest.TestCase):
+    def test_portable_skill_requires_layered_runtime_readable_motion(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        direction = (ROOT / "references" / "create-modify.md").read_text(
+            encoding="utf-8"
+        )
+        combined = skill + "\n" + direction
+
+        for required in (
+            "Stable anchors are not frozen bodies",
+            "Layered motion requirement",
+            "Runtime-size readability",
+            "causal supporting motion",
+            "secondary motion",
+            "192 × 208",
+            "accepted closing poses",
+            "bounded rejection record",
+        ):
+            self.assertIn(required, combined)
+
+    def test_portable_skill_does_not_absorb_scenario_specific_workarounds(self) -> None:
+        combined = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "SKILL.md",
+                ROOT / "references" / "create-modify.md",
+                ROOT / "references" / "petpack-v1.md",
+            )
+        )
+        for scenario_specific in (
+            "#00FF00",
+            "chroma-key",
+            "wooden stool",
+            "UF_HIDDEN",
+        ):
+            self.assertNotIn(scenario_specific, combined)
+
+
 class InstallTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agent-pet-maker-tests-")
@@ -1124,6 +1162,8 @@ class MotionQualityTests(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], workspace_helper.MOTION_QA_SCHEMA)
             self.assertEqual(report["audited_states"], ["idle"])
+            self.assertIn("spatial-anchor stability", report["measurement_note"])
+            self.assertIn("primary/supporting/secondary motion", report["measurement_note"])
             preview = report_path.parent / report["states"]["idle"]["previews"]["standard_10_fps"]
             with Image.open(preview) as decoded:
                 self.assertEqual(decoded.size, workspace_helper.MOTION_PREVIEW_SIZE)
@@ -1140,6 +1180,17 @@ class MotionQualityTests(unittest.TestCase):
                 )
             )
             self.assertTrue(Path(review["review_path"]).is_file())
+            review_evidence = json.loads(
+                Path(review["review_path"]).read_text(encoding="utf-8")
+            )
+            self.assertIn(
+                "spatial-anchor stability",
+                review_evidence["review_contract"],
+            )
+            self.assertIn(
+                "primary/supporting/secondary motion",
+                review_evidence["review_contract"],
+            )
             evidence = workspace_helper.verify_motion_review(
                 workspace,
                 workspace / "petpack-source",

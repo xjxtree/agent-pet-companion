@@ -977,9 +977,10 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func overlayContentUsesDisplayFieldsAndIgnoresRawEventPayload() throws {
+    func overlayContentPrefersAuthoritativeDisplayFieldsOverEmbeddedEventCopies() throws {
         let displayTitle = "修复宠物消息气泡"
         let displayReply = "气泡已经恢复显示最新回复。"
+        let displayActivity = "正在运行已校验的构建工具"
         let rawPrompt = "RAW_EVENT_PROMPT_DO_NOT_RENDER sk-live-secret /Users/alice/private.txt"
         let rawCommand = "COMMAND_DO_NOT_RENDER /bin/sh -c curl-secret"
         let json = """
@@ -1022,7 +1023,7 @@ struct OverlayGeometryTests {
           "session_title":"\(displayTitle)",
           "session_user_message":{"role":"user","content":"\(displayTitle)"},
           "session_message":{"role":"assistant","content":"\(displayReply)"},
-          "session_activity":{"kind":"command","content":"\(rawCommand)"},
+          "session_activity":{"kind":"command","content":"\(displayActivity)"},
           "overlay_display":{
             "summary_kind":"command",
             "navigation":{
@@ -1042,10 +1043,12 @@ struct OverlayGeometryTests {
 
         #expect(content.sessionID == "safe-session")
         #expect(content.sessionTitle == displayTitle)
-        #expect(content.activityText == APCLocalization.text(.overlayActivityCommand))
+        #expect(content.activityText == displayActivity)
         #expect(content.messageText == displayReply)
-        #expect(content.secondaryMessageText == displayReply)
-        #expect(content.detailText.contains(APCLocalization.text(.overlayActivityCommand)))
+        #expect(content.primaryDetailText == displayReply)
+        #expect(content.secondaryDetailText == displayActivity)
+        #expect(content.detailText == [displayReply, displayActivity].joined(separator: "\n"))
+        #expect(content.detailText.contains(displayActivity))
         #expect(content.detailText.contains(displayReply))
         #expect(content.navigation.sessionOpen == true)
         #expect(!content.sessionTitle.contains(rawPrompt))
@@ -1054,16 +1057,33 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func legacyStateNeverFallsBackToRawEventPayload() throws {
+    func overlayDoesNotInventToolActivityWhenNoDetailExists() throws {
         let state = try JSONDecoder().decode(
             ActiveAgentState.self,
-            from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER"},"created_at":"2026-07-21T00:00:00Z"}}"#.utf8)
+            from: Data(
+                #"{"state":"tool","official_status":"running","source":"codex","session_id":"tool-session","session_active":true,"source_session_sequence":2,"priority":300,"event":{"id":"tool-event","source":"codex","session_id":"tool-session","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"tool_name":"Bash","activity_kind":"command"},"created_at":"2026-07-29T00:00:00Z"},"session_title":"构建 App","session_message":{"role":"assistant","content":"正在检查构建结果。"},"session_activity":{"kind":"command","content":null},"overlay_display":{"summary_kind":"command","navigation":{"capability":"unavailable"}}}"#.utf8
+            )
         )
         let content = OverlaySessionContent(state: state)
 
-        #expect(content.activityText == APCLocalization.text(.overlayDetailReady))
-        #expect(content.messageText == APCLocalization.text(.overlayDetailReady))
-        #expect(content.secondaryMessageText == nil)
+        #expect(content.activityText.isEmpty)
+        #expect(content.messageText == "正在检查构建结果。")
+        #expect(content.primaryDetailText == "正在检查构建结果。")
+        #expect(content.secondaryDetailText == nil)
+        #expect(content.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
+    }
+
+    @Test
+    func legacyStateUsesBoundedEventActivityWithoutInventingAnAgentMessage() throws {
+        let state = try JSONDecoder().decode(
+            ActiveAgentState.self,
+            from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER","activity_kind":"plan","activity_content":"原始活动详情现在可以显示"},"created_at":"2026-07-21T00:00:00Z"}}"#.utf8)
+        )
+        let content = OverlaySessionContent(state: state)
+
+        #expect(content.activityText == "原始活动详情现在可以显示")
+        #expect(content.messageText.isEmpty)
+        #expect(content.secondaryDetailText == nil)
         #expect(content.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Pi"))
         #expect(!content.sessionTitle.contains("PRIVATE"))
         #expect(!content.detailText.contains("PRIVATE"))
@@ -1177,8 +1197,8 @@ struct OverlayGeometryTests {
                 "Codex",
                 fixture.session,
                 fixture.status,
-                fixture.activity,
                 fixture.message,
+                fixture.activity,
                 session.actionLabel,
             ])
             #expect(

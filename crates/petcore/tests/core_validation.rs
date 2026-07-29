@@ -4565,7 +4565,7 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .join("agent-pet-companion-hook.sh");
     let claude_helper_content = std::fs::read_to_string(&claude_hook_script).unwrap();
     assert!(claude_helper_content.contains("agent hook --source claude_code"));
-    assert!(claude_helper_content.contains("claude-hooks-2026-07-17-activity-v5"));
+    assert!(claude_helper_content.contains("claude-hooks-2026-07-29-activity-v6"));
     let mut claude_hook_child = Command::new(&claude_hook_script)
         .env("APC_FAKE_CLI_CAPTURE", &capture_path)
         .stdin(Stdio::piped())
@@ -4692,7 +4692,7 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(pi_capture.contains("Pi runtime prompt"));
     assert!(pi_capture.contains("Pi runtime assistant response"));
     assert!(pi_capture.contains("\"turn_id\":"));
-    assert!(!pi_capture.contains("secret-output"));
+    assert!(pi_capture.contains("secret-output"));
 
     let opencode_status = connections::repair_source(&paths, AgentSource::Opencode).unwrap();
     let opencode_plugin = fake_agent_home
@@ -4705,7 +4705,7 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_script.contains("event: async ({ event })"));
     assert!(opencode_script.contains("\"tool.execute.before\""));
     assert!(opencode_script.contains("\"--event-type\", \"auto\""));
-    assert!(!opencode_script.contains("output?.args"));
+    assert!(opencode_script.contains("output?.args"));
     assert!(opencode_script.contains("\"permission.ask\""));
     assert!(opencode_script.contains("\"command.execute.before\""));
     assert!(opencode_script.contains("type: \"connector.probe\""));
@@ -4805,7 +4805,7 @@ await new Promise((resolve) => setTimeout(resolve, 500));
     assert!(opencode_capture.contains("sess_opencode_idle_fallback_runtime"));
     assert!(opencode_capture.contains("\"type\":\"session.deleted\""));
     assert!(opencode_capture.contains("\"sessionID\":\"sess_opencode_deleted_runtime\""));
-    assert!(!opencode_capture.contains("secret-command"));
+    assert!(opencode_capture.contains("secret-command"));
 
     let codex_uninstall = connections::uninstall_source(&paths, AgentSource::Codex).unwrap();
     let codex_marketplace_after = std::fs::read_to_string(&codex_marketplace).unwrap();

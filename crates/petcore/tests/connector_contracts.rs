@@ -102,7 +102,7 @@ fn adapter_session_title_and_project_label_match_envelope_utf8_limits() {
 }
 
 #[test]
-fn codex_and_claude_official_hooks_map_without_raw_payload() {
+fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
     let codex_session_start = parse_contract_event(
         AgentSource::Codex,
         &serde_json::json!({
@@ -145,6 +145,10 @@ fn codex_and_claude_official_hooks_map_without_raw_payload() {
     assert_eq!(post_tool.tool_name.as_deref(), Some("Bash"));
     assert_eq!(post_tool.outcome.as_deref(), Some("completed"));
     assert_eq!(post_tool.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(
+        post_tool.activity_content.as_deref(),
+        Some("codex-secret-output-do-not-persist")
+    );
     assert!(post_tool
         .external_event_id
         .as_deref()
@@ -169,6 +173,10 @@ fn codex_and_claude_official_hooks_map_without_raw_payload() {
     assert!(tool_failure.session_active);
     assert_eq!(tool_failure.outcome.as_deref(), Some("tool_failure"));
     assert_eq!(tool_failure.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(
+        tool_failure.activity_content.as_deref(),
+        Some("claude-secret-tool-output-do-not-persist")
+    );
 
     let api_failure = parsed(AgentSource::ClaudeCode, "claude-code/stop_failure.json");
     assert_eq!(api_failure.kind, AgentEventType::Failed);
@@ -183,16 +191,75 @@ fn codex_and_claude_official_hooks_map_without_raw_payload() {
         api_failure,
     ])
     .unwrap();
-    for secret in [
-        "TOKEN=",
-        "command",
-        "tool_input",
-        "tool_response",
-        "tool-secret-id",
-        "error",
-    ] {
+    for secret in ["tool_input", "tool_response", "tool-secret-id"] {
         assert!(!serialized.contains(secret), "raw field leaked: {secret}");
     }
+}
+
+#[test]
+fn every_non_codex_connector_preserves_host_exposed_tool_activity() {
+    let claude = parse_contract_event(
+        AgentSource::ClaudeCode,
+        &serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "claude-tool-detail",
+            "prompt_id": "claude-turn-detail",
+            "tool_name": "Bash",
+            "tool_input": {"command": "swift test"}
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    let pi = parse_contract_event(
+        AgentSource::Pi,
+        &serde_json::json!({
+            "type": "tool_execution_start",
+            "session_id": "pi-tool-detail",
+            "turn_id": "pi-turn-detail",
+            "toolName": "read",
+            "activity_content": {"path": "README.md"}
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    let opencode = parse_contract_event(
+        AgentSource::Opencode,
+        &serde_json::json!({
+            "type": "tool.execute.before",
+            "input": {
+                "sessionID": "opencode-tool-detail",
+                "tool": "bash"
+            },
+            "properties": {
+                "command": "pnpm test"
+            },
+            "outcome": "started"
+        }),
+    )
+    .unwrap()
+    .unwrap();
+
+    for event in [&claude, &pi, &opencode] {
+        assert_eq!(event.kind, AgentEventType::Tool);
+        assert!(event.session_active);
+        assert!(
+            event
+                .activity_content
+                .as_deref()
+                .is_some_and(|content| !content.is_empty()),
+            "{:?} omitted concrete tool activity",
+            event.source
+        );
+    }
+    assert_eq!(
+        claude.activity_content.as_deref(),
+        Some(r#"{"command":"swift test"}"#)
+    );
+    assert_eq!(
+        pi.activity_content.as_deref(),
+        Some(r#"{"path":"README.md"}"#)
+    );
+    assert_eq!(opencode.activity_content.as_deref(), Some("pnpm test"));
 }
 
 #[test]
@@ -217,6 +284,10 @@ fn opaque_tool_invocation_identity_prevents_same_turn_collisions_without_leaking
     let first_retry = codex_tool("PreToolUse", "raw-call-one");
     let second = codex_tool("PreToolUse", "raw-call-two");
     let first_completed = codex_tool("PostToolUse", "raw-call-one");
+    assert_eq!(
+        first.activity_content.as_deref(),
+        Some(r#"{"command":"TOKEN=must-not-cross"}"#)
+    );
     assert_eq!(first.external_event_id, first_retry.external_event_id);
     assert_ne!(first.external_event_id, second.external_event_id);
     assert_ne!(first.external_event_id, first_completed.external_event_id);
@@ -280,7 +351,6 @@ fn opaque_tool_invocation_identity_prevents_same_turn_collisions_without_leaking
         "raw-claude-call",
         "raw-pi-call",
         "opencode-secret-call-id",
-        "must-not-cross",
     ] {
         assert!(
             !serialized.contains(forbidden),
@@ -754,9 +824,10 @@ fn pi_uses_settled_and_marks_shutdown_navigation_closed() {
         recoverable_tool_error.outcome.as_deref(),
         Some("tool_failure")
     );
-    assert!(!serde_json::to_string(&recoverable_tool_error)
-        .unwrap()
-        .contains("pi-secret"));
+    assert_eq!(
+        recoverable_tool_error.activity_content.as_deref(),
+        Some("pi-secret-output-do-not-persist")
+    );
 
     let final_agent_error = parse_contract_event(
         AgentSource::Pi,
@@ -808,7 +879,16 @@ fn opencode_v1_17_18_reads_discriminated_and_direct_payloads() {
     assert_eq!(replied.kind, AgentEventType::Tool);
     assert_eq!(replied.outcome.as_deref(), Some("permission_replied_once"));
 
-    for fixture_name in ["tool_execute_before.json", "tool_execute_after.json"] {
+    for (fixture_name, expected_activity) in [
+        (
+            "tool_execute_before.json",
+            r#"{"command":"TOKEN=opencode-secret-command-do-not-persist"}"#,
+        ),
+        (
+            "tool_execute_after.json",
+            "opencode-secret-output-do-not-persist",
+        ),
+    ] {
         let event = parsed(
             AgentSource::Opencode,
             &format!("opencode-v1.17.18/{fixture_name}"),
@@ -816,9 +896,7 @@ fn opencode_v1_17_18_reads_discriminated_and_direct_payloads() {
         assert_eq!(event.kind, AgentEventType::Tool);
         assert_eq!(event.session_id.as_deref(), Some("opencode-session-tool"));
         assert_eq!(event.tool_name.as_deref(), Some("bash"));
-        let serialized = serde_json::to_string(&event).unwrap();
-        assert!(!serialized.contains("opencode-secret"));
-        assert!(!serialized.contains("TOKEN="));
+        assert_eq!(event.activity_content.as_deref(), Some(expected_activity));
     }
 
     let allowlisted_before = parse_contract_event(
@@ -948,7 +1026,7 @@ fn versioned_templates_only_claim_supported_contracts() {
         std::fs::read_to_string(root.join("plugins/claude-code/settings.fragment.json.tpl"))
             .unwrap();
     assert!(claude.contains("PostToolUseFailure"));
-    assert!(claude.contains("claude-hooks-2026-07-17-activity-v5"));
+    assert!(claude.contains("claude-hooks-2026-07-29-activity-v6"));
     assert!(claude.contains("\"release_version\": \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(claude.contains("\"async\":false"));
     assert!(claude.contains("\"timeout\":2"));
@@ -970,7 +1048,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-activity-v8"));
+    assert!(pi.contains("pi-extension-0.80.10-activity-v9"));
     assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
@@ -989,14 +1067,15 @@ fn versioned_templates_only_claim_supported_contracts() {
 
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
-    assert!(opencode.contains("opencode-v1.18.4-activity-v9"));
+    assert!(opencode.contains("opencode-v1.18.4-activity-v10"));
     assert!(opencode.contains(
         "APC_OPENCODE_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""
     ));
     assert!(opencode.contains("APC_OPENCODE_EVENT_INVENTORY"));
     assert!(opencode.contains("event?.properties"));
     assert!(opencode.contains("input?.sessionID"));
-    assert!(!opencode.contains("output?.args"));
+    assert!(opencode.contains("output?.args"));
+    assert!(opencode.contains("activity_content"));
     assert!(opencode.contains("connectorDiagnostic"));
     assert!(opencode.contains("\"permission.ask\""));
     assert!(opencode.contains("\"command.execute.before\""));

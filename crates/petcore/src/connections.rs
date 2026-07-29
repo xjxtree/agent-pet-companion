@@ -2417,12 +2417,12 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 mapped_information: strings(&[
                     "10 个官方 Hook 提供任务开始/完成、工具、权限、压缩与子 Agent 生命周期",
                     "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
-                    "有界的用户提示与最终助手消息",
+                    "有界的用户提示、最终助手消息、reasoning、命令与工具输入输出",
                 ]),
                 privacy_exclusions: strings(&[
-                    "不订阅/保存 App Server 的 output delta、patch、reasoning、transcript/audio 或账户通知内容",
-                    "不保存 transcript_path、tool_input、tool_response、命令输出或完整补丁",
-                    "不保存推理正文、认证信息、Token、Cookie 或 API Key",
+                    "不逐条保存 App Server 的高频 token delta、audio 或账户通知内容",
+                    "不保存 transcript_path、完整 transcript、完整补丁或任意宿主 envelope",
+                    "不读取认证存储，也不转发 auth headers、Token、Cookie、API Key 或完整环境变量",
                 ]),
                 ..Default::default()
             }
@@ -2463,11 +2463,12 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 "任务、工具、权限/提问、子 Agent/Task、压缩、失败与后台工作状态",
                 "Setup/配置/CWD/指令加载等元数据仅用于连接观察，不驱动桌宠",
                 "prompt_id 用作 turn 终止栅栏",
+                "有界命令、工具输入输出、错误正文与原始活动详情用于本地气泡",
             ]),
             privacy_exclusions: strings(&[
                 "不订阅 WorktreeCreate（会替换宿主默认创建行为）",
                 "不订阅 MessageDisplay/FileChanged（流式风暴或无安全全量匹配）",
-                "不保存 tool input/output、transcript、错误正文、elicitation 内容或后台命令",
+                "不保存完整 transcript、认证存储、auth headers、完整环境变量或无会话归属的宿主数据",
             ]),
             ..Default::default()
         },
@@ -2512,9 +2513,10 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
             mapped_information: strings(&[
                 "输入、turn、工具开始/结束、压缩、最终 agent_settled 与会话关闭",
                 "session title、工具名与单向散列调用身份",
+                "稳定事件中的有界 reasoning、命令、工具输入输出与原始活动详情",
             ]),
             privacy_exclusions: strings(&[
-                "不转发 context、provider request/headers/response、tool result 或流式 delta",
+                "不转发完整 context、provider headers/auth、完整环境变量或逐 token 流式 delta",
                 "agent_end 不作为终态；只有 agent_settled 稳定完成",
             ]),
             ..Default::default()
@@ -2545,14 +2547,15 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 ]),
                 mapped_information: strings(&[
                     "已盘点 21 个 Plugin Hook；注册 9 个只读安全项",
-                    "generic event 覆盖 91 个 SDK v1 + v2/host bus 事件；仅映射隐私安全的活动子集",
+                    "generic event 覆盖 91 个 SDK v1 + v2/host bus 事件；映射有会话归属的有界活动内容",
                     "session 状态、权限/提问、消息、命令/工具、计划、压缩与 session.next 生命周期",
+                    "稳定事件中的 reasoning、命令、工具输入输出、错误正文与原始活动详情",
                     "v2 单次 tool success/failure 保持可恢复；retry 重新激活；step.failed/session_failure 映射为终态失败",
                 ]),
                 privacy_exclusions: strings(&[
                     "不注册 config/tool/tool.definition/auth 等会修改配置、工具定义或认证行为的 Hook",
-                    "不转发 prompt 参数、headers/env/auth、tool args/output、todo 内容或 reasoning delta",
-                    "不保存命令文本、权限 patterns、错误正文或补丁内容",
+                    "不转发 provider headers/env/auth、认证存储、完整 transcript 或任意宿主 envelope",
+                    "高频 token delta 不逐条持久化；使用稳定完成事件的有界内容",
                 ]),
                 ..Default::default()
             }
@@ -5707,7 +5710,7 @@ fn check_agent_cli_version(
     }
     let (minimum, audited_maximum) = match source {
         AgentSource::Codex => unreachable!("Codex uses an exact audited version allowlist"),
-        AgentSource::ClaudeCode => ((2, 1, 212), (2, 1, 215)),
+        AgentSource::ClaudeCode => ((2, 1, 212), (2, 1, 216)),
         AgentSource::Pi => ((0, 80, 10), (0, 80, 10)),
         AgentSource::Opencode => ((1, 18, 0), (1, 18, 4)),
     };
@@ -7652,13 +7655,13 @@ mod tests {
         std::fs::write(&claude, "#!/bin/sh\necho '2.1.212 (Claude Code)'\n").unwrap();
         let audited = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
         assert_eq!(audited.status, CheckStatus::Ok);
-        assert!(audited.detail.contains("已审计范围 2.1.212–2.1.215"));
+        assert!(audited.detail.contains("已审计范围 2.1.212–2.1.216"));
 
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.215 (Claude Code)'\n").unwrap();
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.216 (Claude Code)'\n").unwrap();
         let current = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
         assert_eq!(current.status, CheckStatus::Ok);
 
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.216 (Claude Code)'\n").unwrap();
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.217 (Claude Code)'\n").unwrap();
         let future = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
         assert_eq!(future.status, CheckStatus::Unverified);
 
@@ -7938,7 +7941,7 @@ mod tests {
 
         let mut bad_hooks = rendered_codex_hooks(&cli).unwrap();
         bad_hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"] =
-            json!("true # --source codex codex-hooks-2026-07-17-schema-v6");
+            json!("true # --source codex codex-hooks-2026-07-29-activity-v7");
         std::fs::write(&hooks, serde_json::to_vec_pretty(&bad_hooks).unwrap()).unwrap();
         assert_eq!(
             check_codex_hooks(&hooks, &cli, temp.path()).status,
@@ -9213,7 +9216,7 @@ mod tests {
         let forged_build = "'/Users/test/Library/Application Support/AgentPetCompanion/runtime/versions/../../foreign/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let foreign = "'/Users/test/other/runtime/versions/0.1.0/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let legacy_bundle = "'/Users/test/project/dist/AgentPetCompanion.app/Contents/Resources/bin/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
-        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-07-17-activity-v5' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
+        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-07-29-activity-v6' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
 
         assert!(is_agent_pet_claude_command(
             prior,

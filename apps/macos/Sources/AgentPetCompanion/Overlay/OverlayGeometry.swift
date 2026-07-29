@@ -1634,14 +1634,14 @@ enum OverlayGeometry {
 enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
     case running = 0
     case ready = 1
-    case failed = 2
-    case needsInput = 3
+    case needsInput = 2
+    case failed = 3
 
     init(eventType: AgentEventKind?) {
         self = switch eventType {
-        case .waiting: .needsInput
+        case .waiting, .review: .needsInput
         case .failed: .failed
-        case .review, .done: .ready
+        case .done: .ready
         case .start, .tool, nil: .running
         }
     }
@@ -1720,21 +1720,22 @@ struct OverlaySessionContent: Equatable, Identifiable {
             source: source
         ) ?? APCLocalizedPresentation.navigationUnavailableTitle()
     }
-    var secondaryMessageText: String? {
-        guard let message = Self.compactMessage(messageText),
-              Self.normalizedText(message) != Self.normalizedText(activityText)
+    var secondaryDetailText: String? {
+        guard Self.compactMessage(messageText) != nil,
+              let activity = Self.compactMessage(activityText),
+              Self.normalizedText(activity) != Self.normalizedText(messageText)
         else {
             return nil
         }
-        return message
+        return activity
     }
     var primaryDetailText: String {
-        Self.compactMessage(activityText)
-            ?? Self.compactMessage(messageText)
+        Self.compactMessage(messageText)
+            ?? Self.compactMessage(activityText)
             ?? ""
     }
     var detailText: String {
-        [primaryDetailText, secondaryMessageText]
+        [primaryDetailText, secondaryDetailText]
             .compactMap { $0 }
             .joined(separator: "\n")
     }
@@ -1744,7 +1745,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
             sessionTitle,
             statusText,
             primaryDetailText,
-            secondaryMessageText,
+            secondaryDetailText,
             actionLabel,
         ]
         .compactMap(Self.compactMessage)
@@ -1807,11 +1808,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         self.sessionID = sessionID
         self.eventType = eventType
         self.sessionTitle = sessionTitle
-        self.activityText = activityText
-            ?? eventType.map {
-                Self.displayMessage(summaryKind: nil, eventType: $0)
-            }
-            ?? ""
+        self.activityText = activityText ?? ""
         self.messageText = messageText
         self.statusText = statusText
         self.navigation = navigation
@@ -1836,15 +1833,15 @@ struct OverlaySessionContent: Equatable, Identifiable {
             ? Self.genericSessionTitle(for: state)
             : proposedTitle
         navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
-        activityText = Self.displayMessage(
-            summaryKind: state.overlayDisplay?.summaryKind,
-            eventType: event.eventType
+        activityText = Self.nonredundantDetail(
+            Self.activityDetail(for: state),
+            title: sessionTitle,
+            status: statusText
         )
         messageText = Self.nonredundantMessage(
-            Self.displayMessage(for: state),
+            Self.assistantMessage(for: state) ?? "",
             title: sessionTitle,
-            status: statusText,
-            eventType: event.eventType
+            status: statusText
         )
     }
 
@@ -1861,16 +1858,8 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
         statusText = Self.displayStatus(for: event.eventType)
         navigation = event.sessionNavigation
-        activityText = Self.displayMessage(
-            summaryKind: nil,
-            eventType: event.eventType
-        )
-        messageText = Self.nonredundantMessage(
-            Self.fallbackDetail(for: event.eventType),
-            title: sessionTitle,
-            status: statusText,
-            eventType: event.eventType
-        )
+        activityText = ""
+        messageText = ""
     }
 
     static func stableID(
@@ -1962,17 +1951,10 @@ struct OverlaySessionContent: Equatable, Identifiable {
         return value
     }
 
-    static func displayMessage(
-        summaryKind: AgentOverlaySummaryKind?,
-        eventType: AgentEventKind
-    ) -> String {
-        summaryMessage(for: summaryKind ?? fallbackSummaryKind(for: eventType))
-    }
-
-    private static func displayMessage(for state: ActiveAgentState) -> String {
-        assistantMessage(for: state) ?? displayMessage(
-            summaryKind: state.overlayDisplay?.summaryKind,
-            eventType: state.event.eventType
+    private static func activityDetail(for state: ActiveAgentState) -> String? {
+        compactMessage(
+            state.sessionActivity?.content
+                ?? state.event.payloadJSON?.activityContent
         )
     }
 
@@ -2006,50 +1988,20 @@ struct OverlaySessionContent: Equatable, Identifiable {
     private static func nonredundantMessage(
         _ proposed: String,
         title: String,
-        status: String,
-        eventType: AgentEventKind
+        status: String
     ) -> String {
         let occupied = Set([title, status].map(normalizedText))
-        if !occupied.contains(normalizedText(proposed)) {
-            return proposed
-        }
-        let fallback = fallbackDetail(for: eventType)
-        return occupied.contains(normalizedText(fallback)) ? "" : fallback
+        return occupied.contains(normalizedText(proposed)) ? "" : proposed
     }
 
-    private static func fallbackSummaryKind(
-        for eventType: AgentEventKind
-    ) -> AgentOverlaySummaryKind {
-        switch eventType {
-        case .start: .running
-        case .tool: .tool
-        case .waiting: .needsInput
-        case .review: .review
-        case .done: .done
-        case .failed: .failed
-        }
-    }
-
-    private static func summaryMessage(for kind: AgentOverlaySummaryKind) -> String {
-        let key: APCLocalizationKey = switch kind {
-        case .running: .overlayDetailRunning
-        case .thinking: .overlayActivityThinking
-        case .plan: .overlayActivityPlan
-        case .command: .overlayActivityCommand
-        case .file: .overlayActivityFile
-        case .fileChange: .overlayActivityFileChange
-        case .tool: .overlayActivityTool
-        case .subagent: .overlayActivitySubagent
-        case .search: .overlayActivitySearch
-        case .network: .overlayActivityNetwork
-        case .image: .overlayActivityImage
-        case .compaction: .overlayActivityCompaction
-        case .needsInput: .overlayDetailNeedsInput
-        case .review: .overlayDetailReady
-        case .done: .overlayDetailCompleted
-        case .failed: .overlayDetailBlocked
-        }
-        return APCLocalization.text(key)
+    private static func nonredundantDetail(
+        _ proposed: String?,
+        title: String,
+        status: String
+    ) -> String {
+        guard let proposed = compactMessage(proposed) else { return "" }
+        let occupied = Set([title, status].map(normalizedText))
+        return occupied.contains(normalizedText(proposed)) ? "" : proposed
     }
 
     static func displayStatus(for eventType: AgentEventKind) -> String {
@@ -2058,15 +2010,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
         )
     }
 
-    private static func fallbackDetail(for eventType: AgentEventKind) -> String {
-        switch eventType {
-        case .start, .tool: APCLocalization.text(.overlayDetailRunning)
-        case .waiting: APCLocalization.text(.overlayDetailNeedsInput)
-        case .review: APCLocalization.text(.overlayDetailReady)
-        case .done: APCLocalization.text(.overlayDetailCompleted)
-        case .failed: APCLocalization.text(.overlayDetailBlocked)
-        }
-    }
 }
 
 struct OverlayBubbleContent: Equatable, Identifiable {

@@ -33,6 +33,17 @@ struct AgentConnectionActionLayout: Equatable {
     let moreActions: [AgentConnectionMoreAction]
 }
 
+enum AgentConnectionAttentionReason: Equatable {
+    case managedRepair
+    case agentMissing
+    case updateRequired
+    case hookAuthorization
+    case permissionRequired
+    case restartRequired
+    case localConnectionIssue
+    case actionRequired
+}
+
 enum AgentConnectionsPresentation {
     static func repairableStatuses(
         from statuses: [AgentConnectionStatus]
@@ -124,6 +135,14 @@ enum AgentConnectionsPresentation {
             return operationFailureDetail(failure.reason, locale: locale)
         }
 
+        if let reason = attentionReason(for: presentation) {
+            return attentionSummary(
+                reason,
+                source: presentation.source,
+                locale: locale
+            )
+        }
+
         let key: APCLocalizationKey = switch presentation.health {
         case .notChecked: .connectionsSummaryNotChecked
         case .checking: .connectionsSummaryChecking
@@ -134,28 +153,109 @@ enum AgentConnectionsPresentation {
         return APCLocalization.text(key, locale: locale)
     }
 
+    static func healthTitle(
+        for presentation: AgentConnectionProductPresentation,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        guard let reason = attentionReason(for: presentation) else {
+            return APCLocalizedPresentation.connectionHealthTitle(
+                presentation.health,
+                locale: locale
+            )
+        }
+
+        let key: APCLocalizationKey = switch reason {
+        case .managedRepair: .productConnectionNeedsRepair
+        case .agentMissing: .connectionsStatusAgentMissing
+        case .updateRequired: .connectionsStatusUpdateRequired
+        case .hookAuthorization: .connectionsStatusHookAuthorization
+        case .permissionRequired: .connectionsStatusPermissionRequired
+        case .restartRequired: .connectionsStatusRestartRequired
+        case .localConnectionIssue: .connectionsStatusLocalIssue
+        case .actionRequired: .connectionsStatusActionRequired
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
     static func userGuidance(
         for presentation: AgentConnectionProductPresentation,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String? {
-        if presentation.health == .needsRepair {
+        guard let reason = attentionReason(for: presentation) else {
+            return nil
+        }
+
+        switch reason {
+        case .managedRepair:
             return APCLocalization.text(
                 .connectionsGuidanceRepair,
                 locale: locale
             )
-        }
-        guard presentation.health == .unavailable else { return nil }
-
-        let items = presentation.technicalItems
-        if items.contains(where: {
-            $0.code == .agentCLI
-                && ($0.status == .missing || $0.status == .unsupported)
-        }) {
+        case .agentMissing:
             return APCLocalization.format(
                 .connectionsGuidanceInstallFormat,
                 locale: locale,
                 presentation.source.title
             )
+        case .updateRequired:
+            return APCLocalization.format(
+                .connectionsGuidanceUpdateFormat,
+                locale: locale,
+                presentation.source.title
+            )
+        case .hookAuthorization:
+            return APCLocalization.text(
+                .connectionsGuidanceHookAuthorization,
+                locale: locale
+            )
+        case .permissionRequired:
+            return APCLocalization.text(
+                .connectionsGuidanceSettings,
+                locale: locale
+            )
+        case .restartRequired:
+            return APCLocalization.format(
+                .connectionsGuidanceFullRestartFormat,
+                locale: locale,
+                presentation.source.title
+            )
+        case .localConnectionIssue:
+            return APCLocalization.text(
+                .connectionsGuidanceLocalService,
+                locale: locale
+            )
+        case .actionRequired:
+            return APCLocalization.text(
+                .connectionsGuidanceActionRequired,
+                locale: locale
+            )
+        }
+    }
+
+    static func attentionReason(
+        for presentation: AgentConnectionProductPresentation
+    ) -> AgentConnectionAttentionReason? {
+        if presentation.health == .needsRepair {
+            return .managedRepair
+        }
+        guard presentation.health == .unavailable else { return nil }
+
+        let items = presentation.technicalItems
+        if presentation.source == .codex,
+           items.contains(where: { item in
+               guard item.status.isBlocking else { return false }
+               if case .codexHookTrust = item.evidence {
+                   return true
+               }
+               return false
+           }) {
+            return .hookAuthorization
+        }
+        if items.contains(where: {
+            $0.code == .agentCLI
+                && ($0.status == .missing || $0.status == .unsupported)
+        }) {
+            return .agentMissing
         }
         if items.contains(where: {
             $0.code == .agentVersion
@@ -163,19 +263,22 @@ enum AgentConnectionsPresentation {
                     || $0.status == .needsFix
                     || $0.status == .unsupported)
         }) {
-            return APCLocalization.format(
-                .connectionsGuidanceUpdateFormat,
-                locale: locale,
-                presentation.source.title
-            )
+            return .updateRequired
         }
         if items.contains(where: {
             $0.code == .claudeHooksPolicy && $0.status.isBlocking
         }) {
-            return APCLocalization.text(
-                .connectionsGuidanceSettings,
-                locale: locale
-            )
+            return .permissionRequired
+        }
+        if items.contains(where: {
+            switch $0.code {
+            case .eventCLI, .eventDelivery, .channelTest:
+                $0.status.isBlocking
+            default:
+                false
+            }
+        }) {
+            return .localConnectionIssue
         }
         if items.contains(where: {
             switch $0.code {
@@ -185,22 +288,62 @@ enum AgentConnectionsPresentation {
                 false
             }
         }) {
-            return APCLocalization.format(
-                .connectionsGuidanceRestartFormat,
-                locale: locale,
-                presentation.source.title
-            )
+            return .restartRequired
         }
-        if presentation.canManageManagedConnector {
+        return .actionRequired
+    }
+
+    private static func attentionSummary(
+        _ reason: AgentConnectionAttentionReason,
+        source: AgentSource,
+        locale: String
+    ) -> String {
+        switch reason {
+        case .managedRepair:
             return APCLocalization.text(
-                .connectionsGuidanceRepair,
+                .connectionsSummaryNeedsRepair,
+                locale: locale
+            )
+        case .agentMissing:
+            return APCLocalization.format(
+                .connectionsSummaryAgentMissingFormat,
+                locale: locale,
+                source.title
+            )
+        case .updateRequired:
+            return APCLocalization.format(
+                .connectionsSummaryUpdateRequiredFormat,
+                locale: locale,
+                source.title
+            )
+        case .hookAuthorization:
+            return APCLocalization.text(
+                .connectionsSummaryHookAuthorization,
+                locale: locale
+            )
+        case .permissionRequired:
+            return APCLocalization.format(
+                .connectionsSummaryPermissionRequiredFormat,
+                locale: locale,
+                source.title
+            )
+        case .restartRequired:
+            return APCLocalization.format(
+                .connectionsSummaryRestartRequiredFormat,
+                locale: locale,
+                source.title
+            )
+        case .localConnectionIssue:
+            return APCLocalization.text(
+                .connectionsSummaryLocalIssue,
+                locale: locale
+            )
+        case .actionRequired:
+            return APCLocalization.text(
+                .connectionsSummaryActionRequired,
                 locale: locale
             )
         }
-        return APCLocalization.text(
-            .connectionsGuidanceService,
-            locale: locale
-        )
     }
 
     static func taskVerificationTitle(
@@ -256,7 +399,9 @@ enum AgentConnectionsPresentation {
             hintKey = .connectionsPrimaryRepairHint
         case .verify:
             image = "arrow.clockwise"
-            hintKey = .connectionsPrimaryVerifyHint
+            hintKey = attentionReason(for: presentation) == nil
+                ? .connectionsPrimaryVerifyHint
+                : .connectionsPrimaryAttentionVerifyHint
         case .retry:
             image = "arrow.clockwise"
             hintKey = .connectionsPrimaryRetryHint
@@ -908,7 +1053,7 @@ private struct AgentConnectionSection: View {
     }
 
     private var healthTitle: String {
-        APCLocalizedPresentation.connectionHealthTitle(presentation.health)
+        AgentConnectionsPresentation.healthTitle(for: presentation)
     }
 
     private var healthIndicator: some View {
@@ -965,38 +1110,22 @@ private struct AgentConnectionSection: View {
                 managedComponents
             }
 
-            if let guidance = AgentConnectionsPresentation.userGuidance(
-                for: presentation
-            ) {
-                Label(guidance, systemImage: "lightbulb")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier(
-                        "connections.agent-guidance.\(source.rawValue)"
-                    )
-            }
-
             actionControls
         }
     }
 
     private var connectionOverview: some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: presentation.taskVerification.systemImage)
-                .foregroundStyle(presentation.taskVerification.color)
+            Image(systemName: overviewSystemImage)
+                .foregroundStyle(overviewColor)
                 .frame(width: 18)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(AgentConnectionsPresentation.taskVerificationTitle(
-                    presentation.taskVerification
-                ))
+                Text(overviewTitle)
                 .font(.callout.weight(.semibold))
 
-                Text(AgentConnectionsPresentation.taskVerificationDetail(
-                    presentation.taskVerification
-                ))
+                Text(overviewDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1005,6 +1134,38 @@ private struct AgentConnectionSection: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(
             "connections.agent-verification.\(source.rawValue)"
+        )
+    }
+
+    private var overviewSystemImage: String {
+        AgentConnectionsPresentation.attentionReason(for: presentation) == nil
+            ? presentation.taskVerification.systemImage
+            : "exclamationmark.triangle.fill"
+    }
+
+    private var overviewColor: Color {
+        AgentConnectionsPresentation.attentionReason(for: presentation) == nil
+            ? presentation.taskVerification.color
+            : APCDesign.warning
+    }
+
+    private var overviewTitle: String {
+        if AgentConnectionsPresentation.attentionReason(for: presentation) != nil {
+            return healthTitle
+        }
+        return AgentConnectionsPresentation.taskVerificationTitle(
+            presentation.taskVerification
+        )
+    }
+
+    private var overviewDetail: String {
+        if let guidance = AgentConnectionsPresentation.userGuidance(
+            for: presentation
+        ) {
+            return guidance
+        }
+        return AgentConnectionsPresentation.taskVerificationDetail(
+            presentation.taskVerification
         )
     }
 

@@ -136,7 +136,7 @@ credential-like values never cross into ordinary or accessibility presentation.
 Runtime version checks fail closed outside the protocol surfaces audited by the
 current connector: Codex accepts only `0.144.5`, `0.145.0-alpha.18`, and the
 ChatGPT-bundled `0.146.0-alpha.3.1`; Claude Code accepts
-`2.1.212`–`2.1.215`; Pi requires exactly `0.80.10`; and OpenCode accepts
+`2.1.212`–`2.1.216`; Pi requires exactly `0.80.10`; and OpenCode accepts
 `1.18.0`–`1.18.4`. The Codex `0.146.0-alpha.3.1` App Server notification schema
 is an exact 70-method match to the recorded inventory, and the OpenCode
 `1.18.4` plugin hook plus v1/v2 event inventories are exact matches to the
@@ -154,15 +154,50 @@ bounded daily return path: one attention-prioritized/latest row while
 collapsed, and every concrete session already present in the bounded PetCore
 snapshot while expanded. The whole session row is the navigation target; a
 chevron is visual hover/focus affordance rather than repeated action copy. The
-row status names the exact fixed lifecycle action presented by the pet, and its
-detail keeps the closed safe activity summary visible alongside a distinct
-current-turn Agent message.
+row badge names the exact fixed lifecycle action presented by the pet. Its two
+detail lines are reserved for a bounded current-turn Agent message,
+host-exposed reasoning, commands, tool input/output, errors, or raw activity
+details. When a concrete activity detail exists, the Agent message and activity
+use one line each; otherwise the Agent message may use both detail lines. The
+App does not insert a duplicate generic thinking/working sentence. When Codex
+App Server persistence temporarily omits new hidden activity, PetCore preserves
+the newest concrete host-exposed reasoning or tool detail instead of replacing
+it with an empty inferred category. Once a later `thread/read` exposes a
+current concrete item for the same turn, that item supersedes the older
+running hook detail; waiting, review, and terminal hooks remain authoritative.
+App Server status events still receive a direct per-thread display read because
+the cached recent-task list may not revise while live reasoning changes.
+That bounded, read-only hydration does not share the mutation/admission gate
+used by background recent-thread scans, connection checks, or generation
+startup, so unrelated host work cannot serialize the current bubble behind a
+multi-second queue. A materially changed per-thread display advances a
+process-local display epoch and wakes the current `state.wait` immediately;
+the App retains a one-second active-session timeout only as a fallback.
+
+Concrete activity availability follows the host API rather than the generic pet
+state:
+
+| Source | Concrete running detail available to the bubble |
+|---|---|
+| Codex | Persisted App Server reasoning summaries and tool/command/file activity, plus managed-hook tool input/output when the host invokes those hooks. A separately spawned App Server may lag activity still hidden inside the live desktop turn. |
+| Claude Code | Tool input/output, tool failures, permission/input requests, sub-Agent/task and compaction details exposed by hooks. Claude hooks do not expose private model reasoning, so prompt-only thinking has no concrete second-line text. |
+| Pi Coding Agent | Tool start/end input/output and provider-visible reasoning content carried by stable message/settled events. High-frequency update deltas are observation-only and do not become bubble text. |
+| OpenCode | Stable reasoning, command/tool input/output, plan, compaction, error, and session-step details exposed by the managed plugin. |
+
+Terminal rows prioritize the final Agent message. A short prompt-only task or a
+task that never invokes a tool legitimately has no concrete activity line.
+For the Codex App Server fallback, a successful unarchived `thread/list` round
+also closes any previously observed task that has disappeared from that list,
+which covers stop-then-archive without waiting for the activity lease. A failed
+list round preserves the prior projection, and a listed task is not closed when
+only its bounded `thread/read` detail refresh fails.
 
 ## Security and privacy boundary
 
 - Never read or export Agent auth, token, cookie, API key, or secret files.
-- Do not forward arbitrary command/tool payloads, hidden reasoning, complete transcript archives, arbitrary environment variables, or unbounded host payloads as event structure.
-- Explicit, bounded session titles plus first/latest user and latest assistant display messages are product data and remain available to the desktop bubble. Each Agent connector forwards later generated-title metadata without inventing activity; PetCore uses the first user message only until that explicit title arrives.
+- Session-scoped reasoning, commands, tool input/output, errors, and raw activity details may cross only as bounded `activity_content`; the adapter does not preserve the arbitrary host envelope. Stable completion content is preferred over persisting every high-frequency token delta.
+- Explicit, bounded session titles, first/latest user and latest assistant display messages, host-exposed activity content, and closed tool categories are product data and remain available to the desktop bubble. Each Agent connector forwards later generated-title metadata without inventing activity; PetCore uses the first user message only until that explicit title arrives.
+- Never read or forward credential stores, auth headers, cookies, API keys, complete environment dumps, or complete transcript archives. Credential-shaped object fields are removed recursively before structured tool/activity values are serialized; plain command/output strings remain visible as supplied by the host.
 - Project paths and session IDs are normalized for local correlation and removed or redacted from diagnostics.
 - Internal Codex suggestion/Pet Studio sessions are suppressed from ordinary desktop activity.
 - Connector files must be attributable to Agent Pet Companion, updated atomically, and removed without changing unrelated user configuration or projects.

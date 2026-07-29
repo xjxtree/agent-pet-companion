@@ -21,7 +21,8 @@ struct PetLibraryImportTests {
 
         #expect(!store.isImportingPetpack)
         #expect(store.selection == .library)
-        #expect(store.petLibraryNotice == nil)
+        #expect(store.petLibraryNotice?.kind == .importSuccess)
+        #expect(store.petLibraryNotice?.title == APCLocalization.text(.libraryImportSuccessTitle))
         #expect(store.statusText == "已导入本 App .petpack")
         #expect(probe.importWorkflowMethods == ["petpack.import", "state.snapshot"])
         #expect(probe.importedPaths == [url.standardizedFileURL.path])
@@ -96,6 +97,13 @@ struct PetLibraryImportTests {
         store.importPetpacks(urls: [firstURL])
         await probe.waitForDelayedRequestToStart()
         #expect(store.isImportingPetpack)
+        #expect(store.petpackImportProgress == PetLibraryImportProgress(
+            phase: .importing,
+            totalCount: 1,
+            completedCount: 0,
+            importedCount: 0,
+            currentFileName: firstURL.lastPathComponent
+        ))
 
         store.importPetpacks(urls: [secondURL])
         let waiter = Task { @MainActor in
@@ -116,7 +124,42 @@ struct PetLibraryImportTests {
 
         #expect(completion.didComplete)
         #expect(!store.isImportingPetpack)
+        #expect(store.petpackImportProgress == nil)
+        #expect(store.petLibraryNotice?.kind == .importSuccess)
         #expect(probe.importedPaths == [firstURL.standardizedFileURL.path])
+    }
+
+    @MainActor
+    @Test
+    func protectedImportConfirmsHealthBeforeReportingStateWaitAsOffline() async {
+        var methods: [String] = []
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, _, _ in
+                methods.append(method)
+                switch method {
+                case "state.wait":
+                    throw PetCoreClientError.connectFailed("timed out")
+                case "petcore.health":
+                    return ["ok": true]
+                default:
+                    throw PetpackImportTestError.unexpectedMethod(method)
+                }
+            }
+        )
+        store.isImportingPetpack = true
+
+        await store.waitForStateChange()
+
+        #expect(methods == ["state.wait", "petcore.health"])
+        #expect(store.petCoreOperationalState == .online)
+        #expect(store.serviceStatusText == "本地服务运行中")
     }
 
     @MainActor

@@ -729,8 +729,8 @@ enum ConfigurationSourcePresentation {
             status: status,
             operationState: operationState
         )
-        return APCLocalizedPresentation.connectionHealthTitle(
-            connection.health,
+        return AgentConnectionsPresentation.healthTitle(
+            for: connection,
             locale: localeIdentifier
         )
     }
