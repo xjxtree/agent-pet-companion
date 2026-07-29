@@ -282,6 +282,7 @@ extension ActiveAgentState {
             && current.sessionID == next.sessionID
             && current.eventType == next.eventType
             && current.sessionTitle == next.sessionTitle
+            && current.activityText == next.activityText
             && current.messageText == next.messageText
             && current.statusText == next.statusText
             && current.actionLabel == next.actionLabel
@@ -549,6 +550,12 @@ final class AppStore: ObservableObject {
     @Published var overlayScreenFrame = CGRect(x: 780, y: 140, width: 704, height: 640)
     @Published var overlayScreenVisibleFrame = NSScreen.main?.visibleFrame ?? .zero
     @Published var overlayPetScreenCenter = CGPoint.zero
+    var overlayPresentedPetScreenCenter: CGPoint {
+        overlayPetDragPresentationCenter ?? overlayPetScreenCenter
+    }
+    var overlayPresentedScale: CGFloat {
+        overlayResizePresentationScale ?? overlayScale
+    }
     private(set) var overlayPetVisualEnvelope: OverlayPetVisualEnvelope?
     private var overlayPetFrameHitTestProjection: OverlayPetFrameHitTestProjection?
     var overlayPetFrameHitTest: OverlayPetFrameHitTest? {
@@ -601,6 +608,8 @@ final class AppStore: ObservableObject {
     private var overlayPlacementSaveSequence: UInt64 = 0
     private var overlayPetReleaseTask: Task<Void, Never>?
     private var overlayPetReleaseSequence: UInt64 = 0
+    private var overlayPetDragPresentationCenter: CGPoint?
+    private var overlayResizePresentationScale: CGFloat?
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
     private var authoritativeBehavior = BehaviorSettings()
@@ -611,6 +620,8 @@ final class AppStore: ObservableObject {
     private var pendingBehaviorMutationCount = 0
     private var mainWindowPresenter: (() -> Void)?
     private weak var controlCenterWindow: NSWindow?
+    private var controlCenterCloseObserver: AnyCancellable?
+    private(set) var controlCenterIsOpen = false
     private var pendingMainWindowPresentation = false
     private var pendingMainWindowPresentationChecksRuntimeHandoff = true
     private var generationMessagesTask: Task<Void, Never>?
@@ -1028,8 +1039,25 @@ final class AppStore: ObservableObject {
     }
 
     func registerControlCenterWindow(_ window: NSWindow) {
+        guard controlCenterWindow !== window else { return }
+        controlCenterCloseObserver?.cancel()
         window.identifier = Self.controlCenterWindowIdentifier
         controlCenterWindow = window
+        controlCenterIsOpen = true
+        overlayController.controlCenterDidOpen()
+        controlCenterCloseObserver = NotificationCenter.default.publisher(
+            for: NSWindow.willCloseNotification,
+            object: window
+        )
+        .sink { [weak self, weak window] _ in
+            Task { @MainActor in
+                guard let self, self.controlCenterWindow === window else {
+                    return
+                }
+                self.controlCenterIsOpen = false
+                self.overlayController.controlCenterDidClose()
+            }
+        }
     }
 
     func presentManualAppInstallation(_ request: AppManualInstallationRequest) {
@@ -1221,6 +1249,8 @@ final class AppStore: ObservableObject {
             window.deminiaturize(nil)
         }
         window.makeKeyAndOrderFront(nil)
+        controlCenterIsOpen = true
+        overlayController.controlCenterDidOpen()
         return true
     }
 
@@ -4019,13 +4049,17 @@ final class AppStore: ObservableObject {
             }
             let result = try await requestPetCore(
                 method: "connections.test",
-                params: ["source": source.rawValue]
+                params: ["source": source.rawValue],
+                timeout: .seconds(3)
             )
             guard (result as? [String: Any])?["ok"] as? Bool == true else {
                 throw AgentConnectionOperationExecutionError(.rejected)
             }
-            _ = await refresh()
-            return "\(source.title) PetCore 通道自检通过（诊断事件不触发桌宠）"
+            // The diagnostic event is intentionally excluded from ordinary
+            // snapshots and connection evidence. Waiting for a full refresh
+            // here adds no state and can turn a lightweight test into a
+            // service-recovery operation that makes the UI appear stuck.
+            return "\(source.title) 本地连接测试通过"
         case .repair:
             return try await performConnectionRepair(operation.sources)
         case .uninstall:
@@ -4154,6 +4188,9 @@ final class AppStore: ObservableObject {
                 .rejected
             }
         }
+        if error is PetCoreTransportError {
+            return .transportUnavailable
+        }
         return .unknown
     }
 
@@ -4190,6 +4227,7 @@ final class AppStore: ObservableObject {
     }
 
     func moveOverlayPet(to proposedCenter: CGPoint, visibleFrame: CGRect?, commit: Bool = true) {
+        overlayPetDragPresentationCenter = nil
         let targetScreen = screen(containing: proposedCenter)
             ?? screen(matchingVisibleFrame: visibleFrame)
             ?? screen(containing: overlayPetScreenCenter)
@@ -4204,7 +4242,12 @@ final class AppStore: ObservableObject {
             screenFrame: targetScreen?.frame ?? targetVisibleFrame,
             visibleFrame: targetVisibleFrame
         )
-        overlayScreenVisibleFrame = targetVisibleFrame
+        if !rect(
+            overlayScreenVisibleFrame,
+            nearlyEquals: targetVisibleFrame
+        ) {
+            overlayScreenVisibleFrame = targetVisibleFrame
+        }
         overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
             proposedCenter,
             scale: overlayScale,
@@ -4238,12 +4281,18 @@ final class AppStore: ObservableObject {
         if overlayPetReleaseTask != nil {
             cancelOverlayPetReleaseMotion()
         }
-        if let visibleFrame, !visibleFrame.isEmpty {
+        if let visibleFrame,
+           !visibleFrame.isEmpty,
+           !rect(overlayScreenVisibleFrame, nearlyEquals: visibleFrame)
+        {
             overlayScreenVisibleFrame = visibleFrame
         }
-        overlayPetScreenCenter = presentationCenter
+        overlayPetDragPresentationCenter = presentationCenter
         overlayPetPositionInitialized = true
-        overlayController.updateLayoutDuringInteraction()
+        overlayController.presentPetDrag(
+            at: presentationCenter,
+            visibleFrame: visibleFrame ?? overlayScreenVisibleFrame
+        )
     }
 
     func settleOverlayPet(
@@ -4253,6 +4302,7 @@ final class AppStore: ObservableObject {
         reduceMotion: Bool
     ) {
         cancelOverlayPetReleaseMotion()
+        overlayPetDragPresentationCenter = presentationCenter
 
         let targetScreen = screen(matchingVisibleFrame: visibleFrame)
             ?? screen(containing: presentationCenter)
@@ -4308,15 +4358,23 @@ final class AppStore: ObservableObject {
                       self.overlayPetReleaseSequence == sequence else {
                     return
                 }
-                self.overlayPetScreenCenter =
-                    OverlayPetDragMotion.criticallyDampedPosition(
-                        from: presentationCenter,
-                        to: target,
-                        initialVelocity: velocity,
-                        elapsed: elapsed
-                    )
-                self.overlayScreenVisibleFrame = targetVisibleFrame
-                self.overlayController.updateLayoutDuringInteraction()
+                let presentedCenter = OverlayPetDragMotion.criticallyDampedPosition(
+                    from: presentationCenter,
+                    to: target,
+                    initialVelocity: velocity,
+                    elapsed: elapsed
+                )
+                self.overlayPetDragPresentationCenter = presentedCenter
+                if !self.rect(
+                    self.overlayScreenVisibleFrame,
+                    nearlyEquals: targetVisibleFrame
+                ) {
+                    self.overlayScreenVisibleFrame = targetVisibleFrame
+                }
+                self.overlayController.presentPetDrag(
+                    at: presentedCenter,
+                    visibleFrame: targetVisibleFrame
+                )
                 do {
                     try await Task.sleep(
                         for: OverlayPetDragMotion.releaseFrameInterval
@@ -4342,6 +4400,7 @@ final class AppStore: ObservableObject {
 
     func ensureOverlayPetPosition(in visibleFrame: CGRect) {
         guard !visibleFrame.isEmpty else { return }
+        guard overlayPetDragPresentationCenter == nil else { return }
         if overlayPetPositionInitialized {
             let targetScreen = screen(matchingVisibleFrame: visibleFrame)
                 ?? screen(containing: overlayPetScreenCenter)
@@ -4376,7 +4435,18 @@ final class AppStore: ObservableObject {
     }
 
     func setOverlayScale(_ scale: CGFloat, commit: Bool = true) {
-        overlayScale = OverlayGeometry.clampedScale(scale)
+        let targetScale = OverlayGeometry.clampedScale(scale)
+        if !commit {
+            guard overlayResizePresentationScale != targetScale else { return }
+            overlayResizePresentationScale = targetScale
+            overlayController.updateScaleDuringInteraction(targetScale)
+            return
+        }
+
+        overlayResizePresentationScale = nil
+        if overlayScale != targetScale {
+            overlayScale = targetScale
+        }
         if commit {
             diagnostics.log(
                 .info,
@@ -4388,8 +4458,6 @@ final class AppStore: ObservableObject {
             ensureOverlayPetPosition(in: visibleFrame)
             overlayController.updateScale(overlayScale)
             scheduleOverlayPlacementSave()
-        } else {
-            overlayController.updateScaleDuringInteraction(overlayScale)
         }
     }
 
@@ -4534,8 +4602,20 @@ final class AppStore: ObservableObject {
 
     func cancelOverlayPointerInteractions() {
         guard overlayPetDragInProgress || overlayResizeInProgress else { return }
+        let interruptedDragCenter = overlayPetDragPresentationCenter
+        let interruptedScale = overlayResizePresentationScale
         overlayPetDragInProgress = false
         overlayResizeInProgress = false
+        if let interruptedDragCenter {
+            moveOverlayPet(
+                to: interruptedDragCenter,
+                visibleFrame: overlayScreenVisibleFrame,
+                commit: true
+            )
+        }
+        if let interruptedScale {
+            setOverlayScale(interruptedScale, commit: true)
+        }
         overlayController.updateLayoutDuringInteraction()
     }
 
@@ -4551,6 +4631,9 @@ final class AppStore: ObservableObject {
     }
 
     func setOverlayResizeInProgress(_ value: Bool) {
+        if !value, let interruptedScale = overlayResizePresentationScale {
+            setOverlayScale(interruptedScale, commit: true)
+        }
         if overlayResizeInProgress != value {
             overlayResizeInProgress = value
             overlayController.updateLayoutDuringInteraction()

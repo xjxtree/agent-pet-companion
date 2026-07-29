@@ -21,6 +21,18 @@ enum AgentConnectionVisualTone: Equatable {
     }
 }
 
+enum AgentConnectionMoreAction: Equatable {
+    case recheck
+    case sendTestMessage
+    case setUpAgain
+    case remove
+}
+
+struct AgentConnectionActionLayout: Equatable {
+    let primaryAction: AgentConnectionPrimaryAction?
+    let moreActions: [AgentConnectionMoreAction]
+}
+
 enum AgentConnectionsPresentation {
     static func repairableStatuses(
         from statuses: [AgentConnectionStatus]
@@ -122,6 +134,75 @@ enum AgentConnectionsPresentation {
         return APCLocalization.text(key, locale: locale)
     }
 
+    static func userGuidance(
+        for presentation: AgentConnectionProductPresentation,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        if presentation.health == .needsRepair {
+            return APCLocalization.text(
+                .connectionsGuidanceRepair,
+                locale: locale
+            )
+        }
+        guard presentation.health == .unavailable else { return nil }
+
+        let items = presentation.technicalItems
+        if items.contains(where: {
+            $0.code == .agentCLI
+                && ($0.status == .missing || $0.status == .unsupported)
+        }) {
+            return APCLocalization.format(
+                .connectionsGuidanceInstallFormat,
+                locale: locale,
+                presentation.source.title
+            )
+        }
+        if items.contains(where: {
+            $0.code == .agentVersion
+                && ($0.status == .missing
+                    || $0.status == .needsFix
+                    || $0.status == .unsupported)
+        }) {
+            return APCLocalization.format(
+                .connectionsGuidanceUpdateFormat,
+                locale: locale,
+                presentation.source.title
+            )
+        }
+        if items.contains(where: {
+            $0.code == .claudeHooksPolicy && $0.status.isBlocking
+        }) {
+            return APCLocalization.text(
+                .connectionsGuidanceSettings,
+                locale: locale
+            )
+        }
+        if items.contains(where: {
+            switch $0.code {
+            case .hostRuntime, .hostVerification, .appServer, .hostServer:
+                $0.status.isBlocking
+            default:
+                false
+            }
+        }) {
+            return APCLocalization.format(
+                .connectionsGuidanceRestartFormat,
+                locale: locale,
+                presentation.source.title
+            )
+        }
+        if presentation.canManageManagedConnector {
+            return APCLocalization.text(
+                .connectionsGuidanceRepair,
+                locale: locale
+            )
+        }
+        return APCLocalization.text(
+            .connectionsGuidanceService,
+            locale: locale
+        )
+    }
+
     static func taskVerificationTitle(
         _ state: AgentTaskVerificationState,
         locale: String = APCLocalization.interfaceLocaleIdentifier
@@ -152,10 +233,15 @@ enum AgentConnectionsPresentation {
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> ProductActionPresentation<AgentConnectionPrimaryAction>? {
         let action = presentation.primaryAction
-        guard let title = APCLocalizedPresentation.primaryActionTitle(
+        let title: String
+        if action == .verify {
+            title = APCLocalization.text(.connectionsRecheck, locale: locale)
+        } else if let localizedTitle = APCLocalizedPresentation.primaryActionTitle(
             action,
             locale: locale
-        ) else {
+        ) {
+            title = localizedTitle
+        } else {
             return nil
         }
 
@@ -169,7 +255,7 @@ enum AgentConnectionsPresentation {
             image = "wrench.and.screwdriver"
             hintKey = .connectionsPrimaryRepairHint
         case .verify:
-            image = "checkmark.seal"
+            image = "arrow.clockwise"
             hintKey = .connectionsPrimaryVerifyHint
         case .retry:
             image = "arrow.clockwise"
@@ -193,6 +279,39 @@ enum AgentConnectionsPresentation {
                 locale: locale
             ),
             isEnabled: !busy
+        )
+    }
+
+    static func actionLayout(
+        for presentation: AgentConnectionProductPresentation
+    ) -> AgentConnectionActionLayout {
+        let primaryAction: AgentConnectionPrimaryAction? =
+            switch presentation.primaryAction {
+        case .connect, .repair, .retry:
+            presentation.primaryAction
+        case .verify:
+            presentation.health == .connected ? nil : .verify
+        case .unavailable:
+            nil
+        }
+
+        var moreActions: [AgentConnectionMoreAction] = []
+        if primaryAction != .verify {
+            moreActions.append(.recheck)
+        }
+        moreActions.append(.sendTestMessage)
+        if presentation.canManageManagedConnector,
+           primaryAction != .connect,
+           primaryAction != .repair {
+            moreActions.append(.setUpAgain)
+        }
+        if presentation.canUninstall {
+            moreActions.append(.remove)
+        }
+
+        return AgentConnectionActionLayout(
+            primaryAction: primaryAction,
+            moreActions: moreActions
         )
     }
 
@@ -335,6 +454,112 @@ enum AgentConnectionsPresentation {
         return APCLocalization.text(key, locale: locale)
     }
 
+    static func extensionKindTitle(
+        _ kind: AgentExtensionKind,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch kind {
+        case .connector: .connectionsComponentKindConnector
+        case .plugin: .connectionsComponentKindPlugin
+        case .hostExtension: .connectionsComponentKindExtension
+        case .package: .connectionsComponentKindPackage
+        case .skill: .connectionsComponentKindSkill
+        case .unknown: .connectionsComponentKindUnknown
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func managedComponentStatusTitle(
+        _ component: AgentManagedComponent,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        if managedComponentHasVersionMismatch(component) {
+            return APCLocalization.text(
+                .connectionsComponentVersionMismatch,
+                locale: locale
+            )
+        }
+
+        let statusTitle = APCLocalizedPresentation.checkStatusTitle(
+            component.status,
+            locale: locale
+        )
+        guard let activeVersion = component.activeVersion,
+              let displayedVersion =
+                displayedManagedComponentVersion(activeVersion) else {
+            return statusTitle
+        }
+        return "\(displayedVersion) · \(statusTitle)"
+    }
+
+    static func managedComponentHasVersionMismatch(
+        _ component: AgentManagedComponent
+    ) -> Bool {
+        guard let expectedVersion = component.expectedVersion,
+              let activeVersion = component.activeVersion,
+              let normalizedExpectedVersion =
+                normalizedManagedComponentVersion(expectedVersion),
+              let normalizedActiveVersion =
+                normalizedManagedComponentVersion(activeVersion) else {
+            return false
+        }
+        return normalizedExpectedVersion != normalizedActiveVersion
+    }
+
+    static func managedComponentVersionDetail(
+        _ component: AgentManagedComponent,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        if let expectedVersion = component.expectedVersion,
+           let activeVersion = component.activeVersion,
+           managedComponentHasVersionMismatch(component),
+           let displayedActiveVersion =
+               displayedManagedComponentVersion(activeVersion),
+           let displayedExpectedVersion =
+               displayedManagedComponentVersion(expectedVersion) {
+            return APCLocalization.format(
+                .connectionsComponentVersionMismatchDetailFormat,
+                locale: locale,
+                displayedActiveVersion,
+                displayedExpectedVersion
+            )
+        }
+
+        guard component.activeVersion == nil,
+              let expectedVersion = component.expectedVersion,
+              let displayedExpectedVersion =
+                displayedManagedComponentVersion(expectedVersion) else {
+            return nil
+        }
+        return APCLocalization.format(
+            .connectionsComponentRequiredVersionFormat,
+            locale: locale,
+            displayedExpectedVersion
+        )
+    }
+
+    private static func displayedManagedComponentVersion(
+        _ version: String
+    ) -> String? {
+        normalizedManagedComponentVersion(version).map { "v\($0)" }
+    }
+
+    private static func normalizedManagedComponentVersion(
+        _ version: String
+    ) -> String? {
+        guard let firstCharacter = version.first else {
+            return nil
+        }
+        if firstCharacter.isNumber {
+            return version
+        }
+        if firstCharacter.lowercased() == "v",
+           version.dropFirst().first?.isNumber == true {
+            return String(version.dropFirst())
+        }
+        return nil
+    }
+
     static func verificationTitle(
         _ status: AgentVerificationStatus,
         locale: String = APCLocalization.interfaceLocaleIdentifier
@@ -400,6 +625,7 @@ enum AgentConnectionsPresentation {
 struct AgentConnectionsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var confirmingRepairAll = false
+    @State private var expandedSource: AgentSource?
 
     var body: some View {
         ScrollView {
@@ -423,7 +649,15 @@ struct AgentConnectionsView: View {
                 ForEach(AgentConnectionsCatalog.sources) { source in
                     AgentConnectionSection(
                         source: source,
-                        status: store.connections.first { $0.source == source }
+                        status: store.connections.first { $0.source == source },
+                        isExpanded: expandedSource == source,
+                        onToggle: {
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                expandedSource = expandedSource == source
+                                    ? nil
+                                    : source
+                            }
+                        }
                     )
                 }
             }
@@ -537,19 +771,13 @@ struct AgentConnectionsView: View {
 
 private struct AgentConnectionSection: View {
     @EnvironmentObject private var store: AppStore
-    @State private var technicalDetailsExpanded = false
     @State private var confirmingRepair = false
     @State private var confirmingUninstall = false
 
     let source: AgentSource
     let status: AgentConnectionStatus?
-
-    private var identity: ProductComponentIdentity {
-        ProductComponentIdentity(
-            scope: "connections",
-            instance: source.rawValue
-        )
-    }
+    let isExpanded: Bool
+    let onToggle: () -> Void
 
     private var presentation: AgentConnectionProductPresentation {
         AgentConnectionProductPresentation(
@@ -564,52 +792,18 @@ private struct AgentConnectionSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            AgentHealthRow(
-                identity: identity,
-                agentTitle: source.title,
-                agentSummary: AgentConnectionsPresentation.healthSummary(
-                    for: presentation,
-                    operationState: store.connectionOperationState
-                ),
-                health: presentation.health,
-                healthTitle: APCLocalizedPresentation.connectionHealthTitle(
-                    presentation.health
-                ),
-                taskVerification: presentation.taskVerification,
-                taskVerificationTitle:
-                    AgentConnectionsPresentation.taskVerificationTitle(
-                        presentation.taskVerification
-                    ),
-                taskVerificationDetail:
-                    AgentConnectionsPresentation.taskVerificationDetail(
-                        presentation.taskVerification
-                    ),
-                primaryAction: rowPrimaryAction,
-                onPrimaryAction: performPrimaryAction
-            )
+        ProductCardSurface(padding: SharedProductComponentLayout.compactPadding) {
+            VStack(alignment: .leading, spacing: 0) {
+                disclosureButton
 
-            if let failure = AgentConnectionsPresentation.failure(
-                for: source,
-                in: store.connectionOperationState
-            ) {
-                operationFailureNotice(failure)
-            }
+                if isExpanded {
+                    Divider()
+                        .padding(.top, 12)
 
-            if let success = AgentConnectionsPresentation.success(
-                for: source,
-                in: store.connectionOperationState
-            ) {
-                operationSuccessNotice(success)
-            }
-
-            AdvancedDetailsDisclosure(
-                identity: identity,
-                title: APCLocalization.text(.connectionsTechnicalTitle),
-                summary: APCLocalization.text(.connectionsTechnicalSummary),
-                isExpanded: $technicalDetailsExpanded
-            ) {
-                technicalDetails
+                    connectionDetails
+                        .padding(.top, 14)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
         }
         .confirmationDialog(
@@ -651,29 +845,216 @@ private struct AgentConnectionSection: View {
         .accessibilityIdentifier("connections.agent-section.\(source.rawValue)")
     }
 
-    private var rowPrimaryAction:
-        ProductActionPresentation<AgentConnectionPrimaryAction>? {
-        if presentation.health == .unavailable,
-           presentation.primaryAction == .verify {
-            return ProductActionPresentation(
-                action: .verify,
-                title: APCLocalization.text(.connectionsTroubleshoot),
-                systemImage: "wrench.adjustable",
-                accessibilityLabel: APCLocalization.format(
-                    .connectionsPrimaryAccessibilityFormat,
-                    APCLocalization.text(.connectionsTroubleshoot),
-                    source.title
-                ),
-                accessibilityHint: APCLocalization.text(
-                    busy ? .connectionsBusyHint : .connectionsTroubleshootHint
-                ),
-                isEnabled: !busy
+    private var disclosureButton: some View {
+        Button(action: onToggle) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 14) {
+                    agentIdentity
+                    Spacer(minLength: 12)
+                    healthIndicator
+                    disclosureChevron
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center, spacing: 12) {
+                        agentIdentity
+                        Spacer(minLength: 8)
+                        disclosureChevron
+                    }
+                    healthIndicator
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(source.title)
+        .accessibilityValue(APCLocalization.format(
+            .connectionsMetadataFormat,
+            healthTitle,
+            APCLocalization.text(
+                isExpanded ? .commonExpanded : .commonCollapsed
             )
+        ))
+        .accessibilityHint(APCLocalization.text(
+            isExpanded
+                ? .commonCollapseDisclosureHint
+                : .commonExpandDisclosureHint
+        ))
+        .accessibilityIdentifier(
+            "connections.agent-toggle.\(source.rawValue)"
+        )
+    }
+
+    private var agentIdentity: some View {
+        HStack(alignment: .center, spacing: 12) {
+            AgentIconView(source: source, size: 34)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(source.title)
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(AgentConnectionsPresentation.healthSummary(
+                    for: presentation,
+                    operationState: store.connectionOperationState
+                ))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var healthTitle: String {
+        APCLocalizedPresentation.connectionHealthTitle(presentation.health)
+    }
+
+    private var healthIndicator: some View {
+        ProductStatusIndicator(
+            presentation: ProductStatusPresentation(
+                connectionHealth: presentation.health,
+                title: healthTitle
+            )
+        )
+    }
+
+    private var disclosureChevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .frame(width: 18, height: 22)
+            .accessibilityHidden(true)
+    }
+
+    private var connectionDetails: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let runningOperationTitle {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                    Text(runningOperationTitle)
+                        .font(.callout.weight(.semibold))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(
+                    "connections.operation.running.\(source.rawValue)"
+                )
+            }
+
+            if let failure = AgentConnectionsPresentation.failure(
+                for: source,
+                in: store.connectionOperationState
+            ) {
+                operationFailureNotice(failure)
+            }
+
+            if let success = AgentConnectionsPresentation.success(
+                for: source,
+                in: store.connectionOperationState
+            ) {
+                operationSuccessNotice(success)
+            }
+
+            connectionOverview
+
+            if !presentation.managedComponents.isEmpty {
+                managedComponents
+            }
+
+            if let guidance = AgentConnectionsPresentation.userGuidance(
+                for: presentation
+            ) {
+                Label(guidance, systemImage: "lightbulb")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(
+                        "connections.agent-guidance.\(source.rawValue)"
+                    )
+            }
+
+            actionControls
+        }
+    }
+
+    private var connectionOverview: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: presentation.taskVerification.systemImage)
+                .foregroundStyle(presentation.taskVerification.color)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(AgentConnectionsPresentation.taskVerificationTitle(
+                    presentation.taskVerification
+                ))
+                .font(.callout.weight(.semibold))
+
+                Text(AgentConnectionsPresentation.taskVerificationDetail(
+                    presentation.taskVerification
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(
+            "connections.agent-verification.\(source.rawValue)"
+        )
+    }
+
+    private var managedComponents: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(APCLocalization.text(.connectionsManagedComponentsTitle))
+                    .font(.callout.weight(.semibold))
+
+                Text(APCLocalization.text(.connectionsManagedComponentsSummary))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 0) {
+                ForEach(
+                    Array(presentation.managedComponents.enumerated()),
+                    id: \.offset
+                ) { index, component in
+                    AgentManagedComponentRow(component: component)
+                    if index < presentation.managedComponents.count - 1 {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            Color.secondary.opacity(0.055),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .accessibilityIdentifier(
+            "connections.managed-components.\(source.rawValue)"
+        )
+    }
+
+    private var featuredAction:
+        ProductActionPresentation<AgentConnectionPrimaryAction>? {
+        guard actionLayout.primaryAction == presentation.primaryAction else {
+            return nil
         }
         return AgentConnectionsPresentation.primaryActionPresentation(
             for: presentation,
             busy: busy
         )
+    }
+
+    private var actionLayout: AgentConnectionActionLayout {
+        AgentConnectionsPresentation.actionLayout(for: presentation)
     }
 
     private func performPrimaryAction(
@@ -688,13 +1069,7 @@ private struct AgentConnectionSection: View {
             confirmingRepair = true
         case .verify:
             guard !busy else { return }
-            if presentation.health == .unavailable {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    technicalDetailsExpanded = true
-                }
-            } else {
-                store.checkConnection(source)
-            }
+            store.checkConnection(source)
         case .retry:
             guard AgentConnectionsPresentation.failure(
                 for: source,
@@ -706,6 +1081,24 @@ private struct AgentConnectionSection: View {
         case .unavailable:
             break
         }
+    }
+
+    private var runningOperationTitle: String? {
+        guard let operation = store.connectionOperationState.runningOperation,
+              operation.sources.contains(source) else {
+            return nil
+        }
+        let key: APCLocalizationKey = switch operation.kind {
+        case .check: .connectionsOperationCheck
+        case .test: .connectionsOperationTest
+        case .repair: .connectionsOperationRepair
+        case .uninstall: .connectionsOperationUninstall
+        }
+        return APCLocalization.format(
+            .connectionsOperationTitleFormat,
+            source.title,
+            APCLocalization.text(key)
+        )
     }
 
     private func operationFailureNotice(
@@ -788,186 +1181,112 @@ private struct AgentConnectionSection: View {
         )
     }
 
-    @ViewBuilder
-    private var technicalDetails: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(APCLocalization.text(.connectionsValidationBoundary))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if presentation.technicalItems.isEmpty {
-                Text(APCLocalization.text(.connectionsChecksEmpty))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(
-                        Array(presentation.technicalItems.enumerated()),
-                        id: \.offset
-                    ) { index, item in
-                            ConnectionTechnicalRow(item: item, index: index)
-                        if index < presentation.technicalItems.count - 1 {
-                            Divider()
-                        }
-                    }
-                }
-            }
-
-            if let status {
-                Divider()
-
-                ConnectionVerificationSummary(
-                    source: source,
-                    status: status.verification.status
-                )
-
-                if status.hasInstalledConnectorArtifacts
-                    || !status.installPaths.isEmpty {
-                    Divider()
+    private var actionControls: some View {
+        HStack(spacing: 10) {
+            if let featuredAction {
+                Button {
+                    performPrimaryAction(featuredAction.action)
+                } label: {
                     Label(
-                        APCLocalization.text(.connectionsManagedArtifactsTitle),
-                        systemImage: "shippingbox"
+                        featuredAction.title,
+                        systemImage: featuredAction.systemImage
+                            ?? "arrow.right.circle"
                     )
-                    .font(.callout.weight(.semibold))
-                    Text(APCLocalization.format(
-                        .connectionsManagedArtifactsCountFormat,
-                        status.installPaths.count
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
-
-                Divider()
-                secondaryActions(status)
-            }
-        }
-    }
-
-    private func secondaryActions(
-        _ status: AgentConnectionStatus
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(APCLocalization.text(.connectionsLocalChannelTitle))
-                    .font(.callout.weight(.semibold))
-                Text(APCLocalization.text(.connectionsLocalChannelDetail))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    inspectionActionButtons
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    inspectionActionButtons
-                }
-            }
-
-            if presentation.canManageManagedConnector
-                || status.canUninstallManagedConnector {
-                Divider()
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(APCLocalization.text(.connectionsManagedActionsTitle))
-                        .font(.callout.weight(.semibold))
-                    Text(APCLocalization.text(.connectionsManagedActionsDetail))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        managedActionButtons(status)
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        managedActionButtons(status)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var inspectionActionButtons: some View {
-        Button {
-            store.checkConnection(source)
-        } label: {
-            Label(
-                APCLocalization.text(.connectionsRecheck),
-                systemImage: "arrow.clockwise"
-            )
-        }
-        .buttonStyle(.bordered)
-        .disabled(busy)
-        .accessibilityHint(APCLocalization.text(
-            busy ? .connectionsBusyHint : .connectionsRecheckHint
-        ))
-        .accessibilityIdentifier(
-            "connections.secondary.recheck.\(source.rawValue)"
-        )
-
-        Button {
-            store.sendConnectionTestEvent(source)
-        } label: {
-            Label(
-                APCLocalization.text(.connectionsTestChannel),
-                systemImage: "wave.3.right"
-            )
-        }
-        .buttonStyle(.bordered)
-        .disabled(busy)
-        .accessibilityHint(APCLocalization.text(
-            busy ? .connectionsBusyHint : .connectionsTestHint
-        ))
-        .accessibilityIdentifier(
-            "connections.secondary.test-channel.\(source.rawValue)"
-        )
-    }
-
-    @ViewBuilder
-    private func managedActionButtons(
-        _ status: AgentConnectionStatus
-    ) -> some View {
-        if presentation.canManageManagedConnector {
-            Button {
-                confirmingRepair = true
-            } label: {
-                Label(
-                    APCLocalization.text(.connectionsInstallRepair),
-                    systemImage: "wrench.and.screwdriver"
+                .buttonStyle(.bordered)
+                .disabled(!featuredAction.isEnabled)
+                .accessibilityLabel(featuredAction.accessibilityLabel)
+                .accessibilityHint(featuredAction.accessibilityHint ?? "")
+                .accessibilityIdentifier(
+                    "connections.primary.\(source.rawValue)"
                 )
             }
-            .buttonStyle(.bordered)
-            .disabled(busy)
-            .accessibilityHint(APCLocalization.text(
-                busy ? .connectionsBusyHint : .connectionsRepairAgainHint
-            ))
-            .accessibilityIdentifier(
-                "connections.secondary.install-repair.\(source.rawValue)"
-            )
-        }
 
-        if status.canUninstallManagedConnector {
-            Button(role: .destructive) {
-                confirmingUninstall = true
-            } label: {
-                Label(
-                    APCLocalization.text(.connectionsUninstall),
-                    systemImage: "trash"
+            moreActionsMenu
+        }
+    }
+
+    private var moreActionsMenu: some View {
+        Menu {
+            if actionLayout.moreActions.contains(.recheck) {
+                Button {
+                    store.checkConnection(source)
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsRecheck),
+                        systemImage: "arrow.clockwise"
+                    )
+                }
+                .accessibilityHint(APCLocalization.text(
+                    busy ? .connectionsBusyHint : .connectionsRecheckHint
+                ))
+                .accessibilityIdentifier(
+                    "connections.secondary.recheck.\(source.rawValue)"
                 )
             }
-            .buttonStyle(.bordered)
-            .disabled(busy)
-            .accessibilityHint(APCLocalization.text(.connectionsUninstallHint))
-            .accessibilityIdentifier(
-                "connections.secondary.uninstall.\(source.rawValue)"
+
+            if actionLayout.moreActions.contains(.sendTestMessage) {
+                Button {
+                    store.sendConnectionTestEvent(source)
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsTestChannel),
+                        systemImage: "wave.3.right"
+                    )
+                }
+                .accessibilityHint(APCLocalization.text(
+                    busy ? .connectionsBusyHint : .connectionsTestHint
+                ))
+                .accessibilityIdentifier(
+                    "connections.secondary.test-channel.\(source.rawValue)"
+                )
+            }
+
+            if actionLayout.moreActions.contains(.setUpAgain) {
+                Divider()
+
+                Button {
+                    confirmingRepair = true
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsSetUpAgain),
+                        systemImage: "wrench.and.screwdriver"
+                    )
+                }
+                .accessibilityHint(APCLocalization.text(
+                    busy ? .connectionsBusyHint : .connectionsRepairAgainHint
+                ))
+                .accessibilityIdentifier(
+                    "connections.secondary.install-repair.\(source.rawValue)"
+                )
+            }
+
+            if actionLayout.moreActions.contains(.remove) {
+                Divider()
+
+                Button(role: .destructive) {
+                    confirmingUninstall = true
+                } label: {
+                    Label(
+                        APCLocalization.text(.connectionsUninstall),
+                        systemImage: "trash"
+                    )
+                }
+                .accessibilityHint(APCLocalization.text(.connectionsUninstallHint))
+                .accessibilityIdentifier(
+                    "connections.secondary.uninstall.\(source.rawValue)"
+                )
+            }
+        } label: {
+            Label(
+                APCLocalization.text(.appActionMore),
+                systemImage: "ellipsis.circle"
             )
         }
+        .disabled(busy)
+        .accessibilityIdentifier(
+            "connections.secondary.more.\(source.rawValue)"
+        )
     }
 
     private var repairConfirmationMessage: String {
@@ -1011,96 +1330,102 @@ private struct AgentConnectionSection: View {
     }
 }
 
-private struct ConnectionTechnicalRow: View {
-    let item: AgentConnectionTechnicalItem
-    let index: Int
+private struct AgentManagedComponentRow: View {
+    let component: AgentManagedComponent
 
-    private var tone: AgentConnectionVisualTone {
-        AgentConnectionsPresentation.itemTone(for: item)
+    private var hasVersionMismatch: Bool {
+        AgentConnectionsPresentation.managedComponentHasVersionMismatch(
+            component
+        )
     }
 
-    private var evidenceDetail: String? {
-        AgentConnectionsPresentation.itemEvidenceDetail(for: item)
+    private var componentSystemImage: String {
+        switch component.kind {
+        case .connector: "cable.connector"
+        case .plugin: "puzzlepiece.extension"
+        case .hostExtension: "bolt.horizontal.circle"
+        case .package: "shippingbox"
+        case .skill: "sparkles.rectangle.stack"
+        case .unknown: "questionmark.square.dashed"
+        }
     }
 
-    private var accessibilityDetail: String {
-        [
-            AgentConnectionsPresentation.itemDisplayDetail(for: item),
-            evidenceDetail,
-        ]
-        .compactMap { $0 }
-        .joined(separator: " ")
+    private var statusSystemImage: String {
+        if hasVersionMismatch {
+            return "exclamationmark.triangle.fill"
+        }
+        return switch component.status {
+        case .ok: "checkmark.circle.fill"
+        case .needsFix: "wrench.and.screwdriver.fill"
+        case .missing: "xmark.circle.fill"
+        case .unverified: "questionmark.circle.fill"
+        case .unsupported: "minus.circle.fill"
+        case .notRequired: "circle.dashed"
+        }
+    }
+
+    private var statusColor: Color {
+        if hasVersionMismatch {
+            return APCDesign.warning
+        }
+        return switch component.status {
+        case .ok: APCDesign.success
+        case .needsFix: APCDesign.warning
+        case .missing: APCDesign.destructive
+        case .unverified, .unsupported, .notRequired:
+            APCDesign.textSecondary
+        }
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(
-                systemName: AgentConnectionsPresentation.itemSystemImage(
-                    for: item
-                )
-            )
-            .foregroundStyle(tone.color)
-            .frame(width: 20)
-            .accessibilityHidden(true)
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: componentSystemImage)
+                .foregroundStyle(APCDesign.accent)
+                .frame(width: 18)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(AgentConnectionsPresentation.itemDisplayName(for: item))
-                    .font(.callout.weight(.semibold))
-                Text(AgentConnectionsPresentation.itemDisplayDetail(for: item))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let evidenceDetail {
-                    Text(evidenceDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(component.name)
+                    .font(.callout.weight(.medium))
+
+                Text(AgentConnectionsPresentation.extensionKindTitle(
+                    component.kind
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 8)
 
-            Text(AgentConnectionsPresentation.itemStatusTitle(for: item))
+            VStack(alignment: .trailing, spacing: 2) {
+                Label(
+                    AgentConnectionsPresentation.managedComponentStatusTitle(
+                        component
+                    ),
+                    systemImage: statusSystemImage
+                )
+                .labelStyle(.titleAndIcon)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(tone.color)
+                .foregroundStyle(statusColor)
+
+                if let versionDetail =
+                    AgentConnectionsPresentation.managedComponentVersionDetail(
+                        component
+                    )
+                {
+                    Text(versionDetail)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            hasVersionMismatch
+                                ? APCDesign.warning
+                                : APCDesign.textSecondary
+                        )
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                }
+            }
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(APCLocalization.format(
-            .connectionsCheckAccessibilityFormat,
-            AgentConnectionsPresentation.itemDisplayName(for: item),
-            AgentConnectionsPresentation.itemStatusTitle(for: item),
-            accessibilityDetail
-        ))
-        .accessibilityIdentifier(
-            "connections.technical.check.\(item.code.rawValue).\(index)"
-        )
-    }
-}
-
-private struct ConnectionVerificationSummary: View {
-    let source: AgentSource
-    let status: AgentVerificationStatus
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(
-                APCLocalization.text(.connectionsVerificationTitle),
-                systemImage: "person.crop.circle.badge.checkmark"
-            )
-            .font(.callout.weight(.semibold))
-
-            Text(AgentConnectionsPresentation.verificationTitle(status))
-                .font(.callout.weight(.medium))
-
-            Text(AgentConnectionsPresentation.verificationDetail(status))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(
-            "connections.technical.real-task.\(source.rawValue)"
-        )
     }
 }

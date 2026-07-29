@@ -15,6 +15,91 @@ struct AppLifecycleContractTests {
 
     @MainActor
     @Test
+    func closingTheControlCenterKeepsTheResidentPetLifecycleOpen() async {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
+        )
+        let window = NSPanel(
+            contentRect: .zero,
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.close() }
+
+        store.registerControlCenterWindow(window)
+        #expect(store.controlCenterIsOpen)
+
+        NotificationCenter.default.post(
+            name: NSWindow.willCloseNotification,
+            object: window
+        )
+        await Task.yield()
+
+        #expect(!store.controlCenterIsOpen)
+    }
+
+    @Test
+    func explicitControlCenterCloseIsNotClassifiedAsShowDesktop() {
+        var policy = OverlayDesktopVisibilityPolicy()
+        policy.controlCenterDidOpen()
+
+        #expect(policy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: true,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+
+        policy.controlCenterDidClose()
+
+        #expect(!policy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: true,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+        #expect(!policy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: false,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+    }
+
+    @Test
+    func reopeningControlCenterRestoresShowDesktopDetection() {
+        var policy = OverlayDesktopVisibilityPolicy()
+        policy.controlCenterDidClose()
+        policy.controlCenterDidOpen()
+
+        #expect(policy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: false,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+        #expect(!policy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: false,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: true
+        ))
+        #expect(!policy.shouldHide(
+            rendererValidationActive: true,
+            frontmostApplicationIsFinder: true,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+    }
+
+    @MainActor
+    @Test
     func reopenBeforeSceneRegistrationIsReplayedExactlyOnce() {
         let store = AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(

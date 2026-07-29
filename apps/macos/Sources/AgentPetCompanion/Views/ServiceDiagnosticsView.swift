@@ -542,7 +542,6 @@ struct ServiceDiagnosticsAggregatePresentation: Equatable {
 struct ServiceDiagnosticsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var isRefreshing = false
-    @State private var isTechnicalDetailsExpanded = false
 
     private var presentation: ServiceDiagnosticsPresentation {
         ServiceDiagnosticsPresentation(
@@ -578,7 +577,6 @@ struct ServiceDiagnosticsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 overallHealthRegion
                 diagnosticPackageRegion
-                technicalDetailsRegion
             }
             .frame(maxWidth: 860, alignment: .topLeading)
             .accessibilityIdentifier("diagnostics.layout.single-column")
@@ -599,39 +597,32 @@ struct ServiceDiagnosticsView: View {
         ) { _ in
             performServiceAction()
         } content: {
-            EmptyView()
+            serviceStatusDetails
         }
         .accessibilityIdentifier("diagnostics.service-summary")
     }
 
-    private var technicalDetailsRegion: some View {
-        AdvancedDetailsDisclosure(
-            identity: ProductComponentIdentity(
-                scope: "diagnostics",
-                instance: "technical"
-            ),
-            title: APCLocalization.text(.diagnosticsTechnicalTitle),
-            summary: APCLocalization.text(.diagnosticsTechnicalSummary),
-            isExpanded: $isTechnicalDetailsExpanded
-        ) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(presentation.rows) { row in
-                    ServiceDiagnosticRow(presentation: row)
-                    if row.id != presentation.rows.last?.id {
-                        Divider()
-                    }
+    private var serviceStatusDetails: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+                .padding(.bottom, 4)
+
+            ForEach(presentation.rows) { row in
+                ServiceDiagnosticRow(presentation: row)
+                if row.id != presentation.rows.last?.id {
+                    Divider()
                 }
-
-                Divider()
-                    .padding(.vertical, 10)
-
-                Text(diagnosticPackageSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            Divider()
+                .padding(.vertical, 10)
+
+            Text(diagnosticPackageSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .accessibilityIdentifier("diagnostics.technical-details")
+        .accessibilityIdentifier("diagnostics.service-details")
     }
 
     private var diagnosticPackageRegion: some View {

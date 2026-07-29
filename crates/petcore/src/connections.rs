@@ -12,9 +12,10 @@ use crate::paths::AppPaths;
 use crate::process_runner::{run_bounded, ProcessSpec};
 use crate::{now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    AgentConnectionStatus, AgentConnectorCapabilities, AgentSource, AgentVerification,
-    AgentVerificationStatus, CheckStatus, ConnectionCheckCode as CheckCode, ConnectionCheckItem,
-    ConnectionCheckMode, ConnectionCheckRecoveryAction as RecoveryAction,
+    AgentConnectionStatus, AgentConnectorCapabilities, AgentExtensionKind, AgentExtensionOwnership,
+    AgentManagedComponent, AgentSource, AgentVerification, AgentVerificationStatus, CheckStatus,
+    ConnectionCheckCode as CheckCode, ConnectionCheckItem, ConnectionCheckMode,
+    ConnectionCheckRecoveryAction as RecoveryAction,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,6 +72,8 @@ const CLAUDE_SETTINGS_TEMPLATE: &str =
 const PI_EXTENSION_TEMPLATE: &str = include_str!("../../../plugins/pi/agent-pet-companion.ts.tpl");
 const OPENCODE_PLUGIN_TEMPLATE: &str =
     include_str!("../../../plugins/opencode/agent-pet-companion.js.tpl");
+const APP_MANAGED_CONNECTOR_RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CONNECTOR_RELEASE_VERSION_PLACEHOLDER: &str = "__APC_CONNECTOR_RELEASE_VERSION__";
 const HOST_VERIFICATION_CACHE_TTL_SECONDS: i64 = 5 * 60;
 const HOST_VERIFICATION_FUTURE_SKEW_SECONDS: i64 = 60;
 const PROBE_CWD_ACCESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -669,8 +672,12 @@ fn check_source_with_runtime_smoke(
         runtime_processes_allowed,
     ));
 
-    let (repairable_connector_issue, managed_path_conflict, host_connector_installed) = match source
-    {
+    let (
+        repairable_connector_issue,
+        managed_path_conflict,
+        host_connector_installed,
+        managed_components,
+    ) = match source {
         AgentSource::Codex => {
             let root_state = codex_managed_root_state(&install_root);
             let managed_root_state = if root_state == ManagedPathState::Safe
@@ -728,12 +735,14 @@ fn check_source_with_runtime_smoke(
                 maker_check,
                 marketplace_check,
             ]);
-            let plugin_install_check = if runtime_processes_allowed {
+            let (plugin_install_check, plugin_probe) = if runtime_processes_allowed {
                 check_codex_plugin_installed(paths, &install_root)
             } else {
-                check_codex_plugin_installed_light(&install_root)
+                (check_codex_plugin_installed_light(&install_root), None)
             };
             let host_connector_installed = plugin_install_check.status == CheckStatus::Ok;
+            let managed_components =
+                codex_managed_components(paths, plugin_install_check.status, plugin_probe.as_ref());
             items.push(plugin_install_check);
             items.push(if run_runtime_smoke {
                 exact_connector_gated_native_host_check(
@@ -769,6 +778,7 @@ fn check_source_with_runtime_smoke(
                 repairable_connector_issue,
                 managed_path_conflict,
                 host_connector_installed,
+                managed_components,
             )
         }
         AgentSource::ClaudeCode => {
@@ -802,6 +812,18 @@ fn check_source_with_runtime_smoke(
                 [&root_check, &fragment_check, &helper_check, &settings_check]
                     .into_iter()
                     .all(|item| item.status == CheckStatus::Ok);
+            let component_status = aggregate_component_status(&[
+                root_check.status,
+                fragment_check.status,
+                helper_check.status,
+                settings_check.status,
+            ]);
+            let managed_components = static_managed_components(
+                source,
+                &install_root,
+                static_connector_ready,
+                component_status,
+            );
             items.extend([root_check, fragment_check, helper_check]);
             items.push(check_claude_auth_status(runtime_processes_allowed));
             items.push(check_claude_hooks_policy());
@@ -825,7 +847,12 @@ fn check_source_with_runtime_smoke(
                     Some(RecoveryAction::Recheck),
                 )
             });
-            (repairable_connector_issue, managed_path_conflict, false)
+            (
+                repairable_connector_issue,
+                managed_path_conflict,
+                false,
+                managed_components,
+            )
         }
         AgentSource::Pi => {
             let root_state = pi_managed_root_state(&install_root);
@@ -847,6 +874,14 @@ fn check_source_with_runtime_smoke(
                 has_repairable_managed_connector_issue(managed_path_conflict, &[&extension_check]);
             let static_connector_ready =
                 root_check.status == CheckStatus::Ok && extension_check.status == CheckStatus::Ok;
+            let component_status =
+                aggregate_component_status(&[root_check.status, extension_check.status]);
+            let managed_components = static_managed_components(
+                source,
+                &install_root,
+                static_connector_ready,
+                component_status,
+            );
             items.extend([root_check, extension_check]);
             items.push(check_event_channel(paths, &connector_cli));
             if run_runtime_smoke {
@@ -859,7 +894,12 @@ fn check_source_with_runtime_smoke(
                     || check_pi_extension_runtime(paths, &install_root, &runtime_probe_cwd),
                 ));
             }
-            (repairable_connector_issue, managed_path_conflict, false)
+            (
+                repairable_connector_issue,
+                managed_path_conflict,
+                false,
+                managed_components,
+            )
         }
         AgentSource::Opencode => {
             let root_state = opencode_managed_root_state(&install_root);
@@ -880,6 +920,14 @@ fn check_source_with_runtime_smoke(
                 has_repairable_managed_connector_issue(managed_path_conflict, &[&plugin_check]);
             let static_connector_ready =
                 root_check.status == CheckStatus::Ok && plugin_check.status == CheckStatus::Ok;
+            let component_status =
+                aggregate_component_status(&[root_check.status, plugin_check.status]);
+            let managed_components = static_managed_components(
+                source,
+                &install_root,
+                static_connector_ready,
+                component_status,
+            );
             items.extend([root_check, plugin_check]);
             items.push(if static_connector_ready {
                 check_opencode_server(runtime_processes_allowed)
@@ -901,7 +949,12 @@ fn check_source_with_runtime_smoke(
                     || check_opencode_plugin_runtime(paths, &install_root, &runtime_probe_cwd),
                 ));
             }
-            (repairable_connector_issue, managed_path_conflict, false)
+            (
+                repairable_connector_issue,
+                managed_path_conflict,
+                false,
+                managed_components,
+            )
         }
     };
     if runtime_processes_allowed {
@@ -937,6 +990,7 @@ fn check_source_with_runtime_smoke(
     capabilities.managed_path_conflict = Some(managed_path_conflict);
     capabilities.can_uninstall_managed_connector =
         Some(connector_installed && !managed_path_conflict);
+    capabilities.managed_components = managed_components;
     AgentConnectionStatus {
         source,
         items,
@@ -2150,6 +2204,185 @@ pub(crate) fn contract_version_for_source(source: AgentSource) -> &'static str {
     }
 }
 
+fn aggregate_component_status(statuses: &[CheckStatus]) -> CheckStatus {
+    if statuses.contains(&CheckStatus::Missing) {
+        CheckStatus::Missing
+    } else if statuses.contains(&CheckStatus::NeedsFix) {
+        CheckStatus::NeedsFix
+    } else if statuses.contains(&CheckStatus::Unverified) {
+        CheckStatus::Unverified
+    } else if statuses.contains(&CheckStatus::Unsupported) {
+        CheckStatus::Unsupported
+    } else if statuses
+        .iter()
+        .all(|status| *status == CheckStatus::NotRequired)
+    {
+        CheckStatus::NotRequired
+    } else {
+        CheckStatus::Ok
+    }
+}
+
+fn static_managed_components(
+    source: AgentSource,
+    install_root: &Path,
+    exact: bool,
+    status: CheckStatus,
+) -> Vec<AgentManagedComponent> {
+    let (name, kind) = match source {
+        AgentSource::ClaudeCode => ("agent-pet-companion-hooks", AgentExtensionKind::Connector),
+        AgentSource::Pi => ("agent-pet-companion.ts", AgentExtensionKind::Extension),
+        AgentSource::Opencode => ("agent-pet-companion.js", AgentExtensionKind::Plugin),
+        AgentSource::Codex => return Vec::new(),
+    };
+    let expected_version = APP_MANAGED_CONNECTOR_RELEASE_VERSION.to_string();
+    let active_version = installed_static_connector_release_version(source, install_root);
+    vec![AgentManagedComponent {
+        kind,
+        name: name.to_string(),
+        ownership: AgentExtensionOwnership::AppManaged,
+        status,
+        expected_version: Some(expected_version),
+        active_version,
+        content_matches: Some(exact),
+    }]
+}
+
+fn installed_static_connector_release_version(
+    source: AgentSource,
+    install_root: &Path,
+) -> Option<String> {
+    match source {
+        AgentSource::ClaudeCode => {
+            let path = install_root.join("settings.fragment.json");
+            if !claude_fragment_is_owned(&path, install_root) {
+                return None;
+            }
+            let fragment = read_regular_json_config(&path)?;
+            let version = fragment.get("release_version")?.as_str()?;
+            validated_connector_release_version(version)
+        }
+        AgentSource::Pi => {
+            let path = install_root.join("agent-pet-companion.ts");
+            if managed_connector_script_ownership(&path, source)
+                != ManagedConnectorScriptOwnership::Owned
+            {
+                return None;
+            }
+            let content = fs::read_to_string(path).ok()?;
+            connector_release_version_constant(&content, "APC_PI_CONNECTOR_RELEASE_VERSION")
+        }
+        AgentSource::Opencode => {
+            let path = install_root.join("agent-pet-companion.js");
+            if managed_connector_script_ownership(&path, source)
+                != ManagedConnectorScriptOwnership::Owned
+            {
+                return None;
+            }
+            let content = fs::read_to_string(path).ok()?;
+            connector_release_version_constant(&content, "APC_OPENCODE_CONNECTOR_RELEASE_VERSION")
+        }
+        AgentSource::Codex => None,
+    }
+}
+
+fn connector_release_version_constant(content: &str, identifier: &str) -> Option<String> {
+    let declarations = [
+        format!("const {identifier} = \""),
+        format!("export const {identifier} = \""),
+    ];
+    content.lines().find_map(|line| {
+        let line = line.trim();
+        declarations.iter().find_map(|declaration| {
+            let version = line.strip_prefix(declaration)?.strip_suffix("\";")?;
+            validated_connector_release_version(version)
+        })
+    })
+}
+
+fn validated_connector_release_version(version: &str) -> Option<String> {
+    if version.is_empty() || version.len() > 48 {
+        return None;
+    }
+    let mut components = version.split('.');
+    let valid_component = |component: &str| {
+        !component.is_empty()
+            && component.len() <= 10
+            && component.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    let major = components.next()?;
+    let minor = components.next()?;
+    let patch = components.next()?;
+    if components.next().is_some()
+        || !valid_component(major)
+        || !valid_component(minor)
+        || !valid_component(patch)
+    {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+fn codex_managed_components(
+    paths: &AppPaths,
+    plugin_status: CheckStatus,
+    probe: Option<&CodexActivePluginProbe>,
+) -> Vec<AgentManagedComponent> {
+    let expected_version = expected_codex_plugin_version().ok();
+    let source_content_matches =
+        managed_connector_artifacts_match_current_installation(paths, AgentSource::Codex);
+    let active_content_matches = probe.map(|probe| {
+        probe.active_content_sha256.as_deref() == Some(probe.expected_content_sha256.as_str())
+            && probe.managed_source_content_sha256.as_deref()
+                == Some(probe.expected_content_sha256.as_str())
+            && source_content_matches
+    });
+    let skills_match = probe.map(|probe| {
+        probe.active_skills_sha256.as_deref() == Some(probe.expected_skills_sha256.as_str())
+    });
+    let active_version = probe.and_then(|probe| probe.active_version.clone());
+    let unavailable_active_status = match plugin_status {
+        CheckStatus::Missing => CheckStatus::Missing,
+        CheckStatus::NeedsFix => CheckStatus::NeedsFix,
+        _ => CheckStatus::Unverified,
+    };
+    let skill_status = match skills_match {
+        Some(true) => CheckStatus::Ok,
+        Some(false) => CheckStatus::NeedsFix,
+        None => unavailable_active_status,
+    };
+
+    vec![
+        AgentManagedComponent {
+            kind: AgentExtensionKind::Plugin,
+            name: "agent-pet-companion".to_string(),
+            ownership: AgentExtensionOwnership::AppManaged,
+            status: plugin_status,
+            expected_version: expected_version.clone(),
+            active_version: active_version.clone(),
+            content_matches: active_content_matches,
+        },
+        AgentManagedComponent {
+            kind: AgentExtensionKind::Skill,
+            name: "agent-pet-studio".to_string(),
+            ownership: AgentExtensionOwnership::AppManaged,
+            status: skill_status,
+            expected_version: expected_version.clone(),
+            active_version: active_version.clone(),
+            content_matches: skills_match,
+        },
+        AgentManagedComponent {
+            kind: AgentExtensionKind::Skill,
+            name: "agent-pet-maker".to_string(),
+            ownership: AgentExtensionOwnership::AppManaged,
+            status: skill_status,
+            expected_version,
+            active_version,
+            content_matches: skills_match,
+        },
+    ]
+}
+
 fn has_repairable_managed_connector_issue(
     managed_path_conflict: bool,
     managed_checks: &[&ConnectionCheckItem],
@@ -2451,15 +2684,25 @@ fn failed_refresh_result(
             .as_ref()
             .map(|probe| probe.expected_version.clone())
             .or_else(|| {
-                (source == AgentSource::Codex)
-                    .then(expected_codex_plugin_version)
-                    .transpose()
-                    .ok()
-                    .flatten()
+                if source == AgentSource::Codex {
+                    expected_codex_plugin_version().ok()
+                } else {
+                    Some(APP_MANAGED_CONNECTOR_RELEASE_VERSION.to_string())
+                }
             }),
         active_version: codex_probe
             .as_ref()
-            .and_then(|probe| probe.active_version.clone()),
+            .and_then(|probe| probe.active_version.clone())
+            .or_else(|| {
+                (source != AgentSource::Codex)
+                    .then(|| {
+                        installed_static_connector_release_version(
+                            source,
+                            &install_root(paths, source),
+                        )
+                    })
+                    .flatten()
+            }),
         expected_skills_sha256: codex_probe
             .as_ref()
             .map(|probe| probe.expected_skills_sha256.clone())
@@ -2491,6 +2734,13 @@ fn refresh_managed_source(
 
     let was_current = managed_connector_artifacts_match_current_installation(paths, source);
     if was_current {
+        let active_version =
+            installed_static_connector_release_version(source, &root).ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "{} 当前受管文件缺少可验证发行版本",
+                    source.display_name()
+                ))
+            })?;
         return Ok(InstalledSourceRefreshResult {
             source,
             status: InstalledSourceRefreshStatus::Current,
@@ -2498,8 +2748,8 @@ fn refresh_managed_source(
             refreshed: true,
             ok: true,
             verified: true,
-            expected_version: None,
-            active_version: None,
+            expected_version: Some(APP_MANAGED_CONNECTOR_RELEASE_VERSION.to_string()),
+            active_version: Some(active_version),
             expected_skills_sha256: None,
             active_skills_sha256: None,
             expected_content_sha256: None,
@@ -2522,6 +2772,13 @@ fn refresh_managed_source(
             source.display_name()
         )));
     }
+    let active_version =
+        installed_static_connector_release_version(source, &root).ok_or_else(|| {
+            PetCoreError::Validation(format!(
+                "{} 更新后的受管文件缺少可验证发行版本",
+                source.display_name()
+            ))
+        })?;
     Ok(InstalledSourceRefreshResult {
         source,
         status: InstalledSourceRefreshStatus::Updated,
@@ -2529,8 +2786,8 @@ fn refresh_managed_source(
         refreshed: true,
         ok: true,
         verified: true,
-        expected_version: None,
-        active_version: None,
+        expected_version: Some(APP_MANAGED_CONNECTOR_RELEASE_VERSION.to_string()),
+        active_version: Some(active_version),
         expected_skills_sha256: None,
         active_skills_sha256: None,
         expected_content_sha256: None,
@@ -3110,7 +3367,10 @@ fn repair_opencode(root: &Path, cli_path: &Path) -> Result<()> {
 fn render_connector_script(template: &str, cli_path: &Path) -> String {
     let cli_json = serde_json::to_string(&cli_path.display().to_string())
         .expect("serializing a connector CLI path string cannot fail");
-    template.replace("__APC_CLI_JSON__", &cli_json)
+    template.replace("__APC_CLI_JSON__", &cli_json).replace(
+        CONNECTOR_RELEASE_VERSION_PLACEHOLDER,
+        APP_MANAGED_CONNECTOR_RELEASE_VERSION,
+    )
 }
 
 fn rendered_claude_hook(connector_cli: &Path) -> String {
@@ -3376,7 +3636,13 @@ fn rendered_claude_settings_fragment(_connector_cli: &Path, install_root: &Path)
             .display()
             .to_string(),
     );
-    render_json_template(CLAUDE_SETTINGS_TEMPLATE, "__APC_HOOK__", &hook)
+    let mut fragment = render_json_template(CLAUDE_SETTINGS_TEMPLATE, "__APC_HOOK__", &hook)?;
+    replace_json_string(
+        &mut fragment,
+        CONNECTOR_RELEASE_VERSION_PLACEHOLDER,
+        APP_MANAGED_CONNECTOR_RELEASE_VERSION,
+    );
+    Ok(fragment)
 }
 
 fn render_json_template(template: &str, placeholder: &str, replacement: &str) -> Result<Value> {
@@ -4705,49 +4971,61 @@ fn probe_codex_active_plugin(
     })
 }
 
-fn check_codex_plugin_installed(paths: &AppPaths, install_root: &Path) -> ConnectionCheckItem {
+fn check_codex_plugin_installed(
+    paths: &AppPaths,
+    install_root: &Path,
+) -> (ConnectionCheckItem, Option<CodexActivePluginProbe>) {
     let Some(codex) = codex_command_path() else {
-        return ConnectionCheckItem::new(
-            CheckCode::HostVerification,
-            "Codex 插件安装",
-            CheckStatus::Missing,
-            "未检测到 codex 命令",
-            Some(RecoveryAction::Recheck),
+        return (
+            ConnectionCheckItem::new(
+                CheckCode::HostVerification,
+                "Codex 插件安装",
+                CheckStatus::Missing,
+                "未检测到 codex 命令",
+                Some(RecoveryAction::Recheck),
+            ),
+            None,
         );
     };
 
     if absolute_env_path("APC_AGENT_CONFIG_HOME").is_some() {
-        return ConnectionCheckItem::new(
-            CheckCode::HostVerification,
-            "Codex 插件安装",
-            CheckStatus::NeedsFix,
-            "测试环境跳过 codex plugin add",
-            Some(RecoveryAction::Recheck),
+        return (
+            ConnectionCheckItem::new(
+                CheckCode::HostVerification,
+                "Codex 插件安装",
+                CheckStatus::NeedsFix,
+                "测试环境跳过 codex plugin add",
+                Some(RecoveryAction::Recheck),
+            ),
+            None,
         );
     }
 
     let connector_cli = connector_cli_path(paths);
     let probe = probe_codex_active_plugin(install_root, &connector_cli, &codex);
     let installed = probe.as_ref().is_ok_and(|probe| probe.exact);
-    let detail = match probe {
-        Ok(probe) => probe.detail,
+    let detail = match probe.as_ref() {
+        Ok(probe) => probe.detail.clone(),
         Err(error) => error.to_string(),
     };
 
-    ConnectionCheckItem::new(
-        CheckCode::HostVerification,
-        "Codex 插件安装",
-        if installed {
-            CheckStatus::Ok
-        } else {
-            CheckStatus::NeedsFix
-        },
-        if installed {
-            detail
-        } else {
-            format!("{detail}；待更新并重新验证 Codex 插件")
-        },
-        Some(RecoveryAction::Recheck),
+    (
+        ConnectionCheckItem::new(
+            CheckCode::HostVerification,
+            "Codex 插件安装",
+            if installed {
+                CheckStatus::Ok
+            } else {
+                CheckStatus::NeedsFix
+            },
+            if installed {
+                detail
+            } else {
+                format!("{detail}；待更新并重新验证 Codex 插件")
+            },
+            Some(RecoveryAction::Recheck),
+        ),
+        probe.ok(),
     )
 }
 
@@ -8886,6 +9164,15 @@ mod tests {
             Some(true),
             "a healthy managed connector keeps a safe reapply entry"
         );
+        assert!(pi_status
+            .capabilities
+            .managed_components
+            .iter()
+            .all(|component| {
+                component.expected_version.as_deref()
+                    == Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+                    && component.active_version == component.expected_version
+            }));
 
         let opencode_status = connections::repair_source(&paths, AgentSource::Opencode).unwrap();
         let opencode_plugin = opencode_root.join("plugins/agent-pet-companion.js");
@@ -8898,6 +9185,15 @@ mod tests {
             Some(true),
             "a healthy managed connector keeps a safe reapply entry"
         );
+        assert!(opencode_status
+            .capabilities
+            .managed_components
+            .iter()
+            .all(|component| {
+                component.expected_version.as_deref()
+                    == Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+                    && component.active_version == component.expected_version
+            }));
 
         connections::uninstall_source(&paths, AgentSource::Pi).unwrap();
         connections::uninstall_source(&paths, AgentSource::Opencode).unwrap();
@@ -8992,6 +9288,14 @@ mod tests {
         assert!(super::claude_settings_match_owned_fragment(
             &repaired, &fragment
         ));
+        assert_eq!(
+            super::installed_static_connector_release_version(
+                AgentSource::ClaudeCode,
+                &install_root,
+            )
+            .as_deref(),
+            Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+        );
     }
 
     impl Drop for EnvVarGuard {
@@ -9100,6 +9404,92 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
     }
 
     #[test]
+    fn static_managed_component_reports_release_version_and_app_ownership() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config_home = temp.path().join("agent-home");
+        let connector_cli = temp.path().join("runtime/current/petcore-cli");
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &config_home);
+        let root = pi_extensions_dir();
+        super::repair_pi(&root, &connector_cli).unwrap();
+
+        let components =
+            super::static_managed_components(AgentSource::Pi, &root, true, CheckStatus::Ok);
+        assert_eq!(components.len(), 1);
+        let component = &components[0];
+        assert_eq!(component.name, "agent-pet-companion.ts");
+        assert_eq!(
+            component.ownership,
+            petcore_types::AgentExtensionOwnership::AppManaged
+        );
+        assert_eq!(
+            component.expected_version.as_deref(),
+            Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+        );
+        assert_eq!(component.expected_version, component.active_version);
+        assert_eq!(component.content_matches, Some(true));
+    }
+
+    #[test]
+    fn static_managed_component_reports_installed_release_mismatch() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config_home = temp.path().join("agent-home");
+        let connector_cli = temp.path().join("runtime/current/petcore-cli");
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &config_home);
+        let root = pi_extensions_dir();
+        super::repair_pi(&root, &connector_cli).unwrap();
+        let path = root.join("agent-pet-companion.ts");
+        let current = std::fs::read_to_string(&path).unwrap();
+        let old = current.replace(
+            &format!(
+                "APC_PI_CONNECTOR_RELEASE_VERSION = \"{}\"",
+                super::APP_MANAGED_CONNECTOR_RELEASE_VERSION
+            ),
+            "APC_PI_CONNECTOR_RELEASE_VERSION = \"9.8.7\"",
+        );
+        assert_ne!(old, current);
+        std::fs::write(&path, old).unwrap();
+
+        let components =
+            super::static_managed_components(AgentSource::Pi, &root, false, CheckStatus::NeedsFix);
+        let component = &components[0];
+        assert_eq!(
+            component.expected_version.as_deref(),
+            Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+        );
+        assert_eq!(component.active_version.as_deref(), Some("9.8.7"));
+        assert_eq!(component.content_matches, Some(false));
+    }
+
+    #[test]
+    fn codex_managed_components_report_the_plugin_version_for_bundled_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        let version = super::expected_codex_plugin_version().unwrap();
+        let probe = super::CodexActivePluginProbe {
+            expected_version: version.clone(),
+            active_version: Some(version.clone()),
+            expected_skills_sha256: "skills".to_string(),
+            active_skills_sha256: Some("skills".to_string()),
+            expected_content_sha256: "content".to_string(),
+            managed_source_content_sha256: Some("content".to_string()),
+            active_content_sha256: Some("content".to_string()),
+            managed_source: true,
+            exact: true,
+            detail: String::new(),
+        };
+
+        let components = super::codex_managed_components(&paths, CheckStatus::Ok, Some(&probe));
+
+        assert_eq!(components.len(), 3);
+        assert!(components.iter().all(|component| {
+            component.expected_version.as_deref() == Some(version.as_str())
+                && component.active_version.as_deref() == Some(version.as_str())
+        }));
+    }
+
+    #[test]
     fn codex_skill_bundle_digest_covers_every_cached_skill_file() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("cache");
@@ -9178,6 +9568,11 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
         assert!(result.managed);
         assert!(result.refreshed);
         assert!(result.verified);
+        assert_eq!(
+            result.expected_version.as_deref(),
+            Some(super::APP_MANAGED_CONNECTOR_RELEASE_VERSION)
+        );
+        assert_eq!(result.expected_version, result.active_version);
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             super::render_connector_script(super::PI_EXTENSION_TEMPLATE, &connector_cli)

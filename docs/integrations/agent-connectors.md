@@ -54,24 +54,51 @@ to Agent Pet Companion; it does not silently connect a previously unmanaged
 Agent. Refresh returns typed per-Agent results, so one failed host becomes
 **Needs Update** without blocking healthy Agents or the core App.
 
-The page shows each Agent's identity with two independent indicators. Local
-integration health is **Not Checked**, **Checking**, **Healthy**,
-**Needs Repair**, or **Unavailable**. Real-task verification is **Not Run**,
-**Awaiting Evidence**, or **Verified**. A healthy local adapter never implies
+The page presents the four Agents as a single-selection accordion. A collapsed
+row shows only identity, a short connection summary, and local integration
+health: **Not Checked**, **Checking**, **Connected**, **Needs Repair**, or
+**Unavailable**. Selecting the whole row opens that Agent and closes the
+previous one. The open row adds the independent real-task state—**Not
+Verified**, **Waiting for a Real Task**, or **Verified with a Real Task**—plus
+only actionable guidance and controls. A healthy local adapter never implies
 that a provider task has run, and missing real-task evidence never makes the
-local integration unhealthy. The page keeps **Check All** prominent and keeps a
-typed **Set Up or Repair All** entry whenever at least one managed connector can
-be safely installed or reapplied, including after a successful repair. Per-Agent
-check, local-channel test, managed install/repair, and uninstall controls remain
-available in Technical Details according to explicit capabilities. An
-unavailable Agent uses **View Fix** to reveal typed recovery guidance instead of
-repeating a check with no explanation. Project directories, App/PetCore runtime details, renderer state, and
-diagnostics export do not belong on this page. Service state and archive export
-live under **Service & Diagnostics**. Individual CLI, managed connector, host
-verification, event delivery, and App Server checks remain typed support data
-behind Technical Details.
+local integration unhealthy.
 
-Check, test, repair, and uninstall share a typed App coordinator and a serialized PetCore mutation gate. A running operation disables conflicting actions, and failures remain inline with an explicit retry path.
+The page keeps **Check All** prominent and keeps a typed **Set Up or Repair
+All** entry whenever at least one managed connector can be safely installed or
+reapplied, including after a successful repair. An expanded Agent shows at most
+one action required by its current state—**Check Connection**, **Set Up or
+Repair**, or **Retry**—plus one **More** menu. Routine rechecks for an already
+connected Agent, **Send Test Message**, safe managed reconfiguration, and
+removal live in that menu according to explicit capabilities; removal remains
+destructive and confirmed. Each expanded Agent also lists only the plugin,
+connector, extension, or bundled Skills owned by Agent Pet Companion, with the
+component name, user-facing kind, current check status, and verified active
+release version. Codex uses the independent version from its bundled plugin
+manifest. The Claude Code fragment, Pi extension, and OpenCode plugin instead
+carry the App/PetCore release version that rendered them; PetCore reads that
+marker only from an owned regular file and still requires the complete artifact
+set to match the current templates exactly. When an active release version
+differs from the version shipped with the current App, the row names both the
+installed and App-required versions. A legacy owned artifact without a release
+marker names only the required version. Both states direct the user to the
+existing setup/repair action. Typed support checks still decide status and
+mutation authority, but CLI names, runtime terminology, internal contract
+identities, exact-content evidence, and managed-location counts are not
+rendered in the ordinary connection card.
+An unavailable Agent receives a short user-facing install, update, settings,
+restart, repair, or service-recovery instruction derived from those typed
+checks. Project directories, App/PetCore runtime details, renderer state, and
+diagnostics export do not belong on this page. Service state and archive export
+live under **Service & Diagnostics**.
+
+Check, test, repair, and uninstall share a typed App coordinator and a
+serialized PetCore mutation gate. A running operation disables conflicting
+actions but never disables opening or switching Agent rows; the active row
+shows visible progress, and failures remain inline with an explicit retry path.
+The lightweight connection test uses a dedicated three-second transport bound
+and completes from its RPC result without waiting for an unrelated full state
+refresh.
 
 PetCore returns typed check items and explicit management capabilities: `repairable_connector_issue`, `can_repair_managed_connector`, `managed_path_conflict`, and `can_uninstall_managed_connector`. `repairable_connector_issue` authorizes issue-specific **Connect/Repair** presentation; `can_repair_managed_connector` independently keeps the safe managed install/reapply entry available after that issue clears. The App never infers repair or uninstall authority from display text. **Needs Repair** is projected only when an executable typed repair authority is present; a failed check without that authority is **Unavailable**. Missing capability data denies mutation. Current check items use stable presentation codes and only `confirm_managed_repair`, `test_channel`, or `recheck` recovery actions. `project_directory` and `choose_project_directory` are decode-only compatibility values: PetCore does not emit or reproject them, and the App never presents or executes them.
 
@@ -81,14 +108,30 @@ restrictions, missing Agent/runtime dependencies, unknown checks, and managed
 path conflicts still deny mutation. A full runtime check remains required for
 healthy integration and real-task verification presentation.
 
-PetCore distinguishes ordinary, diagnostic, and full-task receipts against the current connector contract and install time. The page labels these proofs separately: a local-channel test proves only the on-device adapter round trip, while real Agent verification requires a qualifying event from an actual provider task. A local test does not prove provider authentication, model execution, or completion of a real Agent task. Every single-Agent operation produces a persistent, dismissible success or failure notice in that Agent section, so Test Channel and managed writes have visible feedback.
+PetCore distinguishes ordinary, diagnostic, and full-task receipts against the
+current connector contract and install time. **Send Test Message** proves only
+that the desktop pet can receive the App's local test message, while real Agent
+verification requires a qualifying event from an actual provider task. A test
+message does not prove provider authentication, model execution, or completion
+of a real Agent task. Every single-Agent operation produces a persistent,
+dismissible success or failure notice in that Agent section, so test messages
+and managed writes have visible feedback.
 
-Technical Details projects only bounded, typed evidence needed to act on a
-failed check. Agent-version rows show the detected semantic version and the
-closed supported version set; the Codex host-verification row may show bounded
-disabled, modified, and untrusted hook counts. Arbitrary diagnostic prose,
-paths, identifiers, and credential-like values never cross into ordinary or
-accessibility presentation.
+The internal support projection remains bounded and typed. Agent-version
+evidence contains only the detected semantic version and closed supported set;
+Codex host verification may contain bounded disabled, modified, and untrusted
+hook counts. The `managed_components` projection identifies only App-owned
+connector and Skill components, their expected and active release version, and
+an exact-content boolean. The component-version fields use only the independent
+Codex bundle version or the App release embedded in the three static
+connectors; compatibility contract identities remain in the separate internal
+capability contract. The expanded Agent renders only each safe name, kind,
+user-facing release version, and derived status. A mismatch additionally
+renders the safe App-required release version; internal contract identities and
+exact-content evidence stay internal. The projection never exposes a digest or
+path. User-managed plugins, extensions, packages, and Skills are neither
+scanned nor shown. Arbitrary diagnostic prose, paths, identifiers, and
+credential-like values never cross into ordinary or accessibility presentation.
 
 Runtime version checks fail closed outside the protocol surfaces audited by the
 current connector: Codex accepts only `0.144.5`, `0.145.0-alpha.18`, and the
@@ -101,17 +144,19 @@ managed adapter. Pi `0.79.x` is intentionally not treated as compatible:
 although it has the older task lifecycle events, its ExtensionAPI does not
 expose the required `session_info_changed` and `agent_settled` boundaries.
 
-Technical Details and the other shared advanced-detail cards use a full-width
-header button with expanded/collapsed accessibility state. The complete rounded
-header area toggles the section; controls inside expanded content remain
-independently interactive.
+Agent rows and the other shared disclosure cards use a full-width header button
+with expanded/collapsed accessibility state. The complete rounded header area
+toggles the section; controls inside expanded content remain independently
+interactive.
 
 The desktop bubble keeps the same Agent → session boundary but exposes only the
-bounded daily return path: one row while collapsed, at most three while
-expanded, and a Control Center action for the remainder. The whole session row
-is the navigation target; a chevron is visual hover/focus affordance rather
-than repeated action copy. The row's **Busy**, **Needs You**, or **Ended**
-intent is a localized projection over the unchanged fixed lifecycle states.
+bounded daily return path: one attention-prioritized/latest row while
+collapsed, and every concrete session already present in the bounded PetCore
+snapshot while expanded. The whole session row is the navigation target; a
+chevron is visual hover/focus affordance rather than repeated action copy. The
+row status names the exact fixed lifecycle action presented by the pet, and its
+detail keeps the closed safe activity summary visible alongside a distinct
+current-turn Agent message.
 
 ## Security and privacy boundary
 

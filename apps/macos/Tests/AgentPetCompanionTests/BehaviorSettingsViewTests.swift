@@ -134,7 +134,7 @@ struct BehaviorSettingsViewTests {
                 status: status,
                 operationState: .idle,
                 localeIdentifier: "en"
-            ) == "Local Healthy"
+            ) == "Connected"
         )
     }
 

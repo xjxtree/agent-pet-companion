@@ -13,6 +13,59 @@ struct AgentConnectionsTests {
         )
     }
 
+    @MainActor
+    @Test
+    func connectionTestIsBoundedAndDoesNotWaitForSnapshotRefresh() async throws {
+        var requests: [(source: String, timeout: Duration?)] = []
+        var snapshotRefreshCount = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in
+                    snapshotRefreshCount += 1
+                },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, params, timeout in
+                #expect(method == "connections.test")
+                let source = try #require(
+                    (params as? [String: String])?["source"]
+                )
+                requests.append((source, timeout))
+                return ["ok": true]
+            },
+            productConvergenceManifest: nil
+        )
+
+        for source in AgentSource.allCases {
+            store.sendConnectionTestEvent(source)
+            #expect(
+                store.connectionOperationState.runningOperation?.sources
+                    == [source]
+            )
+
+            for _ in 0 ..< 100
+            where store.connectionOperationState.succeededOperation == nil {
+                await Task.yield()
+            }
+
+            #expect(
+                store.connectionOperationState.succeededOperation
+                    == AgentConnectionOperation(
+                        kind: .test,
+                        sources: [source]
+                    )
+            )
+            store.dismissConnectionOperationNotice()
+        }
+
+        #expect(requests.map(\.source) == AgentSource.allCases.map(\.rawValue))
+        #expect(requests.allSatisfy { $0.timeout == .seconds(3) })
+        #expect(snapshotRefreshCount == 0)
+        #expect(store.canStartConnectionOperation)
+    }
+
     @Test
     func connectionOperationGateSerializesEveryActionKindAndPreservesRetryContext() throws {
         var gate = AgentConnectionOperationGate()
@@ -39,7 +92,7 @@ struct AgentConnectionsTests {
     }
 
     @Test
-    func connectedSnapshotHasOneVerifyAction() throws {
+    func connectedSnapshotKeepsRoutineActionsInMoreMenu() throws {
         let status = currentStatus(
             items: [
                 item(.ok, code: .managedConnector),
@@ -47,7 +100,8 @@ struct AgentConnectionsTests {
                 item(.ok, code: .hostVerification),
             ],
             installed: true,
-            verification: .verified
+            verification: .verified,
+            canUninstall: true
         )
 
         let presentation = product(status)
@@ -64,8 +118,17 @@ struct AgentConnectionsTests {
             )
         )
         #expect(action.action == .verify)
-        #expect(action.title == "Verify")
+        #expect(action.title == "Check Connection")
         #expect(action.isEnabled)
+
+        let layout = AgentConnectionsPresentation.actionLayout(
+            for: presentation
+        )
+        #expect(layout.primaryAction == nil)
+        #expect(
+            layout.moreActions
+                == [.recheck, .sendTestMessage, .setUpAgain, .remove]
+        )
     }
 
     @Test
@@ -121,6 +184,10 @@ struct AgentConnectionsTests {
         #expect(repair.health == .needsRepair)
         #expect(repair.primaryAction == .repair)
         #expect(repair.canRepairManagedConnector)
+
+        let layout = AgentConnectionsPresentation.actionLayout(for: repair)
+        #expect(layout.primaryAction == .repair)
+        #expect(layout.moreActions == [.recheck, .sendTestMessage])
     }
 
     @Test
@@ -202,6 +269,55 @@ struct AgentConnectionsTests {
         #expect(presentation.primaryAction == .verify)
         #expect(!presentation.canRepairManagedConnector)
         #expect(!presentation.canManageManagedConnector)
+    }
+
+    @Test
+    func unavailableCardsShowOnlyActionableUserGuidance() throws {
+        let missingAgent = product(currentStatus(
+            source: .claudeCode,
+            items: [item(.missing, code: .agentCLI)]
+        ))
+        let install = try #require(
+            AgentConnectionsPresentation.userGuidance(
+                for: missingAgent,
+                locale: "en"
+            )
+        )
+        #expect(install.contains("Claude Code"))
+        #expect(install.contains("Install or open"))
+        #expect(!install.contains("CLI"))
+
+        let blockedSettings = product(currentStatus(
+            source: .claudeCode,
+            items: [item(.needsFix, code: .claudeHooksPolicy)]
+        ))
+        let settings = try #require(
+            AgentConnectionsPresentation.userGuidance(
+                for: blockedSettings,
+                locale: "en"
+            )
+        )
+        #expect(settings.contains("settings"))
+        #expect(settings.contains("Allow Agent Pet Companion"))
+        #expect(!settings.contains("Hooks"))
+        #expect(!settings.contains("disableAllHooks"))
+
+        let needsRepair = product(currentStatus(
+            items: [
+                item(
+                    .missing,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+            ],
+            repairable: true
+        ))
+        #expect(
+            AgentConnectionsPresentation.userGuidance(
+                for: needsRepair,
+                locale: "en"
+            ) == "Choose Set Up or Repair below."
+        )
     }
 
     @Test
@@ -423,19 +539,19 @@ struct AgentConnectionsTests {
         for (kind, expected) in [
             (
                 AgentConnectionOperationKind.check,
-                "Connection check finished. The local health and real-task evidence above are up to date."
+                "Connection check finished. The status is up to date."
             ),
             (
                 .test,
-                "Local channel test passed. This proves only the on-device CLI, RPC, and event path—not a real Agent task."
+                "The test message was sent. Run a real Agent task next to confirm the desktop pet responds."
             ),
             (
                 .repair,
-                "The managed connector was installed or repaired and checked again."
+                "The connection was set up or repaired, then checked again."
             ),
             (
                 .uninstall,
-                "The App-managed connector files were removed. The Agent itself was not uninstalled."
+                "The connection was removed. The Agent itself was not uninstalled."
             ),
         ] {
             let operation = AgentConnectionOperation(
@@ -560,6 +676,11 @@ struct AgentConnectionsTests {
         #expect(!copy.contains(raw))
         #expect(!copy.contains("/Users/"))
         #expect(!copy.contains("secret"))
+        #expect(
+            AppStore.connectionOperationFailureReason(
+                for: PetCoreTransportError.timedOut
+            ) == .transportUnavailable
+        )
     }
 
     @Test
@@ -639,6 +760,174 @@ struct AgentConnectionsTests {
         ] {
             #expect(!projectionDescription.contains(forbidden))
         }
+    }
+
+    @Test
+    func managedComponentProjectionKeepsOnlyBoundedAppOwnedEvidence() {
+        let validPlugin = AgentManagedComponent(
+            kind: .plugin,
+            name: "agent-pet-companion",
+            ownership: .appManaged,
+            status: .ok,
+            expectedVersion: "0.4.1",
+            activeVersion: "0.4.1",
+            contentMatches: true
+        )
+        let validSkill = AgentManagedComponent(
+            kind: .skill,
+            name: "agent-pet-maker",
+            ownership: .appManaged,
+            status: .ok,
+            expectedVersion: "0.4.1",
+            activeVersion: "0.4.1",
+            contentMatches: true
+        )
+        let userManaged = AgentManagedComponent(
+            kind: .plugin,
+            name: "user-plugin",
+            ownership: .userManaged,
+            status: .ok
+        )
+        let presentation = product(currentStatus(
+            items: [item(.ok, code: .managedConnector)],
+            managedComponents: Array(repeating: userManaged, count: 8) + [
+                validPlugin,
+                validSkill,
+                AgentManagedComponent(
+                    kind: .plugin,
+                    name: "/Users/alice/private/plugin",
+                    ownership: .appManaged,
+                    status: .ok
+                ),
+                AgentManagedComponent(
+                    kind: .plugin,
+                    name: "invalid-version",
+                    ownership: .appManaged,
+                    status: .ok,
+                    expectedVersion: "1.0/token"
+                ),
+            ]
+        ))
+
+        #expect(presentation.managedComponents == [validPlugin, validSkill])
+        #expect(
+            AgentConnectionsPresentation.extensionKindTitle(
+                validPlugin.kind,
+                locale: "en"
+            ) == "Plugin"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentStatusTitle(
+                validPlugin,
+                locale: "en"
+            ) == "v0.4.1 · OK"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentVersionDetail(
+                validPlugin,
+                locale: "en"
+            ) == nil
+        )
+        let ordinaryCopy = [
+            AgentConnectionsPresentation.extensionKindTitle(
+                validPlugin.kind,
+                locale: "en"
+            ),
+            AgentConnectionsPresentation.managedComponentStatusTitle(
+                validPlugin,
+                locale: "en"
+            ),
+        ].joined(separator: " · ")
+        #expect(!ordinaryCopy.contains("Expected"))
+        #expect(!ordinaryCopy.contains("Active"))
+        #expect(!ordinaryCopy.contains("Exact content"))
+        #expect(!ordinaryCopy.contains("User managed"))
+        #expect(!String(describing: presentation).contains("/Users/"))
+
+        let mismatchedPlugin = AgentManagedComponent(
+            kind: .plugin,
+            name: "agent-pet-companion",
+            ownership: .appManaged,
+            status: .needsFix,
+            expectedVersion: "0.4.1",
+            activeVersion: "0.4.0",
+            contentMatches: false
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentHasVersionMismatch(
+                mismatchedPlugin
+            )
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentStatusTitle(
+                mismatchedPlugin,
+                locale: "en"
+            ) == "Version mismatch"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentStatusTitle(
+                mismatchedPlugin,
+                locale: "zh-Hans"
+            ) == "版本不匹配"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentVersionDetail(
+                mismatchedPlugin,
+                locale: "en"
+            ) == "Installed v0.4.0 · This App requires v0.4.1"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentVersionDetail(
+                mismatchedPlugin,
+                locale: "zh-Hans"
+            ) == "当前 v0.4.0 · 本 App 需要 v0.4.1"
+        )
+
+        let missingPlugin = AgentManagedComponent(
+            kind: .plugin,
+            name: "agent-pet-companion",
+            ownership: .appManaged,
+            status: .missing,
+            expectedVersion: "0.4.1"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentVersionDetail(
+                missingPlugin,
+                locale: "zh-Hans"
+            ) == "本 App 需要 v0.4.1"
+        )
+
+        let internalContractIdentity = AgentManagedComponent(
+            kind: .connector,
+            name: "agent-pet-companion.ts",
+            ownership: .appManaged,
+            status: .ok,
+            expectedVersion: "pi-extension-0.80.10-activity-v8",
+            activeVersion: "pi-extension-0.80.10-activity-v8",
+            contentMatches: true
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentStatusTitle(
+                internalContractIdentity,
+                locale: "en"
+            ) == "OK"
+        )
+        #expect(
+            AgentConnectionsPresentation.managedComponentVersionDetail(
+                internalContractIdentity,
+                locale: "en"
+            ) == nil
+        )
+
+        let localizedSkillKind = AgentConnectionsPresentation.extensionKindTitle(
+            validSkill.kind,
+            locale: "zh-Hans"
+        )
+        #expect(localizedSkillKind == "技能")
+        #expect(APCLocalization.text(
+            .connectionsManagedComponentsSummary,
+            locale: "zh-Hans"
+        ).contains("只显示"))
     }
 
     @Test
@@ -744,12 +1033,21 @@ struct AgentConnectionsTests {
             primary.title,
             primary.accessibilityLabel,
             primary.accessibilityHint ?? "",
+            APCLocalization.text(.connectionsRepairAgainHint, locale: "en"),
+            APCLocalization.text(.connectionsUninstallHint, locale: "en"),
+            APCLocalization.text(.connectionsSuccessCheck, locale: "en"),
+            APCLocalization.text(.connectionsSuccessRepair, locale: "en"),
+            APCLocalization.text(.connectionsSuccessUninstall, locale: "en"),
         ].joined(separator: " ")
 
         for forbidden in [
             "Runtime Identity",
             "Renderer",
             "Export Diagnostics",
+            "managed connector",
+            "managed file",
+            "CLI",
+            "RPC",
             "/Users/alice/project",
             "project_directory",
             "choose_project_directory",
@@ -780,6 +1078,18 @@ struct AgentConnectionsTests {
         #expect(real.contains("Run a real task"))
         #expect(real.contains("Verify"))
         #expect(local != real)
+        #expect(
+            APCLocalization.text(
+                .connectionsTestChannel,
+                locale: "en"
+            ) == "Send Test Message"
+        )
+        #expect(
+            APCLocalization.text(
+                .connectionsTestChannel,
+                locale: "zh-Hans"
+            ) == "发送测试消息"
+        )
     }
 
     @Test
@@ -821,7 +1131,8 @@ struct AgentConnectionsTests {
         repairable: Bool? = false,
         canManage: Bool? = true,
         conflict: Bool? = false,
-        canUninstall: Bool? = false
+        canUninstall: Bool? = false,
+        managedComponents: [AgentManagedComponent] = []
     ) -> AgentConnectionStatus {
         AgentConnectionStatus(
             source: source,
@@ -834,7 +1145,8 @@ struct AgentConnectionsTests {
                 repairable: repairable,
                 canManage: canManage,
                 conflict: conflict,
-                canUninstall: canUninstall
+                canUninstall: canUninstall,
+                managedComponents: managedComponents
             )
         )
     }
@@ -857,7 +1169,8 @@ struct AgentConnectionsTests {
         repairable: Bool?,
         canManage: Bool? = true,
         conflict: Bool?,
-        canUninstall: Bool?
+        canUninstall: Bool?,
+        managedComponents: [AgentManagedComponent] = []
     ) -> AgentConnectorCapabilities {
         AgentConnectorCapabilities(
             contractVersion: "typed-test-v1",
@@ -867,7 +1180,8 @@ struct AgentConnectionsTests {
             repairableConnectorIssue: repairable,
             canRepairManagedConnector: canManage,
             managedPathConflict: conflict,
-            canUninstallManagedConnector: canUninstall
+            canUninstallManagedConnector: canUninstall,
+            managedComponents: managedComponents
         )
     }
 

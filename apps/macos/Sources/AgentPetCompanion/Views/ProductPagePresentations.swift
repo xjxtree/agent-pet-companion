@@ -89,6 +89,7 @@ struct AgentConnectionProductPresentation: Equatable {
     let taskVerification: AgentTaskVerificationState
     let primaryAction: AgentConnectionPrimaryAction
     let technicalItems: [AgentConnectionTechnicalItem]
+    let managedComponents: [AgentManagedComponent]
     let hasCurrentTypedSnapshot: Bool
     let canRepairManagedConnector: Bool
     let canManageManagedConnector: Bool
@@ -105,6 +106,9 @@ struct AgentConnectionProductPresentation: Equatable {
             source: source
         )
         technicalItems = projectedItems
+        managedComponents = Self.projectedManagedComponents(
+            status?.capabilities.managedComponents ?? []
+        )
         hasCurrentTypedSnapshot = status.map(Self.hasCurrentTypedSnapshot) ?? false
         canManageManagedConnector = status?.canRepairManagedConnector == true
         canUninstall = status?.canUninstallManagedConnector == true
@@ -313,6 +317,35 @@ struct AgentConnectionProductPresentation: Equatable {
             }
         }
         return result
+    }
+
+    private static func projectedManagedComponents(
+        _ components: [AgentManagedComponent]
+    ) -> [AgentManagedComponent] {
+        Array(components.lazy.filter { component in
+            guard component.ownership == .appManaged,
+                  component.kind != .unknown,
+                  !component.name.isEmpty,
+                  component.name.count <= 80,
+                  !component.name.contains("/"),
+                  !component.name.contains("\\"),
+                  !component.name.unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0)
+                  })
+            else { return false }
+            return [component.expectedVersion, component.activeVersion]
+                .compactMap { $0 }
+                .allSatisfy { version in
+                    !version.isEmpty
+                        && version.count <= 48
+                        && version.unicodeScalars.allSatisfy {
+                            CharacterSet(
+                                charactersIn:
+                                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_+"
+                            ).contains($0)
+                        }
+                }
+        }.prefix(8))
     }
 
     private static func safeTechnicalEvidence(

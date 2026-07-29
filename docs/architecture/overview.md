@@ -45,10 +45,11 @@ Connections and bubbles use `Agent → session`; they do not introduce a project
 
 The bubble is intentionally a glanceable return surface rather than a second
 control center. A collapsed Agent group shows one highest-attention or latest
-session; an expanded group shows at most three, then routes the remainder to
-Agent Connections. Every row exposes one of the presentation intents **Busy**,
-**Needs You**, or **Ended** without changing the persisted lifecycle state, and
-the full row is the exact-session action when that typed capability exists.
+session; an expanded group shows every concrete session already present in the
+bounded PetCore snapshot. Every row labels the exact authored pet action for
+its fixed lifecycle state and renders the closed, safe current-activity summary
+alongside any current-turn Agent message. The full row is the exact-session
+action when that typed capability exists.
 
 ## Main flows
 
@@ -64,13 +65,21 @@ the full row is the exact-session action when that typed capability exists.
 
 Dock reopen, second-instance activation, MenuBarExtra, and overlay actions target the registered control-center window identity. The About window is a separate scene and is never selected as the control center. Initial automatic retry and explicit user recovery coalesce onto one full bootstrap pipeline so behavior hydration, bundled-pet seeding, snapshot publication, and first overlay presentation cannot race each other.
 
+Closing the control center leaves the resident menu-bar and desktop-pet
+surfaces running. Its explicit close lifecycle keeps an enabled pet visible
+even when no regular application window remains, rather than treating that
+ordinary resident state as a request to hide every window for Show Desktop.
+
 The desktop pet body remains hoverable and draggable whenever the overlay is visible. When the renderer has a valid frame alpha mask, transparent pixels may pass pointer events through; during launch, state transitions, or any interval without a mask, hit testing falls back to the geometric pet region so the pet never becomes non-interactive.
 
 Direct drag uses a bounded rubber-band presentation outside the usable screen
 region and a short critically damped velocity handoff on release. Only the
 hard-clamped final center is persisted. A new drag cancels the handoff at its
 current presentation position, reduced motion commits directly, and overlay
-transitions never disable the visible pet's pointer interaction.
+transitions never disable the visible pet's pointer interaction. Drag and
+bottom-right resize previews update only the owning AppKit overlay windows and
+their narrow presentation state; the shared App model is published once when
+the interaction settles.
 
 See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and compatibility details.
 
@@ -160,6 +169,12 @@ logo/                       Approved reusable brand assets
   the bundled runtime transaction converges PetCore, CLI, missing bundled pets,
   and previously managed Agent integrations. External components do not
   independently update or report product versions.
+- Agent Connections projects only bounded component identities owned by Agent
+  Pet Companion under their corresponding Agent. It does not scan or list
+  user-owned extensions and Skills. Claude Code, Pi, and OpenCode managed
+  artifacts carry the App/PetCore release that installed them; Codex keeps its
+  independent plugin-bundle version. PetCore projects the verified active and
+  required release versions without exposing the internal connector contract.
 - The Codex plugin, its hook, `agent-pet-studio`, and `agent-pet-maker` are one
   versioned capability bundle. Any content change requires a strictly greater
   plugin version, and healthy connection state requires active-content

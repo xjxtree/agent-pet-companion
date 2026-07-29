@@ -192,6 +192,47 @@ struct ProductConvergenceTests {
     }
 
     @Test
+    func managedStaticConnectorRequiresMatchingReleaseWithoutCodexDigests() {
+        let current = managedStaticResult(
+            source: .pi,
+            expectedVersion: "0.3.0",
+            activeVersion: "0.3.0"
+        )
+        let mismatched = managedStaticResult(
+            source: .pi,
+            expectedVersion: "0.3.0",
+            activeVersion: "0.2.0"
+        )
+        let missing = managedStaticResult(
+            source: .pi,
+            expectedVersion: "0.3.0",
+            activeVersion: nil
+        )
+        let codexDigest = ProductConnectorRefreshResult(
+            source: .pi,
+            status: .current,
+            managed: true,
+            refreshed: true,
+            ok: true,
+            verified: true,
+            expectedVersion: "0.3.0",
+            activeVersion: "0.3.0",
+            expectedSkillsSHA256: nil,
+            activeSkillsSHA256: nil,
+            expectedContentSHA256: String(repeating: "a", count: 64),
+            managedSourceContentSHA256: nil,
+            activeContentSHA256: nil,
+            detail: "current",
+            error: nil
+        )
+
+        #expect(current.isExactlyConverged)
+        #expect(!mismatched.isExactlyConverged)
+        #expect(!missing.isExactlyConverged)
+        #expect(!codexDigest.isExactlyConverged)
+    }
+
+    @Test
     func finalSnapshotFailureNeverClaimsTheNewVersionIsReady() async throws {
         let manifest = runtimeManifest(
             buildID: "build-new",
@@ -470,6 +511,30 @@ struct ProductConvergenceTests {
                     error: nil
                 )
             }
+        )
+    }
+
+    private func managedStaticResult(
+        source: AgentSource,
+        expectedVersion: String?,
+        activeVersion: String?
+    ) -> ProductConnectorRefreshResult {
+        ProductConnectorRefreshResult(
+            source: source,
+            status: .current,
+            managed: true,
+            refreshed: true,
+            ok: true,
+            verified: true,
+            expectedVersion: expectedVersion,
+            activeVersion: activeVersion,
+            expectedSkillsSHA256: nil,
+            activeSkillsSHA256: nil,
+            expectedContentSHA256: nil,
+            managedSourceContentSHA256: nil,
+            activeContentSHA256: nil,
+            detail: "current",
+            error: nil
         )
     }
 

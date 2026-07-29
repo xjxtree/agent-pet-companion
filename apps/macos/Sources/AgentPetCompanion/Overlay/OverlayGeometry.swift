@@ -198,8 +198,8 @@ enum OverlayControlVisibility {
 enum OverlayMotion {
     static let controlFadeDuration: TimeInterval = 0.14
     static let controlFadeDelay = Duration.milliseconds(140)
-    static let bubbleLayoutDuration: TimeInterval = 0.20
-    static let bubbleLayoutDelay = Duration.milliseconds(200)
+    static let bubbleLayoutDuration: TimeInterval = 0.16
+    static let bubbleLayoutDelay = Duration.milliseconds(160)
     static let reducedMotionCrossfadeDuration: TimeInterval = 0.16
     static let reducedMotionCrossfadeDelay = Duration.milliseconds(160)
     static let reducedMotionCrossfadeHalfDelay = Duration.milliseconds(80)
@@ -314,6 +314,41 @@ final class OverlayControlPresentationState: ObservableObject {
         guard isVisible != visible else { return }
         isVisible = visible
         visibilityDidChange?()
+    }
+}
+
+/// Keeps high-frequency resize presentation out of `AppStore`. Only the pet
+/// canvas and resize handle observe this state, so pointer movement does not
+/// invalidate the control center, bubbles, or unrelated overlay content.
+@MainActor
+final class OverlayInteractionPresentationState: ObservableObject {
+    private struct ResizePresentation: Equatable {
+        var scale: CGFloat
+        var petLocalCenter: CGPoint
+    }
+
+    @Published private var resizePresentation: ResizePresentation?
+
+    func resolvedScale(fallback: CGFloat) -> CGFloat {
+        resizePresentation?.scale ?? fallback
+    }
+
+    func resolvedPetLocalCenter(fallback: CGPoint) -> CGPoint {
+        resizePresentation?.petLocalCenter ?? fallback
+    }
+
+    func present(scale: CGFloat, petLocalCenter: CGPoint) {
+        let next = ResizePresentation(
+            scale: scale,
+            petLocalCenter: petLocalCenter
+        )
+        guard resizePresentation != next else { return }
+        resizePresentation = next
+    }
+
+    func clearResize() {
+        guard resizePresentation != nil else { return }
+        resizePresentation = nil
     }
 }
 
@@ -582,13 +617,6 @@ enum OverlayGeometry {
     static let bubbleSessionTitleSpacing: CGFloat = 2
     static let bubbleDetailLineLimit = 2
     static let bubbleSessionDividerHeight: CGFloat = 1
-    static var bubbleMoreSessionsRowHeight: CGFloat {
-        max(
-            30,
-            ceil(lineHeight(for: NSFont.preferredFont(forTextStyle: .caption1))) + 12
-        )
-    }
-    static let maximumExpandedSessions = 3
     static let bubbleHeaderAvatarWidth: CGFloat = 14
     static var bubbleHeaderButtonSize: CGFloat {
         max(15, bubbleGroupHeaderHeight - 2)
@@ -1532,16 +1560,12 @@ enum OverlayGeometry {
     private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
         let rowHeights = bubbleSessionRowHeights(bubbleWidth: width, content: content)
         let dividers = CGFloat(max(0, rowHeights.count - 1)) * bubbleSessionDividerHeight
-        let controlCenterSummaryHeight = content.controlCenterSessionCount > 0
-            ? bubbleSessionDividerHeight + bubbleMoreSessionsRowHeight
-            : 0
         return ceil(
             bubbleVerticalPadding * 2
                 + bubbleGroupHeaderHeight
                 + bubbleGroupHeaderSpacing
                 + rowHeights.reduce(0, +)
                 + dividers
-                + controlCenterSummaryHeight
                 + content.stackDecorationDepth
         )
     }
@@ -1630,20 +1654,6 @@ enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
     }
 }
 
-enum OverlaySessionIntent: String, CaseIterable, Equatable {
-    case busy
-    case needsYou
-    case ended
-
-    init(eventType: AgentEventKind?) {
-        self = switch eventType {
-        case .start, .tool, nil: .busy
-        case .waiting, .review: .needsYou
-        case .done, .failed: .ended
-        }
-    }
-}
-
 enum OverlayBubbleProjection {
     static func contents(
         states: [ActiveAgentState],
@@ -1682,13 +1692,10 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var sessionID: String?
     var eventType: AgentEventKind?
     var sessionTitle: String
+    var activityText: String
     var messageText: String
     var statusText: String
     var navigation: AgentSessionNavigation
-
-    var intent: OverlaySessionIntent {
-        OverlaySessionIntent(eventType: eventType)
-    }
 
     var needsUserAttention: Bool {
         eventType == .waiting || eventType == .review || eventType == .failed
@@ -1713,12 +1720,31 @@ struct OverlaySessionContent: Equatable, Identifiable {
             source: source
         ) ?? APCLocalizedPresentation.navigationUnavailableTitle()
     }
+    var secondaryMessageText: String? {
+        guard let message = Self.compactMessage(messageText),
+              Self.normalizedText(message) != Self.normalizedText(activityText)
+        else {
+            return nil
+        }
+        return message
+    }
+    var primaryDetailText: String {
+        Self.compactMessage(activityText)
+            ?? Self.compactMessage(messageText)
+            ?? ""
+    }
+    var detailText: String {
+        [primaryDetailText, secondaryMessageText]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
     var accessibilityReadingOrder: [String] {
         [
             source?.title,
             sessionTitle,
             statusText,
-            messageText,
+            primaryDetailText,
+            secondaryMessageText,
             actionLabel,
         ]
         .compactMap(Self.compactMessage)
@@ -1742,6 +1768,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionID: nil,
         eventType: nil,
         sessionTitle: "Agent Pet Companion",
+        activityText: "",
         messageText: "",
         statusText: "",
         navigation: AgentSessionNavigation()
@@ -1755,6 +1782,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
             sessionID: nil,
             eventType: nil,
             sessionTitle: APCLocalization.text(.overlayMoreSessionsTitle),
+            activityText: "",
             messageText: APCLocalization.format(.overlayMoreSessionsDetailFormat, count),
             statusText: "",
             navigation: AgentSessionNavigation()
@@ -1768,6 +1796,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionID: String?,
         eventType: AgentEventKind?,
         sessionTitle: String,
+        activityText: String? = nil,
         messageText: String,
         statusText: String,
         navigation: AgentSessionNavigation = AgentSessionNavigation()
@@ -1778,6 +1807,11 @@ struct OverlaySessionContent: Equatable, Identifiable {
         self.sessionID = sessionID
         self.eventType = eventType
         self.sessionTitle = sessionTitle
+        self.activityText = activityText
+            ?? eventType.map {
+                Self.displayMessage(summaryKind: nil, eventType: $0)
+            }
+            ?? ""
         self.messageText = messageText
         self.statusText = statusText
         self.navigation = navigation
@@ -1802,6 +1836,10 @@ struct OverlaySessionContent: Equatable, Identifiable {
             ? Self.genericSessionTitle(for: state)
             : proposedTitle
         navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
+        activityText = Self.displayMessage(
+            summaryKind: state.overlayDisplay?.summaryKind,
+            eventType: event.eventType
+        )
         messageText = Self.nonredundantMessage(
             Self.displayMessage(for: state),
             title: sessionTitle,
@@ -1823,6 +1861,10 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
         statusText = Self.displayStatus(for: event.eventType)
         navigation = event.sessionNavigation
+        activityText = Self.displayMessage(
+            summaryKind: nil,
+            eventType: event.eventType
+        )
         messageText = Self.nonredundantMessage(
             Self.fallbackDetail(for: event.eventType),
             title: sessionTitle,
@@ -2011,14 +2053,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     static func displayStatus(for eventType: AgentEventKind) -> String {
-        switch OverlaySessionIntent(eventType: eventType) {
-        case .busy:
-            APCLocalization.text(.overlayIntentBusy)
-        case .needsYou:
-            APCLocalization.text(.overlayIntentNeedsYou)
-        case .ended:
-            APCLocalization.text(.overlayIntentEnded)
-        }
+        APCLocalizedPresentation.lifecycleTitle(
+            ProductLifecycleState(eventKind: eventType)
+        )
     }
 
     private static func fallbackDetail(for eventType: AgentEventKind) -> String {
@@ -2050,26 +2087,22 @@ struct OverlayBubbleContent: Equatable, Identifiable {
             ]
         }
 
-        var bounded = [sessions[0]]
+        var ordered = [sessions[0]]
         let prioritized = sessions.dropFirst().filter(\.needsUserAttention)
             + sessions.dropFirst().filter { !$0.needsUserAttention }
-        for session in prioritized where bounded.count < OverlayGeometry.maximumExpandedSessions {
-            guard !bounded.contains(where: { $0.id == session.id }) else {
+        for session in prioritized {
+            guard !ordered.contains(where: { $0.id == session.id }) else {
                 continue
             }
-            bounded.append(session)
+            ordered.append(session)
         }
-        return bounded
+        return ordered
     }
     var sessionCount: Int { sessions.count }
     var representedSessionCount: Int {
         omittedSessionCount > 0 ? omittedSessionCount : sessionCount
     }
     var isOmittedSummary: Bool { omittedSessionCount > 0 }
-    var controlCenterSessionCount: Int {
-        guard isExpanded, !isOmittedSummary else { return 0 }
-        return max(0, sessionCount - visibleSessions.count)
-    }
     var canDismiss: Bool { !isOmittedSummary }
     var hasMultipleSessions: Bool { sessions.count > 1 }
     var isStacked: Bool { hasMultipleSessions && !isExpanded }

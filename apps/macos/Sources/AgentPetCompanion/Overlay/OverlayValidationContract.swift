@@ -309,6 +309,15 @@ public enum AgentPetCompanionUIValidationContract {
             "active bubble did not render the bounded assistant display message"
         )
         try require(
+            session.activityText == APCLocalization.text(.overlayActivityThinking),
+            "active bubble did not render the safe current activity summary"
+        )
+        try require(
+            session.detailText.contains(session.activityText)
+                && session.detailText.contains(session.messageText),
+            "active bubble did not keep activity and assistant message together"
+        )
+        try require(
             content.agentName == "Codex",
             "active bubble omitted its Agent group title"
         )
@@ -318,8 +327,8 @@ public enum AgentPetCompanionUIValidationContract {
             "active bubble did not render the bounded session title"
         )
         try require(
-            !session.messageText.contains("Verifying live activity synchronization")
-                && !session.messageText.contains("Keep the current conversation message visible."),
+            !session.detailText.contains("Verifying live activity synchronization")
+                && !session.detailText.contains("Keep the current conversation message visible."),
             "active bubble fell back to raw event or activity content"
         )
         try require(!session.statusText.isEmpty, "active bubble omitted its run status")
@@ -466,35 +475,21 @@ public enum AgentPetCompanionUIValidationContract {
                 title: "arbitrary transport title",
                 createdAt: "2026-07-23T00:00:00Z"
             ))
-            let expectedStatus = switch OverlaySessionIntent(eventType: eventType) {
-            case .busy:
-                APCLocalization.text(.overlayIntentBusy)
-            case .needsYou:
-                APCLocalization.text(.overlayIntentNeedsYou)
-            case .ended:
-                APCLocalization.text(.overlayIntentEnded)
-            }
+            let expectedStatus = APCLocalizedPresentation.lifecycleTitle(
+                ProductLifecycleState(eventKind: eventType)
+            )
             try require(
                 content.statusText == expectedStatus,
-                "bubble status did not use the closed daily intent mapping for \(eventType)"
+                "bubble status did not match the authored pet action for \(eventType)"
             )
-            let fallbackIsRedundant = eventType == .start
-                && content.statusText
-                    == APCLocalization.text(.overlayDetailRunning)
             try require(
-                !content.messageText.isEmpty || fallbackIsRedundant,
-                "bubble omitted the typed nonredundant fallback detail for \(eventType)"
+                !content.activityText.isEmpty,
+                "bubble omitted the safe activity summary for \(eventType)"
             )
             try require(
                 content.sessionTitle != content.statusText
-                    && (
-                        content.messageText.isEmpty
-                            || (
-                                content.messageText != content.statusText
-                                    && content.messageText != content.sessionTitle
-                            )
-                    ),
-                "bubble repeated title, status, or detail for \(eventType)"
+                    && content.activityText != content.sessionTitle,
+                "bubble repeated its title as lifecycle or activity copy for \(eventType)"
             )
         }
     }
@@ -510,6 +505,7 @@ public enum AgentPetCompanionUIValidationContract {
                 sessionID: id,
                 eventType: .waiting,
                 sessionTitle: "Session \(id)",
+                activityText: APCLocalization.text(.overlayDetailNeedsInput),
                 messageText: "A response is required",
                 statusText: APCLocalizedPresentation.lifecycleTitle(.waiting),
                 navigation: navigation
@@ -571,10 +567,11 @@ public enum AgentPetCompanionUIValidationContract {
                 "Codex",
                 "Session exact",
                 APCLocalizedPresentation.lifecycleTitle(.waiting),
+                APCLocalization.text(.overlayDetailNeedsInput),
                 "A response is required",
                 exact.actionLabel,
             ],
-            "VoiceOver order was not Agent, session, status, message, action"
+            "VoiceOver order was not Agent, session, status, activity, message, action"
         )
     }
 
@@ -711,12 +708,16 @@ public enum AgentPetCompanionUIValidationContract {
                 usesPolling: monitor.usesPolling,
                 isRunning: monitor.isRunning,
                 hasMouseMoved: OverlayPointerEventMonitor.eventMask.contains(.mouseMoved),
+                hasMouseUp: OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp),
                 hasDrag: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged)
             )
         }
         try require(!result.usesPolling, "pointer monitor still uses polling")
         try require(!result.isRunning, "pointer monitor starts while not needed")
-        try require(result.hasMouseMoved && result.hasDrag, "pointer event mask is incomplete")
+        try require(
+            result.hasMouseMoved && result.hasMouseUp && !result.hasDrag,
+            "pointer event mask must track hover and release without duplicating drag delivery"
+        )
     }
 
     private static func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {

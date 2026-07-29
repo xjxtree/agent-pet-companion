@@ -47,6 +47,7 @@ enum OverlayBubbleTogglePresentation {
 struct OverlayRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @EnvironmentObject private var interactionPresentation: OverlayInteractionPresentationState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var currentEvent: AgentEvent? {
@@ -60,12 +61,21 @@ struct OverlayRootView: View {
     var body: some View {
         GeometryReader { proxy in
             let petCenter = OverlayGeometry.localPoint(
+                // During a direct drag both the AppKit panel and the
+                // transient presentation center move together without
+                // publishing. Keep this local coordinate based on the last
+                // published center/frame pair so an unrelated SwiftUI update
+                // cannot move the pet inside its already-translated panel.
                 forScreenPoint: store.overlayPetScreenCenter,
                 panelFrame: store.overlayScreenFrame,
                 fallbackIn: proxy.size
             )
-            let displayPetCenter = petCenter
+            let displayPetCenter = interactionPresentation
+                .resolvedPetLocalCenter(fallback: petCenter)
             let controlsVisible = controlPresentation.isVisible
+            let presentedScale = interactionPresentation.resolvedScale(
+                fallback: store.overlayScale
+            )
 
             ZStack {
                 Color.clear
@@ -76,13 +86,13 @@ struct OverlayRootView: View {
                     stateEntryID: OverlayPetAnimationIdentity.stateEntryID(
                         for: store.presentedActiveAgentState
                     ),
-                    scale: store.overlayScale,
+                    scale: presentedScale,
                     fpsProfile: store.effectiveFPSProfile,
                     appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,
                     bubbleToggleAvailable: store.hasAvailableOverlayBubbleContent,
-                    petScreenCenter: store.overlayPetScreenCenter,
+                    petScreenCenter: store.overlayPresentedPetScreenCenter,
                     petVisualEnvelope: store.overlayPetVisualEnvelope,
                     controlsVisible: controlsVisible,
                     active: store.behavior.enabled,
@@ -197,6 +207,7 @@ struct OverlayMenuControlRootView: View {
 struct OverlayResizeControlRootView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
+    @EnvironmentObject private var interactionPresentation: OverlayInteractionPresentationState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scaleStepFeedbackVisible = false
     @State private var scaleStepFeedbackTask: Task<Void, Never>?
@@ -206,9 +217,12 @@ struct OverlayResizeControlRootView: View {
     }
 
     var body: some View {
+        let presentedScale = interactionPresentation.resolvedScale(
+            fallback: store.overlayScale
+        )
         ZStack {
             ResizeHandle(
-                scale: store.overlayScale,
+                scale: presentedScale,
                 showScaleValue: OverlayScaleFeedbackVisibility.isVisible(
                     isFocused: false,
                     isResizing: store.overlayResizeInProgress,
@@ -224,7 +238,7 @@ struct OverlayResizeControlRootView: View {
             .allowsHitTesting(false)
 
             ResizeInteractionRegion(
-                scale: store.overlayScale,
+                scale: presentedScale,
                 onHoverChanged: { hovering in
                     controlPresentation.setHovered(.resize, hovering)
                     store.refreshOverlayPointerState()
@@ -249,10 +263,9 @@ struct OverlayResizeControlRootView: View {
                         screenTranslation: screenTranslation,
                         commit: true
                     )
-                    store.updateOverlayLayout()
                 },
                 onScaleStep: { step in
-                    store.setOverlayScale(store.overlayScale + step)
+                    store.setOverlayScale(presentedScale + step)
                     showScaleStepFeedback()
                 }
             )
@@ -306,7 +319,7 @@ struct BubbleOverlayRootView: View {
     @ViewBuilder
     private func bubbleLayer(in proxy: GeometryProxy) -> some View {
         let alignLeft = OverlayGeometry.bubbleAlignsLeft(
-            petScreenCenter: store.overlayPetScreenCenter,
+            petScreenCenter: store.overlayPresentedPetScreenCenter,
             screenFrame: store.overlayScreenVisibleFrame
         )
         let bubbleRects = OverlayGeometry.bubbleRects(
@@ -331,10 +344,6 @@ struct BubbleOverlayRootView: View {
                         guard let source = content.source else { return }
                         store.toggleOverlayAgentGroup(source)
                     },
-                    onOpenControlCenter: {
-                        store.selection = .connections
-                        store.presentMainWindow()
-                    },
                     onActivateSession: { session in
                         store.activateOverlaySession(session)
                     },
@@ -351,9 +360,9 @@ struct BubbleOverlayRootView: View {
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
         .animation(
-            .easeInOut(duration: reduceMotion
-                ? OverlayMotion.reducedMotionCrossfadeDuration
-                : OverlayMotion.bubbleLayoutDuration),
+            reduceMotion
+                ? .easeOut(duration: OverlayMotion.reducedMotionCrossfadeDuration)
+                : .snappy(duration: OverlayMotion.bubbleLayoutDuration, extraBounce: 0),
             value: contents
         )
         .onHover { controlPresentation.setHovered(.bubble, $0) }
@@ -369,7 +378,6 @@ private struct ConversationBubble: View {
     var glassTransparency: Double
     var onClose: () -> Void
     var onToggleGroup: () -> Void
-    var onOpenControlCenter: () -> Void
     var onActivateSession: (OverlaySessionContent) -> Void
     var onDismissSession: (OverlaySessionContent) -> Void
 
@@ -415,8 +423,6 @@ private struct ConversationBubble: View {
                 bubbleSurface
                     .frame(width: proxy.size.width, height: surfaceHeight, alignment: .top)
             }
-            .animation(bubbleAnimation, value: content.visibleSessions.map(\.id))
-            .animation(bubbleAnimation, value: content.isStacked)
         }
         .accessibilityIdentifier("overlay.group.\(content.id)")
     }
@@ -499,46 +505,6 @@ private struct ConversationBubble: View {
                 }
             }
 
-            if content.controlCenterSessionCount > 0 {
-                Divider()
-                    .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
-                    .frame(height: OverlayGeometry.bubbleSessionDividerHeight)
-                    .transition(.opacity)
-
-                Button(action: onOpenControlCenter) {
-                    HStack(spacing: 6) {
-                        Text(APCLocalization.format(
-                            .overlayMoreSessionsControlCenterFormat,
-                            content.controlCenterSessionCount
-                        ))
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-
-                        Spacer(minLength: 8)
-
-                        Image(systemName: "arrow.up.forward.square")
-                            .font(.caption.weight(.semibold))
-                            .accessibilityHidden(true)
-                    }
-                    .foregroundStyle(Color.primary)
-                    .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
-                    .frame(
-                        maxWidth: .infinity,
-                        minHeight: OverlayGeometry.bubbleMoreSessionsRowHeight,
-                        alignment: .leading
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("overlay.group.\(content.id).more")
-                .accessibilitySortPriority(1)
-                .help(APCLocalization.format(
-                    .overlayMoreSessionsControlCenterFormat,
-                    content.controlCenterSessionCount
-                ))
-                .transition(sessionTransition)
-            }
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
         .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
@@ -554,12 +520,6 @@ private struct ConversationBubble: View {
         ))
     }
 
-    private var bubbleAnimation: Animation {
-        .easeInOut(duration: reduceMotion
-            ? OverlayMotion.reducedMotionCrossfadeDuration
-            : OverlayMotion.bubbleLayoutDuration)
-    }
-
     private var sessionTransition: AnyTransition {
         reduceMotion
             ? .opacity
@@ -567,6 +527,8 @@ private struct ConversationBubble: View {
     }
 }
 private struct SessionCountButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var count: Int
     var expanded: Bool
     var tone: OverlaySessionGroupTone
@@ -577,8 +539,18 @@ private struct SessionCountButton: View {
             HStack(spacing: 4) {
                 Text("\(count)")
                     .monospacedDigit()
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                Image(systemName: "chevron.down")
                     .font(.caption2.weight(.bold))
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .snappy(
+                                duration: OverlayMotion.bubbleLayoutDuration,
+                                extraBounce: 0
+                            ),
+                        value: expanded
+                    )
             }
             .font(.caption2.weight(.semibold))
             .foregroundStyle(BubbleForegroundStyle.text)

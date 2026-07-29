@@ -714,6 +714,47 @@ impl CheckStatus {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AgentExtensionKind {
+    Connector,
+    Plugin,
+    Extension,
+    Package,
+    Skill,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentExtensionOwnership {
+    AppManaged,
+    UserManaged,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// UI-safe evidence for an Agent Pet Companion-owned connector component.
+///
+/// Names and versions are bounded identifiers selected by PetCore. Digests,
+/// paths, and arbitrary host diagnostic prose never cross this projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentManagedComponent {
+    pub kind: AgentExtensionKind,
+    pub name: String,
+    pub ownership: AgentExtensionOwnership,
+    pub status: CheckStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_matches: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectionCheckCode {
     AgentCli,
     EventCli,
@@ -842,6 +883,11 @@ pub struct AgentConnectorCapabilities {
     /// uninstalled without crossing a managed-path conflict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_uninstall_managed_connector: Option<bool>,
+    /// Bounded component identities and exact-match evidence for files owned
+    /// by Agent Pet Companion. User-owned extensions are not projected here
+    /// and never grant mutation authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_components: Vec<AgentManagedComponent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

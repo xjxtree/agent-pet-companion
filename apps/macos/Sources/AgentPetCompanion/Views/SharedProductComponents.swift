@@ -517,7 +517,7 @@ struct AgentHealthRow: View {
     }
 }
 
-private extension AgentTaskVerificationState {
+extension AgentTaskVerificationState {
     var color: Color {
         switch self {
         case .notRun:
@@ -628,13 +628,25 @@ struct SessionBubbleRow: View {
                 }
             }
 
-            Text(session.messageText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Color.primary)
-                .lineLimit(OverlayGeometry.bubbleDetailLineLimit)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(session.primaryDetailText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(session.secondaryMessageText == nil
+                        ? OverlayGeometry.bubbleDetailLineLimit
+                        : 1)
+                    .truncationMode(.tail)
+
+                if let secondaryMessageText = session.secondaryMessageText {
+                    Text(secondaryMessageText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
@@ -1031,7 +1043,7 @@ private struct ProductSecondaryActionButton<Action: Hashable>: View {
     }
 }
 
-private struct ProductStatusIndicator: View {
+struct ProductStatusIndicator: View {
     let presentation: ProductStatusPresentation
 
     var body: some View {
@@ -1065,7 +1077,7 @@ private struct ProductStatusIndicator: View {
     }
 }
 
-private struct ProductCardSurface<Content: View>: View {
+struct ProductCardSurface<Content: View>: View {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let padding: CGFloat

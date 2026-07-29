@@ -13,7 +13,7 @@ This document defines the current process lifecycle, compatibility contract, tra
 
 The App uses `run/app-instance.lock`; a second instance sends an activation request containing its bundle path and build ID, then exits. PetCore uses `run/petcore.lock`, `runtime.json`, and a live health identity. Shutdown requires the expected PetCore instance ID.
 
-Closing the control-center window does not terminate the UI host because the menu-bar and overlay surfaces remain active. Reopen requests resolve the registered control-center window identifier, so an already-open About window cannot intercept them. Standard **Quit** terminates the App and overlay. The normal LaunchAgent-hosted PetCore remains available; a direct child fallback is tied to the App process.
+Closing the control-center window does not terminate the UI host because the menu-bar and overlay surfaces remain active. The close notification explicitly keeps the enabled desktop pet visible, so the expected absence of a regular App window is not misclassified as the system **Show Desktop** gesture; reopening the control center restores ordinary Show Desktop detection. Reopen requests resolve the registered control-center window identifier, so an already-open About window cannot intercept them. Standard **Quit** terminates the App and overlay. The normal LaunchAgent-hosted PetCore remains available; a direct child fallback is tied to the App process.
 
 The runtime topology does not make PetCore health a permanent product headline. The toolbar is quiet while the service is healthy and exposes only typed attention or recovery states. Service & Diagnostics leads with one aggregate state and one contextual action; PetCore, RPC, event-channel, renderer, retention, and archive details remain available behind disclosure. Presentation never changes PetCore operational states or recovery authority.
 
@@ -52,7 +52,7 @@ At bootstrap, the App applies the persisted `behavior` projection, including int
 
 Initial startup, automatic retry, and explicit recovery coalesce onto one behavior → seed → snapshot → overlay pipeline so partial bootstrap work cannot race.
 
-The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. Service & Diagnostics projects one aggregate state from these values, the toolbar appears only for attention or recovery, and the local RPC and event-channel rows stay in Technical Details. Desktop-pet rendering remains an independent App-side status. No presentation infers recovery authority from localized text.
+The App publishes service lifecycle independently from human-readable status copy as the closed operational states `checking`, `recovering`, `online`, `offline`, `runtimeMismatch`, and `error`. Transport failures explicitly become `offline`; candidate compatibility and rollback failures become `runtimeMismatch`; other startup failures map from the typed failure code. Service & Diagnostics projects one aggregate state from these values, the toolbar appears only for attention or recovery, and the PetCore, local RPC, event-channel, desktop-pet, and bounded diagnostic-package details render directly inside Service Status without a separate technical-details disclosure. Desktop-pet rendering remains an independent App-side status. No presentation infers recovery authority from localized text.
 
 There is no periodic disk or bundle updater and V1 never downloads or installs
 an App update. Bundle identity is re-evaluated only on lifecycle events such as
@@ -70,7 +70,16 @@ Primary sources: [App runtime lifecycle](../../apps/macos/Sources/AgentPetCompan
 
 The App is the only update coordinator. PetCore, `petcore-cli`, connector
 templates, plugins, and Skills never check the network or advertise independent
-updates.
+updates. Agent Connections consumes only the bounded `managed_components`
+evidence already attached to each typed connection status; it does not scan or
+list user-managed extensions and Skills. The Codex capability bundle keeps its
+independent plugin version. Claude Code, Pi, and OpenCode managed artifacts
+embed the App/PetCore release that rendered them, so PetCore can compare a
+verified installed version with the current App requirement while retaining
+the stricter whole-artifact equality check. Product-convergence receipts accept
+those three version pairs only when expected and active both equal the running
+App version, and continue to reject Codex-only digest fields on static
+connectors.
 
 Automatic and manual checks call GitHub's public
 `/repos/xjxtree/agent-pet-companion/releases/latest` endpoint. The decoder is
@@ -175,7 +184,7 @@ RPC capabilities are grouped as follows; [the RPC implementation](../../crates/p
 | Events | normalized ingest, bounded recent events |
 | Pet library | list with validated native FPS, fixed state durations, and derived current revision metadata; bounded typed revision/job history; activate, delete, validate/import/seed/export `.petpack`; forced runtime-asset repair |
 | Generation | create, edit from a validated current or older owned revision, retry, messages/wait/reply, cancel, latest private Maker-session recovery globally and by pet |
-| Connections | check, receipts, repair, refresh, test, uninstall |
+| Connections | check, typed App-managed component status, receipts, repair, refresh, test, uninstall |
 | Product convergence | optional receipt get, current-build receipt update, read-only replacement preflight |
 | Support | renderer budget, Codex App Server probe, diagnostics export |
 
@@ -230,7 +239,7 @@ traversals until another state arrives; this avoids a frozen thinking pose and
 does not reinterpret the V1 manifest's `loop: false` authoring flag. `done`
 still completes once and holds its final frame.
 
-Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. The App applies a tighter daily-surface bound per Agent: collapsed shows one row, expanded shows at most three, and any remainder opens Agent Connections. It derives only the presentation intents **Busy** (`start`/`tool`), **Needs You** (`waiting`/`review`), and **Ended** (`done`/`failed`); the stored protocol names do not change. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
+Allowlisted navigation includes the closed `capability` value `exact_session`, `agent_host`, or `unavailable`, plus only the target fields needed to prove that capability. Validated terminal URLs and a canonical 36-character Codex UUID in the dedicated `routable_session_id` may provide exact routing; a known host target may provide host-only activation. Malformed, unknown, or closed targets fail closed. Active rows also carry a closed summary kind and opaque animation identity. At most eight concrete sessions are returned, with `active_agent_sessions_omitted_count` representing the bounded remainder. A collapsed Agent group shows one attention-prioritized/latest row; expanding it shows every concrete row for that Agent already present in the bounded snapshot, while the global omitted summary continues to represent sessions beyond the PetCore projection. Each visible row derives its status from the exact fixed lifecycle state so the label matches the authored `start`, `tool`, `waiting`, `review`, `done`, or `failed` pet action. Its detail area renders the closed localized `summary_kind` alongside a distinct current-turn Agent message; raw activity detail, tool input, and output remain outside the App projection. The explicit `events.recent` RPC remains the bounded audit-history interface and is not reused by the App snapshot.
 
 ### Capability-token loopback ingress
 

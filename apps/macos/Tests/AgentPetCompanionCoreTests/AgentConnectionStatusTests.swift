@@ -23,6 +23,7 @@ struct AgentConnectionStatusTests {
         #expect(status.capabilities.canRepairManagedConnector == nil)
         #expect(status.capabilities.managedPathConflict == nil)
         #expect(status.capabilities.canUninstallManagedConnector == nil)
+        #expect(status.capabilities.managedComponents.isEmpty)
     }
 
     @Test
@@ -54,7 +55,16 @@ struct AgentConnectionStatusTests {
                 "repairable_connector_issue": true,
                 "can_repair_managed_connector": true,
                 "managed_path_conflict": false,
-                "can_uninstall_managed_connector": true
+                "can_uninstall_managed_connector": true,
+                "managed_components": [{
+                  "kind": "connector",
+                  "name": "agent-pet-companion-hooks",
+                  "ownership": "app_managed",
+                  "status": "ok",
+                  "expected_version": "claude-hooks-v5",
+                  "active_version": "claude-hooks-v5",
+                  "content_matches": true
+                }]
               }
             }
             """#.utf8
@@ -78,6 +88,9 @@ struct AgentConnectionStatusTests {
         #expect(status.capabilities.canRepairManagedConnector == true)
         #expect(status.capabilities.managedPathConflict == false)
         #expect(status.capabilities.canUninstallManagedConnector == true)
+        #expect(status.capabilities.managedComponents.count == 1)
+        #expect(status.capabilities.managedComponents[0].ownership == .appManaged)
+        #expect(status.capabilities.managedComponents[0].contentMatches == true)
         #expect(status.hasRepairableConnectorIssue)
         #expect(status.canRepairManagedConnector)
         #expect(!status.hasManagedPathConflict)
@@ -108,7 +121,18 @@ struct AgentConnectionStatusTests {
                 repairableConnectorIssue: false,
                 canRepairManagedConnector: false,
                 managedPathConflict: true,
-                canUninstallManagedConnector: false
+                canUninstallManagedConnector: false,
+                managedComponents: [
+                    AgentManagedComponent(
+                        kind: .hostExtension,
+                        name: "agent-pet-companion.ts",
+                        ownership: .appManaged,
+                        status: .ok,
+                        expectedVersion: "pi-extension-v7",
+                        activeVersion: "pi-extension-v7",
+                        contentMatches: true
+                    )
+                ]
             )
         )
 
@@ -128,6 +152,13 @@ struct AgentConnectionStatusTests {
         #expect(capabilities["can_repair_managed_connector"] as? Bool == false)
         #expect(capabilities["managed_path_conflict"] as? Bool == true)
         #expect(capabilities["can_uninstall_managed_connector"] as? Bool == false)
+        let managedComponents = try #require(
+            capabilities["managed_components"] as? [[String: Any]]
+        )
+        #expect(managedComponents.count == 1)
+        #expect(managedComponents[0]["kind"] as? String == "extension")
+        #expect(managedComponents[0]["expected_version"] as? String == "pi-extension-v7")
+        #expect(managedComponents[0]["content_matches"] as? Bool == true)
     }
 
     @Test

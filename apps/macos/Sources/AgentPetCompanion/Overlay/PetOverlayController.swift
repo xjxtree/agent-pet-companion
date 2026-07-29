@@ -2,7 +2,39 @@ import AgentPetCompanionCore
 import AppKit
 import CoreGraphics
 import MetalKit
+import QuartzCore
 import SwiftUI
+
+struct OverlayDesktopVisibilityPolicy {
+    private(set) var controlCenterIsOpen = false
+
+    mutating func controlCenterDidOpen() {
+        controlCenterIsOpen = true
+    }
+
+    mutating func controlCenterDidClose() {
+        controlCenterIsOpen = false
+    }
+
+    func shouldHide(
+        rendererValidationActive: Bool,
+        frontmostApplicationIsFinder: Bool,
+        finderHasRegularWindow: Bool,
+        hasVisibleRegularApplicationWindow: Bool
+    ) -> Bool {
+        // The desktop pet is a resident surface, not a child of the control
+        // center. Once that window is explicitly closed, an empty layer-0
+        // window list describes the expected resident-app state and must not
+        // be mistaken for the system Show Desktop gesture.
+        guard controlCenterIsOpen, !rendererValidationActive else {
+            return false
+        }
+        if frontmostApplicationIsFinder {
+            return !finderHasRegularWindow
+        }
+        return !hasVisibleRegularApplicationWindow
+    }
+}
 
 @MainActor
 final class PetOverlayController {
@@ -14,9 +46,12 @@ final class PetOverlayController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var desktopVisibilityTimer: Timer?
     private var hiddenForDesktop = false
+    private var desktopVisibilityPolicy = OverlayDesktopVisibilityPolicy()
     private let controlPresentation = OverlayControlPresentationState()
+    private let interactionPresentation = OverlayInteractionPresentationState()
     private var controlPanelFadeOutTask: Task<Void, Never>?
     private var bubbleAnimationGeneration: UInt = 0
+    private var presentedPetScreenCenter: CGPoint?
 
     func show(store: AppStore) {
         self.store = store
@@ -33,6 +68,7 @@ final class PetOverlayController {
         let root = OverlayRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .environmentObject(interactionPresentation)
             .apcInterfaceLanguage(store)
         let hostingView = PassthroughOverlayHostingView(rootView: root, store: store, includeBubble: false)
         hostingView.wantsLayer = true
@@ -57,6 +93,7 @@ final class PetOverlayController {
         let resizeRoot = OverlayResizeControlRootView()
             .environmentObject(store)
             .environmentObject(controlPresentation)
+            .environmentObject(interactionPresentation)
             .apcInterfaceLanguage(store)
         let resizeHostingView = FirstMouseHostingView(rootView: resizeRoot)
         resizeHostingView.wantsLayer = true
@@ -187,11 +224,53 @@ final class PetOverlayController {
             store?.ensureOverlayPetPosition(in: visibleFrame)
         }
         syncPlacement()
+        interactionPresentation.clearResize()
+        if let store {
+            syncInteractionViews(
+                petScreenCenter: store.overlayPresentedPetScreenCenter,
+                scale: scale
+            )
+        }
         (panel as? OverlayPanel)?.refreshPointerPassthrough()
     }
 
     func updateScaleDuringInteraction(_ scale: CGFloat) {
-        fitPanelToContentFrame(ensurePosition: false, refreshPointer: false)
+        guard let store, let panel else { return }
+        let petScreenCenter = store.overlayPresentedPetScreenCenter
+        let visibleFrame = currentVisibleFrame(for: store)
+        let targetFrame = OverlayGeometry.petPanelScreenFrame(
+            scale: scale,
+            petScreenCenter: petScreenCenter,
+            clickMenuEnabled: false,
+            includeResize: false
+        )
+        interactionPresentation.present(
+            scale: scale,
+            petLocalCenter: OverlayGeometry.localPoint(
+                forScreenPoint: petScreenCenter,
+                panelFrame: targetFrame,
+                fallbackIn: targetFrame.size
+            )
+        )
+        moveWindowDuringInteraction(
+            panel,
+            to: targetFrame
+        )
+        presentedPetScreenCenter = petScreenCenter
+        relocateBubbleDuringPetDrag(
+            for: store,
+            petScreenCenter: petScreenCenter,
+            visibleFrame: visibleFrame
+        )
+        positionControlPanelFrames(
+            for: store,
+            petScreenCenter: petScreenCenter,
+            duringInteraction: true
+        )
+        syncInteractionViews(
+            petScreenCenter: petScreenCenter,
+            scale: scale
+        )
     }
 
     func updateLayout(animateBubble: Bool = false) {
@@ -210,11 +289,56 @@ final class PetOverlayController {
         fitPanelToContentFrame(ensurePosition: false, refreshPointer: false)
     }
 
+    /// Keep the high-frequency direct-drag path inside AppKit. Publishing the
+    /// pet center and remeasuring every session row for each pointer event
+    /// makes the whole ObservableObject and Metal-backed view hierarchy work
+    /// much harder than a window translation requires.
+    func presentPetDrag(at petScreenCenter: CGPoint, visibleFrame: CGRect) {
+        guard let store, let panel else { return }
+        let scale = presentedScale(for: store)
+        let previousCenter = presentedPetScreenCenter
+            ?? store.overlayPetScreenCenter
+        let targetFrame = panel.frame.offsetBy(
+            dx: petScreenCenter.x - previousCenter.x,
+            dy: petScreenCenter.y - previousCenter.y
+        )
+        moveWindowDuringInteraction(
+            panel,
+            to: targetFrame
+        )
+        presentedPetScreenCenter = petScreenCenter
+        relocateBubbleDuringPetDrag(
+            for: store,
+            petScreenCenter: petScreenCenter,
+            visibleFrame: visibleFrame
+        )
+        positionControlPanelFrames(
+            for: store,
+            petScreenCenter: petScreenCenter,
+            duringInteraction: true
+        )
+        syncInteractionViews(
+            petScreenCenter: petScreenCenter,
+            scale: scale
+        )
+    }
+
     func updateAppearance(_ theme: AppearanceTheme) {
         let appearance = APCApplicationAppearance.nsAppearance(for: theme)
         for window in [panel, bubblePanel, menuPanel, resizePanel] {
             window?.appearance = appearance
         }
+    }
+
+    func controlCenterDidOpen() {
+        desktopVisibilityPolicy.controlCenterDidOpen()
+    }
+
+    func controlCenterDidClose() {
+        desktopVisibilityPolicy.controlCenterDidClose()
+        hiddenForDesktop = false
+        guard store?.behavior.enabled == true else { return }
+        setVisible(true)
     }
 
     func refreshPointerPassthrough() {
@@ -275,17 +399,33 @@ final class PetOverlayController {
         if ensurePosition {
             store.ensureOverlayPetPosition(in: visibleFrame)
         }
-        let targetFrame = contentFrame(for: store, visibleFrame: visibleFrame)
-        store.recordOverlayPanelFrame(targetFrame, visibleFrame: visibleFrame)
+        let petScreenCenter = store.overlayPresentedPetScreenCenter
+        let targetFrame = contentFrame(
+            for: store,
+            visibleFrame: visibleFrame,
+            petScreenCenter: petScreenCenter
+        )
+        let presentationMatchesCommittedCenter = hypot(
+            petScreenCenter.x - store.overlayPetScreenCenter.x,
+            petScreenCenter.y - store.overlayPetScreenCenter.y
+        ) <= 0.01
+        if !store.overlayPetDragInProgress,
+           !store.overlayResizeInProgress,
+           presentationMatchesCommittedCenter
+        {
+            store.recordOverlayPanelFrame(targetFrame, visibleFrame: visibleFrame)
+        }
         if panel.frame != targetFrame {
             panel.setFrame(targetFrame, display: true, animate: false)
         }
+        presentedPetScreenCenter = petScreenCenter
         fitBubblePanel(
             for: store,
             visibleFrame: visibleFrame,
+            petScreenCenter: petScreenCenter,
             animate: animateBubble
         )
-        fitControlPanels(for: store)
+        fitControlPanels(for: store, petScreenCenter: petScreenCenter)
         if refreshPointer {
             (panel as? OverlayPanel)?.refreshPointerPassthrough()
         }
@@ -300,8 +440,10 @@ final class PetOverlayController {
     private func currentScreen(for store: AppStore?) -> NSScreen? {
         if
             let store,
-            store.overlayPetScreenCenter != .zero,
-            let screen = NSScreen.screens.first(where: { $0.frame.contains(store.overlayPetScreenCenter) })
+            store.overlayPresentedPetScreenCenter != .zero,
+            let screen = NSScreen.screens.first(where: {
+                $0.frame.contains(store.overlayPresentedPetScreenCenter)
+            })
         {
             return screen
         }
@@ -317,13 +459,41 @@ final class PetOverlayController {
         store?.recordOverlayPanelFrame(panel.frame, visibleFrame: currentVisibleFrame(for: store))
     }
 
-    private func contentFrame(for store: AppStore, visibleFrame _: CGRect) -> CGRect {
+    private func contentFrame(
+        for store: AppStore,
+        visibleFrame _: CGRect,
+        petScreenCenter: CGPoint? = nil
+    ) -> CGRect {
         OverlayGeometry.petPanelScreenFrame(
-            scale: store.overlayScale,
-            petScreenCenter: store.overlayPetScreenCenter,
+            scale: presentedScale(for: store),
+            petScreenCenter: petScreenCenter
+                ?? store.overlayPresentedPetScreenCenter,
             clickMenuEnabled: false,
             includeResize: false
         )
+    }
+
+    private func presentedScale(for store: AppStore) -> CGFloat {
+        interactionPresentation.resolvedScale(
+            fallback: store.overlayPresentedScale
+        )
+    }
+
+    private func syncInteractionViews(
+        petScreenCenter: CGPoint,
+        scale: CGFloat
+    ) {
+        if let dragView = panel?.contentView.flatMap({
+            firstDescendant(of: WindowDragRegion.DragView.self, in: $0)
+        }) {
+            dragView.petScreenCenter = petScreenCenter
+            dragView.scale = scale
+        }
+        if let resizeView = resizePanel?.contentView.flatMap({
+            firstDescendant(of: OverlayResizeAccessibilityView.self, in: $0)
+        }) {
+            resizeView.scale = scale
+        }
     }
 
     private func configureControlPanel(_ panel: NSPanel, contentView: NSView) {
@@ -349,30 +519,16 @@ final class PetOverlayController {
         panel.isExcludedFromWindowsMenu = true
     }
 
-    private func fitControlPanels(for store: AppStore) {
-        let menuFrame = OverlayGeometry.rect(
-            center: OverlayGeometry.menuScreenCenter(
-                petScreenCenter: store.overlayPetScreenCenter,
-                scale: store.overlayScale,
-                petVisualEnvelope: store.overlayPetVisualEnvelope
-            ),
-            size: OverlayGeometry.menuHitSize
-        ).integral
-        let resizeFrame = OverlayGeometry.rect(
-            center: OverlayGeometry.resizeScreenCenter(
-                petScreenCenter: store.overlayPetScreenCenter,
-                scale: store.overlayScale,
-                petVisualEnvelope: store.overlayPetVisualEnvelope
-            ),
-            size: OverlayGeometry.resizeHitSize
-        ).integral
-
-        if menuPanel?.frame != menuFrame {
-            menuPanel?.setFrame(menuFrame, display: true, animate: false)
-        }
-        if resizePanel?.frame != resizeFrame {
-            resizePanel?.setFrame(resizeFrame, display: true, animate: false)
-        }
+    private func fitControlPanels(
+        for store: AppStore,
+        petScreenCenter: CGPoint? = nil
+    ) {
+        positionControlPanelFrames(
+            for: store,
+            petScreenCenter: petScreenCenter
+                ?? store.overlayPresentedPetScreenCenter,
+            duringInteraction: false
+        )
 
         guard panel?.isVisible == true else { return }
         let bubbleToggleVisible = OverlayBubbleTogglePresentation.content(
@@ -424,6 +580,46 @@ final class PetOverlayController {
         }
     }
 
+    private func positionControlPanelFrames(
+        for store: AppStore,
+        petScreenCenter: CGPoint,
+        duringInteraction: Bool
+    ) {
+        let menuFrame = OverlayGeometry.rect(
+            center: OverlayGeometry.menuScreenCenter(
+                petScreenCenter: petScreenCenter,
+                scale: presentedScale(for: store),
+                petVisualEnvelope: store.overlayPetVisualEnvelope
+            ),
+            size: OverlayGeometry.menuHitSize
+        )
+        let resizeFrame = OverlayGeometry.rect(
+            center: OverlayGeometry.resizeScreenCenter(
+                petScreenCenter: petScreenCenter,
+                scale: presentedScale(for: store),
+                petVisualEnvelope: store.overlayPetVisualEnvelope
+            ),
+            size: OverlayGeometry.resizeHitSize
+        )
+        let positionedMenuFrame = duringInteraction ? menuFrame : menuFrame.integral
+        let positionedResizeFrame = duringInteraction ? resizeFrame : resizeFrame.integral
+
+        if let menuPanel, menuPanel.frame != positionedMenuFrame {
+            if duringInteraction {
+                moveWindowDuringInteraction(menuPanel, to: positionedMenuFrame)
+            } else {
+                menuPanel.setFrame(positionedMenuFrame, display: true, animate: false)
+            }
+        }
+        if let resizePanel, resizePanel.frame != positionedResizeFrame {
+            if duringInteraction {
+                moveWindowDuringInteraction(resizePanel, to: positionedResizeFrame)
+            } else {
+                resizePanel.setFrame(positionedResizeFrame, display: true, animate: false)
+            }
+        }
+    }
+
     private func syncControlVisibility() {
         guard let store else { return }
         fitControlPanels(for: store)
@@ -432,6 +628,7 @@ final class PetOverlayController {
     private func fitBubblePanel(
         for store: AppStore,
         visibleFrame: CGRect,
+        petScreenCenter: CGPoint? = nil,
         animate: Bool = false
     ) {
         guard let bubblePanel else { return }
@@ -442,8 +639,9 @@ final class PetOverlayController {
 
         let bubbleContents = store.overlayBubbleContents
         let targetFrame = OverlayGeometry.bubblePanelScreenFrame(
-            scale: store.overlayScale,
-            petScreenCenter: store.overlayPetScreenCenter,
+            scale: presentedScale(for: store),
+            petScreenCenter: petScreenCenter
+                ?? store.overlayPresentedPetScreenCenter,
             visibleFrame: visibleFrame,
             contents: bubbleContents,
             petVisualEnvelope: store.overlayPetVisualEnvelope
@@ -478,6 +676,7 @@ final class PetOverlayController {
             if animate {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = OverlayMotion.bubbleLayoutDuration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                     context.allowsImplicitAnimation = true
                     bubblePanel.animator().setFrame(targetFrame, display: true)
                 }
@@ -505,6 +704,7 @@ final class PetOverlayController {
             context.duration = reduceMotion
                 ? OverlayMotion.reducedMotionCrossfadeDuration
                 : OverlayMotion.bubbleLayoutDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             bubblePanel.animator().alphaValue = 1
         }
@@ -536,6 +736,7 @@ final class PetOverlayController {
             : OverlayMotion.bubbleLayoutDelay
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
             bubblePanel.animator().alphaValue = 0
         }
@@ -581,6 +782,42 @@ final class PetOverlayController {
     private func syncBubbleVisibility() {
         guard let store else { return }
         fitBubblePanel(for: store, visibleFrame: currentVisibleFrame(for: store))
+    }
+
+    private func relocateBubbleDuringPetDrag(
+        for store: AppStore,
+        petScreenCenter: CGPoint,
+        visibleFrame: CGRect
+    ) {
+        guard let bubblePanel, bubblePanel.isVisible,
+              shouldShowBubble(for: store) else {
+            return
+        }
+        let bubbleSize = bubblePanel.frame.size
+        guard bubbleSize.width > 0, bubbleSize.height > 0 else { return }
+        let targetFrame = OverlayGeometry.rect(
+            center: OverlayGeometry.bubbleScreenCenter(
+                bubbleSize: bubbleSize,
+                scale: presentedScale(for: store),
+                petScreenCenter: petScreenCenter,
+                screenFrame: visibleFrame,
+                petVisualEnvelope: store.overlayPetVisualEnvelope
+            ),
+            size: bubbleSize
+        ).integral
+        moveWindowDuringInteraction(bubblePanel, to: targetFrame)
+    }
+
+    private func moveWindowDuringInteraction(
+        _ window: NSWindow,
+        to targetFrame: CGRect
+    ) {
+        guard window.frame != targetFrame else { return }
+        if window.frame.size == targetFrame.size {
+            window.setFrameOrigin(targetFrame.origin)
+        } else {
+            window.setFrame(targetFrame, display: true, animate: false)
+        }
     }
 
     private func shouldShowBubble(for store: AppStore) -> Bool {
@@ -657,32 +894,31 @@ final class PetOverlayController {
     }
 
     private func shouldHideForFinderDesktop() -> Bool {
-        // The explicit renderer acceptance profile must keep a real on-screen
-        // MTKView alive even when the current desktop/full-screen arrangement
-        // contains no layer-0 regular window. Normal app runs do not set the
-        // telemetry path and continue to honor Show Desktop hiding.
-        if PetRendererTelemetry.isRequested {
+        guard desktopVisibilityPolicy.controlCenterIsOpen,
+              !PetRendererTelemetry.isRequested
+        else {
             return false
         }
-        guard
-            let app = NSWorkspace.shared.frontmostApplication,
-            app.bundleIdentifier == "com.apple.finder"
-        else {
-            // Show Desktop can leave the overlay app active briefly while regular windows are out
-            // of view, so use WindowServer visibility as the source of truth.
-            return !hasVisibleRegularApplicationWindow()
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        let frontmostApplicationIsFinder =
+            frontmostApplication?.bundleIdentifier == "com.apple.finder"
+        let regularWindows = visibleRegularApplicationWindows()
+        let finderHasRegularWindow = if frontmostApplicationIsFinder,
+                                        let frontmostApplication {
+            regularWindows.contains { info in
+                (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                    == frontmostApplication.processIdentifier
+            }
+        } else {
+            false
         }
-        return !finderHasRegularWindow(app)
-    }
-
-    private func finderHasRegularWindow(_ app: NSRunningApplication) -> Bool {
-        visibleRegularApplicationWindows().contains { info in
-            (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == app.processIdentifier
-        }
-    }
-
-    private func hasVisibleRegularApplicationWindow() -> Bool {
-        !visibleRegularApplicationWindows().isEmpty
+        return desktopVisibilityPolicy.shouldHide(
+            rendererValidationActive: false,
+            frontmostApplicationIsFinder: frontmostApplicationIsFinder,
+            finderHasRegularWindow: finderHasRegularWindow,
+            hasVisibleRegularApplicationWindow:
+                !regularWindows.isEmpty
+        )
     }
 
     private func visibleRegularApplicationWindows() -> [[String: Any]] {
@@ -766,6 +1002,11 @@ final class BubbleOverlayPanel: NSPanel {
 
     func refreshPointerPassthrough() {
         guard pointerMonitor.isRunning else { return }
+        if overlayStore?.overlayPetDragInProgress == true
+            || overlayStore?.overlayResizeInProgress == true
+        {
+            return
+        }
         guard !isKeyWindow else {
             setIgnoresMouseEventsIfNeeded(false)
             return
@@ -956,7 +1197,7 @@ final class BubbleOverlayPanel: NSPanel {
         let visibleFrame = screen?.visibleFrame ?? overlayStore.overlayScreenVisibleFrame
         let contents = overlayStore.overlayBubbleContents
         let alignLeft = OverlayGeometry.bubbleAlignsLeft(
-            petScreenCenter: overlayStore.overlayPetScreenCenter,
+            petScreenCenter: overlayStore.overlayPresentedPetScreenCenter,
             screenFrame: visibleFrame
         )
         return OverlayGeometry.bubbleRects(
@@ -1097,6 +1338,10 @@ private final class OverlayPanel: NSPanel {
 
     func refreshPointerPassthrough() {
         guard pointerMonitor.isRunning else { return }
+        if interactionInProgress, NSEvent.pressedMouseButtons != 0 {
+            setIgnoresMouseEventsIfNeeded(false)
+            return
+        }
         let mouseLocation = NSEvent.mouseLocation
         var pointerInActivationZone = false
         if let overlayStore {
@@ -1106,8 +1351,8 @@ private final class OverlayPanel: NSPanel {
             pointerInActivationZone = shouldHandleMouse(screenPoint: mouseLocation)
             overlayStore.setOverlayPointerNearPet(OverlayGeometry.shouldShowControls(
                 at: mouseLocation,
-                scale: overlayStore.overlayScale,
-                petScreenCenter: overlayStore.overlayPetScreenCenter,
+                scale: overlayStore.overlayPresentedScale,
+                petScreenCenter: overlayStore.overlayPresentedPetScreenCenter,
                 clickMenuEnabled: overlayStore.behavior.clickMenu,
                 petVisualEnvelope: overlayStore.overlayPetVisualEnvelope
             ))
@@ -1193,7 +1438,7 @@ private final class OverlayPanel: NSPanel {
         let topLeftPoint = CGPoint(x: localPoint.x, y: containerSize.height - localPoint.y)
         let bubbleVisible = !overlayStore.overlayBubbleContents.isEmpty
         let petCenter = OverlayGeometry.localPoint(
-            forScreenPoint: overlayStore.overlayPetScreenCenter,
+            forScreenPoint: overlayStore.overlayPresentedPetScreenCenter,
             panelFrame: frame,
             fallbackIn: containerSize
         )
@@ -1201,7 +1446,7 @@ private final class OverlayPanel: NSPanel {
         return OverlayGeometry.shouldHandleMouse(
             atTopLeftPoint: topLeftPoint,
             in: containerSize,
-            scale: overlayStore.overlayScale,
+            scale: overlayStore.overlayPresentedScale,
             petCenter: petCenter,
             bubbleVisible: bubbleVisible,
             clickMenuEnabled: overlayStore.behavior.clickMenu,
@@ -1225,9 +1470,6 @@ private final class OverlayPanel: NSPanel {
 final class OverlayPointerEventMonitor {
     static let eventMask: NSEvent.EventTypeMask = [
         .mouseMoved,
-        .leftMouseDragged,
-        .rightMouseDragged,
-        .otherMouseDragged,
         .leftMouseUp,
         .rightMouseUp,
         .otherMouseUp
@@ -1306,14 +1548,14 @@ private final class PassthroughOverlayHostingView<Content: View>: NSHostingView<
         let bubbleVisible = !store.overlayBubbleContents.isEmpty
         let panelFrame = window?.frame ?? store.overlayScreenFrame
         let petCenter = OverlayGeometry.localPoint(
-            forScreenPoint: store.overlayPetScreenCenter,
+            forScreenPoint: store.overlayPresentedPetScreenCenter,
             panelFrame: panelFrame,
             fallbackIn: size
         )
         return OverlayGeometry.shouldHandleMouse(
             atTopLeftPoint: topLeftPoint,
             in: size,
-            scale: store.overlayScale,
+            scale: store.overlayPresentedScale,
             petCenter: petCenter,
             bubbleVisible: bubbleVisible,
             clickMenuEnabled: store.behavior.clickMenu,
@@ -1383,7 +1625,7 @@ private final class PassthroughBubbleHostingView<Content: View>: NSHostingView<C
         let visibleFrame = window?.screen?.visibleFrame ?? store.overlayScreenVisibleFrame
         let contents = store.overlayBubbleContents
         let alignLeft = OverlayGeometry.bubbleAlignsLeft(
-            petScreenCenter: store.overlayPetScreenCenter,
+            petScreenCenter: store.overlayPresentedPetScreenCenter,
             screenFrame: visibleFrame
         )
         return OverlayGeometry.bubbleRects(

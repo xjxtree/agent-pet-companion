@@ -45,6 +45,45 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
 
 Use `--operation modify` when appropriate. A missing `petcore-cli` is also a capability failure; report the helper's error rather than building a ZIP manually.
 
+## Enforce native frame resolution and early image QA
+
+Treat `manifest.render_size` as a source-pixel contract for every accepted
+frame, not merely the dimensions of the final PNG canvas. Generate or edit a
+frame directly at the selected width × height, or take one exact width × height
+crop from the decoded generated image without resampling. Never upscale,
+super-resolve, resize, or paste a smaller crop into a target-size canvas.
+
+A larger generated sheet is valid only when every logical cell contains an
+independent target-size crop in native source pixels. Extra pixels around a
+cell may be discarded with a stable crop. Compute cell capacity from the
+decoded image's actual dimensions after subtracting margins and gutters; do not
+trust the requested output size. For example, High requires 384 × 416 source
+pixels per frame. A decoded 1536 × 1024 sheet can support four columns and two
+rows when each cell supplies an unscaled 384 × 416 crop; arranging ten columns
+and four rows on that same image is invalid because each cell is smaller than
+the target. A 192 × 208 crop enlarged to 384 × 416 is always invalid.
+
+After every image-generation or image-editing call, before making another image
+call:
+
+1. Persist the untouched generated image outside `petpack-source`, decode its
+   actual pixel dimensions, and map every intended cell to an explicit
+   target-size source crop.
+2. Reject the image immediately if any crop is undersized, overlaps another
+   cell, needs resampling, or contains a lower-resolution raster enlarged inside
+   a target-size cell. Regenerate with fewer cells per sheet or a larger source.
+3. Inspect the complete source image at 100% for identity drift, missing or
+   duplicated cells, grid leakage, clipping, blur/pixelation, broken anatomy,
+   props, transparency, and action continuity.
+4. Extract accepted frames by cropping only. Verify each decoded PNG is exactly
+   `render_size`, then inspect the extracted frames before continuing.
+
+For a state split across multiple images, apply this gate to each image before
+generating the next one. After the state reaches its exact frame count, run its
+explicit-state motion QA and repair it before generating any later state. Final
+PNG dimensions alone do not prove native resolution or authorize an upscaled
+source.
+
 ## Create a pet
 
 1. Ask one concise follow-up only when identity, appearance, or essential action intent is too ambiguous to make a coherent pet.
@@ -67,7 +106,8 @@ Use `--operation modify` when appropriate. A missing `petcore-cli` is also a cap
 4. Keep visual generation contexts isolated, but generate them serially in the
    owning turn: one state row per image call, always grounded only by the
    production base and that state's action card. Persist, inspect, extract, and
-   incrementally QA the accepted row before starting the next. Do not spawn
+   incrementally QA the accepted row before starting the next. Apply the native
+   frame resolution and early image gate above after every image call. Do not spawn
    task workers for pet rows because an in-app App Server turn can finalize
    when a worker reports completion, leaving the package half-written.
    Request the exact authored frame count as distinct sprite cells from the
@@ -78,7 +118,8 @@ Use `--operation modify` when appropriate. A missing `petcore-cli` is also a cap
    Never expand a smaller key-pose set with crossfade, morphing, optical flow,
    affine transforms, or procedural/interpolated filler.
 5. Write the required manifest, brief, previews, prompt, provider-neutral source metadata, and bounded lifecycle events under `/absolute/workspace/petpack-source`. Use only fields documented in `petpack-v1.md`; the strict producer schemas reject undeclared fields. Always create `source/references/` even when the user supplied no reference image; copy only user-supplied references into it.
-6. As soon as one state has its exact frame count, run `motion-qa --workspace
+6. As soon as one state has passed source-image inspection and has its exact
+   target-size frame count, run `motion-qa --workspace
    /absolute/workspace --state <state>` and inspect that state before accepting
    another row. This explicit-state mode supports an otherwise incomplete
    seven-state workspace. `invalid_motion_registration` and
@@ -155,7 +196,7 @@ Use `--operation modify` when appropriate. A missing `petcore-cli` is also a cap
    ```
 
 3. Read `.agent-pet-maker/context.json`. Preserve the manifest ID and immutable render contract. Use the existing character frames as visual references.
-4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. A native-FPS change necessarily changes all seven states; a duration change necessarily changes that state. Use the strongest unchanged baseline frame as the canonical identity reference and repair the complete changed sequence rather than patching one isolated final frame. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
+4. Change only the requested state directories. Keep every unrequested state's frame files byte-identical. A native-FPS change necessarily changes all seven states; a duration change necessarily changes that state. Apply the same native frame resolution and per-image early QA gate to every newly generated or edited source image. Use the strongest unchanged baseline frame as the canonical identity reference and repair the complete changed sequence rather than patching one isolated final frame. Replace `source/prompt.md`, `source/source.json`, and `brief.json` with concise metadata for this revision; never copy an embedded transcript into the new package.
 5. Apply timing edits as authored animation changes, not playback-speed changes. For 10 to 20 FPS at unchanged duration, preserve the original 10 FPS poses at the indices selected by runtime Standard playback and create genuinely new frames at every other index. Loop states use every second source frame; one-shot `start` and `done` use uniform endpoint-preserving indices so their final pose remains intact. Adjacent poses in that Standard sample, including the wrap pair for loops, must remain pixel-distinct. For 20 to 10 FPS, retain exactly that same runtime sample. When switching an action between one and two seconds, re-storyboard it and generate the new exact frame count; do not truncate, repeat, duplicate, speed up, or slow down the old sequence.
 6. Run `motion-qa --workspace /absolute/workspace`; in a modify workspace it
    automatically audits the actual changed states. Inspect and repair the
@@ -185,7 +226,10 @@ Add `--activate` only when the user explicitly asks to enable that pet. Installa
 
 ## Finish
 
-Return the absolute `.petpack` path and sidecar result path. State which states changed and whether validation passed. Do not import, enable, overwrite, or delete a user's library pet unless the user explicitly requests that separate action.
+Return the absolute `.petpack` path and sidecar result path. State which states
+changed, whether native source resolution and incremental image QA passed, and
+whether final validation passed. Do not import, enable, overwrite, or delete a
+user's library pet unless the user explicitly requests that separate action.
 
 A modification preserves the stable manifest ID but produces a new package that
 PetCore commits as a new immutable revision. Never replace or rewrite an earlier

@@ -949,6 +949,7 @@ fn versioned_templates_only_claim_supported_contracts() {
             .unwrap();
     assert!(claude.contains("PostToolUseFailure"));
     assert!(claude.contains("claude-hooks-2026-07-17-activity-v5"));
+    assert!(claude.contains("\"release_version\": \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(claude.contains("\"async\":false"));
     assert!(claude.contains("\"timeout\":2"));
     for excluded in ["MessageDisplay", "FileChanged", "WorktreeCreate"] {
@@ -970,6 +971,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
     assert!(pi.contains("pi-extension-0.80.10-activity-v8"));
+    assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
     assert!(pi.contains("pi.on(\"input\""));
@@ -988,6 +990,9 @@ fn versioned_templates_only_claim_supported_contracts() {
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
     assert!(opencode.contains("opencode-v1.18.4-activity-v9"));
+    assert!(opencode.contains(
+        "APC_OPENCODE_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""
+    ));
     assert!(opencode.contains("APC_OPENCODE_EVENT_INVENTORY"));
     assert!(opencode.contains("event?.properties"));
     assert!(opencode.contains("input?.sessionID"));

@@ -211,7 +211,8 @@ let prepared = try await pipeline.prepare(PetFrameLoadRequest(
     requestedFPS: 10,
     nativeFPS: 10,
     durationMS: 2_000,
-    loops: true
+    authoredLoops: true,
+    playbackMode: .loop
 ))
 precondition(prepared.sourceKind == .ring)
 precondition(prepared.readyFrameCount <= 7)

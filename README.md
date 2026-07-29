@@ -11,8 +11,8 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 ## Highlight Features
 
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
-- **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own; identity-locked motion direction and actual-speed visual review keep non-moving regions, anchors, props, and action timing coherent.
-- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. A collapsed Agent bubble shows one session, an expanded bubble shows up to three, and overflow opens Agent Connections; the complete row opens the corresponding host or exact session when available.
+- **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own; every accepted frame must retain the selected native source resolution without upscaling, while per-image and per-state checks catch bad material before the remaining animations are generated.
+- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. A collapsed Agent bubble shows one attention-prioritized or latest session, while expanding it shows every concrete session in the bounded local snapshot. Each row names the exact pet action, keeps the safe current activity visible beside the latest Agent message, and opens the corresponding host or exact session when available.
 - **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file. AI Pet Maker contacts your configured Codex provider only when you start a creation or edit.
 
 ## Features
@@ -20,7 +20,7 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 - **Pet Library** — use the bundled `星雾团子` and `Bytebud 字节芽`, or import, preview, enable, export, and manage your own `.petpack` pets. A damaged local preview can be revalidated and rebuilt from its immutable package.
 - **AI Pet Maker** — describe a pet, choose its style and quality, add reference images, then create or refine it through Codex.
 - **Pet Configuration** — choose visibility, appearance, Standard/Smooth motion, and a message-attention preset; source, event, timeout, grouping, and interaction controls remain available under Advanced Settings.
-- **Agent Connections** — separately shows local integration health and real-task verification, with typed check, one-click setup or repair, test, and managed-removal actions for Codex, Claude Code, Pi Coding Agent, and OpenCode.
+- **Agent Connections** — presents Codex, Claude Code, Pi Coding Agent, and OpenCode as a concise single-selection list: select an Agent to see real-task verification, user-facing recovery guidance, check/test, setup or repair, managed-removal actions, and only the plugin, connector, or Skills installed and maintained by Agent Pet Companion for that Agent, including a verified release version when available or a clear current/required version mismatch.
 - **Service & Diagnostics** — confirm that the companion is working, recover unhealthy services, and export a privacy-filtered diagnostics ZIP when support needs more detail.
 - **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
 
@@ -68,7 +68,9 @@ Release, and whenever a release App is opened outside Applications. After the
 new App starts, it preserves pets and settings while bringing PetCore, the CLI,
 managed Agent connectors, the Codex plugin, and bundled pet-making Skills to
 the versions shipped with that App. A problem with one Agent remains isolated
-to that connection.
+to that connection. User-managed third-party extensions and Skills remain under
+each Agent's own manager and are not inspected, listed, or updated by Agent Pet
+Companion.
 
 ### Build from source
 
@@ -91,6 +93,8 @@ The ad-hoc-signed development app is written to `dist/`. Add `--archive` only wh
 On first launch, the App resumes a short setup until you finish or explicitly skip it. The demo shows thinking, working, needs-attention, and completion using only local presentation state; it does not create Agent activity or diagnostics records. Closing the setup preserves the current scene for the next launch.
 
 After setup, leave the App running and work normally in your Agent. The pet shows working, attention, and result states. A bubble action returns to the exact session when a validated route is available, opens the Agent host when only host-level navigation is safe, and stays unavailable when neither destination is valid.
+
+Closing the control-center window leaves the menu-bar App and enabled desktop pet running. Use the pet visibility control to hide only the pet, or **Quit** when you want to stop the complete UI host.
 
 Open the five management pages only when you want to switch or import a pet, create or edit one, adjust the ambient experience, connect an Agent, or recover and export diagnostics. AI creation requires a working Codex App Server and access through the current user's configured provider. Standard/Smooth playback never changes authored action duration, and Smooth appears only for validated native-20 pets.
 

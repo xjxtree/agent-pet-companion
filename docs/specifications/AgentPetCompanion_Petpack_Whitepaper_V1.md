@@ -87,6 +87,16 @@ The runtime permits unknown root data files except explicit compatibility-packag
 
 Every state uses the same canvas. Producers must keep the character anchor, baseline, and visible scale stable across states to prevent jumps during transitions.
 
+For strict generated sources, this table is also the minimum effective native
+source resolution of each authored frame. A producer may generate a larger
+image or sprite sheet only when every frame can be extracted as an exact
+target-size rectangle from decoded source pixels without resampling. Trimming
+surplus pixels from a larger cell is allowed; upscaling, super-resolution,
+stretching, or pasting a smaller crop into a target-size canvas is not. Sheet
+capacity is calculated from actual decoded dimensions after margins and
+gutters, not from the requested generator size. Final PNG dimensions alone
+cannot establish this provenance.
+
 ### States
 
 | State | `frames_dir` | `loop` | Default `duration_ms` | Runtime meaning |
@@ -132,11 +142,21 @@ The package contract stays technical and exact; the ordinary product UI does not
 - Frames for one state are generated/edited as a coherent sequence from the canonical base, not independently invented cells. Props preserve shape, orientation, position, and visible contact throughout their lifecycle.
 - Every adjacent authored frame in a full visual source is visually distinct; duplicating a frame does not create a higher native rate or a longer action.
 - The exact timing-derived count is authored as distinct ordered sprite cells. Multiple coherent sheets may sum to that count, but a smaller key-pose storyboard may not be expanded with crossfade, morph, optical flow, transformed duplicates, or procedural interpolation.
+- Each accepted sprite cell supplies one exact `render_size` crop in native
+  decoded source pixels. Frame extraction is crop-only and never resizes a
+  lower-resolution cell to satisfy the manifest.
 - The seven states may not reuse one identical visual sequence. The strict Studio path requires at least four states to have different first-frame decoded digests.
 - For native 20 FPS output, the 10 FPS sample must remain a coherent action and the additional source frames must be real intermediate motion. Extending a state from one to two seconds requires authored continuation rather than replaying or slowing the original second.
 - `cover.png` identifies the same character without animation; the animated preview may not depict assets absent from the package.
 
 Portable finalization and strict external Studio generation render a private 192 × 208 keyframe sheet plus actual-speed Standard playback, with Smooth playback for native 20 FPS. Automated measurements identify visible runtime-edge contact, abrupt transitions, shape/scale changes, anchor movement, near-inert motion, loop seams, and repeated linear-blend filler. Every strict full-source frame must retain at least one transparent pixel on all four sides at runtime size; visible edge contact means the subject, moving part, prop, or effect is clipped. Edge clipping, obvious whole-subject scale/anchor jumps, abrupt attachment-silhouette loss in localized or looping actions, broken loop closure, and synthetic blended filler fail motion QA; smaller warnings still require state-by-state inspection of identity/locked-region stability, semantics, props, timing, and loop/settle quality. PetCore independently reruns these integrity gates before strict external-source import. The review is bound to the report hash and decoded state-frame digests, and becomes stale after a frame edit. These QA artifacts are producer/job evidence outside the closed package tree.
+
+Strict generation additionally inspects every untouched source image
+immediately after its image-tool call: decode actual dimensions, validate the
+cell/crop layout, review the image at 100%, extract without resampling, verify
+the resulting PNGs, and complete explicit-state motion QA before generating a
+later state. An invalid batch is repaired or regenerated immediately rather
+than being carried into the remaining states.
 
 Ordinary runtime import of an existing archive verifies decodability, dimensions, structure, and budgets. It does not recreate or certify the producer's motion review, anchor stability, or cross-state artistic distinction. Do not present a normal import result as Verified visual source evidence.
 

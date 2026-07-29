@@ -970,7 +970,8 @@ struct OverlayGeometryTests {
         ))
         #expect((0.12 ... 0.16).contains(OverlayMotion.controlFadeDuration))
         #expect(OverlayMotion.controlFadeDelay == .milliseconds(140))
-        #expect((0.18 ... 0.22).contains(OverlayMotion.bubbleLayoutDuration))
+        #expect((0.14 ... 0.18).contains(OverlayMotion.bubbleLayoutDuration))
+        #expect(OverlayMotion.bubbleLayoutDelay == .milliseconds(160))
         #expect(OverlayMotion.reducedMotionCrossfadeDuration > 0)
         #expect(OverlayMotion.reducedMotionCrossfadeDuration <= 0.22)
     }
@@ -1041,11 +1042,15 @@ struct OverlayGeometryTests {
 
         #expect(content.sessionID == "safe-session")
         #expect(content.sessionTitle == displayTitle)
+        #expect(content.activityText == APCLocalization.text(.overlayActivityCommand))
         #expect(content.messageText == displayReply)
+        #expect(content.secondaryMessageText == displayReply)
+        #expect(content.detailText.contains(APCLocalization.text(.overlayActivityCommand)))
+        #expect(content.detailText.contains(displayReply))
         #expect(content.navigation.sessionOpen == true)
         #expect(!content.sessionTitle.contains(rawPrompt))
-        #expect(!content.messageText.contains(rawPrompt))
-        #expect(!content.messageText.contains(rawCommand))
+        #expect(!content.detailText.contains(rawPrompt))
+        #expect(!content.detailText.contains(rawCommand))
     }
 
     @Test
@@ -1056,10 +1061,12 @@ struct OverlayGeometryTests {
         )
         let content = OverlaySessionContent(state: state)
 
+        #expect(content.activityText == APCLocalization.text(.overlayDetailReady))
         #expect(content.messageText == APCLocalization.text(.overlayDetailReady))
+        #expect(content.secondaryMessageText == nil)
         #expect(content.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Pi"))
         #expect(!content.sessionTitle.contains("PRIVATE"))
-        #expect(!content.messageText.contains("PRIVATE"))
+        #expect(!content.detailText.contains("PRIVATE"))
     }
 
     @Test
@@ -1138,12 +1145,14 @@ struct OverlayGeometryTests {
             (
                 session: "A longer session title that still identifies the active work",
                 status: "Needs You",
-                message: "Return to the agent to approve, answer, or decide."
+                activity: "Return to the agent to approve, answer, or decide.",
+                message: "The Agent reply remains visible."
             ),
             (
                 session: "一个用于确认较长中文内容仍保持语义顺序的会话标题",
                 status: "等你处理",
-                message: "请回到 Agent 完成确认、回答或决策。"
+                activity: "请回到 Agent 完成确认、回答或决策。",
+                message: "Agent 回复仍然可见。"
             ),
         ]
 
@@ -1154,6 +1163,7 @@ struct OverlayGeometryTests {
                 sessionID: "voiceover-order",
                 eventType: .waiting,
                 sessionTitle: fixture.session,
+                activityText: fixture.activity,
                 messageText: fixture.message,
                 statusText: fixture.status,
                 navigation: AgentSessionNavigation(
@@ -1167,6 +1177,7 @@ struct OverlayGeometryTests {
                 "Codex",
                 fixture.session,
                 fixture.status,
+                fixture.activity,
                 fixture.message,
                 session.actionLabel,
             ])

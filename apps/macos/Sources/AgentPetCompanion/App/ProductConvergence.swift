@@ -52,7 +52,15 @@ struct ProductConnectorRefreshResult: Codable, Equatable, Sendable {
         guard ok, verified, status == .current || status == .updated else {
             return false
         }
-        guard source == .codex else { return true }
+        guard source == .codex else {
+            return expectedVersion != nil
+                && activeVersion == expectedVersion
+                && expectedSkillsSHA256 == nil
+                && activeSkillsSHA256 == nil
+                && expectedContentSHA256 == nil
+                && managedSourceContentSHA256 == nil
+                && activeContentSHA256 == nil
+        }
         return expectedVersion != nil
             && activeVersion == expectedVersion
             && Self.isSHA256(expectedSkillsSHA256)

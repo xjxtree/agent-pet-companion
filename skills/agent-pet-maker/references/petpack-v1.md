@@ -54,6 +54,38 @@ Use an ID matching `^pet_[a-z0-9]+$`. For a modification, preserve the base ID, 
 | `ultra` | 768 × 832 |
 | `original` | 1536 × 1664 |
 
+### Per-frame native source resolution
+
+The quality table is a source-pixel requirement as well as a final PNG
+dimension requirement. Every accepted animation frame must originate from an
+independent crop containing exactly the selected `render_size` in decoded
+source pixels before any resampling. A target-size PNG canvas does not make a
+smaller source frame native resolution.
+
+- A frame generated or edited directly at `render_size` is valid.
+- A larger image or sprite sheet is valid when each frame is extracted as one
+  exact target-size source rectangle with crop-only operations.
+- A sheet cell larger than the target may be trimmed to one stable target-size
+  crop. Do not resize the cell in either direction during extraction.
+- A crop smaller than the target is invalid. Never upscale, super-resolve,
+  stretch, or paste it into a target-size transparent canvas.
+- Calculate available cell pixels from the decoded source dimensions after
+  accounting for margins and gutters. Do not infer them from the requested
+  generator size or the final exported PNG dimensions.
+- Reject a nominally target-size cell when it visibly contains a lower-
+  resolution raster that was enlarged before or during extraction.
+
+For High quality, each frame requires 384 × 416 native source pixels. A decoded
+1536 × 1024 image arranged as 4 × 2 can provide an unscaled 384 × 416 crop per
+cell, with surplus cell height discarded by cropping. The same image arranged
+as 10 × 4 provides only about 154 × 256 pixels per cell and is invalid; scaling
+those cells to 384 × 416 does not repair it.
+
+The runtime media gate verifies that each final PNG decodes at `render_size`.
+That check cannot prove source provenance or detect every pre-export upscale,
+so strict producers must enforce and visually inspect this native-source
+contract immediately after each generated image.
+
 Set `native_fps` to exactly `10` or `20`. Creation defaults to `10`; use `20`
 only when the user requests a smooth-native pet and the producer can create the
 additional real intermediate frames. Runtime derives supported playback modes:
@@ -123,6 +155,9 @@ duplicates, or procedural interpolation.
   duration; runtime may hold that pose after the action completes.
 - Make the seven state actions distinguishable at desktop-pet size.
 - Use the exact manifest dimensions for every frame.
+- Preserve target-size native source pixels for every frame and extract with
+  crop-only operations; a resized lower-resolution source is non-conforming
+  even when its final PNG dimensions match the manifest.
 - Provide a useful still `cover.png` and an actual animated WebP preview. Prefer 384 × 416 for previews.
 - Before finalization, inspect the helper's 192 × 208 keyframe sheet and every
   Standard/Smooth playback preview. Automated drift and seam warnings are

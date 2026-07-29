@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
+export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
 export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v8";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 

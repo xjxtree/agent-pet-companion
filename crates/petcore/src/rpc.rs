@@ -1590,13 +1590,26 @@ fn validated_product_convergence_receipt(
             }
             codex_skills_sha256 = result.expected_skills_sha256.clone();
             codex_content_sha256 = result.expected_content_sha256.clone();
-        } else if result.source != AgentSource::Codex
-            && connector_result_has_version_or_digest(result)
-        {
-            return Err(invalid_params(format!(
-                "{} connector must not report Codex-only version or digest fields",
-                enum_name(result.source)
-            )));
+        } else if result.source != AgentSource::Codex && result.managed {
+            let expected_version = result.expected_version.as_deref();
+            if expected_version.is_none() || expected_version != result.active_version.as_deref() {
+                return Err(invalid_params(format!(
+                    "managed {} connector versions must be present and equal",
+                    enum_name(result.source)
+                )));
+            }
+            if expected_version != Some(runtime.app_version.as_str()) {
+                return Err(invalid_params(format!(
+                    "managed {} connector version does not match this runtime",
+                    enum_name(result.source)
+                )));
+            }
+            if connector_result_has_digest(result) {
+                return Err(invalid_params(format!(
+                    "{} connector must not report Codex-only digest fields",
+                    enum_name(result.source)
+                )));
+            }
         }
     }
 
@@ -1623,7 +1636,11 @@ fn connector_result_has_version_or_digest(
 ) -> bool {
     result.expected_version.is_some()
         || result.active_version.is_some()
-        || result.expected_skills_sha256.is_some()
+        || connector_result_has_digest(result)
+}
+
+fn connector_result_has_digest(result: &connections::InstalledSourceRefreshResult) -> bool {
+    result.expected_skills_sha256.is_some()
         || result.active_skills_sha256.is_some()
         || result.expected_content_sha256.is_some()
         || result.managed_source_content_sha256.is_some()
@@ -3494,6 +3511,29 @@ mod tests {
         }
     }
 
+    fn managed_static_refresh_result(
+        source: AgentSource,
+    ) -> connections::InstalledSourceRefreshResult {
+        let version = RuntimeReleaseManifest::compiled().app_version;
+        connections::InstalledSourceRefreshResult {
+            source,
+            status: connections::InstalledSourceRefreshStatus::Current,
+            managed: true,
+            refreshed: true,
+            ok: true,
+            verified: true,
+            expected_version: Some(version.clone()),
+            active_version: Some(version),
+            expected_skills_sha256: None,
+            active_skills_sha256: None,
+            expected_content_sha256: None,
+            managed_source_content_sha256: None,
+            active_content_sha256: None,
+            detail: "current and verified".to_string(),
+            error: None,
+        }
+    }
+
     fn complete_convergence_report(paths: &AppPaths) -> connections::InstalledSourcesRefreshReport {
         let (version, skills_digest, content_digest) =
             connections::compiled_codex_plugin_identity(paths).unwrap();
@@ -3604,6 +3644,24 @@ mod tests {
     }
 
     #[test]
+    fn product_convergence_accepts_current_release_for_managed_static_connectors() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let mut report = complete_convergence_report(&state.paths);
+        report.results[1] = managed_static_refresh_result(AgentSource::ClaudeCode);
+        report.results[2] = managed_static_refresh_result(AgentSource::Pi);
+        report.results[3] = managed_static_refresh_result(AgentSource::Opencode);
+
+        let updated =
+            handle_request(&state, convergence_update_request(report)).expect("current report");
+
+        assert_eq!(updated["connector_report_summary"]["managed_sources"], 4);
+        assert_eq!(updated["connector_report_summary"]["verified_sources"], 4);
+        assert_eq!(updated["connector_report_summary"]["skipped_sources"], 0);
+    }
+
+    #[test]
     fn product_convergence_update_rejects_stale_identity_and_incomplete_reports() {
         let temp = tempfile::tempdir().unwrap();
         let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
@@ -3623,6 +3681,22 @@ mod tests {
         wrong_digest.results[0].active_content_sha256 = forged;
         assert!(matches!(
             handle_request(&state, convergence_update_request(wrong_digest)),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
+
+        let mut wrong_static_version = complete_convergence_report(&state.paths);
+        wrong_static_version.results[1] = managed_static_refresh_result(AgentSource::ClaudeCode);
+        wrong_static_version.results[1].active_version = Some("0.0.0".to_string());
+        assert!(matches!(
+            handle_request(&state, convergence_update_request(wrong_static_version)),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
+
+        let mut static_digest = complete_convergence_report(&state.paths);
+        static_digest.results[2] = managed_static_refresh_result(AgentSource::Pi);
+        static_digest.results[2].expected_content_sha256 = Some("d".repeat(64));
+        assert!(matches!(
+            handle_request(&state, convergence_update_request(static_digest)),
             Err(PetCoreError::InvalidRequest(_))
         ));
 

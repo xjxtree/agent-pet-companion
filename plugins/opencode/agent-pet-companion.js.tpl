@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
+const APC_OPENCODE_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
 const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-activity-v9";
 
 // OpenCode 1.18.0–1.18.4 plugin hooks. Agent Pet Companion implements only observation

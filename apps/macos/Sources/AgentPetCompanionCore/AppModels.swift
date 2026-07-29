@@ -1823,6 +1823,79 @@ public enum CheckStatus: String, Codable, Hashable, Sendable {
     }
 }
 
+public enum AgentExtensionKind: String, Codable, Hashable, Sendable {
+    case connector
+    case plugin
+    case hostExtension = "extension"
+    case package
+    case skill
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self(rawValue: try container.decode(String.self)) ?? .unknown
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum AgentExtensionOwnership: String, Codable, Hashable, Sendable {
+    case appManaged = "app_managed"
+    case userManaged = "user_managed"
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self(rawValue: try container.decode(String.self)) ?? .unknown
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public struct AgentManagedComponent: Codable, Hashable, Sendable {
+    public var kind: AgentExtensionKind
+    public var name: String
+    public var ownership: AgentExtensionOwnership
+    public var status: CheckStatus
+    public var expectedVersion: String?
+    public var activeVersion: String?
+    public var contentMatches: Bool?
+
+    public init(
+        kind: AgentExtensionKind,
+        name: String,
+        ownership: AgentExtensionOwnership,
+        status: CheckStatus,
+        expectedVersion: String? = nil,
+        activeVersion: String? = nil,
+        contentMatches: Bool? = nil
+    ) {
+        self.kind = kind
+        self.name = name
+        self.ownership = ownership
+        self.status = status
+        self.expectedVersion = expectedVersion
+        self.activeVersion = activeVersion
+        self.contentMatches = contentMatches
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case name
+        case ownership
+        case status
+        case expectedVersion = "expected_version"
+        case activeVersion = "active_version"
+        case contentMatches = "content_matches"
+    }
+}
+
 public enum ConnectionCheckMode: String, Codable, Hashable, Sendable {
     case light
     case runtime
@@ -1931,6 +2004,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
     public var canRepairManagedConnector: Bool?
     public var managedPathConflict: Bool?
     public var canUninstallManagedConnector: Bool?
+    public var managedComponents: [AgentManagedComponent]
 
     public init(
         contractVersion: String,
@@ -1941,7 +2015,8 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         repairableConnectorIssue: Bool? = nil,
         canRepairManagedConnector: Bool? = nil,
         managedPathConflict: Bool? = nil,
-        canUninstallManagedConnector: Bool? = nil
+        canUninstallManagedConnector: Bool? = nil,
+        managedComponents: [AgentManagedComponent] = []
     ) {
         self.contractVersion = contractVersion
         self.auditedEvents = auditedEvents
@@ -1952,6 +2027,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         self.canRepairManagedConnector = canRepairManagedConnector
         self.managedPathConflict = managedPathConflict
         self.canUninstallManagedConnector = canUninstallManagedConnector
+        self.managedComponents = managedComponents
     }
 
     public static let empty = AgentConnectorCapabilities(
@@ -1972,6 +2048,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
             || canRepairManagedConnector != nil
             || managedPathConflict != nil
             || canUninstallManagedConnector != nil
+            || !managedComponents.isEmpty
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1984,6 +2061,7 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
         case canRepairManagedConnector = "can_repair_managed_connector"
         case managedPathConflict = "managed_path_conflict"
         case canUninstallManagedConnector = "can_uninstall_managed_connector"
+        case managedComponents = "managed_components"
     }
 
     public init(from decoder: Decoder) throws {
@@ -2003,6 +2081,10 @@ public struct AgentConnectorCapabilities: Codable, Hashable, Sendable {
             Bool.self,
             forKey: .canUninstallManagedConnector
         )
+        managedComponents = try container.decodeIfPresent(
+            [AgentManagedComponent].self,
+            forKey: .managedComponents
+        ) ?? []
     }
 }
 

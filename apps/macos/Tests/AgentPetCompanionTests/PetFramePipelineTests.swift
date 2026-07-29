@@ -699,6 +699,8 @@ struct PetFramePipelineTests {
 
         #expect(!monitor.usesPolling)
         #expect(OverlayPointerEventMonitor.eventMask.contains(.mouseMoved))
+        #expect(OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp))
+        #expect(!OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged))
         #expect(!monitor.isRunning)
     }
 
