@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v8";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v9";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered
-// below, while payload-bearing provider/context/stream events are deliberately
-// observed without serializing their data across the adapter boundary.
+// below. Stable, session-scoped reasoning, command, tool input/output, and raw
+// activity details may cross as one bounded local display string; provider
+// headers, auth state, environments, and complete contexts remain excluded.
 export const APC_PI_EVENT_INVENTORY = Object.freeze([
   "project_trust",
   "resources_discover",
@@ -125,6 +126,64 @@ function displayMessage(event, id, includeBeforeAgentPrompt) {
   return undefined;
 }
 
+function activityText(event) {
+  let value;
+  if (typeof event?.activity_content === "string") {
+    value = event.activity_content;
+  } else if (["tool_call", "tool_execution_start"].includes(event?.type)) {
+    value = event?.input;
+  } else if (event?.type === "tool_execution_end") {
+    value = event?.result ?? event?.output ?? event?.error;
+  } else {
+    const message = event?.type === "message_end" ? event?.message : undefined;
+    const reasoning = Array.isArray(message?.content)
+      ? message.content
+        .filter((part) => (
+          ["reasoning", "thinking", "analysis"].includes(part?.type)
+          && typeof (part?.text ?? part?.content) === "string"
+        ))
+        .map((part) => part.text ?? part.content)
+        .join("\n")
+        .trim()
+      : undefined;
+    value = reasoning
+      || event?.reasoning_summary
+      || event?.reasoning
+      || event?.summary
+      || event?.detail
+      || event?.reason;
+  }
+  if (value == null) return undefined;
+  value = activityValueWithoutCredentials(value);
+  let text;
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+  text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim();
+  if (!text) return undefined;
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= 1024) return text;
+  return new TextDecoder().decode(bytes.slice(0, 1024)).replace(/\uFFFD$/, "");
+}
+
+function activityValueWithoutCredentials(value) {
+  if (Array.isArray(value)) return value.map(activityValueWithoutCredentials);
+  if (value == null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => ![
+      "auth", "authorization", "cookie", "cookies", "credential", "credentials",
+      "env", "environment", "headers", "password", "secret", "secrets", "token",
+      "tokens", "apikey", "accesstoken", "refreshtoken",
+    ].includes(key.replace(/[^a-z0-9]/gi, "").toLowerCase()))
+    .map(([key, nested]) => [key, activityValueWithoutCredentials(nested)]));
+}
+
 function remember(map, id, value) {
   if (!id) return;
   map.delete(id);
@@ -228,6 +287,7 @@ async function forward(event, ctx) {
     diagnostic: connectorDiagnostic || event?.diagnostic === true,
     message_role: message?.role,
     message_content: message?.content,
+    activity_content: activityText(event),
   };
   try {
     await sendEvent(allowlisted);
@@ -239,9 +299,9 @@ async function forward(event, ctx) {
 }
 
 function observeOnly() {
-  // Intentionally empty: registering proves that the capability was audited,
-  // while provider/context/header/token/tool-result payloads never cross the
-  // local connector boundary.
+  // Intentionally empty for events without a stable session-scoped display
+  // payload. Provider context, headers, auth, and environment data never cross
+  // the local connector boundary.
 }
 
 async function sendConnectorProbeOnce() {

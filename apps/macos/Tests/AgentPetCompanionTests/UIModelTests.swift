@@ -615,12 +615,13 @@ struct UIModelTests {
         let content = OverlayBubbleContent(state: state)
         let session = try #require(content.sessions.first)
 
-        #expect(session.activityText == APCLocalization.text(.overlayActivityThinking))
+        #expect(session.activityText == "正在验证活动摘要同步")
         #expect(session.messageText == "已恢复气泡消息内容。")
-        #expect(session.secondaryMessageText == "已恢复气泡消息内容。")
+        #expect(session.primaryDetailText == "已恢复气泡消息内容。")
+        #expect(session.secondaryDetailText == "正在验证活动摘要同步")
         #expect(session.detailText == [
-            APCLocalization.text(.overlayActivityThinking),
             "已恢复气泡消息内容。",
+            "正在验证活动摘要同步",
         ].joined(separator: "\n"))
         #expect(session.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
         #expect(content.agentName == "Codex")
@@ -751,7 +752,7 @@ struct UIModelTests {
     }
 
     @Test
-    func appServerClockAndPrivateActivityCopyDoNotChangeOverlayPresentation() throws {
+    func appServerClockDoesNotRepublishButActivityDetailChangesDo() throws {
         func state(createdAt: String, expiresAt: String, activity: String) throws -> ActiveAgentState {
             let json = """
             {"state":"tool","official_status":"running","source":"codex","session_id":"stable-session","session_active":true,"source_session_sequence":2,"priority":300,"lease_seconds":600,"expires_at":"\(expiresAt)","session_activated_at":"2026-07-20T00:00:00Z","event":{"id":"app-server-stable-turn","source":"codex","session_id":"stable-session","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"source_event":"app_server_activity","turn_id":"turn-1","session_active":true,"activity_kind":"tool","activity_content":"\(activity)"},"created_at":"\(createdAt)"},"session_activity":{"kind":"tool","content":"\(activity)"},"overlay_display":{"summary_kind":"tool","navigation":{"session_open":true,"surface":"chatgpt_app","terminal_app":null,"open_url":null}}}
@@ -776,7 +777,7 @@ struct UIModelTests {
         )
 
         #expect(first.hasSamePresentation(as: renewed))
-        #expect(first.hasSamePresentation(as: changed))
+        #expect(!first.hasSamePresentation(as: changed))
         #expect(first.event.hasSamePresentation(as: renewed.event))
     }
 
@@ -1232,7 +1233,7 @@ struct UIModelTests {
     }
 
     @Test
-    func sessionGroupToneUsesAttentionFailureReadyRunningPriority() {
+    func sessionGroupToneUsesFailureAttentionReadyRunningPriority() {
         func session(_ id: String, _ eventType: AgentEventKind) -> OverlaySessionContent {
             OverlaySessionContent(
                 id: id,
@@ -1249,13 +1250,19 @@ struct UIModelTests {
         let ready = session("ready", .done)
         let failed = session("failed", .failed)
         let needsInput = session("needs-input", .waiting)
+        let review = session("review", .review)
 
         #expect(OverlaySessionGroupTone.aggregate([running]) == .running)
         #expect(OverlaySessionGroupTone.aggregate([running, ready]) == .ready)
+        #expect(
+            OverlaySessionGroupTone.aggregate([running, ready, needsInput])
+                == .needsInput
+        )
+        #expect(OverlaySessionGroupTone(eventType: review.eventType) == .needsInput)
         #expect(OverlaySessionGroupTone.aggregate([running, ready, failed]) == .failed)
         #expect(
             OverlaySessionGroupTone.aggregate([running, ready, failed, needsInput])
-                == .needsInput
+                == .failed
         )
     }
 
@@ -1944,7 +1951,6 @@ struct UIModelTests {
             "Codex",
             "exact",
             "Needs You",
-            APCLocalization.text(.overlayDetailNeedsInput),
             "Needs a response",
             APCLocalizedPresentation.navigationActionTitle(
                 .exactSession,

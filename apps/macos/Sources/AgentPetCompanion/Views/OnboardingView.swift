@@ -454,10 +454,13 @@ struct OnboardingView: View {
                 operationState: store.connectionOperationState
             ),
             health: presentation.health,
-            healthTitle: APCLocalizedPresentation.connectionHealthTitle(
-                presentation.health
+            healthTitle: AgentConnectionsPresentation.healthTitle(
+                for: presentation
             ),
-            taskVerification: presentation.taskVerification,
+            taskVerification:
+                AgentConnectionsPresentation.attentionReason(for: presentation) == nil
+                ? presentation.taskVerification
+                : nil,
             taskVerificationTitle:
                 AgentConnectionsPresentation.taskVerificationTitle(
                     presentation.taskVerification

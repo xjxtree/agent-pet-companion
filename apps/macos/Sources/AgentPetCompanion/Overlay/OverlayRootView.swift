@@ -402,13 +402,16 @@ private struct ConversationBubble: View {
                             cornerRadius: OverlayGeometry.bubbleCornerRadius,
                             style: .continuous
                         )
-                        .fill(Color.primary.opacity(0.035))
+                        .fill((content.statusTone.color ?? .clear).opacity(0.12))
                         .overlay {
                             RoundedRectangle(
                                 cornerRadius: OverlayGeometry.bubbleCornerRadius,
                                 style: .continuous
                             )
-                            .stroke(.primary.opacity(0.16), lineWidth: 0.7)
+                            .stroke(
+                                (content.statusTone.color ?? .clear).opacity(0.46),
+                                lineWidth: 0.7
+                            )
                         }
                         .frame(
                             width: max(0, proxy.size.width - inset * 2),
@@ -558,8 +561,13 @@ private struct SessionCountButton: View {
             .padding(.horizontal, 5)
             .background(
                 Capsule()
-                    .fill(tone.color.opacity(0.24))
+                    .fill((tone.color ?? .clear).opacity(0.34))
             )
+            .overlay {
+                Capsule()
+                    .stroke((tone.color ?? .clear).opacity(0.65), lineWidth: 0.75)
+                    .allowsHitTesting(false)
+            }
         }
         .buttonStyle(.plain)
         .frame(width: OverlayGeometry.bubbleGroupToggleWidth)
@@ -577,12 +585,12 @@ private struct SessionCountButton: View {
 }
 
 private extension OverlaySessionGroupTone {
-    var color: Color {
+    var color: Color? {
         switch self {
         case .needsInput: .orange
         case .failed: .red
         case .ready: .green
-        case .running: .gray
+        case .running: nil
         }
     }
 }
@@ -1209,7 +1217,7 @@ private struct PetMenuButton: View {
             )
             .background(
                 Capsule()
-                    .fill(tone.color.opacity(sessionCount > 0 ? 0.28 : 0.12))
+                    .fill((tone.color ?? .clear).opacity(sessionCount > 0 ? 0.28 : 0.12))
             )
             .apcFloatingControlGlass(in: Capsule(), interactive: true)
         }

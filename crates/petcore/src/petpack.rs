@@ -2333,11 +2333,11 @@ pub fn import_petpack_expecting_absent(
     database: &Database,
     source_path: &Path,
 ) -> Result<PetSummary> {
+    let prepared = prepare_import_assets(paths, source_path, None)?;
     let store_guard = PetStoreGuard::acquire(paths)?;
-    import_petpack_with_origin_policy_guarded(
-        paths,
+    commit_prepared_import_with_origin_policy_guarded(
         database,
-        source_path,
+        prepared,
         ImportIdentityPolicy::PackageDeclared(PetOrigin::ExternalImport),
         ExistingIdPolicy::ExpectAbsent,
         None,
@@ -2351,8 +2351,16 @@ pub fn import_petpack_with_origin(
     source_path: &Path,
     origin: PetOrigin,
 ) -> Result<PetSummary> {
+    let prepared = prepare_import_assets(paths, source_path, None)?;
     let store_guard = PetStoreGuard::acquire(paths)?;
-    import_petpack_with_origin_guarded(paths, database, source_path, origin, &store_guard)
+    commit_prepared_import_with_origin_policy_guarded(
+        database,
+        prepared,
+        ImportIdentityPolicy::PackageDeclared(origin),
+        ExistingIdPolicy::AppendNonBundledRevision,
+        None,
+        &store_guard,
+    )
 }
 
 /// Imports while the caller holds the pet-store mutation lock. This is kept
@@ -2386,6 +2394,23 @@ fn import_petpack_with_origin_policy_guarded(
     expected_source_digest: Option<[u8; 32]>,
     _store_guard: &PetStoreGuard,
 ) -> Result<PetSummary> {
+    validate_import_policy(identity_policy, existing_id_policy, expected_source_digest)?;
+    let prepared = prepare_import_assets(paths, source_path, expected_source_digest)?;
+    commit_prepared_import_with_origin_policy_guarded(
+        database,
+        prepared,
+        identity_policy,
+        existing_id_policy,
+        expected_source_digest,
+        _store_guard,
+    )
+}
+
+fn validate_import_policy(
+    identity_policy: ImportIdentityPolicy,
+    existing_id_policy: ExistingIdPolicy,
+    expected_source_digest: Option<[u8; 32]>,
+) -> Result<()> {
     let valid_policy_pair = matches!(
         (identity_policy, existing_id_policy),
         (
@@ -2406,8 +2431,18 @@ fn import_petpack_with_origin_policy_guarded(
             "invalid internal pet import identity policy".to_string(),
         ));
     }
+    Ok(())
+}
 
-    let prepared = prepare_import_assets(paths, source_path, expected_source_digest)?;
+fn commit_prepared_import_with_origin_policy_guarded(
+    database: &Database,
+    prepared: PreparedImport,
+    identity_policy: ImportIdentityPolicy,
+    existing_id_policy: ExistingIdPolicy,
+    expected_source_digest: Option<[u8; 32]>,
+    _store_guard: &PetStoreGuard,
+) -> Result<PetSummary> {
+    validate_import_policy(identity_policy, existing_id_policy, expected_source_digest)?;
     let PreparedImport {
         validation,
         target_path,
@@ -4596,6 +4631,36 @@ pub(crate) fn normalize_visible_pixels(image: &mut RgbaImage) {
 #[cfg(test)]
 mod asset_contract_tests {
     use super::*;
+
+    #[test]
+    fn external_import_validates_before_waiting_for_mutation_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("home"));
+        paths.ensure().unwrap();
+        let database = Database::new(paths.db_path.clone());
+        database.init().unwrap();
+        let source = temp.path().join("invalid.petpack");
+        fs::write(&source, b"not a petpack").unwrap();
+
+        let reader = PetStoreGuard::acquire_shared(&paths).unwrap();
+        let import_paths = paths.clone();
+        let import_database = database.clone();
+        let import_source = source.clone();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let import = std::thread::spawn(move || {
+            let result = import_petpack(&import_paths, &import_database, &import_source);
+            result_sender.send(result).unwrap();
+        });
+
+        let result_while_reader_is_active =
+            result_receiver.recv_timeout(std::time::Duration::from_secs(1));
+        drop(reader);
+        import.join().unwrap();
+        assert!(
+            matches!(result_while_reader_is_active, Ok(Err(_))),
+            "external import validation waited for the exclusive mutation lock"
+        );
+    }
 
     #[test]
     fn frame_paths_use_runtime_natural_numeric_order() {

@@ -603,11 +603,11 @@ struct SessionBubbleRow: View {
                         .padding(.vertical, 1)
                         .background(
                             Capsule()
-                                .fill(statusColor.opacity(0.24))
+                                .fill((statusColor ?? .clear).opacity(0.24))
                         )
                         .overlay {
                             Capsule()
-                                .stroke(statusColor.opacity(0.62), lineWidth: 0.75)
+                                .stroke((statusColor ?? .clear).opacity(0.62), lineWidth: 0.75)
                                 .allowsHitTesting(false)
                         }
                 }
@@ -632,13 +632,13 @@ struct SessionBubbleRow: View {
                 Text(session.primaryDetailText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.primary)
-                    .lineLimit(session.secondaryMessageText == nil
+                    .lineLimit(session.secondaryDetailText == nil
                         ? OverlayGeometry.bubbleDetailLineLimit
                         : 1)
                     .truncationMode(.tail)
 
-                if let secondaryMessageText = session.secondaryMessageText {
-                    Text(secondaryMessageText)
+                if let secondaryDetailText = session.secondaryDetailText {
+                    Text(secondaryDetailText)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
@@ -653,12 +653,15 @@ struct SessionBubbleRow: View {
         .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    (hovered || focused) && session.canOpen
-                        ? Color.primary.opacity(0.05)
-                        : .clear
-                )
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill((statusColor ?? .clear).opacity(0.12))
+
+                if (hovered || focused) && session.canOpen {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                }
+            }
         )
     }
 
@@ -673,13 +676,12 @@ struct SessionBubbleRow: View {
         )
     }
 
-    private var statusColor: Color {
+    private var statusColor: Color? {
         switch session.eventType {
         case .waiting, .review: .orange
         case .failed: .red
         case .done: .green
-        case .start, .tool: .blue
-        case nil: .secondary
+        case .start, .tool, nil: nil
         }
     }
 }

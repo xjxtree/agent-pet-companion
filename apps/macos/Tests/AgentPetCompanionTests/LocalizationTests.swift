@@ -160,7 +160,7 @@ struct LocalizationTests {
         let lifecycleEnglish: [ProductLifecycleState: String] = [
             .idle: "Resting",
             .start: "Thinking",
-            .tool: "Working",
+            .tool: "Using Tools",
             .waiting: "Needs You",
             .review: "Ready to Review",
             .done: "Completed",
@@ -169,7 +169,7 @@ struct LocalizationTests {
         let lifecycleChinese: [ProductLifecycleState: String] = [
             .idle: "正在休息",
             .start: "正在思考",
-            .tool: "正在工作",
+            .tool: "正在调用工具",
             .waiting: "等你处理",
             .review: "可以查看",
             .done: "已完成",

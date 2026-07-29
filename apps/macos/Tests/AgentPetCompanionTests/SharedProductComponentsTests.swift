@@ -202,6 +202,18 @@ struct SharedProductComponentsTests {
         #expect(!sharedSource.contains("Text(session.actionLabel)"))
         #expect(sharedSource.contains(".accessibilityIdentifier(\"overlay.session.\\(session.id)\")"))
         #expect(sharedSource.contains(".accessibilityLabel(session.accessibilityLabel)"))
+        #expect(sharedSource.contains(".fill((statusColor ?? .clear).opacity(0.12))"))
+        #expect(sharedSource.contains("case .start, .tool, nil: nil"))
+        #expect(!sharedSource.contains("case .start, .tool: .blue"))
+        let adaptiveDetailLineLimit = """
+        Text(session.primaryDetailText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(session.secondaryDetailText == nil
+                                ? OverlayGeometry.bubbleDetailLineLimit
+                                : 1)
+        """
+        #expect(sharedSource.contains(adaptiveDetailLineLimit))
         #expect(sharedSource.contains(
             "openLabel: session.canOpen ? session.actionLabel : nil"
         ))

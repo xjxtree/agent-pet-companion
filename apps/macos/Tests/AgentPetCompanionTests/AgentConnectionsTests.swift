@@ -277,6 +277,19 @@ struct AgentConnectionsTests {
             source: .claudeCode,
             items: [item(.missing, code: .agentCLI)]
         ))
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: missingAgent,
+                locale: "en"
+            ) == "Agent Not Found"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthSummary(
+                for: missingAgent,
+                operationState: .idle,
+                locale: "en"
+            ) == "Claude Code was not found on this Mac."
+        )
         let install = try #require(
             AgentConnectionsPresentation.userGuidance(
                 for: missingAgent,
@@ -291,6 +304,12 @@ struct AgentConnectionsTests {
             source: .claudeCode,
             items: [item(.needsFix, code: .claudeHooksPolicy)]
         ))
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: blockedSettings,
+                locale: "en"
+            ) == "Permission Required"
+        )
         let settings = try #require(
             AgentConnectionsPresentation.userGuidance(
                 for: blockedSettings,
@@ -317,6 +336,107 @@ struct AgentConnectionsTests {
                 for: needsRepair,
                 locale: "en"
             ) == "Choose Set Up or Repair below."
+        )
+    }
+
+    @Test
+    func codexHookTrustNamesAuthorizationAndRestartSteps() throws {
+        let presentation = product(currentStatus(
+            source: .codex,
+            items: [
+                item(
+                    .needsFix,
+                    code: .hostVerification,
+                    detail: "Codex hooks/list 精确检测：未启用 0、已修改 10、未信任 0（共 10）；App 更新后必须重新审查"
+                ),
+            ]
+        ))
+
+        #expect(presentation.health == .unavailable)
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: presentation,
+                locale: "zh-Hans"
+            ) == "需要 Hook 授权"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthSummary(
+                for: presentation,
+                operationState: .idle,
+                locale: "zh-Hans"
+            ) == "Codex Hooks 已更新，需要重新审查并授权。"
+        )
+        let guidance = try #require(
+            AgentConnectionsPresentation.userGuidance(
+                for: presentation,
+                locale: "zh-Hans"
+            )
+        )
+        #expect(guidance.contains("授权 Agent Pet Companion Hooks"))
+        #expect(guidance.contains("完全退出并重新打开所有 Codex 窗口"))
+        #expect(guidance.contains("重新检查连接"))
+        let action = try #require(
+            AgentConnectionsPresentation.primaryActionPresentation(
+                for: presentation,
+                busy: false,
+                locale: "zh-Hans"
+            )
+        )
+        #expect(action.accessibilityHint == "完成当前处理指引后，重新检查连接。")
+    }
+
+    @Test
+    func unavailableReasonsGiveSpecificStatusAndNextAction() throws {
+        let update = product(currentStatus(
+            source: .pi,
+            items: [item(.unsupported, code: .agentVersion)]
+        ))
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: update,
+                locale: "en"
+            ) == "Update Required"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthSummary(
+                for: update,
+                operationState: .idle,
+                locale: "en"
+            ) == "The installed Pi Coding Agent version is not supported."
+        )
+
+        let restart = product(currentStatus(
+            source: .opencode,
+            items: [item(.needsFix, code: .hostServer)]
+        ))
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: restart,
+                locale: "en"
+            ) == "Restart Required"
+        )
+        #expect(
+            AgentConnectionsPresentation.userGuidance(
+                for: restart,
+                locale: "en"
+            ) == "Fully quit and reopen OpenCode, then check the connection again."
+        )
+
+        let eventRuntime = product(currentStatus(
+            source: .codex,
+            items: [item(.missing, code: .eventCLI)]
+        ))
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: eventRuntime,
+                locale: "en"
+            ) == "Local Connection Issue"
+        )
+        #expect(
+            AgentConnectionsPresentation.userGuidance(
+                for: eventRuntime,
+                locale: "en"
+            ) == "Open Service & Diagnostics, restore the local service, then check the connection again."
         )
     }
 
@@ -902,8 +1022,8 @@ struct AgentConnectionsTests {
             name: "agent-pet-companion.ts",
             ownership: .appManaged,
             status: .ok,
-            expectedVersion: "pi-extension-0.80.10-activity-v8",
-            activeVersion: "pi-extension-0.80.10-activity-v8",
+            expectedVersion: "pi-extension-0.80.10-activity-v9",
+            activeVersion: "pi-extension-0.80.10-activity-v9",
             contentMatches: true
         )
         #expect(
@@ -1154,13 +1274,14 @@ struct AgentConnectionsTests {
     private func item(
         _ status: CheckStatus,
         code: ConnectionCheckCode,
-        recovery: ConnectionCheckRecoveryKind? = nil
+        recovery: ConnectionCheckRecoveryKind? = nil,
+        detail: String = "untrusted-detail"
     ) -> ConnectionCheckItem {
         ConnectionCheckItem(
             code: code,
             name: "untrusted-name",
             status: status,
-            detail: "untrusted-detail",
+            detail: detail,
             recoveryAction: recovery
         )
     }

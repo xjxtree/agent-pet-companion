@@ -3,11 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 const APC_OPENCODE_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-activity-v9";
+const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-activity-v10";
 
 // OpenCode 1.18.0–1.18.4 plugin hooks. Agent Pet Companion implements only observation
-// hooks; configuration, auth, headers, environment, prompts, and tool payloads
-// are intentionally never inspected or modified.
+// hooks; configuration, auth, headers, and environment data are never modified
+// or forwarded. Stable session-scoped reasoning, command, tool input/output,
+// and raw activity details may cross as bounded local display content.
 const APC_OPENCODE_PLUGIN_HOOK_INVENTORY = Object.freeze([
   "event",
   "dispose",
@@ -608,6 +609,56 @@ function textParts(parts) {
   return text || undefined;
 }
 
+function boundedActivity(value) {
+  if (value == null) return undefined;
+  value = activityValueWithoutCredentials(value);
+  let text;
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      return undefined;
+    }
+  }
+  text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim();
+  if (!text) return undefined;
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= 1024) return text;
+  return new TextDecoder().decode(bytes.slice(0, 1024)).replace(/\uFFFD$/, "");
+}
+
+function activityValueWithoutCredentials(value) {
+  if (Array.isArray(value)) return value.map(activityValueWithoutCredentials);
+  if (value == null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => ![
+      "auth", "authorization", "cookie", "cookies", "credential", "credentials",
+      "env", "environment", "headers", "password", "secret", "secrets", "token",
+      "tokens", "apikey", "accesstoken", "refreshtoken",
+    ].includes(key.replace(/[^a-z0-9]/gi, "").toLowerCase()))
+    .map(([key, nested]) => [key, activityValueWithoutCredentials(nested)]));
+}
+
+function activityDetail(properties) {
+  return boundedActivity(
+    properties?.activity_content
+      ?? properties?.reasoning_summary
+      ?? properties?.reasoning
+      ?? properties?.summary
+      ?? properties?.detail
+      ?? properties?.command
+      ?? properties?.arguments
+      ?? properties?.input
+      ?? properties?.result
+      ?? properties?.output
+      ?? properties?.content
+      ?? properties?.error?.message
+      ?? properties?.error,
+  );
+}
+
 function rememberMessageText(messageID, partID, content) {
   if (!messageID || !partID || !content) return undefined;
   remember(messageTextParts, `${messageID}:${partID}`, { messageID, content });
@@ -741,6 +792,7 @@ function toolEvent(type, id, callID, name, properties, isError = false) {
     },
     outcome: isError ? "tool_failure" : type === "tool.execute.before" ? "started" : "completed",
     is_error: isError,
+    activity_content: activityDetail(properties),
     diagnostic: diagnostic(properties?.diagnostic, properties?.info?.diagnostic),
   };
 }
@@ -754,6 +806,7 @@ function compatibleNextEvent(type, properties, id) {
         properties: {
           sessionID: id,
           session_title: sessions.get(id),
+          activity_content: activityDetail(properties),
           diagnostic: diagnostic(properties?.diagnostic),
         },
         turn_id: opaqueIdentity(properties?.messageID),
@@ -782,6 +835,7 @@ function compatibleNextEvent(type, properties, id) {
         properties: {
           sessionID: id,
           session_title: sessions.get(id),
+          activity_content: activityDetail(properties),
           diagnostic: diagnostic(properties?.diagnostic),
         },
         outcome: "session_failure",
@@ -794,6 +848,15 @@ function compatibleNextEvent(type, properties, id) {
           ?? `${id}:session.next.text.ended`,
         typeof properties?.text === "string" ? properties.text.trim() : undefined,
       );
+    case "session.next.reasoning.ended":
+      return {
+        type: "session.plan.updated",
+        properties: {
+          sessionID: id,
+          activity_content: activityDetail(properties),
+          diagnostic: diagnostic(properties?.diagnostic),
+        },
+      };
     case "session.next.shell.started":
       return toolEvent("tool.execute.before", id, properties?.callID, "shell", properties);
     case "session.next.shell.ended":
@@ -824,9 +887,9 @@ function compatibleNextEvent(type, properties, id) {
         },
       };
     default:
-      // Prompt/synthetic metadata, token deltas, reasoning text, tool
-      // input/progress/output, model data, and compaction text are
-      // intentionally not serialized or disguised as a busy status.
+      // High-frequency token deltas and host/global model metadata stay out of
+      // the event stream. Their stable session-scoped completion events above
+      // carry bounded reasoning and tool details when the host provides them.
       return undefined;
   }
 }
@@ -865,6 +928,20 @@ function compatibleEvent(event) {
   }
   if (type === "message.part.updated") {
     const part = properties?.part ?? {};
+    if (
+      ["reasoning", "thinking", "analysis"].includes(part?.type)
+      && typeof (part?.text ?? part?.content) === "string"
+      && part?.synthetic !== true
+    ) {
+      return {
+        type: "session.plan.updated",
+        properties: {
+          sessionID: part?.sessionID ?? messageSessions.get(part.messageID) ?? id,
+          activity_content: boundedActivity(part?.text ?? part?.content),
+          diagnostic: diagnostic(properties?.diagnostic, part?.diagnostic),
+        },
+      };
+    }
     if (part?.type !== "text" || typeof part?.text !== "string" || part?.synthetic === true) {
       return undefined;
     }
@@ -893,7 +970,11 @@ function compatibleEvent(event) {
     if (!id) return undefined;
     return {
       type: "session.plan.updated",
-      properties: { sessionID: id, diagnostic: diagnostic(properties?.diagnostic) },
+      properties: {
+        sessionID: id,
+        activity_content: boundedActivity(properties?.todos),
+        diagnostic: diagnostic(properties?.diagnostic),
+      },
     };
   }
   if (type === "command.executed") {
@@ -927,6 +1008,7 @@ function compatibleEvent(event) {
       status: properties?.status?.type
         ?? (typeof properties?.status === "string" ? properties.status : undefined),
       response: safeResponse(properties),
+      activity_content: activityDetail(properties),
       diagnostic: diagnostic(properties?.diagnostic, properties?.info?.diagnostic),
     },
   };
@@ -996,18 +1078,23 @@ export const AgentPetCompanion = async () => {
       });
     },
 
-    "command.execute.before": async (input) => {
+    "command.execute.before": async (input, output) => {
       if (!input?.sessionID) return;
       markSessionActive(input?.sessionID);
       await forward({
         type: "command.execute.before",
         input: { sessionID: input?.sessionID, tool: "command" },
+        activity_content: boundedActivity({
+          command: input?.command,
+          arguments: input?.arguments,
+          parts: output?.parts,
+        }),
         outcome: "started",
         diagnostic: diagnostic(input?.diagnostic),
       });
     },
 
-    "tool.execute.before": async (input) => {
+    "tool.execute.before": async (input, output) => {
       if (!input?.sessionID) return;
       markSessionActive(input?.sessionID);
       if (activeStepKeys.has(input.sessionID)) {
@@ -1019,18 +1106,24 @@ export const AgentPetCompanion = async () => {
         input?.sessionID,
         input?.callID,
         input?.tool,
-        input,
+        {
+          ...input,
+          input: output?.args ?? output,
+        },
       ));
     },
 
-    "tool.execute.after": async (input) => {
+    "tool.execute.after": async (input, output) => {
       if (!input?.sessionID) return;
       await forward(toolEvent(
         "tool.execute.after",
         input?.sessionID,
         input?.callID,
         input?.tool,
-        input,
+        {
+          ...input,
+          output,
+        },
       ));
     },
 

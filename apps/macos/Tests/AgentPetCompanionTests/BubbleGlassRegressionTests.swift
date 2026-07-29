@@ -29,7 +29,12 @@ struct BubbleGlassRegressionTests {
         #expect(bubbleSource.components(separatedBy: ".apcTransparentBubbleGlass").count - 1 == 1)
         #expect(!bubbleSource.contains(".apcFloatingControlGlass"))
         #expect(countButtonSource.contains("Capsule()"))
-        #expect(countButtonSource.contains(".fill(tone.color.opacity(0.24))"))
+        #expect(bubbleSource.contains(
+            ".fill((content.statusTone.color ?? .clear).opacity(0.12))"
+        ))
+        #expect(countButtonSource.contains(".fill((tone.color ?? .clear).opacity(0.34))"))
+        #expect(countButtonSource.contains(".stroke((tone.color ?? .clear).opacity(0.65)"))
+        #expect(bubbleSource.contains("case .running: nil"))
     }
 
     @Test

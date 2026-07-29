@@ -575,6 +575,7 @@ final class AppStore: ObservableObject {
     @Published var overlayResizeInProgress = false
     @Published var petOperationIDs: Set<String> = []
     @Published var isImportingPetpack = false
+    @Published private(set) var petpackImportProgress: PetLibraryImportProgress?
     @Published private(set) var petLibraryNotice: PetLibraryNotice?
     @Published private(set) var diagnosticsExportState = DiagnosticsExportState.idle
     @Published private(set) var connectionOperationState = AgentConnectionOperationState.idle
@@ -654,6 +655,16 @@ final class AppStore: ObservableObject {
         .seconds(8)
     ]
     static let initialAppearanceFallbackDelay: Duration = .milliseconds(500)
+    static func stateWaitTimeoutMilliseconds(
+        generationIsActive: Bool,
+        hasActiveAgentState: Bool
+    ) -> Int {
+        if generationIsActive || hasActiveAgentState {
+            return 1_000
+        }
+        return 30_000
+    }
+
     static let controlCenterWindowIdentifier = NSUserInterfaceItemIdentifier(
         "dev.agentpet.companion.control-center"
     )
@@ -1990,18 +2001,15 @@ final class AppStore: ObservableObject {
         setServiceOnline()
     }
 
-    private func waitForStateChange() async {
-        // With no time-limited active state, the daemon revision wakes this
-        // request immediately. A longer idle wait avoids decoding and
-        // republishing an unchanged full snapshot every three seconds while
-        // still keeping generation and event-expiry paths responsive.
-        let timeoutMs = if generationSession.isActive {
-            1_000
-        } else if activeAgentState != nil {
-            3_000
-        } else {
-            30_000
-        }
+    func waitForStateChange() async {
+        // The daemon revision wakes this request immediately. Active work uses
+        // a one-second hydration budget so an asynchronous host display read
+        // becomes visible promptly; idle waits remain long to avoid decoding
+        // and republishing unchanged full snapshots.
+        let timeoutMs = Self.stateWaitTimeoutMilliseconds(
+            generationIsActive: generationSession.isActive,
+            hasActiveAgentState: activeAgentState != nil
+        )
         do {
             let result = try await requestPetCore(
                 method: "state.wait",
@@ -2014,6 +2022,21 @@ final class AppStore: ObservableObject {
             try applyStateSnapshot(result)
             setServiceOnline()
         } catch {
+            if hasProtectedUserWork,
+               (try? await requestPetCore(
+                   method: "petcore.health",
+                   timeout: .seconds(2)
+               )) != nil
+            {
+                diagnostics.log(
+                    .info,
+                    category: "service",
+                    event: "petcore_state_wait_deferred_during_protected_work",
+                    metadata: [:]
+                )
+                setServiceOnline()
+                return
+            }
             diagnostics.logFailure(
                 error,
                 category: "service",
@@ -3670,9 +3693,17 @@ final class AppStore: ObservableObject {
 
         petLibraryNotice = nil
         isImportingPetpack = true
+        petpackImportProgress = PetLibraryImportProgress(
+            phase: .importing,
+            totalCount: urls.count,
+            completedCount: 0,
+            importedCount: 0,
+            currentFileName: urls.first?.lastPathComponent
+        )
         statusText = urls.count == 1 ? "正在导入本 App .petpack" : "正在导入 \(urls.count) 个本 App .petpack"
         petpackImportTask = Task {
             defer {
+                petpackImportProgress = nil
                 isImportingPetpack = false
                 petpackImportTask = nil
             }
@@ -3680,6 +3711,13 @@ final class AppStore: ObservableObject {
             var failures: [PetLibraryImportFailure] = []
 
             for (fileIndex, url) in urls.enumerated() {
+                petpackImportProgress = PetLibraryImportProgress(
+                    phase: .importing,
+                    totalCount: urls.count,
+                    completedCount: fileIndex,
+                    importedCount: importedCount,
+                    currentFileName: url.lastPathComponent
+                )
                 do {
                     _ = try await requestPetCore(
                         method: "petpack.import",
@@ -3695,9 +3733,25 @@ final class AppStore: ObservableObject {
                     )
                     failures.append(.file(at: url))
                 }
+                petpackImportProgress = PetLibraryImportProgress(
+                    phase: .importing,
+                    totalCount: urls.count,
+                    completedCount: fileIndex + 1,
+                    importedCount: importedCount,
+                    currentFileName: fileIndex + 1 < urls.count
+                        ? urls[fileIndex + 1].lastPathComponent
+                        : nil
+                )
             }
 
             if importedCount > 0 {
+                petpackImportProgress = PetLibraryImportProgress(
+                    phase: .refreshingLibrary,
+                    totalCount: urls.count,
+                    completedCount: urls.count,
+                    importedCount: importedCount,
+                    currentFileName: nil
+                )
                 do {
                     try await refreshSnapshot()
                     selection = .library
@@ -3707,7 +3761,7 @@ final class AppStore: ObservableObject {
             }
 
             if failures.isEmpty {
-                petLibraryNotice = nil
+                petLibraryNotice = .importSuccess(importedCount: importedCount)
                 statusText = importedCount == 1 ? "已导入本 App .petpack" : "已导入 \(importedCount) 个本 App .petpack"
             } else if importedCount > 0 {
                 let notice = setPetLibraryImportFailure(

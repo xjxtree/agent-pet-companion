@@ -46,6 +46,18 @@ private struct SidebarCurrentPetView: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider()
+            if let activePet = store.activePet {
+                PetCoverImage(
+                    pet: activePet,
+                    assetWarning: store.petAssetWarningIndex[activePet.id],
+                    fallbackScale: 0.45
+                )
+                .frame(width: 112, height: 126)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 12)
+                .padding(.bottom, 2)
+                .accessibilityHidden(true)
+            }
             HStack(spacing: 8) {
                 APCBrandMark(size: 18)
                     .saturation(store.behavior.enabled ? 1 : 0)

@@ -7,6 +7,19 @@ import Testing
 struct AppStoreOverlaySnapshotTests {
     @MainActor
     @Test
+    func activeAgentStateUsesAOneSecondDisplayRefreshBudget() {
+        #expect(AppStore.stateWaitTimeoutMilliseconds(
+            generationIsActive: false,
+            hasActiveAgentState: true
+        ) == 1_000)
+        #expect(AppStore.stateWaitTimeoutMilliseconds(
+            generationIsActive: false,
+            hasActiveAgentState: false
+        ) == 30_000)
+    }
+
+    @MainActor
+    @Test
     func idleStateRestsWithoutAPlaceholderSessionBubble() throws {
         let store = makeStore()
 

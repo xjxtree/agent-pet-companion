@@ -195,6 +195,10 @@ struct PetLibraryView: View {
                 summary: APCLocalization.text(.libraryPageSubtitle)
             )
 
+            if let progress = store.petpackImportProgress {
+                PetLibraryImportProgressBanner(progress: progress)
+            }
+
             if let notice = store.petLibraryNotice {
                 PetLibraryNoticeBanner(
                     notice: notice,
@@ -379,6 +383,81 @@ private struct PetLibrarySheetRequest: Identifiable {
     var id: String { "\(pet.id)-\(mode.rawValue)" }
 }
 
+private struct PetLibraryImportProgressBanner: View {
+    let progress: PetLibraryImportProgress
+
+    private var detail: String {
+        switch progress.phase {
+        case .importing:
+            guard let currentFileName = progress.currentFileName else {
+                return APCLocalization.text(.libraryImportInProgress)
+            }
+            return APCLocalization.format(
+                .libraryImportProgressDetailFormat,
+                currentFileName
+            )
+        case .refreshingLibrary:
+            return APCLocalization.text(.libraryImportProgressRefreshing)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(APCLocalization.text(.libraryImportProgressTitle))
+                        .font(.callout.weight(.semibold))
+                    if progress.phase == .importing {
+                        Text(
+                            APCLocalization.format(
+                                .libraryImportProgressFileFormat,
+                                progress.currentOrdinal,
+                                progress.totalCount
+                            )
+                        )
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                if progress.totalCount > 1 {
+                    ProgressView(value: progress.completedFraction)
+                        .progressViewStyle(.linear)
+                        .accessibilityValue(
+                            "\(progress.completedCount)/\(progress.totalCount)"
+                        )
+                }
+
+                Text(APCLocalization.text(.libraryImportProgressKeepOpen))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.accentColor.opacity(0.08))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("pet-library.import-progress")
+    }
+}
+
 private struct PetLibraryNoticeBanner: View {
     let notice: PetLibraryNotice
     let retrying: Bool
@@ -388,7 +467,9 @@ private struct PetLibraryNoticeBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: notice.systemImage)
-                .foregroundStyle(.orange)
+                .foregroundStyle(
+                    notice.kind == .importSuccess ? Color.green : Color.orange
+                )
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(notice.title)
@@ -400,13 +481,15 @@ private struct PetLibraryNoticeBanner: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
-                Button(
-                    APCLocalization.text(.libraryNoticeRetryImport),
-                    systemImage: "arrow.clockwise",
-                    action: onRetry
-                )
-                .disabled(retrying)
-                .accessibilityIdentifier("pet-library.notice.retry")
+                if notice.kind == .importFailure {
+                    Button(
+                        APCLocalization.text(.libraryNoticeRetryImport),
+                        systemImage: "arrow.clockwise",
+                        action: onRetry
+                    )
+                    .disabled(retrying)
+                    .accessibilityIdentifier("pet-library.notice.retry")
+                }
 
                 Button(
                     APCLocalization.text(.libraryNoticeDismiss),
@@ -425,11 +508,20 @@ private struct PetLibraryNoticeBanner: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color(nsColor: .systemOrange).opacity(0.72), lineWidth: 1)
+                .stroke(
+                    notice.kind == .importSuccess
+                        ? Color(nsColor: .systemGreen).opacity(0.72)
+                        : Color(nsColor: .systemOrange).opacity(0.72),
+                    lineWidth: 1
+                )
                 .allowsHitTesting(false)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("pet-library.notice.import-failure")
+        .accessibilityIdentifier(
+            notice.kind == .importSuccess
+                ? "pet-library.notice.import-success"
+                : "pet-library.notice.import-failure"
+        )
     }
 }
 

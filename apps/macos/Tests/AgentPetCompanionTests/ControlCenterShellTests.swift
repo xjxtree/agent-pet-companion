@@ -174,6 +174,27 @@ struct ControlCenterShellTests {
         #expect(!contentSource.contains("Menu {"))
     }
 
+    @Test
+    func currentPetPreviewIsCenteredAboveItsSidebarIdentityRow() throws {
+        let sidebarSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Views/SidebarView.swift"
+            ),
+            encoding: .utf8
+        )
+        let preview = try #require(sidebarSource.range(of: "PetCoverImage("))
+        let identity = try #require(sidebarSource.range(of: "APCBrandMark(size: 18)"))
+
+        #expect(preview.lowerBound < identity.lowerBound)
+        #expect(sidebarSource.contains(
+            ".frame(maxWidth: .infinity, alignment: .center)"
+        ))
+        #expect(sidebarSource.contains(
+            "assetWarning: store.petAssetWarningIndex[activePet.id]"
+        ))
+        #expect(sidebarSource.contains(".accessibilityHidden(true)"))
+    }
+
     private var sourceDirectory: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

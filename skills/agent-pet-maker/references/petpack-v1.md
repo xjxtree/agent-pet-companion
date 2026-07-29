@@ -137,11 +137,15 @@ duplicates, or procedural interpolation.
   anatomy, outfit/accessories, palette, lighting, outline/texture, scale,
   baseline, and camera remain stable unless the action explicitly moves or
   deforms that part.
-- Direct exactly one primary action per state. Use anticipation, a readable
-  apex, and recovery/settle; simplify multi-step business instead of squeezing
-  it into one second.
-- Declare moving and non-moving regions while planning. Generate/edit each
-  state as one coherent sequence from the canonical base rather than
+- Direct exactly one intent and one primary action per state, supported by small
+  causally connected responses and delayed or settling secondary motion
+  appropriate to the pet's form. Use anticipation, a readable apex, and
+  recovery/settle; simplify multi-step business instead of squeezing it into
+  one second.
+- Declare stable spatial anchors and moving regions while planning. Anchors
+  preserve identity, camera, scale, baseline, and essential contacts; they do
+  not require every other body or visual feature to remain frozen. Generate/edit
+  each state as one coherent sequence from the canonical base rather than
   independently inventing each frame.
 - Keep props continuous in shape, orientation, position, and attachment. Props
   enter and leave through visible motion rather than appearing between frames.
@@ -154,6 +158,9 @@ duplicates, or procedural interpolation.
 - For non-looping actions, reach a readable final pose within the fixed authored
   duration; runtime may hold that pose after the action completes.
 - Make the seven state actions distinguishable at desktop-pet size.
+- Reject actions that require zooming to understand, move only an isolated
+  micro-feature without a connected response, or move the whole subject as one
+  rigid layer. Review the intent and layered response at 192 × 208.
 - Use the exact manifest dimensions for every frame.
 - Preserve target-size native source pixels for every frame and extract with
   crop-only operations; a resized lower-resolution source is non-conforming

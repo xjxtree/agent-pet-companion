@@ -47,9 +47,10 @@ The bubble is intentionally a glanceable return surface rather than a second
 control center. A collapsed Agent group shows one highest-attention or latest
 session; an expanded group shows every concrete session already present in the
 bounded PetCore snapshot. Every row labels the exact authored pet action for
-its fixed lifecycle state and renders the closed, safe current-activity summary
-alongside any current-turn Agent message. The full row is the exact-session
-action when that typed capability exists.
+its fixed lifecycle state in the badge, while its two detail lines render
+distinct bounded Agent messages, host-exposed reasoning, commands, tool
+input/output, errors, or raw activity details when available. The full row is
+the exact-session action when that typed capability exists.
 
 ## Main flows
 
@@ -101,7 +102,7 @@ sequenceDiagram
     A->>A: Update bubble and pet animation
 ```
 
-The persisted event set is `start`, `tool`, `waiting`, `review`, `done`, and `failed`; `idle` is the no-activity pet state. Display aliases such as “thinking” or “working” must not replace protocol names.
+The persisted event set is `start`, `tool`, `waiting`, `review`, `done`, and `failed`; `idle` is the no-activity pet state. Product badges render `start` as **Thinking / 正在思考** and `tool` as **Using Tools / 正在调用工具** without changing those stored protocol names.
 
 The App preserves the package's authored sampling and fixed duration while
 applying state-lifetime presentation. A `start` action completes once in the
@@ -148,7 +149,7 @@ logo/                       Approved reusable brand assets
 - App, PetCore, CLI, database range, `.petpack` versions, event schema, and connector contracts ship as one runtime manifest identity.
 - Normal online writes go through PetCore. The App and Agent hosts do not bypass its validation or state revision.
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
-- Bounded session titles and latest user/assistant display messages are part of the product data model and cross to the App for local bubbles. Credential stores and complete transcript archives do not.
+- Bounded session titles, latest user/assistant display messages, and session-scoped reasoning/command/tool/raw activity details are part of the product data model and cross to the App for local bubbles. Credential stores, auth headers, environment dumps, and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
 - Native packaged validation seeds both included pets into a clean home and
   proves their canonical cover plus every expected runtime frame for all seven

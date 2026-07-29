@@ -1221,7 +1221,6 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
     let serialized = serde_json::to_string(&current).unwrap();
     for forbidden in [
         path,
-        command,
         hostile_event_id,
         hostile_session_id,
         hostile_detail,
@@ -1242,6 +1241,11 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
     assert_eq!(tool["source"], "codex");
     assert!(tool["event"]["id"].as_str().unwrap().starts_with("evt-"));
     assert!(tool["session_id"].as_str().unwrap().starts_with("ses-"));
+    assert_eq!(
+        tool["session_activity"],
+        json!({"kind": "command", "content": command}),
+        "tool projection: {tool:#}"
+    );
     assert_eq!(tool["overlay_display"]["summary_kind"], "command");
     assert_eq!(tool["session_title"], prompt);
     assert_eq!(
