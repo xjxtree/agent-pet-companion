@@ -10,11 +10,11 @@ struct OverlayKeyboardFocusTests {
         let scenarios: [FocusScenario] = [
             .init(overlayEnabled: false, sessionCount: 0, expected: []),
             .init(overlayEnabled: false, sessionCount: 3, expected: []),
-            .init(overlayEnabled: true, sessionCount: 0, expected: [.resizeHandle]),
+            .init(overlayEnabled: true, sessionCount: 0, expected: []),
             .init(
                 overlayEnabled: true,
                 sessionCount: 3,
-                expected: [.bubbleSessions, .resizeHandle]
+                expected: [.bubbleSessions]
             ),
         ]
 
@@ -31,12 +31,6 @@ struct OverlayKeyboardFocusTests {
                     bubbleSessionCount: scenario.sessionCount
                 ) == scenario.expected.contains(.bubbleSessions)
             )
-            #expect(
-                OverlayKeyboardFocusAction.resizeHandle.isAvailable(
-                    overlayEnabled: scenario.overlayEnabled,
-                    bubbleSessionCount: scenario.sessionCount
-                ) == scenario.expected.contains(.resizeHandle)
-            )
         }
     }
 
@@ -48,12 +42,12 @@ struct OverlayKeyboardFocusTests {
         disabledStore.behavior.enabled = false
 
         disabledStore.focusOverlayBubbleForKeyboardNavigation()
-        disabledStore.focusOverlayResizeForKeyboardNavigation()
         #expect(probe.actions.isEmpty)
 
         let enabledStore = makeStore(probe: probe)
         try enabledStore.applyStateSnapshot([
             "revision": "keyboard-focus-test",
+            "overlay_placement_revision": "0",
             "behavior": try jsonObject(BehaviorSettings()),
             "behavior_revision": "0",
             "pets": [],
@@ -65,9 +59,8 @@ struct OverlayKeyboardFocusTests {
         ])
 
         enabledStore.focusOverlayBubbleForKeyboardNavigation()
-        enabledStore.focusOverlayResizeForKeyboardNavigation()
 
-        #expect(probe.actions == [.bubbleSessions, .resizeHandle])
+        #expect(probe.actions == [.bubbleSessions])
     }
 
     @MainActor

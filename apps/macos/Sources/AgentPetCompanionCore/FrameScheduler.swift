@@ -1,134 +1,136 @@
 import Foundation
 
-public enum FramePlaybackMode: String, Equatable, Sendable {
-    case oneShot
-    case loop
-    case autoreverse
-}
-
-public struct FrameScheduler: Equatable, Sendable {
-    public var fps: Int
-    public var frameCount: Int
-    public var durationMS: Int
-    public var playbackMode: FramePlaybackMode
-
-    public var loops: Bool {
-        get { playbackMode != .oneShot }
-        set { playbackMode = newValue ? .loop : .oneShot }
-    }
+public struct FrameTimeline: Equatable, Sendable {
+    public let durationsMS: [Int]
+    public let cumulativeMS: [Int]
+    public let playback: PlaybackContract
+    public let settleFrameIndex: Int?
+    public let reducedMotionFrameIndex: Int
+    public let periodicCooldownMS: Int?
 
     public init(
-        fps: Int,
-        frameCount: Int,
-        durationMS: Int,
-        loops: Bool = true
+        durationsMS: [Int],
+        playback: PlaybackContract,
+        settleFrameIndex: Int? = nil,
+        reducedMotionFrameIndex: Int,
+        periodicCooldownMS: Int? = nil
     ) {
-        precondition(PetAnimationContract.supportedDurationsMS.contains(durationMS))
-        self.fps = max(1, fps)
-        self.frameCount = max(1, frameCount)
-        self.durationMS = durationMS
-        playbackMode = loops ? .loop : .oneShot
-    }
-
-    public init(
-        fps: Int,
-        frameCount: Int,
-        durationMS: Int,
-        playbackMode: FramePlaybackMode
-    ) {
-        precondition(PetAnimationContract.supportedDurationsMS.contains(durationMS))
-        self.fps = max(1, fps)
-        self.frameCount = max(1, frameCount)
-        self.durationMS = durationMS
-        self.playbackMode = playbackMode
-    }
-
-    public func frameIndex(elapsedSeconds: TimeInterval) -> Int {
-        let elapsed = max(0, elapsedSeconds)
-        let duration = Double(durationMS) / 1_000
-        if playbackMode == .oneShot, elapsed >= duration {
-            return frameCount - 1
+        precondition((2...40).contains(durationsMS.count))
+        precondition(durationsMS.allSatisfy { (50...2_000).contains($0) })
+        precondition(durationsMS.reduce(0, +) <= 5_000)
+        precondition(durationsMS.indices.contains(reducedMotionFrameIndex))
+        if let settleFrameIndex {
+            precondition(durationsMS.indices.contains(settleFrameIndex))
         }
-        if playbackMode == .autoreverse {
-            let cycleDuration = duration * 2
-            let phase = elapsed.truncatingRemainder(dividingBy: cycleDuration)
-            if phase >= duration {
-                let reverseFrame = Int(floor((phase - duration) * Double(fps) + 1e-9))
-                return max(0, frameCount - 1 - min(reverseFrame, frameCount - 1))
-            }
+        self.durationsMS = durationsMS
+        var elapsed = 0
+        cumulativeMS = durationsMS.map { duration in
+            elapsed += duration
+            return elapsed
         }
-        let phase = playbackMode == .loop
-            ? elapsed.truncatingRemainder(dividingBy: duration)
-            : elapsed.truncatingRemainder(dividingBy: duration * 2)
-        // Display-link timestamps commonly land a few ulps below an exact
-        // frame boundary (for example 2.05 at 20 FPS). A nanosecond-scale
-        // tolerance keeps those mathematical boundaries deterministic
-        // without changing any visible frame interval.
-        let raw = Int(floor(phase * Double(fps) + 1e-9))
-        return min(raw, frameCount - 1)
+        self.playback = playback
+        self.settleFrameIndex = settleFrameIndex ?? playback.settleFrameIndex
+        self.reducedMotionFrameIndex = reducedMotionFrameIndex
+        if let periodicCooldownMS, let cooldownMS = playback.cooldownMS {
+            precondition(cooldownMS.count == 2)
+            precondition((cooldownMS[0]...cooldownMS[1]).contains(periodicCooldownMS))
+        }
+        self.periodicCooldownMS = periodicCooldownMS
     }
 
-    public func hasCompleted(elapsedSeconds: TimeInterval) -> Bool {
-        guard playbackMode == .oneShot else { return false }
-        return max(0, elapsedSeconds) >= Double(durationMS) / 1_000
-    }
-}
-
-public struct FrameSamplingPlan: Equatable, Sendable {
-    public let nativeFPS: Int
-    public let requestedFPS: Int
-    public let effectiveFPS: Int
-    public let durationMS: Int
-    public let loops: Bool
-    public let sourceFrameCount: Int
-    public let sourceIndices: [Int]
-
-    public init(
-        nativeFPS: Int,
-        requestedFPS: Int,
-        durationMS: Int,
-        loops: Bool,
-        sourceFrameCount: Int
-    ) {
-        precondition(PetAnimationContract.supportedNativeFPS.contains(nativeFPS))
-        precondition(PetAnimationContract.supportedNativeFPS.contains(requestedFPS))
-        precondition(PetAnimationContract.supportedDurationsMS.contains(durationMS))
-        self.nativeFPS = nativeFPS
-        self.requestedFPS = requestedFPS
-        effectiveFPS = nativeFPS == FpsProfile.standard.fps
-            ? FpsProfile.standard.fps
-            : requestedFPS
-        self.durationMS = durationMS
-        self.loops = loops
-        let resolvedSourceFrameCount = max(0, sourceFrameCount)
-        self.sourceFrameCount = resolvedSourceFrameCount
-
-        let targetCount = min(
-            resolvedSourceFrameCount,
-            effectiveFPS * durationMS / 1_000
+    public init(state: PetStateTiming, periodicCooldownMS: Int? = nil) {
+        self.init(
+            durationsMS: state.frameDurationsMS,
+            playback: state.playback,
+            settleFrameIndex: state.playback.mode == .periodic
+                ? state.reducedMotionFrameIndex
+                : state.playback.settleFrameIndex,
+            reducedMotionFrameIndex: state.reducedMotionFrameIndex,
+            periodicCooldownMS: periodicCooldownMS
         )
-        guard targetCount > 0 else {
-            sourceIndices = []
-            return
-        }
-        guard targetCount < resolvedSourceFrameCount else {
-            sourceIndices = Array(0..<resolvedSourceFrameCount)
-            return
-        }
+    }
 
-        if loops {
-            sourceIndices = (0..<targetCount).map { logicalIndex in
-                logicalIndex * resolvedSourceFrameCount / targetCount
+    public var totalDurationMS: Int {
+        cumulativeMS.last ?? 0
+    }
+
+    public var frameCount: Int {
+        durationsMS.count
+    }
+
+    public func frameIndex(elapsedMS: Int, reducedMotion: Bool = false) -> Int {
+        if reducedMotion {
+            return reducedMotionFrameIndex
+        }
+        let elapsed = max(0, elapsedMS)
+        switch playback.mode {
+        case .loop:
+            return authoredFrame(at: elapsed % totalDurationMS)
+        case .onceHold:
+            guard elapsed < totalDurationMS else {
+                return settleFrameIndex ?? frameCount - 1
             }
-        } else if targetCount == 1 {
-            sourceIndices = [resolvedSourceFrameCount - 1]
-        } else {
-            sourceIndices = (0..<targetCount).map { logicalIndex in
-                Int((Double(logicalIndex)
-                    * Double(resolvedSourceFrameCount - 1)
-                    / Double(targetCount - 1)).rounded())
+            return authoredFrame(at: elapsed)
+        case .periodic:
+            guard let periodicCooldownMS else {
+                preconditionFailure("periodic playback requires one sampled cooldown")
+            }
+            let cycle = totalDurationMS + periodicCooldownMS
+            let phase = cycle > 0 ? elapsed % cycle : 0
+            guard phase < totalDurationMS else {
+                return settleFrameIndex ?? frameCount - 1
+            }
+            return authoredFrame(at: phase)
+        case .burstThenSettle:
+            let repeats = max(1, playback.entryRepeatCount ?? 1)
+            let activeDuration = totalDurationMS * repeats
+            guard elapsed < activeDuration else {
+                return settleFrameIndex ?? frameCount - 1
+            }
+            return authoredFrame(at: elapsed % totalDurationMS)
+        }
+    }
+
+    public func hasCompleted(elapsedMS: Int) -> Bool {
+        let elapsed = max(0, elapsedMS)
+        switch playback.mode {
+        case .loop, .periodic:
+            return false
+        case .onceHold:
+            return elapsed >= totalDurationMS
+        case .burstThenSettle:
+            return elapsed >= totalDurationMS * max(1, playback.entryRepeatCount ?? 1)
+        }
+    }
+
+    /// Resolves directly from wall-clock elapsed time. Missed boundaries are
+    /// intentionally not replayed after a stall.
+    public func resolvedFrameAfterStall(
+        elapsedMS: Int,
+        reducedMotion: Bool = false
+    ) -> Int {
+        frameIndex(elapsedMS: elapsedMS, reducedMotion: reducedMotion)
+    }
+
+    /// Resolves a frame inside one authored pass. Periodic scheduling owns
+    /// cooldown selection separately so repeated lookups cannot resample it.
+    public func authoredFrameIndex(elapsedMS: Int) -> Int {
+        authoredFrame(at: min(max(0, elapsedMS), max(0, totalDurationMS - 1)))
+    }
+
+    private func authoredFrame(at phaseMS: Int) -> Int {
+        let target = max(0, phaseMS)
+        var low = 0
+        var high = cumulativeMS.count
+        while low < high {
+            let middle = (low + high) / 2
+            if target < cumulativeMS[middle] {
+                high = middle
+            } else {
+                low = middle + 1
             }
         }
+        return min(low, frameCount - 1)
     }
 }
 
@@ -147,38 +149,36 @@ public struct FramePlaybackState: Equatable, Sendable {
         enteredAt = time
     }
 
-    public func frameIndex(at time: TimeInterval, scheduler: FrameScheduler) -> Int {
-        scheduler.frameIndex(elapsedSeconds: max(0, time - enteredAt))
+    public func frameIndex(
+        at time: TimeInterval,
+        timeline: FrameTimeline,
+        reducedMotion: Bool = false
+    ) -> Int {
+        timeline.frameIndex(
+            elapsedMS: Int(max(0, time - enteredAt) * 1_000),
+            reducedMotion: reducedMotion
+        )
     }
 
-    public func hasCompleted(at time: TimeInterval, scheduler: FrameScheduler) -> Bool {
-        scheduler.hasCompleted(elapsedSeconds: max(0, time - enteredAt))
+    public func hasCompleted(at time: TimeInterval, timeline: FrameTimeline) -> Bool {
+        timeline.hasCompleted(elapsedMS: Int(max(0, time - enteredAt) * 1_000))
     }
 }
 
 public struct RendererBudget: Equatable, Sendable {
     public var quality: QualityLevel
-    public var fpsProfile: FpsProfile
+    public var frameCount: Int
     public var decodedStateMB: Double
     public var rendererBudgetMB: Int
     public var usesRingCache: Bool
 
-    public init(quality: QualityLevel, fpsProfile: FpsProfile) {
+    public init(quality: QualityLevel, frameCount: Int) {
         self.quality = quality
-        self.fpsProfile = fpsProfile
+        self.frameCount = min(max(frameCount, 2), 40)
         let size = quality.renderSize
-        let frames = fpsProfile.fps * 2
-        decodedStateMB = Double(size.width * size.height * 4 * frames) / 1024.0 / 1024.0
-        switch (quality, fpsProfile) {
-        case (.original, .smooth):
-            rendererBudgetMB = 420
-        case (.original, .standard):
-            rendererBudgetMB = 320
-        case (_, .smooth):
-            rendererBudgetMB = 260
-        case (_, .standard):
-            rendererBudgetMB = 180
-        }
-        usesRingCache = quality == .original
+        decodedStateMB = Double(size.width * size.height * 4 * self.frameCount)
+            / 1024.0 / 1024.0
+        rendererBudgetMB = max(64, Int(ceil(decodedStateMB * 3)))
+        usesRingCache = false
     }
 }

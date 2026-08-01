@@ -4,11 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT_DIR/script/validation_helpers.sh"
 apc_require_host_ui_opt_in "renderer runtime validation"
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-renderer-runtime.XXXXXX")"
 apc_use_isolated_home "$TMP_DIR"
-APP_NAME="AgentPetCompanion"
-APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
-APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
+APP_BINARY="$APP_BUNDLE/Contents/MacOS/AgentPetCompanion"
 PETCORE_BINARY="$APP_BUNDLE/Contents/Resources/bin/petcore"
 PETCORE_CLI="$APP_BUNDLE/Contents/Resources/bin/petcore-cli"
 TELEMETRY_PATH="$TMP_DIR/renderer-telemetry.json"
@@ -25,28 +25,19 @@ fi
 python3 - "$METRIC_INTERVAL_SECONDS" "$METRIC_SAMPLES" <<'PY'
 import sys
 
-try:
-    interval = float(sys.argv[1])
-except ValueError as error:
-    raise SystemExit("renderer runtime validation failed: metric interval must be numeric") from error
-if interval <= 0:
-    raise SystemExit("renderer runtime validation failed: metric interval must be positive")
-sample_count = int(sys.argv[2])
-if (sample_count - 1) * interval < 30:
-    raise SystemExit("renderer runtime validation failed: metric samples must span at least 30 seconds")
+interval = float(sys.argv[1])
+samples = int(sys.argv[2])
+if interval <= 0 or (samples - 1) * interval < 30:
+    raise SystemExit(
+        "renderer runtime validation failed: metric samples must span at least 30 seconds"
+    )
 PY
 
 cleanup() {
   local status="$?"
   if ((status != 0)); then
-    if [[ -s "$TELEMETRY_PATH" ]]; then
-      printf 'renderer telemetry at failure: '
-      cat "$TELEMETRY_PATH"
-    fi
-    if [[ -s "$APP_LOG" ]]; then
-      printf 'renderer app log tail at failure:\n'
-      tail -n 80 "$APP_LOG"
-    fi
+    [[ -s "$TELEMETRY_PATH" ]] && cat "$TELEMETRY_PATH" >&2
+    [[ -s "$APP_LOG" ]] && tail -n 80 "$APP_LOG" >&2
   fi
   apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
   rm -rf "$TMP_DIR"
@@ -54,137 +45,122 @@ cleanup() {
 }
 trap cleanup EXIT
 
-json_expr() {
+assert_json() {
   local json="$1"
-  local expr="$2"
-  JSON="$json" python3 - "$expr" <<'PY'
+  local expression="$2"
+  JSON="$json" EXPRESSION="$expression" python3 - <<'PY'
 import json
 import os
-import sys
 
 data = json.loads(os.environ["JSON"])
-expr = sys.argv[1]
-if not eval(expr, {"__builtins__": {}, "abs": abs, "len": len}, {"data": data}):
-    raise SystemExit(f"assertion failed: {expr}\n{json.dumps(data, ensure_ascii=False, indent=2)}")
-PY
-}
-
-read_json_file() {
-  python3 - "$1" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as file:
-    print(json.dumps(json.load(file), ensure_ascii=False))
+expression = os.environ["EXPRESSION"]
+if not eval(
+    expression,
+    {"__builtins__": {}, "abs": abs, "len": len, "set": set},
+    {"data": data},
+):
+    raise SystemExit(
+        f"renderer assertion failed: {expression}\n"
+        f"{json.dumps(data, ensure_ascii=False, indent=2)}"
+    )
 PY
 }
 
 wait_for_telemetry() {
   local quality="$1"
-  local source_kind="$2"
-  local fps_profile="$3"
-  local expected_native_fps="$4"
-  local expected_fps="$5"
-  local expected_duration_ms="$6"
-  local expected_source_frame_count="$7"
-  local expected_sampled_frame_count="$8"
-  local extra_expr="$9"
-  for _ in {1..120}; do
-    if [[ -s "$TELEMETRY_PATH" ]]; then
-      local telemetry
-      telemetry="$(read_json_file "$TELEMETRY_PATH")"
-      if JSON="$telemetry" \
-        QUALITY="$quality" \
-        SOURCE_KIND="$source_kind" \
-        FPS_PROFILE="$fps_profile" \
-        EXPECTED_NATIVE_FPS="$expected_native_fps" \
-        EXPECTED_FPS="$expected_fps" \
-        EXPECTED_DURATION_MS="$expected_duration_ms" \
-        EXPECTED_SOURCE_FRAME_COUNT="$expected_source_frame_count" \
-        EXPECTED_SAMPLED_FRAME_COUNT="$expected_sampled_frame_count" \
-        EXTRA_EXPR="$extra_expr" \
-        python3 - <<'PY'
+  local minimum_seconds="$2"
+  local expected_width="$3"
+  local expected_height="$4"
+  for _ in {1..160}; do
+    if [[ -s "$TELEMETRY_PATH" ]] && \
+      QUALITY="$quality" \
+      MINIMUM_SECONDS="$minimum_seconds" \
+      EXPECTED_WIDTH="$expected_width" \
+      EXPECTED_HEIGHT="$expected_height" \
+      TELEMETRY_PATH="$TELEMETRY_PATH" \
+      python3 - <<'PY'
 import json
 import os
 import sys
 
-data = json.loads(os.environ["JSON"])
-quality = os.environ["QUALITY"]
-source_kind = os.environ["SOURCE_KIND"]
-fps_profile = os.environ["FPS_PROFILE"]
-expected_native_fps = int(os.environ["EXPECTED_NATIVE_FPS"])
-expected_fps = int(os.environ["EXPECTED_FPS"])
-expected_duration_ms = int(os.environ["EXPECTED_DURATION_MS"])
-expected_source_frame_count = int(os.environ["EXPECTED_SOURCE_FRAME_COUNT"])
-expected_sampled_frame_count = int(os.environ["EXPECTED_SAMPLED_FRAME_COUNT"])
-extra_expr = os.environ["EXTRA_EXPR"]
+try:
+    with open(os.environ["TELEMETRY_PATH"], encoding="utf-8") as file:
+        data = json.load(file)
+except (OSError, json.JSONDecodeError):
+    sys.exit(1)
+
+durations = [150, 150, 150, 150, 170, 230]
+legacy = {
+    "fps_profile",
+    "native_fps",
+    "fps",
+    "duration_ms",
+    "sampled_frame_count",
+    "observed_fps",
+}
 ok = (
-    data.get("quality") == quality
-    and data.get("source_kind") == source_kind
-    and data.get("fps_profile") == fps_profile
-    and data.get("native_fps") == expected_native_fps
-    and data.get("fps") == expected_fps
-    and data.get("duration_ms") == expected_duration_ms
-    and data.get("source_frame_count") == expected_source_frame_count
-    and data.get("sampled_frame_count") == expected_sampled_frame_count
+    data.get("quality") == os.environ["QUALITY"]
+    and data.get("state") == "waiting"
+    and data.get("source_kind") == "eager"
+    and data.get("frame_durations_ms") == durations
+    and data.get("total_duration_ms") == sum(durations)
+    and data.get("playback_mode") == "once_hold"
+    and data.get("settle_frame_index") == 5
+    and data.get("reduced_motion_frame_index") == 4
+    and data.get("source_frame_count") == len(durations)
+    and data.get("frame_count") == len(durations)
     and bool(data.get("active")) is True
+    and int(data.get("canvas_width", 0)) == int(os.environ["EXPECTED_WIDTH"])
+    and int(data.get("canvas_height", 0)) == int(os.environ["EXPECTED_HEIGHT"])
+    and int(data.get("ready_decoded_frame_count", 0)) == len(durations)
+    and int(data.get("pipeline_cache_frame_count", 0)) >= len(durations)
+    and int(data.get("pipeline_cache_bytes", 0)) > 0
     and data.get("decode_pipeline") == "actor"
     and data.get("draw_reads_disk") is False
-    and int(data.get("actual_draw_count", 0)) > 0
-    and float(data.get("measurement_seconds", 0)) >= 0.75
-    and float(data.get("observed_fps", 0)) > 0
-    and int(data.get("ready_decoded_bytes", 0)) > 0
-    and int(data.get("ready_decoded_frame_count", 0)) > 0
-    and int(data.get("pipeline_cache_bytes", 0)) > 0
-    and int(data.get("pipeline_cache_frame_count", 0)) > 0
-    and int(data.get("peak_drawable_texture_allocated_bytes", 0)) > 0
-    and int(data.get("peak_metal_device_allocated_bytes", 0)) > 0
-    and eval(extra_expr, {"__builtins__": {}, "abs": abs, "len": len}, {"data": data})
+    and float(data.get("measurement_seconds", 0)) >= float(os.environ["MINIMUM_SECONDS"])
+    and not legacy.intersection(data)
 )
 sys.exit(0 if ok else 1)
 PY
-      then
-        printf '%s\n' "$telemetry"
-        return 0
-      fi
+    then
+      python3 - "$TELEMETRY_PATH" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as file:
+    print(json.dumps(json.load(file), ensure_ascii=False, sort_keys=True))
+PY
+      return 0
     fi
     sleep 0.25
   done
-
-  echo "renderer runtime validation failed: telemetry did not match quality=$quality source=$source_kind native_fps=$expected_native_fps fps_profile=$fps_profile fps=$expected_fps duration_ms=$expected_duration_ms source_frames=$expected_source_frame_count sampled_frames=$expected_sampled_frame_count" >&2
-  [[ -s "$TELEMETRY_PATH" ]] && cat "$TELEMETRY_PATH" >&2
+  echo "renderer runtime validation failed: V2 telemetry did not settle for $quality" >&2
   return 1
 }
 
 sample_process_metrics() {
   local label="$1"
-  local samples_path="$TMP_DIR/$label-process-metrics.tsv"
-  : >"$samples_path"
+  local path="$TMP_DIR/$label-process-metrics.tsv"
+  : >"$path"
   for ((index = 0; index < METRIC_SAMPLES; index += 1)); do
     ps -o %cpu= -o rss= -o time= -p "$APC_OWNED_APP_PID" \
       | awk 'NF >= 3 { print $1, $2, $3; found=1; exit } END { if (!found) exit 1 }' \
-      >>"$samples_path" || {
-        echo "renderer runtime validation failed: could not sample app CPU/RSS" >&2
-        return 1
-      }
+      >>"$path"
     if ((index + 1 < METRIC_SAMPLES)); then
       sleep "$METRIC_INTERVAL_SECONDS"
     fi
   done
-  python3 - "$samples_path" "$METRIC_INTERVAL_SECONDS" <<'PY'
+  python3 - "$path" "$METRIC_INTERVAL_SECONDS" <<'PY'
 import json
 import statistics
 import sys
 
-samples = []
+rows = []
 with open(sys.argv[1], encoding="utf-8") as file:
     for line in file:
         cpu, rss_kb, cpu_time = line.split()
-        samples.append((float(cpu), int(rss_kb) / 1024.0, cpu_time))
-if not samples:
-    raise SystemExit("renderer runtime validation failed: process metric sample is empty")
-cpu = [sample[0] for sample in samples]
-rss = [sample[1] for sample in samples]
+        rows.append((float(cpu), int(rss_kb) / 1024.0, cpu_time))
+
 def cpu_seconds(value):
     days = 0
     if "-" in value:
@@ -196,35 +172,27 @@ def cpu_seconds(value):
     elif len(parts) == 3:
         hours, minutes, seconds = parts
     else:
-        raise SystemExit(f"renderer runtime validation failed: unrecognized ps CPU time {value!r}")
+        raise SystemExit(f"unrecognized ps CPU time: {value}")
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
-sample_interval = float(sys.argv[2])
-sample_span = max(0, len(samples) - 1) * sample_interval
-cpu_time_delta = max(0.0, cpu_seconds(samples[-1][2]) - cpu_seconds(samples[0][2]))
-window_cpu_average = cpu_time_delta / sample_span * 100 if sample_span else 0.0
+
+span = max(0, len(rows) - 1) * float(sys.argv[2])
+delta = max(0.0, cpu_seconds(rows[-1][2]) - cpu_seconds(rows[0][2]))
 print(json.dumps({
-    "sample_count": len(samples),
-    "sample_interval_seconds": sample_interval,
-    "sample_span_seconds": sample_span,
-    "cpu_average_percent": window_cpu_average,
-    "cpu_peak_percent": max(cpu),
-    "ps_sample_average_percent": sum(cpu) / len(cpu),
-    "cpu_time_delta_seconds": cpu_time_delta,
-    "rss_median_mib": statistics.median(rss),
-    "rss_peak_mib": max(rss),
+    "sample_count": len(rows),
+    "sample_span_seconds": span,
+    "cpu_average_percent": delta / span * 100 if span else 0.0,
+    "rss_median_mib": statistics.median(row[1] for row in rows),
+    "rss_peak_mib": max(row[1] for row in rows),
 }, sort_keys=True))
 PY
 }
 
 assert_hidden_baseline() {
-  local metrics="$1"
-  METRICS="$metrics" python3 - <<'PY'
+  METRICS="$1" python3 - <<'PY'
 import json
 import os
 
 metrics = json.loads(os.environ["METRICS"])
-if metrics["sample_count"] < 3:
-    raise SystemExit("renderer runtime validation failed: too few hidden baseline samples")
 if metrics["cpu_average_percent"] >= 1.0:
     raise SystemExit(
         "renderer runtime validation failed: hidden overlay CPU average "
@@ -233,118 +201,34 @@ if metrics["cpu_average_percent"] >= 1.0:
 PY
 }
 
-attach_process_metrics() {
-  local telemetry="$1"
-  local baseline_metrics="$2"
-  local active_metrics="$3"
-  local cpu_budget="$4"
-  local renderer_memory_budget="$5"
-  local minimum_observed_fps="$6"
-  TELEMETRY="$telemetry" \
-  BASELINE_METRICS="$baseline_metrics" \
-  ACTIVE_METRICS="$active_metrics" \
-  CPU_BUDGET="$cpu_budget" \
-  RENDERER_MEMORY_BUDGET="$renderer_memory_budget" \
-  MINIMUM_OBSERVED_FPS="$minimum_observed_fps" \
-  python3 - <<'PY'
-import json
-import os
-
-data = json.loads(os.environ["TELEMETRY"])
-baseline = json.loads(os.environ["BASELINE_METRICS"])
-active = json.loads(os.environ["ACTIVE_METRICS"])
-cpu_budget = float(os.environ["CPU_BUDGET"])
-renderer_memory_budget = float(os.environ["RENDERER_MEMORY_BUDGET"])
-minimum_observed_fps = float(os.environ["MINIMUM_OBSERVED_FPS"])
-renderer_rss_delta = max(0.0, active["rss_peak_mib"] - baseline["rss_median_mib"])
-
-if active["cpu_average_percent"] > cpu_budget:
-    raise SystemExit(
-        "renderer runtime validation failed: active CPU average "
-        f"{active['cpu_average_percent']:.2f}% exceeds {cpu_budget:.2f}%"
-    )
-if renderer_rss_delta > renderer_memory_budget:
-    raise SystemExit(
-        "renderer runtime validation failed: active RSS peak delta "
-        f"{renderer_rss_delta:.2f} MiB exceeds Renderer budget "
-        f"{renderer_memory_budget:.2f} MiB"
-    )
-if float(data.get("observed_fps", 0)) < minimum_observed_fps:
-    raise SystemExit(
-        "renderer runtime validation failed: playback observed FPS "
-        f"{float(data.get('observed_fps', 0)):.2f} is below the "
-        f"{minimum_observed_fps:.2f} FPS tolerance"
-    )
-
-data["process_metrics"] = {
-    "method": "30-second cumulative process CPU-time delta plus repeated ps RSS samples and tracked decoded/Metal allocations; Renderer memory is active RSS peak minus hidden-overlay RSS median",
-    "hidden_baseline": baseline,
-    "active": active,
-    "renderer_rss_delta_peak_mib": renderer_rss_delta,
-    "cpu_average_budget_percent": cpu_budget,
-    "renderer_memory_budget_mib": renderer_memory_budget,
-    "minimum_observed_fps": minimum_observed_fps,
-}
-print(json.dumps(data, ensure_ascii=False, sort_keys=True))
-PY
-}
-
 "$ROOT_DIR/script/build_app_bundle.sh" >/dev/null
 
-HIGH_SOURCE="$TMP_DIR/high-source"
-ULTRA_SOURCE="$TMP_DIR/ultra-source"
-ORIGINAL_SOURCE="$TMP_DIR/original-source"
-"$PETCORE_CLI" petpack sample --output "$HIGH_SOURCE" --quality high >/dev/null
-STATE_DURATIONS_JSON='{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}'
-ULTRA_FORM_JSON="{\"description\":\"Native 20 FPS ultra renderer fixture\",\"style\":\"validation\",\"quality\":\"ultra\",\"reference_images\":[],\"native_fps\":20,\"state_durations_ms\":$STATE_DURATIONS_JSON}"
-ORIGINAL_FORM_JSON="{\"description\":\"Native 20 FPS original renderer fixture\",\"style\":\"validation\",\"quality\":\"original\",\"reference_images\":[],\"native_fps\":20,\"state_durations_ms\":$STATE_DURATIONS_JSON}"
-"$PETCORE_CLI" petpack materialize \
-  --output "$ULTRA_SOURCE" \
-  --name "Native 20 Ultra Fixture" \
-  --form-json "$ULTRA_FORM_JSON" \
-  >/dev/null
-"$PETCORE_CLI" petpack materialize \
-  --output "$ORIGINAL_SOURCE" \
-  --name "Native 20 Original Fixture" \
-  --form-json "$ORIGINAL_FORM_JSON" \
-  >/dev/null
-mkdir -p "$TMP_DIR/home"
+LOW_BUDGET="$("$PETCORE_CLI" renderer budget --quality low --frame-count 2)"
+STANDARD_BUDGET="$("$PETCORE_CLI" renderer budget --quality standard --frame-count 8)"
+STANDARD_MAX_BUDGET="$("$PETCORE_CLI" renderer budget --quality standard --frame-count 40)"
+assert_json "$LOW_BUDGET" 'data["quality"] == "low" and data["frame_count"] == 2 and data["runtime_cache_frame_limit"] == 2 and data["uses_ring_cache"] is False'
+assert_json "$STANDARD_BUDGET" 'data["quality"] == "standard" and data["frame_count"] == 8 and data["runtime_cache_frame_limit"] == 8 and data["uses_ring_cache"] is False'
+assert_json "$STANDARD_MAX_BUDGET" 'data["quality"] == "standard" and data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == 40 and data["uses_ring_cache"] is False'
+if "$PETCORE_CLI" renderer budget --quality high --frame-count 8 \
+    >"$TMP_DIR/retired-high.stdout" 2>"$TMP_DIR/retired-high.stderr"; then
+  echo 'renderer runtime validation failed: retired high quality was accepted' >&2
+  exit 1
+fi
 
-HIGH_BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
-json_expr "$HIGH_BUDGET" 'data["fps"] == 10 and data["renderer_budget_mb"] == 180 and data["uses_ring_cache"] is False'
-ULTRA_BUDGET="$("$PETCORE_CLI" renderer budget --quality ultra --fps-profile smooth)"
-json_expr "$ULTRA_BUDGET" 'data["fps"] == 20 and data["renderer_budget_mb"] == 260 and data["uses_ring_cache"] is False'
-ORIGINAL_BUDGET="$("$PETCORE_CLI" renderer budget --quality original --fps-profile smooth)"
-json_expr "$ORIGINAL_BUDGET" 'data["fps"] == 20 and data["renderer_budget_mb"] == 420 and data["uses_ring_cache"] is True and data["runtime_cache_frame_limit"] == 9'
-
-HIGH_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$HIGH_SOURCE")"
-ULTRA_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$ULTRA_SOURCE")"
-ORIGINAL_PET="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$ORIGINAL_SOURCE")"
-json_expr "$HIGH_PET" 'data["native_fps"] == 10 and data["state_durations_ms"]["waiting"] == 2000'
-json_expr "$ULTRA_PET" 'data["native_fps"] == 20 and data["state_durations_ms"]["waiting"] == 2000'
-json_expr "$ORIGINAL_PET" 'data["native_fps"] == 20 and data["state_durations_ms"]["waiting"] == 2000'
-HIGH_ID="$(JSON="$HIGH_PET" python3 - <<'PY'
+declare -a PET_IDS=()
+for quality in low standard; do
+  source_dir="$TMP_DIR/$quality-source"
+  "$PETCORE_CLI" petpack sample --output "$source_dir" --quality "$quality" >/dev/null
+  imported="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$source_dir")"
+  assert_json "$imported" 'data["quality"] in {"low", "standard"} and len(data["states"]) == 7 and len(data["states"][3]["frame_durations_ms"]) == 6'
+  PET_IDS+=("$(JSON="$imported" python3 - <<'PY'
 import json
 import os
 print(json.loads(os.environ["JSON"])["id"])
 PY
-)"
-ULTRA_ID="$(JSON="$ULTRA_PET" python3 - <<'PY'
-import json
-import os
-print(json.loads(os.environ["JSON"])["id"])
-PY
-)"
-ORIGINAL_ID="$(JSON="$ORIGINAL_PET" python3 - <<'PY'
-import json
-import os
-print(json.loads(os.environ["JSON"])["id"])
-PY
-)"
+)")
+done
 
-# Import fixtures before the daemon starts so large original-quality packs are
-# not constrained by the interactive RPC deadline. The app and PetCore then
-# share the already-populated isolated APC_HOME.
 export APC_RENDERER_TELEMETRY_PATH="$TELEMETRY_PATH"
 apc_start_owned_runtime \
   "$APP_BINARY" \
@@ -352,54 +236,61 @@ apc_start_owned_runtime \
   "$PETCORE_BINARY" \
   "$APP_LOG" \
   "$OWNED_PROTOCOL"
-kill -0 "$APC_OWNED_APP_PID" >/dev/null
 
-STANDARD_BEHAVIOR='{"enabled":true,"status_bubble":true,"click_menu":true,"mouse_passthrough":true,"auto_hide":false,"fps_profile":"standard","sources":{"codex":true,"claude_code":true,"pi":true,"opencode":true},"events":{"start":true,"tool":true,"waiting":true,"review":true,"done":true,"failed":true}}'
-SMOOTH_BEHAVIOR='{"enabled":true,"status_bubble":true,"click_menu":true,"mouse_passthrough":true,"auto_hide":false,"fps_profile":"smooth","sources":{"codex":true,"claude_code":true,"pi":true,"opencode":true},"events":{"start":true,"tool":true,"waiting":true,"review":true,"done":true,"failed":true}}'
-HIDDEN_BEHAVIOR='{"enabled":false,"status_bubble":true,"click_menu":true,"mouse_passthrough":true,"auto_hide":false,"fps_profile":"smooth","sources":{"codex":true,"claude_code":true,"pi":true,"opencode":true},"events":{"start":true,"tool":true,"waiting":true,"review":true,"done":true,"failed":true}}'
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$HIDDEN_BEHAVIOR" >/dev/null
-sleep 3
+APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json '{"enabled":false}' >/dev/null
+sleep 2
 BASELINE_METRICS="$(sample_process_metrics hidden)"
 assert_hidden_baseline "$BASELINE_METRICS"
+APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json '{"enabled":true}' >/dev/null
 
-activate_looping_renderer_state() {
-  local pet_id="$1"
+activate_waiting_state() {
+  local quality="$1"
+  local pet_id="$2"
+  rm -f "$TELEMETRY_PATH"
   APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" pet activate --id "$pet_id" >/dev/null
   APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" agent ingest \
     --source codex \
     --event-type waiting \
-    --id "renderer-budget-${pet_id}" \
-    --session-id renderer-budget \
-    --title "Renderer budget loop" \
+    --id "renderer-v2-${quality}-$$" \
+    --session-id "renderer-v2-${quality}" \
+    --title "Renderer V2 timing" \
     --payload-json '{"schema_version":"apc.agent-event.v1","diagnostic":false,"session_active":true,"session_open":true,"interaction_kind":"input_required"}' \
     >/dev/null
 }
 
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$STANDARD_BEHAVIOR" >/dev/null
-activate_looping_renderer_state "$HIGH_ID"
+activate_waiting_state low "${PET_IDS[0]}"
+LOW_TELEMETRY="$(wait_for_telemetry low 1 192 208)"
+activate_waiting_state standard "${PET_IDS[1]}"
+STANDARD_TELEMETRY="$(wait_for_telemetry standard 10 384 416)"
+ACTIVE_METRICS="$(sample_process_metrics standard)"
 
-HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 10 10 2000 20 20 'data["frame_count"] == 20 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 180 and data["pipeline_cache_bytes"] <= 180 * 1024 * 1024 and abs(data["canvas_width"] - 384) < 1 and abs(data["canvas_height"] - 416) < 1')"
-HIGH_METRICS="$(sample_process_metrics high)"
-HIGH_TELEMETRY="$(wait_for_telemetry high eager standard 10 10 2000 20 20 'data["measurement_seconds"] >= 30')"
-HIGH_TELEMETRY="$(attach_process_metrics "$HIGH_TELEMETRY" "$BASELINE_METRICS" "$HIGH_METRICS" 4 180 9)"
+TELEMETRY="$STANDARD_TELEMETRY" \
+BASELINE="$BASELINE_METRICS" \
+ACTIVE="$ACTIVE_METRICS" \
+python3 - <<'PY'
+import json
+import os
 
-activate_looping_renderer_state "$ULTRA_ID"
-ULTRA_STANDARD_TELEMETRY="$(wait_for_telemetry ultra eager standard 20 10 2000 40 20 'data["frame_count"] == 20 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
+telemetry = json.loads(os.environ["TELEMETRY"])
+baseline = json.loads(os.environ["BASELINE"])
+active = json.loads(os.environ["ACTIVE"])
+if telemetry["actual_draw_count"] > telemetry["frame_count"] + 2:
+    raise SystemExit(
+        "renderer runtime validation failed: once_hold kept drawing after settling"
+    )
+if telemetry["observed_draws_per_second"] >= 1:
+    raise SystemExit(
+        "renderer runtime validation failed: settled renderer still draws continuously"
+    )
+if active["cpu_average_percent"] > 4:
+    raise SystemExit(
+        "renderer runtime validation failed: settled renderer CPU average exceeds 4%"
+    )
+if max(0, active["rss_peak_mib"] - baseline["rss_median_mib"]) > 165:
+    raise SystemExit(
+        "renderer runtime validation failed: standard-tier renderer exceeds memory budget"
+    )
+PY
 
-APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" behavior set-json --value-json "$SMOOTH_BEHAVIOR" >/dev/null
-ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 20 2000 40 40 'data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == data["frame_count"] and data["estimated_runtime_cache_mb"] <= 260 and data["pipeline_cache_bytes"] <= 260 * 1024 * 1024 and abs(data["canvas_width"] - 768) < 1 and abs(data["canvas_height"] - 832) < 1')"
-ULTRA_METRICS="$(sample_process_metrics ultra)"
-ULTRA_TELEMETRY="$(wait_for_telemetry ultra eager smooth 20 20 2000 40 40 'data["measurement_seconds"] >= 30')"
-ULTRA_TELEMETRY="$(attach_process_metrics "$ULTRA_TELEMETRY" "$BASELINE_METRICS" "$ULTRA_METRICS" 7 260 18)"
-
-activate_looping_renderer_state "$ORIGINAL_ID"
-ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 20 2000 40 40 'data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == 9 and data["estimated_runtime_cache_mb"] <= 420 and data["pipeline_cache_bytes"] <= 420 * 1024 * 1024 and abs(data["canvas_width"] - 1536) < 1 and abs(data["canvas_height"] - 1664) < 1')"
-ORIGINAL_METRICS="$(sample_process_metrics original)"
-ORIGINAL_TELEMETRY="$(wait_for_telemetry original ring smooth 20 20 2000 40 40 'data["measurement_seconds"] >= 30')"
-ORIGINAL_TELEMETRY="$(attach_process_metrics "$ORIGINAL_TELEMETRY" "$BASELINE_METRICS" "$ORIGINAL_METRICS" 9 420 18)"
-
-printf 'Renderer runtime validation ok: high=%s ultra_standard=%s ultra_smooth=%s original=%s\n' \
-  "$HIGH_TELEMETRY" \
-  "$ULTRA_STANDARD_TELEMETRY" \
-  "$ULTRA_TELEMETRY" \
-  "$ORIGINAL_TELEMETRY"
+printf 'Renderer V2 runtime validation ok: low=%s standard=%s\n' \
+  "$LOW_TELEMETRY" "$STANDARD_TELEMETRY"

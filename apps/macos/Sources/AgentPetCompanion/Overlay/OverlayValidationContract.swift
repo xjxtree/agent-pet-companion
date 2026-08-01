@@ -21,8 +21,8 @@ public enum AgentPetCompanionUIValidationContract {
         try validateMultiDisplaySelection()
         passed.append("geometry.current-pointer-display")
 
-        try validateScalePolicy()
-        passed.append("geometry.scale-policy")
+        try validateDisplayWidthPolicy()
+        passed.append("geometry.display-width-policy")
 
         try validateActiveSessionBubbleContent()
         passed.append("bubble.active-session-content-retention")
@@ -39,14 +39,11 @@ public enum AgentPetCompanionUIValidationContract {
         try await validateBubbleDisclosureState()
         passed.append("bubble.expand-preserves-consumed-sessions")
 
-        try validateScheduler()
-        passed.append("scheduler.loop-and-one-shot")
-
-        try await validateAccessibleResize()
-        passed.append("accessibility.resize-slider-keyboard-actions")
+        try validateFrameTimeline()
+        passed.append("timeline.authored-durations-and-playback")
 
         try await validateFramePipeline()
-        passed.append("renderer.actor-lru-ring-ready-handoff")
+        passed.append("renderer.actor-lru-eager-ready-handoff")
 
         try await validatePointerMonitor()
         passed.append("pointer.event-driven-monitor")
@@ -82,59 +79,30 @@ public enum AgentPetCompanionUIValidationContract {
             CGRect(x: -1280, y: 0, width: 1280, height: 775)
         ]
         for visibleFrame in visibleFrames {
-            for scale: CGFloat in [0.10, 0.72, 1.8] {
+            for displayWidthPt: CGFloat in [80, 112, 224] {
                 let localPetCenter = CGPoint(x: 420, y: 360)
-                let resizeCenter = OverlayGeometry.resizeCenter(
-                    petCenter: localPetCenter,
-                    scale: scale
-                )
-                let menuCenter = OverlayGeometry.menuCenter(
-                    petCenter: localPetCenter,
-                    scale: scale
-                )
-                try require(
-                    abs(resizeCenter.x - menuCenter.x) < 0.001,
-                    "resize handle left the pet-side control column at scale \(scale)"
-                )
-                try require(
-                    !OverlayGeometry.rect(center: resizeCenter, size: OverlayGeometry.resizeHitSize)
-                        .intersects(OverlayGeometry.rect(center: menuCenter, size: OverlayGeometry.menuHitSize)),
-                    "resize and bubble-toggle hit regions overlap at scale \(scale)"
-                )
-
                 let menuScreenRect = OverlayGeometry.rect(
                     center: OverlayGeometry.menuScreenCenter(
                         petScreenCenter: localPetCenter,
-                        scale: scale
+                        displayWidthPt: displayWidthPt
                     ),
                     size: OverlayGeometry.menuHitSize
                 )
-                let resizeScreenRect = OverlayGeometry.rect(
-                    center: OverlayGeometry.resizeScreenCenter(
-                        petScreenCenter: localPetCenter,
-                        scale: scale
-                    ),
-                    size: OverlayGeometry.resizeHitSize
-                )
                 let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petScreenCenter: localPetCenter,
                     clickMenuEnabled: true
                 )
                 try require(
                     activationRect.contains(menuScreenRect.insetBy(dx: -8, dy: -8)),
-                    "bubble toggle lacks a preactivation margin at scale \(scale)"
-                )
-                try require(
-                    activationRect.contains(resizeScreenRect.insetBy(dx: -8, dy: -8)),
-                    "resize handle lacks a preactivation margin at scale \(scale)"
+                    "bubble toggle lacks a preactivation margin at \(displayWidthPt)pt"
                 )
 
                 let bubbleSize = CGSize(width: OverlayGeometry.bubbleWidth, height: 76)
                 let bubbleRect = OverlayGeometry.rect(
                     center: OverlayGeometry.bubbleScreenCenter(
                         bubbleSize: bubbleSize,
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         petScreenCenter: localPetCenter,
                         screenFrame: visibleFrame
                     ),
@@ -142,7 +110,7 @@ public enum AgentPetCompanionUIValidationContract {
                 )
                 try require(
                     !bubbleRect.intersects(menuScreenRect),
-                    "bubble panel overlaps the toggle hit region at scale \(scale)"
+                    "bubble panel overlaps the toggle hit region at \(displayWidthPt)pt"
                 )
 
                 let proposals = [
@@ -154,19 +122,18 @@ public enum AgentPetCompanionUIValidationContract {
                 for proposal in proposals {
                     let center = OverlayGeometry.clampedPetScreenCenter(
                         proposal,
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         visibleFrame: visibleFrame,
                         clickMenuEnabled: true
                     )
                     let bounds = OverlayGeometry.petMovementScreenBounds(
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         petScreenCenter: center,
-                        clickMenuEnabled: true,
-                        includeResize: true
+                        clickMenuEnabled: true
                     )
                     try require(
                         visibleFrame.insetBy(dx: -0.5, dy: -0.5).contains(bounds),
-                        "movement bounds escaped its frame at scale \(scale): \(bounds)"
+                        "movement bounds escaped its frame at \(displayWidthPt)pt: \(bounds)"
                     )
                 }
             }
@@ -208,28 +175,30 @@ public enum AgentPetCompanionUIValidationContract {
         try require(target == secondary, "drag target did not follow the current pointer display")
     }
 
-    private static func validateScalePolicy() throws {
+    private static func validateDisplayWidthPolicy() throws {
         try require(
-            OverlayGeometry.clampedScale(0.01) == OverlayGeometry.minimumScale,
-            "minimum scale clamp failed"
+            OverlayGeometry.clampedDisplayWidthPt(1)
+                == OverlayGeometry.minimumDisplayWidthPt,
+            "minimum display-width clamp failed"
         )
         try require(
-            OverlayGeometry.clampedScale(9) == OverlayGeometry.maximumScale,
-            "maximum scale clamp failed"
+            OverlayGeometry.clampedDisplayWidthPt(999)
+                == OverlayGeometry.maximumDisplayWidthPt,
+            "maximum display-width clamp failed"
         )
         try require(
-            OverlayGeometry.resolvedInitialScale(
-                persistedScale: 0.12,
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+                persistedDisplayWidthPt: 80,
                 hasPersistedPosition: false
-            ) == 0.72,
-            "never-positioned placement did not use calibrated scale"
+            ) == 112,
+            "never-positioned placement did not use the default width"
         )
         try require(
-            OverlayGeometry.resolvedInitialScale(
-                persistedScale: 0.12,
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+                persistedDisplayWidthPt: 80,
                 hasPersistedPosition: true
-            ) == 0.12,
-            "legacy nonzero placement scale was overwritten"
+            ) == 80,
+            "persisted display width was overwritten"
         )
     }
 
@@ -561,98 +530,95 @@ public enum AgentPetCompanionUIValidationContract {
         try require(
             exact.accessibilityReadingOrder == [
                 "Codex",
+                exact.surfaceLabel,
                 "Session exact",
                 APCLocalizedPresentation.lifecycleTitle(.waiting),
                 "A response is required",
                 APCLocalization.text(.overlayDetailNeedsInput),
                 exact.actionLabel,
             ],
-            "VoiceOver order was not Agent, session, status, message, activity, action"
+            "VoiceOver order was not Agent, surface, session, status, message, activity, action"
         )
     }
 
-    private static func validateScheduler() throws {
-        let oneShot = FrameScheduler(
-            fps: 10,
-            frameCount: 10,
-            durationMS: 1_000,
-            loops: false
+    private static func validateFrameTimeline() throws {
+        let oneShot = FrameTimeline(
+            durationsMS: [100, 200, 300],
+            playback: PlaybackContract(
+                mode: .onceHold,
+                settleFrameIndex: 1
+            ),
+            reducedMotionFrameIndex: 2
         )
-        try require(oneShot.frameIndex(elapsedSeconds: 10) == 9, "one-shot did not stop at final frame")
-        try require(oneShot.hasCompleted(elapsedSeconds: 10), "one-shot completion was not reported")
+        try require(oneShot.frameIndex(elapsedMS: 99) == 0, "first authored boundary drifted")
+        try require(oneShot.frameIndex(elapsedMS: 100) == 1, "second authored frame started late")
+        try require(oneShot.frameIndex(elapsedMS: 300) == 2, "third authored frame started late")
+        try require(oneShot.frameIndex(elapsedMS: 600) == 1, "one-shot did not hold its settle frame")
+        try require(oneShot.hasCompleted(elapsedMS: 600), "one-shot completion was not reported")
 
-        let looping = FrameScheduler(
-            fps: 10,
-            frameCount: 20,
-            durationMS: 2_000,
-            loops: true
+        let looping = FrameTimeline(
+            durationsMS: [100, 200],
+            playback: PlaybackContract(mode: .loop),
+            reducedMotionFrameIndex: 1
         )
         try require(
-            looping.frameIndex(elapsedSeconds: 2) == 0,
+            looping.frameIndex(elapsedMS: 300) == 0,
             "looping state did not wrap"
         )
 
+        let periodic = FrameTimeline(
+            durationsMS: [100, 100],
+            playback: PlaybackContract(
+                mode: .periodic,
+                cooldownMS: [500, 500]
+            ),
+            reducedMotionFrameIndex: 1,
+            periodicCooldownMS: 500
+        )
+        try require(
+            periodic.frameIndex(elapsedMS: 250) == 1,
+            "periodic cooldown did not hold its settle frame"
+        )
+        try require(
+            periodic.frameIndex(elapsedMS: 700) == 0,
+            "periodic playback did not restart after cooldown"
+        )
+        try require(
+            periodic.frameIndex(elapsedMS: 0, reducedMotion: true) == 1,
+            "reduced motion did not select the authored static frame"
+        )
+
         var playback = FramePlaybackState(stateID: "start", enteredAt: 10)
+        playback.enter(stateID: "start", at: 10.5)
+        try require(
+            playback.enteredAt == 10,
+            "unchanged semantic state restarted playback"
+        )
         playback.enter(stateID: "done", at: 11)
         try require(
-            playback.frameIndex(at: 11, scheduler: oneShot) == 0,
+            playback.frameIndex(at: 11, timeline: oneShot) == 0,
             "state entry did not reset playback"
         )
-    }
-
-    private static func validateAccessibleResize() async throws {
-        let result = await MainActor.run {
-            let view = OverlayResizeAccessibilityView(
-                frame: CGRect(x: 0, y: 0, width: 38, height: 38)
-            )
-            var steps: [CGFloat] = []
-            view.scale = 0.72
-            view.onScaleStep = { steps.append($0) }
-            view.keyDown(with: NSEvent.keyEvent(
-                with: .keyDown,
-                location: .zero,
-                modifierFlags: [],
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                characters: "+",
-                charactersIgnoringModifiers: "+",
-                isARepeat: false,
-                keyCode: 24
-            )!)
-            let incremented = view.accessibilityPerformIncrement()
-            let decremented = view.accessibilityPerformDecrement()
-            return (
-                acceptsFocus: view.acceptsFirstResponder,
-                role: view.accessibilityRole(),
-                value: (view.accessibilityValue() as? NSNumber)?.doubleValue,
-                valueDescription: view.accessibilityValueDescription(),
-                steps: steps,
-                incremented: incremented,
-                decremented: decremented
-            )
-        }
-        try require(result.acceptsFocus, "resize control is not focusable")
-        try require(result.role == .slider, "resize control is not exposed as an AX slider")
-        try require(result.value == 0.72, "resize AX value is missing")
-        try require(result.valueDescription == "72%", "resize AX value description is missing")
-        try require(result.incremented && result.decremented, "resize AX actions failed")
         try require(
-            result.steps == [0.05, 0.05, -0.05],
-            "keyboard and AX actions did not share the five-percent step path"
+            oneShot.resolvedFrameAfterStall(elapsedMS: 450) == 2,
+            "stall recovery did not jump directly to the current authored frame"
         )
     }
 
     private static func validateFramePipeline() async throws {
-        let urls = (0..<40).map { URL(fileURLWithPath: "/virtual/frame-\($0).png") }
+        let timing = PetAnimationContract.defaultStates.first {
+            $0.name == "tool"
+        }!
+        let urls = timing.frameDurationsMS.indices.map {
+            URL(fileURLWithPath: "/virtual/frame-\($0).png")
+        }
         let probe = UIValidationDecodeProbe()
         let pipeline = PetFramePipeline(
             memoryBudgetBytes: 32,
-            originalWindowSize: 7,
             catalog: { _, _ in PetFrameAssetCatalog(frameURLs: urls, coverURL: nil) },
             decoder: { probe.decode($0) }
         )
-        let quality = QualityLevel.original
+        let quality = QualityLevel.standard
         let pet = PetSummary(
             id: "pet_validation",
             name: "Validation",
@@ -667,18 +633,29 @@ public enum AgentPetCompanionUIValidationContract {
         let request = PetFrameLoadRequest(
             pet: pet,
             stateName: "tool",
-            requestedFPS: 10,
-            nativeFPS: 20,
-            durationMS: 2_000,
-            authoredLoops: true,
-            playbackMode: .loop
+            timing: timing
         )
         let prepared = try await Task { @MainActor in
             try await pipeline.prepare(request)
         }.value
 
-        try require(prepared.sourceKind == .ring, "original quality did not select ring cache")
-        try require(prepared.readyFrameCount <= 7, "initial ring exceeded its window")
+        try require(prepared.sourceKind == .eager, "V2 state did not use eager frame handoff")
+        try require(
+            prepared.sourceFrameCount == timing.frameDurationsMS.count,
+            "source frame count did not match the timing contract"
+        )
+        try require(
+            prepared.frameCount == timing.frameDurationsMS.count,
+            "runtime frame count did not preserve every authored frame"
+        )
+        try require(
+            prepared.readyFrameCount == timing.frameDurationsMS.count,
+            "eager handoff did not contain the complete authored state"
+        )
+        try require(
+            prepared.timeline == FrameTimeline(state: timing),
+            "prepared timeline diverged from the package timing contract"
+        )
         let readsAfterPrepare = probe.snapshot().count
         for index in 0..<100 {
             _ = prepared.readyFrame(at: index % max(1, prepared.frameCount))
@@ -688,9 +665,6 @@ public enum AgentPetCompanionUIValidationContract {
             "ready-frame lookup performed decode or file work"
         )
 
-        let advanced = try await pipeline.prefetch(prepared, around: 12)
-        try require(advanced.readyFrame(at: 12) != nil, "ring prefetch missed requested frame")
-        try require(advanced.readyFrameCount <= 7, "advanced ring exceeded its window")
         let metrics = await pipeline.cacheMetrics()
         try require(metrics.byteCount <= 32, "LRU exceeded byte budget")
         try require(metrics.maximumConcurrentDecodes == 1, "decode queue was not bounded")

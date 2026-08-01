@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/petpack.schema.json",
-  "title": "Agent Pet Companion Petpack Manifest",
+  "title": "Agent Pet Companion Petpack V2 Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,69 +11,210 @@
     "style",
     "quality",
     "render_size",
-    "native_fps",
     "states",
     "created_at"
   ],
   "properties": {
-    "schema_version": { "const": "apc.petpack.v1" },
+    "schema_version": { "const": "apc.petpack.v2" },
     "id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
     "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
     "style": { "type": "string", "minLength": 1, "pattern": "\\S" },
-    "quality": { "enum": ["standard", "high", "ultra", "original"] },
-    "render_size": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["width", "height"],
-      "properties": {
-        "width": { "type": "integer", "minimum": 1 },
-        "height": { "type": "integer", "minimum": 1 }
-      }
-    },
-    "native_fps": { "enum": [10, 20] },
+    "quality": { "enum": ["low", "standard"] },
+    "render_size": { "$ref": "#/$defs/renderSize" },
     "states": {
       "type": "array",
       "minItems": 7,
       "maxItems": 7,
+      "items": { "$ref": "#/$defs/state" },
       "allOf": [
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "idle" }, "frames_dir": { "const": "assets/frames/idle" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "start" }, "frames_dir": { "const": "assets/frames/start" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "tool" }, "frames_dir": { "const": "assets/frames/tool" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "waiting" }, "frames_dir": { "const": "assets/frames/waiting" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "review" }, "frames_dir": { "const": "assets/frames/review" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "done" }, "frames_dir": { "const": "assets/frames/done" }, "loop": { "const": false } } }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "type": "object", "required": ["name", "frames_dir", "loop", "duration_ms"], "properties": { "name": { "const": "failed" }, "frames_dir": { "const": "assets/frames/failed" }, "loop": { "const": true } } }, "minContains": 1, "maxContains": 1 }
-      ],
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "frames_dir", "loop", "duration_ms"],
-        "properties": {
-          "name": { "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"] },
-          "frames_dir": { "type": "string", "minLength": 1 },
-          "loop": { "type": "boolean" },
-          "duration_ms": { "enum": [1000, 2000] }
-        }
-      }
+        { "contains": { "$ref": "#/$defs/idleState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/startState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/toolState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/waitingState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/reviewState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/doneState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/failedState" }, "minContains": 1, "maxContains": 1 }
+      ]
     },
     "created_at": { "type": "string", "format": "date-time" }
   },
   "allOf": [
     {
+      "if": { "properties": { "quality": { "const": "low" } }, "required": ["quality"] },
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/lowSize" } } }
+    },
+    {
       "if": { "properties": { "quality": { "const": "standard" } }, "required": ["quality"] },
-      "then": { "properties": { "render_size": { "properties": { "width": { "const": 192 }, "height": { "const": 208 } } } } }
-    },
-    {
-      "if": { "properties": { "quality": { "const": "high" } }, "required": ["quality"] },
-      "then": { "properties": { "render_size": { "properties": { "width": { "const": 384 }, "height": { "const": 416 } } } } }
-    },
-    {
-      "if": { "properties": { "quality": { "const": "ultra" } }, "required": ["quality"] },
-      "then": { "properties": { "render_size": { "properties": { "width": { "const": 768 }, "height": { "const": 832 } } } } }
-    },
-    {
-      "if": { "properties": { "quality": { "const": "original" } }, "required": ["quality"] },
-      "then": { "properties": { "render_size": { "properties": { "width": { "const": 1536 }, "height": { "const": 1664 } } } } }
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/standardSize" } } }
     }
-  ]
+  ],
+  "$defs": {
+    "stateName": {
+      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+    },
+    "renderSize": {
+      "oneOf": [
+        { "$ref": "#/$defs/lowSize" },
+        { "$ref": "#/$defs/standardSize" }
+      ]
+    },
+    "renderSizeShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 192, "multipleOf": 192 },
+        "height": { "type": "integer", "minimum": 208, "multipleOf": 16 }
+      }
+    },
+    "lowSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 192 }, "height": { "const": 208 } }
+    },
+    "standardSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 384 }, "height": { "const": 416 } }
+    },
+    "frameDurations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 40,
+      "items": { "type": "integer", "minimum": 50, "maximum": 2000 }
+    },
+    "playback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["loop", "once_hold", "periodic", "burst_then_settle"] },
+        "entry_repeat_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "settle_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 },
+        "cooldown_ms": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "loop" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "once_hold" } }, "required": ["mode"] },
+          "then": {
+            "required": ["settle_frame_index"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "periodic" } }, "required": ["mode"] },
+          "then": {
+            "required": ["cooldown_ms"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "burst_then_settle" } }, "required": ["mode"] },
+          "then": {
+            "required": ["entry_repeat_count", "settle_frame_index"],
+            "not": { "required": ["cooldown_ms"] }
+          }
+        }
+      ]
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "frames_dir",
+        "frame_durations_ms",
+        "playback",
+        "reduced_motion_frame_index"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/stateName" },
+        "frames_dir": { "type": "string", "minLength": 1 },
+        "frame_durations_ms": { "$ref": "#/$defs/frameDurations" },
+        "playback": { "$ref": "#/$defs/playback" },
+        "reduced_motion_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 }
+      }
+    },
+    "idleState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "idle" },
+        "frames_dir": { "const": "assets/frames/idle" }
+      }
+    },
+    "startState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "start" },
+        "frames_dir": { "const": "assets/frames/start" }
+      }
+    },
+    "toolState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "tool" },
+        "frames_dir": { "const": "assets/frames/tool" }
+      }
+    },
+    "waitingState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "waiting" },
+        "frames_dir": { "const": "assets/frames/waiting" }
+      }
+    },
+    "reviewState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "review" },
+        "frames_dir": { "const": "assets/frames/review" }
+      }
+    },
+    "doneState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "done" },
+        "frames_dir": { "const": "assets/frames/done" }
+      }
+    },
+    "failedState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "failed" },
+        "frames_dir": { "const": "assets/frames/failed" }
+      }
+    }
+  }
 }

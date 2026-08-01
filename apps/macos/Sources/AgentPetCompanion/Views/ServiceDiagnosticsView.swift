@@ -72,7 +72,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
         desktopPetEnabled: Bool,
         desktopPetVisible: Bool,
         activePetName: String?,
-        framesPerSecond: Int,
+        animationTiming: PetStateTiming?,
         localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
     ) {
         rows = [
@@ -95,7 +95,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
                 enabled: desktopPetEnabled,
                 visible: desktopPetVisible,
                 activePetName: activePetName,
-                framesPerSecond: framesPerSecond,
+                animationTiming: animationTiming,
                 locale: localeIdentifier
             )
         ]
@@ -109,7 +109,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
         desktopPetEnabled: Bool,
         desktopPetVisible: Bool,
         activePetName: String?,
-        framesPerSecond: Int,
+        animationTiming: PetStateTiming?,
         localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
     ) {
         self.init(
@@ -119,7 +119,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
             desktopPetEnabled: desktopPetEnabled,
             desktopPetVisible: desktopPetVisible,
             activePetName: activePetName,
-            framesPerSecond: framesPerSecond,
+            animationTiming: animationTiming,
             localeIdentifier: localeIdentifier
         )
     }
@@ -131,7 +131,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
         desktopPetEnabled: Bool,
         desktopPetVisible: Bool,
         activePetName: String?,
-        framesPerSecond: Int,
+        animationTiming: PetStateTiming?,
         localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
     ) {
         self.init(
@@ -141,7 +141,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
             desktopPetEnabled: desktopPetEnabled,
             desktopPetVisible: desktopPetVisible,
             activePetName: activePetName,
-            framesPerSecond: framesPerSecond,
+            animationTiming: animationTiming,
             localeIdentifier: localeIdentifier
         )
     }
@@ -399,7 +399,7 @@ struct ServiceDiagnosticsPresentation: Equatable {
         enabled: Bool,
         visible: Bool,
         activePetName: String?,
-        framesPerSecond: Int,
+        animationTiming: PetStateTiming?,
         locale: String
     ) -> ServiceDiagnosticRowPresentation {
         guard enabled else {
@@ -421,14 +421,25 @@ struct ServiceDiagnosticsPresentation: Equatable {
             )
         }
         let petName = activePetName ?? APCLocalization.text(.appStateNoPetEnabled, locale: locale)
+        guard let animationTiming else {
+            return ServiceDiagnosticRowPresentation(
+                id: .desktopPet,
+                title: APCLocalization.text(.serviceRowDesktopPet, locale: locale),
+                detail: petName,
+                status: APCLocalization.text(.serviceStatusHealthy, locale: locale),
+                tone: .healthy
+            )
+        }
+        let animationDescription =
+            "\(petName) · \(animationTiming.playback.mode.rawValue)"
         return ServiceDiagnosticRowPresentation(
             id: .desktopPet,
             title: APCLocalization.text(.serviceRowDesktopPet, locale: locale),
             detail: APCLocalization.format(
                 .serviceDesktopRunningFormat,
                 locale: locale,
-                framesPerSecond,
-                petName
+                animationTiming.frameDurationsMS.count,
+                animationDescription
             ),
             status: APCLocalization.text(.serviceStatusHealthy, locale: locale),
             tone: .healthy
@@ -543,6 +554,12 @@ struct ServiceDiagnosticsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var isRefreshing = false
 
+    private var activeAnimationTiming: PetStateTiming? {
+        guard let pet = store.activePet else { return nil }
+        let stateName = store.activeOverlayEvent?.eventType.petState ?? "idle"
+        return pet.timing(for: stateName)
+    }
+
     private var presentation: ServiceDiagnosticsPresentation {
         ServiceDiagnosticsPresentation(
             operationalState: store.petCoreOperationalState,
@@ -551,7 +568,7 @@ struct ServiceDiagnosticsView: View {
             desktopPetEnabled: store.behavior.enabled,
             desktopPetVisible: store.overlayVisible,
             activePetName: store.activePet?.name,
-            framesPerSecond: store.effectiveFPSProfile.fps
+            animationTiming: activeAnimationTiming
         )
     }
 

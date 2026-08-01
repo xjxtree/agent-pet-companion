@@ -70,7 +70,6 @@ fn diagnostic_environment() -> Value {
             "auto_hide": true,
             "session_message_timeout_minutes": 15,
             "session_group_display": "stacked",
-            "fps_profile": "standard",
             "sources": {
                 "codex": true,
                 "claude_code": true,

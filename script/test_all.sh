@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEST_ALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-test-all.XXXXXX")"
+trap 'rm -rf "$TEST_ALL_TEMP_DIR"' EXIT
 
 log_legend() {
   cat <<'EOF'
@@ -11,7 +13,7 @@ Validation profiles:
   [macos runtime] real macOS app bundle and overlay runtime checks; environment-gated.
   [real agent connectors] current user Codex/Claude/Pi/OpenCode connector files sending diagnostic events into the current app; environment-gated.
   [real app server] real Codex App Server stdio session; environment-gated.
-  [perf/nightly] bounded stress and budget checks; default scale is still part of test_all.
+  [perf/nightly] bounded stress and budget checks; the default stress size remains part of test_all.
 Default test_all covers deterministic, simulated, security, and bounded stress checks only. Host UI and real-agent checks require explicit opt-in and otherwise print skip reasons.
 EOF
 }
@@ -103,28 +105,16 @@ real_agent_connectors_skip_reason() {
   return 0
 }
 
-overlay_interaction_skip_reason() {
-  local setting="${APC_VALIDATE_OVERLAY_INTERACTION:-0}"
-  case "$setting" in
-    0|false|FALSE|no|NO)
-      printf 'APC_VALIDATE_OVERLAY_INTERACTION=%s keeps real mouse-event overlay interaction validation disabled' "$setting"
-      return 0
-      ;;
-    1|true|TRUE|yes|YES)
-      return 1
-      ;;
-  esac
-
-  printf 'APC_VALIDATE_OVERLAY_INTERACTION=%s is not recognized; use 0 or 1' "$setting"
-  return 0
-}
-
 log_legend
 
 run_step "fast/core" "default test isolation and owned-process safety" "$ROOT_DIR/script/validate_test_isolation.sh"
 run_step "fast/core" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/script/validate_app_lifecycle_contract.sh"
 run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
 run_step "fast/core" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
+export APC_INTERACTION_ATTESTATION_PATH="$TEST_ALL_TEMP_DIR/interaction-attestation.json"
+run_step "fast/core" "native Swift Phase A/T-B4 interaction attestation bound to this PetCore build" \
+  "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
+  --output "$APC_INTERACTION_ATTESTATION_PATH"
 run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
 run_step "fast/core" "in-app Pet Studio timing source helper" "$ROOT_DIR/script/validate_pet_studio_helper.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
@@ -139,17 +129,12 @@ run_step "fast/core" "security boundary checks with fake sentinel secrets" "$ROO
 run_step "simulated integration" "development app bundle assembly without launch" "$ROOT_DIR/script/build_app_bundle.sh" --configuration debug
 
 if host_ui_skip_reason_value="$(host_ui_skip_reason)"; then
-  log_skip "macos runtime" "real app bundle, overlay layout, scale persistence, renderer telemetry, and app recovery" "$host_ui_skip_reason_value"
+  log_skip "macos runtime" "real app bundle, overlay layout, display-width persistence, renderer telemetry, and app recovery" "$host_ui_skip_reason_value"
 else
   run_step "macos runtime" "real app bundle launch and overlay verification" env APC_VALIDATE_HOST_UI=1 "$ROOT_DIR/script/build_and_run.sh" --verify
   run_step "macos runtime" "real main window UI structure without mouse events" "$ROOT_DIR/script/validate_main_window_ui.sh"
   run_step "macos runtime" "real overlay multi-agent layout without mouse events" "$ROOT_DIR/script/validate_overlay_non_mouse.sh"
-  if overlay_interaction_skip_reason="$(overlay_interaction_skip_reason)"; then
-    log_skip "macos runtime" "real overlay mouse drag, resize, and bubble controls" "$overlay_interaction_skip_reason"
-  else
-    run_step "macos runtime" "real overlay mouse drag, resize, and bubble controls" "$ROOT_DIR/script/validate_overlay_interaction.sh"
-  fi
-  run_step "macos runtime" "overlay scale persistence in the packaged app" "$ROOT_DIR/script/validate_overlay_scale_persistence.sh"
+  run_step "macos runtime" "overlay display-width persistence in the packaged app" "$ROOT_DIR/script/validate_overlay_display_width_persistence.sh"
   run_step "macos runtime" "real renderer cache strategy and runtime budget telemetry" "$ROOT_DIR/script/validate_renderer_runtime_budget.sh"
   run_step "macos runtime" "app recovery after PetCore restart" "$ROOT_DIR/script/validate_app_recovery.sh"
 fi

@@ -98,15 +98,9 @@ public enum AttentionPreset: String, CaseIterable, Identifiable, Hashable, Senda
 
 public struct ConfigurationPresentation: Equatable, Sendable {
     public let attentionPreset: AttentionPreset
-    public let supportedPlaybackProfiles: [FpsProfile]
-    public let selectedPlaybackProfile: FpsProfile
 
-    public init(behavior: BehaviorSettings, activePet: PetSummary?) {
+    public init(behavior: BehaviorSettings, activePet _: PetSummary?) {
         attentionPreset = .resolve(events: behavior.events)
-        supportedPlaybackProfiles = activePet?.supportedFPSProfiles ?? [.standard]
-        selectedPlaybackProfile = supportedPlaybackProfiles.contains(behavior.fpsProfile)
-            ? behavior.fpsProfile
-            : .standard
     }
 }
 

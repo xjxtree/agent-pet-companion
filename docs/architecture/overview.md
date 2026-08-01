@@ -47,10 +47,24 @@ The bubble is intentionally a glanceable return surface rather than a second
 control center. A collapsed Agent group shows one highest-attention or latest
 session; an expanded group shows every concrete session already present in the
 bounded PetCore snapshot. Every row labels the exact authored pet action for
-its fixed lifecycle state in the badge, while its two detail lines render
+its fixed lifecycle state in the badge and identifies its App or CLI origin,
+while its two detail lines render
 distinct bounded Agent messages, host-exposed reasoning, commands, tool
-input/output, errors, or raw activity details when available. The full row is
-the exact-session action when that typed capability exists.
+input/output, errors, or another normalized semantic scalar detail when available. The full row is
+the exact-session action when that typed capability exists; otherwise it names
+and opens only a validated Agent App or terminal host, or exposes no action.
+A completed or review-ready row is acknowledged through PetCore only after its
+declared exact-session or host-level destination opens successfully. If an
+exact deep link is rejected, opening the same App as a recovery aid is not
+treated as reaching that session: the row remains visible with a retryable,
+localized navigation error. A successful acknowledgement survives App and PetCore relaunch,
+while a later event for the same Agent session creates a new activity identity
+and returns the row to the bubble. Pet Configuration response events,
+attention-preset summaries and previews, menu-bar recent activity, Pet Library
+current state, and bubble badges all map the fixed event through
+`ProductLifecycleState` and use one localized lifecycle label. Protocol names
+and persisted event titles remain data identities rather than independent
+UI-copy authorities.
 
 ## Main flows
 
@@ -73,14 +87,23 @@ ordinary resident state as a request to hide every window for Show Desktop.
 
 The desktop pet body remains hoverable and draggable whenever the overlay is visible. When the renderer has a valid frame alpha mask, transparent pixels may pass pointer events through; during launch, state transitions, or any interval without a mask, hit testing falls back to the geometric pet region so the pet never becomes non-interactive.
 
-Direct drag uses a bounded rubber-band presentation outside the usable screen
-region and a short critically damped velocity handoff on release. Only the
-hard-clamped final center is persisted. A new drag cancels the handoff at its
-current presentation position, reduced motion commits directly, and overlay
-transitions never disable the visible pet's pointer interaction. Drag and
-bottom-right resize previews update only the owning AppKit overlay windows and
-their narrow presentation state; the shared App model is published once when
-the interaction settles.
+`OverlayPlacementAuthority` is the only presentation owner for desktop-pet
+position. A drag captures the presented anchor and pointer in absolute screen
+coordinates, then derives every sample from that fixed pair; it never
+accumulates event deltas. The presented center is hard-clamped to the current
+display and the release commits exactly that center once, with no momentum,
+projection, rubber-band, or settling phase. Pending local commits, stale remote
+snapshots, late acknowledgements, and failed saves cannot move the presented
+pet. Bubble and menu panels are child windows of the pet panel, so the complete
+composition moves from one root rather than by independently publishing model
+updates for several windows.
+
+Pet display size is a separate persisted `display_width_pt` value. Pet
+Configuration → Appearance owns the 80–224 pt slider (112 pt default, 1 pt
+step, numeric value, restore-default, keyboard, and VoiceOver adjustment);
+height derives from the fixed 208/192 canvas ratio. The overlay has no resize
+panel, handle, hover target, pointer mode, or resizing state. Dragging the pet
+only changes position.
 
 See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and compatibility details.
 
@@ -102,23 +125,30 @@ sequenceDiagram
     A->>A: Update bubble and pet animation
 ```
 
-The persisted event set is `start`, `tool`, `waiting`, `review`, `done`, and `failed`; `idle` is the no-activity pet state. Product badges render `start` as **Thinking / 正在思考** and `tool` as **Using Tools / 正在调用工具** without changing those stored protocol names.
+The persisted event set is `start`, `tool`, `waiting`, `review`, `done`, and
+`failed`; `idle` is the no-activity pet state. Every user-visible status surface
+uses the same lifecycle labels: **Thinking / 正在思考**, **Using Tools /
+正在调用工具**, **Needs You / 等你处理**, **Ready to Review / 可以查看**,
+**Completed / 已完成**, and **Needs Attention / 需要处理**. This presentation
+mapping does not change the stored protocol names or closed persisted titles.
 
-The App preserves the package's authored sampling and fixed duration while
-applying state-lifetime presentation. A `start` action completes once in the
-authored direction, then autoreverses while the same thinking state remains
-active so it neither freezes nor jumps across a mismatched final/first seam.
-`done` remains a one-shot and holds its final pose until the state changes.
+The App uses each state's V2 `frame_durations_ms` and closed playback contract
+directly. It exposes no global FPS or Standard/Smooth profile and never
+resamples or retimes authored frames. `loop`, `once_hold`, `periodic`, and
+`burst_then_settle` determine the state-lifetime presentation; an unchanged
+semantic state does not restart, a stall resumes at the currently due frame
+without catch-up playback, and Reduce Motion uses the declared representative
+frame.
 
 ### Pet creation and editing
 
-The AI Pet Maker creates a database-backed generation job and a private job workspace. PetCore launches Codex App Server over stdio and provides the internal Pet Studio contract. The Skill locks one runtime-size canonical production base, isolates and serializes state-row generation in the owning turn, directs one primary action per state, and requires the exact timing-derived frame count to consist of distinct authored sprite cells rather than crossfade, morph, optical-flow, transformed-duplicate, or procedural interpolation filler. It extracts every sheet with fixed cell bounds and runs incremental plus final private actual-speed motion QA outside the package source; obvious whole-subject scale or anchor jumps are hard failures rather than review-only warnings. Explicit moving masks may preserve pixels that an approved action card marks as locked, but only after scale, camera, anatomy, anchor, and action geometry pass; the separate result must be visually checked for seams. Skill output is untrusted until PetCore validates source budgets, metadata, privacy, provenance, assets, frame differences, synthetic-blend and motion-registration evidence, manifest, preview, package structure, and—for the strict external path—a current per-state motion review bound to the decoded frames.
+The AI Pet Maker creates a database-backed generation job and a private job workspace. Its App form contains description, style, either low or standard native quality, and bounded references; timing is authored by the visual producer rather than exposed as form input. PetCore launches Codex App Server over stdio and provides the internal Pet Studio contract. Studio and the portable Maker Skill reference one shared visual-production and native-resolution contract and use the same Maker helper for incremental/final motion evidence. The Skill locks one canonical production base at the package's exact low 192×208 or standard 384×416 tier; isolates and serializes one complete state per ordinary image batch; directs a readable state intent without prescribing a fixed action or layer count; and requires the exact `frame_durations_ms` count to consist of distinct authored sprite cells rather than crossfade, morph, optical-flow, transformed-duplicate, or procedural interpolation filler. A larger tier is not synthesized through upscaling or multiple batches when the image path cannot supply the required native cell size. The Skill extracts every sheet with fixed cell bounds and runs incremental plus final private QA outside the package source, including one actual-duration `authored_timing` preview per state and a digest of the complete timing contract. Intentional whole-character translation, rotation, bounce, recoil, squash/stretch, scale, or baseline change is allowed; displacement, silhouette, scale, baseline, and playback-boundary metrics remain human-review evidence instead of amplitude-based hard failures. Objective edge clipping and synthetic interpolation still fail automatically, while visible identity/anatomy drift, accidental popping or jitter, broken props, and bad loop/final settles fail visual review. Explicit moving masks may preserve truly unchanged pixels in localized actions, but full-character actions remain free to move. Maker finalization and Studio both call `petpack verify-production`, whose PetCore implementation derives changed states and verifies timing and frame digests, QA/review freshness and coverage, authored-timing previews, objective frame integrity, interpolation, revision structure, and timing transitions. Strict Studio import reruns that exact implementation as the final trust boundary. Workspace safety, source/metadata identity, output policy, and commit conflict remain responsibilities of the calling host.
 
 A successful result is committed as an immutable local pet revision. Any non-bundled pet can start an edit job from its current validated archive, and App-owned history can explicitly select an older validated immutable revision as the read-only baseline. Existing App generation messages are restored when present; an imported pet without creation history simply starts a new edit conversation from the exact package snapshot accepted for that job. Bundled pets remain read-only and require a new pet ID for customization.
 
 ### Pet import and activation
 
-`.petpack` identity is the manifest ID, never the display name. Same-name/different-ID pets coexist. Imports and edits publish a staged, immutable revision, atomically update `active.json`, then commit the database row; failure restores the previous pointer and state. See [Data model](data-model.md) and the [`.petpack` V1 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md).
+`.petpack` identity is the manifest ID, never the display name. Same-name/different-ID pets coexist. Imports and edits publish a staged, immutable revision, atomically update `active.json`, then commit the database row; failure restores the previous pointer and state. PetCore reads and writes only V2; a V1 archive is rejected and must be recreated with a V2 maker. See [Data model](data-model.md) and the [`.petpack` V2 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V2.md).
 
 PetCore reports bounded per-pet asset warnings in `state.snapshot`. An explicit
 repair request bypasses the cached fingerprint, revalidates the immutable
@@ -149,7 +179,7 @@ logo/                       Approved reusable brand assets
 - App, PetCore, CLI, database range, `.petpack` versions, event schema, and connector contracts ship as one runtime manifest identity.
 - Normal online writes go through PetCore. The App and Agent hosts do not bypass its validation or state revision.
 - External content is data, never executable instruction. Pet packages, hook payloads, reference images, and Skill output cross bounded validation gates.
-- Bounded session titles, latest user/assistant display messages, and session-scoped reasoning/command/tool/raw activity details are part of the product data model and cross to the App for local bubbles. Credential stores, auth headers, environment dumps, and complete transcript archives do not.
+- Bounded session titles, latest user/assistant display messages, and normalized session-scoped reasoning, command, tool, error, or other semantic scalar details are part of the product data model and cross to the App for local bubbles. Arbitrary host objects, credential stores, auth headers, environment dumps, and complete transcript archives do not.
 - Pet library mutations are ID-based, serialized, revisioned, and recoverable.
 - Native packaged validation seeds both included pets into a clean home and
   proves their canonical cover plus every expected runtime frame for all seven

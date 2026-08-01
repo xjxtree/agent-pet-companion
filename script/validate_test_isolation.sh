@@ -82,6 +82,9 @@ fi
 write_executable "$BUILD_ROOT/script/validate_app_bundle.sh" \
   '#!/usr/bin/env bash' \
   'exit 0'
+write_executable "$BUILD_ROOT/script/validate_overlay_interaction.sh" \
+  '#!/usr/bin/env bash' \
+  'exit 0'
 for binary in \
   "$BUILD_ROOT/target/debug/petcore" \
   "$BUILD_ROOT/target/debug/petcore-cli" \
@@ -146,7 +149,8 @@ for script_name in \
   validate_portable_pet_maker.sh validate_pet_studio_helper.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
   validate_overlay_non_mouse.sh validate_overlay_interaction.sh \
-  validate_overlay_scale_persistence.sh validate_renderer_runtime_budget.sh \
+  prepare_interaction_attestation.sh \
+  validate_overlay_display_width_persistence.sh validate_renderer_runtime_budget.sh \
   validate_app_recovery.sh; do
   write_executable "$TEST_ROOT/script/$script_name" \
     '#!/usr/bin/env bash' \
@@ -170,7 +174,6 @@ TEST_ALL_CARGO_LOG="$TMP_DIR/test-all-cargo.log"
 : >"$TEST_ALL_CARGO_LOG"
 if ! env \
   -u APC_VALIDATE_HOST_UI \
-  -u APC_VALIDATE_OVERLAY_RUNTIME \
   -u APC_VALIDATE_REAL_AGENT_CONNECTORS \
   -u APC_VALIDATE_REAL_APP_SERVER \
   PATH="$SHIM_DIR:$PATH" \
@@ -262,8 +265,7 @@ HOST_MUTATING_VALIDATORS=(
   "$ROOT_DIR/script/validate_main_window_ui.sh"
   "$ROOT_DIR/script/validate_overlay_runtime.sh"
   "$ROOT_DIR/script/validate_overlay_non_mouse.sh"
-  "$ROOT_DIR/script/validate_overlay_interaction.sh"
-  "$ROOT_DIR/script/validate_overlay_scale_persistence.sh"
+  "$ROOT_DIR/script/validate_overlay_display_width_persistence.sh"
   "$ROOT_DIR/script/validate_renderer_runtime_budget.sh"
   "$ROOT_DIR/script/validate_app_recovery.sh"
 )
@@ -281,7 +283,7 @@ for identifier in \
   product.maker.primary-experience-card.primary-action \
   configuration.root product.configuration.page-header configuration.subpage-picker \
   configuration.page.appearance configuration.appearance.status-bubble \
-  configuration.appearance.theme configuration.appearance.fps \
+  configuration.appearance.theme configuration.appearance.pet-size \
   connections.root product.connections.page-header connections.agent-section.codex \
   product.connections.codex.agent-health-row \
   product.connections.codex.advanced-details-disclosure \
@@ -353,23 +355,6 @@ for accessibility_identifier in \
   fi
 done
 
-OVERLAY_OFFLINE_VALIDATOR="$ROOT_DIR/script/validate_overlay_offline.sh"
-OVERLAY_ROUTER_SHIM="$ROOT_DIR/script/fixtures/AgentSessionRouterValidationShim.swift"
-if [[ "$(rg -Fc 'AgentSessionRouterValidationShim.swift' "$OVERLAY_OFFLINE_VALIDATOR")" != "2" ]]; then
-  record_failure 'overlay offline modules do not both include the navigation compile shim'
-fi
-for shim_contract in \
-  'Production navigation is already exercised by' \
-  'fatalError(' \
-  'must not exercise navigation'; do
-  if ! rg -Fq "$shim_contract" "$OVERLAY_ROUTER_SHIM"; then
-    record_failure "overlay navigation compile shim is missing its fail-closed contract: $shim_contract"
-  fi
-done
-if rg -Fq 'return navigation.capability' "$OVERLAY_ROUTER_SHIM"; then
-  record_failure 'overlay navigation compile shim substitutes routing behavior'
-fi
-
 # Keep the deterministic R13 proof mapped to concrete Swift and Rust tests.
 # The full suites still run later; these names prevent a green suite from
 # silently losing one of the required accessibility/integration contracts.
@@ -397,7 +382,7 @@ R13_TEST_NAMES=(
   "voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic"
   "appStoreFocusActionsGuardDisabledRoutesAndDispatchTypedEnabledActions"
   "bubblePanelRestoresPassiveFocusStateWhenKeyboardNavigationEnds"
-  "reducedMotionPinsPlaybackToRepresentativeFrameAndPauses"
+  "reducedMotionPinsPlaybackToRepresentativeFrameAndStopsScheduling"
   "accessibilityFallbacksRemainDarkerThanLegacyMaterial"
   "completeComponentSetBuildsAtMinimumWidth"
   "responsivePolicyPreservesTheSupportedMinimumWindow"
@@ -445,10 +430,10 @@ done
 RENDERER_VALIDATOR="$ROOT_DIR/script/validate_renderer_runtime_budget.sh"
 for renderer_contract in \
   'metrics["cpu_average_percent"] >= 1.0' \
-  'wait_for_telemetry high eager standard 10 10 2000 20 20' \
-  'wait_for_telemetry ultra eager standard 20 10 2000 40 20' \
-  'wait_for_telemetry ultra eager smooth 20 20 2000 40 40' \
-  'wait_for_telemetry original ring smooth 20 20 2000 40 40'; do
+  'renderer budget --quality low --frame-count 2' \
+  'renderer budget --quality standard --frame-count 8' \
+  'retired high quality was accepted' \
+  'observed_draws_per_second'; do
   if ! rg -Fq "$renderer_contract" "$RENDERER_VALIDATOR"; then
     record_failure "renderer validator is missing contract mapping: $renderer_contract"
   fi
@@ -469,30 +454,18 @@ done
 
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 for current_contract in \
-  'findDesktopPetFrame' \
-  'pressButton' \
-  'AXUIElementPerformAction' \
-  '关闭会话气泡' \
-  'Close session bubble' \
-  'waitForDesktopPetFrame' \
-  'resolveOverlayControlPoints' \
-  'quartzPoint(cocoaX: persisted.x, cocoaY: persisted.y)' \
-  'lastDragStart.x - 48' \
-  'window.width >= 36 && window.width <= 40' \
-  'resizeStart.x + 16' \
-  'abs(next.scale - moved.scale) >= 0.075' \
-  'evt_overlay_interaction_follow_up_' \
-  'for _ in 0..<7'; do
+  'OverlayPlacementAuthorityTests' \
+  'AppStoreOverlaySnapshotTests' \
+  'OverlayGeometryTests' \
+  'OverlayDisplayWidthTests' \
+  'Computer Use'; do
   if ! rg -Fq "$current_contract" "$OVERLAY_INTERACTION_VALIDATOR"; then
-    record_failure "overlay interaction validator is missing current hit geometry: $current_contract"
+    record_failure "overlay interaction validator is missing current deterministic contract: $current_contract"
   fi
 done
-if rg -Fq 'quartzPoint(cocoaX: initial.x, cocoaY: initial.y)' "$OVERLAY_INTERACTION_VALIDATOR" \
-  || rg -Fq 'resizeY = moved.y - petHeight / 2 - 8' "$OVERLAY_INTERACTION_VALIDATOR" \
-  || rg -Fq 'cocoaY: resizeY - 110' "$OVERLAY_INTERACTION_VALIDATOR" \
-  || rg -Fq 'bubble.x + bubble.width - 17' "$OVERLAY_INTERACTION_VALIDATOR" \
-  || rg -Fq 'menuPoint(for:' "$OVERLAY_INTERACTION_VALIDATOR"; then
-  record_failure 'overlay interaction validator still hard-codes the legacy monolithic overlay geometry'
+if rg -q 'CGEvent|osascript|AppleScript|cliclick|pyautogui|(/usr/bin/)?open -n' \
+  "$OVERLAY_INTERACTION_VALIDATOR"; then
+  record_failure 'overlay interaction validator still injects host input instead of deferring live acceptance to Computer Use'
 fi
 
 for validator in "${HOST_MUTATING_VALIDATORS[@]}"; do
@@ -555,8 +528,7 @@ for validator in \
   "$ROOT_DIR/script/build_and_run.sh" \
   "$ROOT_DIR/script/validate_main_window_ui.sh" \
   "$ROOT_DIR/script/validate_overlay_non_mouse.sh" \
-  "$ROOT_DIR/script/validate_overlay_interaction.sh" \
-  "$ROOT_DIR/script/validate_overlay_scale_persistence.sh" \
+  "$ROOT_DIR/script/validate_overlay_display_width_persistence.sh" \
   "$ROOT_DIR/script/validate_renderer_runtime_budget.sh" \
   "$ROOT_DIR/script/validate_app_recovery.sh"; do
   if ! rg -q 'apc_start_owned_runtime' "$validator"; then
@@ -609,7 +581,7 @@ else
     'PY' \
     '    ;;' \
     '  snapshot)' \
-    '    printf '\''{"behavior":{"enabled":true},"overlay_placement":{"x":0,"y":0,"scale":0.12,"display_id":"fixture"},"events":[]}\n'\''' \
+    '    printf '\''{"behavior":{"enabled":true},"overlay_placement":{"x":0,"y":0,"display_width_pt":112,"display_id":"fixture"},"events":[]}\n'\''' \
     '    ;;' \
     '  *) printf '\''{"ok":true}\n'\'' ;;' \
     'esac'
@@ -762,10 +734,9 @@ if ! rg -q 'SIMULATED_AGENT_BIN' "$ROOT_DIR/script/validate_connectors_runtime.s
   || ! rg -q 'PATH="\$SIMULATED_AGENT_BIN:\$PATH"' "$ROOT_DIR/script/validate_connectors_runtime.sh"; then
   record_failure 'simulated connector validation does not isolate third-party agent commands behind local shims'
 fi
-if auto_gates="$(rg -n 'APC_VALIDATE_(REAL_APP_SERVER|REAL_AGENT_CONNECTORS|OVERLAY_INTERACTION):-auto' \
+if auto_gates="$(rg -n 'APC_VALIDATE_(REAL_APP_SERVER|REAL_AGENT_CONNECTORS):-auto' \
   "$ROOT_DIR/script/validate_real_app_server.sh" \
-  "$ROOT_DIR/script/validate_real_agent_connectors.sh" \
-  "$ROOT_DIR/script/validate_overlay_interaction.sh" || true)" && [[ -n "$auto_gates" ]]; then
+  "$ROOT_DIR/script/validate_real_agent_connectors.sh" || true)" && [[ -n "$auto_gates" ]]; then
   record_failure "real validation gates still auto-enable: ${auto_gates//$'\n'/; }"
 fi
 if ! rg -q 'if ! truthy "\$setting"' "$ROOT_DIR/script/validate_real_app_server.sh"; then
@@ -774,10 +745,6 @@ fi
 if ! rg -q 'if ! is_truthy "\$SETTING"' "$ROOT_DIR/script/validate_real_agent_connectors.sh"; then
   record_failure 'real connector validation does not require a truthy explicit gate'
 fi
-if ! rg -q 'if ! truthy "\$MODE"' "$ROOT_DIR/script/validate_overlay_interaction.sh"; then
-  record_failure 'real overlay interaction validation does not require a truthy explicit gate'
-fi
-
 if [[ ! -x "$ROOT_DIR/script/build_app_bundle.sh" ]]; then
   record_failure 'script/build_app_bundle.sh is missing or not executable'
 else

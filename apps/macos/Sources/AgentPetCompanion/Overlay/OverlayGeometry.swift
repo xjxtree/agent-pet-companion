@@ -3,11 +3,279 @@ import AgentPetCompanionCore
 import Combine
 import CoreGraphics
 import Foundation
+import QuartzCore
 
 struct OverlayDisplayGeometry: Equatable, Sendable {
     var frame: CGRect
     var visibleFrame: CGRect
     var backingScaleFactor: CGFloat
+}
+
+/// The target display's presentation cadence. `CGDisplayMode.refreshRate`
+/// reflects an explicitly selected 50/60/etc. Hz mode; some built-in and
+/// adaptive displays report zero there, so AppKit's advertised maximum is the
+/// bounded fallback before the conservative 60 Hz default.
+struct OverlayDisplayRefreshCadence: Equatable, Sendable {
+    let displayID: String
+    let framesPerSecond: Double
+
+    init(displayID: String, framesPerSecond: Double) {
+        self.displayID = displayID
+        self.framesPerSecond = framesPerSecond.isFinite && framesPerSecond > 0
+            ? framesPerSecond
+            : 60
+    }
+
+    var intervalSeconds: TimeInterval {
+        1 / framesPerSecond
+    }
+
+    static func resolved(for screen: NSScreen?) -> Self {
+        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+        let screenNumber = screen?.deviceDescription[screenNumberKey] as? NSNumber
+        let displayID = screenNumber?.stringValue ?? "fallback"
+        let directDisplayID = screenNumber.map { CGDirectDisplayID($0.uint32Value) }
+        let selectedModeRefreshRate = directDisplayID
+            .flatMap(CGDisplayCopyDisplayMode)?
+            .refreshRate ?? 0
+        let advertisedMaximum = Double(screen?.maximumFramesPerSecond ?? 0)
+        let refreshRate = selectedModeRefreshRate > 0
+            ? selectedModeRefreshRate
+            : (advertisedMaximum > 0 ? advertisedMaximum : 60)
+        return Self(displayID: displayID, framesPerSecond: refreshRate)
+    }
+}
+
+/// Latest-value coalescing state shared by pointer drag and display-width
+/// preview. Callers inject monotonic timestamps, which keeps the cadence logic
+/// deterministic in tests and lets production own exactly one sleeping task.
+struct OverlayDisplayRefreshCoalescer<Value> {
+    private var pending: Value?
+    private var cadence: OverlayDisplayRefreshCadence?
+    private var lastDeliveryTime: TimeInterval?
+    private(set) var scheduledDeadline: TimeInterval?
+
+    @discardableResult
+    mutating func submit(
+        _ value: Value,
+        at time: TimeInterval,
+        cadence proposedCadence: OverlayDisplayRefreshCadence
+    ) -> TimeInterval {
+        let now = max(0, time)
+        pending = value
+        if scheduledDeadline == nil || cadence != proposedCadence {
+            let earliest: TimeInterval
+            if let lastDeliveryTime {
+                earliest = lastDeliveryTime + proposedCadence.intervalSeconds
+            } else {
+                earliest = now + proposedCadence.intervalSeconds
+            }
+            scheduledDeadline = max(now, earliest)
+        }
+        cadence = proposedCadence
+        return scheduledDeadline ?? now
+    }
+
+    mutating func takePending(deliveredAt time: TimeInterval) -> Value? {
+        guard let pending else { return nil }
+        self.pending = nil
+        scheduledDeadline = nil
+        lastDeliveryTime = max(lastDeliveryTime ?? 0, max(0, time))
+        return pending
+    }
+
+    mutating func cancelPending() {
+        pending = nil
+        scheduledDeadline = nil
+        cadence = nil
+    }
+}
+
+@MainActor
+protocol OverlayDisplayRefreshTickSource: AnyObject {
+    var isPaused: Bool { get set }
+    func invalidate()
+}
+
+@MainActor
+private final class OverlayDisplayLinkWeakTarget: NSObject {
+    private let onTick: @MainActor () -> Void
+
+    init(onTick: @escaping @MainActor () -> Void) {
+        self.onTick = onTick
+    }
+
+    @objc func displayLinkDidFire(_ displayLink: CADisplayLink) {
+        onTick()
+    }
+}
+
+@MainActor
+private final class OverlayScreenDisplayLinkTickSource:
+    OverlayDisplayRefreshTickSource
+{
+    private let target: OverlayDisplayLinkWeakTarget
+    // Source creation, mutation, and teardown are MainActor-owned. The unsafe
+    // annotation only lets deinit invalidate AppKit's non-Sendable token.
+    nonisolated(unsafe) private let displayLink: CADisplayLink
+
+    init?(screen: NSScreen?, onTick: @escaping @MainActor () -> Void) {
+        guard let screen else { return nil }
+        let target = OverlayDisplayLinkWeakTarget(onTick: onTick)
+        let displayLink = screen.displayLink(
+            target: target,
+            selector: #selector(OverlayDisplayLinkWeakTarget.displayLinkDidFire(_:))
+        )
+        self.target = target
+        self.displayLink = displayLink
+        displayLink.isPaused = true
+        displayLink.add(to: .main, forMode: .common)
+    }
+
+    var isPaused: Bool {
+        get { displayLink.isPaused }
+        set { displayLink.isPaused = newValue }
+    }
+
+    func invalidate() {
+        displayLink.invalidate()
+    }
+
+    deinit {
+        displayLink.invalidate()
+    }
+}
+
+/// Tick-driven latest-value delivery for direct manipulation. A real target
+/// screen binds an `NSScreen` display link, so adaptive-refresh panels follow
+/// actual presentation ticks rather than an assumed maximum FPS. The time
+/// coalescer remains only as the no-screen/display-link fallback.
+@MainActor
+final class OverlayDisplayLinkCoalescer<Value> {
+    typealias TickSourceFactory = @MainActor (
+        _ screen: NSScreen?,
+        _ onTick: @escaping @MainActor () -> Void
+    ) -> (any OverlayDisplayRefreshTickSource)?
+
+    private let tickSourceFactory: TickSourceFactory
+    private var tickSource: (any OverlayDisplayRefreshTickSource)?
+    private var targetDisplayID: String?
+    private var pending: Value?
+    private var delivery: ((Value) -> Void)?
+    private var fallbackCoalescer = OverlayDisplayRefreshCoalescer<Void>()
+    private var fallbackTask: Task<Void, Never>?
+    private var fallbackTaskDeadline: TimeInterval?
+
+    init(
+        tickSourceFactory: @escaping TickSourceFactory = { screen, onTick in
+            return OverlayScreenDisplayLinkTickSource(
+                screen: screen,
+                onTick: onTick
+            )
+        }
+    ) {
+        self.tickSourceFactory = tickSourceFactory
+    }
+
+    var hasPending: Bool { pending != nil }
+
+    func submit(
+        _ value: Value,
+        targetDisplayID: String,
+        screen: NSScreen?,
+        fallbackCadence: OverlayDisplayRefreshCadence,
+        deliver: @escaping (Value) -> Void
+    ) {
+        pending = value
+        delivery = deliver
+        if self.targetDisplayID != targetDisplayID {
+            rebind(targetDisplayID: targetDisplayID, screen: screen)
+        }
+        if let tickSource {
+            tickSource.isPaused = false
+            return
+        }
+        let deadline = fallbackCoalescer.submit(
+            (),
+            at: ProcessInfo.processInfo.systemUptime,
+            cadence: fallbackCadence
+        )
+        scheduleFallback(at: deadline)
+    }
+
+    func flushNow() {
+        deliverPending()
+    }
+
+    func cancelPending() {
+        pending = nil
+        delivery = nil
+        tickSource?.isPaused = true
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        fallbackTaskDeadline = nil
+        fallbackCoalescer.cancelPending()
+    }
+
+    func invalidate() {
+        cancelPending()
+        tickSource?.invalidate()
+        tickSource = nil
+        targetDisplayID = nil
+    }
+
+    func receiveDisplayRefreshTick() {
+        deliverPending()
+    }
+
+    private func rebind(targetDisplayID: String, screen: NSScreen?) {
+        tickSource?.invalidate()
+        tickSource = nil
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        fallbackTaskDeadline = nil
+        fallbackCoalescer.cancelPending()
+        self.targetDisplayID = targetDisplayID
+        tickSource = tickSourceFactory(screen) { [weak self] in
+            self?.receiveDisplayRefreshTick()
+        }
+    }
+
+    private func deliverPending() {
+        guard let pending else {
+            tickSource?.isPaused = true
+            return
+        }
+        let delivery = delivery
+        self.pending = nil
+        self.delivery = nil
+        tickSource?.isPaused = true
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        fallbackTaskDeadline = nil
+        _ = fallbackCoalescer.takePending(
+            deliveredAt: ProcessInfo.processInfo.systemUptime
+        )
+        delivery?(pending)
+    }
+
+    private func scheduleFallback(at deadline: TimeInterval) {
+        if let fallbackTaskDeadline,
+           abs(fallbackTaskDeadline - deadline) < 0.000_001,
+           fallbackTask != nil {
+            return
+        }
+        fallbackTask?.cancel()
+        fallbackTaskDeadline = deadline
+        let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+        fallbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.fallbackTask = nil
+            self.fallbackTaskDeadline = nil
+            self.deliverPending()
+        }
+    }
 }
 
 struct OverlayPetVisualEnvelope: Equatable, Sendable {
@@ -98,7 +366,7 @@ struct OverlayPetAlphaMask: Equatable, Sendable {
 
 /// Describes the exact decoded frame currently presented by the Metal view.
 /// `frameID` lets the renderer and AppStore coalesce repeated display-link
-/// draws without comparing the mask payload at 10/20 FPS.
+/// draws without comparing the mask payload for every authored frame.
 struct OverlayPetFrameHitTest: Equatable, Sendable {
     let frameID: UUID
     let canvasSize: CGSize
@@ -166,16 +434,6 @@ enum OverlayPetAnimationIdentity {
 
 }
 
-enum OverlayScaleFeedbackVisibility {
-    static func isVisible(
-        isFocused _: Bool,
-        isResizing: Bool,
-        isStepFeedbackVisible: Bool
-    ) -> Bool {
-        isResizing || isStepFeedbackVisible
-    }
-}
-
 enum OverlayControlVisibility {
     static let hoverShowDelay = Duration.zero
     static let hoverHideDelay = Duration.milliseconds(300)
@@ -183,10 +441,9 @@ enum OverlayControlVisibility {
     static func isVisible(
         pointerNearPet: Bool,
         petDragInProgress: Bool,
-        resizeInProgress: Bool,
         keyboardFocusActive: Bool = false
     ) -> Bool {
-        pointerNearPet || petDragInProgress || resizeInProgress || keyboardFocusActive
+        pointerNearPet || petDragInProgress || keyboardFocusActive
     }
 
     static func transitionDelay(showing: Bool, forced: Bool) -> Duration {
@@ -207,8 +464,8 @@ enum OverlayMotion {
 
 /// One presentation state coordinates every transient overlay control. Pointer
 /// hover begins the visual fade immediately, while pointer exit is delayed to
-/// avoid flicker between the pet and its controls. Keyboard focus and active
-/// drag/resize interactions remain immediate.
+/// avoid flicker between the pet and its controls. Keyboard focus and an active
+/// pet drag remain immediate.
 @MainActor
 final class OverlayControlPresentationState: ObservableObject {
     typealias TransitionSleeper = @MainActor @Sendable (Duration) async throws -> Void
@@ -217,7 +474,6 @@ final class OverlayControlPresentationState: ObservableObject {
         case pet
         case bubble
         case menu
-        case resize
     }
 
     @Published private(set) var isVisible = false
@@ -317,192 +573,166 @@ final class OverlayControlPresentationState: ObservableObject {
     }
 }
 
-/// Keeps high-frequency resize presentation out of `AppStore`. Only the pet
-/// canvas and resize handle observe this state, so pointer movement does not
-/// invalidate the control center, bubbles, or unrelated overlay content.
+/// Keeps high-frequency display-size preview out of `AppStore`. Only the pet
+/// canvas observes this state, so slider movement does not invalidate the
+/// control center, bubbles, or unrelated overlay content.
 @MainActor
 final class OverlayInteractionPresentationState: ObservableObject {
-    private struct ResizePresentation: Equatable {
-        var scale: CGFloat
+    private struct DisplayWidthPresentation: Equatable {
+        var displayWidthPt: CGFloat
         var petLocalCenter: CGPoint
     }
 
-    @Published private var resizePresentation: ResizePresentation?
+    @Published private var displayWidthPresentation: DisplayWidthPresentation?
 
-    func resolvedScale(fallback: CGFloat) -> CGFloat {
-        resizePresentation?.scale ?? fallback
+    func resolvedDisplayWidthPt(fallback: CGFloat) -> CGFloat {
+        displayWidthPresentation?.displayWidthPt ?? fallback
     }
 
     func resolvedPetLocalCenter(fallback: CGPoint) -> CGPoint {
-        resizePresentation?.petLocalCenter ?? fallback
+        displayWidthPresentation?.petLocalCenter ?? fallback
     }
 
-    func present(scale: CGFloat, petLocalCenter: CGPoint) {
-        let next = ResizePresentation(
-            scale: scale,
+    func present(displayWidthPt: CGFloat, petLocalCenter: CGPoint) {
+        let next = DisplayWidthPresentation(
+            displayWidthPt: displayWidthPt,
             petLocalCenter: petLocalCenter
         )
-        guard resizePresentation != next else { return }
-        resizePresentation = next
+        guard displayWidthPresentation != next else { return }
+        displayWidthPresentation = next
     }
 
-    func clearResize() {
-        guard resizePresentation != nil else { return }
-        resizePresentation = nil
+    func clearDisplayWidthPreview() {
+        guard displayWidthPresentation != nil else { return }
+        displayWidthPresentation = nil
     }
 }
 
 enum OverlayPetPointerGesture {
-    static let dragThreshold: CGFloat = 3
+    static let dragThreshold: CGFloat = 4
 
     static func exceedsDragThreshold(from start: CGPoint, to current: CGPoint) -> Bool {
         hypot(current.x - start.x, current.y - start.y) > dragThreshold
     }
 }
 
-struct OverlayPetMotionSample: Equatable {
-    let point: CGPoint
-    let timestamp: TimeInterval
+struct OverlayDragSession: Equatable, Sendable {
+    let interactionID: UUID
+    let startPointerScreen: CGPoint
+    let startAnchorScreen: CGPoint
+    var latestPointerScreen: CGPoint
+    let startDisplayID: String
+    var hasCrossedThreshold: Bool
+
+    init(
+        interactionID: UUID = UUID(),
+        startPointerScreen: CGPoint,
+        startAnchorScreen: CGPoint,
+        startDisplayID: String
+    ) {
+        self.interactionID = interactionID
+        self.startPointerScreen = startPointerScreen
+        self.startAnchorScreen = startAnchorScreen
+        latestPointerScreen = startPointerScreen
+        self.startDisplayID = startDisplayID
+        hasCrossedThreshold = false
+    }
+
+    var proposedAnchorScreen: CGPoint {
+        CGPoint(
+            x: startAnchorScreen.x
+                + latestPointerScreen.x
+                - startPointerScreen.x,
+            y: startAnchorScreen.y
+                + latestPointerScreen.y
+                - startPointerScreen.y
+        )
+    }
+
+    mutating func updatePointer(_ point: CGPoint) {
+        latestPointerScreen = point
+        if !hasCrossedThreshold {
+            hasCrossedThreshold = OverlayPetPointerGesture.exceedsDragThreshold(
+                from: startPointerScreen,
+                to: point
+            )
+        }
+    }
 }
 
-/// Presentation-only drag physics. Persistent placement always uses the hard
-/// clamped release target; elastic overshoot and velocity exist only while the
-/// user is directly manipulating the desktop pet or while it settles.
-enum OverlayPetDragMotion {
-    static let velocityWindow: TimeInterval = 0.12
-    static let maximumReleaseVelocity: CGFloat = 1_200
-    static let releaseProjectionDuration: TimeInterval = 0.08
-    static let releaseSettlingDuration: TimeInterval = 0.42
-    static let criticalAngularFrequency: CGFloat = 18
-    static let releaseFrameInterval = Duration.milliseconds(16)
+struct OverlayDragDisplay: Equatable, Sendable {
+    let id: String
+    let frame: CGRect
+    let visibleFrame: CGRect
+}
 
-    static func rubberBandedCenter(
+/// Selects the drag display from injected geometry so crossing a display edge
+/// does not replace the absolute pointer anchor with window-relative deltas.
+enum OverlayDragScreenResolver {
+    static func resolve(
+        pointer: CGPoint,
+        proposedPetCenter: CGPoint,
+        displays: [OverlayDragDisplay],
+        fallbackDisplayID: String?
+    ) -> OverlayDragDisplay? {
+        displays.first { $0.frame.contains(pointer) }
+            ?? displays.first { $0.frame.contains(proposedPetCenter) }
+            ?? fallbackDisplayID.flatMap { fallbackID in
+                displays.first { $0.id == fallbackID }
+            }
+            ?? displays.first
+    }
+}
+
+enum OverlayInteractionWindowRole: Equatable, Sendable {
+    case parentPetPanel
+    case bubbleChildPanel
+    case menuChildPanel
+}
+
+struct OverlayInteractionWindowMove: Equatable, Sendable {
+    let role: OverlayInteractionWindowRole
+    let frame: CGRect
+}
+
+/// The display-link delivery path translates only the parent pet panel. Child
+/// bubble/menu panels are reconciled by the lower-frequency committed layout,
+/// never by every pointer/display tick.
+enum OverlayDirectManipulationMovePlan {
+    static func moves(
+        parentFrame: CGRect,
+        previousPetCenter: CGPoint,
+        presentedPetCenter: CGPoint
+    ) -> [OverlayInteractionWindowMove] {
+        let targetFrame = parentFrame.offsetBy(
+            dx: presentedPetCenter.x - previousPetCenter.x,
+            dy: presentedPetCenter.y - previousPetCenter.y
+        )
+        guard targetFrame != parentFrame else { return [] }
+        return [OverlayInteractionWindowMove(
+            role: .parentPetPanel,
+            frame: targetFrame
+        )]
+    }
+}
+
+/// Pure geometry for direct manipulation. Dragging has no rubber band,
+/// projection, velocity handoff, settling, momentum, or bounce.
+enum OverlayPetDragGeometry {
+    static func clampedCenter(
         _ proposedCenter: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         visibleFrame: CGRect,
         clickMenuEnabled: Bool = true,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
-        let hardClamped = OverlayGeometry.clampedPetScreenCenter(
+        OverlayGeometry.clampedPetScreenCenter(
             proposedCenter,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             visibleFrame: visibleFrame,
             clickMenuEnabled: clickMenuEnabled,
             petVisualEnvelope: petVisualEnvelope
         )
-        let dimension = max(44, 64 * scale)
-        return CGPoint(
-            x: hardClamped.x + rubberBandedDistance(
-                proposedCenter.x - hardClamped.x,
-                dimension: dimension
-            ),
-            y: hardClamped.y + rubberBandedDistance(
-                proposedCenter.y - hardClamped.y,
-                dimension: dimension
-            )
-        )
-    }
-
-    static func projectedReleaseTarget(
-        from presentationCenter: CGPoint,
-        velocity: CGVector,
-        scale: CGFloat,
-        visibleFrame: CGRect,
-        clickMenuEnabled: Bool = true,
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
-    ) -> CGPoint {
-        let limited = limitedVelocity(velocity)
-        let projected = CGPoint(
-            x: presentationCenter.x
-                + limited.dx * releaseProjectionDuration,
-            y: presentationCenter.y
-                + limited.dy * releaseProjectionDuration
-        )
-        return OverlayGeometry.clampedPetScreenCenter(
-            projected,
-            scale: scale,
-            visibleFrame: visibleFrame,
-            clickMenuEnabled: clickMenuEnabled,
-            petVisualEnvelope: petVisualEnvelope
-        )
-    }
-
-    static func estimatedVelocity(
-        from samples: [OverlayPetMotionSample]
-    ) -> CGVector {
-        guard let latest = samples.last else { return .zero }
-        let cutoff = latest.timestamp - velocityWindow
-        guard let first = samples.first(where: { $0.timestamp >= cutoff }) else {
-            return .zero
-        }
-        let elapsed = latest.timestamp - first.timestamp
-        guard elapsed >= 1.0 / 240.0 else { return .zero }
-        return limitedVelocity(CGVector(
-            dx: (latest.point.x - first.point.x) / elapsed,
-            dy: (latest.point.y - first.point.y) / elapsed
-        ))
-    }
-
-    static func criticallyDampedPosition(
-        from start: CGPoint,
-        to target: CGPoint,
-        initialVelocity: CGVector,
-        elapsed: TimeInterval
-    ) -> CGPoint {
-        let time = max(0, CGFloat(elapsed))
-        let velocity = limitedVelocity(initialVelocity)
-        return CGPoint(
-            x: criticallyDampedAxis(
-                start: start.x,
-                target: target.x,
-                initialVelocity: velocity.dx,
-                elapsed: time
-            ),
-            y: criticallyDampedAxis(
-                start: start.y,
-                target: target.y,
-                initialVelocity: velocity.dy,
-                elapsed: time
-            )
-        )
-    }
-
-    private static func rubberBandedDistance(
-        _ distance: CGFloat,
-        dimension: CGFloat
-    ) -> CGFloat {
-        guard distance != 0, dimension > 0 else { return 0 }
-        let magnitude = abs(distance)
-        let compressed = (
-            1 - (1 / ((magnitude * 0.55 / dimension) + 1))
-        ) * dimension
-        return distance < 0 ? -compressed : compressed
-    }
-
-    private static func limitedVelocity(_ velocity: CGVector) -> CGVector {
-        let speed = hypot(velocity.dx, velocity.dy)
-        guard speed > maximumReleaseVelocity, speed > 0 else { return velocity }
-        let multiplier = maximumReleaseVelocity / speed
-        return CGVector(
-            dx: velocity.dx * multiplier,
-            dy: velocity.dy * multiplier
-        )
-    }
-
-    private static func criticallyDampedAxis(
-        start: CGFloat,
-        target: CGFloat,
-        initialVelocity: CGFloat,
-        elapsed: CGFloat
-    ) -> CGFloat {
-        let displacement = start - target
-        let coefficient = initialVelocity
-            + criticalAngularFrequency * displacement
-        let decay = CGFloat(exp(
-            -Double(criticalAngularFrequency * elapsed)
-        ))
-        return target
-            + (displacement + coefficient * elapsed) * decay
     }
 }
 
@@ -590,10 +820,16 @@ enum OverlayPresentedAgentState {
 }
 
 enum OverlayGeometry {
-    static let minimumScale: CGFloat = 0.10
-    static let maximumScale: CGFloat = 1.8
-    static let defaultScale: CGFloat = 0.72
-    static let resizeStep: CGFloat = 0.05
+    static let minimumDisplayWidthPt = CGFloat(
+        OverlayPlacement.minimumDisplayWidthPt
+    )
+    static let maximumDisplayWidthPt = CGFloat(
+        OverlayPlacement.maximumDisplayWidthPt
+    )
+    static let defaultDisplayWidthPt = CGFloat(
+        OverlayPlacement.defaultDisplayWidthPt
+    )
+    static let displayAspectHeightRatio: CGFloat = 208 / 192
     static let bubbleWidth: CGFloat = 344
     static let bubbleMinimumHeight: CGFloat = 70
     static let bubbleMaximumHeight: CGFloat = 680
@@ -628,19 +864,14 @@ enum OverlayGeometry {
     static let bubbleCollapsedStackLayerInset: CGFloat = 5
     static let menuVisualSize = CGSize(width: 24, height: 24)
     static let menuHitSize = CGSize(width: 38, height: 38)
-    static let resizeVisualSize = CGSize(width: 24, height: 24)
-    static let resizeHitSize = CGSize(width: 38, height: 38)
     static let pointerNearMargin: CGFloat = 12
     static let controlVisibilitySlop: CGFloat = 4
-    private static let petStageBaseSize = CGSize(width: 238, height: 318)
-    private static let petSpriteBaseSize = CGSize(width: 230, height: 310)
+    private static let petStagePadding: CGFloat = 8
     private static let petShadowRadius: CGFloat = 10
     private static let petShadowYOffset: CGFloat = 6
     private static let panelContentPadding: CGFloat = 2
     private static let petControlTrailingGap: CGFloat = 8
     private static let petMenuToPetGap: CGFloat = 3
-    private static let resizeSideVerticalRatio: CGFloat = 0.28
-    private static let petControlMinimumVerticalGap: CGFloat = 2
 
     static func clampedPoint(_ base: CGPoint, in size: CGSize) -> CGPoint {
         CGPoint(
@@ -761,14 +992,17 @@ enum OverlayGeometry {
         }
     }
 
-    static func defaultPetScreenCenter(in visibleFrame: CGRect, scale: CGFloat) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
+    static func defaultPetScreenCenter(
+        in visibleFrame: CGRect,
+        displayWidthPt: CGFloat
+    ) -> CGPoint {
+        let petSize = petVisibleSize(displayWidthPt: displayWidthPt)
         return clampedPetScreenCenter(
             CGPoint(
                 x: visibleFrame.maxX - petSize.width * 0.72,
                 y: visibleFrame.minY + petSize.height * 0.62
             ),
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             visibleFrame: visibleFrame
         )
     }
@@ -803,19 +1037,17 @@ enum OverlayGeometry {
 
     static func clampedPetScreenCenter(
         _ proposedCenter: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         visibleFrame: CGRect,
         clickMenuEnabled: Bool = true,
-        includeResize: Bool = true,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
         guard !visibleFrame.isEmpty else { return proposedCenter }
 
         let relativeBounds = petMovementScreenBounds(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: .zero,
             clickMenuEnabled: clickMenuEnabled,
-            includeResize: includeResize,
             petVisualEnvelope: petVisualEnvelope
         )
         let edgeInset: CGFloat = 1
@@ -849,7 +1081,7 @@ enum OverlayGeometry {
 
     static func bubblePosition(
         bubbleSize: CGSize,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petCenter: CGPoint,
         panelFrame: CGRect,
         screenFrame: CGRect,
@@ -858,7 +1090,7 @@ enum OverlayGeometry {
         let petScreenPoint = screenPoint(forLocalPoint: petCenter, panelFrame: panelFrame)
         let screenCenter = bubbleScreenCenter(
             bubbleSize: bubbleSize,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petScreenPoint,
             screenFrame: screenFrame
         )
@@ -867,14 +1099,14 @@ enum OverlayGeometry {
 
     static func bubbleScreenCenter(
         bubbleSize: CGSize,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         screenFrame: CGRect,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
+        let petSize = petVisibleSize(displayWidthPt: displayWidthPt)
         let verticalOffsets = petVisualVerticalOffsets(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             envelope: petVisualEnvelope
         )
         let petLeft = petScreenCenter.x - petSize.width / 2
@@ -939,42 +1171,49 @@ enum OverlayGeometry {
         )
     }
 
-    static func petDragSize(scale: CGFloat) -> CGSize {
-        let visible = petVisibleSize(scale: scale)
+    static func petDragSize(displayWidthPt: CGFloat) -> CGSize {
+        let visible = petVisibleSize(displayWidthPt: displayWidthPt)
         return CGSize(
             width: max(26, visible.width * 0.78),
             height: max(38, visible.height * 0.90)
         )
     }
 
-    static func petVisibleSize(scale: CGFloat) -> CGSize {
-        CGSize(width: max(30, 230 * scale), height: max(42, 310 * scale))
+    static func petVisibleSize(displayWidthPt: CGFloat) -> CGSize {
+        let width = clampedDisplayWidthPt(displayWidthPt)
+        return CGSize(
+            width: width,
+            height: width * displayAspectHeightRatio
+        )
     }
 
     static func petVisualVerticalOffsets(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         envelope: OverlayPetVisualEnvelope?
     ) -> (bottom: CGFloat, top: CGFloat) {
-        let bounds = fittedPetVisualBounds(scale: scale, envelope: envelope)
+        let bounds = fittedPetVisualBounds(
+            displayWidthPt: displayWidthPt,
+            envelope: envelope
+        )
         return (bounds.minY, bounds.maxY)
     }
 
     static func petVisualHorizontalOffsets(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         envelope: OverlayPetVisualEnvelope?
     ) -> (left: CGFloat, right: CGFloat) {
-        let bounds = fittedPetVisualBounds(scale: scale, envelope: envelope)
+        let bounds = fittedPetVisualBounds(
+            displayWidthPt: displayWidthPt,
+            envelope: envelope
+        )
         return (bounds.minX, bounds.maxX)
     }
 
     private static func fittedPetVisualBounds(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         envelope: OverlayPetVisualEnvelope?
     ) -> CGRect {
-        let spriteSize = CGSize(
-            width: petSpriteBaseSize.width * scale,
-            height: petSpriteBaseSize.height * scale
-        )
+        let spriteSize = petVisibleSize(displayWidthPt: displayWidthPt)
         guard
             let envelope,
             envelope.canvasSize.width > 0,
@@ -1008,79 +1247,57 @@ enum OverlayGeometry {
         )
     }
 
-    static func clampedScale(_ scale: CGFloat) -> CGFloat {
-        min(maximumScale, max(minimumScale, scale))
+    static func clampedDisplayWidthPt(_ displayWidthPt: CGFloat) -> CGFloat {
+        guard displayWidthPt.isFinite else { return defaultDisplayWidthPt }
+        return min(
+            maximumDisplayWidthPt,
+            max(minimumDisplayWidthPt, displayWidthPt)
+        )
     }
 
-    static func resolvedInitialScale(
-        persistedScale: CGFloat,
+    static func resolvedInitialDisplayWidthPt(
+        persistedDisplayWidthPt: CGFloat,
         hasPersistedPosition: Bool
     ) -> CGFloat {
-        guard hasPersistedPosition, persistedScale.isFinite, persistedScale > 0 else {
-            return defaultScale
+        guard hasPersistedPosition,
+              persistedDisplayWidthPt.isFinite,
+              persistedDisplayWidthPt > 0 else {
+            return defaultDisplayWidthPt
         }
-        return clampedScale(persistedScale)
+        return clampedDisplayWidthPt(persistedDisplayWidthPt)
     }
 
-    static func resizeCenter(
-        petCenter: CGPoint,
-        scale: CGFloat,
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+    static func bottomAnchoredCenter(
+        from center: CGPoint,
+        currentDisplayWidthPt: CGFloat,
+        proposedDisplayWidthPt: CGFloat
     ) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
-        let petRight = petVisualHorizontalOffsets(
-            scale: scale,
-            envelope: petVisualEnvelope
-        ).right
-        let verticalOffset = resizeVerticalOffset(
-            petHeight: petSize.height,
-            menuCenterOffset: menuLocalVerticalOffset(
-                scale: scale,
-                envelope: petVisualEnvelope
-            )
-        )
+        let currentHeight = petVisibleSize(
+            displayWidthPt: currentDisplayWidthPt
+        ).height
+        let proposedHeight = petVisibleSize(
+            displayWidthPt: proposedDisplayWidthPt
+        ).height
+        let bottomAnchorY = center.y - currentHeight / 2
         return CGPoint(
-            x: petCenter.x + petRight + petControlTrailingGap,
-            y: petCenter.y + verticalOffset
-        )
-    }
-
-    static func resizeScreenCenter(
-        petScreenCenter: CGPoint,
-        scale: CGFloat,
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
-    ) -> CGPoint {
-        let petSize = petVisibleSize(scale: scale)
-        let petRight = petVisualHorizontalOffsets(
-            scale: scale,
-            envelope: petVisualEnvelope
-        ).right
-        let verticalOffset = resizeVerticalOffset(
-            petHeight: petSize.height,
-            menuCenterOffset: menuLocalVerticalOffset(
-                scale: scale,
-                envelope: petVisualEnvelope
-            )
-        )
-        return CGPoint(
-            x: petScreenCenter.x + petRight + petControlTrailingGap,
-            y: petScreenCenter.y - verticalOffset
+            x: center.x,
+            y: bottomAnchorY + proposedHeight / 2
         )
     }
 
     static func menuCenter(
         petCenter: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
         let petRight = petVisualHorizontalOffsets(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             envelope: petVisualEnvelope
         ).right
         return CGPoint(
             x: petCenter.x + petRight + petControlTrailingGap,
             y: petCenter.y + menuLocalVerticalOffset(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 envelope: petVisualEnvelope
             )
         )
@@ -1088,64 +1305,54 @@ enum OverlayGeometry {
 
     static func menuScreenCenter(
         petScreenCenter: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
         let petRight = petVisualHorizontalOffsets(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             envelope: petVisualEnvelope
         ).right
         return CGPoint(
             x: petScreenCenter.x + petRight + petControlTrailingGap,
             y: petScreenCenter.y - menuLocalVerticalOffset(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 envelope: petVisualEnvelope
             )
         )
     }
 
     private static func menuLocalVerticalOffset(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         envelope: OverlayPetVisualEnvelope?
     ) -> CGFloat {
-        let petTop = petVisualVerticalOffsets(scale: scale, envelope: envelope).top
+        let petTop = petVisualVerticalOffsets(
+            displayWidthPt: displayWidthPt,
+            envelope: envelope
+        ).top
         return -petTop + menuHitSize.height / 2 + petMenuToPetGap
     }
 
-    private static func resizeVerticalOffset(
-        petHeight: CGFloat,
-        menuCenterOffset: CGFloat
-    ) -> CGFloat {
-        let preferredOffset = petHeight * resizeSideVerticalRatio
-        let minimumCenterSeparation = (menuHitSize.height + resizeHitSize.height) / 2
-            + petControlMinimumVerticalGap
-        return max(preferredOffset, menuCenterOffset + minimumCenterSeparation)
-    }
-
     static func petPanelScreenFrame(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
-        clickMenuEnabled: Bool,
-        includeResize: Bool
+        clickMenuEnabled: Bool
     ) -> CGRect {
         petInteractiveScreenBounds(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petScreenCenter,
-            clickMenuEnabled: clickMenuEnabled,
-            includeResize: includeResize
+            clickMenuEnabled: clickMenuEnabled
         ).integral
     }
 
     static func petInteractiveScreenBounds(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
-        clickMenuEnabled: Bool,
-        includeResize: Bool
+        clickMenuEnabled: Bool
     ) -> CGRect {
-        let visibleSize = petVisibleSize(scale: scale)
+        let visibleSize = petVisibleSize(displayWidthPt: displayWidthPt)
         let stageSize = CGSize(
-            width: max(visibleSize.width, petStageBaseSize.width * scale),
-            height: max(visibleSize.height, petStageBaseSize.height * scale)
+            width: visibleSize.width + petStagePadding,
+            height: visibleSize.height + petStagePadding
         )
         let stage = rect(center: petScreenCenter, size: stageSize)
         var bounds = CGRect(
@@ -1155,16 +1362,12 @@ enum OverlayGeometry {
             height: stage.height + petShadowRadius * 2
         )
 
-        if includeResize {
-            bounds = bounds.union(rect(
-                center: resizeScreenCenter(petScreenCenter: petScreenCenter, scale: scale),
-                size: resizeHitSize
-            ))
-        }
-
         if clickMenuEnabled {
             bounds = bounds.union(rect(
-                center: menuScreenCenter(petScreenCenter: petScreenCenter, scale: scale),
+                center: menuScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    displayWidthPt: displayWidthPt
+                ),
                 size: menuHitSize
             ))
         }
@@ -1177,35 +1380,23 @@ enum OverlayGeometry {
     /// pixels that are actually visible plus the two reachable controls. This
     /// prevents transparent sprite padding from creating an invisible wall.
     static func petMovementScreenBounds(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         clickMenuEnabled: Bool,
-        includeResize: Bool,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         var bounds = fittedPetVisualBounds(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             envelope: petVisualEnvelope
         )
         .offsetBy(dx: petScreenCenter.x, dy: petScreenCenter.y)
         .insetBy(dx: -panelContentPadding, dy: -panelContentPadding)
 
-        if includeResize {
-            bounds = bounds.union(rect(
-                center: resizeScreenCenter(
-                    petScreenCenter: petScreenCenter,
-                    scale: scale,
-                    petVisualEnvelope: petVisualEnvelope
-                ),
-                size: resizeHitSize
-            ))
-        }
-
         if clickMenuEnabled {
             bounds = bounds.union(rect(
                 center: menuScreenCenter(
                     petScreenCenter: petScreenCenter,
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petVisualEnvelope: petVisualEnvelope
                 ),
                 size: menuHitSize
@@ -1216,25 +1407,20 @@ enum OverlayGeometry {
     }
 
     static func pointerNearPetScreenRect(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         clickMenuEnabled: Bool,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         var rects = [
             petVisualScreenRect(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petScreenCenter,
                 petVisualEnvelope: petVisualEnvelope
             ),
-            rect(center: petScreenCenter, size: petDragSize(scale: scale)),
             rect(
-                center: resizeScreenCenter(
-                    petScreenCenter: petScreenCenter,
-                    scale: scale,
-                    petVisualEnvelope: petVisualEnvelope
-                ),
-                size: resizeHitSize
+                center: petScreenCenter,
+                size: petDragSize(displayWidthPt: displayWidthPt)
             )
         ]
 
@@ -1242,7 +1428,7 @@ enum OverlayGeometry {
             rects.append(rect(
                 center: menuScreenCenter(
                     petScreenCenter: petScreenCenter,
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petVisualEnvelope: petVisualEnvelope
                 ),
                 size: menuHitSize
@@ -1258,29 +1444,21 @@ enum OverlayGeometry {
     /// The compact controls use a tighter visual hover region than the broad
     /// activation rectangle above. The activation rectangle deliberately
     /// includes a margin and the empty corridor between windows so a first
-    /// click cannot fall through; using it for opacity would leave the resize
-    /// affordance visible after the pointer has left the actual pet/control
+    /// click cannot fall through; using it for opacity would leave the compact
+    /// control visible after the pointer has left the actual pet/control
     /// surfaces.
     static func shouldShowControls(
         at screenPoint: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         clickMenuEnabled: Bool,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> Bool {
         var regions = [
             petVisualScreenRect(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petScreenCenter,
                 petVisualEnvelope: petVisualEnvelope
-            ).insetBy(dx: -controlVisibilitySlop, dy: -controlVisibilitySlop),
-            rect(
-                center: resizeScreenCenter(
-                    petScreenCenter: petScreenCenter,
-                    scale: scale,
-                    petVisualEnvelope: petVisualEnvelope
-                ),
-                size: resizeHitSize
             ).insetBy(dx: -controlVisibilitySlop, dy: -controlVisibilitySlop)
         ]
 
@@ -1288,7 +1466,7 @@ enum OverlayGeometry {
             regions.append(rect(
                 center: menuScreenCenter(
                     petScreenCenter: petScreenCenter,
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petVisualEnvelope: petVisualEnvelope
                 ),
                 size: menuHitSize
@@ -1299,12 +1477,18 @@ enum OverlayGeometry {
     }
 
     static func petVisualScreenRect(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
-        let horizontal = petVisualHorizontalOffsets(scale: scale, envelope: petVisualEnvelope)
-        let vertical = petVisualVerticalOffsets(scale: scale, envelope: petVisualEnvelope)
+        let horizontal = petVisualHorizontalOffsets(
+            displayWidthPt: displayWidthPt,
+            envelope: petVisualEnvelope
+        )
+        let vertical = petVisualVerticalOffsets(
+            displayWidthPt: displayWidthPt,
+            envelope: petVisualEnvelope
+        )
         return CGRect(
             x: petScreenCenter.x + horizontal.left,
             y: petScreenCenter.y + vertical.bottom,
@@ -1319,11 +1503,11 @@ enum OverlayGeometry {
     /// then sampled from the immutable one-bit alpha mask.
     static func petFrameContainsOpaquePixel(
         atTopLeftPoint point: CGPoint,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petCenter: CGPoint,
         frameHitTest: OverlayPetFrameHitTest
     ) -> Bool {
-        guard scale.isFinite, scale > 0,
+        guard displayWidthPt.isFinite, displayWidthPt > 0,
               point.x.isFinite, point.y.isFinite,
               frameHitTest.canvasSize.width.isFinite,
               frameHitTest.canvasSize.height.isFinite,
@@ -1332,10 +1516,7 @@ enum OverlayGeometry {
             return false
         }
 
-        let drawableSize = CGSize(
-            width: petSpriteBaseSize.width * scale,
-            height: petSpriteBaseSize.height * scale
-        )
+        let drawableSize = petVisibleSize(displayWidthPt: displayWidthPt)
         let drawableRect = rect(center: petCenter, size: drawableSize)
         guard drawableRect.contains(point) else { return false }
 
@@ -1387,14 +1568,14 @@ enum OverlayGeometry {
     }
 
     static func bubblePanelScreenFrame(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
         content: OverlayBubbleContent = .measurementPlaceholder,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
         bubblePanelScreenFrame(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petScreenCenter,
             visibleFrame: visibleFrame,
             contents: [content],
@@ -1403,7 +1584,7 @@ enum OverlayGeometry {
     }
 
     static func bubblePanelScreenFrame(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
         contents: [OverlayBubbleContent],
@@ -1414,7 +1595,7 @@ enum OverlayGeometry {
         return rect(
             center: bubbleScreenCenter(
                 bubbleSize: bubbleSize,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petScreenCenter,
                 screenFrame: visibleFrame,
                 petVisualEnvelope: petVisualEnvelope
@@ -1424,7 +1605,7 @@ enum OverlayGeometry {
     }
 
     static func panelScreenFrame(
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petScreenCenter: CGPoint,
         bubbleVisible: Bool,
         clickMenuEnabled: Bool,
@@ -1433,19 +1614,27 @@ enum OverlayGeometry {
     ) -> CGRect {
         let bubbleSize = resolvedBubbleSize(in: visibleFrame.size, content: bubbleContent)
         var rects = [
-            rect(center: petScreenCenter, size: petVisibleSize(scale: scale)),
-            rect(center: resizeScreenCenter(petScreenCenter: petScreenCenter, scale: scale), size: resizeHitSize)
+            rect(
+                center: petScreenCenter,
+                size: petVisibleSize(displayWidthPt: displayWidthPt)
+            )
         ]
 
         if clickMenuEnabled {
-            rects.append(rect(center: menuScreenCenter(petScreenCenter: petScreenCenter, scale: scale), size: menuHitSize))
+            rects.append(rect(
+                center: menuScreenCenter(
+                    petScreenCenter: petScreenCenter,
+                    displayWidthPt: displayWidthPt
+                ),
+                size: menuHitSize
+            ))
         }
 
         if bubbleVisible {
             rects.append(rect(
                 center: bubbleScreenCenter(
                     bubbleSize: bubbleSize,
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petScreenCenter: petScreenCenter,
                     screenFrame: visibleFrame
                 ),
@@ -1461,25 +1650,26 @@ enum OverlayGeometry {
 
     static func interactiveRects(
         in containerSize: CGSize,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petCenter: CGPoint,
         bubbleVisible: Bool,
         clickMenuEnabled: Bool,
         panelFrame: CGRect,
         screenFrame: CGRect,
         includeBubble: Bool,
-        includeResize: Bool = true,
         bubbleContent: OverlayBubbleContent = .measurementPlaceholder
     ) -> [CGRect] {
         let displayPetCenter = petCenter
-        let menuCenter = menuCenter(petCenter: displayPetCenter, scale: scale)
+        let menuCenter = menuCenter(
+            petCenter: displayPetCenter,
+            displayWidthPt: displayWidthPt
+        )
         var rects: [CGRect] = [
-            rect(center: displayPetCenter, size: petVisibleSize(scale: scale))
+            rect(
+                center: displayPetCenter,
+                size: petVisibleSize(displayWidthPt: displayWidthPt)
+            )
         ]
-
-        if includeResize {
-            rects.append(rect(center: resizeCenter(petCenter: displayPetCenter, scale: scale), size: resizeHitSize))
-        }
 
         if clickMenuEnabled {
             rects.append(rect(center: menuCenter, size: menuHitSize))
@@ -1489,7 +1679,7 @@ enum OverlayGeometry {
             let bubbleSize = resolvedBubbleSize(in: screenFrame.size, content: bubbleContent)
             let center = bubblePosition(
                 bubbleSize: bubbleSize,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petCenter: displayPetCenter,
                 panelFrame: panelFrame,
                 screenFrame: screenFrame,
@@ -1504,14 +1694,13 @@ enum OverlayGeometry {
     static func shouldHandleMouse(
         atTopLeftPoint point: CGPoint,
         in containerSize: CGSize,
-        scale: CGFloat,
+        displayWidthPt: CGFloat,
         petCenter: CGPoint,
         bubbleVisible: Bool,
         clickMenuEnabled: Bool,
         panelFrame: CGRect,
         screenFrame: CGRect,
         includeBubble: Bool,
-        includeResize: Bool = true,
         bubbleContent: OverlayBubbleContent = .measurementPlaceholder,
         mousePassthroughEnabled: Bool = true,
         petFrameHitTest: OverlayPetFrameHitTest? = nil
@@ -1523,14 +1712,13 @@ enum OverlayGeometry {
 
         let rects = interactiveRects(
             in: containerSize,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petCenter: petCenter,
             bubbleVisible: bubbleVisible,
             clickMenuEnabled: clickMenuEnabled,
             panelFrame: panelFrame,
             screenFrame: screenFrame,
             includeBubble: includeBubble,
-            includeResize: includeResize,
             bubbleContent: bubbleContent
         )
         guard let petDragRect = rects.first else { return false }
@@ -1551,7 +1739,7 @@ enum OverlayGeometry {
         }
         return petFrameContainsOpaquePixel(
             atTopLeftPoint: point,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petCenter: petCenter,
             frameHitTest: petFrameHitTest
         )
@@ -1685,6 +1873,30 @@ enum OverlayBubbleProjection {
     }
 }
 
+enum OverlaySessionSurfaceKind: Equatable {
+    case app
+    case cli
+}
+
+enum OverlaySessionNavigationNotice: Equatable, Sendable {
+    case unavailable
+    case failed
+    case degradedToHost
+
+    func localizedText(
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        switch self {
+        case .unavailable:
+            APCLocalization.text(.overlaySessionNavigationUnavailable, locale: locale)
+        case .failed:
+            APCLocalization.text(.overlaySessionNavigationFailed, locale: locale)
+        case .degradedToHost:
+            APCLocalization.text(.overlaySessionNavigationDegraded, locale: locale)
+        }
+    }
+}
+
 struct OverlaySessionContent: Equatable, Identifiable {
     var id: String
     var eventID: String
@@ -1695,7 +1907,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var activityText: String
     var messageText: String
     var statusText: String
+    var acknowledgementID: String?
     var navigation: AgentSessionNavigation
+    var navigationNotice: OverlaySessionNavigationNotice?
 
     var needsUserAttention: Bool {
         eventType == .waiting || eventType == .review || eventType == .failed
@@ -1712,27 +1926,50 @@ struct OverlaySessionContent: Equatable, Identifiable {
         source == nil || navigationCapability != .unavailable
     }
     var actionLabel: String {
+        actionLabel()
+    }
+    func actionLabel(
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
         guard let source else {
-            return APCLocalization.text(.overlayActionOpen)
+            return APCLocalization.text(.overlayActionOpen, locale: locale)
         }
         return APCLocalizedPresentation.navigationActionTitle(
             navigationCapability,
-            source: source
-        ) ?? APCLocalizedPresentation.navigationUnavailableTitle()
+            source: source,
+            navigation: navigation,
+            locale: locale
+        ) ?? APCLocalizedPresentation.navigationUnavailableTitle(locale: locale)
+    }
+    var surfaceKind: OverlaySessionSurfaceKind? {
+        switch navigation.surface {
+        case "chatgpt_app", "claude_app", "opencode_app":
+            .app
+        case "cli_terminal":
+            .cli
+        default:
+            nil
+        }
+    }
+    var surfaceLabel: String? {
+        surfaceLabel()
+    }
+    func surfaceLabel(
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String? {
+        surfaceKind.map {
+            APCLocalizedPresentation.sessionSurfaceTitle($0, locale: locale)
+        }
     }
     var secondaryDetailText: String? {
-        guard Self.compactMessage(messageText) != nil,
-              let activity = Self.compactMessage(activityText),
-              Self.normalizedText(activity) != Self.normalizedText(messageText)
-        else {
-            return nil
+        let details = detailCandidates
+        guard let primary = details.first else { return nil }
+        return details.dropFirst().first {
+            Self.normalizedText($0) != Self.normalizedText(primary)
         }
-        return activity
     }
     var primaryDetailText: String {
-        Self.compactMessage(messageText)
-            ?? Self.compactMessage(activityText)
-            ?? ""
+        detailCandidates.first ?? ""
     }
     var detailText: String {
         [primaryDetailText, secondaryDetailText]
@@ -1742,6 +1979,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var accessibilityReadingOrder: [String] {
         [
             source?.title,
+            surfaceLabel,
             sessionTitle,
             statusText,
             primaryDetailText,
@@ -1752,6 +1990,13 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
     var accessibilityLabel: String {
         accessibilityReadingOrder.joined(separator: ", ")
+    }
+    private var detailCandidates: [String] {
+        [
+            navigationNotice?.localizedText(),
+            Self.compactMessage(messageText),
+            Self.compactMessage(activityText),
+        ].compactMap { $0 }
     }
     var dismissesAfterActivation: Bool {
         switch eventType {
@@ -1800,7 +2045,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
         activityText: String? = nil,
         messageText: String,
         statusText: String,
-        navigation: AgentSessionNavigation = AgentSessionNavigation()
+        acknowledgementID: String? = nil,
+        navigation: AgentSessionNavigation = AgentSessionNavigation(),
+        navigationNotice: OverlaySessionNavigationNotice? = nil
     ) {
         self.id = id
         self.eventID = eventID ?? id
@@ -1811,7 +2058,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
         self.activityText = activityText ?? ""
         self.messageText = messageText
         self.statusText = statusText
+        self.acknowledgementID = acknowledgementID
         self.navigation = navigation
+        self.navigationNotice = navigationNotice
     }
 
     init(state: ActiveAgentState) {
@@ -1827,12 +2076,14 @@ struct OverlaySessionContent: Equatable, Identifiable {
         source = event.source
         sessionID = resolvedSessionID
         eventType = event.eventType
+        acknowledgementID = state.acknowledgementID
         statusText = Self.displayStatus(for: event.eventType)
         let proposedTitle = Self.sessionTitle(for: state)
         sessionTitle = Self.normalizedText(proposedTitle) == Self.normalizedText(statusText)
             ? Self.genericSessionTitle(for: state)
             : proposedTitle
         navigation = state.overlayDisplay?.navigation ?? AgentSessionNavigation()
+        navigationNotice = nil
         activityText = Self.nonredundantDetail(
             Self.activityDetail(for: state),
             title: sessionTitle,
@@ -1855,9 +2106,11 @@ struct OverlaySessionContent: Equatable, Identifiable {
         source = event.source
         sessionID = event.sessionID
         eventType = event.eventType
+        acknowledgementID = nil
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
         statusText = Self.displayStatus(for: event.eventType)
         navigation = event.sessionNavigation
+        navigationNotice = nil
         activityText = ""
         messageText = ""
     }
@@ -1952,10 +2205,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
 
     private static func activityDetail(for state: ActiveAgentState) -> String? {
-        compactMessage(
-            state.sessionActivity?.content
-                ?? state.event.payloadJSON?.activityContent
-        )
+        // Only PetCore's bounded, normalized projection is displayable. Raw
+        // connector payloads may contain commands, paths, or serialized JSON.
+        compactMessage(state.sessionActivity?.content)
     }
 
     private static func assistantMessage(for state: ActiveAgentState) -> String? {
@@ -2153,12 +2405,10 @@ struct OverlayBubbleAccessibilityModel: Equatable {
     init(content: OverlayBubbleContent, locale: String? = nil) {
         sessionActionLabels = content.visibleSessions.map { session in
             guard session.canOpen else { return nil }
-            guard let source = session.source else {
+            guard session.source != nil else {
                 return Self.text(.overlayActionOpen, locale: locale)
             }
-            return APCLocalizedPresentation.navigationActionTitle(
-                session.navigationCapability,
-                source: source,
+            return session.actionLabel(
                 locale: locale ?? APCLocalization.interfaceLocaleIdentifier
             )
         }

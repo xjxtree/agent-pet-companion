@@ -48,7 +48,6 @@ The default validation gate is deliberately host-safe: it uses isolated temporar
 
 ```bash
 APC_VALIDATE_HOST_UI=0 \
-APC_VALIDATE_OVERLAY_INTERACTION=0 \
 APC_VALIDATE_REAL_AGENT_CONNECTORS=0 \
 APC_VALIDATE_REAL_APP_SERVER=0 \
 ./script/test_all.sh

@@ -6,7 +6,7 @@ import Testing
 @Suite
 struct PetStudioTests {
     @Test
-    func briefKeepsTheSixSupportedStylesAndFourRenderContracts() {
+    func briefKeepsTheSixSupportedStylesAndTwoRenderContracts() throws {
         #expect(StylePreset.allCases == [
             .realistic,
             .semiRealistic,
@@ -18,24 +18,27 @@ struct PetStudioTests {
         #expect(QualityLevel.allCases.map(\.renderSize) == [
             RenderSize(width: 192, height: 208),
             RenderSize(width: 384, height: 416),
-            RenderSize(width: 768, height: 832),
-            RenderSize(width: 1536, height: 1664),
         ])
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(
+                QualityLevel.self,
+                from: Data(#""high""#.utf8)
+            )
+        }
     }
 
     @Test
     func timingSummaryUsesTheClosedAuthoredContractInBothLocales() {
-        let durations = PetAnimationContract.defaultStateDurationsMS
+        let states = PetAnimationContract.defaultStates
 
         #expect(PetStudioPresentation.timingSummary(
-            nativeFPS: 20,
-            stateDurationsMS: durations,
+            states,
             localeIdentifier: "en"
-        ) == "20 FPS · 1 s: start · done   2 s: idle · tool · waiting · review · failed")
-        #expect(PetStudioPresentation.stateDurationSummary(
-            durations,
+        ) == "32 frames across 7 states · authored per-frame timing")
+        #expect(PetStudioPresentation.timingSummary(
+            states,
             localeIdentifier: "zh-Hans"
-        ) == "1 秒：start · done   2 秒：idle · tool · waiting · review · failed")
+        ) == "32 帧 · 7 个状态 · 逐帧创作时序")
     }
 
     @Test

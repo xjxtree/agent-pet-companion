@@ -121,13 +121,10 @@ let placement = snapshotObject["overlay_placement"] as? [String: Any] ?? [:]
 let behavior = snapshotObject["behavior"] as? [String: Any] ?? [:]
 let activeSessions = ((snapshotObject["active_agent_sessions"] as? [Any])?.isEmpty == false)
 let hasCanonicalState = snapshotObject["active_agent_state"] is [String: Any]
-let persistedX = (placement["x"] as? NSNumber)?.doubleValue ?? 0
-let persistedY = (placement["y"] as? NSNumber)?.doubleValue ?? 0
-let persistedScale = (placement["scale"] as? NSNumber)?.doubleValue ?? 0
-let hasPersistedPosition = persistedX != 0 || persistedY != 0
-let scale = hasPersistedPosition && persistedScale.isFinite && persistedScale > 0
-    ? max(0.10, min(1.8, persistedScale))
-    : 0.72
+let persistedDisplayWidthPt = (placement["display_width_pt"] as? NSNumber)?.doubleValue ?? 112
+let displayWidthPt = persistedDisplayWidthPt.isFinite
+    ? max(80, min(224, persistedDisplayWidthPt))
+    : 112
 let expectsBubble = (behavior["status_bubble"] as? Bool ?? true)
     && (activeSessions || (!hasCanonicalState && !(behavior["auto_hide"] as? Bool ?? false)))
 
@@ -181,14 +178,14 @@ if floating.isEmpty {
     exit(1)
 }
 
-let petVisibleWidth = max(34, 230 * scale)
-let petVisibleHeight = max(48, 310 * scale)
+let petVisibleWidth = displayWidthPt
+let petVisibleHeight = displayWidthPt * 208 / 192
 let petMaxWidth = max(150, petVisibleWidth + 96)
 let petMaxHeight = max(170, petVisibleHeight + 96)
 
 func isPetPanel(_ window: WindowInfo) -> Bool {
-    // The panel can briefly be smaller than the persisted scale immediately after
-    // placement restoration; that is safe. Large panels are what block desktop input.
+    // The panel can briefly be smaller than the persisted display width
+    // immediately after placement restoration. Large panels are what block input.
     window.width >= 28
         && window.height >= 40
         && window.width <= petMaxWidth
@@ -225,7 +222,7 @@ let unexpected = floating.filter { !isPetPanel($0) && !isBubblePanel($0) }
 if !unexpected.isEmpty {
     fputs("overlay runtime validation failed: unexpected floating window size may block desktop input:\n", stderr)
     for window in unexpected {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height)) scale=\(scale)\n", stderr)
+        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height)) displayWidthPt=\(displayWidthPt)\n", stderr)
     }
     exit(1)
 }

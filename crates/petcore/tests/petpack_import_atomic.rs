@@ -6,7 +6,9 @@ use petcore::petpack::{
     write_sample_petpack_dir,
 };
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
-use petcore_types::{PetManifest, PetOrigin, QualityLevel, REQUIRED_STATES};
+use petcore_types::{
+    PetManifest, PetOrigin, PetStateName, QualityLevel, MAX_PERIODIC_COOLDOWN_MS, REQUIRED_STATES,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -72,7 +74,7 @@ fn petpack_import_atomic_rejects_unsafe_manifest_id_without_writing_assets() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("unsafe-id-source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Unsafe Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Unsafe Pet", "半写实").unwrap();
 
     let mut manifest = read_manifest(&source);
     manifest.id = "../escape".to_string();
@@ -88,11 +90,49 @@ fn petpack_import_atomic_rejects_unsafe_manifest_id_without_writing_assets() {
 }
 
 #[test]
+fn petpack_import_rejects_periodic_cooldown_above_the_published_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("oversized-periodic-cooldown-source");
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::Standard,
+        "Cooldown Boundary Pet",
+        "半写实",
+    )
+    .unwrap();
+
+    let mut manifest = read_manifest(&source);
+    let pet_id = manifest.id.clone();
+    manifest
+        .states
+        .iter_mut()
+        .find(|state| state.name == PetStateName::Idle)
+        .unwrap()
+        .playback
+        .cooldown_ms = Some([MAX_PERIODIC_COOLDOWN_MS + 1, MAX_PERIODIC_COOLDOWN_MS + 1]);
+    write_manifest(&source, &manifest);
+
+    let error = import_petpack(&paths, &database, &source)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not exceed 86400000"), "{error}");
+    assert!(database.list_pets().unwrap().is_empty());
+    assert!(!paths.pets_dir.join(pet_id).exists());
+}
+
+#[test]
 fn petpack_import_rejects_cross_metadata_name_mismatch_without_publishing_revision() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("mismatched-name-source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Consistent Fixture", "半写实").unwrap();
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::Standard,
+        "Consistent Fixture",
+        "半写实",
+    )
+    .unwrap();
 
     let mut manifest = read_manifest(&source);
     let pet_id = manifest.id.clone();
@@ -115,7 +155,7 @@ fn petpack_import_atomic_failed_reimport_keeps_existing_owned_assets() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Original Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Original Pet", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
     assert_eq!(pet.origin, PetOrigin::ExternalImport);
     assert_eq!(pet.generator.as_deref(), Some("sample-petpack"));
@@ -148,7 +188,7 @@ fn petpack_import_atomic_repairs_partial_runtime_dir_without_marker() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Runtime Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Runtime Pet", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
     let frames_dir = std::path::Path::new(&pet.petpack_path)
         .parent()
@@ -182,7 +222,7 @@ fn petpack_import_database_failure_preserves_previous_revision_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Original Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Original Pet", "半写实").unwrap();
     let original = import_petpack(&paths, &database, &source).unwrap();
     let original_package = Sha256::digest(fs::read(&original.petpack_path).unwrap());
     let original_cover = Sha256::digest(fs::read(&original.cover_path).unwrap());
@@ -236,7 +276,7 @@ fn petpack_import_publishes_immutable_revision_and_atomic_pointer() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Revision One", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Revision One", "半写实").unwrap();
 
     let first = import_petpack(&paths, &database, &source).unwrap();
     let first_path = std::path::PathBuf::from(&first.petpack_path);
@@ -274,7 +314,13 @@ fn pet_list_and_snapshot_report_current_owned_revision_metadata() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("rpc-revision-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "RPC Revision One", "半写实").unwrap();
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::Standard,
+        "RPC Revision One",
+        "半写实",
+    )
+    .unwrap();
     let first = import_petpack(&state.paths, &state.database, &source).unwrap();
 
     let replacement = temp.path().join("rpc-revision-v2");
@@ -316,7 +362,7 @@ fn pet_list_keeps_external_nonowned_revision_metadata_empty() {
     state.ensure_ready().unwrap();
 
     let source = temp.path().join("external-source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "External Source", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "External Source", "半写实").unwrap();
     let imported = import_petpack(&state.paths, &state.database, &source).unwrap();
     let external_package = temp.path().join("external.petpack");
     fs::copy(&imported.petpack_path, &external_package).unwrap();
@@ -344,7 +390,7 @@ fn expect_absent_rejects_same_id_without_publishing_a_revision() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Revision One", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Revision One", "半写实").unwrap();
 
     let first = import_petpack_expecting_absent(&paths, &database, &source).unwrap();
     let pet_root = paths.pets_dir.join(&first.id);
@@ -375,7 +421,7 @@ fn petpack_first_insert_failure_removes_uncommitted_revision_and_pointer() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("source");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Rejected Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Rejected Pet", "半写实").unwrap();
     let pet_id = read_manifest(&source).id;
 
     let connection = rusqlite::Connection::open(database.path()).unwrap();
@@ -410,7 +456,7 @@ fn concurrent_imports_leave_only_complete_revisions() {
     let first_source = temp.path().join("concurrent-v1");
     write_sample_petpack_dir(
         &first_source,
-        QualityLevel::High,
+        QualityLevel::Standard,
         "Concurrent One",
         "半写实",
     )
@@ -462,7 +508,7 @@ fn canceled_revision_restores_previous_pet_without_deleting_its_assets() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("cancel-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Stable Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Stable Pet", "半写实").unwrap();
     let previous = import_petpack(&paths, &database, &source).unwrap();
     let previous_bytes = Sha256::digest(fs::read(&previous.petpack_path).unwrap());
 
@@ -496,7 +542,7 @@ fn late_cancellation_does_not_undo_a_newer_manual_import() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("late-v1");
-    write_sample_petpack_dir(&source, QualityLevel::High, "First", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "First", "半写实").unwrap();
     let first = import_petpack(&paths, &database, &source).unwrap();
 
     let second_source = temp.path().join("late-v2");
@@ -521,7 +567,7 @@ fn unchanged_asset_fingerprint_reuses_cached_validation() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("cached-assets");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Cached Pet", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Cached Pet", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
 
     let first = petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
@@ -538,7 +584,7 @@ fn fingerprint_change_revalidates_and_repairs_runtime_frames() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("repair-cache");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Repair Cache", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Repair Cache", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
     petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
     let before = database.pet_asset_validation(&pet.id).unwrap().unwrap();
@@ -562,7 +608,7 @@ fn unchanged_repair_failure_is_cached_and_exposed_without_retry() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("failed-repair-cache");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Broken Cache", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Broken Cache", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
     petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
     let frames = std::path::Path::new(&pet.petpack_path)
@@ -589,7 +635,7 @@ fn explicit_asset_repair_bypasses_an_unchanged_invalid_cache_entry() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));
     let source = temp.path().join("explicit-repair-cache");
-    write_sample_petpack_dir(&source, QualityLevel::High, "Explicit Repair", "半写实").unwrap();
+    write_sample_petpack_dir(&source, QualityLevel::Standard, "Explicit Repair", "半写实").unwrap();
     let pet = import_petpack(&paths, &database, &source).unwrap();
 
     let initial = petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();

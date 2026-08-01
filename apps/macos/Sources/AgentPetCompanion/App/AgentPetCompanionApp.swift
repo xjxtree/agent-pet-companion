@@ -264,12 +264,6 @@ struct AppStatusMenuContent: View {
             .keyboardShortcut("b", modifiers: [.command, .shift])
             .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
             .accessibilityIdentifier("menubar.focus-pet-sessions")
-            Button(APCLocalization.text(.appActionFocusPetResize)) {
-                store.focusOverlayResizeForKeyboardNavigation()
-            }
-            .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
-            .accessibilityIdentifier("menubar.focus-pet-resize")
             Divider()
             Button(APCLocalization.text(.appActionCheckConnections)) {
                 store.selection = .connections
@@ -343,12 +337,6 @@ private struct ControlCenterCommands: Commands {
                 }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
-
-                Button(APCLocalization.text(.appActionFocusPetResize)) {
-                    store.focusOverlayResizeForKeyboardNavigation()
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(!store.canFocusOverlayResizeForKeyboardNavigation)
 
                 Divider()
 

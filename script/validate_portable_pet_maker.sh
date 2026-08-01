@@ -81,6 +81,15 @@ HELPER="$ROOT_DIR/skills/agent-pet-maker/scripts/petpack_workspace.py"
 CLI="$ROOT_DIR/target/debug/petcore-cli"
 PETCORE="$ROOT_DIR/target/debug/petcore"
 
+if [[ -z "${APC_INTERACTION_ATTESTATION_PATH:-}" ]]; then
+  export APC_INTERACTION_ATTESTATION_PATH="$TMP_DIR/interaction-attestation.json"
+  "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
+    --output "$APC_INTERACTION_ATTESTATION_PATH"
+elif [[ ! -f "$APC_INTERACTION_ATTESTATION_PATH" ]]; then
+  echo 'portable pet maker validation requires the declared interaction attestation' >&2
+  exit 1
+fi
+
 "$PET_MAKER_PYTHON" -B -m unittest discover \
   -s "$ROOT_DIR/skills/agent-pet-maker/tests" \
   -p 'test_*.py' >/dev/null
@@ -116,19 +125,49 @@ state_colors = {
     "done": (62, 184, 91, 235),
     "failed": (210, 72, 87, 235),
 }
-native_fps = 10
-state_durations_ms = {
-    "idle": 2000,
-    "start": 1000,
-    "tool": 2000,
-    "waiting": 2000,
-    "review": 2000,
-    "done": 1000,
-    "failed": 2000,
+state_timings = {
+    "idle": {
+        "frame_durations_ms": [180, 160, 180, 380],
+        "playback": {"mode": "periodic", "cooldown_ms": [4000, 8000]},
+        "reduced_motion_frame_index": 2,
+    },
+    "start": {
+        "frame_durations_ms": [120, 140, 160, 180],
+        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "reduced_motion_frame_index": 2,
+    },
+    "tool": {
+        "frame_durations_ms": [150, 150, 170, 330],
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 1,
+            "settle_frame_index": 3,
+        },
+        "reduced_motion_frame_index": 2,
+    },
+    "waiting": {
+        "frame_durations_ms": [150, 150, 150, 150, 170, 230],
+        "playback": {"mode": "once_hold", "settle_frame_index": 5},
+        "reduced_motion_frame_index": 4,
+    },
+    "review": {
+        "frame_durations_ms": [140, 140, 150, 150, 180, 240],
+        "playback": {"mode": "once_hold", "settle_frame_index": 5},
+        "reduced_motion_frame_index": 4,
+    },
+    "done": {
+        "frame_durations_ms": [120, 140, 160, 230],
+        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "reduced_motion_frame_index": 2,
+    },
+    "failed": {
+        "frame_durations_ms": [150, 170, 190, 290],
+        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "reduced_motion_frame_index": 2,
+    },
 }
 state_frame_counts = {
-    state: native_fps * duration_ms // 1000
-    for state, duration_ms in state_durations_ms.items()
+    state: len(state_timings[state]["frame_durations_ms"]) for state in states
 }
 
 
@@ -195,19 +234,17 @@ frames[0].resize((384, 416), Image.Resampling.NEAREST).save(
 
 created_at = "2026-07-16T00:00:00Z"
 manifest = {
-    "schema_version": "apc.petpack.v1",
+    "schema_version": "apc.petpack.v2",
     "id": "pet_portablefixture",
     "name": "Portable Validation Fixture",
     "style": "deterministic repository validation fixture",
-    "quality": "standard",
+    "quality": "low",
     "render_size": {"width": 192, "height": 208},
-    "native_fps": native_fps,
     "states": [
         {
             "name": state,
             "frames_dir": f"assets/frames/{state}",
-            "loop": state not in {"start", "done"},
-            "duration_ms": state_durations_ms[state],
+            **state_timings[state],
         }
         for state in states
     ],
@@ -220,7 +257,7 @@ write_json(
         "schema_version": "apc.pet-brief.v1",
         "name": manifest["name"],
         "style": manifest["style"],
-        "quality": "standard",
+        "quality": "low",
         "description": "A deterministic isolated fixture used only to validate the portable workflow.",
         "generation": {
             "generator": "repository-fixture-renderer",
@@ -232,13 +269,12 @@ write_json(
             {
                 "name": state,
                 "motion": f"Deterministic {state} fixture motion.",
-                "duration_ms": state_durations_ms[state],
+                **state_timings[state],
             }
             for state in states
         ],
         "runtime": {
-            "native_fps": native_fps,
-            "state_durations_ms": state_durations_ms,
+            "states": manifest["states"],
             "state_frame_counts": state_frame_counts,
             "render_size": {"width": 192, "height": 208},
         },
@@ -255,10 +291,9 @@ write_json(
         "manifest_id": manifest["id"],
         "pet_name": manifest["name"],
         "style": manifest["style"],
-        "quality": "standard",
+        "quality": "low",
         "visual_source": "image-generation",
-        "native_fps": native_fps,
-        "state_durations_ms": state_durations_ms,
+        "states": manifest["states"],
         "state_frame_counts": state_frame_counts,
         "preview_only": False,
         "reference_files": [],
@@ -283,11 +318,10 @@ with session.open("a", encoding="utf-8") as handle:
                 "runner": "repository-validation",
                 "generator": "repository-fixture-renderer",
                 "manifest_id": manifest["id"],
-                "quality": "standard",
+                "quality": "low",
                 "render_size": {"width": 192, "height": 208},
                 "states": list(states),
-                "native_fps": native_fps,
-                "state_durations_ms": state_durations_ms,
+                "state_timings": manifest["states"],
                 "state_frame_counts": state_frame_counts,
                 "extensions": {"dev.agentpet.validation/fixture": True},
             },
@@ -316,7 +350,7 @@ CREATE_MOTION_LOCK="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-lock \
   --moving-mask "$TMP_DIR/moving-mask.png" \
   --output-dir "$TMP_DIR/locked-idle" \
   --feather-px 0)"
-assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 20'
+assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 4'
 
 CREATE_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
   --workspace "$CREATE_WORKSPACE")"
@@ -339,10 +373,10 @@ CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --output "$CREATE_OUTPUT" \
   --result "$CREATE_RESULT" \
   --cli "$CLI")"
-assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 120 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 7'
+assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 32 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 7'
 
 CREATE_VALIDATION="$("$CLI" petpack validate "$CREATE_OUTPUT")"
-assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
+assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["frame_count"] == 32 and data["warnings"] == []'
 
 MODIFY_WORKSPACE="$TMP_DIR/modify-workspace"
 MODIFY_OUTPUT="$TMP_DIR/portable-fixture-revised.petpack"
@@ -390,13 +424,9 @@ for index, frame_path in enumerate(sorted((root / "assets" / "frames" / "tool").
     frame.save(frame_path, format="PNG", optimize=False)
 
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-native_fps = manifest["native_fps"]
-state_durations_ms = {
-    entry["name"]: entry["duration_ms"] for entry in manifest["states"]
-}
+state_timings = {entry["name"]: entry for entry in manifest["states"]}
 state_frame_counts = {
-    state: native_fps * duration_ms // 1000
-    for state, duration_ms in state_durations_ms.items()
+    state: len(state_timings[state]["frame_durations_ms"]) for state in states
 }
 write_json(
     root / "brief.json",
@@ -404,7 +434,7 @@ write_json(
         "schema_version": "apc.pet-brief.v1",
         "name": manifest["name"],
         "style": manifest["style"],
-        "quality": "standard",
+        "quality": "low",
         "description": "The isolated fixture now has a visibly revised tool state.",
         "generation": {
             "generator": "repository-fixture-editor",
@@ -420,13 +450,16 @@ write_json(
                     if state == "tool"
                     else f"Preserved deterministic {state} fixture motion."
                 ),
-                "duration_ms": state_durations_ms[state],
+                "frame_durations_ms": state_timings[state]["frame_durations_ms"],
+                "playback": state_timings[state]["playback"],
+                "reduced_motion_frame_index": state_timings[state][
+                    "reduced_motion_frame_index"
+                ],
             }
             for state in states
         ],
         "runtime": {
-            "native_fps": native_fps,
-            "state_durations_ms": state_durations_ms,
+            "states": manifest["states"],
             "state_frame_counts": state_frame_counts,
             "render_size": {"width": 192, "height": 208},
         },
@@ -443,10 +476,9 @@ write_json(
         "manifest_id": manifest["id"],
         "pet_name": manifest["name"],
         "style": manifest["style"],
-        "quality": "standard",
+        "quality": "low",
         "visual_source": "image-generation",
-        "native_fps": native_fps,
-        "state_durations_ms": state_durations_ms,
+        "states": manifest["states"],
         "state_frame_counts": state_frame_counts,
         "preview_only": False,
         "reference_files": [],
@@ -471,12 +503,11 @@ with session.open("a", encoding="utf-8") as handle:
                 "runner": "repository-validation",
                 "generator": "repository-fixture-editor",
                 "manifest_id": manifest["id"],
-                "quality": "standard",
+                "quality": "low",
                 "render_size": {"width": 192, "height": 208},
                 "states": ["tool"],
                 "changed_states": ["tool"],
-                "native_fps": native_fps,
-                "state_durations_ms": state_durations_ms,
+                "state_timings": manifest["states"],
                 "state_frame_counts": state_frame_counts,
                 "extensions": {"dev.agentpet.validation/fixture": True},
             },
@@ -506,7 +537,7 @@ MODIFY_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
 assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True and data["motion_quality"]["human_reviewed"] is True and data["motion_quality"]["audited_states"] == ["tool"]'
 
 MODIFY_VALIDATION="$("$CLI" petpack validate "$MODIFY_OUTPUT")"
-assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and data["manifest"]["native_fps"] == 10 and data["frame_count"] == 120 and data["warnings"] == []'
+assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["frame_count"] == 32 and data["warnings"] == []'
 
 "$PET_MAKER_PYTHON" -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
 import hashlib

@@ -748,7 +748,6 @@ struct AppDiagnosticEnvironment: Codable, Equatable, Sendable {
         let autoHide: Bool
         let sessionMessageTimeoutMinutes: Int
         let sessionGroupDisplay: String
-        let fpsProfile: String
         let sources: [String: Bool]
         let events: [String: Bool]
     }
@@ -807,7 +806,6 @@ struct AppDiagnosticEnvironment: Codable, Equatable, Sendable {
                 autoHide: behavior.autoHide,
                 sessionMessageTimeoutMinutes: behavior.sessionMessageTimeoutMinutes,
                 sessionGroupDisplay: behavior.sessionGroupDisplay.rawValue,
-                fpsProfile: behavior.fpsProfile.rawValue,
                 sources: Dictionary(uniqueKeysWithValues: behavior.sources.map { ($0.key.rawValue, $0.value) }),
                 events: Dictionary(uniqueKeysWithValues: behavior.events.map { ($0.key.rawValue, $0.value) })
             ),

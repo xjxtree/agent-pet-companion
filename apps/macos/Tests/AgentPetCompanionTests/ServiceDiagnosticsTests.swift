@@ -64,7 +64,7 @@ struct ServiceDiagnosticsTests {
             desktopPetEnabled: true,
             desktopPetVisible: true,
             activePetName: "Bytebud 字节芽",
-            framesPerSecond: 10,
+            animationTiming: PetAnimationContract.defaultStates[0],
             localeIdentifier: "zh-Hans"
         )
 

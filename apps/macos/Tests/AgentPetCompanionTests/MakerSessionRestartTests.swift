@@ -23,8 +23,6 @@ struct MakerSessionRestartTests {
         #expect(store.descriptionText == "A recovered pixel pet")
         #expect(store.selectedStyle == .pixel)
         #expect(store.selectedQuality == .standard)
-        #expect(store.selectedNativeFPS == 20)
-        #expect(store.generationStateDurationsMS == Self.recoveredDurations)
         #expect(store.referenceImages.isEmpty)
         #expect(store.referenceReselectionCount == 0)
         #expect(store.generationSession.canRetry)
@@ -53,7 +51,7 @@ struct MakerSessionRestartTests {
             submittedForm: GenerationForm(
                 description: "Keep the active session",
                 style: StylePreset.modern.rawValue,
-                quality: .high,
+                quality: .low,
                 referenceImages: []
             ),
             messages: [],
@@ -181,7 +179,7 @@ struct MakerSessionRestartTests {
             id: "pet_xingwutuanzi",
             name: "Bundled",
             style: StylePreset.semiRealistic.rawValue,
-            quality: .high,
+            quality: .standard,
             renderSize: RenderSize(width: 384, height: 416),
             petpackPath: "/missing/bundled.petpack",
             coverPath: "/missing/cover.png",
@@ -194,9 +192,7 @@ struct MakerSessionRestartTests {
         let mutations: [(String, @MainActor (AppStore) -> Void)] = [
             ("description", { $0.updateGenerationDescription(AIPetMakerDefaults.descriptionText) }),
             ("style", { $0.selectGenerationStyle(.semiRealistic) }),
-            ("quality", { $0.selectGenerationQuality(.high) }),
-            ("native fps", { $0.selectGenerationNativeFPS(20) }),
-            ("state duration", { $0.selectGenerationStateDuration(1_000, for: "idle") }),
+            ("quality", { $0.selectGenerationQuality(.low) }),
             ("clear", { $0.clearStudioForm() }),
             ("new", { $0.showNewPetDraft() }),
             ("add", { $0.addReferenceImageURLs([]) }),
@@ -233,10 +229,8 @@ struct MakerSessionRestartTests {
             "form": [
                 "description": "Authoritative active brief",
                 "style": StylePreset.modern.rawValue,
-                "quality": QualityLevel.high.rawValue,
+                "quality": QualityLevel.low.rawValue,
                 "reference_images": [],
-                "native_fps": 20,
-                "state_durations_ms": Self.recoveredDurations,
             ],
             "reference_reselection_count": 0,
             "heartbeat_at": "2026-07-22T00:00:00Z",
@@ -250,8 +244,6 @@ struct MakerSessionRestartTests {
         #expect(store.generationSession.state == .waitingForInput)
         #expect(store.generationSession.jobID == "job_active_snapshot")
         #expect(store.descriptionText == "Authoritative active brief")
-        #expect(store.selectedNativeFPS == 20)
-        #expect(store.generationStateDurationsMS == Self.recoveredDurations)
     }
 
     @MainActor
@@ -423,8 +415,6 @@ struct MakerSessionRestartTests {
                 "style": StylePreset.pixel.rawValue,
                 "quality": QualityLevel.standard.rawValue,
                 "reference_images": references,
-                "native_fps": 20,
-                "state_durations_ms": recoveredDurations,
             ],
             "reference_reselection_count": reselectionCount,
             "message_revision": "3",
@@ -448,6 +438,7 @@ struct MakerSessionRestartTests {
         )
         var snapshot: [String: Any] = [
             "revision": "snapshot-1",
+            "overlay_placement_revision": "0",
             "behavior": behavior,
             "behavior_revision": "1",
             "pets": [],
@@ -499,15 +490,6 @@ struct MakerSessionRestartTests {
         )
     }
 
-    private static let recoveredDurations: [String: Int] = [
-        "idle": 1_000,
-        "start": 2_000,
-        "tool": 1_000,
-        "waiting": 2_000,
-        "review": 1_000,
-        "done": 2_000,
-        "failed": 1_000,
-    ]
 }
 
 private enum RestoreTestError: Error {

@@ -204,23 +204,33 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
         .unwrap()
         .to_string();
 
-    let mut current_head_durations = petcore_types::default_state_durations_ms();
-    current_head_durations.insert(PetStateName::Idle, 1_000);
-    current_head_durations.insert(PetStateName::Start, 2_000);
+    let mut current_head_states = petcore_types::default_pet_states();
+    current_head_states
+        .iter_mut()
+        .find(|state| state.name == PetStateName::Idle)
+        .unwrap()
+        .frame_durations_ms = vec![200, 220, 240, 260];
+    current_head_states
+        .iter_mut()
+        .find(|state| state.name == PetStateName::Start)
+        .unwrap()
+        .frame_durations_ms = vec![100, 120, 140, 160];
     let current_head_form = GenerationForm {
         description: "Current head with different authored timing".to_string(),
         style: baseline_manifest.style.clone(),
         quality: baseline_manifest.quality,
         reference_images: Vec::new(),
-        native_fps: 20,
-        state_durations_ms: current_head_durations.clone(),
     };
+    let current_head_brief = json!({
+        "timing_changed": true,
+        "states": current_head_states
+    });
     let current_head_source = temp.path().join("historical-timing-current-head");
     let mut current_head_manifest = write_generated_petpack_dir(
         &current_head_source,
         &current_head_form,
         &baseline_manifest.name,
-        None,
+        Some(&current_head_brief),
     )
     .unwrap();
     current_head_manifest.id = baseline_manifest.id.clone();
@@ -257,8 +267,7 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
         .get_pet(&baseline_manifest.id)
         .unwrap()
         .unwrap();
-    assert_eq!(current_head.native_fps, 20);
-    assert_eq!(current_head.state_durations_ms, current_head_durations);
+    assert_eq!(current_head.states, current_head_states);
 
     let edit = handle_request(
         &state,
@@ -274,22 +283,16 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
     .unwrap();
 
     assert_eq!(edit["baseline_revision_id"], baseline_revision_id);
-    assert_eq!(edit["native_fps"], baseline_manifest.native_fps);
-    assert_eq!(
-        edit["state_durations_ms"],
-        json!(petcore_types::default_state_durations_ms())
-    );
+    assert!(edit.get("native_fps").is_none());
+    assert!(edit.get("state_durations_ms").is_none());
     assert!(edit.get("form").is_none());
     assert!(edit.get("reference_images").is_none());
 
     let job_id = edit["job_id"].as_str().unwrap();
     let job = state.database.generation_job(job_id).unwrap().unwrap();
     let accepted_form: GenerationForm = serde_json::from_str(&job.form_json).unwrap();
-    assert_eq!(accepted_form.native_fps, baseline_manifest.native_fps);
-    assert_eq!(
-        accepted_form.state_durations_ms,
-        petcore_types::default_state_durations_ms()
-    );
+    assert_eq!(accepted_form.style, baseline_manifest.style);
+    assert_eq!(accepted_form.quality, baseline_manifest.quality);
     wait_for_terminal_message(&state, job_id, "generation_failed");
 }
 
@@ -320,12 +323,7 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
             style: manifest.style.clone(),
             quality: manifest.quality,
             render_size: manifest.render_size,
-            native_fps: manifest.native_fps,
-            state_durations_ms: manifest
-                .states
-                .iter()
-                .map(|state| (state.name, state.duration_ms))
-                .collect(),
+            states: manifest.states.clone(),
             petpack_path: package.display().to_string(),
             cover_path: source
                 .join("assets/preview/cover.png")
@@ -635,7 +633,7 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
     assert_eq!(terminal["revision_id"], committed_revision);
     assert_eq!(terminal["validation_summary"]["ok"], true);
     assert_eq!(terminal["validation_summary"]["state_count"], 7);
-    assert_eq!(terminal["validation_summary"]["frame_count"], 120);
+    assert_eq!(terminal["validation_summary"]["frame_count"], 32);
 
     let history = handle_request(
         &state,
@@ -1071,8 +1069,6 @@ fn generation_lifecycle_interrupted_recovery_appends_one_failed_terminal() {
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let job_dir = paths.jobs_dir.join("job_lifecycle_interrupted");
     std::fs::create_dir_all(&job_dir).unwrap();
@@ -1122,8 +1118,6 @@ fn generation_lifecycle_cancel_is_noop_for_failed_terminal_job() {
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let job_id = "job_lifecycle_failed";
     let job_dir = state.paths.jobs_dir.join(job_id);

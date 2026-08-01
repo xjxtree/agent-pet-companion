@@ -754,8 +754,7 @@ mod tests {
                 width: 384,
                 height: 416,
             },
-            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-            state_durations_ms: petcore_types::default_state_durations_ms(),
+            states: petcore_types::default_pet_states(),
             petpack_path: revisions_root
                 .join(REVISION_ONE)
                 .join(format!("{PET_ID}.petpack"))

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v9";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v10";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered
@@ -154,17 +154,16 @@ function activityText(event) {
       || event?.reason;
   }
   if (value == null) return undefined;
-  value = activityValueWithoutCredentials(value);
-  let text;
-  if (typeof value === "string") {
-    text = value;
-  } else {
-    try {
-      text = JSON.stringify(value);
-    } catch {
-      return undefined;
-    }
-  }
+  const scalar = normalizeActivityNode(
+    value,
+    0,
+    { nodes: 256 },
+    new WeakSet(),
+    event?.activity_kind === "command" ? "command" : "safe",
+    0,
+  );
+  if (scalar == null) return undefined;
+  let text = String(scalar);
   text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim();
   if (!text) return undefined;
   const bytes = new TextEncoder().encode(text);
@@ -172,16 +171,122 @@ function activityText(event) {
   return new TextDecoder().decode(bytes.slice(0, 1024)).replace(/\uFFFD$/, "");
 }
 
-function activityValueWithoutCredentials(value) {
-  if (Array.isArray(value)) return value.map(activityValueWithoutCredentials);
-  if (value == null || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => ![
-      "auth", "authorization", "cookie", "cookies", "credential", "credentials",
-      "env", "environment", "headers", "password", "secret", "secrets", "token",
-      "tokens", "apikey", "accesstoken", "refreshtoken",
-    ].includes(key.replace(/[^a-z0-9]/gi, "").toLowerCase()))
-    .map(([key, nested]) => [key, activityValueWithoutCredentials(nested)]));
+const ACTIVITY_SEMANTIC_KEYS = [
+  "description", "command", "file_path", "filePath", "path", "pattern", "query", "url", "prompt",
+  "message", "summary", "content", "output", "result", "stdout", "stderr",
+  "plan", "error",
+];
+
+function normalizeActivityNode(value, depth, budget, seen, policy = "safe", jsonLayers = 0) {
+  if (["string", "number", "boolean"].includes(typeof value)) {
+    return activityScalar(value, policy, depth, budget, seen, jsonLayers);
+  }
+  return semanticActivityScalar(value, depth, budget, seen);
+}
+
+function activityScalar(value, policy, depth, budget, seen, jsonLayers = 0) {
+  if (!["string", "number", "boolean"].includes(typeof value)) return undefined;
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text) return undefined;
+  const bytes = new TextEncoder().encode(text).length;
+  if (jsonLayers < 8 && bytes <= 16 * 1024) {
+    try {
+      const decoded = JSON.parse(text);
+      if (depth >= 8 || budget.nodes <= 0) return undefined;
+      budget.nodes -= 1;
+      return normalizeActivityNode(decoded, depth + 1, budget, seen, policy, jsonLayers + 1);
+    } catch {
+      if (/^[\[{\"]/.test(text)) return undefined;
+    }
+  } else if (/^[\[{\"]/.test(text)) {
+    return undefined;
+  }
+  if (policy !== "command" && containsSensitiveDumpLine(text)) return undefined;
+  return text;
+}
+
+function semanticActivityScalar(value, depth, budget, seen) {
+  if (value == null || typeof value !== "object" || depth > 8 || budget.nodes <= 0) {
+    return undefined;
+  }
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+  budget.nodes -= 1;
+  if (Array.isArray(value)) {
+    for (const nested of value.slice(0, 64)) {
+      const scalar = semanticActivityScalar(nested, depth + 1, budget, seen);
+      if (scalar != null) return scalar;
+    }
+    return undefined;
+  }
+  for (const key of ACTIVITY_SEMANTIC_KEYS) {
+    const candidate = value[key];
+    if (key === "error") {
+      const message = activityScalar(candidate, "safe", depth + 1, budget, seen)
+        ?? activityScalar(candidate?.message, "safe", depth + 1, budget, seen);
+      if (message != null) return message;
+      continue;
+    }
+    const nested = normalizeActivityNode(
+      candidate,
+      depth + 1,
+      budget,
+      seen,
+      key === "command" ? "command" : "safe",
+      0,
+    );
+    if (nested != null) return nested;
+  }
+  for (const [key, candidate] of Object.entries(value)) {
+    if (ACTIVITY_SEMANTIC_KEYS.includes(key) || isCredentialField(key)) continue;
+    const nested = semanticActivityScalar(candidate, depth + 1, budget, seen);
+    if (nested != null) return nested;
+  }
+  return undefined;
+}
+
+function containsSensitiveDumpLine(value) {
+  return value.split(/\r?\n/).some((line) => {
+    for (let index = 0; index < line.length; index += 1) {
+      if (line[index] !== ":" && line[index] !== "=") continue;
+      const key = line.slice(Math.max(0, index - 128), index).trim();
+      if (key && isCredentialField(key)) return true;
+    }
+    return false;
+  });
+}
+
+function isCredentialField(key) {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (["tokencount", "tokencounts"].includes(normalized)) return false;
+  const tokens = identifierTokens(key);
+  const sensitiveTokens = new Set([
+    "env", "environment", "header", "headers", "auth", "oauth", "authentication",
+    "authorization", "secret", "secrets", "password", "passphrase", "credential",
+    "credentials", "cookie", "cookies", "token", "tokens", "keychain", "keystore", "pem",
+  ]);
+  const keyQualifiers = new Set([
+    "private", "api", "ssh", "signing", "encryption", "access", "client",
+  ]);
+  const gluedSensitiveFragments = [
+    "clientsecret", "sessiontoken", "privatekey", "apikey", "sshkey", "signingkey",
+    "encryptionkey", "accesskey", "clientkey", "accesstoken", "refreshtoken",
+    "bearertoken", "authtoken", "requestheader", "processenv", "processenvironment",
+    "clientauth", "clientauthentication",
+  ];
+  return tokens.some((token) => sensitiveTokens.has(token))
+    || (tokens.includes("key") && tokens.some((token) => keyQualifiers.has(token)))
+    || gluedSensitiveFragments.some((fragment) => normalized.includes(fragment));
+}
+
+function identifierTokens(key) {
+  return String(key)
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((token) => token.toLowerCase());
 }
 
 function remember(map, id, value) {

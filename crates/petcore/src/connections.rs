@@ -41,12 +41,18 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         include_str!("../../../skills/agent-pet-maker/SKILL.md"),
     ),
     (
-        "references/petpack-v1.md",
-        include_str!("../../../skills/agent-pet-maker/references/petpack-v1.md"),
+        "references/petpack-v2.md",
+        include_str!("../../../skills/agent-pet-maker/references/petpack-v2.md"),
     ),
     (
         "references/create-modify.md",
         include_str!("../../../skills/agent-pet-maker/references/create-modify.md"),
+    ),
+    (
+        "references/visual-production-and-native-resolution.md",
+        include_str!(
+            "../../../skills/agent-pet-maker/references/visual-production-and-native-resolution.md"
+        ),
     ),
     (
         "references/security.md",
@@ -202,8 +208,16 @@ const CODEX_APP_SERVER_HOOK_EVENTS: &[&str] = &[
     "subagentStop",
     "stop",
 ];
+const CODEX_AUDITED_VERSIONS: &[&str] = &[
+    "0.144.5",
+    "0.145.0-alpha.18",
+    "0.146.0-alpha.3.1",
+    "0.146.0-alpha.9.2",
+];
+const CODEX_AUDITED_VERSION_DISPLAY: &str =
+    "0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1 / 0.146.0-alpha.9.2";
 // Generated and diffed from Codex CLI 0.144.5 plus the ChatGPT desktop bundled
-// Codex CLI 0.145.0-alpha.18 and 0.146.0-alpha.3.1 with
+// Codex CLI 0.145.0-alpha.18, 0.146.0-alpha.3.1, and 0.146.0-alpha.9.2 with
 // `codex app-server generate-json-schema --experimental`. These are audited
 // notification methods, not fields that Agent Pet Companion persists.
 const CODEX_APP_SERVER_NOTIFICATION_EVENTS: &[&str] = &[
@@ -2416,7 +2430,7 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 subscribed_events,
                 mapped_information: strings(&[
                     "10 个官方 Hook 提供任务开始/完成、工具、权限、压缩与子 Agent 生命周期",
-                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
+                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 / 0.146.0-alpha.9.2 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
                     "有界的用户提示、最终助手消息、reasoning、命令与工具输入输出",
                 ]),
                 privacy_exclusions: strings(&[
@@ -5766,13 +5780,12 @@ fn check_agent_cli_version(
 
 fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionCheckItem {
     const MINIMUM: (u64, u64, u64) = (0, 144, 5);
-    const AUDITED: &[&str] = &["0.144.5", "0.145.0-alpha.18", "0.146.0-alpha.3.1"];
-    let audited = text.as_deref().is_some_and(|output| {
-        AUDITED
-            .iter()
-            .any(|version| version_token_present(output, version))
-    });
-    let parsed = text.as_deref().and_then(parse_version_triplet);
+    let canonical_version = text
+        .as_deref()
+        .and_then(parse_canonical_codex_version_output);
+    let audited =
+        canonical_version.is_some_and(|version| CODEX_AUDITED_VERSIONS.contains(&version));
+    let parsed = canonical_version.and_then(parse_version_triplet);
     let status = if audited {
         CheckStatus::Ok
     } else if parsed.is_some_and(|version| version < MINIMUM) {
@@ -5781,14 +5794,14 @@ fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionChe
         CheckStatus::Unverified
     };
     let detail = match (text.as_deref(), status) {
-        (Some(text), CheckStatus::Ok) => format!(
-            "检测到 {text}；命中精确审计版本 0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1"
-        ),
+        (Some(text), CheckStatus::Ok) => {
+            format!("检测到 {text}；命中精确审计版本 {CODEX_AUDITED_VERSION_DISPLAY}")
+        }
         (Some(text), CheckStatus::NeedsFix) => {
             format!("检测到 {text}，低于当前连接器最低版本 0.144.5")
         }
         (Some(text), _) => format!(
-            "检测到 {text}，不在精确审计版本 0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1 中；不会把其他 alpha 或正式版自动视为兼容"
+            "检测到 {text}，不在精确审计版本 {CODEX_AUDITED_VERSION_DISPLAY} 中；不会把其他 alpha 或正式版自动视为兼容"
         ),
         (None, _) => "Codex CLI 未返回可解析的 --version 输出".to_string(),
     };
@@ -5801,12 +5814,19 @@ fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionChe
     )
 }
 
-fn version_token_present(output: &str, expected: &str) -> bool {
-    output.split_whitespace().any(|token| {
-        token.trim_matches(|character: char| {
-            !(character.is_ascii_alphanumeric() || character == '.' || character == '-')
-        }) == expected
-    })
+fn parse_canonical_codex_version_output(output: &str) -> Option<&str> {
+    let mut fields = output.split_whitespace();
+    match (fields.next(), fields.next(), fields.next()) {
+        (Some("codex-cli"), Some(version), None)
+            if !version.is_empty()
+                && version.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+')
+                }) =>
+        {
+            Some(version)
+        }
+        _ => None,
+    }
 }
 
 fn parse_version_triplet(value: &str) -> Option<(u64, u64, u64)> {
@@ -6070,11 +6090,20 @@ fn codex_hooks_are_owned(path: &Path, root: &Path) -> bool {
         })
 }
 
+// This is the byte-for-byte V1 Studio Skill shipped before the V2 transition.
+// Add a historical digest here before changing an App-owned Studio Skill;
+// semantic markers are intentionally insufficient ownership evidence.
+const RETIRED_CODEX_STUDIO_SKILL_SHA256: &[&str] =
+    &["b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"];
+
 fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
     managed_regular_file_state(root, path) == ManagedPathState::Safe
-        && fs::read_to_string(path).is_ok_and(|content| {
-            content.contains("Generate Agent Pet Companion .petpack assets")
-                && content.contains("APC_PETCORE_CLI")
+        && fs::read(path).is_ok_and(|content| {
+            if content == PET_STUDIO_SKILL_MD.as_bytes() {
+                return true;
+            }
+            let digest = hex::encode(Sha256::digest(&content));
+            RETIRED_CODEX_STUDIO_SKILL_SHA256.contains(&digest.as_str())
         })
 }
 
@@ -7065,11 +7094,11 @@ mod tests {
         has_required_ordinary_task_evidence, host_verification_check_is_fresh,
         install_claude_settings, install_root, is_agent_pet_claude_command,
         json_config_backup_path, managed_connector_script_ownership, opencode_debug_reports_plugin,
-        opencode_plugins_dir, pi_extensions_dir, pi_native_probe_spec,
-        remove_claude_settings_hooks, remove_codex_marketplace_entry,
+        opencode_plugins_dir, parse_canonical_codex_version_output, pi_extensions_dir,
+        pi_native_probe_spec, remove_claude_settings_hooks, remove_codex_marketplace_entry,
         remove_owned_connector_script, render_connector_script, rendered_claude_hook,
         rendered_claude_settings_fragment, rendered_codex_hooks, repair_claude, repair_source_at,
-        uninstall_codex_plugin_if_possible, verification_requires_item, version_token_present,
+        uninstall_codex_plugin_if_possible, verification_requires_item,
         write_owned_connector_script, ManagedConnectorScriptOwnership,
         CODEX_APP_SERVER_HOOK_EVENTS, CODEX_LOCAL_HOOK_EVENTS, CODEX_PLUGIN_JSON,
         OPENCODE_PLUGIN_TEMPLATE, PI_EXTENSION_TEMPLATE, PI_NATIVE_PROBE_TIMEOUT,
@@ -7084,6 +7113,7 @@ mod tests {
         ConnectionCheckItem, ConnectionCheckMode, ConnectionCheckRecoveryAction as RecoveryAction,
     };
     use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -7608,27 +7638,48 @@ mod tests {
 
     #[test]
     fn codex_audited_versions_are_exact_including_alpha_build() {
-        assert!(version_token_present("codex-cli 0.144.5", "0.144.5"));
-        assert!(version_token_present(
-            "codex-cli 0.145.0-alpha.18",
-            "0.145.0-alpha.18"
-        ));
-        assert!(!version_token_present(
-            "codex-cli 0.145.0-alpha.180",
-            "0.145.0-alpha.18"
-        ));
-        assert!(!version_token_present(
-            "codex-cli 0.145.0",
-            "0.145.0-alpha.18"
-        ));
-        assert!(version_token_present(
-            "codex-cli 0.146.0-alpha.3.1",
-            "0.146.0-alpha.3.1"
-        ));
-        assert!(!version_token_present(
-            "codex-cli 0.146.0-alpha.3.10",
-            "0.146.0-alpha.3.1"
-        ));
+        assert_eq!(
+            parse_canonical_codex_version_output("codex-cli 0.144.5"),
+            Some("0.144.5")
+        );
+        assert_eq!(
+            parse_canonical_codex_version_output("codex-cli 0.145.0-alpha.18\n"),
+            Some("0.145.0-alpha.18")
+        );
+        assert_eq!(
+            parse_canonical_codex_version_output(
+                "codex-cli 9.9.9 compatible-with 0.146.0-alpha.9.2"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_canonical_codex_version_output("warning codex-cli 0.146.0-alpha.9.2"),
+            None
+        );
+        assert_eq!(
+            super::check_codex_cli_version(
+                "Codex CLI".to_string(),
+                Some("codex-cli 0.146.0-alpha.9.2".to_string())
+            )
+            .status,
+            CheckStatus::Ok
+        );
+        assert_eq!(
+            super::check_codex_cli_version(
+                "Codex CLI".to_string(),
+                Some("codex-cli 0.146.0-alpha.9.20".to_string())
+            )
+            .status,
+            CheckStatus::Unverified
+        );
+        assert_eq!(
+            super::check_codex_cli_version(
+                "Codex CLI".to_string(),
+                Some("codex-cli 9.9.9 compatible-with 0.146.0-alpha.9.2".to_string())
+            )
+            .status,
+            CheckStatus::Unverified
+        );
     }
 
     #[test]
@@ -7941,7 +7992,7 @@ mod tests {
 
         let mut bad_hooks = rendered_codex_hooks(&cli).unwrap();
         bad_hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"] =
-            json!("true # --source codex codex-hooks-2026-07-29-activity-v7");
+            json!("true # --source codex codex-hooks-stale");
         std::fs::write(&hooks, serde_json::to_vec_pretty(&bad_hooks).unwrap()).unwrap();
         assert_eq!(
             check_codex_hooks(&hooks, &cli, temp.path()).status,
@@ -8946,6 +8997,54 @@ mod tests {
     }
 
     #[test]
+    fn codex_repair_upgrades_only_the_recognized_retired_v1_studio_skill() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+
+        let retired_v1 =
+            include_bytes!("../tests/fixtures/retired-agent-pet-studio-v1.md").as_slice();
+        assert_eq!(
+            hex::encode(Sha256::digest(retired_v1)),
+            super::RETIRED_CODEX_STUDIO_SKILL_SHA256[0]
+        );
+        std::fs::write(&studio, retired_v1).unwrap();
+        assert!(super::codex_studio_skill_is_owned(&studio, &root));
+        super::repair_codex(&root, &cli).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&studio).unwrap(),
+            super::PET_STUDIO_SKILL_MD
+        );
+
+        let customized_current = format!("{}\n## My custom workflow\n", super::PET_STUDIO_SKILL_MD);
+        std::fs::write(&studio, &customized_current).unwrap();
+        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+        assert!(super::repair_codex(&root, &cli).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&studio).unwrap(),
+            customized_current
+        );
+
+        let mut customized_retired = retired_v1.to_vec();
+        customized_retired.extend_from_slice(b"\n## My custom workflow\n");
+        std::fs::write(&studio, &customized_retired).unwrap();
+        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+        assert!(super::repair_codex(&root, &cli).is_err());
+        assert_eq!(std::fs::read(&studio).unwrap(), customized_retired);
+
+        super::remove_owned_codex_connector_files(&root).unwrap();
+        assert_eq!(std::fs::read(&studio).unwrap(), customized_retired);
+    }
+
+    #[test]
     fn uninstall_removes_recognized_legacy_codex_and_claude_artifacts_only() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
@@ -9216,7 +9315,7 @@ mod tests {
         let forged_build = "'/Users/test/Library/Application Support/AgentPetCompanion/runtime/versions/../../foreign/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let foreign = "'/Users/test/other/runtime/versions/0.1.0/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let legacy_bundle = "'/Users/test/project/dist/AgentPetCompanion.app/Contents/Resources/bin/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
-        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-07-29-activity-v6' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
+        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-07-31-activity-v8' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
 
         assert!(is_agent_pet_claude_command(
             prior,
@@ -9566,7 +9665,11 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
 
         let result = connections::refresh_installed_source(&paths, AgentSource::Pi);
 
-        assert_eq!(result.status, super::InstalledSourceRefreshStatus::Updated);
+        assert_eq!(
+            result.status,
+            super::InstalledSourceRefreshStatus::Updated,
+            "{result:?}"
+        );
         assert!(result.ok);
         assert!(result.managed);
         assert!(result.refreshed);
@@ -9640,7 +9743,11 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
 
         let result = connections::refresh_installed_source(&paths, AgentSource::Codex);
 
-        assert_eq!(result.status, super::InstalledSourceRefreshStatus::Updated);
+        assert_eq!(
+            result.status,
+            super::InstalledSourceRefreshStatus::Updated,
+            "{result:?}"
+        );
         assert!(result.ok, "{result:?}");
         assert!(result.verified);
         assert_eq!(result.expected_version, result.active_version);

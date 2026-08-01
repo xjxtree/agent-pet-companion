@@ -124,11 +124,10 @@ struct OnboardingAppStoreTests {
                         id: "pet_bytebudcodex",
                         name: "Bytebud 字节芽",
                         style: "像素",
-                        quality: .high,
-                        renderSize: QualityLevel.high.renderSize,
+                        quality: .standard,
+                        renderSize: QualityLevel.standard.renderSize,
                         petpackPath: "/tmp/pet_bytebudcodex.petpack",
                         coverPath: "/tmp/pet_bytebudcodex-cover.png",
-                        nativeFPS: 10,
                         active: false,
                         createdAt: "2026-07-23T00:00:00Z"
                     ),
@@ -330,14 +329,13 @@ struct OnboardingAppStoreTests {
             id: "pet_xingwutuanzi",
             name: "星雾团子",
             style: "半写实",
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
+            quality: .standard,
+            renderSize: QualityLevel.standard.renderSize,
             petpackPath: "/tmp/pet_xingwutuanzi.petpack",
             coverPath: "/tmp/pet_xingwutuanzi-cover.png",
             origin: .verifiedSkillSource,
             generator: "agent-pet-companion.release-inventory",
             provenance: "apc.bundled-pets.v1",
-            nativeFPS: 20,
             active: active,
             createdAt: "2026-07-23T00:00:00Z"
         )
@@ -444,7 +442,18 @@ private final class OnboardingRPCProbe {
                 revision: String(revision)
             ))
         case "overlay.placement.update":
-            return params
+            var placement = try #require(params as? [String: Any])
+            let expected = try #require(
+                placement.removeValue(forKey: "expected_revision") as? String
+            )
+            let next = (UInt64(expected) ?? 0) + 1
+            return [
+                "ok": true,
+                "revision": "state-overlay-\(next)",
+                "overlay_placement_revision": String(next),
+                "overlay_placement": placement,
+                "overlay_placement_intent": NSNull(),
+            ]
         case "generation.latest":
             return ["found": false]
         default:
@@ -455,6 +464,7 @@ private final class OnboardingRPCProbe {
     func snapshot() throws -> [String: Any] {
         [
             "revision": String(revision),
+            "overlay_placement_revision": "0",
             "changed": true,
             "behavior": try jsonObject(behavior),
             "behavior_revision": String(revision),

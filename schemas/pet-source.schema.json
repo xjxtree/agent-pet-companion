@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/pet-source.schema.json",
-  "title": "Agent Pet Companion Pet Source Metadata — Safe Producer Profile",
-  "description": "Runtime-enforced contract for source/source.json in the tagged Safe Producer profile. The apc.pet-source.v1 marker opts the package into strict validation of all four portable metadata artifacts; historical untagged packages remain on the legacy minimum gate.",
+  "title": "Agent Pet Companion Pet Source Metadata — V2 Safe Producer Profile",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "generator", "provenance"],
@@ -14,7 +13,7 @@
     "manifest_id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
     "pet_name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
     "style": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" },
-    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "quality": { "enum": ["low", "standard"] },
     "visual_source": {
       "enum": [
         "image-generation",
@@ -26,8 +25,12 @@
         "unknown"
       ]
     },
-    "native_fps": { "enum": [10, 20] },
-    "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
+    "states": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": { "$ref": "#/$defs/manifestState" }
+    },
     "state_frame_counts": { "$ref": "#/$defs/stateFrameCounts" },
     "preview_only": { "type": "boolean" },
     "reference_visual_influence": { "type": "boolean" },
@@ -37,9 +40,7 @@
       "properties": {
         "description": { "type": "string", "maxLength": 8000 },
         "style": { "type": "string", "maxLength": 1000 },
-        "quality": { "enum": ["standard", "high", "ultra", "original"] },
-        "native_fps": { "enum": [10, 20] },
-        "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
+        "quality": { "enum": ["low", "standard"] },
         "reference_images": {
           "type": "array",
           "maxItems": 4,
@@ -56,10 +57,7 @@
     },
     "input_reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
     "copied_reference_count": { "type": "integer", "minimum": 0, "maximum": 4 },
-    "ai_brief": {
-      "type": ["object", "null"],
-      "maxProperties": 64
-    },
+    "ai_brief": { "type": ["object", "null"], "maxProperties": 64 },
     "palette_source": { "type": "string", "minLength": 1, "maxLength": 96 },
     "palette": {
       "type": "object",
@@ -87,7 +85,9 @@
     "extensions": {
       "type": "object",
       "maxProperties": 32,
-      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$"
+      }
     }
   },
   "allOf": [
@@ -97,7 +97,7 @@
         "required": ["provenance"]
       },
       "then": {
-        "required": ["visual_source", "native_fps", "state_durations_ms", "state_frame_counts", "preview_only"],
+        "required": ["visual_source", "states", "state_frame_counts", "preview_only"],
         "properties": {
           "visual_source": { "enum": ["image-generation", "user-reference-derived"] },
           "preview_only": { "const": false }
@@ -132,18 +132,89 @@
       "maxItems": 4,
       "items": { "type": "integer", "minimum": 0, "maximum": 255 }
     },
-    "stateDurations": {
+    "frameDurations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 40,
+      "items": { "type": "integer", "minimum": 50, "maximum": 2000 }
+    },
+    "playback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "required": ["mode"],
       "properties": {
-        "idle": { "enum": [1000, 2000] },
-        "start": { "enum": [1000, 2000] },
-        "tool": { "enum": [1000, 2000] },
-        "waiting": { "enum": [1000, 2000] },
-        "review": { "enum": [1000, 2000] },
-        "done": { "enum": [1000, 2000] },
-        "failed": { "enum": [1000, 2000] }
+        "mode": { "enum": ["loop", "once_hold", "periodic", "burst_then_settle"] },
+        "entry_repeat_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "settle_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 },
+        "cooldown_ms": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "loop" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "once_hold" } }, "required": ["mode"] },
+          "then": {
+            "required": ["settle_frame_index"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "periodic" } }, "required": ["mode"] },
+          "then": {
+            "required": ["cooldown_ms"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "burst_then_settle" } }, "required": ["mode"] },
+          "then": {
+            "required": ["entry_repeat_count", "settle_frame_index"],
+            "not": { "required": ["cooldown_ms"] }
+          }
+        }
+      ]
+    },
+    "manifestState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "frames_dir",
+        "frame_durations_ms",
+        "playback",
+        "reduced_motion_frame_index"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/stateName" },
+        "frames_dir": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "frame_durations_ms": { "$ref": "#/$defs/frameDurations" },
+        "playback": { "$ref": "#/$defs/playback" },
+        "reduced_motion_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 }
       }
     },
     "stateFrameCounts": {
@@ -151,13 +222,13 @@
       "additionalProperties": false,
       "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
       "properties": {
-        "idle": { "enum": [10, 20, 40] },
-        "start": { "enum": [10, 20, 40] },
-        "tool": { "enum": [10, 20, 40] },
-        "waiting": { "enum": [10, 20, 40] },
-        "review": { "enum": [10, 20, 40] },
-        "done": { "enum": [10, 20, 40] },
-        "failed": { "enum": [10, 20, 40] }
+        "idle": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "start": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "tool": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "waiting": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "review": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "done": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "failed": { "type": "integer", "minimum": 2, "maximum": 40 }
       }
     }
   }

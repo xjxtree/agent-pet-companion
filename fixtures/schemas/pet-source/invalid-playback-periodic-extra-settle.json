@@ -1,0 +1,14 @@
+{
+  "schema_version": "apc.pet-source.v1",
+  "generator": "schema-fixture",
+  "provenance": "manual",
+  "states": [
+    { "name": "idle", "frames_dir": "assets/frames/idle", "frame_durations_ms": [100, 100], "playback": { "mode": "periodic", "cooldown_ms": [4000, 8000], "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "start", "frames_dir": "assets/frames/start", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "tool", "frames_dir": "assets/frames/tool", "frame_durations_ms": [100, 100], "playback": { "mode": "burst_then_settle", "entry_repeat_count": 1, "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "waiting", "frames_dir": "assets/frames/waiting", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "review", "frames_dir": "assets/frames/review", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "done", "frames_dir": "assets/frames/done", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "failed", "frames_dir": "assets/frames/failed", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 }
+  ]
+}

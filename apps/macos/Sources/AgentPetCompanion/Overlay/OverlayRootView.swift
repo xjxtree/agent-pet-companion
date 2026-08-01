@@ -73,9 +73,10 @@ struct OverlayRootView: View {
             let displayPetCenter = interactionPresentation
                 .resolvedPetLocalCenter(fallback: petCenter)
             let controlsVisible = controlPresentation.isVisible
-            let presentedScale = interactionPresentation.resolvedScale(
-                fallback: store.overlayScale
-            )
+            let presentedDisplayWidthPt =
+                interactionPresentation.resolvedDisplayWidthPt(
+                    fallback: store.overlayDisplayWidthPt
+                )
 
             ZStack {
                 Color.clear
@@ -86,8 +87,7 @@ struct OverlayRootView: View {
                     stateEntryID: OverlayPetAnimationIdentity.stateEntryID(
                         for: store.presentedActiveAgentState
                     ),
-                    scale: presentedScale,
-                    fpsProfile: store.effectiveFPSProfile,
+                    displayWidthPt: presentedDisplayWidthPt,
                     appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
                     bubbleVisible: bubbleVisible,
@@ -119,24 +119,30 @@ struct OverlayRootView: View {
                         controlPresentation.setHovered(.pet, hovering)
                         store.refreshOverlayPointerState()
                     },
-                    onDragActiveChanged: { active in
+                    onDragActiveChanged: { active, interactionID in
                         controlPresentation.setActive(.pet, active)
-                        store.setOverlayPetDragInProgress(active)
+                        if active, let interactionID {
+                            store.beginOverlayPetDrag(
+                                interactionID: interactionID
+                            )
+                        } else {
+                            store.endOverlayPetDrag(
+                                interactionID: interactionID
+                            )
+                        }
                     },
-                    onDragChanged: { center, visibleFrame in
-                        guard !store.overlayResizeInProgress else { return }
+                    onDragChanged: { center, visibleFrame, interactionID in
                         store.presentOverlayPetDrag(
                             at: center,
-                            visibleFrame: visibleFrame
+                            visibleFrame: visibleFrame,
+                            interactionID: interactionID
                         )
                     },
-                    onDragEnded: { center, velocity, visibleFrame in
-                        guard !store.overlayResizeInProgress else { return }
-                        store.settleOverlayPet(
-                            from: center,
-                            velocity: velocity,
+                    onDragEnded: { center, visibleFrame, interactionID in
+                        store.commitOverlayPetDrag(
+                            at: center,
                             visibleFrame: visibleFrame,
-                            reduceMotion: reduceMotion
+                            interactionID: interactionID
                         )
                     }
                 )
@@ -201,91 +207,6 @@ struct OverlayMenuControlRootView: View {
         .onHover { controlPresentation.setHovered(.menu, $0) }
         .onDisappear { controlPresentation.setHovered(.menu, false) }
         .apcAppearanceTheme(store.behavior.appearanceTheme)
-    }
-}
-
-struct OverlayResizeControlRootView: View {
-    @EnvironmentObject private var store: AppStore
-    @EnvironmentObject private var controlPresentation: OverlayControlPresentationState
-    @EnvironmentObject private var interactionPresentation: OverlayInteractionPresentationState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var scaleStepFeedbackVisible = false
-    @State private var scaleStepFeedbackTask: Task<Void, Never>?
-
-    private var controlsVisible: Bool {
-        controlPresentation.isVisible
-    }
-
-    var body: some View {
-        let presentedScale = interactionPresentation.resolvedScale(
-            fallback: store.overlayScale
-        )
-        ZStack {
-            ResizeHandle(
-                scale: presentedScale,
-                showScaleValue: OverlayScaleFeedbackVisibility.isVisible(
-                    isFocused: false,
-                    isResizing: store.overlayResizeInProgress,
-                    isStepFeedbackVisible: scaleStepFeedbackVisible
-                )
-            )
-            .accessibilityHidden(true)
-            .opacity(controlsVisible ? 1 : 0)
-            .animation(
-                reduceMotion ? nil : .easeOut(duration: OverlayMotion.controlFadeDuration),
-                value: controlsVisible
-            )
-            .allowsHitTesting(false)
-
-            ResizeInteractionRegion(
-                scale: presentedScale,
-                onHoverChanged: { hovering in
-                    controlPresentation.setHovered(.resize, hovering)
-                    store.refreshOverlayPointerState()
-                },
-                onFocusChanged: { focused in
-                    controlPresentation.setFocused(.resize, focused)
-                },
-                onResizeActiveChanged: { active in
-                    controlPresentation.setActive(.resize, active)
-                    store.setOverlayResizeInProgress(active)
-                },
-                onResizeChanged: { initialScale, screenTranslation in
-                    store.resizeOverlay(
-                        from: initialScale,
-                        screenTranslation: screenTranslation,
-                        commit: false
-                    )
-                },
-                onResizeEnded: { initialScale, screenTranslation in
-                    store.resizeOverlay(
-                        from: initialScale,
-                        screenTranslation: screenTranslation,
-                        commit: true
-                    )
-                },
-                onScaleStep: { step in
-                    store.setOverlayScale(presentedScale + step)
-                    showScaleStepFeedback()
-                }
-            )
-        }
-        .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
-        .onDisappear {
-            scaleStepFeedbackTask?.cancel()
-            controlPresentation.setHovered(.resize, false)
-        }
-        .apcAppearanceTheme(store.behavior.appearanceTheme)
-    }
-
-    private func showScaleStepFeedback() {
-        scaleStepFeedbackTask?.cancel()
-        scaleStepFeedbackVisible = true
-        scaleStepFeedbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled else { return }
-            scaleStepFeedbackVisible = false
-        }
     }
 }
 
@@ -611,8 +532,7 @@ private struct PetInteractionLayer: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
-    var scale: CGFloat
-    var fpsProfile: FpsProfile
+    var displayWidthPt: CGFloat
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
@@ -629,21 +549,20 @@ private struct PetInteractionLayer: View {
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
     var onHoverChanged: (Bool) -> Void
-    var onDragActiveChanged: (Bool) -> Void
-    var onDragChanged: (CGPoint, CGRect?) -> Void
-    var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void
+    var onDragActiveChanged: (Bool, UUID?) -> Void
+    var onDragChanged: (CGPoint, CGRect?, UUID) -> Void
+    var onDragEnded: (CGPoint, CGRect?, UUID) -> Void
 
     var body: some View {
         ZStack {
             WindowDragRegion(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petScreenCenter,
                 appearanceTheme: appearanceTheme,
                 clickMenuEnabled: clickMenuEnabled,
                 bubbleVisible: bubbleVisible,
                 bubbleToggleAvailable: bubbleToggleAvailable,
                 petVisualEnvelope: petVisualEnvelope,
-                reduceMotion: reduceMotion,
                 onActivate: onActivate,
                 onToggleBubble: onToggleBubble,
                 onOpenMainWindow: onOpenMainWindow,
@@ -654,16 +573,19 @@ private struct PetInteractionLayer: View {
                 onDragEnded: onDragEnded
             )
             .frame(
-                width: OverlayGeometry.petVisibleSize(scale: scale).width,
-                height: OverlayGeometry.petVisibleSize(scale: scale).height
+                width: OverlayGeometry.petVisibleSize(
+                    displayWidthPt: displayWidthPt
+                ).width,
+                height: OverlayGeometry.petVisibleSize(
+                    displayWidthPt: displayWidthPt
+                ).height
             )
 
             PetStage(
                 pet: pet,
                 state: state,
                 stateEntryID: stateEntryID,
-                scale: scale,
-                fpsProfile: fpsProfile,
+                displayWidthPt: displayWidthPt,
                 active: active,
                 reduceMotion: reduceMotion,
                 hovered: controlsVisible,
@@ -673,41 +595,53 @@ private struct PetInteractionLayer: View {
             .allowsHitTesting(false)
         }
         .frame(
-            width: max(OverlayGeometry.petVisibleSize(scale: scale).width, OverlayGeometry.petDragSize(scale: scale).width),
-            height: max(OverlayGeometry.petVisibleSize(scale: scale).height, OverlayGeometry.petDragSize(scale: scale).height)
+            width: max(
+                OverlayGeometry.petVisibleSize(
+                    displayWidthPt: displayWidthPt
+                ).width,
+                OverlayGeometry.petDragSize(
+                    displayWidthPt: displayWidthPt
+                ).width
+            ),
+            height: max(
+                OverlayGeometry.petVisibleSize(
+                    displayWidthPt: displayWidthPt
+                ).height,
+                OverlayGeometry.petDragSize(
+                    displayWidthPt: displayWidthPt
+                ).height
+            )
         )
         .contentShape(Rectangle())
     }
 }
 
 struct WindowDragRegion: NSViewRepresentable {
-    var scale: CGFloat
+    var displayWidthPt: CGFloat
     var petScreenCenter: CGPoint
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
     var bubbleToggleAvailable: Bool
     var petVisualEnvelope: OverlayPetVisualEnvelope?
-    var reduceMotion: Bool
     var onActivate: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
     var onHoverChanged: (Bool) -> Void
-    var onDragActiveChanged: (Bool) -> Void
-    var onDragChanged: (CGPoint, CGRect?) -> Void
-    var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void
+    var onDragActiveChanged: (Bool, UUID?) -> Void
+    var onDragChanged: (CGPoint, CGRect?, UUID) -> Void
+    var onDragEnded: (CGPoint, CGRect?, UUID) -> Void
 
     func makeNSView(context: Context) -> DragView {
         let view = DragView()
-        view.scale = scale
+        view.displayWidthPt = displayWidthPt
         view.petScreenCenter = petScreenCenter
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
-        view.reduceMotion = reduceMotion
         view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
@@ -720,14 +654,13 @@ struct WindowDragRegion: NSViewRepresentable {
     }
 
     func updateNSView(_ view: DragView, context: Context) {
-        view.scale = scale
+        view.displayWidthPt = displayWidthPt
         view.petScreenCenter = petScreenCenter
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
-        view.reduceMotion = reduceMotion
         view.onActivate = onActivate
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
@@ -739,7 +672,13 @@ struct WindowDragRegion: NSViewRepresentable {
     }
 
     final class DragView: NSView {
-        var scale: CGFloat = 1
+        private struct PendingPresentation {
+            let center: CGPoint
+            let visibleFrame: CGRect?
+            let interactionID: UUID
+        }
+
+        var displayWidthPt = OverlayGeometry.defaultDisplayWidthPt
         var petScreenCenter = CGPoint.zero
         var appearanceTheme: AppearanceTheme = .system
         var clickMenuEnabled = true {
@@ -748,19 +687,17 @@ struct WindowDragRegion: NSViewRepresentable {
         var bubbleVisible = true
         var bubbleToggleAvailable = true
         var petVisualEnvelope: OverlayPetVisualEnvelope?
-        var reduceMotion = false
         var onActivate: () -> Void = {}
         var onToggleBubble: () -> Void = {}
         var onOpenMainWindow: () -> Void = {}
         var onHidePet: () -> Void = {}
         var onHoverChanged: (Bool) -> Void = { _ in }
-        var onDragActiveChanged: (Bool) -> Void = { _ in }
-        var onDragChanged: (CGPoint, CGRect?) -> Void = { _, _ in }
-        var onDragEnded: (CGPoint, CGVector, CGRect?) -> Void = { _, _, _ in }
-        private var dragStartMouseLocation: NSPoint?
-        private var dragStartPetCenter: CGPoint?
-        private var motionSamples: [OverlayPetMotionSample] = []
-        private var didDrag = false
+        var onDragActiveChanged: (Bool, UUID?) -> Void = { _, _ in }
+        var onDragChanged: (CGPoint, CGRect?, UUID) -> Void = { _, _, _ in }
+        var onDragEnded: (CGPoint, CGRect?, UUID) -> Void = { _, _, _ in }
+        private var dragSession: OverlayDragSession?
+        private let presentationDriver =
+            OverlayDisplayLinkCoalescer<PendingPresentation>()
         private var menuTarget: PetClickMenuTarget?
 
         override init(frame frameRect: NSRect) {
@@ -797,6 +734,10 @@ struct WindowDragRegion: NSViewRepresentable {
         }
 
         override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
+            if selector == NSSelectorFromString("accessibilityPerformIncrement")
+                || selector == NSSelectorFromString("accessibilityPerformDecrement") {
+                return false
+            }
             if selector == #selector(accessibilityPerformShowMenu) {
                 return clickMenuEnabled
             }
@@ -822,118 +763,127 @@ struct WindowDragRegion: NSViewRepresentable {
         }
 
         override func mouseExited(with event: NSEvent) {
-            if dragStartMouseLocation == nil {
+            if dragSession == nil {
                 onHoverChanged(false)
             }
         }
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
-            dragStartMouseLocation = NSEvent.mouseLocation
-            dragStartPetCenter = petScreenCenter
-            motionSamples = [
-                OverlayPetMotionSample(
-                    point: NSEvent.mouseLocation,
-                    timestamp: event.timestamp
-                ),
-            ]
-            didDrag = false
+            let pointer = NSEvent.mouseLocation
+            let interactionID = UUID()
+            dragSession = OverlayDragSession(
+                interactionID: interactionID,
+                startPointerScreen: pointer,
+                startAnchorScreen: petScreenCenter,
+                startDisplayID: displayID(for: window.screen)
+            )
             window.ignoresMouseEvents = false
-            onDragActiveChanged(true)
+            onDragActiveChanged(true, interactionID)
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard
-                let window,
-                let dragStartMouseLocation,
-                let dragStartPetCenter
-            else { return }
-
-            let currentMouseLocation = NSEvent.mouseLocation
-            recordMotionSample(
-                point: currentMouseLocation,
-                timestamp: event.timestamp
+            guard let window else { return }
+            updateDragPresentation(
+                pointer: NSEvent.mouseLocation,
+                window: window,
+                flushImmediately: false
             )
-            guard OverlayPetPointerGesture.exceedsDragThreshold(
-                from: dragStartMouseLocation,
-                to: currentMouseLocation
-            ) else { return }
-            didDrag = true
-            let proposedCenter = CGPoint(
-                x: dragStartPetCenter.x + currentMouseLocation.x - dragStartMouseLocation.x,
-                y: dragStartPetCenter.y + currentMouseLocation.y - dragStartMouseLocation.y
-            )
-            let targetScreen = resolvedScreen(
-                forMouseLocation: currentMouseLocation,
-                proposedPetCenter: proposedCenter,
-                fallbackWindow: window
-            )
-            let screenFrame = targetScreen?.frame ?? window.screen?.frame ?? window.frame
-            let visibleFrame = targetScreen?.visibleFrame ?? window.screen?.visibleFrame ?? window.frame
-            let movementFrame = OverlayGeometry.petMovementFrame(
-                screenFrame: screenFrame,
-                visibleFrame: visibleFrame
-            )
-            let presentationCenter = reduceMotion
-                ? OverlayGeometry.clampedPetScreenCenter(
-                    proposedCenter,
-                    scale: scale,
-                    visibleFrame: movementFrame,
-                    clickMenuEnabled: clickMenuEnabled,
-                    petVisualEnvelope: petVisualEnvelope
-                )
-                : OverlayPetDragMotion.rubberBandedCenter(
-                    proposedCenter,
-                    scale: scale,
-                    visibleFrame: movementFrame,
-                    clickMenuEnabled: clickMenuEnabled,
-                    petVisualEnvelope: petVisualEnvelope
-                )
-            petScreenCenter = presentationCenter
-            window.ignoresMouseEvents = false
-            onDragChanged(presentationCenter, visibleFrame)
         }
 
         override func mouseUp(with event: NSEvent) {
-            recordMotionSample(
-                point: NSEvent.mouseLocation,
-                timestamp: event.timestamp
-            )
+            guard let session = dragSession else { return }
+            if let window {
+                updateDragPresentation(
+                    pointer: NSEvent.mouseLocation,
+                    window: window,
+                    flushImmediately: true
+                )
+            } else {
+                presentationDriver.flushNow()
+            }
+            let finalSession = dragSession ?? session
+            let interactionID = finalSession.interactionID
+            let didDrag = finalSession.hasCrossedThreshold
             let finalCenter = petScreenCenter
-            let velocity = reduceMotion
-                ? CGVector.zero
-                : OverlayPetDragMotion.estimatedVelocity(from: motionSamples)
             let visibleFrame = window.flatMap { window in
                 resolvedScreen(
-                    forMouseLocation: NSEvent.mouseLocation,
+                    forMouseLocation: finalSession.latestPointerScreen,
                     proposedPetCenter: finalCenter,
                     fallbackWindow: window
                 )?.visibleFrame ?? window.screen?.visibleFrame
             }
-            dragStartMouseLocation = nil
-            dragStartPetCenter = nil
-            motionSamples.removeAll(keepingCapacity: true)
+            dragSession = nil
+            presentationDriver.cancelPending()
             if didDrag {
-                onDragEnded(finalCenter, velocity, visibleFrame)
+                onDragEnded(finalCenter, visibleFrame, interactionID)
             } else {
                 onActivate()
             }
-            onDragActiveChanged(false)
+            onDragActiveChanged(false, interactionID)
         }
 
-        private func recordMotionSample(
-            point: CGPoint,
-            timestamp: TimeInterval
+        private func updateDragPresentation(
+            pointer: CGPoint,
+            window: NSWindow,
+            flushImmediately: Bool
         ) {
-            motionSamples.append(OverlayPetMotionSample(
-                point: point,
-                timestamp: timestamp
-            ))
-            let cutoff = timestamp - OverlayPetDragMotion.velocityWindow
-            motionSamples.removeAll { $0.timestamp < cutoff }
-            if motionSamples.count > 8 {
-                motionSamples.removeFirst(motionSamples.count - 8)
+            guard var session = dragSession else { return }
+            session.updatePointer(pointer)
+            dragSession = session
+            guard session.hasCrossedThreshold else { return }
+
+            let proposedCenter = session.proposedAnchorScreen
+            let targetScreen = resolvedScreen(
+                forMouseLocation: pointer,
+                proposedPetCenter: proposedCenter,
+                fallbackWindow: window
+            )
+            let screenFrame = targetScreen?.frame
+                ?? window.screen?.frame
+                ?? window.frame
+            let visibleFrame = targetScreen?.visibleFrame
+                ?? window.screen?.visibleFrame
+                ?? window.frame
+            let movementFrame = OverlayGeometry.petMovementFrame(
+                screenFrame: screenFrame,
+                visibleFrame: visibleFrame
+            )
+            let center = OverlayPetDragGeometry.clampedCenter(
+                proposedCenter,
+                displayWidthPt: displayWidthPt,
+                visibleFrame: movementFrame,
+                clickMenuEnabled: clickMenuEnabled,
+                petVisualEnvelope: petVisualEnvelope
+            )
+            let cadence = OverlayDisplayRefreshCadence.resolved(
+                for: targetScreen ?? window.screen
+            )
+            presentationDriver.submit(
+                PendingPresentation(
+                    center: center,
+                    visibleFrame: visibleFrame,
+                    interactionID: session.interactionID
+                ),
+                targetDisplayID: cadence.displayID,
+                screen: targetScreen ?? window.screen,
+                fallbackCadence: cadence
+            ) { [weak self] presentation in
+                self?.present(presentation)
             }
+            if flushImmediately {
+                presentationDriver.flushNow()
+            }
+        }
+
+        private func present(_ pendingPresentation: PendingPresentation) {
+            petScreenCenter = pendingPresentation.center
+            window?.ignoresMouseEvents = false
+            onDragChanged(
+                pendingPresentation.center,
+                pendingPresentation.visibleFrame,
+                pendingPresentation.interactionID
+            )
         }
 
         override func rightMouseDown(with event: NSEvent) {
@@ -946,8 +896,10 @@ struct WindowDragRegion: NSViewRepresentable {
             showClickMenu(at: event.locationInWindow)
         }
 
-        private func screen(containing point: NSPoint) -> NSScreen? {
-            NSScreen.screens.first { $0.frame.contains(point) }
+        private func displayID(for screen: NSScreen?) -> String {
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            let number = screen?.deviceDescription[key] as? NSNumber
+            return number?.stringValue ?? "main"
         }
 
         private func configureAccessibility() {
@@ -976,8 +928,23 @@ struct WindowDragRegion: NSViewRepresentable {
             proposedPetCenter: CGPoint,
             fallbackWindow window: NSWindow
         ) -> NSScreen? {
-            screen(containing: mouseLocation)
-                ?? screen(containing: proposedPetCenter)
+            let screens = NSScreen.screens
+            let displays = screens.map { screen in
+                OverlayDragDisplay(
+                    id: displayID(for: screen),
+                    frame: screen.frame,
+                    visibleFrame: screen.visibleFrame
+                )
+            }
+            guard let resolved = OverlayDragScreenResolver.resolve(
+                pointer: mouseLocation,
+                proposedPetCenter: proposedPetCenter,
+                displays: displays,
+                fallbackDisplayID: window.screen.map { displayID(for: $0) }
+            ) else {
+                return window.screen ?? NSScreen.main
+            }
+            return screens.first { displayID(for: $0) == resolved.id }
                 ?? window.screen
                 ?? NSScreen.main
         }
@@ -1065,8 +1032,7 @@ private struct PetStage: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
-    var scale: CGFloat
-    var fpsProfile: FpsProfile
+    var displayWidthPt: CGFloat
     var active: Bool
     var reduceMotion: Bool
     var hovered: Bool
@@ -1079,8 +1045,7 @@ private struct PetStage: View {
                 pet: pet,
                 state: state,
                 stateEntryID: stateEntryID,
-                scale: scale,
-                fpsProfile: fpsProfile,
+                displayWidthPt: displayWidthPt,
                 active: active,
                 reduceMotion: reduceMotion,
                 onVisualEnvelopeChanged: onVisualEnvelopeChanged,
@@ -1088,7 +1053,14 @@ private struct PetStage: View {
             )
                 .shadow(color: .black.opacity(hovered ? 0.09 : 0.05), radius: hovered ? 10 : 6, y: 6)
         }
-        .frame(width: 238 * scale, height: 318 * scale)
+        .frame(
+            width: OverlayGeometry.petVisibleSize(
+                displayWidthPt: displayWidthPt
+            ).width + 8,
+            height: OverlayGeometry.petVisibleSize(
+                displayWidthPt: displayWidthPt
+            ).height + 8
+        )
         .contentShape(Rectangle())
     }
 }
@@ -1097,8 +1069,7 @@ private struct FloatingPetSprite: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
-    var scale: CGFloat
-    var fpsProfile: FpsProfile
+    var displayWidthPt: CGFloat
     var active: Bool
     var reduceMotion: Bool
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
@@ -1110,16 +1081,29 @@ private struct FloatingPetSprite: View {
                 pet: pet,
                 stateName: state?.petState ?? "idle",
                 stateEntryID: stateEntryID,
-                fpsProfile: fpsProfile,
                 active: active,
                 reduceMotion: reduceMotion,
                 onVisualEnvelopeChanged: onVisualEnvelopeChanged,
                 onFrameHitTestChanged: onFrameHitTestChanged
             )
-                .frame(width: 230 * scale, height: 310 * scale)
+                .frame(
+                    width: OverlayGeometry.petVisibleSize(
+                        displayWidthPt: displayWidthPt
+                    ).width,
+                    height: OverlayGeometry.petVisibleSize(
+                        displayWidthPt: displayWidthPt
+                    ).height
+                )
         } else {
             Color.clear
-                .frame(width: 230 * scale, height: 310 * scale)
+                .frame(
+                    width: OverlayGeometry.petVisibleSize(
+                        displayWidthPt: displayWidthPt
+                    ).width,
+                    height: OverlayGeometry.petVisibleSize(
+                        displayWidthPt: displayWidthPt
+                    ).height
+                )
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(APCLocalization.text(.overlayNoPet))
         }
@@ -1130,7 +1114,6 @@ private struct PetFrameLayerView: NSViewRepresentable {
     var pet: PetSummary
     var stateName: String
     var stateEntryID: String
-    var fpsProfile: FpsProfile
     var active: Bool
     var reduceMotion: Bool
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
@@ -1154,7 +1137,6 @@ private struct PetFrameLayerView: NSViewRepresentable {
             pet: pet,
             stateName: stateName,
             stateEntryID: stateEntryID,
-            fpsProfile: fpsProfile,
             active: active,
             reduceMotion: reduceMotion,
             onVisualEnvelopeChanged: { envelope in
@@ -1312,79 +1294,5 @@ private struct ConversationBubbleAccessibilityActions: ViewModifier {
         case (nil, nil):
             content
         }
-    }
-}
-
-private struct ResizeInteractionRegion: NSViewRepresentable {
-    var scale: CGFloat
-    var onHoverChanged: (Bool) -> Void
-    var onFocusChanged: (Bool) -> Void
-    var onResizeActiveChanged: (Bool) -> Void
-    var onResizeChanged: (CGFloat, CGSize) -> Void
-    var onResizeEnded: (CGFloat, CGSize) -> Void
-    var onScaleStep: (CGFloat) -> Void
-
-    func makeNSView(context: Context) -> OverlayResizeAccessibilityView {
-        let view = OverlayResizeAccessibilityView()
-        view.scale = scale
-        view.onHoverChanged = onHoverChanged
-        view.onFocusChanged = onFocusChanged
-        view.onResizeActiveChanged = onResizeActiveChanged
-        view.onResizeChanged = onResizeChanged
-        view.onResizeEnded = onResizeEnded
-        view.onScaleStep = onScaleStep
-        return view
-    }
-
-    func updateNSView(_ view: OverlayResizeAccessibilityView, context: Context) {
-        view.scale = scale
-        view.onHoverChanged = onHoverChanged
-        view.onFocusChanged = onFocusChanged
-        view.onResizeActiveChanged = onResizeActiveChanged
-        view.onResizeChanged = onResizeChanged
-        view.onResizeEnded = onResizeEnded
-        view.onScaleStep = onScaleStep
-    }
-}
-
-struct ResizeHandle: View {
-    var scale: CGFloat = OverlayGeometry.defaultScale
-    var showScaleValue = false
-
-    var body: some View {
-        ZStack {
-            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 8.5, weight: .bold))
-                .foregroundStyle(OverlayStyle.secondaryText)
-                .frame(width: OverlayGeometry.resizeVisualSize.width, height: OverlayGeometry.resizeVisualSize.height)
-                .apcFloatingControlGlass(
-                    in: RoundedRectangle(cornerRadius: 6, style: .continuous),
-                    interactive: true
-                )
-
-            if showScaleValue {
-                Text(APCLocalization.format(
-                    .commonPercentFormat,
-                    Int((scale * 100).rounded())
-                ))
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(OverlayStyle.text)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .apcFloatingControlGlass(in: Capsule())
-                    .offset(x: -24, y: -27)
-                    .accessibilityHidden(true)
-            }
-        }
-            .frame(width: OverlayGeometry.resizeHitSize.width, height: OverlayGeometry.resizeHitSize.height)
-            .contentShape(Rectangle())
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(APCLocalization.text(.overlayResizeHelp))
-            .accessibilityValue(APCLocalization.format(
-                .commonPercentFormat,
-                Int((scale * 100).rounded())
-            ))
-            .accessibilityHint(APCLocalization.text(.overlayResizeHelp))
-            .help(APCLocalization.text(.overlayResizeHelp))
     }
 }

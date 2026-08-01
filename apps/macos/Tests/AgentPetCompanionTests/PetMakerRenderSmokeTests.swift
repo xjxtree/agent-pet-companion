@@ -32,14 +32,12 @@ struct PetMakerRenderSmokeTests {
             id: "pet_maker_result",
             name: "Maker Result",
             style: StylePreset.semiRealistic.rawValue,
-            quality: .high,
+            quality: .standard,
             renderSize: .init(width: 384, height: 416),
             petpackPath: "/nonexistent/pet_maker_result.petpack",
             coverPath: "/nonexistent/pet_maker_result.png",
             revisionID: "rev_maker_result",
             revisionCount: 1,
-            nativeFPS: 20,
-            stateDurationsMS: customDurations,
             active: false,
             createdAt: "2026-07-23T00:00:00Z"
         )
@@ -50,10 +48,8 @@ struct PetMakerRenderSmokeTests {
             submittedForm: GenerationForm(
                 description: "A luminous fox that celebrates completed work",
                 style: StylePreset.semiRealistic.rawValue,
-                quality: .high,
-                referenceImages: [],
-                nativeFPS: 20,
-                stateDurationsMS: customDurations
+                quality: .standard,
+                referenceImages: []
             ),
             messages: [
                 GenerationMessage(
@@ -139,11 +135,4 @@ struct PetMakerRenderSmokeTests {
         )
     }
 
-    private var customDurations: [String: Int] {
-        Dictionary(
-            uniqueKeysWithValues: PetAnimationContract.orderedStateNames.map {
-                ($0, $0 == "start" || $0 == "done" ? 1_000 : 2_000)
-            }
-        )
-    }
 }

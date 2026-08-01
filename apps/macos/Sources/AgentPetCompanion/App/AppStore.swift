@@ -116,7 +116,7 @@ struct PetCoreRuntimeInfo: Equatable {
 
 enum AgentSessionDeepLink {
     static func url(source: AgentSource?, sessionID: String?) -> URL? {
-        guard source == .codex else { return nil }
+        guard let source else { return nil }
         guard let sessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
               sessionID.count == 36,
               let uuid = UUID(uuidString: sessionID)
@@ -127,7 +127,20 @@ enum AgentSessionDeepLink {
         guard canonical.caseInsensitiveCompare(sessionID) == .orderedSame else {
             return nil
         }
-        return URL(string: "codex://threads/\(canonical)")
+        switch source {
+        case .codex:
+            return URL(string: "codex://threads/\(canonical)")
+        case .claudeCode:
+            var components = URLComponents()
+            components.scheme = "claude"
+            components.host = "resume"
+            components.queryItems = [
+                URLQueryItem(name: "session", value: canonical)
+            ]
+            return components.url
+        case .pi, .opencode:
+            return nil
+        }
     }
 }
 
@@ -136,9 +149,50 @@ enum AgentSessionOpenRoute: Equatable {
     case application(bundleIdentifiers: [String], paths: [String])
 }
 
+enum AgentSessionOpenFailure: Equatable, Sendable {
+    case urlOpenRejected
+    case applicationUnavailable
+    case applicationLaunchFailed
+}
+
+enum AgentSessionOpenOutcome: Equatable, Sendable {
+    case openedExactSession
+    case openedAgentHost
+    case failed(AgentSessionOpenFailure)
+
+    var didOpen: Bool {
+        switch self {
+        case .openedExactSession, .openedAgentHost: true
+        case .failed: false
+        }
+    }
+}
+
+private struct OverlaySessionNavigationNoticeRecord: Equatable {
+    let identity: OverlaySessionProjectionIdentity
+    let notice: OverlaySessionNavigationNotice
+}
+
+private struct OverlaySessionProjectionIdentity: Equatable, Sendable {
+    let eventID: String
+    let acknowledgementID: String?
+}
+
 enum AgentSessionRouter {
     private static let chatGPTBundleIdentifiers = ["com.openai.codex"]
     private static let chatGPTPaths = ["/Applications/ChatGPT.app", "/Applications/Codex.app"]
+    private static let claudeBundleIdentifiers = ["com.anthropic.claudefordesktop"]
+    private static let claudePaths = ["/Applications/Claude.app"]
+    private static let openCodeBundleIdentifiers = [
+        "ai.opencode.desktop",
+        "ai.opencode.desktop.beta",
+        "ai.opencode.desktop.dev"
+    ]
+    private static let openCodePaths = [
+        "/Applications/OpenCode.app",
+        "/Applications/OpenCode Beta.app",
+        "/Applications/OpenCode Dev.app"
+    ]
     private static let terminalTargets: [String: ([String], [String])] = [
         "warp": (["dev.warp.Warp-Stable", "dev.warp.Warp-Preview"], ["/Applications/Warp.app", "/Applications/WarpPreview.app"]),
         "terminal": (["com.apple.Terminal"], ["/System/Applications/Utilities/Terminal.app"]),
@@ -173,6 +227,15 @@ enum AgentSessionRouter {
             : navigation.capability
     }
 
+    static func hostFallbackRoute(
+        source: AgentSource?,
+        navigation: AgentSessionNavigation
+    ) -> AgentSessionOpenRoute? {
+        guard navigation.capability == .exactSession,
+              !navigation.explicitlyClosed else { return nil }
+        return agentHostRoute(source: source, navigation: navigation)
+    }
+
     private static func exactSessionRoute(
         source: AgentSource?,
         navigation: AgentSessionNavigation
@@ -191,6 +254,16 @@ enum AgentSessionRouter {
                // Only PetCore's dedicated, strictly validated routing field
                // may cross back into a Codex task URL. Never reinterpret the
                // generic projected session identity as a routable raw ID.
+               sessionID: navigation.routableSessionID
+           )
+        {
+            return .url(deepLink)
+        }
+        if source == .claudeCode,
+           navigation.surface == "claude_app",
+           navigation.sessionOpen == true,
+           let deepLink = AgentSessionDeepLink.url(
+               source: source,
                sessionID: navigation.routableSessionID
            )
         {
@@ -217,6 +290,18 @@ enum AgentSessionRouter {
             return .application(
                 bundleIdentifiers: chatGPTBundleIdentifiers,
                 paths: chatGPTPaths
+            )
+        }
+        if source == .claudeCode, navigation.surface == "claude_app" {
+            return .application(
+                bundleIdentifiers: claudeBundleIdentifiers,
+                paths: claudePaths
+            )
+        }
+        if source == .opencode, navigation.surface == "opencode_app" {
+            return .application(
+                bundleIdentifiers: openCodeBundleIdentifiers,
+                paths: openCodePaths
             )
         }
         return nil
@@ -399,16 +484,10 @@ private enum PetAssetDiagnosticCategory: String {
 
 enum OverlayKeyboardFocusAction: CaseIterable, Hashable {
     case bubbleSessions
-    case resizeHandle
 
     func isAvailable(overlayEnabled: Bool, bubbleSessionCount: Int) -> Bool {
         guard overlayEnabled else { return false }
-        switch self {
-        case .bubbleSessions:
-            return bubbleSessionCount > 0
-        case .resizeHandle:
-            return true
-        }
+        return bubbleSessionCount > 0
     }
 
     static func availableActions(
@@ -490,6 +569,10 @@ final class AppStore: ObservableObject {
     typealias BundledPetSeeder = @MainActor () async -> Bool
     typealias BundledPetSeedSleeper = @Sendable (Duration) async throws -> Void
     typealias InitialAppearanceFallbackSleeper = @Sendable (Duration) async throws -> Void
+    typealias OverlayPlacementRetrySleeper = @Sendable (Duration) async throws -> Void
+    typealias AgentSessionRouteOpener = @MainActor (
+        AgentSessionOpenRoute
+    ) async -> AgentSessionOpenOutcome
     typealias ProductConvergenceSleeper = @Sendable (Duration) async throws -> Void
     typealias ProductConvergenceUpgradeEvidence = @MainActor (
         RuntimeReleaseManifest
@@ -512,8 +595,6 @@ final class AppStore: ObservableObject {
     @Published private(set) var descriptionText = AIPetMakerDefaults.descriptionText
     @Published private(set) var selectedStyle = AIPetMakerDefaults.style
     @Published private(set) var selectedQuality = AIPetMakerDefaults.quality
-    @Published private(set) var selectedNativeFPS = PetAnimationContract.defaultNativeFPS
-    @Published private(set) var generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
     @Published private(set) var referenceImages: [String] = []
     @Published private(set) var referenceImageIssue: MakerReferenceImageIssue?
     @Published private(set) var referenceReselectionCount = 0
@@ -545,16 +626,14 @@ final class AppStore: ObservableObject {
         manifest: PetCoreRuntimeContract.requiredManifest
     )
     @Published private(set) var lastServiceFailureCode = PetCoreServiceFailureCode.none
-    @Published var overlayScale = OverlayGeometry.defaultScale
+    @Published private(set) var overlayDisplayWidthPt =
+        OverlayGeometry.defaultDisplayWidthPt
     @Published var overlayVisible = true
     @Published var overlayScreenFrame = CGRect(x: 780, y: 140, width: 704, height: 640)
     @Published var overlayScreenVisibleFrame = NSScreen.main?.visibleFrame ?? .zero
     @Published var overlayPetScreenCenter = CGPoint.zero
     var overlayPresentedPetScreenCenter: CGPoint {
         overlayPetDragPresentationCenter ?? overlayPetScreenCenter
-    }
-    var overlayPresentedScale: CGFloat {
-        overlayResizePresentationScale ?? overlayScale
     }
     private(set) var overlayPetVisualEnvelope: OverlayPetVisualEnvelope?
     private var overlayPetFrameHitTestProjection: OverlayPetFrameHitTestProjection?
@@ -569,10 +648,13 @@ final class AppStore: ObservableObject {
     }
     @Published var overlayBubbleDismissed = false
     @Published var overlayDismissedBubbleEventIDs: Set<String> = []
+    @Published private var overlaySessionNavigationNotices:
+        [String: OverlaySessionNavigationNoticeRecord] = [:]
+    private var overlaySessionProjectionIdentities:
+        [String: OverlaySessionProjectionIdentity] = [:]
     @Published private(set) var overlayAgentGroupExpansionOverrides: [AgentSource: Bool] = [:]
     @Published var overlayPointerNearPet = false
     @Published var overlayPetDragInProgress = false
-    @Published var overlayResizeInProgress = false
     @Published var petOperationIDs: Set<String> = []
     @Published var isImportingPetpack = false
     @Published private(set) var petpackImportProgress: PetLibraryImportProgress?
@@ -589,6 +671,9 @@ final class AppStore: ObservableObject {
     private let bundledPetSeederOverride: BundledPetSeeder?
     private let bundledPetSeedSleeper: BundledPetSeedSleeper
     private let initialAppearanceFallbackSleeper: InitialAppearanceFallbackSleeper
+    private let overlayPlacementRetrySleeper: OverlayPlacementRetrySleeper
+    private let overlayPlacementJournalStore: OverlayPlacementJournalStore
+    private let agentSessionRouteOpener: AgentSessionRouteOpener
     private let runtimeHandoffIfNeeded: RuntimeHandoffCheck
     private let applicationAppearanceApplier: ApplicationAppearanceApplier
     private let applicationLanguageApplier: ApplicationLanguageApplier
@@ -603,14 +688,16 @@ final class AppStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var petpackImportTask: Task<Void, Never>?
     private var overlayPetPositionInitialized = false
-    private var overlayPlacementLoaded = false
-    private var isApplyingOverlayPlacement = false
+    private var overlayPlacementAuthority = OverlayPlacementAuthority()
     private var overlayPlacementSaveTask: Task<Void, Never>?
-    private var overlayPlacementSaveSequence: UInt64 = 0
-    private var overlayPetReleaseTask: Task<Void, Never>?
-    private var overlayPetReleaseSequence: UInt64 = 0
+    private var overlayPlacementJournalDidLoad = false
+    private let overlayPlacementPreviewDriver =
+        OverlayDisplayLinkCoalescer<CGFloat>()
+    private var overlayDisplayWidthCommitTask: Task<Void, Never>?
+    private var overlayDisplayWidthCommitDeadline: TimeInterval?
     private var overlayPetDragPresentationCenter: CGPoint?
-    private var overlayResizePresentationScale: CGFloat?
+    private var overlayDragInteractionID: UUID?
+    private var pendingDisplayWidthPt: CGFloat?
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
     private var authoritativeBehavior = BehaviorSettings()
@@ -672,8 +759,6 @@ final class AppStore: ObservableObject {
         switch action {
         case .bubbleSessions:
             controller.focusBubbleForKeyboardNavigation()
-        case .resizeHandle:
-            controller.focusResizeForKeyboardNavigation()
         }
     }
 
@@ -692,6 +777,11 @@ final class AppStore: ObservableObject {
         initialAppearanceFallbackSleeper = { duration in
             try await Task.sleep(for: duration)
         }
+        overlayPlacementRetrySleeper = { duration in
+            try await Task.sleep(for: duration)
+        }
+        overlayPlacementJournalStore = .fileBacked()
+        agentSessionRouteOpener = Self.openAgentSessionRoute
         runtimeHandoffIfNeeded = {
             AppUpdateHandoffCoordinator.shared.restartIfInstalledBuildChanged()
         }
@@ -740,6 +830,13 @@ final class AppStore: ObservableObject {
         initialAppearanceFallbackSleeper: @escaping InitialAppearanceFallbackSleeper = { duration in
             try await Task.sleep(for: duration)
         },
+        overlayPlacementRetrySleeper: @escaping OverlayPlacementRetrySleeper = { duration in
+            try await Task.sleep(for: duration)
+        },
+        overlayPlacementJournalStore: OverlayPlacementJournalStore = .disabled(),
+        agentSessionRouteOpener: @escaping AgentSessionRouteOpener = { _ in
+            .failed(.applicationUnavailable)
+        },
         runtimeHandoffIfNeeded: @escaping RuntimeHandoffCheck = { false },
         applicationAppearanceApplier: @escaping ApplicationAppearanceApplier = { theme in
             APCApplicationAppearance.apply(theme)
@@ -774,6 +871,9 @@ final class AppStore: ObservableObject {
         bundledPetSeederOverride = bundledPetSeeder
         self.bundledPetSeedSleeper = bundledPetSeedSleeper
         self.initialAppearanceFallbackSleeper = initialAppearanceFallbackSleeper
+        self.overlayPlacementRetrySleeper = overlayPlacementRetrySleeper
+        self.overlayPlacementJournalStore = overlayPlacementJournalStore
+        self.agentSessionRouteOpener = agentSessionRouteOpener
         self.runtimeHandoffIfNeeded = runtimeHandoffIfNeeded
         self.applicationAppearanceApplier = applicationAppearanceApplier
         self.applicationLanguageApplier = applicationLanguageApplier
@@ -816,9 +916,10 @@ final class AppStore: ObservableObject {
             || inFlightProtectedMutationCount > 0
             || pendingBehaviorMutationCount > 0
             || overlayPlacementSaveTask != nil
+            || overlayPlacementAuthority.pending != nil
+            || overlayPlacementPreviewDriver.hasPending
+            || overlayDisplayWidthCommitTask != nil
             || overlayPetDragInProgress
-            || overlayPetReleaseTask != nil
-            || overlayResizeInProgress
             || runtimeBootstrap != nil
             || serviceRecovery != nil
     }
@@ -866,10 +967,6 @@ final class AppStore: ObservableObject {
         petCoreOperationalState == .online ? .ready : .serviceUnavailable
     }
 
-    var effectiveFPSProfile: FpsProfile {
-        activePet?.effectiveFPSProfile(behavior.fpsProfile) ?? .standard
-    }
-
     /// Compatibility projection for older callers. The typed operation state
     /// remains the single source of truth for serialization and failure UI.
     var connectionOperationSources: Set<AgentSource> {
@@ -911,12 +1008,22 @@ final class AppStore: ObservableObject {
 
     var overlayAvailableBubbleContents: [OverlayBubbleContent] {
         guard overlayVisibility.statusBubbleVisible else { return [] }
-        return OverlayBubbleProjection.contents(
+        var contents = OverlayBubbleProjection.contents(
             states: activeAgentSessions,
             omittedCount: activeAgentSessionsOmittedCount,
             dismissedSessionIDs: overlayDismissedBubbleEventIDs,
             isExpanded: { overlayAgentGroupIsExpanded($0) }
         )
+        for contentIndex in contents.indices {
+            for sessionIndex in contents[contentIndex].sessions.indices {
+                let session = contents[contentIndex].sessions[sessionIndex]
+                guard let record = overlaySessionNavigationNotices[session.id],
+                      record.identity == overlaySessionProjectionIdentities[session.id]
+                else { continue }
+                contents[contentIndex].sessions[sessionIndex].navigationNotice = record.notice
+            }
+        }
+        return contents
     }
 
     var overlayBubbleContents: [OverlayBubbleContent] {
@@ -935,10 +1042,6 @@ final class AppStore: ObservableObject {
 
     var canFocusOverlayBubbleForKeyboardNavigation: Bool {
         overlayKeyboardFocusActions.contains(.bubbleSessions)
-    }
-
-    var canFocusOverlayResizeForKeyboardNavigation: Bool {
-        overlayKeyboardFocusActions.contains(.resizeHandle)
     }
 
     private var overlayKeyboardFocusActions: Set<OverlayKeyboardFocusAction> {
@@ -990,8 +1093,6 @@ final class AppStore: ObservableObject {
                     || selectedStyle != AIPetMakerDefaults.style
                     || selectedQuality != AIPetMakerDefaults.quality
                     || !referenceImages.isEmpty
-                    || selectedNativeFPS != PetAnimationContract.defaultNativeFPS
-                    || generationStateDurationsMS != PetAnimationContract.defaultStateDurationsMS
                     || referenceImageIssue != nil
                     || referenceReselectionCount != 0
                     || !generationReplyText.isEmpty
@@ -1182,43 +1283,204 @@ final class AppStore: ObservableObject {
         source: AgentSource?,
         sessionID: String? = nil,
         navigation: AgentSessionNavigation = AgentSessionNavigation()
-    ) {
+    ) async -> AgentSessionOpenOutcome {
         guard source != nil else {
             presentMainWindow()
-            return
+            return .openedAgentHost
         }
         guard let route = AgentSessionRouter.route(
             source: source,
             sessionID: sessionID,
             navigation: navigation
-        ) else { return }
-        let workspace = NSWorkspace.shared
-        switch route {
-        case let .url(url):
-            _ = workspace.open(url)
-        case let .application(bundleIdentifiers, paths):
-            openAgentApplication(bundleIdentifiers: bundleIdentifiers, paths: paths)
+        ) else {
+            return .failed(.applicationUnavailable)
         }
+        let outcome = await agentSessionRouteOpener(route)
+        if !outcome.didOpen,
+           let fallback = AgentSessionRouter.hostFallbackRoute(
+               source: source,
+               navigation: navigation
+           ),
+           fallback != route {
+            return await agentSessionRouteOpener(fallback)
+        }
+        return outcome
     }
 
     func activateOverlaySession(_ session: OverlaySessionContent) {
-        if session.canOpen {
-            presentAgentSession(
-                source: session.source,
-                sessionID: session.sessionID,
-                navigation: session.navigation
+        let capturedIdentity = overlaySessionProjectionIdentities[session.id]
+            ?? OverlaySessionProjectionIdentity(
+                eventID: session.eventID,
+                acknowledgementID: session.acknowledgementID
             )
-        } else if session.source == nil {
-            presentMainWindow()
+        let actionSession = currentOverlayActionSession(
+            stableID: session.id,
+            identity: capturedIdentity
+        ) ?? session
+        guard actionSession.canOpen else {
+            setOverlaySessionNavigationNotice(
+                .unavailable,
+                sessionID: actionSession.id,
+                identity: capturedIdentity
+            )
+            return
         }
-
-        if session.dismissesAfterActivation {
-            dismissOverlayBubble(eventID: session.id)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let outcome = await presentAgentSession(
+                source: actionSession.source,
+                sessionID: actionSession.sessionID,
+                navigation: actionSession.navigation
+            )
+            guard overlaySessionProjectionIsCurrent(
+                sessionID: actionSession.id,
+                identity: capturedIdentity
+            ) else {
+                return
+            }
+            let reachedRequestedDestination: Bool
+            switch outcome {
+            case .openedExactSession:
+                reachedRequestedDestination = true
+            case .openedAgentHost:
+                reachedRequestedDestination = actionSession.navigationCapability != .exactSession
+                if !reachedRequestedDestination {
+                    setOverlaySessionNavigationNotice(
+                        .degradedToHost,
+                        sessionID: actionSession.id,
+                        identity: capturedIdentity
+                    )
+                }
+            case .failed:
+                reachedRequestedDestination = false
+                setOverlaySessionNavigationNotice(
+                    .failed,
+                    sessionID: actionSession.id,
+                    identity: capturedIdentity
+                )
+            }
+            guard reachedRequestedDestination else {
+                return
+            }
+            clearOverlaySessionNavigationNotice(
+                sessionID: actionSession.id,
+                identity: capturedIdentity
+            )
+            if actionSession.dismissesAfterActivation {
+                guard await acknowledgeOverlaySession(
+                    acknowledgementID: capturedIdentity.acknowledgementID
+                ),
+                      overlaySessionProjectionIsCurrent(
+                          sessionID: actionSession.id,
+                          identity: capturedIdentity
+                      )
+                else {
+                    return
+                }
+                dismissOverlayBubble(eventID: actionSession.id)
+            }
         }
     }
 
-    private func openAgentApplication(bundleIdentifiers: [String], paths: [String]) {
+    private func currentOverlayActionSession(
+        stableID: String,
+        identity: OverlaySessionProjectionIdentity
+    ) -> OverlaySessionContent? {
+        activeAgentSessions.lazy
+            .map(OverlaySessionContent.init(state:))
+            .first { candidate in
+                candidate.id == stableID
+                    && candidate.eventID == identity.eventID
+                    && candidate.acknowledgementID == identity.acknowledgementID
+            }
+    }
+
+    private func overlaySessionProjectionIsCurrent(
+        sessionID: String,
+        identity: OverlaySessionProjectionIdentity
+    ) -> Bool {
+        overlaySessionProjectionIdentities[sessionID] == identity
+    }
+
+    private func setOverlaySessionNavigationNotice(
+        _ notice: OverlaySessionNavigationNotice,
+        sessionID: String,
+        identity: OverlaySessionProjectionIdentity
+    ) {
+        overlaySessionNavigationNotices[sessionID] =
+            OverlaySessionNavigationNoticeRecord(
+                identity: identity,
+                notice: notice
+            )
+        overlayController.updateLayout(animateBubble: true)
+    }
+
+    private func clearOverlaySessionNavigationNotice(
+        sessionID: String,
+        identity: OverlaySessionProjectionIdentity
+    ) {
+        guard overlaySessionNavigationNotices[sessionID]?.identity == identity
+        else { return }
+        guard overlaySessionNavigationNotices.removeValue(
+            forKey: sessionID
+        ) != nil else { return }
+        overlayController.updateLayout(animateBubble: true)
+    }
+
+    private func reconcileOverlaySessionNavigationNotices() {
+        guard !overlaySessionNavigationNotices.isEmpty else { return }
+        overlaySessionNavigationNotices = overlaySessionNavigationNotices.filter {
+            sessionID, record in
+            overlaySessionProjectionIdentities[sessionID] == record.identity
+        }
+    }
+
+    private func acknowledgeOverlaySession(
+        acknowledgementID: String?
+    ) async -> Bool {
+        guard let acknowledgementID else {
+            return true
+        }
+        do {
+            let result = try await requestPetCore(
+                method: "agent.session.acknowledge",
+                params: ["acknowledgement_id": acknowledgementID]
+            )
+            guard let result = result as? [String: Any],
+                  result["acknowledged"] as? Bool == true,
+                  result["acknowledgement_id"] as? String == acknowledgementID
+            else {
+                throw PetCoreClientError.invalidResponse
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func openAgentSessionRoute(
+        _ route: AgentSessionOpenRoute
+    ) async -> AgentSessionOpenOutcome {
         let workspace = NSWorkspace.shared
+        switch route {
+        case let .url(url):
+            return workspace.open(url)
+                ? .openedExactSession
+                : .failed(.urlOpenRejected)
+        case let .application(bundleIdentifiers, paths):
+            return await openAgentApplication(
+                bundleIdentifiers: bundleIdentifiers,
+                paths: paths,
+                workspace: workspace
+            )
+        }
+    }
+
+    private static func openAgentApplication(
+        bundleIdentifiers: [String],
+        paths: [String],
+        workspace: NSWorkspace
+    ) async -> AgentSessionOpenOutcome {
         if let running = workspace.runningApplications
             .filter({ application in
                 application.bundleIdentifier.map(bundleIdentifiers.contains) == true
@@ -1228,7 +1490,7 @@ final class AppStore: ObservableObject {
             .first,
            running.activate(options: [])
         {
-            return
+            return .openedAgentHost
         }
         let applicationURL = bundleIdentifiers.lazy
             .compactMap { workspace.urlForApplication(withBundleIdentifier: $0) }
@@ -1237,12 +1499,22 @@ final class AppStore: ObservableObject {
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
                 .first(where: { FileManager.default.fileExists(atPath: $0.path) })
         guard let applicationURL else {
-            presentMainWindow()
-            return
+            return .failed(.applicationUnavailable)
         }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        workspace.openApplication(at: applicationURL, configuration: configuration) { _, _ in }
+        return await withCheckedContinuation { continuation in
+            workspace.openApplication(
+                at: applicationURL,
+                configuration: configuration
+            ) { application, error in
+                continuation.resume(returning:
+                    application != nil && error == nil
+                        ? .openedAgentHost
+                        : .failed(.applicationLaunchFailed)
+                )
+            }
+        }
     }
 
     private func frontExistingMainWindow() -> Bool {
@@ -2105,6 +2377,7 @@ final class AppStore: ObservableObject {
             petCoreRuntimeInfo = nextRuntimeInfo
         }
         setServiceStatusText("本地服务运行中")
+        resumePendingOverlayPlacementSaveIfNeeded()
     }
 
     private func setServiceStatusText(_ value: String) {
@@ -2127,6 +2400,11 @@ final class AppStore: ObservableObject {
         )
         let data = try JSONSerialization.data(withJSONObject: result)
         let snapshot = try JSONDecoder().decode(StateSnapshot.self, from: data)
+        guard let overlayPlacementRevision = OverlayPlacementRevisionCodec.parse(
+            snapshot.overlayPlacementRevision
+        ) else {
+            throw PetCoreClientError.invalidResponse
+        }
         authoritativeBehavior = snapshot.behavior
         if let snapshotOnboarding = snapshot.onboarding,
            onboarding != snapshotOnboarding {
@@ -2170,6 +2448,23 @@ final class AppStore: ObservableObject {
         let nextActiveAgentSessions = snapshot.activeAgentSessions
             ?? snapshot.activeAgentState.map { [$0] }
             ?? []
+        overlaySessionProjectionIdentities = Dictionary(
+            nextActiveAgentSessions.map { state in
+                (
+                    OverlaySessionContent.stableID(
+                        source: state.source,
+                        sessionID: state.sessionID ?? state.event.sessionID,
+                        anonymousSessionAlias: state.anonymousSessionAlias,
+                        fallbackEventID: state.event.id
+                    ),
+                    OverlaySessionProjectionIdentity(
+                        eventID: state.event.id,
+                        acknowledgementID: state.acknowledgementID
+                    )
+                )
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let nextActiveAgentSessionsOmittedCount = max(
             0,
             snapshot.activeAgentSessionsOmittedCount ?? 0
@@ -2181,6 +2476,7 @@ final class AppStore: ObservableObject {
         if activeSessionsChanged {
             activeAgentSessions = nextActiveAgentSessions
         }
+        reconcileOverlaySessionNavigationNotices()
         if activeAgentSessionsOmittedCount != nextActiveAgentSessionsOmittedCount {
             activeAgentSessionsOmittedCount = nextActiveAgentSessionsOmittedCount
         }
@@ -2264,11 +2560,11 @@ final class AppStore: ObservableObject {
         applyAuthoritativeConnectionSnapshot(snapshot.connections)
         stateRevision = snapshot.revision ?? stateRevision
         let snapshotPlacement = snapshot.overlayPlacement ?? OverlayPlacement()
-        if !overlayPlacementLoaded {
-            applyOverlayPlacement(snapshotPlacement)
-        } else if shouldApplyRemoteOverlayPlacement(snapshotPlacement) {
-            applyOverlayPlacement(snapshotPlacement)
-        }
+        applyOverlayPlacement(
+            snapshotPlacement,
+            remoteRevision: overlayPlacementRevision,
+            remoteIntent: snapshot.overlayPlacementIntent
+        )
         syncOverlayVisibilityForBehavior()
         let overlayBubbleLayoutChanged = previousOverlayBubbleLayout
             != OverlayBubbleLayoutSignature(
@@ -2287,6 +2583,7 @@ final class AppStore: ObservableObject {
         if !hasLoadedStateSnapshot {
             hasLoadedStateSnapshot = true
         }
+        resumePendingOverlayPlacementSaveIfNeeded()
         presentOverlayAfterFirstSnapshotIfNeeded()
     }
 
@@ -2445,8 +2742,6 @@ final class AppStore: ObservableObject {
             && descriptionText == AIPetMakerDefaults.descriptionText
             && selectedStyle == AIPetMakerDefaults.style
             && selectedQuality == AIPetMakerDefaults.quality
-            && selectedNativeFPS == PetAnimationContract.defaultNativeFPS
-            && generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS
             && referenceImages.isEmpty
             && referenceImageIssue == nil
     }
@@ -2480,9 +2775,7 @@ final class AppStore: ObservableObject {
             description: form.description,
             style: form.style,
             quality: form.quality,
-            referenceImages: safePaths,
-            nativeFPS: form.nativeFPS,
-            stateDurationsMS: form.stateDurationsMS
+            referenceImages: safePaths
         )
         return sanitized
     }
@@ -2497,8 +2790,6 @@ final class AppStore: ObservableObject {
             selectedStyle = style
         }
         selectedQuality = form.quality
-        selectedNativeFPS = form.nativeFPS
-        generationStateDurationsMS = form.stateDurationsMS
         referenceImages = form.referenceImages
         self.referenceReselectionCount = referenceReselectionCount
         reselectedReferenceImagePaths.removeAll()
@@ -2540,25 +2831,6 @@ final class AppStore: ObservableObject {
         selectedQuality = quality
     }
 
-    func selectGenerationNativeFPS(_ nativeFPS: Int) {
-        guard !generationSession.isActive,
-              PetAnimationContract.supportedNativeFPS.contains(nativeFPS)
-        else { return }
-        recordMakerUserMutation()
-        selectedNativeFPS = nativeFPS
-    }
-
-    func selectGenerationStateDuration(_ durationMS: Int, for stateName: String) {
-        guard !generationSession.isActive,
-              PetAnimationContract.orderedStateNames.contains(stateName),
-              PetAnimationContract.supportedDurationsMS.contains(durationMS)
-        else { return }
-        recordMakerUserMutation()
-        var durations = generationStateDurationsMS
-        durations[stateName] = durationMS
-        generationStateDurationsMS = durations
-    }
-
     func startGeneration() {
         guard canStartNewGenerationWork else {
             statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
@@ -2578,9 +2850,7 @@ final class AppStore: ObservableObject {
             description: description,
             style: selectedStyle.rawValue,
             quality: selectedQuality,
-            referenceImages: referenceImages,
-            nativeFPS: selectedNativeFPS,
-            stateDurationsMS: generationStateDurationsMS
+            referenceImages: referenceImages
         )
         beginGeneration(
             with: form,
@@ -2628,9 +2898,7 @@ final class AppStore: ObservableObject {
             description: instruction,
             style: pet.style,
             quality: pet.quality,
-            referenceImages: [],
-            nativeFPS: pet.nativeFPS,
-            stateDurationsMS: pet.stateDurationsMS
+            referenceImages: []
         )
         let initialUserMessage = GenerationMessage(
             role: "user",
@@ -2663,11 +2931,7 @@ final class AppStore: ObservableObject {
                 )
                 guard let dict = result as? [String: Any],
                       let jobID = dict["job_id"] as? String,
-                      !jobID.isEmpty,
-                      let acceptedNativeFPS = dict["native_fps"] as? Int,
-                      PetAnimationContract.supportedNativeFPS.contains(acceptedNativeFPS),
-                      let acceptedStateDurationsMS = dict["state_durations_ms"] as? [String: Int],
-                      PetAnimationContract.hasValidStateDurations(acceptedStateDurationsMS)
+                      !jobID.isEmpty
                 else {
                     throw PetCoreClientError.invalidResponse
                 }
@@ -2675,9 +2939,7 @@ final class AppStore: ObservableObject {
                     ?? baselineRevisionID
                 _ = reduceGeneration(.startAccepted(
                     jobID: jobID,
-                    baselineRevisionID: acceptedBaselineRevisionID,
-                    nativeFPS: acceptedNativeFPS,
-                    stateDurationsMS: acceptedStateDurationsMS
+                    baselineRevisionID: acceptedBaselineRevisionID
                 ))
                 statusText = "正在修改 \(pet.name)"
             } catch {
@@ -2716,8 +2978,6 @@ final class AppStore: ObservableObject {
         descriptionText = draft.brief
         selectedStyle = draft.style
         selectedQuality = draft.quality
-        selectedNativeFPS = pet.nativeFPS
-        generationStateDurationsMS = pet.stateDurationsMS
         referenceImages = referencePath.map { [$0] } ?? []
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
@@ -2736,8 +2996,6 @@ final class AppStore: ObservableObject {
         descriptionText = AIPetMakerDefaults.descriptionText
         selectedStyle = AIPetMakerDefaults.style
         selectedQuality = AIPetMakerDefaults.quality
-        selectedNativeFPS = PetAnimationContract.defaultNativeFPS
-        generationStateDurationsMS = PetAnimationContract.defaultStateDurationsMS
         referenceImages.removeAll()
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
@@ -2792,9 +3050,7 @@ final class AppStore: ObservableObject {
             descriptionText: descriptionText,
             style: selectedStyle,
             quality: selectedQuality,
-            referenceImages: referenceImages,
-            nativeFPS: selectedNativeFPS,
-            stateDurationsMS: generationStateDurationsMS
+            referenceImages: referenceImages
         ) else { return }
         if modifying, generationSession.resultPetID == nil {
             statusText = "修改会话缺少宠物 ID，无法安全重试"
@@ -3163,9 +3419,6 @@ final class AppStore: ObservableObject {
     }
 
     func updateBehavior(_ next: BehaviorSettings) {
-        var next = next
-        next.fpsProfile = activePet?.effectiveFPSProfile(next.fpsProfile)
-            ?? .standard
         let patch = BehaviorSettingsPatch(from: behavior, to: next)
         guard !patch.isEmpty else { return }
         applyBehaviorProjection(next)
@@ -3245,8 +3498,9 @@ final class AppStore: ObservableObject {
                 }
                 statusText = "设置已保存"
                 return
-            } catch let PetCoreClientError.rpcError(message)
-                where attempt == 0 && message.contains("behavior revision conflict") {
+            } catch let error as PetCoreClientError
+                where attempt == 0
+                    && error.rpcMessage?.contains("behavior revision conflict") == true {
                 do {
                     try await refreshSnapshot()
                 } catch {
@@ -3621,8 +3875,8 @@ final class AppStore: ObservableObject {
 
             onboarding = updated
             return true
-        } catch let PetCoreClientError.rpcError(message)
-            where message.contains("onboarding revision conflict") {
+        } catch let error as PetCoreClientError
+            where error.rpcMessage?.contains("onboarding revision conflict") == true {
             do {
                 try await refreshSnapshot()
                 if onboarding?.progress.stage == nextStage {
@@ -4238,7 +4492,7 @@ final class AppStore: ObservableObject {
                 .transportUnavailable
             case .invalidResponse:
                 .invalidResponse
-            case .rpcError:
+            case .rpcError, .rpcErrorResponse:
                 .rejected
             }
         }
@@ -4258,11 +4512,6 @@ final class AppStore: ObservableObject {
             metadata: ["enabled": .bool(next.enabled)]
         )
         updateBehavior(next)
-    }
-
-    func resizeOverlay(delta: CGSize) {
-        let change = (delta.width + delta.height) / 420
-        setOverlayScale(overlayScale + change)
     }
 
     func updateOverlayPlacement(frame: CGRect, visibleFrame: CGRect?) {
@@ -4304,7 +4553,7 @@ final class AppStore: ObservableObject {
         }
         overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
             proposedCenter,
-            scale: overlayScale,
+            displayWidthPt: overlayDisplayWidthPt,
             visibleFrame: movementFrame,
             clickMenuEnabled: behavior.clickMenu,
             petVisualEnvelope: overlayPetVisualEnvelope
@@ -4318,23 +4567,33 @@ final class AppStore: ObservableObject {
                 metadata: ["committed": .bool(true)]
             )
             overlayController.updateLayout()
-            scheduleOverlayPlacementSave()
+            commitCurrentOverlayPlacement(
+                interactionID: UUID()
+            )
         } else {
             overlayController.updateLayoutDuringInteraction()
         }
     }
 
+    func beginOverlayPetDrag(interactionID: UUID) {
+        guard overlayDragInteractionID == nil else { return }
+        overlayDragInteractionID = interactionID
+        if overlayPetDragInProgress != true {
+            overlayPetDragInProgress = true
+            overlayController.updateLayoutDuringInteraction()
+            overlayController.refreshPointerPassthrough()
+        }
+    }
+
     /// Applies the direct-manipulation presentation position without changing
-    /// the persistent placement contract. The drag view already compresses
-    /// out-of-bounds movement, and release always converges to a hard-clamped
-    /// target before the placement is saved.
+    /// the persistent placement contract. The drag view supplies a hard-clamped
+    /// absolute anchor and coalesces high-frequency samples to display ticks.
     func presentOverlayPetDrag(
         at presentationCenter: CGPoint,
-        visibleFrame: CGRect?
+        visibleFrame: CGRect?,
+        interactionID: UUID
     ) {
-        if overlayPetReleaseTask != nil {
-            cancelOverlayPetReleaseMotion()
-        }
+        guard overlayDragInteractionID == interactionID else { return }
         if let visibleFrame,
            !visibleFrame.isEmpty,
            !rect(overlayScreenVisibleFrame, nearlyEquals: visibleFrame)
@@ -4349,14 +4608,12 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func settleOverlayPet(
-        from presentationCenter: CGPoint,
-        velocity: CGVector,
+    func commitOverlayPetDrag(
+        at presentationCenter: CGPoint,
         visibleFrame: CGRect?,
-        reduceMotion: Bool
+        interactionID: UUID
     ) {
-        cancelOverlayPetReleaseMotion()
-        overlayPetDragPresentationCenter = presentationCenter
+        guard overlayDragInteractionID == interactionID else { return }
 
         let targetScreen = screen(matchingVisibleFrame: visibleFrame)
             ?? screen(containing: presentationCenter)
@@ -4366,10 +4623,12 @@ final class AppStore: ObservableObject {
             ?? visibleFrame
             ?? overlayScreenVisibleFrame
         guard !targetVisibleFrame.isEmpty else {
-            moveOverlayPet(
-                to: presentationCenter,
-                visibleFrame: visibleFrame,
-                commit: true
+            overlayPetScreenCenter = presentationCenter
+            overlayPetDragPresentationCenter = nil
+            overlayDragInteractionID = nil
+            overlayPetDragInProgress = false
+            commitCurrentOverlayPlacement(
+                interactionID: interactionID
             )
             return
         }
@@ -4377,78 +4636,61 @@ final class AppStore: ObservableObject {
             screenFrame: targetScreen?.frame ?? targetVisibleFrame,
             visibleFrame: targetVisibleFrame
         )
-        let target = OverlayPetDragMotion.projectedReleaseTarget(
-            from: presentationCenter,
-            velocity: velocity,
-            scale: overlayScale,
+        let targetDisplayWidthPt = pendingDisplayWidthPt
+            ?? overlayDisplayWidthPt
+        var targetCenter = OverlayPetDragGeometry.clampedCenter(
+            presentationCenter,
+            displayWidthPt: overlayDisplayWidthPt,
             visibleFrame: movementFrame,
             clickMenuEnabled: behavior.clickMenu,
             petVisualEnvelope: overlayPetVisualEnvelope
         )
-        let displacement = hypot(
-            presentationCenter.x - target.x,
-            presentationCenter.y - target.y
-        )
-        let speed = hypot(velocity.dx, velocity.dy)
-        guard !reduceMotion, displacement > 0.5 || speed > 8 else {
-            moveOverlayPet(
-                to: target,
-                visibleFrame: targetVisibleFrame,
-                commit: true
+        if targetDisplayWidthPt != overlayDisplayWidthPt {
+            targetCenter = OverlayGeometry.bottomAnchoredCenter(
+                from: targetCenter,
+                currentDisplayWidthPt: overlayDisplayWidthPt,
+                proposedDisplayWidthPt: targetDisplayWidthPt
             )
-            return
+            targetCenter = OverlayPetDragGeometry.clampedCenter(
+                targetCenter,
+                displayWidthPt: targetDisplayWidthPt,
+                visibleFrame: movementFrame,
+                clickMenuEnabled: behavior.clickMenu,
+                petVisualEnvelope: overlayPetVisualEnvelope
+            )
         }
 
-        overlayPetReleaseSequence &+= 1
-        let sequence = overlayPetReleaseSequence
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        overlayPetReleaseTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-                guard elapsed < OverlayPetDragMotion.releaseSettlingDuration else {
-                    break
-                }
-                guard let self,
-                      self.overlayPetReleaseSequence == sequence else {
-                    return
-                }
-                let presentedCenter = OverlayPetDragMotion.criticallyDampedPosition(
-                    from: presentationCenter,
-                    to: target,
-                    initialVelocity: velocity,
-                    elapsed: elapsed
-                )
-                self.overlayPetDragPresentationCenter = presentedCenter
-                if !self.rect(
-                    self.overlayScreenVisibleFrame,
-                    nearlyEquals: targetVisibleFrame
-                ) {
-                    self.overlayScreenVisibleFrame = targetVisibleFrame
-                }
-                self.overlayController.presentPetDrag(
-                    at: presentedCenter,
-                    visibleFrame: targetVisibleFrame
-                )
-                do {
-                    try await Task.sleep(
-                        for: OverlayPetDragMotion.releaseFrameInterval
-                    )
-                } catch {
-                    return
-                }
-            }
+        overlayPetScreenCenter = targetCenter
+        overlayDisplayWidthPt = targetDisplayWidthPt
+        pendingDisplayWidthPt = nil
+        overlayPetDragPresentationCenter = nil
+        overlayDragInteractionID = nil
+        overlayPetDragInProgress = false
+        overlayScreenVisibleFrame = targetVisibleFrame
+        overlayPetPositionInitialized = true
+        overlayController.updateDisplayWidth(targetDisplayWidthPt)
+        diagnostics.log(
+            .info,
+            category: "overlay",
+            event: "overlay_position_committed",
+            metadata: ["committed": .bool(true)]
+        )
+        commitCurrentOverlayPlacement(
+            interactionID: interactionID
+        )
+    }
 
-            guard let self,
-                  !Task.isCancelled,
-                  self.overlayPetReleaseSequence == sequence else {
-                return
-            }
-            self.overlayPetReleaseTask = nil
-            self.moveOverlayPet(
-                to: target,
-                visibleFrame: targetVisibleFrame,
-                commit: true
-            )
+    func endOverlayPetDrag(interactionID: UUID?) {
+        if let interactionID,
+           overlayDragInteractionID != nil,
+           overlayDragInteractionID != interactionID {
+            return
+        }
+        overlayDragInteractionID = nil
+        if overlayPetDragInProgress {
+            overlayPetDragInProgress = false
+            overlayController.updateLayoutDuringInteraction()
+            overlayController.refreshPointerPassthrough()
         }
     }
 
@@ -4464,7 +4706,7 @@ final class AppStore: ObservableObject {
             )
             overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
                 overlayPetScreenCenter,
-                scale: overlayScale,
+                displayWidthPt: overlayDisplayWidthPt,
                 visibleFrame: movementFrame,
                 clickMenuEnabled: behavior.clickMenu,
                 petVisualEnvelope: overlayPetVisualEnvelope
@@ -4472,51 +4714,146 @@ final class AppStore: ObservableObject {
         } else {
             overlayPetScreenCenter = OverlayGeometry.defaultPetScreenCenter(
                 in: visibleFrame,
-                scale: overlayScale
+                displayWidthPt: overlayDisplayWidthPt
             )
             overlayPetPositionInitialized = true
         }
     }
 
-    func resizeOverlay(from initialScale: CGFloat, translation: CGSize, commit: Bool = true) {
-        let change = (translation.width + translation.height) / 520
-        setOverlayScale(initialScale + change, commit: commit)
+    func previewOverlayDisplayWidthPt(_ proposed: CGFloat) {
+        let target = OverlayGeometry.clampedDisplayWidthPt(proposed)
+        pendingDisplayWidthPt = target
+        scheduleOverlayDisplayWidthCommit()
+        guard !overlayPetDragInProgress else { return }
+        let targetScreen = screen(containing: overlayPetScreenCenter)
+            ?? NSScreen.main
+        let cadence = OverlayDisplayRefreshCadence.resolved(for: targetScreen)
+        overlayPlacementPreviewDriver.submit(
+            target,
+            targetDisplayID: cadence.displayID,
+            screen: targetScreen,
+            fallbackCadence: cadence
+        ) { [weak self] target in
+            guard let self, !self.overlayPetDragInProgress else { return }
+            let center = self.previewCenter(forDisplayWidthPt: target)
+            self.overlayController.previewDisplayWidth(
+                target,
+                petScreenCenter: center
+            )
+        }
     }
 
-    func resizeOverlay(from initialScale: CGFloat, screenTranslation: CGSize, commit: Bool = true) {
-        let change = (screenTranslation.width + screenTranslation.height) / 520
-        setOverlayScale(initialScale + change, commit: commit)
-    }
-
-    func setOverlayScale(_ scale: CGFloat, commit: Bool = true) {
-        let targetScale = OverlayGeometry.clampedScale(scale)
-        if !commit {
-            guard overlayResizePresentationScale != targetScale else { return }
-            overlayResizePresentationScale = targetScale
-            overlayController.updateScaleDuringInteraction(targetScale)
+    func commitOverlayDisplayWidthPt(_ proposed: CGFloat? = nil) {
+        if let proposed {
+            pendingDisplayWidthPt = OverlayGeometry.clampedDisplayWidthPt(
+                proposed
+            )
+        }
+        overlayDisplayWidthCommitTask?.cancel()
+        overlayDisplayWidthCommitTask = nil
+        overlayDisplayWidthCommitDeadline = nil
+        overlayPlacementPreviewDriver.cancelPending()
+        guard !overlayPetDragInProgress,
+              let target = pendingDisplayWidthPt else {
             return
         }
+        pendingDisplayWidthPt = nil
+        applyCommittedDisplayWidthPt(
+            target,
+            interactionID: UUID()
+        )
+    }
 
-        overlayResizePresentationScale = nil
-        if overlayScale != targetScale {
-            overlayScale = targetScale
-        }
-        if commit {
-            diagnostics.log(
-                .info,
-                category: "overlay",
-                event: "overlay_scale_committed",
-                metadata: ["scale": .double(Double(overlayScale))]
-            )
-            let visibleFrame = screen(containing: overlayPetScreenCenter)?.visibleFrame ?? overlayScreenVisibleFrame
-            ensureOverlayPetPosition(in: visibleFrame)
-            overlayController.updateScale(overlayScale)
-            scheduleOverlayPlacementSave()
+    func resetOverlayDisplayWidthPt() {
+        previewOverlayDisplayWidthPt(
+            OverlayGeometry.defaultDisplayWidthPt
+        )
+        commitOverlayDisplayWidthPt(
+            OverlayGeometry.defaultDisplayWidthPt
+        )
+    }
+
+    private func scheduleOverlayDisplayWidthCommit() {
+        overlayDisplayWidthCommitDeadline =
+            ProcessInfo.processInfo.systemUptime + 0.150
+        guard overlayDisplayWidthCommitTask == nil else { return }
+        overlayDisplayWidthCommitTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                guard let deadline = self.overlayDisplayWidthCommitDeadline else {
+                    self.overlayDisplayWidthCommitTask = nil
+                    return
+                }
+                let delay = max(
+                    0,
+                    deadline - ProcessInfo.processInfo.systemUptime
+                )
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                guard let currentDeadline = self.overlayDisplayWidthCommitDeadline else {
+                    self.overlayDisplayWidthCommitTask = nil
+                    return
+                }
+                guard currentDeadline
+                    <= ProcessInfo.processInfo.systemUptime + 0.000_001 else {
+                    continue
+                }
+                self.overlayDisplayWidthCommitTask = nil
+                self.overlayDisplayWidthCommitDeadline = nil
+                self.commitOverlayDisplayWidthPt()
+                return
+            }
         }
     }
 
-    func adjustOverlayScale(by step: CGFloat) {
-        setOverlayScale(overlayScale + step)
+    private func previewCenter(forDisplayWidthPt displayWidthPt: CGFloat) -> CGPoint {
+        let proposed = OverlayGeometry.bottomAnchoredCenter(
+            from: overlayPetScreenCenter,
+            currentDisplayWidthPt: overlayDisplayWidthPt,
+            proposedDisplayWidthPt: displayWidthPt
+        )
+        let targetScreen = screen(containing: overlayPetScreenCenter)
+            ?? NSScreen.main
+        let visibleFrame = targetScreen?.visibleFrame
+            ?? overlayScreenVisibleFrame
+        guard !visibleFrame.isEmpty else { return proposed }
+        let movementFrame = OverlayGeometry.petMovementFrame(
+            screenFrame: targetScreen?.frame ?? visibleFrame,
+            visibleFrame: visibleFrame
+        )
+        return OverlayPetDragGeometry.clampedCenter(
+            proposed,
+            displayWidthPt: displayWidthPt,
+            visibleFrame: movementFrame,
+            clickMenuEnabled: behavior.clickMenu,
+            petVisualEnvelope: overlayPetVisualEnvelope
+        )
+    }
+
+    private func applyCommittedDisplayWidthPt(
+        _ proposed: CGFloat,
+        interactionID: UUID
+    ) {
+        let target = OverlayGeometry.clampedDisplayWidthPt(proposed)
+        let targetCenter = previewCenter(forDisplayWidthPt: target)
+        let widthChanged = target != overlayDisplayWidthPt
+        let centerChanged = hypot(
+            targetCenter.x - overlayPetScreenCenter.x,
+            targetCenter.y - overlayPetScreenCenter.y
+        ) > 0.01
+        overlayDisplayWidthPt = target
+        overlayPetScreenCenter = targetCenter
+        overlayPetPositionInitialized = true
+        overlayController.updateDisplayWidth(target)
+        guard widthChanged || centerChanged else { return }
+        diagnostics.log(
+            .info,
+            category: "overlay",
+            event: "overlay_display_width_committed",
+            metadata: ["display_width_pt": .double(Double(target))]
+        )
+        commitCurrentOverlayPlacement(
+            interactionID: interactionID
+        )
     }
 
     func updateOverlayLayout() {
@@ -4613,11 +4950,6 @@ final class AppStore: ObservableObject {
         overlayKeyboardFocusHandler(overlayController, .bubbleSessions)
     }
 
-    func focusOverlayResizeForKeyboardNavigation() {
-        guard canFocusOverlayResizeForKeyboardNavigation else { return }
-        overlayKeyboardFocusHandler(overlayController, .resizeHandle)
-    }
-
     func toggleOverlayAgentGroup(_ source: AgentSource) {
         overlayAgentGroupExpansionOverrides[source] = !overlayAgentGroupIsExpanded(source)
         overlayController.updateLayout(animateBubble: true)
@@ -4655,44 +4987,19 @@ final class AppStore: ObservableObject {
     }
 
     func cancelOverlayPointerInteractions() {
-        guard overlayPetDragInProgress || overlayResizeInProgress else { return }
-        let interruptedDragCenter = overlayPetDragPresentationCenter
-        let interruptedScale = overlayResizePresentationScale
-        overlayPetDragInProgress = false
-        overlayResizeInProgress = false
-        if let interruptedDragCenter {
-            moveOverlayPet(
-                to: interruptedDragCenter,
+        guard overlayPetDragInProgress else { return }
+        let interactionID = overlayDragInteractionID
+        if let interactionID,
+           let interruptedDragCenter = overlayPetDragPresentationCenter {
+            commitOverlayPetDrag(
+                at: interruptedDragCenter,
                 visibleFrame: overlayScreenVisibleFrame,
-                commit: true
+                interactionID: interactionID
             )
-        }
-        if let interruptedScale {
-            setOverlayScale(interruptedScale, commit: true)
+        } else {
+            endOverlayPetDrag(interactionID: interactionID)
         }
         overlayController.updateLayoutDuringInteraction()
-    }
-
-    func setOverlayPetDragInProgress(_ value: Bool) {
-        if value {
-            cancelOverlayPetReleaseMotion()
-        }
-        if overlayPetDragInProgress != value {
-            overlayPetDragInProgress = value
-            overlayController.updateLayoutDuringInteraction()
-            overlayController.refreshPointerPassthrough()
-        }
-    }
-
-    func setOverlayResizeInProgress(_ value: Bool) {
-        if !value, let interruptedScale = overlayResizePresentationScale {
-            setOverlayScale(interruptedScale, commit: true)
-        }
-        if overlayResizeInProgress != value {
-            overlayResizeInProgress = value
-            overlayController.updateLayoutDuringInteraction()
-            overlayController.refreshPointerPassthrough()
-        }
     }
 
     private func rect(_ lhs: CGRect, nearlyEquals rhs: CGRect, tolerance: CGFloat = 0.5) -> Bool {
@@ -4783,13 +5090,80 @@ final class AppStore: ObservableObject {
         return cleaned.isEmpty ? "AgentPet" : cleaned
     }
 
-    private func applyOverlayPlacement(_ placement: OverlayPlacement) {
-        isApplyingOverlayPlacement = true
-        defer {
-            isApplyingOverlayPlacement = false
-            overlayPlacementLoaded = true
+    private func applyOverlayPlacement(
+        _ placement: OverlayPlacement,
+        remoteRevision: UInt64,
+        remoteIntent: OverlayPlacementRemoteIntent?
+    ) {
+        guard let normalized = normalizedOverlayPlacement(placement) else {
+            return
         }
+        if !overlayPlacementAuthority.bootstrapCompleted {
+            let journal = loadOverlayPlacementJournalOnce()
+            if let journal,
+               let recovered = normalizedOverlayPlacement(journal.placement) {
+                if remoteIntent != nil,
+                   journal.baseRemoteRevision < remoteRevision {
+                    // A newer explicit PetCore intent wins over work recovered
+                    // from an older App process. Its consume commit atomically
+                    // replaces the stale journal entry below.
+                } else if remoteIntent == nil,
+                          placement == journal.placement {
+                    _ = overlayPlacementAuthority.bootstrap(
+                        normalized,
+                        remoteRevision: remoteRevision
+                    )
+                    applyPresentedOverlayPlacement(normalized)
+                    removeOverlayPlacementJournalIfMatching(journal)
+                    if normalized != placement {
+                        commitCurrentOverlayPlacement(interactionID: UUID())
+                    }
+                    return
+                } else {
+                    _ = overlayPlacementAuthority.bootstrap(
+                        normalized,
+                        remoteRevision: remoteRevision
+                    )
+                    applyPresentedOverlayPlacement(recovered)
+                    let replay = overlayPlacementAuthority.commitLocal(
+                        recovered,
+                        interactionID: UUID()
+                    )
+                    enqueueOverlayPlacementCommit(replay)
+                    return
+                }
+            }
+            _ = overlayPlacementAuthority.bootstrap(
+                normalized,
+                remoteRevision: remoteRevision
+            )
+            applyPresentedOverlayPlacement(normalized)
+            if normalized != placement || remoteIntent != nil {
+                commitCurrentOverlayPlacement(interactionID: UUID())
+            }
+            return
+        }
+        guard overlayPlacementAuthority.allowsRemote(
+            normalized,
+            remoteRevision: remoteRevision,
+            intent: remoteIntent
+        ) else {
+            return
+        }
+        _ = overlayPlacementAuthority.applyRemote(
+            normalized,
+            remoteRevision: remoteRevision,
+            intent: remoteIntent
+        )
+        applyPresentedOverlayPlacement(normalized)
+        if remoteIntent != nil {
+            commitCurrentOverlayPlacement(interactionID: UUID())
+        }
+    }
 
+    private func normalizedOverlayPlacement(
+        _ placement: OverlayPlacement
+    ) -> OverlayPlacement? {
         let persistedCenter = CGPoint(x: placement.x, y: placement.y)
         let screen = screen(matchingDisplayID: placement.displayId)
             ?? screen(containing: persistedCenter)
@@ -4797,102 +5171,280 @@ final class AppStore: ObservableObject {
             ?? NSScreen.screens.first
         let visibleFrame = screen?.visibleFrame
             ?? (overlayScreenVisibleFrame.isEmpty ? .zero : overlayScreenVisibleFrame)
-        guard !visibleFrame.isEmpty else { return }
+        guard !visibleFrame.isEmpty else { return nil }
 
-        let persistedScale = CGFloat(placement.scale)
-        let targetScale = OverlayGeometry.resolvedInitialScale(
-            persistedScale: persistedScale,
+        let targetDisplayWidthPt =
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+            persistedDisplayWidthPt: CGFloat(placement.displayWidthPt),
             hasPersistedPosition: persistedCenter != .zero
         )
-        overlayScale = targetScale
 
+        let normalizedCenter: CGPoint
         if persistedCenter == .zero {
-            overlayPetScreenCenter = OverlayGeometry.defaultPetScreenCenter(
+            normalizedCenter = OverlayGeometry.defaultPetScreenCenter(
                 in: visibleFrame,
-                scale: targetScale
+                displayWidthPt: targetDisplayWidthPt
             )
         } else {
             let movementFrame = OverlayGeometry.petMovementFrame(
                 screenFrame: screen?.frame ?? visibleFrame,
                 visibleFrame: visibleFrame
             )
-            overlayPetScreenCenter = OverlayGeometry.clampedPetScreenCenter(
+            normalizedCenter = OverlayGeometry.clampedPetScreenCenter(
                 persistedCenter,
-                scale: targetScale,
+                displayWidthPt: targetDisplayWidthPt,
                 visibleFrame: movementFrame,
                 clickMenuEnabled: behavior.clickMenu,
                 petVisualEnvelope: overlayPetVisualEnvelope
             )
         }
-        overlayPetPositionInitialized = true
-        overlayController.updateScale(targetScale)
-
-        let normalizedPlacement = currentOverlayPlacement()
-        enqueueOverlayPlacementSave(
-            normalizedPlacement,
-            delay: nil
+        return OverlayPlacement(
+            x: Double(normalizedCenter.x),
+            y: Double(normalizedCenter.y),
+            displayWidthPt: Double(targetDisplayWidthPt),
+            displayId: currentDisplayID(for: normalizedCenter)
         )
     }
 
-    private func shouldApplyRemoteOverlayPlacement(_ placement: OverlayPlacement) -> Bool {
-        guard overlayPlacementLoaded, !isApplyingOverlayPlacement else { return false }
-        guard !overlayPetDragInProgress,
-              overlayPetReleaseTask == nil,
-              !overlayResizeInProgress else {
-            return false
-        }
-
-        let current = currentOverlayPlacement()
-        let positionChanged = abs(current.x - placement.x) > 0.5
-            || abs(current.y - placement.y) > 0.5
-        let scaleChanged = abs(current.scale - placement.scale) > 0.0001
-        return positionChanged || scaleChanged || current.displayId != placement.displayId
-    }
-
-    private func scheduleOverlayPlacementSave() {
-        guard overlayPlacementLoaded && !isApplyingOverlayPlacement else { return }
-        enqueueOverlayPlacementSave(
-            currentOverlayPlacement(),
-            delay: .milliseconds(250)
-        )
-    }
-
-    private func cancelOverlayPetReleaseMotion() {
-        overlayPetReleaseSequence &+= 1
-        overlayPetReleaseTask?.cancel()
-        overlayPetReleaseTask = nil
-    }
-
-    private func enqueueOverlayPlacementSave(
-        _ placement: OverlayPlacement,
-        delay: Duration?
+    private func applyPresentedOverlayPlacement(
+        _ placement: OverlayPlacement
     ) {
-        overlayPlacementSaveTask?.cancel()
-        overlayPlacementSaveSequence &+= 1
-        let sequence = overlayPlacementSaveSequence
+        overlayDisplayWidthPt = CGFloat(placement.displayWidthPt)
+        overlayPetScreenCenter = CGPoint(x: placement.x, y: placement.y)
+        overlayPetDragPresentationCenter = nil
+        overlayPetPositionInitialized = true
+        if let screen = screen(matchingDisplayID: placement.displayId)
+            ?? screen(containing: overlayPetScreenCenter) {
+            overlayScreenVisibleFrame = screen.visibleFrame
+        }
+        overlayController.updateDisplayWidth(overlayDisplayWidthPt)
+    }
+
+    private func commitCurrentOverlayPlacement(interactionID: UUID) {
+        let placement = currentOverlayPlacement()
+        if overlayPlacementAuthority.pending?.placement == placement {
+            return
+        }
+        let commit = overlayPlacementAuthority.commitLocal(
+            placement,
+            interactionID: interactionID
+        )
+        enqueueOverlayPlacementCommit(commit)
+    }
+
+    private func enqueueOverlayPlacementCommit(
+        _ commit: OverlayPlacementCommit
+    ) {
+        saveOverlayPlacementJournal(commit)
+        startOverlayPlacementSaveWorkerIfNeeded()
+    }
+
+    private func startOverlayPlacementSaveWorkerIfNeeded() {
+        guard overlayPlacementSaveTask == nil,
+              overlayPlacementAuthority.pending != nil else { return }
         overlayPlacementSaveTask = Task { @MainActor [weak self] in
-            if let delay {
-                do {
-                    try await Task.sleep(for: delay)
-                } catch {
-                    return
-                }
+            guard let self else { return }
+            while !Task.isCancelled,
+                  let commit = self.overlayPlacementAuthority.pending {
+                await self.saveOverlayPlacement(commit)
             }
-            guard !Task.isCancelled, let self else { return }
-            await self.saveOverlayPlacement(placement)
-            guard self.overlayPlacementSaveSequence == sequence else { return }
             self.overlayPlacementSaveTask = nil
         }
     }
 
-    private func saveOverlayPlacement(_ placement: OverlayPlacement) async {
-        do {
-            let data = try JSONEncoder().encode(placement)
-            let object = try JSONSerialization.jsonObject(with: data)
-            _ = try await requestPetCore(method: "overlay.placement.update", params: object)
-        } catch {
-            statusText = "桌宠位置保存失败"
+    private func resumePendingOverlayPlacementSaveIfNeeded() {
+        guard overlayPlacementSaveTask == nil,
+              overlayPlacementAuthority.pending != nil else { return }
+        startOverlayPlacementSaveWorkerIfNeeded()
+    }
+
+    private func saveOverlayPlacement(
+        _ initialCommit: OverlayPlacementCommit
+    ) async {
+        let retryDelays: [Duration] = [
+            .zero,
+            .milliseconds(250),
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+        ]
+        var commit = initialCommit
+        var attempt = 0
+        while !Task.isCancelled {
+            guard overlayPlacementAuthority.pending == commit else { return }
+            let delay = retryDelays[min(attempt, retryDelays.count - 1)]
+            if delay != .zero {
+                do {
+                    try await overlayPlacementRetrySleeper(delay)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled,
+                  overlayPlacementAuthority.pending == commit else { return }
+            do {
+                let data = try JSONEncoder().encode(commit.placement)
+                guard var object = try JSONSerialization.jsonObject(
+                    with: data
+                ) as? [String: Any] else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                object["expected_revision"] = String(commit.baseRemoteRevision)
+                let result = try await requestPetCore(
+                    method: "overlay.placement.update",
+                    params: object
+                )
+                let response = try OverlayPlacementUpdateResponse(result: result)
+                guard response.ok else {
+                    guard response.conflict else {
+                        throw PetCoreClientError.invalidResponse
+                    }
+                    if response.intent != nil {
+                        guard let normalized = normalizedOverlayPlacement(
+                            response.placement
+                        ),
+                        let consume = overlayPlacementAuthority
+                            .supersedeWithExplicitRemote(
+                                normalized,
+                                remoteRevision: response.placementRevision,
+                                interactionID: UUID()
+                            ) else {
+                            return
+                        }
+                        applyPresentedOverlayPlacement(normalized)
+                        saveOverlayPlacementJournal(consume)
+                        commit = consume
+                        attempt = 0
+                        continue
+                    }
+                    let reconciliation = overlayPlacementAuthority
+                        .reconcileOrdinaryConflict(
+                            for: commit,
+                            actualPlacement: response.placement,
+                            remoteRevision: response.placementRevision
+                        )
+                    switch reconciliation {
+                    case .acknowledged:
+                        removeOverlayPlacementJournalIfMatching(
+                            journalEntry(for: commit)
+                        )
+                        return
+                    case let .retry(rebased):
+                        saveOverlayPlacementJournal(rebased)
+                        commit = rebased
+                        attempt = 0
+                        continue
+                    case .stale:
+                        removeOverlayPlacementJournalIfMatching(
+                            journalEntry(for: commit)
+                        )
+                        return
+                    }
+                }
+                guard response.intent == nil,
+                      response.placement == commit.placement else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                let reconciliation = overlayPlacementAuthority.acknowledge(
+                    commit,
+                    remoteRevision: response.placementRevision
+                )
+                switch reconciliation {
+                case .acknowledged:
+                    removeOverlayPlacementJournalIfMatching(
+                        journalEntry(for: commit)
+                    )
+                    return
+                case let .retry(rebased):
+                    removeOverlayPlacementJournalIfMatching(
+                        journalEntry(for: commit)
+                    )
+                    saveOverlayPlacementJournal(rebased)
+                    commit = rebased
+                    attempt = 0
+                case .stale:
+                    removeOverlayPlacementJournalIfMatching(
+                        journalEntry(for: commit)
+                    )
+                    return
+                }
+            } catch {
+                overlayPlacementAuthority.failCommit(commit)
+                diagnostics.log(
+                    .warning,
+                    category: "overlay",
+                    event: "placement_save_failed",
+                    metadata: [
+                        "attempt": .integer(Int64(attempt + 1)),
+                        "local_revision": .integer(
+                            Int64(clamping: commit.localRevision)
+                        ),
+                    ]
+                )
+                if attempt >= retryDelays.count - 1 {
+                    statusText = "桌宠位置保存失败"
+                }
+                attempt = min(attempt + 1, retryDelays.count)
+            }
         }
+    }
+
+    private func loadOverlayPlacementJournalOnce()
+        -> OverlayPlacementJournalEntry? {
+        guard !overlayPlacementJournalDidLoad else { return nil }
+        overlayPlacementJournalDidLoad = true
+        do {
+            return try overlayPlacementJournalStore.load()
+        } catch {
+            logOverlayPlacementJournalFailure("load", error: error)
+            return nil
+        }
+    }
+
+    private func saveOverlayPlacementJournal(
+        _ commit: OverlayPlacementCommit
+    ) {
+        do {
+            try overlayPlacementJournalStore.save(journalEntry(for: commit))
+        } catch {
+            logOverlayPlacementJournalFailure("save", error: error)
+        }
+    }
+
+    private func removeOverlayPlacementJournalIfMatching(
+        _ entry: OverlayPlacementJournalEntry
+    ) {
+        do {
+            try overlayPlacementJournalStore.removeIfMatching(entry)
+        } catch {
+            logOverlayPlacementJournalFailure("remove", error: error)
+        }
+    }
+
+    private func journalEntry(
+        for commit: OverlayPlacementCommit
+    ) -> OverlayPlacementJournalEntry {
+        OverlayPlacementJournalEntry(
+            interactionID: commit.interactionID,
+            localRevision: commit.localRevision,
+            placement: commit.placement,
+            baseRemoteRevision: commit.baseRemoteRevision
+        )
+    }
+
+    private func logOverlayPlacementJournalFailure(
+        _ operation: String,
+        error: Error
+    ) {
+        diagnostics.log(
+            .warning,
+            category: "overlay",
+            event: "placement_journal_failed",
+            metadata: [
+                "operation": .string(operation),
+                "error": .string(String(describing: error)),
+            ]
+        )
     }
 
     @discardableResult
@@ -4932,7 +5484,7 @@ final class AppStore: ObservableObject {
         OverlayPlacement(
             x: Double(overlayPetScreenCenter.x),
             y: Double(overlayPetScreenCenter.y),
-            scale: Double(overlayScale),
+            displayWidthPt: Double(overlayDisplayWidthPt),
             displayId: currentDisplayID(for: overlayPetScreenCenter)
         )
     }
@@ -4992,16 +5544,7 @@ final class AppStore: ObservableObject {
                 paramsJSONData: paramsData,
                 timeout: timeout
             )
-            guard
-                let object = try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
-            else {
-                throw PetCoreClientError.invalidResponse
-            }
-            if let error = object["error"] as? [String: Any] {
-                throw PetCoreClientError.rpcError(
-                    String(describing: error["message"] ?? "Unknown PetCore error")
-                )
-            }
+            let result = try PetCoreClient.decodeResult(from: responseData)
             if !Self.isPollingRPC(method) {
                 diagnostics.log(
                     Self.isUserMutationRPC(method) ? .info : .debug,
@@ -5013,7 +5556,7 @@ final class AppStore: ObservableObject {
                     ]
                 )
             }
-            return object["result"] ?? NSNull()
+            return result
         } catch {
             diagnostics.logFailure(
                 error,
@@ -5042,6 +5585,7 @@ final class AppStore: ObservableObject {
             || method == "behavior.patch"
             || method == "onboarding.update"
             || method == "overlay.placement.update"
+            || method == "agent.session.acknowledge"
             || method == "diagnostics.export"
             || method == "product.convergence.update"
     }
@@ -5051,6 +5595,7 @@ final class AppStore: ObservableObject {
         case "behavior.patch",
              "onboarding.update",
              "overlay.placement.update",
+             "agent.session.acknowledge",
              "pet.activate",
              "pet.delete",
              "pet.assets.repair",
@@ -5076,6 +5621,59 @@ final class AppStore: ObservableObject {
     }
 }
 
+private struct OverlayPlacementUpdateResponse {
+    let ok: Bool
+    let conflict: Bool
+    let placement: OverlayPlacement
+    let placementRevision: UInt64
+    let intent: OverlayPlacementRemoteIntent?
+
+    init(result: Any) throws {
+        guard let object = result as? [String: Any],
+              let ok = object["ok"] as? Bool,
+              let encodedRevision = object["overlay_placement_revision"] as? String,
+              let placementRevision = OverlayPlacementRevisionCodec.parse(
+                  encodedRevision
+              ),
+              let placementObject = object["overlay_placement"] as? [String: Any],
+              object.keys.contains("overlay_placement_intent") else {
+            throw PetCoreClientError.invalidResponse
+        }
+        let placementData = try JSONSerialization.data(
+            withJSONObject: placementObject
+        )
+        placement = try JSONDecoder().decode(
+            OverlayPlacement.self,
+            from: placementData
+        )
+        self.placementRevision = placementRevision
+        self.ok = ok
+        conflict = object["conflict"] as? Bool ?? false
+        if object["overlay_placement_intent"] is NSNull {
+            intent = nil
+        } else if let encodedIntent = object["overlay_placement_intent"] as? String,
+                  let decodedIntent = OverlayPlacementRemoteIntent(
+                    rawValue: encodedIntent
+                  ) {
+            intent = decodedIntent
+        } else {
+            throw PetCoreClientError.invalidResponse
+        }
+
+        if ok {
+            guard !conflict,
+                  object["revision"] is String else {
+                throw PetCoreClientError.invalidResponse
+            }
+        } else {
+            guard conflict,
+                  object["revision"] == nil else {
+                throw PetCoreClientError.invalidResponse
+            }
+        }
+    }
+}
+
 private struct StateSnapshot: Codable {
     var revision: String?
     var changed: Bool?
@@ -5083,6 +5681,8 @@ private struct StateSnapshot: Codable {
     var behaviorRevision: String?
     var onboarding: VersionedOnboardingProgress?
     var overlayPlacement: OverlayPlacement?
+    var overlayPlacementRevision: String
+    var overlayPlacementIntent: OverlayPlacementRemoteIntent?
     var pets: [PetSummary]
     var petAssetWarnings: [PetAssetWarning]?
     var activeGeneration: ActiveGenerationSnapshot?
@@ -5101,6 +5701,8 @@ private struct StateSnapshot: Codable {
         case behaviorRevision = "behavior_revision"
         case onboarding
         case overlayPlacement = "overlay_placement"
+        case overlayPlacementRevision = "overlay_placement_revision"
+        case overlayPlacementIntent = "overlay_placement_intent"
         case pets
         case petAssetWarnings = "pet_asset_warnings"
         case activeGeneration = "active_generation"

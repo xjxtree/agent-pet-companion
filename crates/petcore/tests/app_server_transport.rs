@@ -641,8 +641,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let started = Instant::now();
@@ -699,8 +697,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let result = run_pet_studio_session(&paths, "job_delayed_initialize", &form);
@@ -746,8 +742,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let result = run_pet_studio_session(&paths, "job_turn_completed", &form);
@@ -795,8 +789,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let mut updates = Vec::new();
 
@@ -853,8 +845,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let started = Instant::now();
@@ -907,8 +897,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
 
     let result = run_pet_studio_session(&paths, "job_permanent_error", &form);
@@ -964,8 +952,8 @@ while IFS= read -r request; do
       source_dir="$APC_TEST_JOB_DIR/petpack-source"
       mkdir -p "$source_dir/build" "$source_dir/assets/frames" \
         "$APC_TEST_JOB_DIR/motion-qa"
-      printf '%s\n' '{"id":"checkpoint-pet","name":"Checkpoint Pet","native_fps":10,"states":[{"name":"idle","duration_ms":2000},{"name":"start","duration_ms":1000},{"name":"tool","duration_ms":2000},{"name":"waiting","duration_ms":2000},{"name":"review","duration_ms":2000},{"name":"done","duration_ms":1000},{"name":"failed","duration_ms":2000}]}' > "$source_dir/manifest.json"
-      for state_count in idle:20 start:10 tool:20 waiting:20 review:20 done:10 failed:20; do
+      printf '%s\n' '{"schema_version":"apc.petpack.v2","id":"pet_checkpoint","name":"Checkpoint Pet","style":"storybook","quality":"standard","render_size":{"width":384,"height":416},"states":[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[180,160,180,380],"playback":{"mode":"periodic","cooldown_ms":[4000,8000]},"reduced_motion_frame_index":2},{"name":"start","frames_dir":"assets/frames/start","frame_durations_ms":[120,140,160,180],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_settle","entry_repeat_count":1,"settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[150,150,150,150,170,230],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"review","frames_dir":"assets/frames/review","frame_durations_ms":[140,140,150,150,180,240],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[150,170,190,290],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2}],"created_at":"2026-07-31T00:00:00Z"}' > "$source_dir/manifest.json"
+      for state_count in idle:4 start:4 tool:4 waiting:6 review:6 done:4 failed:4; do
         state=${state_count%%:*}
         count=${state_count##*:}
         state_dir="$source_dir/assets/frames/$state"
@@ -981,7 +969,7 @@ while IFS= read -r request; do
       printf '%s\n' '{"status":"approved"}' > "$APC_TEST_JOB_DIR/motion-review.json"
 
       printf '%s\n' '{"jsonrpc":"2.0","id":103,"result":{"turn":{"id":"turn_checkpoint_1","status":"inProgress"}}}'
-      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_1","item":{"type":"agentMessage","id":"message_checkpoint","text":"{\"petpack_source\":\"petpack-source\",\"mode\":\"external_full_source\",\"native_fps\":10}"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_1","item":{"type":"agentMessage","id":"message_checkpoint","text":"{\"petpack_source\":\"petpack-source\",\"mode\":\"external_full_source\",\"timing_changed\":false,\"authored_timing\":[]}"}}}'
       printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_checkpoint","turn":{"id":"turn_checkpoint_1","status":"completed"}}}'
       ;;
   esac
@@ -1004,8 +992,6 @@ done
         style: "半写实".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     let mut updates = Vec::new();
 

@@ -101,7 +101,7 @@ struct UIModelTests {
             desktopPetEnabled: true,
             desktopPetVisible: true,
             activePetName: "Bytebud 字节芽",
-            framesPerSecond: 10,
+            animationTiming: PetAnimationContract.defaultStates[0],
             localeIdentifier: "zh-Hans"
         )
 
@@ -111,7 +111,7 @@ struct UIModelTests {
         #expect(try #require(presentation.row(.eventChannel)).status == "在线")
         #expect(
             try #require(presentation.row(.desktopPet)).detail
-                == "10 FPS · Bytebud 字节芽"
+                == "4 帧 · Bytebud 字节芽 · periodic"
         )
         #expect(ServiceDiagnosticsPresentation.toolbar(
             runtimeInfo: runtime,
@@ -131,7 +131,7 @@ struct UIModelTests {
             desktopPetEnabled: false,
             desktopPetVisible: false,
             activePetName: nil,
-            framesPerSecond: 20,
+            animationTiming: nil,
             localeIdentifier: "zh-Hans"
         )
 
@@ -283,17 +283,13 @@ struct UIModelTests {
 
         #expect(!store.canClearStudioForm)
         store.selectGenerationStyle(.pixel)
-        store.selectGenerationQuality(.ultra)
-        store.selectGenerationNativeFPS(20)
-        store.selectGenerationStateDuration(1_000, for: "idle")
+        store.selectGenerationQuality(.low)
         #expect(store.canClearStudioForm)
 
         store.clearStudioForm()
 
         #expect(store.selectedStyle == AIPetMakerDefaults.style)
         #expect(store.selectedQuality == AIPetMakerDefaults.quality)
-        #expect(store.selectedNativeFPS == PetAnimationContract.defaultNativeFPS)
-        #expect(store.generationStateDurationsMS == PetAnimationContract.defaultStateDurationsMS)
         #expect(!store.canClearStudioForm)
     }
 
@@ -304,7 +300,7 @@ struct UIModelTests {
         let form = GenerationForm(
             description: "active edit",
             style: StylePreset.semiRealistic.rawValue,
-            quality: .high,
+            quality: .low,
             referenceImages: []
         )
         _ = store.reduceGeneration(.editRequested(
@@ -462,8 +458,7 @@ struct UIModelTests {
 
     @Test
     func libraryUsesValidationSummary() {
-        var pet = makePet(id: "pet_warning", active: true)
-        pet.nativeFPS = 20
+        let pet = makePet(id: "pet_warning", active: true)
         let warning = PetAssetWarning(
             petId: pet.id,
             code: "pet_assets_invalid",
@@ -486,8 +481,8 @@ struct UIModelTests {
         #expect(imported.validationStatus == .verified)
         #expect(imported.validationTitle == "资源校验通过")
         #expect(imported.validationDetail.contains("PetCore 已验证"))
-        #expect(imported.stateSpecification == "7 个固定状态 · 帧数严格匹配原生帧率与动作时长")
-        #expect(imported.fpsSpecification == "原生 20 FPS · 可播放 10 / 20 FPS")
+        #expect(imported.stateSpecification == "7 个固定状态 · 显式逐帧时序与播放方式")
+        #expect(imported.timingSpecification == "32 帧 · 7 个状态 · 逐帧创作时序")
 
         var verifiedPet = pet
         verifiedPet.origin = .verifiedSkillSource
@@ -501,8 +496,8 @@ struct UIModelTests {
         #expect(verified.validationStatus == .verified)
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
-        #expect(verified.stateSpecification == "7 个固定状态 · 帧数严格匹配原生帧率与动作时长")
-        #expect(verified.fpsSpecification == "原生 20 FPS · 可播放 10 / 20 FPS")
+        #expect(verified.stateSpecification == "7 个固定状态 · 显式逐帧时序与播放方式")
+        #expect(verified.timingSpecification == "32 帧 · 7 个状态 · 逐帧创作时序")
     }
 
     @MainActor
@@ -1317,7 +1312,7 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func activatingClosedRowsDismissesOnlyReviewAndDone() {
+    func unavailableRowsNeverActivateDismissOrAcknowledge() {
         let store = makeStore()
         let failed = OverlaySessionContent(
             id: "session-codex-failed",
@@ -1362,12 +1357,12 @@ struct UIModelTests {
 
         store.activateOverlaySession(failed)
         store.activateOverlaySession(waiting)
-        #expect(store.overlayDismissedBubbleEventIDs.isEmpty)
-
         store.activateOverlaySession(review)
         store.activateOverlaySession(done)
 
-        #expect(store.overlayDismissedBubbleEventIDs == [review.id, done.id])
+        #expect(store.overlayDismissedBubbleEventIDs.isEmpty)
+        #expect(!OverlaySessionPrimaryClickPolicy.shouldActivate(review))
+        #expect(!OverlaySessionPrimaryClickPolicy.shouldActivate(done))
     }
 
     @Test
@@ -1519,25 +1514,24 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func pointerMonitorClearsLostDragAndResizeMouseUpState() {
+    func pointerMonitorCommitsAndClearsALostDragMouseUp() {
         let store = makeStore()
-        store.setOverlayPetDragInProgress(true)
-        store.setOverlayResizeInProgress(true)
+        let interactionID = UUID()
+        store.beginOverlayPetDrag(interactionID: interactionID)
 
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 1)
         #expect(store.overlayPetDragInProgress)
-        #expect(store.overlayResizeInProgress)
 
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
         #expect(!store.overlayPetDragInProgress)
-        #expect(!store.overlayResizeInProgress)
     }
 
     @MainActor
     @Test
-    func lostPointerReleaseCommitsThePresentedDragAndResize() throws {
+    func lostPointerReleaseCommitsPresentedDragAndPendingDisplayWidth() throws {
         let visibleFrame = try #require(NSScreen.main?.visibleFrame)
         let store = makeStore()
+        let interactionID = UUID()
         let initialCenter = CGPoint(
             x: visibleFrame.midX,
             y: visibleFrame.midY
@@ -1548,37 +1542,37 @@ struct UIModelTests {
         )
         store.overlayScreenVisibleFrame = visibleFrame
         store.overlayPetScreenCenter = initialCenter
-        store.overlayScale = 0.72
-        store.setOverlayPetDragInProgress(true)
-        store.setOverlayResizeInProgress(true)
+        store.beginOverlayPetDrag(interactionID: interactionID)
         store.presentOverlayPetDrag(
             at: presentedCenter,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            interactionID: interactionID
         )
-        store.resizeOverlay(
-            from: 0.72,
-            screenTranslation: CGSize(width: 52, height: 52),
-            commit: false
-        )
-        let presentedScale = store.overlayPresentedScale
+        store.previewOverlayDisplayWidthPt(160)
 
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
 
         #expect(!store.overlayPetDragInProgress)
-        #expect(!store.overlayResizeInProgress)
-        #expect(store.overlayPetScreenCenter == presentedCenter)
-        #expect(store.overlayScale == presentedScale)
-        #expect(store.overlayPresentedScale == store.overlayScale)
+        #expect(store.overlayDisplayWidthPt == 160)
+        let expectedCenter = OverlayGeometry.bottomAnchoredCenter(
+            from: presentedCenter,
+            currentDisplayWidthPt: 112,
+            proposedDisplayWidthPt: 160
+        )
+        #expect(abs(store.overlayPetScreenCenter.x - expectedCenter.x) < 0.001)
+        #expect(abs(store.overlayPetScreenCenter.y - expectedCenter.y) < 0.001)
     }
 
     @MainActor
     @Test
     func directPetDragPresentationDoesNotPublishTheAppModelPerPointerEvent() {
         let store = makeStore()
+        let interactionID = UUID()
         let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
         let initialCenter = CGPoint(x: 1_100, y: 220)
         store.overlayScreenVisibleFrame = visibleFrame
         store.overlayPetScreenCenter = initialCenter
+        store.beginOverlayPetDrag(interactionID: interactionID)
 
         var publicationCount = 0
         let publication = store.objectWillChange.sink {
@@ -1591,7 +1585,8 @@ struct UIModelTests {
                     x: initialCenter.x - CGFloat(step),
                     y: initialCenter.y + CGFloat(step) / 2
                 ),
-                visibleFrame: visibleFrame
+                visibleFrame: visibleFrame,
+                interactionID: interactionID
             )
         }
 
@@ -1606,126 +1601,89 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func petReleaseHandoffDoesNotPublishTheAppModelPerAnimationFrame() async throws {
+    func petReleaseCommitsExactPresentedCenterWithoutPostReleaseMotion() async throws {
         let visibleFrame = try #require(NSScreen.main?.visibleFrame)
         let store = makeStore()
-        let persistentCenter = CGPoint(
+        let interactionID = UUID()
+        let releaseCenter = CGPoint(
             x: visibleFrame.midX,
             y: visibleFrame.midY
         )
-        let releaseStart = CGPoint(
-            x: visibleFrame.minX - 48,
-            y: visibleFrame.midY
-        )
         store.overlayScreenVisibleFrame = visibleFrame
-        store.overlayPetScreenCenter = persistentCenter
+        store.beginOverlayPetDrag(interactionID: interactionID)
         store.presentOverlayPetDrag(
-            at: releaseStart,
-            visibleFrame: visibleFrame
-        )
-
-        var publicationCount = 0
-        let publication = store.objectWillChange.sink {
-            publicationCount += 1
-        }
-        store.settleOverlayPet(
-            from: releaseStart,
-            velocity: CGVector(dx: -640, dy: 120),
+            at: releaseCenter,
             visibleFrame: visibleFrame,
-            reduceMotion: false
+            interactionID: interactionID
         )
 
-        try await Task.sleep(for: .milliseconds(64))
-        // Under a saturated full-suite MainActor the task may resume after
-        // the 420 ms handoff has already completed. Either timing is valid:
-        // an active handoff publishes nothing, while completion commits the
-        // final center once. Per-frame AppStore publication would exceed this
-        // bound by a wide margin.
-        #expect(publicationCount <= 1)
-        if publicationCount == 0 {
-            #expect(store.overlayPetScreenCenter == persistentCenter)
-            #expect(store.overlayPresentedPetScreenCenter != releaseStart)
-        }
-
-        let interruptedCenter = store.overlayPresentedPetScreenCenter
-        store.presentOverlayPetDrag(
-            at: interruptedCenter,
-            visibleFrame: visibleFrame
+        store.commitOverlayPetDrag(
+            at: releaseCenter,
+            visibleFrame: visibleFrame,
+            interactionID: interactionID
         )
-        withExtendedLifetime(publication) {}
+        let committed = store.overlayPetScreenCenter
+
+        #expect(committed == releaseCenter)
+        #expect(store.overlayPresentedPetScreenCenter == committed)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(store.overlayPetScreenCenter == committed)
+        #expect(store.overlayPresentedPetScreenCenter == committed)
     }
 
     @MainActor
     @Test
-    func directResizePresentationDoesNotPublishTheAppModelPerPointerEvent() {
+    func displayWidthPreviewDoesNotPublishTheAppModelPerPointerEvent() {
         let store = makeStore()
-        let initialScale: CGFloat = 0.72
-        store.overlayScale = initialScale
-        store.setOverlayResizeInProgress(true)
+        let initialWidth = store.overlayDisplayWidthPt
 
         var publicationCount = 0
         let publication = store.objectWillChange.sink {
             publicationCount += 1
         }
         for step in 1 ... 120 {
-            store.resizeOverlay(
-                from: initialScale,
-                screenTranslation: CGSize(
-                    width: CGFloat(step),
-                    height: CGFloat(step) / 2
-                ),
-                commit: false
-            )
+            store.previewOverlayDisplayWidthPt(112 + CGFloat(step) / 2)
         }
 
         #expect(publicationCount == 0)
-        #expect(store.overlayScale == initialScale)
-        #expect(store.overlayPresentedScale > initialScale)
+        #expect(store.overlayDisplayWidthPt == initialWidth)
 
         publication.cancel()
-        store.setOverlayResizeInProgress(false)
-        #expect(store.overlayScale == store.overlayPresentedScale)
+        store.commitOverlayDisplayWidthPt(172)
+        #expect(store.overlayDisplayWidthPt == 172)
     }
 
     @MainActor
     @Test
-    func aNewDragInterruptsVelocityHandoffAtItsPresentedPosition() async throws {
+    func staleDragInteractionCannotMutateANewerDrag() throws {
         let visibleFrame = try #require(NSScreen.main?.visibleFrame)
         let store = makeStore()
-        let releaseStart = CGPoint(
-            x: visibleFrame.minX - 56,
-            y: visibleFrame.midY
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstCenter = CGPoint(x: visibleFrame.midX - 40, y: visibleFrame.midY)
+        let secondCenter = CGPoint(x: visibleFrame.midX + 40, y: visibleFrame.midY)
+
+        store.beginOverlayPetDrag(interactionID: firstID)
+        store.presentOverlayPetDrag(
+            at: firstCenter,
+            visibleFrame: visibleFrame,
+            interactionID: firstID
+        )
+        store.endOverlayPetDrag(interactionID: firstID)
+        store.beginOverlayPetDrag(interactionID: secondID)
+        store.presentOverlayPetDrag(
+            at: firstCenter,
+            visibleFrame: visibleFrame,
+            interactionID: firstID
         )
         store.presentOverlayPetDrag(
-            at: releaseStart,
-            visibleFrame: visibleFrame
-        )
-        store.settleOverlayPet(
-            from: releaseStart,
-            velocity: CGVector(dx: -640, dy: 120),
+            at: secondCenter,
             visibleFrame: visibleFrame,
-            reduceMotion: false
+            interactionID: secondID
         )
 
-        try await Task.sleep(for: .milliseconds(48))
-        let presentedAtInterruption = store.overlayPresentedPetScreenCenter
-        store.setOverlayPetDragInProgress(true)
-
-        #expect(
-            abs(store.overlayPresentedPetScreenCenter.x - presentedAtInterruption.x) < 0.01
-        )
-        #expect(
-            abs(store.overlayPresentedPetScreenCenter.y - presentedAtInterruption.y) < 0.01
-        )
-
-        try await Task.sleep(for: .milliseconds(96))
-        #expect(
-            abs(store.overlayPresentedPetScreenCenter.x - presentedAtInterruption.x) < 0.01
-        )
-        #expect(
-            abs(store.overlayPresentedPetScreenCenter.y - presentedAtInterruption.y) < 0.01
-        )
-        store.setOverlayPetDragInProgress(false)
+        #expect(store.overlayPresentedPetScreenCenter == secondCenter)
+        store.endOverlayPetDrag(interactionID: secondID)
     }
 
     @Test
@@ -1877,6 +1835,181 @@ struct UIModelTests {
                 )
             ) == nil
         )
+
+        let claudeApp = OverlaySessionContent(
+            id: "claude-app",
+            source: .claudeCode,
+            sessionID: "ses-opaque-claude",
+            eventType: .tool,
+            sessionTitle: "Claude App session",
+            messageText: "",
+            statusText: "Using Tools",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "claude_app"
+            )
+        )
+        #expect(claudeApp.surfaceKind == .app)
+        #expect(claudeApp.surfaceLabel(locale: "en") == "App")
+        #expect(claudeApp.actionLabel(locale: "en") == "Open Claude")
+
+        let piCLI = OverlaySessionContent(
+            id: "pi-cli",
+            source: .pi,
+            sessionID: "pi-session",
+            eventType: .tool,
+            sessionTitle: "Pi CLI session",
+            messageText: "",
+            statusText: "Using Tools",
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "cli_terminal",
+                terminalApp: "ghostty"
+            )
+        )
+        #expect(piCLI.surfaceKind == .cli)
+        #expect(piCLI.surfaceLabel(locale: "zh-Hans") == "CLI")
+        #expect(piCLI.actionLabel(locale: "en") == "Open Ghostty")
+    }
+
+    @Test
+    func agentSessionRouterPreservesAppAndCLIDestinationsPerAgent() throws {
+        let codexSessionID = "019fb6ff-e215-7922-a65b-e51274671c9c"
+        #expect(
+            AgentSessionRouter.route(
+                source: .codex,
+                sessionID: "ses-opaque-codex",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "chatgpt_app",
+                    routableSessionID: codexSessionID
+                )
+            ) == .url(try #require(URL(
+                string: "codex://threads/\(codexSessionID)"
+            )))
+        )
+
+        let claudeSessionID = "657555f8-108e-44af-96ac-a306b50451bd"
+        #expect(
+            AgentSessionRouter.route(
+                source: .claudeCode,
+                sessionID: "ses-opaque-claude",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "claude_app",
+                    routableSessionID: claudeSessionID
+                )
+            ) == .url(try #require(URL(
+                string: "claude://resume?session=\(claudeSessionID)"
+            )))
+        )
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .claudeCode,
+                sessionID: "ses-opaque-claude",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "claude_app"
+                )
+            ) == .application(
+                bundleIdentifiers: ["com.anthropic.claudefordesktop"],
+                paths: ["/Applications/Claude.app"]
+            )
+        )
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .opencode,
+                sessionID: "ses-opaque-opencode",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "opencode_app"
+                )
+            ) == .application(
+                bundleIdentifiers: [
+                    "ai.opencode.desktop",
+                    "ai.opencode.desktop.beta",
+                    "ai.opencode.desktop.dev"
+                ],
+                paths: [
+                    "/Applications/OpenCode.app",
+                    "/Applications/OpenCode Beta.app",
+                    "/Applications/OpenCode Dev.app"
+                ]
+            )
+        )
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .pi,
+                sessionID: "pi-session",
+                navigation: AgentSessionNavigation(
+                    capability: .agentHost,
+                    sessionOpen: true,
+                    surface: "opencode_app"
+                )
+            ) == nil
+        )
+
+        #expect(
+            AgentSessionRouter.route(
+                source: .opencode,
+                sessionID: "ses-opaque-opencode",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "opencode_app",
+                    routableSessionID: codexSessionID
+                )
+            ) == nil
+        )
+
+        for source in [
+            AgentSource.codex,
+            .claudeCode,
+            .opencode,
+            .pi,
+        ] {
+            #expect(
+                AgentSessionRouter.route(
+                    source: source,
+                    sessionID: "cli-session",
+                    navigation: AgentSessionNavigation(
+                        capability: .agentHost,
+                        sessionOpen: true,
+                        surface: "cli_terminal",
+                        terminalApp: "terminal"
+                    )
+                ) == .application(
+                    bundleIdentifiers: ["com.apple.Terminal"],
+                    paths: ["/System/Applications/Utilities/Terminal.app"]
+                )
+            )
+        }
+
+        let warpURL = try #require(URL(
+            string: "warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
+        ))
+        #expect(
+            AgentSessionRouter.route(
+                source: .pi,
+                sessionID: "pi-cli-session",
+                navigation: AgentSessionNavigation(
+                    capability: .exactSession,
+                    sessionOpen: true,
+                    surface: "cli_terminal",
+                    terminalApp: "warp",
+                    openURL: warpURL.absoluteString
+                )
+            ) == .url(warpURL)
+        )
     }
 
     @Test
@@ -1943,12 +2076,14 @@ struct UIModelTests {
         #expect(host.navigationCapability == .agentHost)
         #expect(host.actionLabel == APCLocalizedPresentation.navigationActionTitle(
             .agentHost,
-            source: .codex
+            source: .codex,
+            navigation: host.navigation
         ))
         #expect(unavailable.navigationCapability == .unavailable)
         #expect(!unavailable.canOpen)
         #expect(exact.accessibilityReadingOrder == [
             "Codex",
+            "CLI",
             "exact",
             "Needs You",
             "Needs a response",
@@ -1959,7 +2094,7 @@ struct UIModelTests {
         ])
         #expect(accessibility.sessionActionLabels == [
             "Return to Session",
-            "Open Codex",
+            "Open ChatGPT",
             nil,
         ])
     }
@@ -2049,7 +2184,7 @@ struct UIModelTests {
             id: id,
             name: id,
             style: "半写实",
-            quality: .high,
+            quality: .standard,
             renderSize: RenderSize(width: 384, height: 416),
             petpackPath: "/tmp/\(id).petpack",
             coverPath: "/tmp/\(id).webp",

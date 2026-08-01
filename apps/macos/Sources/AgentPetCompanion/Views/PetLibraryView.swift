@@ -729,7 +729,10 @@ private struct PetHistorySheet: View {
                         value: selectedRevision?.revisionID ?? presentation.revisionIDSummary
                     )
                     InfoRow(title: APCLocalization.text(.libraryFieldStates), value: presentation.stateSummary)
-                    InfoRow(title: APCLocalization.text(.libraryFieldFPS), value: presentation.fpsSummary)
+                    InfoRow(
+                        title: APCLocalization.text(.libraryFieldTiming),
+                        value: presentation.timingSummary
+                    )
                     InfoRow(
                         title: APCLocalization.text(.libraryFieldDuration),
                         value: presentation.durationSummary

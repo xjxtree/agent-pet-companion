@@ -145,6 +145,228 @@ fn compiled_schema(schema_name: &str) -> Validator {
 #[test]
 fn petpack_schema_accepts_and_rejects_executable_fixtures() {
     validate_fixture_group("petpack.schema.json", "petpack");
+
+    let root = workspace_root();
+    let schema = compiled_schema("petpack.schema.json");
+    let mut retired_high = read_json(&root.join("fixtures/schemas/petpack/valid-standard.json"));
+    retired_high["quality"] = json!("high");
+    retired_high["render_size"] = json!({ "width": 576, "height": 624 });
+    assert!(
+        !schema.is_valid(&retired_high),
+        "petpack schema accepted the retired high tier"
+    );
+}
+
+#[test]
+fn producer_metadata_schemas_accept_and_reject_executable_fixtures() {
+    validate_fixture_group("pet-brief.schema.json", "pet-brief");
+    validate_fixture_group("pet-source.schema.json", "pet-source");
+    validate_fixture_group("pet-source-event.schema.json", "pet-source-event");
+    validate_fixture_group("pet-validation.schema.json", "pet-validation");
+}
+
+#[test]
+fn producer_playback_modes_are_closed_by_mode() {
+    let root = workspace_root();
+    let producers = [
+        (
+            "pet-brief.schema.json",
+            "pet-brief/valid-standard.json",
+            "/states/0/playback",
+        ),
+        (
+            "pet-source.schema.json",
+            "pet-source/valid-external-agent.json",
+            "/states/0/playback",
+        ),
+        (
+            "pet-source-event.schema.json",
+            "pet-source-event/valid-rendered.json",
+            "/state_timings/0/playback",
+        ),
+        (
+            "pet-validation.schema.json",
+            "pet-validation/valid-runtime.json",
+            "/states/0/playback",
+        ),
+    ];
+    let valid_playback = [
+        ("loop", json!({ "mode": "loop" })),
+        (
+            "once_hold",
+            json!({ "mode": "once_hold", "settle_frame_index": 1 }),
+        ),
+        (
+            "periodic",
+            json!({ "mode": "periodic", "cooldown_ms": [4000, 8000] }),
+        ),
+        (
+            "burst_then_settle",
+            json!({
+                "mode": "burst_then_settle",
+                "entry_repeat_count": 1,
+                "settle_frame_index": 1
+            }),
+        ),
+    ];
+    let invalid_playback = [
+        (
+            "loop with entry_repeat_count",
+            json!({ "mode": "loop", "entry_repeat_count": 1 }),
+        ),
+        (
+            "loop with settle_frame_index",
+            json!({ "mode": "loop", "settle_frame_index": 1 }),
+        ),
+        (
+            "loop with cooldown_ms",
+            json!({ "mode": "loop", "cooldown_ms": [4000, 8000] }),
+        ),
+        ("once_hold without settle", json!({ "mode": "once_hold" })),
+        (
+            "once_hold with entry_repeat_count",
+            json!({
+                "mode": "once_hold",
+                "settle_frame_index": 1,
+                "entry_repeat_count": 1
+            }),
+        ),
+        (
+            "once_hold with cooldown_ms",
+            json!({
+                "mode": "once_hold",
+                "settle_frame_index": 1,
+                "cooldown_ms": [4000, 8000]
+            }),
+        ),
+        ("periodic without cooldown", json!({ "mode": "periodic" })),
+        (
+            "periodic with entry_repeat_count",
+            json!({
+                "mode": "periodic",
+                "cooldown_ms": [4000, 8000],
+                "entry_repeat_count": 1
+            }),
+        ),
+        (
+            "periodic with settle_frame_index",
+            json!({
+                "mode": "periodic",
+                "cooldown_ms": [4000, 8000],
+                "settle_frame_index": 1
+            }),
+        ),
+        (
+            "burst_then_settle without repeat",
+            json!({ "mode": "burst_then_settle", "settle_frame_index": 1 }),
+        ),
+        (
+            "burst_then_settle without settle",
+            json!({ "mode": "burst_then_settle", "entry_repeat_count": 1 }),
+        ),
+        (
+            "burst_then_settle with cooldown_ms",
+            json!({
+                "mode": "burst_then_settle",
+                "entry_repeat_count": 1,
+                "settle_frame_index": 1,
+                "cooldown_ms": [4000, 8000]
+            }),
+        ),
+    ];
+
+    for (schema_name, fixture_name, playback_pointer) in producers {
+        let validator = compiled_schema(schema_name);
+        let fixture = read_json(&root.join("fixtures/schemas").join(fixture_name));
+        for (case, playback) in &valid_playback {
+            let mut instance = fixture.clone();
+            *instance.pointer_mut(playback_pointer).unwrap() = playback.clone();
+            assert!(
+                validator.is_valid(&instance),
+                "{schema_name} rejected valid {case} playback"
+            );
+        }
+        for (case, playback) in &invalid_playback {
+            let mut instance = fixture.clone();
+            *instance.pointer_mut(playback_pointer).unwrap() = playback.clone();
+            assert!(
+                !validator.is_valid(&instance),
+                "{schema_name} accepted {case} playback"
+            );
+        }
+    }
+}
+
+#[test]
+fn producer_render_sizes_are_exact_quality_pairs() {
+    let root = workspace_root();
+    let brief_schema = compiled_schema("pet-brief.schema.json");
+    let brief = read_json(&root.join("fixtures/schemas/pet-brief/valid-standard.json"));
+    for (quality, width, height) in [("low", 192, 208), ("standard", 384, 416)] {
+        let mut instance = brief.clone();
+        instance["quality"] = json!(quality);
+        instance["runtime"]["render_size"] = json!({ "width": width, "height": height });
+        assert!(
+            brief_schema.is_valid(&instance),
+            "pet brief rejected {quality} {width}x{height}"
+        );
+    }
+    for (quality, width, height) in [
+        ("low", 192, 624),
+        ("standard", 384, 208),
+        ("high", 576, 624),
+    ] {
+        let mut instance = brief.clone();
+        instance["quality"] = json!(quality);
+        instance["runtime"]["render_size"] = json!({ "width": width, "height": height });
+        assert!(
+            !brief_schema.is_valid(&instance),
+            "pet brief accepted invalid {quality} {width}x{height}"
+        );
+    }
+
+    let source_schema = compiled_schema("pet-source.schema.json");
+    let source = read_json(&root.join("fixtures/schemas/pet-source/valid-external-agent.json"));
+    for quality_pointer in ["/quality", "/form/quality"] {
+        let mut low = source.clone();
+        *low.pointer_mut(quality_pointer).unwrap() = json!("low");
+        assert!(
+            source_schema.is_valid(&low),
+            "pet source rejected low at {quality_pointer}"
+        );
+
+        let mut retired_high = source.clone();
+        *retired_high.pointer_mut(quality_pointer).unwrap() = json!("high");
+        assert!(
+            !source_schema.is_valid(&retired_high),
+            "pet source accepted retired high at {quality_pointer}"
+        );
+    }
+
+    let event_schema = compiled_schema("pet-source-event.schema.json");
+    let event = read_json(&root.join("fixtures/schemas/pet-source-event/valid-rendered.json"));
+    for (quality, width, height) in [("low", 192, 208), ("standard", 384, 416)] {
+        let mut instance = event.clone();
+        instance["quality"] = json!(quality);
+        instance["render_size"] = json!({ "width": width, "height": height });
+        assert!(
+            event_schema.is_valid(&instance),
+            "pet source event rejected {quality} {width}x{height}"
+        );
+    }
+    for (quality, width, height) in [
+        ("low", 192, 624),
+        ("standard", 192, 208),
+        ("high", 576, 624),
+    ] {
+        let mut instance = event.clone();
+        instance["quality"] = json!(quality);
+        instance["render_size"] = json!({ "width": width, "height": height });
+        assert!(
+            !event_schema.is_valid(&instance),
+            "pet source event accepted invalid {quality} {width}x{height}"
+        );
+    }
 }
 
 #[test]
@@ -436,6 +658,65 @@ fn session_open_url_is_canonical_in_both_schema_and_runtime() {
             "runtime accepted a whitespace-padded session URL"
         );
     }
+}
+
+#[test]
+fn agent_app_and_cli_session_surfaces_are_closed_in_schema_and_runtime() {
+    let ingest_schema = compiled_schema("agent-event-ingest.schema.json");
+    let persisted_schema = compiled_schema("agent-event.schema.json");
+
+    for (index, surface) in [
+        "chatgpt_app",
+        "claude_app",
+        "opencode_app",
+        "cli_terminal",
+        "unknown",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = json!({
+            "id": format!("session-surface-{index}"),
+            "source": "codex",
+            "event_type": "start",
+            "payload": {
+                "source_event": "UserPromptSubmit",
+                "session_surface": surface
+            }
+        });
+        assert!(
+            ingest_schema.is_valid(&request),
+            "ingest schema rejected {surface}"
+        );
+        let event = NormalizedAgentEvent::from_external(
+            AgentSource::Codex,
+            request,
+            "2026-07-10T00:00:00Z",
+        )
+        .unwrap_or_else(|error| panic!("runtime rejected {surface}: {error}"));
+        assert_eq!(event.payload_json["session_surface"], surface);
+        assert!(
+            persisted_schema.is_valid(&serde_json::to_value(event).unwrap()),
+            "persisted schema rejected {surface}"
+        );
+    }
+
+    let unsupported = json!({
+        "id": "session-surface-unsupported",
+        "source": "codex",
+        "event_type": "start",
+        "payload": {
+            "source_event": "UserPromptSubmit",
+            "session_surface": "desktop_app"
+        }
+    });
+    assert!(!ingest_schema.is_valid(&unsupported));
+    assert!(NormalizedAgentEvent::from_external(
+        AgentSource::Codex,
+        unsupported,
+        "2026-07-10T00:00:00Z",
+    )
+    .is_err());
 }
 
 #[test]

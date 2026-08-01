@@ -25,7 +25,6 @@ enum BehaviorSettingsCatalog {
         .simplifiedChinese,
     ]
     static let appearanceThemes: [AppearanceTheme] = [.system, .light, .dark]
-    static let fpsProfiles: [FpsProfile] = [.standard, .smooth]
     static let groupDisplays: [SessionGroupDisplay] = [.stacked, .expanded]
 
     static func title(for theme: AppearanceTheme) -> String {
@@ -34,10 +33,6 @@ enum BehaviorSettingsCatalog {
 
     static func title(for language: InterfaceLanguage) -> String {
         APCLocalizedPresentation.interfaceLanguageTitle(language)
-    }
-
-    static func supportedFPSProfiles(for pet: PetSummary?) -> [FpsProfile] {
-        pet?.supportedFPSProfiles ?? [.standard]
     }
 
     static func attentionPresetOptions(
@@ -103,6 +98,9 @@ struct BehaviorSettingsView: View {
     @SceneStorage("apc.configuration.selected-subpage")
     private var selectedSectionRawValue = BehaviorSettingsSection.appearance.rawValue
     @State private var bubbleTransparencyBeforeEditing: Double?
+    @State private var displayWidthDraft =
+        OverlayPlacement.defaultDisplayWidthPt
+    @State private var displayWidthEditing = false
     @State private var appearanceAdvancedExpanded = false
     @State private var messagesAdvancedExpanded = false
 
@@ -234,7 +232,7 @@ struct BehaviorSettingsView: View {
 
                 interfaceLanguageSetting
                 appearanceThemeSetting
-                fpsSetting
+                petDisplayWidthSetting
             } header: {
                 Text(APCLocalization.text(.configDisplayAppearance))
             }
@@ -452,34 +450,147 @@ struct BehaviorSettingsView: View {
         .padding(.vertical, 4)
     }
 
-    private var fpsSetting: some View {
+    private var petDisplayWidthSetting: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker(APCLocalization.text(.configFPSPicker), selection: fpsProfileBinding) {
-                ForEach(supportedFPSProfiles) { profile in
-                    Text(APCLocalizedPresentation.playbackProfileTitle(profile))
-                        .tag(profile)
+            HStack {
+                Text(APCLocalization.text(.configDisplaySize))
+                    .font(.headline)
+                Spacer()
+                Text(APCLocalization.format(
+                    .configDisplayWidthValueFormat,
+                    Int(displayWidthDraft.rounded())
+                ))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+
+            Slider(
+                value: Binding(
+                    get: { displayWidthDraft },
+                    set: { value in
+                        let rounded = value.rounded()
+                        displayWidthDraft = rounded
+                        store.previewOverlayDisplayWidthPt(
+                            CGFloat(rounded)
+                        )
+                    }
+                ),
+                in: OverlayPlacement.minimumDisplayWidthPt
+                    ... OverlayPlacement.maximumDisplayWidthPt,
+                step: 1,
+                onEditingChanged: { editing in
+                    displayWidthEditing = editing
+                    if !editing {
+                        store.commitOverlayDisplayWidthPt(
+                            CGFloat(displayWidthDraft)
+                        )
+                    }
+                }
+            )
+            .accessibilityLabel(APCLocalization.text(
+                .configDisplayWidthAccessibility
+            ))
+            .accessibilityValue(APCLocalization.format(
+                .configDisplayWidthValueFormat,
+                Int(displayWidthDraft.rounded())
+            ))
+            .accessibilityAdjustableAction { direction in
+                let delta = direction == .increment ? 1.0 : -1.0
+                adjustDisplayWidth(by: delta)
+            }
+            .onMoveCommand { direction in
+                let step = NSEvent.modifierFlags.contains(.option) ? 10.0 : 1.0
+                switch direction {
+                case .left, .down:
+                    adjustDisplayWidth(by: -step)
+                case .right, .up:
+                    adjustDisplayWidth(by: step)
+                default:
+                    break
                 }
             }
-            .pickerStyle(.segmented)
-            .accessibilityLabel(APCLocalization.text(.configFPSAccessibility))
-            .accessibilityValue(
-                APCLocalizedPresentation.playbackProfileTitle(
-                    store.effectiveFPSProfile
-                )
-            )
-            .accessibilityIdentifier("configuration.appearance.fps")
+            .accessibilityIdentifier("configuration.appearance.pet-size")
 
-            Text(APCLocalization.text(
-                supportedFPSProfiles.contains(.smooth)
-                    ? store.effectiveFPSProfile == .standard
-                        ? .configFPSStandardDetail
-                        : .configFPSSmoothDetail
-                    : .configFPSStandardDetail
-            ))
+            HStack(alignment: .firstTextBaseline) {
+                Text(APCLocalization.text(.configSizeGuidance))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(APCLocalization.text(.configDisplayWidthReset)) {
+                    displayWidthDraft =
+                        OverlayPlacement.defaultDisplayWidthPt
+                    store.resetOverlayDisplayWidthPt()
+                }
+                .buttonStyle(.link)
+                .accessibilityIdentifier(
+                    "configuration.appearance.pet-size-reset"
+                )
+            }
+
+            if let displayClarityGuidance {
+                Label(
+                    displayClarityGuidance.text,
+                    systemImage: displayClarityGuidance.exceedsLimit
+                        ? "info.circle.fill"
+                        : "checkmark.circle"
+                )
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(
+                    displayClarityGuidance.exceedsLimit
+                        ? Color.orange
+                        : Color.secondary
+                )
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(
+                    "configuration.appearance.pet-size-clarity"
+                )
+            }
         }
         .padding(.vertical, 4)
+        .onAppear {
+            displayWidthDraft = Double(store.overlayDisplayWidthPt)
+        }
+        .onChange(of: store.overlayDisplayWidthPt) { _, value in
+            guard !displayWidthEditing else { return }
+            displayWidthDraft = Double(value)
+        }
+        .onDisappear {
+            store.commitOverlayDisplayWidthPt(
+                CGFloat(displayWidthDraft)
+            )
+        }
+    }
+
+    private var displayClarityGuidance: (
+        text: String,
+        exceedsLimit: Bool
+    )? {
+        guard let quality = store.activePet?.quality else { return nil }
+        let clarityLimitPt = quality.renderSize.width / 2
+        let exceedsLimit = displayWidthDraft > Double(clarityLimitPt)
+        return (
+            APCLocalization.format(
+                exceedsLimit
+                    ? .configDisplayClarityWarningFormat
+                    : .configDisplayClarityLimitFormat,
+                APCLocalizedPresentation.qualityTitle(quality),
+                clarityLimitPt
+            ),
+            exceedsLimit
+        )
+    }
+
+    private func adjustDisplayWidth(by delta: Double) {
+        let next = min(
+            OverlayPlacement.maximumDisplayWidthPt,
+            max(
+                OverlayPlacement.minimumDisplayWidthPt,
+                displayWidthDraft + delta
+            )
+        )
+        displayWidthDraft = next
+        store.previewOverlayDisplayWidthPt(CGFloat(next))
     }
 
     private var bubbleTransparencySetting: some View {
@@ -606,20 +717,6 @@ struct BehaviorSettingsView: View {
 
     private var messagePreview: some View {
         BehaviorMessagePreview(behavior: store.behavior)
-    }
-
-    private var supportedFPSProfiles: [FpsProfile] {
-        BehaviorSettingsCatalog.supportedFPSProfiles(for: store.activePet)
-    }
-
-    private var fpsProfileBinding: Binding<FpsProfile> {
-        Binding(
-            get: { store.effectiveFPSProfile },
-            set: { profile in
-                guard supportedFPSProfiles.contains(profile) else { return }
-                updateBehavior(\.fpsProfile, value: profile)
-            }
-        )
     }
 
     private func behaviorBinding<Value>(

@@ -95,35 +95,23 @@ struct ProductPresentationModelsTests {
     }
 
     @Test
-    func behaviorAndConfigurationPresentationUsePresetAndValidatedNativeRate() {
-        var behavior = BehaviorSettings(fpsProfile: .smooth)
+    func behaviorAndConfigurationPresentationUseTheAttentionPreset() {
+        var behavior = BehaviorSettings()
         behavior = behavior.applyingAttentionPreset(.onlyWhenNeeded)
-        let standardPet = pet(nativeFPS: 10)
-        let smoothPet = pet(nativeFPS: 20)
 
         #expect(behavior.attentionPreset == .onlyWhenNeeded)
 
-        let standard = ConfigurationPresentation(
+        let withPet = ConfigurationPresentation(
             behavior: behavior,
-            activePet: standardPet
+            activePet: pet()
         )
-        #expect(standard.attentionPreset == .onlyWhenNeeded)
-        #expect(standard.supportedPlaybackProfiles == [.standard])
-        #expect(standard.selectedPlaybackProfile == .standard)
-
-        let smooth = ConfigurationPresentation(
-            behavior: behavior,
-            activePet: smoothPet
-        )
-        #expect(smooth.supportedPlaybackProfiles == [.standard, .smooth])
-        #expect(smooth.selectedPlaybackProfile == .smooth)
+        #expect(withPet.attentionPreset == .onlyWhenNeeded)
 
         let missingPet = ConfigurationPresentation(
             behavior: behavior,
             activePet: nil
         )
-        #expect(missingPet.supportedPlaybackProfiles == [.standard])
-        #expect(missingPet.selectedPlaybackProfile == .standard)
+        #expect(missingPet.attentionPreset == .onlyWhenNeeded)
     }
 
     @Test
@@ -134,16 +122,15 @@ struct ProductPresentationModelsTests {
         #expect(ServiceDiagnosticsPrimaryAction.refresh != .recover)
     }
 
-    private func pet(nativeFPS: Int) -> PetSummary {
+    private func pet() -> PetSummary {
         PetSummary(
-            id: "pet-\(nativeFPS)",
+            id: "pet-timing",
             name: "Pet",
             style: "modern",
             quality: .standard,
-            renderSize: RenderSize(width: 192, height: 208),
+            renderSize: QualityLevel.standard.renderSize,
             petpackPath: "/tmp/pet.petpack",
             coverPath: "/tmp/cover.png",
-            nativeFPS: nativeFPS,
             active: true,
             createdAt: "2026-07-23T00:00:00Z"
         )

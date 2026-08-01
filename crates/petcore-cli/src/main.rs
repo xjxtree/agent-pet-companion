@@ -4,18 +4,22 @@ use petcore::daemon;
 use petcore::daemon::instance_lock::InstanceGuard;
 use petcore::db::Database;
 use petcore::event_envelope::NormalizedAgentEvent;
+use petcore::interaction_attestation::INTERACTION_CONTRACT_DIGEST;
 use petcore::launch_agent::{self, LaunchAgentConfig};
 use petcore::paths::AppPaths;
 use petcore::petpack;
 use petcore::runtime_manifest::{RuntimeReleaseManifest, PETCORE_BUILD_ID};
 use petcore::{enum_from_name, enum_name, now_rfc3339, PetCoreError, Result};
-use petcore_types::{AgentEventType, AgentSource, FpsProfileName, GenerationForm, QualityLevel};
+use petcore_types::{AgentEventType, AgentSource, GenerationForm, QualityLevel};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
+
+const OVERLAY_PLACEMENT_SET_RPC: &str = "overlay.placement.reposition";
+const OVERLAY_PLACEMENT_RESET_RPC: &str = "overlay.placement.reset";
 
 const MAX_HOOK_STDIN_BYTES: usize = 1024 * 1024;
 
@@ -37,6 +41,7 @@ fn run() -> Result<()> {
     match command.as_str() {
         "build-info" => print_json(json!({
             "build_id": PETCORE_BUILD_ID,
+            "interaction_contract_digest": INTERACTION_CONTRACT_DIGEST,
             "runtime_manifest": RuntimeReleaseManifest::compiled(),
         })),
         "health" => print_json(daemon::request(
@@ -127,22 +132,31 @@ fn run_overlay_placement(mut args: Vec<String>) -> Result<()> {
             let y = flag(&mut args, "--y")?
                 .parse::<f64>()
                 .map_err(|error| PetCoreError::InvalidRequest(format!("invalid --y: {error}")))?;
-            let scale = flag(&mut args, "--scale")?
+            let display_width_pt = flag(&mut args, "--display-width-pt")?
                 .parse::<f64>()
                 .map_err(|error| {
-                    PetCoreError::InvalidRequest(format!("invalid --scale: {error}"))
+                    PetCoreError::InvalidRequest(format!("invalid --display-width-pt: {error}"))
                 })?;
             let display_id =
                 flag_optional(&mut args, "--display-id").unwrap_or_else(|| "main".to_string());
+            reject_extra_args(&args, "overlay placement set")?;
             print_json(daemon::request(
                 &AppPaths::from_env()?,
-                "overlay.placement.update",
+                OVERLAY_PLACEMENT_SET_RPC,
                 json!({
                     "x": x,
                     "y": y,
-                    "scale": scale,
+                    "display_width_pt": display_width_pt,
                     "display_id": display_id
                 }),
+            )?)
+        }
+        "reset" => {
+            reject_extra_args(&args, "overlay placement reset")?;
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                OVERLAY_PLACEMENT_RESET_RPC,
+                json!({}),
             )?)
         }
         other => Err(PetCoreError::InvalidRequest(format!(
@@ -390,7 +404,7 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
         "sample" => {
             let output = PathBuf::from(flag(&mut args, "--output")?);
             let quality = parse_quality(
-                &flag_optional(&mut args, "--quality").unwrap_or_else(|| "high".to_string()),
+                &flag_optional(&mut args, "--quality").unwrap_or_else(|| "standard".to_string()),
             )?;
             let name =
                 flag_optional(&mut args, "--name").unwrap_or_else(|| "Cloud Maiden".to_string());
@@ -436,6 +450,30 @@ fn run_petpack(mut args: Vec<String>) -> Result<()> {
         "validate" => {
             let path = PathBuf::from(pop(&mut args, "petpack path")?);
             print_json(json!(petpack::validate_petpack_path(&path)?))
+        }
+        "verify-production-interaction" => {
+            reject_extra_args(&args, "petpack verify-production-interaction")?;
+            let evidence =
+                petcore::interaction_attestation::validate_current_interaction_attestation()?;
+            print_json(json!({
+                "ok": true,
+                "build_id": PETCORE_BUILD_ID,
+                "interaction_contract_digest": INTERACTION_CONTRACT_DIGEST,
+                "interaction_evidence": evidence,
+            }))
+        }
+        "verify-production" => {
+            let source = PathBuf::from(flag(&mut args, "--source")?);
+            let report = PathBuf::from(flag(&mut args, "--report")?);
+            let review = PathBuf::from(flag(&mut args, "--review")?);
+            let baseline = flag_optional(&mut args, "--baseline").map(PathBuf::from);
+            reject_extra_args(&args, "petpack verify-production")?;
+            print_json(json!(petcore::generation::verify_visual_production(
+                &source,
+                &report,
+                &review,
+                baseline.as_deref(),
+            )?))
         }
         "build" => {
             let input = PathBuf::from(flag(&mut args, "--input")?);
@@ -818,7 +856,7 @@ fn generation_mode(
             Some("petcore-internal-skill-materializer"),
         ) => "petcore_internal_skill_materialized",
         (Some("codex-app-server-skill"), Some("skill-full-source"), None) => "skill_full_source",
-        (Some("codex-app-server-brief-petpack-v1"), Some("codex_app_server_brief"), _) => {
+        (Some("codex-app-server-brief-petpack-v2"), Some("codex_app_server_brief"), _) => {
             "codex_brief_materialized"
         }
         (_, Some("app_server_cli_materialized"), _) => "app_server_cli_materialized",
@@ -1095,25 +1133,22 @@ fn run_renderer(mut args: Vec<String>) -> Result<()> {
     match subcommand.as_str() {
         "budget" => {
             let quality = parse_quality(&flag(&mut args, "--quality")?)?;
-            let fps_profile = if let Some(profile) = flag_optional(&mut args, "--fps-profile") {
-                enum_from_name(&profile)?
-            } else {
-                let fps = flag_optional(&mut args, "--fps")
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .unwrap_or(10);
-                match fps {
-                    10 => FpsProfileName::Standard,
-                    20 => FpsProfileName::Smooth,
-                    _ => {
-                        return Err(PetCoreError::InvalidRequest(
-                            "fps must be exactly 10 or 20".to_string(),
-                        ));
-                    }
-                }
-            };
+            let frame_count = flag_optional(&mut args, "--frame-count")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(8);
+            if !(petcore_types::MIN_FRAMES_PER_STATE as u32
+                ..=petcore_types::MAX_FRAMES_PER_STATE as u32)
+                .contains(&frame_count)
+            {
+                return Err(PetCoreError::InvalidRequest(format!(
+                    "frame count must be between {} and {}",
+                    petcore_types::MIN_FRAMES_PER_STATE,
+                    petcore_types::MAX_FRAMES_PER_STATE
+                )));
+            }
             print_json(json!(petcore::metrics::renderer_budget(
                 quality,
-                fps_profile
+                frame_count
             )))
         }
         other => Err(PetCoreError::InvalidRequest(format!(
@@ -1173,7 +1208,7 @@ fn materialized_source_identity(output: &Path) -> Result<(String, String)> {
         .as_ref()
         .and_then(|value| value.get("generator"))
         .and_then(Value::as_str)
-        .unwrap_or("local-form-driven-petpack-v1")
+        .unwrap_or("local-form-driven-petpack-v2")
         .to_string();
     let provenance = metadata
         .as_ref()
@@ -1391,6 +1426,11 @@ fn apply_runtime_navigation(contract: &mut ContractEvent) {
         std::env::var("WARP_FOCUS_URL").ok().as_deref(),
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("__CFBundleIdentifier").ok().as_deref(),
+        std::env::var("CLAUDE_CODE_ENTRYPOINT").ok().as_deref(),
+        std::env::var("OPENCODE_CLIENT").ok().as_deref(),
+        std::env::var("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+            .ok()
+            .as_deref(),
     );
     contract.session_surface = navigation.session_surface;
     contract.terminal_app = navigation.terminal_app;
@@ -1402,24 +1442,83 @@ fn runtime_navigation_from_values(
     warp_focus_url: Option<&str>,
     term_program: Option<&str>,
     bundle_identifier: Option<&str>,
+    claude_code_entrypoint: Option<&str>,
+    opencode_client: Option<&str>,
+    codex_internal_originator: Option<&str>,
 ) -> RuntimeNavigation {
+    if let Some(session_surface) = runtime_agent_app_surface(
+        source,
+        bundle_identifier,
+        claude_code_entrypoint,
+        opencode_client,
+        codex_internal_originator,
+    ) {
+        return RuntimeNavigation {
+            session_surface: Some(session_surface.to_string()),
+            terminal_app: None,
+            session_open_url: None,
+        };
+    }
+
     let session_open_url = warp_focus_url.and_then(validated_warp_focus_url);
     let terminal_app = if session_open_url.is_some() {
         Some("warp".to_string())
     } else {
         term_program.and_then(normalized_terminal_app)
     };
-    let session_surface = if terminal_app.is_some() || source != AgentSource::Codex {
-        Some("cli_terminal".to_string())
-    } else if bundle_identifier == Some("com.openai.codex") {
-        Some("chatgpt_app".to_string())
-    } else {
-        None
-    };
     RuntimeNavigation {
-        session_surface,
+        // This adapter entrypoint is itself a CLI process. When no audited App
+        // marker is present, retain that truthful surface even if an unknown
+        // terminal cannot provide a host target.
+        session_surface: Some("cli_terminal".to_string()),
         terminal_app,
         session_open_url,
+    }
+}
+
+fn runtime_agent_app_surface(
+    source: AgentSource,
+    bundle_identifier: Option<&str>,
+    claude_code_entrypoint: Option<&str>,
+    opencode_client: Option<&str>,
+    codex_internal_originator: Option<&str>,
+) -> Option<&'static str> {
+    let bundle_identifier = bundle_identifier.map(str::trim);
+    match source {
+        AgentSource::Codex
+            if bundle_identifier == Some("com.openai.codex")
+                || codex_internal_originator
+                    .map(str::trim)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("Codex Desktop")) =>
+        {
+            Some("chatgpt_app")
+        }
+        AgentSource::ClaudeCode
+            if matches!(
+                claude_code_entrypoint.map(str::trim),
+                Some("claude-desktop" | "claude-desktop-3p")
+            ) || bundle_identifier == Some("com.anthropic.claudefordesktop") =>
+        {
+            Some("claude_app")
+        }
+        AgentSource::Opencode
+            if opencode_client
+                .map(str::trim)
+                .is_some_and(|value| value.eq_ignore_ascii_case("desktop"))
+                || matches!(
+                    bundle_identifier,
+                    Some(
+                        "ai.opencode.desktop"
+                            | "ai.opencode.desktop.beta"
+                            | "ai.opencode.desktop.dev"
+                    )
+                ) =>
+        {
+            Some("opencode_app")
+        }
+        AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Pi | AgentSource::Opencode => {
+            None
+        }
     }
 }
 
@@ -1449,7 +1548,7 @@ fn normalized_terminal_app(term_program: &str) -> Option<String> {
 
 fn usage() {
     eprintln!(
-        "usage: petcore-cli build-info | health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set | pet list|activate|delete | petpack sample|materialize|validate|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] [--cwd PATH] | connections receipts | connections repair --source SOURCE [--cwd PATH] | connections uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
+        "usage: petcore-cli build-info | health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set|reset | pet list|activate|delete | petpack sample|materialize|validate|verify-production-interaction|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] [--cwd PATH] | connections receipts | connections repair --source SOURCE [--cwd PATH] | connections uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
     );
 }
 
@@ -1776,6 +1875,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overlay_cli_routes_external_set_and_reset_to_explicit_intent_rpcs() {
+        assert_eq!(OVERLAY_PLACEMENT_SET_RPC, "overlay.placement.reposition");
+        assert_eq!(OVERLAY_PLACEMENT_RESET_RPC, "overlay.placement.reset");
+        assert_ne!(OVERLAY_PLACEMENT_SET_RPC, "overlay.placement.update");
+    }
+
+    #[test]
     fn hook_input_reader_rejects_oversize_payloads_without_unbounded_allocation() {
         let accepted =
             read_bounded_hook_input(std::io::Cursor::new(vec![b'a'; MAX_HOOK_STDIN_BYTES]))
@@ -1798,6 +1904,9 @@ mod tests {
             Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
             Some("WarpTerminal"),
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(navigation.session_surface.as_deref(), Some("cli_terminal"));
         assert_eq!(navigation.terminal_app.as_deref(), Some("warp"));
@@ -1811,19 +1920,30 @@ mod tests {
             Some("https://example.com/session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
             None,
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(rejected.session_open_url, None);
-        assert_eq!(rejected.session_surface, None);
+        assert_eq!(rejected.session_surface.as_deref(), Some("cli_terminal"));
     }
 
     #[test]
     fn cli_only_agents_keep_app_fallback_without_terminal_metadata() {
-        let navigation = runtime_navigation_from_values(AgentSource::Pi, None, None, None);
+        let navigation =
+            runtime_navigation_from_values(AgentSource::Pi, None, None, None, None, None, None);
         assert_eq!(navigation.session_surface.as_deref(), Some("cli_terminal"));
         assert_eq!(navigation.terminal_app, None);
 
-        let iterm =
-            runtime_navigation_from_values(AgentSource::Codex, None, Some("iTerm.app"), None);
+        let iterm = runtime_navigation_from_values(
+            AgentSource::Codex,
+            None,
+            Some("iTerm.app"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(iterm.session_surface.as_deref(), Some("cli_terminal"));
         assert_eq!(iterm.terminal_app.as_deref(), Some("iterm2"));
 
@@ -1832,8 +1952,112 @@ mod tests {
             None,
             None,
             Some("com.openai.codex"),
+            None,
+            None,
+            None,
         );
         assert_eq!(chatgpt.session_surface.as_deref(), Some("chatgpt_app"));
+
+        let chatgpt_from_originator = runtime_navigation_from_values(
+            AgentSource::Codex,
+            Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
+            Some("WarpTerminal"),
+            None,
+            None,
+            None,
+            Some("Codex Desktop"),
+        );
+        assert_eq!(
+            chatgpt_from_originator.session_surface.as_deref(),
+            Some("chatgpt_app")
+        );
+        assert_eq!(chatgpt_from_originator.terminal_app, None);
+        assert_eq!(chatgpt_from_originator.session_open_url, None);
+
+        let vscode = runtime_navigation_from_values(
+            AgentSource::Codex,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("codex_vscode"),
+        );
+        assert_eq!(vscode.session_surface.as_deref(), Some("cli_terminal"));
+    }
+
+    #[test]
+    fn desktop_agent_hosts_are_not_collapsed_into_cli_terminal() {
+        let claude = runtime_navigation_from_values(
+            AgentSource::ClaudeCode,
+            None,
+            None,
+            Some("com.anthropic.claudefordesktop"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(claude.session_surface.as_deref(), Some("claude_app"));
+        assert_eq!(claude.terminal_app, None);
+
+        let claude_from_explicit_host = runtime_navigation_from_values(
+            AgentSource::ClaudeCode,
+            Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
+            Some("WarpTerminal"),
+            None,
+            Some("claude-desktop"),
+            None,
+            None,
+        );
+        assert_eq!(
+            claude_from_explicit_host.session_surface.as_deref(),
+            Some("claude_app")
+        );
+        assert_eq!(claude_from_explicit_host.terminal_app, None);
+        assert_eq!(claude_from_explicit_host.session_open_url, None);
+
+        for bundle_identifier in [
+            "ai.opencode.desktop",
+            "ai.opencode.desktop.beta",
+            "ai.opencode.desktop.dev",
+        ] {
+            let opencode = runtime_navigation_from_values(
+                AgentSource::Opencode,
+                None,
+                None,
+                Some(bundle_identifier),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(opencode.session_surface.as_deref(), Some("opencode_app"));
+            assert_eq!(opencode.terminal_app, None);
+        }
+
+        let opencode_from_explicit_host = runtime_navigation_from_values(
+            AgentSource::Opencode,
+            None,
+            None,
+            None,
+            None,
+            Some("desktop"),
+            None,
+        );
+        assert_eq!(
+            opencode_from_explicit_host.session_surface.as_deref(),
+            Some("opencode_app")
+        );
+
+        let pi = runtime_navigation_from_values(
+            AgentSource::Pi,
+            None,
+            None,
+            Some("ai.opencode.desktop"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(pi.session_surface.as_deref(), Some("cli_terminal"));
     }
 
     #[test]
@@ -1985,7 +2209,10 @@ mod tests {
             },
             "output": {
                 "args": {
-                    "command": "TOKEN=secret-command"
+                    "command": "TOKEN=secret-command",
+                    "client_secret": {
+                        "message": "CREDENTIAL_CONTAINER_MUST_NOT_CROSS"
+                    }
                 }
             }
         });
@@ -1999,8 +2226,11 @@ mod tests {
         assert_eq!(contract.activity_kind.as_deref(), Some("command"));
         assert_eq!(
             contract.activity_content.as_deref(),
-            Some(r#"{"command":"TOKEN=secret-command"}"#)
+            Some("TOKEN=secret-command")
         );
+        let activity_content = contract.activity_content.as_deref().unwrap();
+        assert!(!activity_content.contains('{'));
+        assert!(!activity_content.contains("CREDENTIAL_CONTAINER_MUST_NOT_CROSS"));
         assert!(contract
             .external_event_id
             .as_deref()
@@ -2008,6 +2238,8 @@ mod tests {
         let forwarded = serde_json::to_string(&contract).unwrap();
         assert!(!forwarded.contains("args"));
         assert!(!forwarded.contains("callID"));
+        assert!(!forwarded.contains("\"output\""));
+        assert!(!forwarded.contains("CREDENTIAL_CONTAINER_MUST_NOT_CROSS"));
     }
 
     #[test]
@@ -2062,7 +2294,12 @@ mod tests {
                     "callID": "RAW_CALL_ID_MUST_NOT_CROSS"
                 },
                 "output": {
-                    "args": { "command": "RAW_COMMAND_MUST_NOT_CROSS" }
+                    "args": {
+                        "command": "RAW_COMMAND_MUST_NOT_CROSS",
+                        "requestHeaders": {
+                            "content": "STRICT_CREDENTIAL_MUST_NOT_CROSS"
+                        }
+                    }
                 }
             }),
         )
@@ -2085,10 +2322,17 @@ mod tests {
         assert_eq!(request["payload_json"]["session_active"], true);
         assert_eq!(
             request["payload_json"]["activity_content"],
-            r#"{"command":"RAW_COMMAND_MUST_NOT_CROSS"}"#
+            "RAW_COMMAND_MUST_NOT_CROSS"
         );
+        assert!(!request["payload_json"]["activity_content"]
+            .as_str()
+            .unwrap()
+            .contains('{'));
         let encoded = serde_json::to_string(&request).unwrap();
         assert!(!encoded.contains("RAW_CALL_ID_MUST_NOT_CROSS"));
+        assert!(!encoded.contains("STRICT_CREDENTIAL_MUST_NOT_CROSS"));
+        assert!(!encoded.contains("\"args\""));
+        assert!(!encoded.contains("\"output\""));
     }
 
     #[test]

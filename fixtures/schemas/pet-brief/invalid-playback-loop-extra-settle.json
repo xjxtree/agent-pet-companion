@@ -1,0 +1,15 @@
+{
+  "schema_version": "apc.pet-brief.v1",
+  "name": "Loop With Settle",
+  "style": "schema fixture",
+  "quality": "standard",
+  "states": [
+    { "name": "idle", "motion": "Idle.", "frame_durations_ms": [100, 100], "playback": { "mode": "loop", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "start", "motion": "Start.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "tool", "motion": "Tool.", "frame_durations_ms": [100, 100], "playback": { "mode": "burst_then_settle", "entry_repeat_count": 1, "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "waiting", "motion": "Waiting.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "review", "motion": "Review.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "done", "motion": "Done.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
+    { "name": "failed", "motion": "Failed.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 }
+  ]
+}

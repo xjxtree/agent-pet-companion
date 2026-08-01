@@ -34,7 +34,7 @@ apc_start_owned_runtime \
 # Exercise the populated Pet Library rather than accidentally depending on a
 # developer's existing pet data. All assets stay inside this validation HOME.
 PET_SOURCE="$TMP_DIR/library-pet"
-"$PETCORE_CLI" petpack sample --output "$PET_SOURCE" --quality high >/dev/null
+"$PETCORE_CLI" petpack sample --output "$PET_SOURCE" --quality standard >/dev/null
 "$PETCORE_CLI" petpack import "$PET_SOURCE" >/dev/null
 
 APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'
@@ -544,7 +544,7 @@ waitFor("Pet Configuration page") { nodes in
         && containsIdentifier("configuration.page.appearance", in: nodes)
         && containsIdentifier("configuration.appearance.status-bubble", in: nodes)
         && containsIdentifier("configuration.appearance.theme", in: nodes)
-        && containsIdentifier("configuration.appearance.fps", in: nodes)
+        && containsIdentifier("configuration.appearance.pet-size", in: nodes)
         && (
             containsIdentifier("configuration.layout.wide", in: nodes)
                 || containsIdentifier("configuration.layout.compact", in: nodes)

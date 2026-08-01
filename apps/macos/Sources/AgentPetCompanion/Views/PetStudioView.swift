@@ -173,7 +173,6 @@ struct AIPetMakerView: View {
 
 struct MakerBriefView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var timingIsExpanded = false
 
     private var fieldsAreLocked: Bool {
         store.generationSession.isActive
@@ -186,8 +185,6 @@ struct MakerBriefView: View {
             stylePicker
             Divider()
             qualityPicker
-            Divider()
-            timingPicker
             Divider()
             referenceImages
         }
@@ -284,6 +281,11 @@ struct MakerBriefView: View {
             .help(qualityGuidance)
             .accessibilityHint(qualityGuidance)
             .accessibilityIdentifier("maker.brief.quality")
+
+            Text(qualityGuidance)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -292,90 +294,6 @@ struct MakerBriefView: View {
             .studioQualityContractFormat,
             APCLocalizedPresentation.qualityDetail(store.selectedQuality)
         )
-    }
-
-    private var timingPicker: some View {
-        AdvancedDetailsDisclosure(
-            identity: ProductComponentIdentity(
-                scope: "maker",
-                instance: "animation"
-            ),
-            title: APCLocalization.text(.studioTimingHeading),
-            summary: MakerMotionPresentation.title(
-                nativeFPS: store.selectedNativeFPS
-            ),
-            isExpanded: $timingIsExpanded
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(APCLocalization.text(.studioTimingDetail))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                LabeledContent(APCLocalization.text(.studioTimingNativeFPS)) {
-                    Picker(
-                        APCLocalization.text(.studioTimingNativeFPS),
-                        selection: Binding(
-                            get: { store.selectedNativeFPS },
-                            set: { store.selectGenerationNativeFPS($0) }
-                        )
-                    ) {
-                        ForEach(PetAnimationContract.supportedNativeFPS.sorted(), id: \.self) { fps in
-                            Text(MakerMotionPresentation.title(nativeFPS: fps))
-                                .tag(fps)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 220)
-                    .disabled(fieldsAreLocked)
-                    .accessibilityLabel(APCLocalization.text(.studioTimingNativeFPS))
-                    .accessibilityValue(MakerMotionPresentation.exactValue(
-                        nativeFPS: store.selectedNativeFPS
-                    ))
-                    .help(MakerMotionPresentation.exactValue(
-                        nativeFPS: store.selectedNativeFPS
-                    ))
-                    .accessibilityIdentifier("maker.brief.timing.fps")
-                }
-
-                Text(APCLocalization.text(.studioTimingActionDurations))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                VStack(spacing: 8) {
-                    ForEach(PetAnimationContract.orderedStateNames, id: \.self) { stateName in
-                        LabeledContent(stateName) {
-                            Picker(
-                                stateName,
-                                selection: Binding(
-                                    get: {
-                                        store.generationStateDurationsMS[stateName]
-                                            ?? PetAnimationContract.defaultStateDurationsMS[stateName]
-                                            ?? 1_000
-                                    },
-                                    set: { store.selectGenerationStateDuration($0, for: stateName) }
-                                )
-                            ) {
-                                ForEach(PetAnimationContract.supportedDurationsMS.sorted(), id: \.self) { durationMS in
-                                    Text(APCLocalization.format(
-                                        .studioTimingSecondsFormat,
-                                        durationMS / 1_000
-                                    ))
-                                    .tag(durationMS)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .frame(width: 132)
-                            .disabled(fieldsAreLocked)
-                            .accessibilityLabel("\(stateName) \(APCLocalization.text(.studioTimingActionDurations))")
-                            .accessibilityIdentifier("maker.brief.timing.duration.\(stateName)")
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private var referenceImages: some View {
@@ -936,7 +854,6 @@ struct GenerationProgressView: View {
 
 struct SubmittedFormSummary: View {
     var form: GenerationForm?
-    @State private var timingIsExpanded = false
 
     var body: some View {
         if let form {
@@ -978,31 +895,6 @@ struct SubmittedFormSummary: View {
                         presentation.referenceCount
                     )
                 )
-
-                AdvancedDetailsDisclosure(
-                    identity: ProductComponentIdentity(
-                        scope: "maker",
-                        instance: "submitted-animation"
-                    ),
-                    title: APCLocalization.text(.studioTimingHeading),
-                    summary: presentation.motionTitle,
-                    isExpanded: $timingIsExpanded
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        LabeledContent(
-                            APCLocalization.text(.studioTimingNativeFPS),
-                            value: MakerMotionPresentation.exactValue(
-                                nativeFPS: presentation.nativeFPS
-                            )
-                        )
-                        LabeledContent(
-                            APCLocalization.text(.studioTimingActionDurations),
-                            value: PetStudioPresentation.stateDurationSummary(
-                                presentation.stateDurationsMS
-                            )
-                        )
-                    }
-                }
             }
             .font(.caption)
             .accessibilityIdentifier("maker.session.submitted-brief")
@@ -1187,15 +1079,10 @@ struct ValidatedBaselineInspector: View {
                 APCLocalization.text(.studioBaselineQuality),
                 value: "\(pet.renderSize.width)×\(pet.renderSize.height)"
             )
-            if let submittedForm = store.generationSession.submittedForm {
-                LabeledContent(
-                    APCLocalization.text(.studioBaselineAnimation),
-                    value: PetStudioPresentation.timingSummary(
-                        nativeFPS: submittedForm.nativeFPS,
-                        stateDurationsMS: submittedForm.stateDurationsMS
-                    )
-                )
-            }
+            LabeledContent(
+                APCLocalization.text(.studioBaselineAnimation),
+                value: PetStudioPresentation.timingSummary(pet.states)
+            )
         }
     }
 
@@ -1327,30 +1214,15 @@ enum PetStudioPresentation {
     }
 
     static func timingSummary(
-        nativeFPS: Int,
-        stateDurationsMS: [String: Int],
+        _ states: [PetStateTiming],
         localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
-        "\(nativeFPS) FPS · \(stateDurationSummary(stateDurationsMS, localeIdentifier: localeIdentifier))"
-    }
-
-    static func stateDurationSummary(
-        _ durations: [String: Int],
-        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
-    ) -> String {
-        PetAnimationContract.supportedDurationsMS.sorted().compactMap { durationMS in
-            let states = PetAnimationContract.orderedStateNames.filter {
-                durations[$0] == durationMS
-            }
-            guard !states.isEmpty else { return nil }
-            return APCLocalization.format(
-                .libraryDurationGroupFormat,
-                locale: localeIdentifier,
-                durationMS / 1_000,
-                states.joined(separator: " · ")
-            )
-        }
-        .joined(separator: "   ")
+        APCLocalization.format(
+            .studioAuthoredTimingSummaryFormat,
+            locale: localeIdentifier,
+            states.reduce(0) { $0 + $1.frameDurationsMS.count },
+            states.count
+        )
     }
 
     static func completedHistoryIsIncomplete(_ session: GenerationSession) -> Bool {

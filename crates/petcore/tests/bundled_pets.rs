@@ -8,7 +8,7 @@ use petcore::petpack::{
     BUNDLED_PET_INVENTORY_VERSION, BUNDLED_PET_PROVENANCE_MARKER,
 };
 use petcore::rpc::{handle_json_line, CoreState};
-use petcore_types::{PetOrigin, QualityLevel};
+use petcore_types::{PetOrigin, PetStateName, QualityLevel, PETPACK_SCHEMA_VERSION};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -32,6 +32,45 @@ fn response_result(response: &str) -> Value {
     let response: Value = serde_json::from_str(response).unwrap();
     assert!(response.get("error").is_none(), "{response}");
     response["result"].clone()
+}
+
+#[test]
+fn bundled_pets_are_exact_compact_v2_packages() {
+    let expected_counts = [
+        (PetStateName::Idle, 4),
+        (PetStateName::Start, 4),
+        (PetStateName::Tool, 4),
+        (PetStateName::Waiting, 6),
+        (PetStateName::Review, 6),
+        (PetStateName::Done, 4),
+        (PetStateName::Failed, 4),
+    ];
+    for (file_name, expected_quality) in [
+        ("pet_xingwutuanzi.petpack", QualityLevel::Low),
+        ("pet_bytebudcodex.petpack", QualityLevel::Standard),
+    ] {
+        let validation = validate_petpack_path(&inventory_root().join(file_name)).unwrap();
+        assert_eq!(validation.manifest.schema_version, PETPACK_SCHEMA_VERSION);
+        assert_eq!(validation.manifest.quality, expected_quality);
+        assert_eq!(validation.frame_count, 32);
+        for (state, expected_count) in expected_counts {
+            assert_eq!(
+                validation.state_frame_counts.get(&state),
+                Some(&expected_count),
+                "unexpected {state:?} count in {file_name}"
+            );
+        }
+        assert!(
+            validation.warnings.is_empty(),
+            "{file_name}: {:?}",
+            validation.warnings
+        );
+        assert!(
+            validation.timing_warnings.is_empty(),
+            "{file_name}: {:?}",
+            validation.timing_warnings
+        );
+    }
 }
 
 #[test]

@@ -19,8 +19,6 @@ fn form() -> GenerationForm {
         style: "pixel".to_string(),
         quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     }
 }
 
@@ -160,11 +158,10 @@ fn cancel_revision_preserves_existing_pet() {
         style: "pixel".to_string(),
         quality: QualityLevel::Standard,
         render_size: RenderSize {
-            width: 256,
-            height: 288,
+            width: 384,
+            height: 416,
         },
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
+        states: petcore_types::default_pet_states(),
         petpack_path: package.display().to_string(),
         cover_path: cover.display().to_string(),
         origin: PetOrigin::GeneratedByPetcoreJob,
@@ -874,7 +871,7 @@ fn completed_result_rejects_a_noncontract_total_frame_count() {
             .jobs_dir
             .join("job-invalid-frame-total")
             .join("result.json"),
-        br#"{"result_pet_id":"pet-expected","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":168,"warning_count":0}}"#,
+        br#"{"result_pet_id":"pet-expected","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":281,"warning_count":0}}"#,
     )
     .unwrap();
 

@@ -184,6 +184,7 @@ struct PetLibraryImportTests {
         )
         return [
             "revision": "petpack-import-test",
+            "overlay_placement_revision": "0",
             "behavior": behavior,
             "behavior_revision": "0",
             "pets": [],
@@ -262,7 +263,18 @@ private final class PetpackImportRequestProbe {
         case "state.snapshot":
             return snapshot
         case "overlay.placement.update":
-            return [:]
+            var placement = try #require(params as? [String: Any])
+            let expected = try #require(
+                placement.removeValue(forKey: "expected_revision") as? String
+            )
+            let next = (UInt64(expected) ?? 0) + 1
+            return [
+                "ok": true,
+                "revision": "state-overlay-\(next)",
+                "overlay_placement_revision": String(next),
+                "overlay_placement": placement,
+                "overlay_placement_intent": NSNull(),
+            ]
         default:
             throw PetpackImportTestError.unexpectedMethod(method)
         }

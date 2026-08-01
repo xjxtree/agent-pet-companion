@@ -2,8 +2,8 @@ use crate::paths::AppPaths;
 use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    AgentEventType, AgentSource, AppearanceTheme, ConnectionCheckMode, FpsProfileName,
-    PetStateName, SessionGroupDisplay,
+    AgentEventType, AgentSource, AppearanceTheme, ConnectionCheckMode, PetStateName,
+    SessionGroupDisplay,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -638,6 +638,8 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "onboarding.update" => "onboarding.update",
         "overlay.placement.get" => "overlay.placement.get",
         "overlay.placement.update" => "overlay.placement.update",
+        "overlay.placement.reposition" => "overlay.placement.reposition",
+        "overlay.placement.reset" => "overlay.placement.reset",
         "settings.get" => "settings.get",
         "settings.update" => "settings.update",
         "agent.ingest" => "agent.ingest",
@@ -682,6 +684,8 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
             | "behavior.patch"
             | "onboarding.update"
             | "overlay.placement.update"
+            | "overlay.placement.reposition"
+            | "overlay.placement.reset"
             | "settings.update"
             | "pet.activate"
             | "pet.delete"
@@ -1526,7 +1530,6 @@ struct AppEnvironmentBehavior {
     auto_hide: bool,
     session_message_timeout_minutes: u16,
     session_group_display: SessionGroupDisplay,
-    fps_profile: FpsProfileName,
     sources: AppEnvironmentSources,
     events: AppEnvironmentEvents,
 }
@@ -2043,7 +2046,6 @@ mod tests {
                 "auto_hide": true,
                 "session_message_timeout_minutes": 15,
                 "session_group_display": "stacked",
-                "fps_profile": "standard",
                 "sources": {
                     "codex": true,
                     "claude_code": true,

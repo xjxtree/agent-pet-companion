@@ -1,22 +1,22 @@
+use crate::adapter_contracts::CODEX_HOOKS_CONTRACT_VERSION;
 use crate::agent_session_filters::{
     is_codex_internal_suggestions_prompt, suppressed_agent_session_reason,
     CODEX_INTERNAL_SUGGESTIONS_REASON,
 };
-use crate::agent_state::SequencedAgentEvent;
+use crate::agent_state::{is_valid_session_acknowledgement_id, SequencedAgentEvent};
 use crate::event_envelope::{
     minimal_legacy_payload, normalized_session_id, normalized_session_key, persisted_payload,
-    source_event_proves_ordinary_activity, MAX_RECENT_EVENTS,
+    source_event_proves_ordinary_activity, validated_warp_focus_url, MAX_RECENT_EVENTS,
 };
 use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
-    BehaviorSettings, FpsProfileName, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    InterfaceLanguage, OnboardingProgress, OnboardingStage, OverlayPlacement, PetOrigin,
-    PetStateName, PetSummary, QualityLevel, RenderSize, SessionGroupDisplay,
-    LONG_ACTION_DURATION_MS, MAX_BUBBLE_TRANSPARENCY, MAX_SESSION_MESSAGE_TIMEOUT_MINUTES,
-    MIN_BUBBLE_TRANSPARENCY, MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
-    ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES, SHORT_ACTION_DURATION_MS, SMOOTH_FPS,
-    STANDARD_FPS,
+    BehaviorSettings, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
+    InterfaceLanguage, OnboardingProgress, OnboardingStage, OverlayPlacement,
+    OverlayPlacementIntent, PetOrigin, PetState, PetSummary, QualityLevel, RenderSize,
+    SessionGroupDisplay, DEFAULT_OVERLAY_DISPLAY_WIDTH_PT, MAX_BUBBLE_TRANSPARENCY,
+    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
+    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
@@ -31,7 +31,37 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GENERATION_HISTORY_QUERY_LIMIT: usize = 33;
 const ONBOARDING_PROGRESS_SETTING_KEY: &str = "onboarding_progress";
+const OVERLAY_PLACEMENT_SETTING_KEY: &str = "overlay_placement";
+const OVERLAY_PLACEMENT_INTENT_SETTING_KEY: &str = "overlay_placement_intent";
+const AGENT_SESSION_ACKNOWLEDGEMENTS_SETTING_KEY: &str = "agent_session_acknowledgements";
+const AGENT_SESSION_ACKNOWLEDGEMENTS_SCHEMA_VERSION: &str = "apc.agent-session-acknowledgements.v1";
+const MAX_AGENT_SESSION_ACKNOWLEDGEMENTS: usize = 1_024;
 pub const PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION: &str = "apc.product-convergence-receipt.v1";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyOverlayPlacement {
+    x: f64,
+    y: f64,
+    scale: f64,
+    display_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentSessionAcknowledgements {
+    schema_version: String,
+    ids: Vec<String>,
+}
+
+impl Default for AgentSessionAcknowledgements {
+    fn default() -> Self {
+        Self {
+            schema_version: AGENT_SESSION_ACKNOWLEDGEMENTS_SCHEMA_VERSION.to_string(),
+            ids: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +182,6 @@ pub struct BehaviorSettingsPatch {
     pub auto_hide: Option<bool>,
     pub session_group_display: Option<SessionGroupDisplay>,
     pub session_message_timeout_minutes: Option<u16>,
-    pub fps_profile: Option<FpsProfileName>,
     pub sources: Option<BTreeMap<AgentSource, bool>>,
     pub events: Option<BTreeMap<AgentEventType, bool>>,
 }
@@ -169,7 +198,6 @@ impl BehaviorSettingsPatch {
             && self.auto_hide.is_none()
             && self.session_group_display.is_none()
             && self.session_message_timeout_minutes.is_none()
-            && self.fps_profile.is_none()
             && self.sources.as_ref().is_none_or(BTreeMap::is_empty)
             && self.events.as_ref().is_none_or(BTreeMap::is_empty)
     }
@@ -204,9 +232,6 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.session_message_timeout_minutes {
             behavior.session_message_timeout_minutes = value;
-        }
-        if let Some(value) = self.fps_profile {
-            behavior.fps_profile = value;
         }
         if let Some(values) = &self.sources {
             behavior
@@ -279,6 +304,30 @@ pub(crate) enum RevisionChecked<T> {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct OverlayPlacementProjection {
+    pub(crate) placement: OverlayPlacement,
+    pub(crate) intent: Option<OverlayPlacementIntent>,
+    pub(crate) revision: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CodexRuntimeSurfaceHistory {
+    pub(crate) has_any_trusted_marker: bool,
+    pub(crate) latest_current_turn_marker: Option<SequencedAgentEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum OverlayPlacementWriteResult {
+    Updated {
+        state_revision: u64,
+        projection: OverlayPlacementProjection,
+    },
+    Conflict {
+        projection: OverlayPlacementProjection,
+    },
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionMessageProjection {
     pub(crate) latest_assistant: Option<SequencedAgentEvent>,
@@ -304,8 +353,16 @@ impl Default for EventRetentionPolicy {
 // intentionally remains compatible with schema-6 last-known-good runtimes:
 // an older runtime ignores it, so a failed binary replacement can still roll
 // back without turning a successful receipt write into a downgrade blocker.
+//
+// `retired_pet_records` is likewise additive and rollback-compatible. It
+// preserves metadata for pre-V2 quality rows that neither current nor earlier
+// V2 runtimes can decode, while their package and rendered assets remain
+// untouched in the owned store.
+// V2 pet metadata and retired-record storage are additive extensions of the
+// released schema-6 tables. Keeping the version at 6 lets the last-known-good
+// V1 runtime reopen the database after a failed candidate handoff.
 pub const DATABASE_SCHEMA_VERSION: u32 = 6;
-const DEFAULT_STATE_DURATIONS_JSON: &str = r#"{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}"#;
+const DEFAULT_PET_STATES_JSON: &str = r#"[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[180,160,180,380],"playback":{"mode":"periodic","cooldown_ms":[4000,8000]},"reduced_motion_frame_index":2},{"name":"start","frames_dir":"assets/frames/start","frame_durations_ms":[120,140,160,180],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_settle","entry_repeat_count":1,"settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[150,150,150,150,170,230],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"review","frames_dir":"assets/frames/review","frame_durations_ms":[140,140,150,150,180,240],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[150,170,190,290],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2}]"#;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";
 const SUPPRESSED_AGENT_SESSION_RETENTION_DAYS: u32 = 30;
 const MAX_SUPPRESSED_AGENT_SESSIONS: usize = 10_000;
@@ -373,6 +430,7 @@ impl Database {
                 "database preflight quick_check failed: {quick_check}"
             )));
         }
+        preflight_active_generation_forms(&connection)?;
         Ok(schema_version)
     }
 
@@ -385,6 +443,8 @@ impl Database {
                 "database schema {previous_schema_version} is newer than this PetCore supports ({DATABASE_SCHEMA_VERSION}); downgrade is blocked"
             )));
         }
+        let pre_v2_pet_table = table_exists(&connection, "pets")?
+            && !table_has_column(&connection, "pets", "states_json")?;
         connection.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -398,8 +458,7 @@ impl Database {
               quality TEXT NOT NULL,
               render_width INTEGER NOT NULL,
               render_height INTEGER NOT NULL,
-              native_fps INTEGER NOT NULL DEFAULT 10,
-              state_durations_json TEXT NOT NULL DEFAULT '{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}',
+              states_json TEXT NOT NULL DEFAULT '[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[180,160,180,380],"playback":{"mode":"periodic","cooldown_ms":[4000,8000]},"reduced_motion_frame_index":2},{"name":"start","frames_dir":"assets/frames/start","frame_durations_ms":[120,140,160,180],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_settle","entry_repeat_count":1,"settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[150,150,150,150,170,230],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"review","frames_dir":"assets/frames/review","frame_durations_ms":[140,140,150,150,180,240],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[150,170,190,290],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2}]',
               petpack_path TEXT NOT NULL,
               cover_path TEXT NOT NULL,
               origin TEXT NOT NULL DEFAULT 'external_import',
@@ -407,6 +466,28 @@ impl Database {
               provenance TEXT,
               active INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS retired_pet_records (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              style TEXT NOT NULL,
+              quality TEXT NOT NULL,
+              render_width INTEGER NOT NULL,
+              render_height INTEGER NOT NULL,
+              states_json TEXT NOT NULL,
+              legacy_native_fps INTEGER,
+              legacy_state_durations_json TEXT,
+              petpack_path TEXT NOT NULL,
+              cover_path TEXT NOT NULL,
+              origin TEXT NOT NULL,
+              generator TEXT,
+              provenance TEXT,
+              active INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              retired_reason TEXT NOT NULL
+                CHECK(retired_reason = 'unsupported_quality'),
+              retired_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS generation_jobs (
@@ -552,9 +633,12 @@ impl Database {
         self.migrate_agent_events(&mut connection)?;
         self.migrate_agent_session_aliases(&mut connection)?;
         self.ensure_pets_metadata_columns(&connection)?;
+        self.ensure_retired_pet_record_columns(&connection)?;
         self.ensure_generation_job_columns(&connection)?;
         self.ensure_settings_columns(&connection)?;
         self.ensure_state_revision_triggers(&connection)?;
+        self.migrate_legacy_overlay_placement(&mut connection)?;
+        self.migrate_retired_pet_qualities(&mut connection, pre_v2_pet_table)?;
         self.migrate_internal_codex_suggestion_sessions(&mut connection)?;
         self.scrub_legacy_connector_diagnostics(&mut connection)?;
         self.normalize_legacy_pi_tool_failures(&mut connection)?;
@@ -571,7 +655,7 @@ impl Database {
         connection.pragma_update(None, "user_version", DATABASE_SCHEMA_VERSION)?;
 
         self.ensure_setting("behavior", &BehaviorSettings::default())?;
-        self.ensure_setting("overlay_placement", &OverlayPlacement::default())?;
+        self.ensure_setting(OVERLAY_PLACEMENT_SETTING_KEY, &OverlayPlacement::default())?;
         let quick_check: String =
             connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         if !quick_check.eq_ignore_ascii_case("ok") {
@@ -600,18 +684,244 @@ impl Database {
                 [],
             )?;
         }
-        if !table_has_column(connection, "pets", "native_fps")? {
-            connection.execute(
-                "ALTER TABLE pets ADD COLUMN native_fps INTEGER NOT NULL DEFAULT 10",
-                [],
-            )?;
-        }
-        if !table_has_column(connection, "pets", "state_durations_json")? {
+        if !table_has_column(connection, "pets", "states_json")? {
             let sql = format!(
-                "ALTER TABLE pets ADD COLUMN state_durations_json TEXT NOT NULL DEFAULT '{DEFAULT_STATE_DURATIONS_JSON}'"
+                "ALTER TABLE pets ADD COLUMN states_json TEXT NOT NULL DEFAULT '{DEFAULT_PET_STATES_JSON}'"
             );
             connection.execute(&sql, [])?;
         }
+        Ok(())
+    }
+
+    fn ensure_retired_pet_record_columns(&self, connection: &Connection) -> Result<()> {
+        if !table_has_column(connection, "retired_pet_records", "legacy_native_fps")? {
+            connection.execute(
+                "ALTER TABLE retired_pet_records ADD COLUMN legacy_native_fps INTEGER",
+                [],
+            )?;
+        }
+        if !table_has_column(
+            connection,
+            "retired_pet_records",
+            "legacy_state_durations_json",
+        )? {
+            connection.execute(
+                "ALTER TABLE retired_pet_records ADD COLUMN legacy_state_durations_json TEXT",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn migrate_retired_pet_qualities(
+        &self,
+        connection: &mut Connection,
+        retire_every_existing_pet: bool,
+    ) -> Result<()> {
+        let legacy_timing_available = table_has_column(connection, "pets", "native_fps")?
+            && table_has_column(connection, "pets", "state_durations_json")?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let retired_at = now_rfc3339();
+        let retire_every_existing_pet = if retire_every_existing_pet {
+            1_i64
+        } else {
+            0_i64
+        };
+        let retire_sql = if legacy_timing_available {
+            r#"
+            INSERT INTO retired_pet_records (
+              id, name, style, quality, render_width, render_height,
+              states_json, legacy_native_fps, legacy_state_durations_json,
+              petpack_path, cover_path, origin, generator, provenance, active,
+              created_at, retired_reason, retired_at
+            )
+            SELECT
+              id, name, style, quality, render_width, render_height,
+              states_json, native_fps, state_durations_json, petpack_path,
+              cover_path, origin, generator, provenance, active, created_at,
+              'unsupported_quality', ?1
+            FROM pets
+            WHERE ?2 != 0
+               OR NOT (
+                    (quality = 'low' AND render_width = 192 AND render_height = 208)
+                 OR (quality = 'standard' AND render_width = 384 AND render_height = 416)
+               )
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              style = excluded.style,
+              quality = excluded.quality,
+              render_width = excluded.render_width,
+              render_height = excluded.render_height,
+              states_json = excluded.states_json,
+              legacy_native_fps = COALESCE(
+                excluded.legacy_native_fps,
+                retired_pet_records.legacy_native_fps
+              ),
+              legacy_state_durations_json = COALESCE(
+                excluded.legacy_state_durations_json,
+                retired_pet_records.legacy_state_durations_json
+              ),
+              petpack_path = excluded.petpack_path,
+              cover_path = excluded.cover_path,
+              origin = excluded.origin,
+              generator = excluded.generator,
+              provenance = excluded.provenance,
+              active = excluded.active,
+              created_at = excluded.created_at,
+              retired_reason = excluded.retired_reason,
+              retired_at = excluded.retired_at
+            "#
+        } else {
+            r#"
+            INSERT INTO retired_pet_records (
+              id, name, style, quality, render_width, render_height,
+              states_json, legacy_native_fps, legacy_state_durations_json,
+              petpack_path, cover_path, origin, generator, provenance, active,
+              created_at, retired_reason, retired_at
+            )
+            SELECT
+              id, name, style, quality, render_width, render_height,
+              states_json, NULL, NULL, petpack_path, cover_path, origin,
+              generator, provenance, active, created_at,
+              'unsupported_quality', ?1
+            FROM pets
+            WHERE ?2 != 0
+               OR NOT (
+                    (quality = 'low' AND render_width = 192 AND render_height = 208)
+                 OR (quality = 'standard' AND render_width = 384 AND render_height = 416)
+               )
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              style = excluded.style,
+              quality = excluded.quality,
+              render_width = excluded.render_width,
+              render_height = excluded.render_height,
+              states_json = excluded.states_json,
+              legacy_native_fps = COALESCE(
+                excluded.legacy_native_fps,
+                retired_pet_records.legacy_native_fps
+              ),
+              legacy_state_durations_json = COALESCE(
+                excluded.legacy_state_durations_json,
+                retired_pet_records.legacy_state_durations_json
+              ),
+              petpack_path = excluded.petpack_path,
+              cover_path = excluded.cover_path,
+              origin = excluded.origin,
+              generator = excluded.generator,
+              provenance = excluded.provenance,
+              active = excluded.active,
+              created_at = excluded.created_at,
+              retired_reason = excluded.retired_reason,
+              retired_at = excluded.retired_at
+            "#
+        };
+        transaction.execute(retire_sql, params![retired_at, retire_every_existing_pet])?;
+        transaction.execute(
+            r#"
+            DELETE FROM pet_asset_validation
+            WHERE pet_id IN (
+              SELECT id
+              FROM pets
+              WHERE ?1 != 0
+                 OR NOT (
+                      (quality = 'low' AND render_width = 192 AND render_height = 208)
+                   OR (quality = 'standard' AND render_width = 384 AND render_height = 416)
+                 )
+            )
+            "#,
+            params![retire_every_existing_pet],
+        )?;
+        let retired_count = transaction.execute(
+            r#"
+            DELETE FROM pets
+            WHERE ?1 != 0
+               OR NOT (
+                    (quality = 'low' AND render_width = 192 AND render_height = 208)
+                 OR (quality = 'standard' AND render_width = 384 AND render_height = 416)
+               )
+            "#,
+            params![retire_every_existing_pet],
+        )?;
+        if retired_count > 0 {
+            let active_pet_count: i64 =
+                transaction.query_row("SELECT COUNT(*) FROM pets WHERE active = 1", [], |row| {
+                    row.get(0)
+                })?;
+            if active_pet_count == 0 {
+                let next_pet_id = transaction
+                    .query_row(
+                        "SELECT id FROM pets ORDER BY created_at DESC, id ASC LIMIT 1",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(next_pet_id) = next_pet_id {
+                    transaction.execute(
+                        "UPDATE pets SET active = 1 WHERE id = ?1",
+                        params![next_pet_id],
+                    )?;
+                }
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn migrate_legacy_overlay_placement(&self, connection: &mut Connection) -> Result<()> {
+        let value = connection
+            .query_row(
+                "SELECT value_json FROM settings WHERE key = ?1",
+                params![OVERLAY_PLACEMENT_SETTING_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(value) = value else { return Ok(()) };
+        let current_error = match decode_overlay_placement(&value) {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+
+        let parsed = serde_json::from_str::<Value>(&value)?;
+        if !parsed
+            .as_object()
+            .is_some_and(|object| object.contains_key("scale"))
+        {
+            return Err(current_error);
+        }
+        let legacy = serde_json::from_value::<LegacyOverlayPlacement>(parsed)?;
+        if !legacy.x.is_finite()
+            || !legacy.y.is_finite()
+            || !(0.10..=1.80).contains(&legacy.scale)
+            || legacy.display_id.trim().is_empty()
+        {
+            return Err(PetCoreError::Validation(
+                "legacy overlay placement is outside its closed bounds".to_string(),
+            ));
+        }
+
+        let migrated = OverlayPlacement {
+            x: legacy.x,
+            y: legacy.y,
+            display_width_pt: DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
+            display_id: legacy.display_id,
+        };
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            r#"
+            UPDATE settings
+            SET value_json = ?2,
+                updated_at = ?3,
+                revision = revision + 1
+            WHERE key = ?1
+            "#,
+            params![
+                OVERLAY_PLACEMENT_SETTING_KEY,
+                serde_json::to_string_pretty(&migrated)?,
+                now_rfc3339(),
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1082,6 +1392,59 @@ impl Database {
         Ok(())
     }
 
+    pub fn acknowledge_agent_session(&self, acknowledgement_id: &str) -> Result<bool> {
+        if !is_valid_session_acknowledgement_id(acknowledgement_id) {
+            return Err(PetCoreError::InvalidRequest(
+                "invalid params: acknowledgement_id is invalid".to_string(),
+            ));
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut acknowledgements = read_agent_session_acknowledgements(&transaction)?;
+        if acknowledgements
+            .ids
+            .iter()
+            .any(|existing| existing == acknowledgement_id)
+        {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        acknowledgements.ids.push(acknowledgement_id.to_string());
+        if acknowledgements.ids.len() > MAX_AGENT_SESSION_ACKNOWLEDGEMENTS {
+            let excess = acknowledgements.ids.len() - MAX_AGENT_SESSION_ACKNOWLEDGEMENTS;
+            acknowledgements.ids.drain(..excess);
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO settings (key, value_json, updated_at, revision)
+            VALUES (?1, ?2, ?3, 1)
+            ON CONFLICT(key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at = excluded.updated_at,
+              revision = settings.revision + 1
+            "#,
+            params![
+                AGENT_SESSION_ACKNOWLEDGEMENTS_SETTING_KEY,
+                serde_json::to_string(&acknowledgements)?,
+                now_rfc3339()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    pub(crate) fn acknowledged_agent_sessions_at_revision(
+        &self,
+        expected_state_revision: u64,
+    ) -> Result<RevisionChecked<BTreeSet<String>>> {
+        self.read_projection_at_revision(expected_state_revision, |connection| {
+            Ok(read_agent_session_acknowledgements(connection)?
+                .ids
+                .into_iter()
+                .collect())
+        })
+    }
+
     pub fn product_convergence_receipt(&self) -> Result<Option<ProductConvergenceReceipt>> {
         let connection = self.open()?;
         connection
@@ -1302,10 +1665,92 @@ impl Database {
         })
     }
 
-    pub fn overlay_placement(&self) -> Result<OverlayPlacement> {
-        Ok(self
-            .get_setting("overlay_placement")?
-            .unwrap_or_else(OverlayPlacement::default))
+    pub(crate) fn overlay_placement_projection(&self) -> Result<OverlayPlacementProjection> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let projection = read_overlay_placement_projection(&transaction)?;
+        transaction.commit()?;
+        Ok(projection)
+    }
+
+    pub(crate) fn overlay_placement_at_revision(
+        &self,
+        expected_state_revision: u64,
+    ) -> Result<RevisionChecked<OverlayPlacementProjection>> {
+        self.read_projection_at_revision(expected_state_revision, |connection| {
+            read_overlay_placement_projection(connection)
+        })
+    }
+
+    pub(crate) fn set_overlay_placement(
+        &self,
+        placement: &OverlayPlacement,
+        intent: Option<OverlayPlacementIntent>,
+        expected_revision: Option<u64>,
+    ) -> Result<OverlayPlacementWriteResult> {
+        placement.validate().map_err(|error| {
+            PetCoreError::Validation(format!("invalid overlay placement: {error}"))
+        })?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = read_overlay_placement_projection(&transaction)?;
+        if expected_revision.is_some_and(|expected| expected != current.revision) {
+            return Ok(OverlayPlacementWriteResult::Conflict {
+                projection: current,
+            });
+        }
+        let next_revision = current.revision.checked_add(1).ok_or_else(|| {
+            PetCoreError::Validation("overlay placement revision overflow".to_string())
+        })?;
+        let updated_at = now_rfc3339();
+        transaction.execute(
+            r#"
+            INSERT INTO settings (key, value_json, updated_at, revision)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at = excluded.updated_at,
+              revision = excluded.revision
+            "#,
+            params![
+                OVERLAY_PLACEMENT_SETTING_KEY,
+                serde_json::to_string_pretty(placement)?,
+                updated_at,
+                next_revision,
+            ],
+        )?;
+        if let Some(intent) = intent {
+            transaction.execute(
+                r#"
+                INSERT INTO settings (key, value_json, updated_at, revision)
+                VALUES (?1, ?2, ?3, 1)
+                ON CONFLICT(key) DO UPDATE SET
+                  value_json = excluded.value_json,
+                  updated_at = excluded.updated_at,
+                  revision = settings.revision + 1
+                "#,
+                params![
+                    OVERLAY_PLACEMENT_INTENT_SETTING_KEY,
+                    serde_json::to_string(&intent)?,
+                    updated_at
+                ],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                params![OVERLAY_PLACEMENT_INTENT_SETTING_KEY],
+            )?;
+        }
+        let state_revision = state_revision_in_connection(&transaction)?;
+        transaction.commit()?;
+        Ok(OverlayPlacementWriteResult::Updated {
+            state_revision,
+            projection: OverlayPlacementProjection {
+                placement: placement.clone(),
+                intent,
+                revision: next_revision,
+            },
+        })
     }
 
     pub fn connection_statuses(&self) -> Result<Vec<AgentConnectionStatus>> {
@@ -2063,6 +2508,185 @@ impl Database {
             }
         }
         Ok(false)
+    }
+
+    /// Reads the durable hook history needed to resolve the current Codex
+    /// runtime host. App Server activity rows are deliberately excluded: they
+    /// describe a persisted thread, not the process that is currently running
+    /// its turn. The caller is capped at the same eight threads returned by the
+    /// bounded App Server activity poll.
+    pub(crate) fn codex_runtime_surface_history(
+        &self,
+        sessions: &[(String, Option<String>)],
+    ) -> Result<BTreeMap<String, CodexRuntimeSurfaceHistory>> {
+        const MAX_CODEX_RUNTIME_SURFACE_SESSIONS: usize = 8;
+        let requested_turns = sessions.iter().cloned().collect::<BTreeMap<_, _>>();
+        if requested_turns.len() > MAX_CODEX_RUNTIME_SURFACE_SESSIONS {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "Codex runtime surface history accepts at most {MAX_CODEX_RUNTIME_SURFACE_SESSIONS} sessions"
+            )));
+        }
+        let mut histories = requested_turns
+            .keys()
+            .map(|session_id| (session_id.clone(), CodexRuntimeSurfaceHistory::default()))
+            .collect::<BTreeMap<_, _>>();
+        if histories.is_empty() {
+            return Ok(histories);
+        }
+
+        let requested = requested_turns
+            .iter()
+            .map(|(session_id, turn_id)| {
+                (
+                    session_id.clone(),
+                    normalized_session_key(normalized_session_id(Some(session_id)).as_deref()),
+                    turn_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let placeholders = (0..requested.len())
+            .map(|index| {
+                let first = index * 3 + 1;
+                format!("(?{first}, ?{}, ?{})", first + 1, first + 2)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            r#"
+            WITH requested(session_id, session_key, turn_id) AS (
+              VALUES {placeholders}
+            ),
+            trusted AS (
+              SELECT requested.session_id AS requested_session_id,
+                     requested.turn_id AS requested_turn_id,
+                     events.row_id
+              FROM requested
+              JOIN agent_events AS events
+                ON events.source = 'codex'
+               AND events.session_key = requested.session_key
+              WHERE json_type(events.payload_json, '$.diagnostic') = 'false'
+                AND json_type(events.payload_json, '$.contract_version') = 'text'
+                AND json_extract(events.payload_json, '$.contract_version') = '{CODEX_HOOKS_CONTRACT_VERSION}'
+                AND json_extract(events.payload_json, '$.source_event') IN (
+                  'SessionStart',
+                  'UserPromptSubmit',
+                  'PreToolUse',
+                  'PermissionRequest',
+                  'PostToolUse',
+                  'PreCompact',
+                  'PostCompact',
+                  'SubagentStart',
+                  'SubagentStop',
+                  'Stop'
+                )
+                AND (
+                  json_type(events.payload_json, '$.turn_id') IS NULL
+                  OR json_type(events.payload_json, '$.turn_id') = 'null'
+                  OR (
+                    json_type(events.payload_json, '$.turn_id') = 'text'
+                    AND length(json_extract(events.payload_json, '$.turn_id')) BETWEEN 1 AND 256
+                    AND trim(json_extract(events.payload_json, '$.turn_id')) = json_extract(events.payload_json, '$.turn_id')
+                  )
+                )
+                AND (
+                  (
+                    json_extract(events.payload_json, '$.session_surface') = 'chatgpt_app'
+                    AND (
+                      json_type(events.payload_json, '$.terminal_app') IS NULL
+                      OR json_type(events.payload_json, '$.terminal_app') = 'null'
+                    )
+                    AND (
+                      json_type(events.payload_json, '$.session_open_url') IS NULL
+                      OR json_type(events.payload_json, '$.session_open_url') = 'null'
+                    )
+                  )
+                  OR (
+                    json_extract(events.payload_json, '$.session_surface') = 'cli_terminal'
+                    AND (
+                      json_type(events.payload_json, '$.terminal_app') IS NULL
+                      OR json_type(events.payload_json, '$.terminal_app') = 'null'
+                      OR json_extract(events.payload_json, '$.terminal_app') IN ('warp', 'terminal', 'iterm2', 'ghostty')
+                    )
+                    AND (
+                      json_type(events.payload_json, '$.session_open_url') IS NULL
+                      OR json_type(events.payload_json, '$.session_open_url') = 'null'
+                      OR (
+                        json_extract(events.payload_json, '$.terminal_app') = 'warp'
+                        AND (
+                          (
+                            length(json_extract(events.payload_json, '$.session_open_url')) = 47
+                            AND substr(json_extract(events.payload_json, '$.session_open_url'), 1, 15) = 'warp://session/'
+                            AND substr(json_extract(events.payload_json, '$.session_open_url'), 16) NOT GLOB '*[^0-9A-Fa-f]*'
+                          )
+                          OR (
+                            length(json_extract(events.payload_json, '$.session_open_url')) = 54
+                            AND substr(json_extract(events.payload_json, '$.session_open_url'), 1, 22) = 'warppreview://session/'
+                            AND substr(json_extract(events.payload_json, '$.session_open_url'), 23) NOT GLOB '*[^0-9A-Fa-f]*'
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+            ),
+            summary AS (
+              SELECT requested_session_id,
+                     1 AS has_any_trusted_marker,
+                     MAX(CASE
+                       WHEN requested_turn_id IS NOT NULL
+                        AND json_extract(events.payload_json, '$.turn_id') = requested_turn_id
+                       THEN trusted.row_id
+                     END) AS latest_current_turn_row_id
+              FROM trusted
+              JOIN agent_events AS events ON events.row_id = trusted.row_id
+              GROUP BY requested_session_id
+            )
+            SELECT requested.session_id,
+                   COALESCE(summary.has_any_trusted_marker, 0),
+                   current.row_id, current.external_event_id, current.source,
+                   current.project_path, current.session_id, current.event_type,
+                   current.title, current.detail, current.payload_json, current.created_at
+            FROM requested
+            LEFT JOIN summary ON summary.requested_session_id = requested.session_id
+            LEFT JOIN agent_events AS current
+              ON current.row_id = summary.latest_current_turn_row_id
+            "#
+        );
+        let parameters = requested
+            .iter()
+            .flat_map(|(session_id, session_key, turn_id)| {
+                [
+                    rusqlite::types::Value::Text(session_id.clone()),
+                    rusqlite::types::Value::Text(session_key.clone()),
+                    turn_id
+                        .as_ref()
+                        .map_or(rusqlite::types::Value::Null, |turn_id| {
+                            rusqlite::types::Value::Text(turn_id.clone())
+                        }),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let connection = self.open()?;
+        let mut statement = connection.prepare(&query)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(parameters.iter()), |row| {
+            let session_id = row.get::<_, String>(0)?;
+            let has_any_trusted_marker = row.get::<_, bool>(1)?;
+            let marker = row
+                .get::<_, Option<i64>>(2)?
+                .map(|_| sequenced_session_event_from_row_at(row, 2))
+                .transpose()?;
+            Ok((session_id, has_any_trusted_marker, marker))
+        })?;
+        for row in rows {
+            let (session_id, has_any_trusted_marker, marker) = row?;
+            let Some(history) = histories.get_mut(&session_id) else {
+                continue;
+            };
+            history.has_any_trusted_marker = has_any_trusted_marker;
+            history.latest_current_turn_marker =
+                marker.filter(|marker| trusted_codex_runtime_surface_marker(&marker.event));
+        }
+        Ok(histories)
     }
 
     pub fn recent_sequenced_events(&self, limit: usize) -> Result<Vec<SequencedAgentEvent>> {
@@ -3108,20 +3732,19 @@ impl Database {
 
     pub fn upsert_pet(&self, pet: &PetSummary) -> Result<()> {
         let connection = self.open()?;
-        let state_durations_json = serde_json::to_string(&pet.state_durations_ms)?;
+        let states_json = serde_json::to_string(&pet.states)?;
         connection.execute(
             r#"
             INSERT INTO pets
-              (id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+              (id, name, style, quality, render_width, render_height, states_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               style = excluded.style,
               quality = excluded.quality,
               render_width = excluded.render_width,
               render_height = excluded.render_height,
-              native_fps = excluded.native_fps,
-              state_durations_json = excluded.state_durations_json,
+              states_json = excluded.states_json,
               petpack_path = excluded.petpack_path,
               cover_path = excluded.cover_path,
               origin = excluded.origin,
@@ -3137,8 +3760,7 @@ impl Database {
                 enum_name(pet.quality),
                 pet.render_size.width as i64,
                 pet.render_size.height as i64,
-                pet.native_fps as i64,
-                state_durations_json,
+                states_json,
                 pet.petpack_path,
                 pet.cover_path,
                 enum_name(pet.origin),
@@ -3151,29 +3773,30 @@ impl Database {
         Ok(())
     }
 
-    /// Commits a pet summary and the "first pet becomes active" rule in one
+    /// Commits a pet summary and the "first valid pet becomes active" rule in one
     /// SQLite transaction. Callers can therefore publish an immutable asset
     /// revision and roll it back as a unit when this transaction fails.
     pub fn upsert_pet_and_activate_if_first(&self, pet: &PetSummary) -> Result<bool> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
-        let state_durations_json = serde_json::to_string(&pet.state_durations_ms)?;
-        let pet_count: i64 =
-            transaction.query_row("SELECT COUNT(*) FROM pets", [], |row| row.get(0))?;
-        let effective_active = pet_count == 0 || pet.active;
+        let states_json = serde_json::to_string(&pet.states)?;
+        let active_pet_count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM pets WHERE active = 1", [], |row| {
+                row.get(0)
+            })?;
+        let effective_active = active_pet_count == 0 || pet.active;
         transaction.execute(
             r#"
             INSERT INTO pets
-              (id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+              (id, name, style, quality, render_width, render_height, states_json, petpack_path, cover_path, origin, generator, provenance, active, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ON CONFLICT(id) DO UPDATE SET
               name = excluded.name,
               style = excluded.style,
               quality = excluded.quality,
               render_width = excluded.render_width,
               render_height = excluded.render_height,
-              native_fps = excluded.native_fps,
-              state_durations_json = excluded.state_durations_json,
+              states_json = excluded.states_json,
               petpack_path = excluded.petpack_path,
               cover_path = excluded.cover_path,
               origin = excluded.origin,
@@ -3189,8 +3812,7 @@ impl Database {
                 enum_name(pet.quality),
                 pet.render_size.width as i64,
                 pet.render_size.height as i64,
-                pet.native_fps as i64,
-                state_durations_json,
+                states_json,
                 pet.petpack_path,
                 pet.cover_path,
                 enum_name(pet.origin),
@@ -3208,15 +3830,14 @@ impl Database {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
+            SELECT id, name, style, quality, render_width, render_height, states_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
             FROM pets
             ORDER BY created_at DESC
             "#,
         )?;
         let rows = statement.query_map([], |row| {
             let quality: String = row.get(3)?;
-            let (native_fps, state_durations_ms) =
-                decode_pet_timing(row.get(6)?, &row.get::<_, String>(7)?)?;
+            let states = decode_pet_states(&row.get::<_, String>(6)?)?;
             Ok(PetSummary {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -3226,18 +3847,17 @@ impl Database {
                     width: row.get::<_, i64>(4)? as u32,
                     height: row.get::<_, i64>(5)? as u32,
                 },
-                native_fps,
-                state_durations_ms,
-                petpack_path: row.get(8)?,
-                cover_path: row.get(9)?,
-                origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(10)?)
+                states,
+                petpack_path: row.get(7)?,
+                cover_path: row.get(8)?,
+                origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(9)?)
                     .map_err(to_sql_error)?,
-                generator: row.get(11)?,
-                provenance: row.get(12)?,
+                generator: row.get(10)?,
+                provenance: row.get(11)?,
                 revision_id: None,
                 revision_count: 0,
-                active: row.get::<_, i64>(13)? == 1,
-                created_at: row.get(14)?,
+                active: row.get::<_, i64>(12)? == 1,
+                created_at: row.get(13)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -3249,14 +3869,14 @@ impl Database {
         let pet = connection
             .query_row(
                 r#"
-                SELECT id, name, style, quality, render_width, render_height, native_fps, state_durations_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
+                SELECT id, name, style, quality, render_width, render_height, states_json, petpack_path, cover_path, origin, generator, provenance, active, created_at
                 FROM pets
                 WHERE id = ?1
                 "#,
                 params![pet_id],
                 |row| {
                     let quality: String = row.get(3)?;
-                    let (native_fps, state_durations_ms) = decode_pet_timing(row.get(6)?, &row.get::<_, String>(7)?)?;
+                    let states = decode_pet_states(&row.get::<_, String>(6)?)?;
                     Ok(PetSummary {
                         id: row.get(0)?,
                         name: row.get(1)?,
@@ -3266,18 +3886,17 @@ impl Database {
                             width: row.get::<_, i64>(4)? as u32,
                             height: row.get::<_, i64>(5)? as u32,
                         },
-                        native_fps,
-                        state_durations_ms,
-                        petpack_path: row.get(8)?,
-                        cover_path: row.get(9)?,
-                        origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(10)?)
+                        states,
+                        petpack_path: row.get(7)?,
+                        cover_path: row.get(8)?,
+                        origin: enum_from_name::<PetOrigin>(&row.get::<_, String>(9)?)
                             .map_err(to_sql_error)?,
-                        generator: row.get(11)?,
-                        provenance: row.get(12)?,
+                        generator: row.get(10)?,
+                        provenance: row.get(11)?,
                         revision_id: None,
                         revision_count: 0,
-                        active: row.get::<_, i64>(13)? == 1,
-                        created_at: row.get(14)?,
+                        active: row.get::<_, i64>(12)? == 1,
+                        created_at: row.get(13)?,
                     })
                 },
             )
@@ -3424,6 +4043,83 @@ fn state_revision_in_connection(connection: &Connection) -> Result<u64> {
     })
 }
 
+fn read_overlay_placement_projection(
+    connection: &Connection,
+) -> Result<OverlayPlacementProjection> {
+    let placement_row = connection
+        .query_row(
+            "SELECT value_json, revision FROM settings WHERE key = ?1",
+            params![OVERLAY_PLACEMENT_SETTING_KEY],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let (placement, revision) = match placement_row {
+        Some((value, revision)) => (
+            decode_overlay_placement(&value)?,
+            u64::try_from(revision).map_err(|_| {
+                PetCoreError::Validation(
+                    "overlay placement revision must be a non-negative integer".to_string(),
+                )
+            })?,
+        ),
+        None => (OverlayPlacement::default(), 0),
+    };
+    let intent = connection
+        .query_row(
+            "SELECT value_json FROM settings WHERE key = ?1",
+            params![OVERLAY_PLACEMENT_INTENT_SETTING_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| serde_json::from_str::<OverlayPlacementIntent>(&value))
+        .transpose()?;
+    Ok(OverlayPlacementProjection {
+        placement,
+        intent,
+        revision,
+    })
+}
+
+fn decode_overlay_placement(value: &str) -> Result<OverlayPlacement> {
+    let placement = serde_json::from_str::<OverlayPlacement>(value)?;
+    placement.validate().map_err(|error| {
+        PetCoreError::Validation(format!("stored overlay placement is invalid: {error}"))
+    })?;
+    Ok(placement)
+}
+
+fn read_agent_session_acknowledgements(
+    connection: &Connection,
+) -> Result<AgentSessionAcknowledgements> {
+    let value = connection
+        .query_row(
+            "SELECT value_json FROM settings WHERE key = ?1",
+            params![AGENT_SESSION_ACKNOWLEDGEMENTS_SETTING_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let acknowledgements = value
+        .map(|value| serde_json::from_str::<AgentSessionAcknowledgements>(&value))
+        .transpose()?
+        .unwrap_or_default();
+    if acknowledgements.schema_version != AGENT_SESSION_ACKNOWLEDGEMENTS_SCHEMA_VERSION {
+        return Err(PetCoreError::Validation(
+            "unsupported Agent session acknowledgement schema".to_string(),
+        ));
+    }
+    if acknowledgements.ids.len() > MAX_AGENT_SESSION_ACKNOWLEDGEMENTS
+        || acknowledgements
+            .ids
+            .iter()
+            .any(|id| !is_valid_session_acknowledgement_id(id))
+    {
+        return Err(PetCoreError::Validation(
+            "invalid Agent session acknowledgements".to_string(),
+        ));
+    }
+    Ok(acknowledgements)
+}
+
 fn recent_events_in_connection(connection: &Connection, limit: usize) -> Result<Vec<AgentEvent>> {
     let limit = limit.min(MAX_RECENT_EVENTS);
     if limit == 0 {
@@ -3552,7 +4248,14 @@ fn session_message_for_role_in_connection(
 fn sequenced_session_event_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<SequencedAgentEvent> {
-    let row_id = row.get::<_, i64>(0)?;
+    sequenced_session_event_from_row_at(row, 0)
+}
+
+fn sequenced_session_event_from_row_at(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<SequencedAgentEvent> {
+    let row_id = row.get::<_, i64>(offset)?;
     Ok(SequencedAgentEvent {
         source_session_sequence: u64::try_from(row_id).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -3565,8 +4268,84 @@ fn sequenced_session_event_from_row(
         session_activated_at: None,
         session_first_seen_at: None,
         latest_terminal_navigation_payload: None,
-        event: agent_event_from_row(row, 1)?,
+        event: agent_event_from_row(row, offset + 1)?,
     })
+}
+
+fn trusted_codex_runtime_surface_marker(event: &AgentEvent) -> bool {
+    if event.source != AgentSource::Codex
+        || event
+            .payload_json
+            .get("diagnostic")
+            .and_then(Value::as_bool)
+            != Some(false)
+        || event
+            .payload_json
+            .get("contract_version")
+            .and_then(Value::as_str)
+            != Some(CODEX_HOOKS_CONTRACT_VERSION)
+        || !event
+            .payload_json
+            .get("source_event")
+            .and_then(Value::as_str)
+            .is_some_and(|source_event| {
+                matches!(
+                    source_event,
+                    "SessionStart"
+                        | "UserPromptSubmit"
+                        | "PreToolUse"
+                        | "PermissionRequest"
+                        | "PostToolUse"
+                        | "PreCompact"
+                        | "PostCompact"
+                        | "SubagentStart"
+                        | "SubagentStop"
+                        | "Stop"
+                )
+            })
+    {
+        return false;
+    }
+    if event.payload_json.get("turn_id").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|turn_id| !bounded_runtime_marker_text(turn_id, 256))
+            && !value.is_null()
+    }) {
+        return false;
+    }
+
+    let terminal_app = match event.payload_json.get("terminal_app") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value))
+            if matches!(value.as_str(), "warp" | "terminal" | "iterm2" | "ghostty") =>
+        {
+            Some(value.as_str())
+        }
+        _ => return false,
+    };
+    let session_open_url = match event.payload_json.get("session_open_url") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if bounded_runtime_marker_text(value, 256) => {
+            Some(value.as_str())
+        }
+        _ => return false,
+    };
+    match event
+        .payload_json
+        .get("session_surface")
+        .and_then(Value::as_str)
+    {
+        Some("chatgpt_app") => terminal_app.is_none() && session_open_url.is_none(),
+        Some("cli_terminal") => session_open_url.is_none_or(|url| {
+            terminal_app == Some("warp") && validated_warp_focus_url(url).as_deref() == Some(url)
+        }),
+        _ => false,
+    }
+}
+
+fn bounded_runtime_marker_text(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty() && value.trim() == value && value.len() <= maximum_bytes
 }
 
 fn agent_event_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<AgentEvent> {
@@ -4097,31 +4876,23 @@ fn to_sql_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqli
     rusqlite::Error::ToSqlConversionFailure(Box::new(error))
 }
 
-fn decode_pet_timing(
-    native_fps: i64,
-    state_durations_json: &str,
-) -> std::result::Result<(u32, BTreeMap<PetStateName, u32>), rusqlite::Error> {
-    let native_fps = u32::try_from(native_fps).map_err(to_sql_error)?;
-    if !matches!(native_fps, STANDARD_FPS | SMOOTH_FPS) {
-        return Err(to_sql_error(PetCoreError::Validation(format!(
-            "stored pet has unsupported native_fps {native_fps}"
-        ))));
-    }
-    let state_durations_ms: BTreeMap<PetStateName, u32> =
-        serde_json::from_str(state_durations_json).map_err(to_sql_error)?;
-    if state_durations_ms.len() != REQUIRED_STATES.len()
-        || REQUIRED_STATES.iter().any(|state| {
-            !matches!(
-                state_durations_ms.get(state),
-                Some(&SHORT_ACTION_DURATION_MS) | Some(&LONG_ACTION_DURATION_MS)
-            )
+fn decode_pet_states(states_json: &str) -> std::result::Result<Vec<PetState>, rusqlite::Error> {
+    let states: Vec<PetState> = serde_json::from_str(states_json).map_err(to_sql_error)?;
+    if states.len() != REQUIRED_STATES.len()
+        || REQUIRED_STATES
+            .iter()
+            .any(|name| states.iter().filter(|state| state.name == *name).count() != 1)
+        || states.iter().any(|state| {
+            petcore_types::PetTimingContract::from(state)
+                .validate()
+                .is_err()
         })
     {
         return Err(to_sql_error(PetCoreError::Validation(
-            "stored pet has invalid state duration contract".to_string(),
+            "stored pet has invalid V2 state timing contract".to_string(),
         )));
     }
-    Ok((native_fps, state_durations_ms))
+    Ok(states)
 }
 
 fn is_recoverable_corruption(error: &PetCoreError) -> bool {
@@ -4156,6 +4927,37 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
         .optional()
         .map(|value| value.is_some())
         .map_err(Into::into)
+}
+
+fn preflight_active_generation_forms(connection: &Connection) -> Result<()> {
+    if !table_exists(connection, "generation_jobs")? {
+        return Ok(());
+    }
+    let mut statement = connection.prepare(
+        r#"
+        SELECT form_json
+        FROM generation_jobs
+        WHERE status IN (?1, ?2, ?3)
+        ORDER BY updated_at ASC, id ASC
+        "#,
+    )?;
+    let forms = statement.query_map(
+        params![
+            enum_name(GenerationJobStatus::Pending),
+            enum_name(GenerationJobStatus::Running),
+            enum_name(GenerationJobStatus::WaitingForUser),
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    for form in forms {
+        let form = form?;
+        serde_json::from_str::<GenerationForm>(&form).map_err(|error| {
+            PetCoreError::Validation(format!(
+                "active generation form is incompatible with this PetCore contract ({error}); finish or cancel the existing generation before updating"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn backup_if_exists(source: &Path, destination: &Path) -> Result<()> {
@@ -4270,6 +5072,416 @@ mod tests {
         assert!(table_exists);
     }
 
+    #[test]
+    fn legacy_overlay_scale_is_canonicalized_without_weakening_closed_decoding() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("legacy-overlay.sqlite"));
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                r#"
+                UPDATE settings
+                SET value_json = ?2, revision = 7
+                WHERE key = ?1
+                "#,
+                params![
+                    OVERLAY_PLACEMENT_SETTING_KEY,
+                    json!({
+                        "x": 123.5,
+                        "y": 456.25,
+                        "scale": 0.72,
+                        "display_id": "legacy-display"
+                    })
+                    .to_string()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        let projection = database.overlay_placement_projection().unwrap();
+        assert_eq!(projection.placement.x, 123.5);
+        assert_eq!(projection.placement.y, 456.25);
+        assert_eq!(
+            projection.placement.display_width_pt,
+            DEFAULT_OVERLAY_DISPLAY_WIDTH_PT
+        );
+        assert_eq!(projection.placement.display_id, "legacy-display");
+        assert_eq!(projection.revision, 8);
+
+        let connection = Connection::open(database.path()).unwrap();
+        let canonical: Value = connection
+            .query_row(
+                "SELECT value_json FROM settings WHERE key = ?1",
+                params![OVERLAY_PLACEMENT_SETTING_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|value| serde_json::from_str(&value).unwrap())
+            .unwrap();
+        assert!(canonical.get("scale").is_none());
+        assert_eq!(
+            canonical["display_width_pt"],
+            json!(DEFAULT_OVERLAY_DISPLAY_WIDTH_PT)
+        );
+        drop(connection);
+
+        let invalid = Database::new(temp.path().join("invalid-legacy-overlay.sqlite"));
+        invalid.init().unwrap();
+        let connection = Connection::open(invalid.path()).unwrap();
+        connection
+            .execute(
+                r#"
+                UPDATE settings
+                SET value_json = ?2
+                WHERE key = ?1
+                "#,
+                params![
+                    OVERLAY_PLACEMENT_SETTING_KEY,
+                    json!({
+                        "x": 1,
+                        "y": 2,
+                        "scale": 0.72,
+                        "display_id": "legacy-display",
+                        "unexpected": true
+                    })
+                    .to_string()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(invalid.init().is_err());
+    }
+
+    #[test]
+    fn current_overlay_placement_is_rejected_when_any_closed_bound_is_invalid() {
+        let invalid_values = [
+            r#"{"x":1,"y":2,"display_width_pt":1,"display_id":"display"}"#,
+            r#"{"x":1,"y":2,"display_width_pt":112,"display_id":"   "}"#,
+            r#"{"x":1e999,"y":2,"display_width_pt":112,"display_id":"display"}"#,
+            r#"{"x":1,"y":-1e999,"display_width_pt":112,"display_id":"display"}"#,
+        ];
+        for (index, value) in invalid_values.into_iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let database = Database::new(
+                temp.path()
+                    .join(format!("invalid-current-overlay-{index}.sqlite")),
+            );
+            database.init().unwrap();
+            let connection = Connection::open(database.path()).unwrap();
+            connection
+                .execute(
+                    "UPDATE settings SET value_json = ?2 WHERE key = ?1",
+                    params![OVERLAY_PLACEMENT_SETTING_KEY, value],
+                )
+                .unwrap();
+            drop(connection);
+
+            assert!(
+                database.init().is_err(),
+                "invalid current placement {index} must fail initialization"
+            );
+            assert!(
+                database.overlay_placement_projection().is_err(),
+                "invalid current placement {index} must fail projection"
+            );
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("invalid-overlay-write.sqlite"));
+        database.init().unwrap();
+        let invalid = OverlayPlacement {
+            x: f64::NAN,
+            ..OverlayPlacement::default()
+        };
+        assert!(database
+            .set_overlay_placement(&invalid, None, None)
+            .is_err());
+    }
+
+    #[test]
+    fn retired_quality_rows_are_quarantined_without_breaking_v2_pet_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("retired-quality.sqlite"));
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  states_json, petpack_path, cover_path, origin, generator,
+                  provenance, active, created_at
+                )
+                VALUES (
+                  'pet_legacy_high', 'Legacy High', 'legacy', 'high', 768, 832,
+                  ?1, '/owned/legacy.petpack', '/owned/legacy-cover.png',
+                  'external_import', NULL, NULL, 0, '2026-07-01T00:00:00Z'
+                )
+                "#,
+                params![DEFAULT_PET_STATES_JSON],
+            )
+            .unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  states_json, petpack_path, cover_path, origin, generator,
+                  provenance, active, created_at
+                )
+                VALUES (
+                  'pet_legacy_standard', 'Legacy Standard', 'legacy', 'standard', 192, 208,
+                  ?1, '/owned/legacy-standard.petpack', '/owned/legacy-standard-cover.png',
+                  'external_import', NULL, NULL, 1, '2026-07-02T00:00:00Z'
+                )
+                "#,
+                params![DEFAULT_PET_STATES_JSON],
+            )
+            .unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  states_json, petpack_path, cover_path, origin, generator,
+                  provenance, active, created_at
+                )
+                VALUES (
+                  'pet_existing_v2', 'Existing V2', 'current', 'standard', 384, 416,
+                  ?1, '/owned/existing-v2.petpack', '/owned/existing-v2-cover.png',
+                  'external_import', NULL, NULL, 0, '2026-07-15T00:00:00Z'
+                )
+                "#,
+                params![DEFAULT_PET_STATES_JSON],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        let live_pets = database.list_pets().unwrap();
+        assert_eq!(live_pets.len(), 1);
+        assert_eq!(live_pets[0].id, "pet_existing_v2");
+        assert!(live_pets[0].active);
+
+        let connection = Connection::open(database.path()).unwrap();
+        let quarantined: (String, String, String, i64) = connection
+            .query_row(
+                r#"
+                SELECT quality, petpack_path, retired_reason, active
+                FROM retired_pet_records
+                WHERE id = 'pet_legacy_high'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            quarantined,
+            (
+                "high".to_string(),
+                "/owned/legacy.petpack".to_string(),
+                "unsupported_quality".to_string(),
+                0,
+            )
+        );
+        let quarantined_standard: (String, i64) = connection
+            .query_row(
+                r#"
+                SELECT quality, active
+                FROM retired_pet_records
+                WHERE id = 'pet_legacy_standard'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(quarantined_standard, ("standard".to_string(), 1));
+        let schema_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(schema_version, DATABASE_SCHEMA_VERSION);
+        drop(connection);
+
+        let current = PetSummary {
+            id: "pet_new_v2".to_string(),
+            name: "New V2 Pet".to_string(),
+            style: "current".to_string(),
+            quality: QualityLevel::Standard,
+            render_size: QualityLevel::Standard.render_size(),
+            states: decode_pet_states(DEFAULT_PET_STATES_JSON).unwrap(),
+            petpack_path: "/owned/v2.petpack".to_string(),
+            cover_path: "/owned/v2-cover.png".to_string(),
+            origin: PetOrigin::ExternalImport,
+            generator: None,
+            provenance: None,
+            revision_id: None,
+            revision_count: 0,
+            active: false,
+            created_at: "2026-07-31T00:00:00Z".to_string(),
+        };
+        assert!(!database.upsert_pet_and_activate_if_first(&current).unwrap());
+        assert!(!database.get_pet(&current.id).unwrap().unwrap().active);
+        assert!(database.get_pet("pet_existing_v2").unwrap().unwrap().active);
+    }
+
+    #[test]
+    fn every_row_from_a_pre_v2_pet_table_is_quarantined_before_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("pre-v2-pets.sqlite"));
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE pets (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  style TEXT NOT NULL,
+                  quality TEXT NOT NULL,
+                  render_width INTEGER NOT NULL,
+                  render_height INTEGER NOT NULL,
+                  native_fps INTEGER NOT NULL DEFAULT 10,
+                  state_durations_json TEXT NOT NULL,
+                  petpack_path TEXT NOT NULL,
+                  cover_path TEXT NOT NULL,
+                  active INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL
+                );
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  native_fps, state_durations_json, petpack_path, cover_path,
+                  active, created_at
+                )
+                VALUES (
+                  'pet_pre_v2', 'Pre-V2', 'legacy', 'standard', 384, 416,
+                  20,
+                  '{"idle":1000,"start":2000,"tool":1000,"waiting":2000,"review":1000,"done":2000,"failed":1000}',
+                  '/owned/pre-v2.petpack', '/owned/pre-v2-cover.png',
+                  1, '2026-06-01T00:00:00Z'
+                );
+                PRAGMA user_version = 6;
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        assert!(database.list_pets().unwrap().is_empty());
+
+        let connection = Connection::open(database.path()).unwrap();
+        let retired: (String, i64, String, i64, String) = connection
+            .query_row(
+                r#"
+                SELECT quality, active, retired_reason, legacy_native_fps,
+                       legacy_state_durations_json
+                FROM retired_pet_records
+                WHERE id = 'pet_pre_v2'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            retired,
+            (
+                "standard".to_string(),
+                1,
+                "unsupported_quality".to_string(),
+                20,
+                "{\"idle\":1000,\"start\":2000,\"tool\":1000,\"waiting\":2000,\"review\":1000,\"done\":2000,\"failed\":1000}".to_string(),
+            )
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            DATABASE_SCHEMA_VERSION
+        );
+        assert!(table_has_column(&connection, "pets", "native_fps").unwrap());
+        assert!(table_has_column(&connection, "pets", "state_durations_json").unwrap());
+    }
+
+    #[test]
+    fn interrupted_pre_v2_migration_still_preserves_exact_legacy_timing() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("interrupted-pre-v2.sqlite"));
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE pets (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  style TEXT NOT NULL,
+                  quality TEXT NOT NULL,
+                  render_width INTEGER NOT NULL,
+                  render_height INTEGER NOT NULL,
+                  native_fps INTEGER NOT NULL DEFAULT 10,
+                  state_durations_json TEXT NOT NULL,
+                  states_json TEXT NOT NULL,
+                  petpack_path TEXT NOT NULL,
+                  cover_path TEXT NOT NULL,
+                  active INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL
+                );
+                PRAGMA user_version = 6;
+                "#,
+            )
+            .unwrap();
+        let legacy_timing = r#"{"idle":1000,"start":2000,"tool":1000,"waiting":2000,"review":1000,"done":2000,"failed":1000}"#;
+        connection
+            .execute(
+                r#"
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  native_fps, state_durations_json, states_json, petpack_path,
+                  cover_path, active, created_at
+                )
+                VALUES (
+                  'pet_interrupted_v1', 'Interrupted V1', 'legacy',
+                  'standard', 192, 208, 20, ?1, ?2,
+                  '/owned/interrupted-v1.petpack',
+                  '/owned/interrupted-v1-cover.png',
+                  1, '2026-06-02T00:00:00Z'
+                )
+                "#,
+                params![legacy_timing, DEFAULT_PET_STATES_JSON],
+            )
+            .unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        assert!(database.list_pets().unwrap().is_empty());
+        let connection = Connection::open(database.path()).unwrap();
+        let preserved: (i64, String) = connection
+            .query_row(
+                r#"
+                SELECT legacy_native_fps, legacy_state_durations_json
+                FROM retired_pet_records
+                WHERE id = 'pet_interrupted_v1'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, (20, legacy_timing.to_string()));
+    }
+
     fn message_event(id: &str, role: &str, content: &str, created_at: &str) -> AgentEvent {
         AgentEvent {
             id: id.to_string(),
@@ -4339,6 +5551,241 @@ mod tests {
             }),
             created_at: "2026-07-20T00:00:00Z".to_string(),
         }
+    }
+
+    struct CodexRuntimeMarkerFixture<'a> {
+        id: &'a str,
+        session_id: &'a str,
+        turn_id: Option<&'a str>,
+        source_event: &'a str,
+        contract_version: &'a str,
+        diagnostic: bool,
+        surface: &'a str,
+        terminal_app: Option<&'a str>,
+        session_open_url: Option<&'a str>,
+    }
+
+    impl<'a> CodexRuntimeMarkerFixture<'a> {
+        fn new(
+            id: &'a str,
+            session_id: &'a str,
+            turn_id: Option<&'a str>,
+            source_event: &'a str,
+            surface: &'a str,
+        ) -> Self {
+            Self {
+                id,
+                session_id,
+                turn_id,
+                source_event,
+                contract_version: CODEX_HOOKS_CONTRACT_VERSION,
+                diagnostic: false,
+                surface,
+                terminal_app: None,
+                session_open_url: None,
+            }
+        }
+
+        fn with_contract_version(mut self, contract_version: &'a str) -> Self {
+            self.contract_version = contract_version;
+            self
+        }
+
+        fn diagnostic(mut self) -> Self {
+            self.diagnostic = true;
+            self
+        }
+
+        fn terminal(mut self, terminal_app: &'a str, session_open_url: Option<&'a str>) -> Self {
+            self.terminal_app = Some(terminal_app);
+            self.session_open_url = session_open_url;
+            self
+        }
+    }
+
+    fn codex_runtime_marker(fixture: CodexRuntimeMarkerFixture<'_>) -> AgentEvent {
+        AgentEvent {
+            id: fixture.id.to_string(),
+            source: AgentSource::Codex,
+            project_path: None,
+            session_id: Some(fixture.session_id.to_string()),
+            event_type: AgentEventType::Start,
+            title: AgentEventType::Start.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "schema_version": "apc.agent-event.v1",
+                "external_event_id": fixture.id,
+                "source_event": fixture.source_event,
+                "contract_version": fixture.contract_version,
+                "diagnostic": fixture.diagnostic,
+                "affects_activity": fixture.source_event != "SessionStart",
+                "turn_id": fixture.turn_id,
+                "session_active": fixture.source_event != "SessionStart",
+                "session_open": null,
+                "session_surface": fixture.surface,
+                "terminal_app": fixture.terminal_app,
+                "session_open_url": fixture.session_open_url
+            }),
+            created_at: "2026-07-20T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn codex_runtime_surface_history_is_bounded_and_uses_latest_trusted_current_turn_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        let mut current_cli_old = codex_runtime_marker(
+            CodexRuntimeMarkerFixture::new(
+                "current-cli-old",
+                "current-session",
+                Some("turn-2"),
+                "PreToolUse",
+                "cli_terminal",
+            )
+            .terminal(
+                "warp",
+                Some("warp://session/0123456789abcdef0123456789abcdef"),
+            ),
+        );
+        current_cli_old.created_at = "2026-07-20T00:00:10Z".to_string();
+        let mut current_app_new = codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+            "current-app-new",
+            "current-session",
+            Some("turn-2"),
+            "PostToolUse",
+            "chatgpt_app",
+        ));
+        current_app_new.created_at = "2026-07-20T00:00:01Z".to_string();
+        for marker in [
+            current_cli_old,
+            current_app_new,
+            codex_runtime_marker(
+                CodexRuntimeMarkerFixture::new(
+                    "prior-turn",
+                    "ambiguous-session",
+                    Some("turn-1"),
+                    "UserPromptSubmit",
+                    "cli_terminal",
+                )
+                .terminal("iterm2", None),
+            ),
+            codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+                "session-start",
+                "session-start-only",
+                None,
+                "SessionStart",
+                "chatgpt_app",
+            )),
+            codex_runtime_marker(
+                CodexRuntimeMarkerFixture::new(
+                    "stale-contract",
+                    "untrusted-session",
+                    Some("turn-2"),
+                    "PreToolUse",
+                    "chatgpt_app",
+                )
+                .with_contract_version("codex-hooks-stale"),
+            ),
+            codex_runtime_marker(
+                CodexRuntimeMarkerFixture::new(
+                    "diagnostic",
+                    "diagnostic-session",
+                    Some("turn-2"),
+                    "PreToolUse",
+                    "chatgpt_app",
+                )
+                .diagnostic(),
+            ),
+            codex_runtime_marker(
+                CodexRuntimeMarkerFixture::new(
+                    "invalid-combination",
+                    "invalid-session",
+                    Some("turn-2"),
+                    "PreToolUse",
+                    "chatgpt_app",
+                )
+                .terminal("terminal", None),
+            ),
+            codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+                "probe",
+                "probe-session",
+                Some("turn-2"),
+                "connector.probe",
+                "chatgpt_app",
+            )),
+        ] {
+            database.insert_event(&marker).unwrap();
+        }
+        let mut app_server_poll = codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+            "app-server-current-turn",
+            "current-session",
+            Some("turn-2"),
+            "app_server_activity",
+            "cli_terminal",
+        ));
+        app_server_poll.event_type = AgentEventType::Tool;
+        database
+            .upsert_codex_activity_event(&app_server_poll)
+            .unwrap();
+        app_server_poll.payload_json["activity_content"] = json!("second poll");
+        database
+            .upsert_codex_activity_event(&app_server_poll)
+            .unwrap();
+
+        let histories = database
+            .codex_runtime_surface_history(&[
+                ("current-session".to_string(), Some("turn-2".to_string())),
+                ("ambiguous-session".to_string(), Some("turn-2".to_string())),
+                ("session-start-only".to_string(), Some("turn-2".to_string())),
+                ("untrusted-session".to_string(), Some("turn-2".to_string())),
+                ("diagnostic-session".to_string(), Some("turn-2".to_string())),
+                ("invalid-session".to_string(), Some("turn-2".to_string())),
+                ("probe-session".to_string(), Some("turn-2".to_string())),
+            ])
+            .unwrap();
+
+        let current = &histories["current-session"];
+        assert!(current.has_any_trusted_marker);
+        assert_eq!(
+            current
+                .latest_current_turn_marker
+                .as_ref()
+                .map(|marker| marker.event.id.as_str()),
+            Some("current-app-new")
+        );
+        for session_id in ["ambiguous-session", "session-start-only"] {
+            assert!(histories[session_id].has_any_trusted_marker);
+            assert!(histories[session_id].latest_current_turn_marker.is_none());
+        }
+        for session_id in [
+            "untrusted-session",
+            "diagnostic-session",
+            "invalid-session",
+            "probe-session",
+        ] {
+            assert!(!histories[session_id].has_any_trusted_marker);
+            assert!(histories[session_id].latest_current_turn_marker.is_none());
+        }
+
+        let mut at_limit_with_duplicate = (0..8)
+            .map(|index| (format!("session-{index}"), Some("turn-2".to_string())))
+            .collect::<Vec<_>>();
+        at_limit_with_duplicate.push(("session-0".to_string(), Some("turn-3".to_string())));
+        assert_eq!(
+            database
+                .codex_runtime_surface_history(&at_limit_with_duplicate)
+                .unwrap()
+                .len(),
+            8
+        );
+        let oversized = (0..9)
+            .map(|index| (format!("session-{index}"), Some("turn-2".to_string())))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            database.codex_runtime_surface_history(&oversized),
+            Err(PetCoreError::InvalidRequest(_))
+        ));
     }
 
     fn matched_projection(

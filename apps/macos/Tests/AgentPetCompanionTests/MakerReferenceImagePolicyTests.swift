@@ -112,9 +112,6 @@ struct MakerReferenceImagePolicyTests {
 
     @Test
     func failedCreateRetryUsesTheEditedDraftInsteadOfTheSubmittedForm() throws {
-        var editedDurations = PetAnimationContract.defaultStateDurationsMS
-        editedDurations["idle"] = 1_000
-        editedDurations["done"] = 2_000
         let oldForm = GenerationForm(
             description: "old brief",
             style: StylePreset.realistic.rawValue,
@@ -132,26 +129,19 @@ struct MakerReferenceImagePolicyTests {
             session: session,
             descriptionText: "edited brief",
             style: .pixel,
-            quality: .ultra,
-            referenceImages: [],
-            nativeFPS: 20,
-            stateDurationsMS: editedDurations
+            quality: .low,
+            referenceImages: []
         ))
 
         #expect(retry.description == "edited brief")
         #expect(retry.description != oldForm.description)
         #expect(retry.style == StylePreset.pixel.rawValue)
-        #expect(retry.quality == .ultra)
-        #expect(retry.nativeFPS == 20)
-        #expect(retry.stateDurationsMS == editedDurations)
+        #expect(retry.quality == .low)
     }
 
     @MainActor
     @Test
-    func createAndEditSessionsSubmitTheSelectedOrBaselineTiming() {
-        var durations = PetAnimationContract.defaultStateDurationsMS
-        durations["idle"] = 1_000
-        durations["done"] = 2_000
+    func createAndEditSessionsSubmitOnlyMakerInputs() {
         let store = AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
@@ -162,59 +152,47 @@ struct MakerReferenceImagePolicyTests {
             petCoreRequestOverride: { method, _, _ in
                 if method == "generation.edit" {
                     return [
-                        "job_id": "job_timing",
-                        "native_fps": 20,
-                        "state_durations_ms": durations,
+                        "job_id": "job_edit",
                     ]
                 }
-                return ["job_id": "job_timing"]
+                return ["job_id": "job_create"]
             }
         )
 
-        store.updateGenerationDescription("A pet with authored timing")
-        store.selectGenerationNativeFPS(20)
-        for stateName in PetAnimationContract.orderedStateNames {
-            store.selectGenerationStateDuration(
-                durations[stateName] ?? 1_000,
-                for: stateName
-            )
-        }
+        store.updateGenerationDescription("A calm pixel pet")
+        store.selectGenerationStyle(.pixel)
+        store.selectGenerationQuality(.low)
         store.startGeneration()
 
         #expect(store.generationSession.operation == .create)
-        #expect(store.generationSession.submittedForm?.nativeFPS == 20)
-        #expect(store.generationSession.submittedForm?.stateDurationsMS == durations)
+        #expect(store.generationSession.submittedForm?.description == "A calm pixel pet")
+        #expect(store.generationSession.submittedForm?.style == StylePreset.pixel.rawValue)
+        #expect(store.generationSession.submittedForm?.quality == .low)
 
         _ = store.reduceGeneration(.reset)
         let pet = PetSummary(
-            id: "pet_authoredtiming",
-            name: "Authored Timing",
+            id: "pet_authored",
+            name: "Authored Pet",
             style: StylePreset.pixel.rawValue,
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
-            petpackPath: "/tmp/pet_authoredtiming.petpack",
+            quality: .standard,
+            renderSize: QualityLevel.standard.renderSize,
+            petpackPath: "/tmp/pet_authored.petpack",
             coverPath: "",
-            nativeFPS: 20,
-            stateDurationsMS: durations,
             active: false,
             createdAt: "2026-07-23T00:00:00Z"
         )
-        store.startPetEdit(pet, instruction: "Keep the animation timing")
+        store.startPetEdit(pet, instruction: "Keep the authored animation")
 
         #expect(store.generationSession.operation == .modify)
-        #expect(store.generationSession.submittedForm?.nativeFPS == pet.nativeFPS)
-        #expect(store.generationSession.submittedForm?.stateDurationsMS == pet.stateDurationsMS)
+        #expect(store.generationSession.submittedForm?.style == pet.style)
+        #expect(store.generationSession.submittedForm?.quality == pet.quality)
     }
 
     @MainActor
     @Test
-    func historicalEditReceiptImmediatelyReconcilesTheSelectedBaselineTiming() async {
+    func historicalEditReceiptReconcilesTheSelectedBaselineIdentity() async {
         let receiptGate = HistoricalEditReceiptGate()
         let baselineRevisionID = "rev_11111111111111111111111111111111"
-        var currentHeadDurations = PetAnimationContract.defaultStateDurationsMS
-        currentHeadDurations["idle"] = 1_000
-        currentHeadDurations["start"] = 2_000
-        let baselineDurations = PetAnimationContract.defaultStateDurationsMS
         let store = AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
@@ -238,14 +216,12 @@ struct MakerReferenceImagePolicyTests {
             id: "pet_historicaltiming",
             name: "Historical Timing",
             style: StylePreset.pixel.rawValue,
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
+            quality: .standard,
+            renderSize: QualityLevel.standard.renderSize,
             petpackPath: "/tmp/pet_historicaltiming.petpack",
             coverPath: "",
             revisionID: "rev_22222222222222222222222222222222",
             revisionCount: 2,
-            nativeFPS: 20,
-            stateDurationsMS: currentHeadDurations,
             active: false,
             createdAt: "2026-07-23T00:00:00Z"
         )
@@ -258,23 +234,20 @@ struct MakerReferenceImagePolicyTests {
         await receiptGate.waitUntilRequested()
 
         #expect(store.generationSession.state == .starting)
-        #expect(store.generationSession.submittedForm?.nativeFPS == 20)
-        #expect(store.generationSession.submittedForm?.stateDurationsMS == currentHeadDurations)
+        #expect(store.generationSession.submittedForm?.quality == currentHead.quality)
+        #expect(store.generationSession.submittedForm?.style == currentHead.style)
 
         receiptGate.resume(with: [
-            "job_id": "job_historical_timing",
+            "job_id": "job_historical_edit",
             "baseline_revision_id": baselineRevisionID,
-            "native_fps": 10,
-            "state_durations_ms": baselineDurations,
         ])
         for _ in 0 ..< 100 where store.generationSession.jobID == nil {
             await Task.yield()
         }
 
-        #expect(store.generationSession.jobID == "job_historical_timing")
+        #expect(store.generationSession.jobID == "job_historical_edit")
         #expect(store.generationSession.baselineRevisionID == baselineRevisionID)
-        #expect(store.generationSession.submittedForm?.nativeFPS == 10)
-        #expect(store.generationSession.submittedForm?.stateDurationsMS == baselineDurations)
+        #expect(store.generationSession.submittedForm?.quality == currentHead.quality)
         _ = store.reduceGeneration(.reset)
     }
 

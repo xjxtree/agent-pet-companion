@@ -39,6 +39,24 @@ struct PetCoreTransportTests {
         }
 
         do {
+            _ = try PetCoreClient.decodeResult(
+                from: Data(
+                    """
+                    {"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found: product.convergence.preflight"}}
+
+                    """.utf8
+                )
+            )
+            Issue.record("Expected a versioned RPC error")
+        } catch let error as PetCoreClientError {
+            #expect(error.rpcCode == -32601)
+            #expect(
+                error.rpcMessage
+                    == "method not found: product.convergence.preflight"
+            )
+        }
+
+        do {
             _ = try PetCoreClient.decodeResult(from: Data("[]".utf8))
             Issue.record("Expected an invalid response")
         } catch PetCoreClientError.invalidResponse {

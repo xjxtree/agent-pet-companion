@@ -259,11 +259,10 @@ struct OnboardingModelsTests {
             id: id,
             name: name,
             style: "modern",
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
+            quality: .standard,
+            renderSize: QualityLevel.standard.renderSize,
             petpackPath: "/tmp/\(id).petpack",
             coverPath: "/tmp/\(id)-cover.png",
-            nativeFPS: 20,
             active: false,
             createdAt: "2026-07-23T00:00:00Z"
         )

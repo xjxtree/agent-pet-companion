@@ -9,6 +9,7 @@ pub mod db;
 pub mod diagnostics;
 pub mod event_envelope;
 pub mod generation;
+pub mod interaction_attestation;
 pub mod launch_agent;
 pub mod metrics;
 pub mod paths;
@@ -16,6 +17,7 @@ pub mod pet_revision;
 pub mod petpack;
 pub mod process_runner;
 pub mod reference_images;
+pub mod rollback_checkpoint;
 pub mod rpc;
 pub mod runtime_manifest;
 

@@ -54,8 +54,26 @@ struct LocalizationTests {
             == "Focus Pet Sessions")
         #expect(APCLocalization.text(.appActionFocusPetSessions, locale: "zh-Hans")
             == "聚焦桌宠会话")
-        #expect(APCLocalization.text(.appActionFocusPetResize, locale: "en")
-            == "Focus Pet Resize Handle")
+        #expect(APCLocalization.text(.configDisplayWidthAccessibility, locale: "en")
+            == "Pet size")
+        #expect(APCLocalization.text(.configDisplayWidthAccessibility, locale: "zh-Hans")
+            == "宠物大小")
+        #expect(APCLocalization.text(
+            .overlaySessionNavigationFailed,
+            locale: "en"
+        ).contains("message was kept"))
+        #expect(APCLocalization.text(
+            .overlaySessionNavigationFailed,
+            locale: "zh-Hans"
+        ).contains("消息已保留"))
+        #expect(APCLocalization.text(
+            .overlaySessionNavigationDegraded,
+            locale: "en"
+        ).contains("exact session"))
+        #expect(APCLocalization.text(
+            .overlaySessionNavigationDegraded,
+            locale: "zh-Hans"
+        ).contains("对应会话"))
         #expect(APCLocalizedPresentation.interfaceLanguageTitle(
             .system,
             locale: "en"
@@ -72,15 +90,77 @@ struct LocalizationTests {
 
     @Test
     func typedPresentationLocalizesLabelsWithoutTranslatingProtocolNames() {
-        #expect(APCLocalizedPresentation.eventTitle(.tool, locale: "en") == "Using a tool")
-        #expect(APCLocalizedPresentation.eventTitle(.tool, locale: "zh-Hans") == "执行工具")
+        #expect(APCLocalizedPresentation.eventTitle(.tool, locale: "en") == "Using Tools")
+        #expect(APCLocalizedPresentation.eventTitle(.tool, locale: "zh-Hans") == "正在调用工具")
         #expect(APCLocalizedPresentation.styleTitle(.semiRealistic, locale: "en") == "Semi-realistic")
-        #expect(APCLocalizedPresentation.qualityTitle(.high, locale: "zh-Hans") == "高清")
+        #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "zh-Hans") == "标准")
 
         let contract = APCLocalization.text(.studioOutputContractDetail, locale: "en")
         for protocolState in ["idle", "start", "tool", "waiting", "review", "done", "failed"] {
             #expect(contract.contains(protocolState))
         }
+    }
+
+    @Test
+    func responseEventsUseTheSameLifecycleLabelsAsThePetBubble() {
+        for locale in ["en", "zh-Hans"] {
+            for event in AgentEventKind.allCases {
+                #expect(
+                    APCLocalizedPresentation.eventTitle(event, locale: locale)
+                        == APCLocalizedPresentation.lifecycleTitle(
+                            ProductLifecycleState(eventKind: event),
+                            locale: locale
+                        )
+                )
+            }
+        }
+    }
+
+    @Test
+    func responseEventDetailsExplainTheUnifiedLifecycleMeaning() {
+        let expectedEnglish: [(APCLocalizationKey, String)] = [
+            (.configEventStartDetail, "Agent is thinking through your request"),
+            (.configEventToolDetail, "Agent is using a local tool"),
+            (.configEventWaitingDetail, "Needs your approval, answer, or decision"),
+            (.configEventReviewDetail, "The result is ready to review"),
+            (.configEventDoneDetail, "The task is complete"),
+            (.configEventFailedDetail, "The task needs your attention"),
+        ]
+        let expectedChinese: [(APCLocalizationKey, String)] = [
+            (.configEventStartDetail, "Agent 正在思考你的请求"),
+            (.configEventToolDetail, "Agent 正在调用本地工具"),
+            (.configEventWaitingDetail, "需要你的确认、回答或决策"),
+            (.configEventReviewDetail, "结果可以查看"),
+            (.configEventDoneDetail, "任务已完成"),
+            (.configEventFailedDetail, "任务需要处理"),
+        ]
+
+        for (key, expected) in expectedEnglish {
+            #expect(APCLocalization.text(key, locale: "en") == expected)
+        }
+        for (key, expected) in expectedChinese {
+            #expect(APCLocalization.text(key, locale: "zh-Hans") == expected)
+        }
+    }
+
+    @Test
+    func persistentResponseCopyUsesTheUnifiedAttentionLabels() {
+        #expect(
+            APCLocalization.text(.configPersistenceNote, locale: "en")
+                == "Needs You, Ready to Review, and Needs Attention sessions remain visible regardless of the normal message timeout."
+        )
+        #expect(
+            APCLocalization.text(.configPersistencePreview, locale: "en")
+                == "Needs You, Ready to Review, and Needs Attention remain visible until the state changes or you dismiss the session."
+        )
+        #expect(
+            APCLocalization.text(.configPersistenceNote, locale: "zh-Hans")
+                == "“等你处理”“可以查看”和“需要处理”的会话始终保持显示，不受普通消息收起时间影响。"
+        )
+        #expect(
+            APCLocalization.text(.configPersistencePreview, locale: "zh-Hans")
+                == "“等你处理”“可以查看”和“需要处理”会持续显示，直到状态变化或你关闭该会话。"
+        )
     }
 
     @Test
@@ -106,6 +186,14 @@ struct LocalizationTests {
         #expect(APCLocalizedPresentation.navigationUnavailableTitle(
             locale: "en"
         ) == "No safe destination is available")
+        #expect(APCLocalizedPresentation.sessionSurfaceTitle(
+            .app,
+            locale: "en"
+        ) == "App")
+        #expect(APCLocalizedPresentation.sessionSurfaceTitle(
+            .cli,
+            locale: "zh-Hans"
+        ) == "CLI")
 
         for preset in AttentionPreset.allCases {
             #expect(!APCLocalizedPresentation.attentionPresetTitle(
@@ -117,14 +205,9 @@ struct LocalizationTests {
                 locale: "zh-Hans"
             ).isEmpty)
         }
-        #expect(APCLocalizedPresentation.playbackProfileTitle(
-            .standard,
-            locale: "en"
-        ) == "Standard Motion")
-        #expect(APCLocalizedPresentation.playbackProfileTitle(
-            .smooth,
-            locale: "zh-Hans"
-        ) == "流畅动效")
+        #expect(APCLocalizedPresentation.qualityTitle(.low, locale: "en") == "Low")
+        #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "zh-Hans") == "标准")
+        #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "en") == "Standard")
 
         for health in AgentConnectionHealthState.allCases {
             #expect(!APCLocalizedPresentation.connectionHealthTitle(
@@ -307,7 +390,7 @@ struct LocalizationTests {
             desktopPetEnabled: false,
             desktopPetVisible: false,
             activePetName: nil,
-            framesPerSecond: 10,
+            animationTiming: nil,
             localeIdentifier: "en"
         )
         let chinese = ServiceDiagnosticsPresentation(
@@ -317,7 +400,7 @@ struct LocalizationTests {
             desktopPetEnabled: false,
             desktopPetVisible: false,
             activePetName: nil,
-            framesPerSecond: 10,
+            animationTiming: nil,
             localeIdentifier: "zh-Hans"
         )
 

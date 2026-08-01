@@ -7,7 +7,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case appActionQuit = "app.action.quit"
     case appActionTogglePet = "app.action.toggle_pet"
     case appActionFocusPetSessions = "app.action.focus_pet_sessions"
-    case appActionFocusPetResize = "app.action.focus_pet_resize"
     case navigationLibrary = "nav.library"
     case navigationAIPetMaker = "nav.ai_pet_maker"
     case navigationPetConfiguration = "nav.pet_configuration"
@@ -81,7 +80,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case assetRecoveryFailed = "asset_recovery.failed"
     case assetRecoveryDiagnostics = "asset_recovery.diagnostics"
     case librarySpecificationVerifiedStates = "library.specification.verified_states"
-    case librarySpecificationVerifiedFps = "library.specification.verified_fps"
     case librarySpecificationUnavailable = "library.specification.unavailable"
     case libraryStateNotActive = "library.state.not_active"
     case libraryStateIdle = "library.state.idle"
@@ -221,12 +219,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case aboutPrivacy = "about.link.privacy"
     case aboutLicense = "about.link.license"
     case aboutVersionFormat = "about.version.format"
-    case eventStart = "event.start"
-    case eventTool = "event.tool"
-    case eventWaiting = "event.waiting"
-    case eventReview = "event.review"
-    case eventDone = "event.done"
-    case eventFailed = "event.failed"
     case productLifecycleIdle = "product.lifecycle.idle"
     case productLifecycleStart = "product.lifecycle.start"
     case productLifecycleTool = "product.lifecycle.tool"
@@ -237,12 +229,12 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case productNavigationExactSession = "product.navigation.exact_session"
     case productNavigationAgentHostFormat = "product.navigation.agent_host_format"
     case productNavigationUnavailable = "product.navigation.unavailable"
+    case productSessionSurfaceApp = "product.session_surface.app"
+    case productSessionSurfaceCLI = "product.session_surface.cli"
     case productAttentionOnlyWhenNeeded = "product.attention.only_when_needed"
     case productAttentionStandard = "product.attention.standard"
     case productAttentionAllActivity = "product.attention.all_activity"
     case productAttentionCustom = "product.attention.custom"
-    case productMotionStandard = "product.motion.standard"
-    case productMotionSmooth = "product.motion.smooth"
     case productConnectionNotChecked = "product.connection.not_checked"
     case productConnectionChecking = "product.connection.checking"
     case productConnectionConnected = "product.connection.connected"
@@ -258,12 +250,10 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case stylePixel = "style.pixel"
     case styleAnime = "style.anime"
     case styleUnspecified = "style.unspecified"
+    case qualityLow = "quality.low"
     case qualityStandard = "quality.standard"
-    case qualityHigh = "quality.high"
-    case qualityUltra = "quality.ultra"
-    case qualityOriginal = "quality.original"
-    case qualitySizeFormat = "quality.size.format"
-    case qualityRecommendedSizeFormat = "quality.recommended_size.format"
+    case qualityLowDetailFormat = "quality.low_detail.format"
+    case qualityStandardDetailFormat = "quality.standard_detail.format"
     case appearanceSystem = "appearance.system"
     case appearanceLight = "appearance.light"
     case appearanceDark = "appearance.dark"
@@ -320,11 +310,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case studioStyleHeading = "studio.brief.style_heading"
     case studioQualityHeading = "studio.brief.quality_heading"
     case studioQualityContractFormat = "studio.brief.quality_contract_format"
-    case studioTimingHeading = "studio.brief.timing_heading"
-    case studioTimingDetail = "studio.brief.timing_detail"
-    case studioTimingNativeFPS = "studio.brief.timing_native_fps"
-    case studioTimingActionDurations = "studio.brief.timing_action_durations"
-    case studioTimingSecondsFormat = "studio.brief.timing_seconds_format"
+    case studioAuthoredTimingSummaryFormat = "studio.authored_timing_summary.format"
     case studioReferencesHeading = "studio.brief.references_heading"
     case studioReferencesPrivacy = "studio.brief.references_privacy"
     case studioReferencesDropEmpty = "studio.brief.references_drop_empty"
@@ -433,6 +419,11 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configMousePassthroughDetail = "config.mouse_passthrough.detail"
     case configDisplaySize = "config.display_size"
     case configSizeGuidance = "config.size_guidance"
+    case configDisplayWidthValueFormat = "config.display_width.value_format"
+    case configDisplayWidthAccessibility = "config.display_width.accessibility"
+    case configDisplayWidthReset = "config.display_width.reset"
+    case configDisplayClarityLimitFormat = "config.display_clarity.limit_format"
+    case configDisplayClarityWarningFormat = "config.display_clarity.warning_format"
     case configPetInteraction = "config.pet_interaction"
     case configSizeFooter = "config.size_footer"
     case configLivePreview = "config.live_preview"
@@ -448,11 +439,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configThemePicker = "config.theme_picker"
     case configThemeAccessibility = "config.theme_accessibility"
     case configThemeDetail = "config.theme_detail"
-    case configFPSPicker = "config.fps_picker"
-    case configFPSAccessibility = "config.fps_accessibility"
-    case configFPSStandardDetail = "config.fps.standard_detail"
-    case configFPSSmoothDetail = "config.fps.smooth_detail"
-    case configFPSNativeStandardOnlyDetail = "config.fps.native_standard_only_detail"
     case configBubbleTransparency = "config.bubble_transparency"
     case configGlassMore = "config.glass_more"
     case configTransparentMore = "config.transparent_more"
@@ -471,11 +457,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configSourceNeedsRepair = "config.source.needs_repair"
     case configPetHidden = "config.preview.pet_hidden"
     case configDesktopPreviewAccessibility = "config.preview.desktop_accessibility"
-    case configSizeOnlyOnPet = "config.preview.size_only_on_pet"
     case configBubbleAutoShow = "config.preview.bubble_auto_show"
     case configBubbleWorking = "config.preview.bubble_working"
-    case configResizeAccessibility = "config.preview.resize_accessibility"
-    case configResizeHint = "config.preview.resize_hint"
     case configNoPetPreview = "config.preview.no_pet"
     case configCurrentPetFormat = "config.current_pet.format"
     case configLiveMessagePreview = "config.preview.live_messages"
@@ -800,6 +783,11 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayHelpDismiss = "overlay.help.dismiss"
     case overlayHelpOpen = "overlay.help.open"
     case overlayHelpUnavailable = "overlay.help.unavailable"
+    case overlaySessionNavigationUnavailable =
+        "overlay.session.navigation_unavailable"
+    case overlaySessionNavigationFailed = "overlay.session.navigation_failed"
+    case overlaySessionNavigationDegraded =
+        "overlay.session.navigation_degraded"
     case overlayCollapseSessionsFormat = "overlay.sessions.collapse_format"
     case overlayExpandSessionsFormat = "overlay.sessions.expand_format"
     case overlayCloseBubbleAccessibility = "overlay.bubble.close_accessibility"
@@ -812,7 +800,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayExpandBubble = "overlay.bubble.expand"
     case overlayNoPet = "overlay.pet.no_pet"
     case overlayBubbleCountFormat = "overlay.bubble.count_format"
-    case overlayResizeHelp = "overlay.resize.help"
     case overlaySessionAccessibilityFormat = "overlay.session.accessibility_format"
     case libraryPageSubtitle = "library.page.subtitle"
     case librarySearchPlaceholder = "library.search.placeholder"
@@ -832,7 +819,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryFieldImmutableRevisions = "library.field.immutable_revisions"
     case libraryFieldRevisionPolicy = "library.field.revision_policy"
     case libraryFieldStates = "library.field.states"
-    case libraryFieldFPS = "library.field.fps"
+    case libraryFieldTiming = "library.field.timing"
     case libraryFieldDuration = "library.field.duration"
     case libraryFieldFrameCounts = "library.field.frame_counts"
     case libraryFieldRenderSize = "library.field.render_size"
@@ -919,9 +906,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryRevisionCountFormat = "library.revision.count_format"
     case libraryRevisionBundledPolicy = "library.revision.bundled_policy"
     case libraryRevisionNewPolicy = "library.revision.new_policy"
-    case libraryFPSSummary = "library.fps.summary"
-    case libraryFPSStandardSummary = "library.fps.standard_summary"
-    case libraryDurationGroupFormat = "library.duration.group_format"
+    case libraryAuthoredTimingSummaryFormat = "library.authored_timing_summary.format"
+    case libraryDurationStateFormat = "library.duration.state_format"
     case libraryFrameCountStateFormat = "library.frame_count.state_format"
     case librarySourceBundledTitle = "library.source.bundled_title"
     case librarySourceBundledDetail = "library.source.bundled_detail"
@@ -942,7 +928,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case appName = "app.name"
     case sidebarBrand = "sidebar.brand"
     case aboutCopyright = "about.copyright"
-    case commonFPSFormat = "common.fps.format"
     case commonPercentFormat = "common.percent.format"
     case commonCharacterCountFormat = "common.character_count.format"
     case connectionsAgentLabel = "connections.agent_label"
@@ -1197,6 +1182,7 @@ enum APCLocalizedPresentation {
     static func navigationActionTitle(
         _ capability: NavigationCapability,
         source: AgentSource,
+        navigation: AgentSessionNavigation? = nil,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String? {
         switch capability {
@@ -1206,9 +1192,44 @@ enum APCLocalizedPresentation {
             APCLocalization.format(
                 .productNavigationAgentHostFormat,
                 locale: locale,
-                source.title
+                navigationHostTitle(source: source, navigation: navigation) ?? source.title
             )
         case .unavailable:
+            nil
+        }
+    }
+
+    static func sessionSurfaceTitle(
+        _ kind: OverlaySessionSurfaceKind,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.text(
+            kind == .app ? .productSessionSurfaceApp : .productSessionSurfaceCLI,
+            locale: locale
+        )
+    }
+
+    private static func navigationHostTitle(
+        source: AgentSource,
+        navigation: AgentSessionNavigation?
+    ) -> String? {
+        guard let navigation else { return nil }
+        return switch (source, navigation.surface) {
+        case (.codex, "chatgpt_app"):
+            "ChatGPT"
+        case (.claudeCode, "claude_app"):
+            "Claude"
+        case (.opencode, "opencode_app"):
+            "OpenCode"
+        case (_, "cli_terminal"):
+            switch navigation.terminalApp {
+            case "warp": "Warp"
+            case "terminal": "Terminal"
+            case "iterm2": "iTerm2"
+            case "ghostty": "Ghostty"
+            default: nil
+            }
+        default:
             nil
         }
     }
@@ -1230,16 +1251,6 @@ enum APCLocalizedPresentation {
         case .custom: .productAttentionCustom
         }
         return APCLocalization.text(key, locale: locale)
-    }
-
-    static func playbackProfileTitle(
-        _ profile: FpsProfile,
-        locale: String = APCLocalization.interfaceLocaleIdentifier
-    ) -> String {
-        APCLocalization.text(
-            profile == .smooth ? .productMotionSmooth : .productMotionStandard,
-            locale: locale
-        )
     }
 
     static func connectionHealthTitle(
@@ -1317,15 +1328,10 @@ enum APCLocalizedPresentation {
         _ event: AgentEventKind,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
-        let key: APCLocalizationKey = switch event {
-        case .start: .eventStart
-        case .tool: .eventTool
-        case .waiting: .eventWaiting
-        case .review: .eventReview
-        case .done: .eventDone
-        case .failed: .eventFailed
-        }
-        return APCLocalization.text(key, locale: locale)
+        lifecycleTitle(
+            ProductLifecycleState(eventKind: event),
+            locale: locale
+        )
     }
 
     static func styleTitle(
@@ -1348,10 +1354,8 @@ enum APCLocalizedPresentation {
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
         let key: APCLocalizationKey = switch quality {
+        case .low: .qualityLow
         case .standard: .qualityStandard
-        case .high: .qualityHigh
-        case .ultra: .qualityUltra
-        case .original: .qualityOriginal
         }
         return APCLocalization.text(key, locale: locale)
     }
@@ -1361,8 +1365,12 @@ enum APCLocalizedPresentation {
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
         let size = quality.renderSize
+        let key: APCLocalizationKey = switch quality {
+        case .low: .qualityLowDetailFormat
+        case .standard: .qualityStandardDetailFormat
+        }
         return APCLocalization.format(
-            quality == .high ? .qualityRecommendedSizeFormat : .qualitySizeFormat,
+            key,
             locale: locale,
             size.width,
             size.height

@@ -262,18 +262,10 @@ struct PetMakerResultView: View {
                         )
                     )
                 }
-                if let form = store.generationSession.submittedForm {
+                if let resultPet {
                     LabeledContent(
-                        APCLocalization.text(.studioTimingNativeFPS),
-                        value: MakerMotionPresentation.exactValue(
-                            nativeFPS: form.nativeFPS
-                        )
-                    )
-                    LabeledContent(
-                        APCLocalization.text(.studioTimingActionDurations),
-                        value: PetStudioPresentation.stateDurationSummary(
-                            form.stateDurationsMS
-                        )
+                        APCLocalization.text(.studioBaselineAnimation),
+                        value: PetStudioPresentation.timingSummary(resultPet.states)
                     )
                 }
             }

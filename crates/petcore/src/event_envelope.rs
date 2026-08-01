@@ -1,3 +1,4 @@
+use crate::adapter_contracts::normalize_agent_activity_content_for_kind;
 use crate::{enum_from_name, enum_name, PetCoreError, Result};
 use petcore_types::{AgentEvent, AgentEventType, AgentSource};
 use serde_json::{json, Map, Value};
@@ -497,7 +498,13 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
     validate_optional_enum(
         payload,
         "session_surface",
-        &["chatgpt_app", "cli_terminal", "unknown"],
+        &[
+            "chatgpt_app",
+            "claude_app",
+            "opencode_app",
+            "cli_terminal",
+            "unknown",
+        ],
     )?;
     validate_optional_enum(
         payload,
@@ -613,8 +620,14 @@ fn strict_payload(
             "compaction",
         ],
     );
-    let activity_content =
-        normalized_optional_payload_string(payload, "activity_content", MAX_ACTIVITY_CONTENT_BYTES);
+    let activity_content = payload
+        .and_then(|payload| payload.get("activity_content"))
+        .and_then(Value::as_str)
+        .and_then(|content| {
+            normalize_agent_activity_content_for_kind(content, activity_kind.as_str())
+        })
+        .map(Value::String)
+        .unwrap_or(Value::Null);
     let interaction_kind = payload
         .and_then(|payload| payload.get("interaction_kind"))
         .and_then(Value::as_str)
@@ -638,7 +651,13 @@ fn strict_payload(
     let session_surface = normalized_optional_payload_enum(
         payload,
         "session_surface",
-        &["chatgpt_app", "cli_terminal", "unknown"],
+        &[
+            "chatgpt_app",
+            "claude_app",
+            "opencode_app",
+            "cli_terminal",
+            "unknown",
+        ],
     );
     let terminal_app = normalized_optional_payload_enum(
         payload,

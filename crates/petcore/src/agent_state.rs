@@ -1,3 +1,4 @@
+use crate::adapter_contracts::normalize_agent_activity_content_for_kind;
 use crate::enum_name;
 use crate::event_envelope::{
     event_affects_activity, event_requires_prior_user_activation, event_starts_new_activity_epoch,
@@ -6,7 +7,7 @@ use crate::event_envelope::{
 use petcore_types::{AgentEvent, AgentEventType, AgentSource, BehaviorSettings, PetStateName};
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 pub const ACTIVITY_LEASE_SECONDS: i64 = 30;
@@ -114,8 +115,9 @@ pub struct OverlaySessionNavigation {
     pub surface: Option<String>,
     pub terminal_app: Option<String>,
     pub open_url: Option<String>,
-    /// Raw host session identity is never projected. Codex may expose only a
-    /// canonical UUID in this dedicated routing field.
+    /// Raw host session identity is never projected generically. An audited
+    /// App deep link may expose only its canonical UUID in this dedicated
+    /// routing field.
     pub routable_session_id: Option<String>,
 }
 
@@ -136,7 +138,8 @@ impl Serialize for ActiveAgentState {
     {
         let session_id = self.session_id.as_deref().map(opaque_session_id);
         let event = overlay_event_projection(&self.event);
-        let mut state = serializer.serialize_struct("ActiveAgentState", 17)?;
+        let acknowledgement_id = session_acknowledgement_id(&self.event);
+        let mut state = serializer.serialize_struct("ActiveAgentState", 18)?;
         state.serialize_field("state", &self.state)?;
         state.serialize_field("official_status", &self.official_status)?;
         state.serialize_field("source", &self.source)?;
@@ -152,6 +155,7 @@ impl Serialize for ActiveAgentState {
         state.serialize_field("session_message", &self.session_message)?;
         state.serialize_field("session_user_message", &self.session_user_message)?;
         state.serialize_field("session_activity", &self.session_activity)?;
+        state.serialize_field("acknowledgement_id", &acknowledgement_id)?;
         state.serialize_field("event", &event)?;
         state.serialize_field("overlay_display", &self.overlay_display)?;
         state.end()
@@ -207,6 +211,15 @@ pub fn select_active_agent_state(
     candidates: &[SequencedAgentEvent],
     now: OffsetDateTime,
 ) -> Option<ActiveAgentState> {
+    select_active_agent_state_with_acknowledgements(behavior, candidates, now, &BTreeSet::new())
+}
+
+pub fn select_active_agent_state_with_acknowledgements(
+    behavior: &BehaviorSettings,
+    candidates: &[SequencedAgentEvent],
+    now: OffsetDateTime,
+    acknowledged_session_activations: &BTreeSet<String>,
+) -> Option<ActiveAgentState> {
     if !behavior.enabled {
         return None;
     }
@@ -215,6 +228,10 @@ pub fn select_active_agent_state(
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
+        .filter(|candidate| {
+            !acknowledged_session_activations
+                .contains(&session_acknowledgement_id(&candidate.candidate.event))
+        })
         .filter(|candidate| {
             let event = &candidate.candidate.event;
             matches!(
@@ -247,6 +264,15 @@ pub fn select_display_agent_states(
     candidates: &[SequencedAgentEvent],
     now: OffsetDateTime,
 ) -> DisplayAgentStates {
+    select_display_agent_states_with_acknowledgements(behavior, candidates, now, &BTreeSet::new())
+}
+
+pub fn select_display_agent_states_with_acknowledgements(
+    behavior: &BehaviorSettings,
+    candidates: &[SequencedAgentEvent],
+    now: OffsetDateTime,
+    acknowledged_session_activations: &BTreeSet<String>,
+) -> DisplayAgentStates {
     if !behavior.enabled {
         return DisplayAgentStates {
             states: Vec::new(),
@@ -259,6 +285,10 @@ pub fn select_display_agent_states(
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
+        .filter(|candidate| {
+            !acknowledged_session_activations
+                .contains(&session_acknowledgement_id(&candidate.candidate.event))
+        })
         .filter(|candidate| {
             let event = &candidate.candidate.event;
             match event.event_type {
@@ -594,6 +624,28 @@ fn opaque_session_id(value: &str) -> String {
     opaque_overlay_identity("session", value, "ses")
 }
 
+pub fn session_acknowledgement_id(event: &AgentEvent) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"agent-pet-companion/session-acknowledgement/v1\0");
+    for component in [
+        enum_name(event.source),
+        normalized_session_key(event.session_id.as_deref()),
+        event.id.clone(),
+    ] {
+        digest.update(component.as_bytes());
+        digest.update([0]);
+    }
+    format!("ack-{}", hex::encode(digest.finalize()))
+}
+
+pub fn is_valid_session_acknowledgement_id(value: &str) -> bool {
+    value.len() == 68
+        && value.starts_with("ack-")
+        && value[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn opaque_overlay_identity(domain: &str, value: &str, prefix: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"agent-pet-companion/overlay-identity/v1\0");
@@ -649,7 +701,12 @@ pub(crate) fn overlay_navigation(event: &AgentEvent) -> OverlaySessionNavigation
     let surface = payload
         .get("session_surface")
         .and_then(serde_json::Value::as_str)
-        .filter(|value| matches!(*value, "chatgpt_app" | "cli_terminal" | "unknown"))
+        .filter(|value| {
+            matches!(
+                *value,
+                "chatgpt_app" | "claude_app" | "opencode_app" | "cli_terminal" | "unknown"
+            )
+        })
         .map(ToOwned::to_owned);
     let terminal_app = payload
         .get("terminal_app")
@@ -671,23 +728,29 @@ pub(crate) fn overlay_navigation(event: &AgentEvent) -> OverlaySessionNavigation
         && terminal_app.as_deref() == Some("warp"))
     .then_some(projected_open_url)
     .flatten();
-    let routable_session_id = routable_codex_session_id(event);
+    let declared_open_url = payload
+        .get("session_open_url")
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    let app_surface_is_valid = source_app_surface(event.source) == surface.as_deref()
+        && terminal_app.is_none()
+        && !declared_open_url;
+    let routable_session_id = app_surface_is_valid
+        .then(|| routable_app_session_id(event))
+        .flatten();
     let exact_session = session_open != Some(false)
         && (open_url.is_some()
-            || (event.source == AgentSource::Codex
-                && surface.as_deref() == Some("chatgpt_app")
+            || (app_surface_is_valid
                 && session_open == Some(true)
                 && routable_session_id.is_some()));
     let known_terminal_host = surface.as_deref() == Some("cli_terminal")
         && terminal_app
             .as_deref()
             .is_some_and(|value| value != "unknown");
-    let known_codex_host = event.source == AgentSource::Codex
-        && surface.as_deref() == Some("chatgpt_app")
-        && terminal_app.is_none();
+    let known_agent_app_host = app_surface_is_valid;
     let capability = if exact_session {
         OverlayNavigationCapability::ExactSession
-    } else if session_open != Some(false) && (known_terminal_host || known_codex_host) {
+    } else if session_open != Some(false) && (known_terminal_host || known_agent_app_host) {
         // A host-only route needs a specific known application. Merely knowing
         // that a CLI source exists is insufficient: opening an arbitrary
         // terminal would not truthfully return to that Agent.
@@ -744,8 +807,17 @@ fn base36(mut value: u64) -> String {
     String::from_utf8(encoded).expect("base36 digits are valid UTF-8")
 }
 
-fn routable_codex_session_id(event: &AgentEvent) -> Option<String> {
-    if event.source != AgentSource::Codex {
+fn source_app_surface(source: AgentSource) -> Option<&'static str> {
+    match source {
+        AgentSource::Codex => Some("chatgpt_app"),
+        AgentSource::ClaudeCode => Some("claude_app"),
+        AgentSource::Opencode => Some("opencode_app"),
+        AgentSource::Pi => None,
+    }
+}
+
+fn routable_app_session_id(event: &AgentEvent) -> Option<String> {
+    if !matches!(event.source, AgentSource::Codex | AgentSource::ClaudeCode) {
         return None;
     }
     let candidate = event.session_id.as_deref()?.trim();
@@ -774,7 +846,7 @@ fn event_activity(event: &AgentEvent) -> Option<SessionActivity> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+        .and_then(|content| normalize_agent_activity_content_for_kind(content, Some(kind)));
     Some(SessionActivity {
         kind: kind.to_string(),
         content,
@@ -1000,6 +1072,61 @@ mod tests {
         ));
         assert_eq!(
             missing_codex_surface.capability,
+            OverlayNavigationCapability::Unavailable
+        );
+    }
+
+    #[test]
+    fn navigation_capability_distinguishes_desktop_agent_hosts_from_cli() {
+        let claude = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "657555f8-108e-44af-96ac-a306b50451bd",
+            json!({
+                "session_open": true,
+                "session_surface": "claude_app"
+            }),
+        ));
+        assert_eq!(claude.capability, OverlayNavigationCapability::ExactSession);
+        assert_eq!(
+            claude.routable_session_id.as_deref(),
+            Some("657555f8-108e-44af-96ac-a306b50451bd")
+        );
+
+        let claude_host = overlay_navigation(&navigation_event(
+            AgentSource::ClaudeCode,
+            "not-a-routable-uuid",
+            json!({
+                "session_open": true,
+                "session_surface": "claude_app"
+            }),
+        ));
+        assert_eq!(
+            claude_host.capability,
+            OverlayNavigationCapability::AgentHost
+        );
+        assert_eq!(claude_host.routable_session_id, None);
+
+        let opencode = overlay_navigation(&navigation_event(
+            AgentSource::Opencode,
+            "ses_052d7fe89ffeVWsrMygGA3AKvL",
+            json!({
+                "session_open": true,
+                "session_surface": "opencode_app"
+            }),
+        ));
+        assert_eq!(opencode.capability, OverlayNavigationCapability::AgentHost);
+        assert_eq!(opencode.routable_session_id, None);
+
+        let mismatched = overlay_navigation(&navigation_event(
+            AgentSource::Pi,
+            "pi-session",
+            json!({
+                "session_open": true,
+                "session_surface": "opencode_app"
+            }),
+        ));
+        assert_eq!(
+            mismatched.capability,
             OverlayNavigationCapability::Unavailable
         );
     }

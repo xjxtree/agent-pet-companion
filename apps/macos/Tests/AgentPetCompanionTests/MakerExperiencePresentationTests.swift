@@ -129,13 +129,11 @@ struct MakerExperiencePresentationTests {
         let input = GenerationForm(
             description: description,
             style: StylePreset.semiRealistic.rawValue,
-            quality: .high,
+            quality: .low,
             referenceImages: [
                 "/Users/example/private/reference-one.png",
                 "/Users/example/private/reference-two.webp",
-            ],
-            nativeFPS: 20,
-            stateDurationsMS: customDurations
+            ]
         )
 
         let first = MakerSubmittedBriefPresentation(
@@ -151,17 +149,14 @@ struct MakerExperiencePresentationTests {
         #expect(first.descriptionSummary
             == "A small fox with a luminous tail and patient expression.")
         #expect(first.styleTitle == "Semi-realistic")
-        #expect(first.qualityTitle == "High")
-        #expect(first.motionTitle == "Smooth Motion")
+        #expect(first.qualityTitle == "Low")
         #expect(first.referenceCount == 2)
-        #expect(first.nativeFPS == 20)
-        #expect(first.stateDurationsMS == customDurations)
         #expect(!String(describing: first).contains("/Users/example"))
         #expect(!String(describing: first).contains("reference-one"))
     }
 
     @Test
-    func submittedBriefShowsOneCollapsedMotionSummaryAndOnlyTwoExpandedDetails() throws {
+    func submittedBriefShowsOnlyTheFourStableMakerInputs() throws {
         let studio = try source("PetStudioView.swift")
         let summaryStart = try #require(studio.range(
             of: "struct SubmittedFormSummary"
@@ -173,40 +168,11 @@ struct MakerExperiencePresentationTests {
         let summary = String(
             studio[summaryStart.lowerBound ..< summaryEnd.lowerBound]
         )
-        let disclosureStart = try #require(summary.range(
-            of: "AdvancedDetailsDisclosure("
-        ))
-        let disclosureContentStart = try #require(summary.range(
-            of: ") {",
-            range: disclosureStart.upperBound ..< summary.endIndex
-        ))
-        let disclosureEnd = try #require(summary.range(
-            of: "\n                }\n            }\n            .font",
-            range: disclosureContentStart.upperBound ..< summary.endIndex
-        ))
-
-        let ordinarySummary = String(summary[..<disclosureStart.lowerBound])
-        let disclosureHeader = String(
-            summary[disclosureStart.lowerBound ..< disclosureContentStart.lowerBound]
-        )
-        let expandedDetails = String(
-            summary[disclosureContentStart.upperBound ..< disclosureEnd.lowerBound]
-        )
-
-        #expect(occurrences(of: "LabeledContent(", in: ordinarySummary) == 3)
-        #expect(!ordinarySummary.contains(".studioTimingHeading"))
-        #expect(!ordinarySummary.contains("presentation.motionTitle"))
-
-        #expect(occurrences(of: ".studioTimingHeading", in: disclosureHeader) == 1)
-        #expect(occurrences(of: "presentation.motionTitle", in: disclosureHeader) == 1)
-
-        #expect(occurrences(of: "LabeledContent(", in: expandedDetails) == 2)
-        #expect(occurrences(of: ".studioTimingNativeFPS", in: expandedDetails) == 1)
-        #expect(occurrences(of: ".studioTimingActionDurations", in: expandedDetails) == 1)
-        #expect(!expandedDetails.contains(".studioFieldStyle"))
-        #expect(!expandedDetails.contains(".studioFieldQuality"))
-        #expect(!expandedDetails.contains(".studioFieldReferences"))
-        #expect(!expandedDetails.contains("presentation.motionTitle"))
+        #expect(occurrences(of: "LabeledContent(", in: summary) == 3)
+        #expect(summary.contains(".studioFieldStyle"))
+        #expect(summary.contains(".studioFieldQuality"))
+        #expect(summary.contains(".studioFieldReferences"))
+        #expect(!summary.contains("AdvancedDetailsDisclosure("))
     }
 
     @Test
@@ -222,22 +188,6 @@ struct MakerExperiencePresentationTests {
             == MakerSubmittedBriefPresentation.maximumDescriptionScalars + 1)
         #expect(presentation.descriptionSummary.hasSuffix("…"))
         #expect(input.description == original)
-    }
-
-    @Test
-    func standardAndSmoothCopyRetainExactTechnicalValues() {
-        #expect(MakerMotionPresentation.profile(nativeFPS: 10) == .standard)
-        #expect(MakerMotionPresentation.profile(nativeFPS: 20) == .smooth)
-        #expect(MakerMotionPresentation.title(
-            nativeFPS: 10,
-            localeIdentifier: "en"
-        ) == "Standard Motion")
-        #expect(MakerMotionPresentation.title(
-            nativeFPS: 20,
-            localeIdentifier: "zh-Hans"
-        ) == "流畅动效")
-        #expect(MakerMotionPresentation.exactValue(nativeFPS: 10) == "10 FPS")
-        #expect(MakerMotionPresentation.exactValue(nativeFPS: 20) == "20 FPS")
     }
 
     @Test
@@ -270,24 +220,14 @@ struct MakerExperiencePresentationTests {
         ) == nil)
     }
 
-    private var customDurations: [String: Int] {
-        Dictionary(
-            uniqueKeysWithValues: PetAnimationContract.orderedStateNames.map {
-                ($0, $0 == "idle" || $0 == "done" ? 1_000 : 2_000)
-            }
-        )
-    }
-
     private func form(
         description: String = "A calm companion"
     ) -> GenerationForm {
         GenerationForm(
             description: description,
             style: StylePreset.modern.rawValue,
-            quality: .high,
-            referenceImages: [],
-            nativeFPS: 10,
-            stateDurationsMS: PetAnimationContract.defaultStateDurationsMS
+            quality: .standard,
+            referenceImages: []
         )
     }
 
@@ -296,7 +236,7 @@ struct MakerExperiencePresentationTests {
             id: id,
             name: id,
             style: StylePreset.modern.rawValue,
-            quality: .high,
+            quality: .standard,
             renderSize: .init(width: 384, height: 416),
             petpackPath: "/tmp/\(id).petpack",
             coverPath: "/tmp/\(id).png",

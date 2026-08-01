@@ -20,21 +20,19 @@ struct OverlayGeometryTests {
         #expect(OverlayGeometry.bubbleGap <= 3)
         #expect(OverlayGeometry.menuHitSize.width >= 38)
         #expect(OverlayGeometry.menuHitSize.height >= 38)
-        #expect(OverlayGeometry.resizeHitSize.width >= 38)
-        #expect(OverlayGeometry.resizeHitSize.height >= 38)
         #expect(OverlayGeometry.menuVisualSize.width == OverlayGeometry.menuVisualSize.height)
         #expect(OverlayGeometry.menuHitSize.width == OverlayGeometry.menuHitSize.height)
         #expect(OverlayGeometry.menuVisualSize.width < OverlayGeometry.menuHitSize.width)
-        #expect(OverlayGeometry.resizeVisualSize.width < OverlayGeometry.resizeHitSize.width)
     }
 
     @Test
-    func testResizeContractUsesExactVisualHitRangeAndStepValues() {
-        #expect(OverlayGeometry.resizeVisualSize == CGSize(width: 24, height: 24))
-        #expect(OverlayGeometry.resizeHitSize == CGSize(width: 38, height: 38))
-        #expect(OverlayGeometry.minimumScale == 0.10)
-        #expect(OverlayGeometry.maximumScale == 1.80)
-        #expect(OverlayGeometry.resizeStep == 0.05)
+    func displayWidthContractUsesExactRangeAspectAndDefault() {
+        #expect(OverlayGeometry.minimumDisplayWidthPt == 80)
+        #expect(OverlayGeometry.defaultDisplayWidthPt == 112)
+        #expect(OverlayGeometry.maximumDisplayWidthPt == 224)
+        let size = OverlayGeometry.petVisibleSize(displayWidthPt: 112)
+        #expect(size.width == 112)
+        #expect(abs(size.height - 112 * OverlayGeometry.displayAspectHeightRatio) < 0.001)
     }
 
     @Test
@@ -62,80 +60,78 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func testResizeHandleUsesTheSameRightSideControlColumnAsBubbleToggle() {
+    func menuTracksTheRightEdgeAtEverySupportedDisplayWidth() {
         let petCenter = CGPoint(x: 420, y: 360)
 
-        for scale in [OverlayGeometry.minimumScale, 0.72, OverlayGeometry.maximumScale] {
-            let resizeCenter = OverlayGeometry.resizeCenter(petCenter: petCenter, scale: scale)
-            let menuCenter = OverlayGeometry.menuCenter(petCenter: petCenter, scale: scale)
-            let resizeRect = OverlayGeometry.rect(center: resizeCenter, size: OverlayGeometry.resizeHitSize)
-            let menuRect = OverlayGeometry.rect(center: menuCenter, size: OverlayGeometry.menuHitSize)
-
-            #expect(abs(resizeCenter.x - menuCenter.x) < 0.001)
-            #expect(resizeCenter.y > petCenter.y)
-            #expect(!resizeRect.intersects(menuRect))
-
-            let screenResizeCenter = OverlayGeometry.resizeScreenCenter(
-                petScreenCenter: petCenter,
-                scale: scale
+        for displayWidthPt in [
+            OverlayGeometry.minimumDisplayWidthPt,
+            OverlayGeometry.defaultDisplayWidthPt,
+            OverlayGeometry.maximumDisplayWidthPt,
+        ] {
+            let menuCenter = OverlayGeometry.menuCenter(
+                petCenter: petCenter,
+                displayWidthPt: displayWidthPt
             )
+            let petRect = OverlayGeometry.rect(
+                center: petCenter,
+                size: OverlayGeometry.petVisibleSize(displayWidthPt: displayWidthPt)
+            )
+
+            #expect(menuCenter.x > petRect.maxX)
+            #expect(abs(menuCenter.x - petRect.maxX - 8) < 0.001)
+
             let screenMenuCenter = OverlayGeometry.menuScreenCenter(
                 petScreenCenter: petCenter,
-                scale: scale
+                displayWidthPt: displayWidthPt
             )
-            #expect(abs(screenResizeCenter.x - screenMenuCenter.x) < 0.001)
-            #expect(abs((screenResizeCenter.y - petCenter.y) + (resizeCenter.y - petCenter.y)) < 0.001)
+            #expect(abs(screenMenuCenter.x - menuCenter.x) < 0.001)
+            #expect(abs((screenMenuCenter.y - petCenter.y)
+                + (menuCenter.y - petCenter.y)) < 0.001)
         }
-
-        let defaultResizeCenter = OverlayGeometry.resizeCenter(petCenter: petCenter, scale: 0.72)
-        let defaultPetSize = OverlayGeometry.petVisibleSize(scale: 0.72)
-        #expect(defaultResizeCenter.y < petCenter.y + defaultPetSize.height / 2)
     }
 
     @Test
     func testCompactControlsPreactivateMouseAndStayClearOfBubblePanel() {
-        let scale: CGFloat = 0.72
+        let displayWidthPt: CGFloat = 112
         let petCenter = CGPoint(x: 900, y: 420)
         let visibleFrame = CGRect(x: 0, y: 0, width: 1512, height: 934)
         let bubbleSize = CGSize(width: OverlayGeometry.bubbleWidth, height: 76)
         let bubbleCenter = OverlayGeometry.bubbleScreenCenter(
             bubbleSize: bubbleSize,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             screenFrame: visibleFrame
         )
         let bubbleRect = OverlayGeometry.rect(center: bubbleCenter, size: bubbleSize)
         let menuRect = OverlayGeometry.rect(
-            center: OverlayGeometry.menuScreenCenter(petScreenCenter: petCenter, scale: scale),
+            center: OverlayGeometry.menuScreenCenter(
+                petScreenCenter: petCenter,
+                displayWidthPt: displayWidthPt
+            ),
             size: OverlayGeometry.menuHitSize
         )
-        let resizeRect = OverlayGeometry.rect(
-            center: OverlayGeometry.resizeScreenCenter(petScreenCenter: petCenter, scale: scale),
-            size: OverlayGeometry.resizeHitSize
-        )
         let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
         )
 
         #expect(!bubbleRect.intersects(menuRect))
         #expect(activationRect.contains(menuRect.insetBy(dx: -8, dy: -8)))
-        #expect(activationRect.contains(resizeRect.insetBy(dx: -8, dy: -8)))
 
         let petTop = petCenter.y + OverlayGeometry.petVisualVerticalOffsets(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             envelope: nil
         ).top
         #expect(abs(bubbleRect.minY - (petTop + OverlayGeometry.bubbleGap)) < 0.001)
     }
 
     @Test
-    func testBroadActivationZoneDoesNotKeepResizeArtworkVisible() {
-        let scale: CGFloat = 0.72
+    func broadActivationZoneDoesNotKeepMenuArtworkVisible() {
+        let displayWidthPt: CGFloat = 112
         let petCenter = CGPoint(x: 900, y: 420)
         let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
         )
@@ -147,22 +143,22 @@ struct OverlayGeometryTests {
         #expect(activationRect.contains(activationOnlyPoint))
         #expect(!OverlayGeometry.shouldShowControls(
             at: activationOnlyPoint,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
         ))
         #expect(OverlayGeometry.shouldShowControls(
             at: petCenter,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
         ))
         #expect(OverlayGeometry.shouldShowControls(
-            at: OverlayGeometry.resizeScreenCenter(
+            at: OverlayGeometry.menuScreenCenter(
                 petScreenCenter: petCenter,
-                scale: scale
+                displayWidthPt: displayWidthPt
             ),
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
         ))
@@ -170,35 +166,35 @@ struct OverlayGeometryTests {
 
     @Test
     func testPointerRegionsTrackTheActualPetEnvelope() {
-        let scale: CGFloat = 1
+        let displayWidthPt: CGFloat = 112
         let petCenter = CGPoint(x: 500, y: 400)
         let envelope = OverlayPetVisualEnvelope(
             canvasSize: CGSize(width: 1_000, height: 1_000),
             visibleBounds: CGRect(x: 700, y: 200, width: 120, height: 500)
         )
         let visualRect = OverlayGeometry.petVisualScreenRect(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             petVisualEnvelope: envelope
         )
-        let resizeCenter = OverlayGeometry.resizeScreenCenter(
+        let menuCenter = OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petVisualEnvelope: envelope
         )
         let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true,
             petVisualEnvelope: envelope
         )
 
         #expect(visualRect.midX > petCenter.x)
-        #expect(resizeCenter.x > visualRect.maxX)
-        #expect(activationRect.contains(resizeCenter))
+        #expect(menuCenter.x > visualRect.maxX)
+        #expect(activationRect.contains(menuCenter))
         #expect(OverlayGeometry.shouldShowControls(
             at: CGPoint(x: visualRect.midX, y: visualRect.midY),
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true,
             petVisualEnvelope: envelope
@@ -228,7 +224,7 @@ struct OverlayGeometryTests {
             OverlayGeometry.shouldHandleMouse(
                 atTopLeftPoint: point,
                 in: containerSize,
-                scale: 1,
+                displayWidthPt: 112,
                 petCenter: petCenter,
                 bubbleVisible: false,
                 clickMenuEnabled: true,
@@ -240,17 +236,13 @@ struct OverlayGeometryTests {
         }
 
         #expect(!handles(petCenter, hitTest: hitTest))
-        #expect(handles(CGPoint(x: petCenter.x - 70, y: petCenter.y), hitTest: hitTest))
+        #expect(handles(CGPoint(x: petCenter.x - 36, y: petCenter.y), hitTest: hitTest))
 
         // A frame mask is briefly unavailable during launch and state changes.
         // Keep the geometric pet region interactive until pixel data arrives.
         #expect(handles(petCenter, hitTest: nil))
         #expect(handles(
-            OverlayGeometry.resizeCenter(petCenter: petCenter, scale: 1),
-            hitTest: nil
-        ))
-        #expect(handles(
-            OverlayGeometry.menuCenter(petCenter: petCenter, scale: 1),
+            OverlayGeometry.menuCenter(petCenter: petCenter, displayWidthPt: 112),
             hitTest: nil
         ))
     }
@@ -274,8 +266,14 @@ struct OverlayGeometryTests {
         let petCenter = CGPoint(x: 360, y: 280)
         let viewHeight: CGFloat = 700
 
-        func topLeftPointForPixel(x: Int, topRow: Int, scale: CGFloat) -> CGPoint {
-            let drawableSize = CGSize(width: 230 * scale, height: 310 * scale)
+        func topLeftPointForPixel(
+            x: Int,
+            topRow: Int,
+            displayWidthPt: CGFloat
+        ) -> CGPoint {
+            let drawableSize = OverlayGeometry.petVisibleSize(
+                displayWidthPt: displayWidthPt
+            )
             let fittedScale = min(drawableSize.width / 4, drawableSize.height / 2)
             let fittedOrigin = CGPoint(
                 x: (drawableSize.width - 4 * fittedScale) / 2,
@@ -292,19 +290,27 @@ struct OverlayGeometryTests {
             )
         }
 
-        for scale in [CGFloat(0.25), CGFloat(1.8)] {
-            let opaqueTopLeft = topLeftPointForPixel(x: 0, topRow: 0, scale: scale)
-            let transparentBottomLeft = topLeftPointForPixel(x: 0, topRow: 1, scale: scale)
+        for displayWidthPt in [CGFloat(80), CGFloat(224)] {
+            let opaqueTopLeft = topLeftPointForPixel(
+                x: 0,
+                topRow: 0,
+                displayWidthPt: displayWidthPt
+            )
+            let transparentBottomLeft = topLeftPointForPixel(
+                x: 0,
+                topRow: 1,
+                displayWidthPt: displayWidthPt
+            )
 
             #expect(OverlayGeometry.petFrameContainsOpaquePixel(
                 atTopLeftPoint: opaqueTopLeft,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petCenter: petCenter,
                 frameHitTest: hitTest
             ))
             #expect(!OverlayGeometry.petFrameContainsOpaquePixel(
                 atTopLeftPoint: transparentBottomLeft,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petCenter: petCenter,
                 frameHitTest: hitTest
             ))
@@ -340,7 +346,7 @@ struct OverlayGeometryTests {
         #expect(OverlayGeometry.shouldHandleMouse(
             atTopLeftPoint: CGPoint(x: 40, y: 40),
             in: containerSize,
-            scale: 1,
+            displayWidthPt: 112,
             petCenter: CGPoint(x: 400, y: 300),
             bubbleVisible: false,
             clickMenuEnabled: false,
@@ -356,7 +362,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func testBubbleTracksScaledVisiblePetTopForDifferentActionEnvelopes() {
+    func testBubbleTracksSizedVisiblePetTopForDifferentActionEnvelopes() {
         let petCenter = CGPoint(x: 900, y: 420)
         let visibleFrame = CGRect(x: 0, y: 0, width: 1512, height: 934)
         let bubbleSize = CGSize(width: 344, height: 76)
@@ -369,10 +375,13 @@ struct OverlayGeometryTests {
             visibleBounds: CGRect(x: 48, y: 24, width: 288, height: 360)
         )
 
-        func bubbleBottom(scale: CGFloat, envelope: OverlayPetVisualEnvelope) -> CGFloat {
+        func bubbleBottom(
+            displayWidthPt: CGFloat,
+            envelope: OverlayPetVisualEnvelope
+        ) -> CGFloat {
             let center = OverlayGeometry.bubbleScreenCenter(
                 bubbleSize: bubbleSize,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petCenter,
                 screenFrame: visibleFrame,
                 petVisualEnvelope: envelope
@@ -380,14 +389,14 @@ struct OverlayGeometryTests {
             return center.y - bubbleSize.height / 2
         }
 
-        for scale in [0.25, 0.72, 1.2] {
+        for displayWidthPt: CGFloat in [80, 112, 160] {
             let offsets = OverlayGeometry.petVisualVerticalOffsets(
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 envelope: tallAction
             )
             let bubbleCenter = OverlayGeometry.bubbleScreenCenter(
                 bubbleSize: bubbleSize,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petScreenCenter: petCenter,
                 screenFrame: visibleFrame,
                 petVisualEnvelope: tallAction
@@ -396,25 +405,27 @@ struct OverlayGeometryTests {
             let menuRect = OverlayGeometry.rect(
                 center: OverlayGeometry.menuScreenCenter(
                     petScreenCenter: petCenter,
-                    scale: scale,
+                    displayWidthPt: displayWidthPt,
                     petVisualEnvelope: tallAction
                 ),
                 size: OverlayGeometry.menuHitSize
             )
             #expect(abs(
-                bubbleBottom(scale: scale, envelope: tallAction)
+                bubbleBottom(displayWidthPt: displayWidthPt, envelope: tallAction)
                     - (petCenter.y + offsets.top + OverlayGeometry.bubbleGap)
             ) < 0.001)
             #expect(!bubbleRect.intersects(menuRect))
             #expect(bubbleRect.minY - menuRect.maxY >= OverlayGeometry.bubbleGap)
             #expect(
-                bubbleBottom(scale: scale, envelope: tallAction)
-                    > bubbleBottom(scale: scale, envelope: shortAction)
+                bubbleBottom(displayWidthPt: displayWidthPt, envelope: tallAction)
+                    > bubbleBottom(displayWidthPt: displayWidthPt, envelope: shortAction)
             )
         }
 
-        let smallOffset = bubbleBottom(scale: 0.25, envelope: tallAction) - petCenter.y
-        let largeOffset = bubbleBottom(scale: 1.0, envelope: tallAction) - petCenter.y
+        let smallOffset = bubbleBottom(displayWidthPt: 80, envelope: tallAction)
+            - petCenter.y
+        let largeOffset = bubbleBottom(displayWidthPt: 224, envelope: tallAction)
+            - petCenter.y
         #expect(largeOffset > smallOffset)
     }
 
@@ -428,12 +439,12 @@ struct OverlayGeometryTests {
             visibleBounds: CGRect(x: 14, y: 31, width: 174, height: 142)
         )
         let petTop = petCenter.y + OverlayGeometry.petVisualVerticalOffsets(
-            scale: 1.8,
+            displayWidthPt: 224,
             envelope: envelope
         ).top
         let bubbleCenter = OverlayGeometry.bubbleScreenCenter(
             bubbleSize: bubbleSize,
-            scale: 1.8,
+            displayWidthPt: 224,
             petScreenCenter: petCenter,
             screenFrame: visibleFrame,
             petVisualEnvelope: envelope
@@ -451,55 +462,49 @@ struct OverlayGeometryTests {
             visibleBounds: CGRect(x: 54, y: 20, width: 252, height: 370)
         )
 
-        for scale in [0.25, 0.72, 1.8] {
+        for displayWidthPt: CGFloat in [80, 112, 224] {
             let fallbackMenu = OverlayGeometry.menuScreenCenter(
                 petScreenCenter: petCenter,
-                scale: scale
+                displayWidthPt: displayWidthPt
             )
             let fittedMenu = OverlayGeometry.menuScreenCenter(
                 petScreenCenter: petCenter,
-                scale: scale,
-                petVisualEnvelope: envelope
-            )
-            let fittedResize = OverlayGeometry.resizeScreenCenter(
-                petScreenCenter: petCenter,
-                scale: scale,
+                displayWidthPt: displayWidthPt,
                 petVisualEnvelope: envelope
             )
 
             #expect(fittedMenu.x < fallbackMenu.x)
-            #expect(abs(fittedMenu.x - fittedResize.x) < 0.001)
         }
 
         let smallInset = OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            scale: 0.25
+            displayWidthPt: 80
         ).x - OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            scale: 0.25,
+            displayWidthPt: 80,
             petVisualEnvelope: envelope
         ).x
         let largeInset = OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            scale: 1.8
+            displayWidthPt: 224
         ).x - OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            scale: 1.8,
+            displayWidthPt: 224,
             petVisualEnvelope: envelope
         ).x
         #expect(largeInset > smallInset)
     }
 
     @Test
-    func testPetAndControlsStayInsideEachMovementEdgeAtEverySupportedScale() {
+    func testPetAndControlsStayInsideEachMovementEdgeAtEverySupportedSize() {
         let displays = [
             CGRect(x: 0, y: 25, width: 1512, height: 920),
             CGRect(x: -1280, y: 0, width: 1280, height: 760)
         ]
-        let scales: [CGFloat] = [0.10, 0.72, 1.8]
+        let displayWidths: [CGFloat] = [80, 112, 224]
 
         for visibleFrame in displays {
-            for scale in scales {
+            for displayWidthPt in displayWidths {
                 let proposals = [
                     CGPoint(x: visibleFrame.minX, y: visibleFrame.minY),
                     CGPoint(x: visibleFrame.maxX, y: visibleFrame.minY),
@@ -510,19 +515,18 @@ struct OverlayGeometryTests {
                 for proposal in proposals {
                     let center = OverlayGeometry.clampedPetScreenCenter(
                         proposal,
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         visibleFrame: visibleFrame,
                         clickMenuEnabled: true
                     )
                     let bounds = OverlayGeometry.petMovementScreenBounds(
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         petScreenCenter: center,
-                        clickMenuEnabled: true,
-                        includeResize: true
+                        clickMenuEnabled: true
                     )
                     #expect(
                         visibleFrame.insetBy(dx: -0.5, dy: -0.5).contains(bounds),
-                        "movement bounds \(bounds) escaped \(visibleFrame) at scale \(scale)"
+                        "movement bounds \(bounds) escaped \(visibleFrame) at \(displayWidthPt) pt"
                     )
                 }
             }
@@ -530,31 +534,28 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func testClampIncludesVisiblePetMenuAndResizeHitTarget() {
+    func testClampIncludesVisiblePetAndMenuHitTarget() {
         let visibleFrame = CGRect(x: 0, y: 0, width: 800, height: 600)
         let center = OverlayGeometry.clampedPetScreenCenter(
             CGPoint(x: visibleFrame.maxX, y: visibleFrame.minY),
-            scale: 0.72,
+            displayWidthPt: 112,
             visibleFrame: visibleFrame,
             clickMenuEnabled: true
         )
 
         let completeBounds = OverlayGeometry.petMovementScreenBounds(
-            scale: 0.72,
+            displayWidthPt: 112,
             petScreenCenter: center,
-            clickMenuEnabled: true,
-            includeResize: true
-        )
-        let resizeBounds = OverlayGeometry.rect(
-            center: OverlayGeometry.resizeScreenCenter(petScreenCenter: center, scale: 0.72),
-            size: OverlayGeometry.resizeHitSize
+            clickMenuEnabled: true
         )
         let menuBounds = OverlayGeometry.rect(
-            center: OverlayGeometry.menuScreenCenter(petScreenCenter: center, scale: 0.72),
+            center: OverlayGeometry.menuScreenCenter(
+                petScreenCenter: center,
+                displayWidthPt: 112
+            ),
             size: OverlayGeometry.menuHitSize
         )
 
-        #expect(completeBounds.contains(resizeBounds))
         #expect(completeBounds.contains(menuBounds))
         #expect(visibleFrame.insetBy(dx: -0.5, dy: -0.5).contains(completeBounds))
     }
@@ -590,21 +591,20 @@ struct OverlayGeometryTests {
 
         let center = OverlayGeometry.clampedPetScreenCenter(
             CGPoint(x: 900, y: -1_000),
-            scale: 0.87,
+            displayWidthPt: 136,
             visibleFrame: movementFrame,
             clickMenuEnabled: true,
             petVisualEnvelope: envelope
         )
         let movementBounds = OverlayGeometry.petMovementScreenBounds(
-            scale: 0.87,
+            displayWidthPt: 136,
             petScreenCenter: center,
             clickMenuEnabled: true,
-            includeResize: true,
             petVisualEnvelope: envelope
         )
         let oldVisibleFrameCenter = OverlayGeometry.clampedPetScreenCenter(
             CGPoint(x: 900, y: -1_000),
-            scale: 0.87,
+            displayWidthPt: 136,
             visibleFrame: visibleFrame,
             clickMenuEnabled: true
         )
@@ -644,7 +644,11 @@ struct OverlayGeometryTests {
             #expect(movementFrame.minY == display.frame.minY)
             #expect(movementFrame.maxY == display.visibleFrame.maxY)
 
-            for scale in [OverlayGeometry.minimumScale, 0.72, OverlayGeometry.maximumScale] {
+            for displayWidthPt in [
+                OverlayGeometry.minimumDisplayWidthPt,
+                OverlayGeometry.defaultDisplayWidthPt,
+                OverlayGeometry.maximumDisplayWidthPt,
+            ] {
                 let proposals = [
                     CGPoint(x: movementFrame.minX - 2_000, y: movementFrame.midY),
                     CGPoint(x: movementFrame.maxX + 2_000, y: movementFrame.midY),
@@ -657,21 +661,20 @@ struct OverlayGeometryTests {
                 for proposal in proposals {
                     let center = OverlayGeometry.clampedPetScreenCenter(
                         proposal,
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         visibleFrame: movementFrame,
                         clickMenuEnabled: true,
                         petVisualEnvelope: envelope
                     )
                     let bounds = OverlayGeometry.petMovementScreenBounds(
-                        scale: scale,
+                        displayWidthPt: displayWidthPt,
                         petScreenCenter: center,
                         clickMenuEnabled: true,
-                        includeResize: true,
                         petVisualEnvelope: envelope
                     )
                     #expect(
                         movementFrame.insetBy(dx: -0.5, dy: -0.5).contains(bounds),
-                        "actual pet/control bounds \(bounds) escaped \(movementFrame) at scale \(scale)"
+                        "actual pet/control bounds \(bounds) escaped \(movementFrame) at \(displayWidthPt) pt"
                     )
                 }
             }
@@ -702,199 +705,459 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func testKeyboardResizeClampsScale() {
-        #expect(OverlayGeometry.clampedScale(0.05) == OverlayGeometry.minimumScale)
-        #expect(OverlayGeometry.clampedScale(4) == OverlayGeometry.maximumScale)
-        #expect(OverlayGeometry.clampedScale(0.10) == 0.10)
-        #expect(OverlayGeometry.clampedScale(1.80) == 1.80)
-        #expect(abs(OverlayGeometry.clampedScale(0.72 + OverlayGeometry.resizeStep) - 0.77) < 0.0001)
+    func displayWidthClampsToTheContract() {
+        #expect(OverlayGeometry.clampedDisplayWidthPt(20)
+            == OverlayGeometry.minimumDisplayWidthPt)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(400)
+            == OverlayGeometry.maximumDisplayWidthPt)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(80) == 80)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(224) == 224)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(.nan)
+            == OverlayGeometry.defaultDisplayWidthPt)
     }
 
     @Test
-    func testScalePercentageIgnoresFocusAndRequiresResizeFeedback() {
-        #expect(!OverlayScaleFeedbackVisibility.isVisible(
-            isFocused: false,
-            isResizing: false,
-            isStepFeedbackVisible: false
-        ))
-        #expect(!OverlayScaleFeedbackVisibility.isVisible(
-            isFocused: true,
-            isResizing: false,
-            isStepFeedbackVisible: false
-        ))
-        #expect(OverlayScaleFeedbackVisibility.isVisible(
-            isFocused: false,
-            isResizing: true,
-            isStepFeedbackVisible: false
-        ))
-        #expect(OverlayScaleFeedbackVisibility.isVisible(
-            isFocused: true,
-            isResizing: false,
-            isStepFeedbackVisible: true
-        ))
-    }
-
-    @Test
-    func testResizeControlHidesOutsidePetUnlessInteractionIsActive() {
+    func overlayControlVisibilityTracksHoverDragAndKeyboardFocus() {
         #expect(!OverlayControlVisibility.isVisible(
             pointerNearPet: false,
-            petDragInProgress: false,
-            resizeInProgress: false
+            petDragInProgress: false
         ))
         #expect(OverlayControlVisibility.isVisible(
             pointerNearPet: true,
-            petDragInProgress: false,
-            resizeInProgress: false
+            petDragInProgress: false
         ))
         #expect(OverlayControlVisibility.isVisible(
             pointerNearPet: false,
-            petDragInProgress: true,
-            resizeInProgress: false
+            petDragInProgress: true
         ))
         #expect(OverlayControlVisibility.isVisible(
             pointerNearPet: false,
             petDragInProgress: false,
-            resizeInProgress: true
+            keyboardFocusActive: true
         ))
     }
 
     @Test
-    func testCalibratedScaleOnlyAppliesToNeverPositionedPlacement() {
+    func calibratedWidthOnlyAppliesToNeverPositionedPlacement() {
         #expect(
-            OverlayGeometry.resolvedInitialScale(
-                persistedScale: 0.12,
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+                persistedDisplayWidthPt: 80,
                 hasPersistedPosition: false
-            ) == 0.72
+            ) == 112
         )
         #expect(
-            OverlayGeometry.resolvedInitialScale(
-                persistedScale: 0.12,
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+                persistedDisplayWidthPt: 80,
                 hasPersistedPosition: true
-            ) == 0.12
+            ) == 80
         )
         #expect(
-            OverlayGeometry.resolvedInitialScale(
-                persistedScale: 0.82,
+            OverlayGeometry.resolvedInitialDisplayWidthPt(
+                persistedDisplayWidthPt: 180,
                 hasPersistedPosition: true
-            ) == 0.82
+            ) == 180
         )
     }
 
-    @MainActor
     @Test
-    func testResizeViewSupportsKeyboardAndAccessibilityIncrement() {
-        let view = OverlayResizeAccessibilityView(
-            frame: CGRect(origin: .zero, size: OverlayGeometry.resizeHitSize)
+    func sizeChangesKeepTheBottomCenterAnchorStable() {
+        let initialCenter = CGPoint(x: 640, y: 180)
+        let resizedCenter = OverlayGeometry.bottomAnchoredCenter(
+            from: initialCenter,
+            currentDisplayWidthPt: 112,
+            proposedDisplayWidthPt: 224
         )
-        var steps: [CGFloat] = []
-        view.scale = 0.72
-        view.onScaleStep = { steps.append($0) }
+        let initialBottom = initialCenter.y
+            - OverlayGeometry.petVisibleSize(displayWidthPt: 112).height / 2
+        let resizedBottom = resizedCenter.y
+            - OverlayGeometry.petVisibleSize(displayWidthPt: 224).height / 2
 
-        #expect(view.acceptsFirstResponder)
-        #expect(view.accessibilityRole() == .slider)
-        #expect(view.accessibilityPerformIncrement())
-        #expect(view.accessibilityPerformDecrement())
-        #expect(steps == [0.05, -0.05])
-        #expect((view.accessibilityMinValue() as? NSNumber)?.doubleValue == 0.10)
-        #expect((view.accessibilityMaxValue() as? NSNumber)?.doubleValue == 1.80)
-        let accessibilityScale = (view.accessibilityValue() as? NSNumber)?.doubleValue ?? -1
-        #expect(abs(accessibilityScale - 0.72) < 0.0001)
+        #expect(resizedCenter.x == initialCenter.x)
+        #expect(abs(resizedBottom - initialBottom) < 0.001)
     }
 
     @Test
     func petClickAndDragUseOneExclusiveThreshold() {
         #expect(!OverlayPetPointerGesture.exceedsDragThreshold(
             from: CGPoint(x: 10, y: 10),
-            to: CGPoint(x: 13, y: 10)
+            to: CGPoint(x: 14, y: 10)
         ))
         #expect(OverlayPetPointerGesture.exceedsDragThreshold(
             from: CGPoint(x: 10, y: 10),
-            to: CGPoint(x: 13.1, y: 10)
+            to: CGPoint(x: 14.1, y: 10)
         ))
     }
 
     @Test
-    func petDragRubberBandsPastEdgesWithoutChangingTheHardReleaseBoundary() {
+    func dragSessionUsesAbsolutePointerDeltaWithoutAccumulatedDrift() {
+        let startPointer = CGPoint(x: 120, y: 240)
+        let startAnchor = CGPoint(x: 600, y: 400)
+        var session = OverlayDragSession(
+            startPointerScreen: startPointer,
+            startAnchorScreen: startAnchor,
+            startDisplayID: "main"
+        )
+
+        for sample in 1 ... 500 {
+            session.updatePointer(CGPoint(
+                x: startPointer.x + CGFloat(sample) * 1.25,
+                y: startPointer.y - CGFloat(sample) * 0.75
+            ))
+        }
+
+        #expect(session.hasCrossedThreshold)
+        #expect(session.proposedAnchorScreen == CGPoint(
+            x: startAnchor.x + 625,
+            y: startAnchor.y - 375
+        ))
+    }
+
+    @Test(arguments: [
+        (500, 50.0),
+        (500, 60.0),
+        (500, 120.0),
+        (1_000, 50.0),
+        (1_000, 60.0),
+        (1_000, 120.0),
+    ])
+    func directManipulationCoalescesToTheTargetDisplayRefreshRate(
+        sampleCount: Int,
+        framesPerSecond: Double
+    ) throws {
+        let cadence = OverlayDisplayRefreshCadence(
+            displayID: "test-display",
+            framesPerSecond: framesPerSecond
+        )
+        var coalescer = OverlayDisplayRefreshCoalescer<Int>()
+        var delivered: [Int] = []
+        var lastDeliveryTime = 0.0
+
+        for sample in 0 ..< sampleCount {
+            let sampleTime = Double(sample) / Double(sampleCount)
+            if let deadline = coalescer.scheduledDeadline,
+               deadline <= sampleTime,
+               let value = coalescer.takePending(deliveredAt: deadline) {
+                delivered.append(value)
+                lastDeliveryTime = deadline
+            }
+            _ = coalescer.submit(
+                sample,
+                at: sampleTime,
+                cadence: cadence
+            )
+        }
+        if let deadline = coalescer.scheduledDeadline,
+           let value = coalescer.takePending(deliveredAt: deadline) {
+            delivered.append(value)
+            lastDeliveryTime = deadline
+        }
+
+        let refreshCycles = Int(ceil(
+            lastDeliveryTime / cadence.intervalSeconds
+        ))
+        #expect(delivered.count <= refreshCycles)
+        #expect(try #require(delivered.last) == sampleCount - 1)
+    }
+
+    @Test
+    func directManipulationReschedulesWhenTheTargetDisplayChanges() throws {
+        let slow = OverlayDisplayRefreshCadence(
+            displayID: "slow",
+            framesPerSecond: 50
+        )
+        let fast = OverlayDisplayRefreshCadence(
+            displayID: "fast",
+            framesPerSecond: 120
+        )
+        var coalescer = OverlayDisplayRefreshCoalescer<Int>()
+
+        let slowDeadline = coalescer.submit(1, at: 0, cadence: slow)
+        #expect(abs(slowDeadline - 0.02) < 0.000_001)
+        let fastDeadline = coalescer.submit(2, at: 0.005, cadence: fast)
+        #expect(fastDeadline < slowDeadline)
+        #expect(abs(fastDeadline - (0.005 + 1.0 / 120.0)) < 0.000_001)
+        #expect(coalescer.takePending(deliveredAt: fastDeadline) == 2)
+
+        let nextSlowDeadline = coalescer.submit(
+            3,
+            at: fastDeadline + 0.001,
+            cadence: slow
+        )
+        #expect(abs(nextSlowDeadline - (fastDeadline + 0.02)) < 0.000_001)
+        #expect(coalescer.takePending(deliveredAt: nextSlowDeadline) == 3)
+    }
+
+    @MainActor
+    @Test(arguments: [
+        (500, 50),
+        (500, 60),
+        (500, 120),
+        (1_000, 50),
+        (1_000, 60),
+        (1_000, 120),
+    ])
+    func displayLinkDriverDeliversAtMostOncePerInjectedTick(
+        sampleCount: Int,
+        tickCount: Int
+    ) throws {
+        let factory = FakeOverlayDisplayTickFactory()
+        let driver = OverlayDisplayLinkCoalescer<Int> { _, onTick in
+            factory.makeSource(onTick: onTick)
+        }
+        let cadence = OverlayDisplayRefreshCadence(
+            displayID: "display",
+            framesPerSecond: Double(tickCount)
+        )
+        var delivered: [Int] = []
+
+        for tick in 0 ..< tickCount {
+            let lower = tick * sampleCount / tickCount
+            let upper = (tick + 1) * sampleCount / tickCount
+            for sample in lower ..< upper {
+                driver.submit(
+                    sample,
+                    targetDisplayID: cadence.displayID,
+                    screen: nil,
+                    fallbackCadence: cadence,
+                    deliver: { delivered.append($0) }
+                )
+            }
+            try #require(factory.sources.last).fire()
+        }
+
+        #expect(delivered.count <= tickCount)
+        #expect(try #require(delivered.last) == sampleCount - 1)
+        #expect(try #require(factory.sources.last).isPaused)
+    }
+
+    @MainActor
+    @Test
+    func displayLinkDriverRebindsAcrossScreensAndReleaseFlushesLatest() throws {
+        let factory = FakeOverlayDisplayTickFactory()
+        let driver = OverlayDisplayLinkCoalescer<Int> { _, onTick in
+            factory.makeSource(onTick: onTick)
+        }
+        let cadence = OverlayDisplayRefreshCadence(
+            displayID: "fallback",
+            framesPerSecond: 60
+        )
+        var delivered: [Int] = []
+
+        driver.submit(
+            1,
+            targetDisplayID: "left",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        driver.submit(
+            2,
+            targetDisplayID: "left",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        let left = try #require(factory.sources.first)
+        #expect(factory.sources.count == 1)
+
+        driver.submit(
+            3,
+            targetDisplayID: "right",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        let right = try #require(factory.sources.last)
+        #expect(factory.sources.count == 2)
+        #expect(left.invalidated)
+        left.fire()
+        #expect(delivered.isEmpty)
+
+        right.fire()
+        #expect(delivered == [3])
+        #expect(right.isPaused)
+
+        driver.submit(
+            4,
+            targetDisplayID: "right",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        driver.submit(
+            5,
+            targetDisplayID: "right",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        driver.flushNow()
+        #expect(delivered == [3, 5])
+        #expect(right.isPaused)
+
+        driver.submit(
+            6,
+            targetDisplayID: "right",
+            screen: nil,
+            fallbackCadence: cadence,
+            deliver: { delivered.append($0) }
+        )
+        driver.invalidate()
+        #expect(right.invalidated)
+        #expect(!driver.hasPending)
+        right.fire()
+        #expect(delivered == [3, 5])
+    }
+
+    @MainActor
+    @Test(arguments: [500, 1_000])
+    func displayLinkDeliveriesMoveOnlyTheParentPanelAtMostOncePerTick(
+        sampleCount: Int
+    ) throws {
+        let tickCount = 60
+        let factory = FakeOverlayDisplayTickFactory()
+        let driver = OverlayDisplayLinkCoalescer<CGPoint> { _, onTick in
+            factory.makeSource(onTick: onTick)
+        }
+        let cadence = OverlayDisplayRefreshCadence(
+            displayID: "display",
+            framesPerSecond: Double(tickCount)
+        )
+        let initialFrame = CGRect(x: 300, y: 200, width: 704, height: 640)
+        let startCenter = CGPoint(x: 600, y: 400)
+        var parentFrame = initialFrame
+        var previousCenter = startCenter
+        var frameSetOperations: [OverlayInteractionWindowRole] = []
+
+        for tick in 0 ..< tickCount {
+            let lower = tick * sampleCount / tickCount
+            let upper = (tick + 1) * sampleCount / tickCount
+            for sample in lower ..< upper {
+                let center = CGPoint(
+                    x: startCenter.x + CGFloat(sample + 1) * 0.5,
+                    y: startCenter.y + CGFloat(sample + 1) * 0.25
+                )
+                driver.submit(
+                    center,
+                    targetDisplayID: cadence.displayID,
+                    screen: nil,
+                    fallbackCadence: cadence
+                ) { center in
+                    let moves = OverlayDirectManipulationMovePlan.moves(
+                        parentFrame: parentFrame,
+                        previousPetCenter: previousCenter,
+                        presentedPetCenter: center
+                    )
+                    for move in moves {
+                        frameSetOperations.append(move.role)
+                        parentFrame = move.frame
+                    }
+                    previousCenter = center
+                }
+            }
+            try #require(factory.sources.last).fire()
+        }
+
+        let finalCenter = CGPoint(
+            x: startCenter.x + CGFloat(sampleCount) * 0.5,
+            y: startCenter.y + CGFloat(sampleCount) * 0.25
+        )
+        let expectedFrame = initialFrame.offsetBy(
+            dx: finalCenter.x - startCenter.x,
+            dy: finalCenter.y - startCenter.y
+        )
+        #expect(frameSetOperations.count <= tickCount)
+        #expect(frameSetOperations.allSatisfy { $0 == .parentPetPanel })
+        #expect(!frameSetOperations.contains(.bubbleChildPanel))
+        #expect(!frameSetOperations.contains(.menuChildPanel))
+        #expect(parentFrame == expectedFrame)
+    }
+
+    @Test
+    func crossDisplayDragPreservesTheAbsoluteStartAnchorWithinOnePoint() throws {
+        let left = OverlayDragDisplay(
+            id: "left",
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1_440, height: 875)
+        )
+        let right = OverlayDragDisplay(
+            id: "right",
+            frame: CGRect(x: 1_440, y: -120, width: 1_920, height: 1_080),
+            visibleFrame: CGRect(x: 1_440, y: -120, width: 1_920, height: 1_055)
+        )
+        let startPointer = CGPoint(x: 1_400, y: 400)
+        let startAnchor = CGPoint(x: 1_360, y: 360)
+        var session = OverlayDragSession(
+            startPointerScreen: startPointer,
+            startAnchorScreen: startAnchor,
+            startDisplayID: left.id
+        )
+
+        for sample in 1 ... 1_000 {
+            let progress = CGFloat(sample) / 1_000
+            session.updatePointer(CGPoint(
+                x: startPointer.x + 600 * progress,
+                y: startPointer.y + 180 * progress
+            ))
+        }
+
+        let expected = CGPoint(
+            x: startAnchor.x + 600,
+            y: startAnchor.y + 180
+        )
+        let display = try #require(OverlayDragScreenResolver.resolve(
+            pointer: session.latestPointerScreen,
+            proposedPetCenter: session.proposedAnchorScreen,
+            displays: [left, right],
+            fallbackDisplayID: session.startDisplayID
+        ))
+        let movementFrame = OverlayGeometry.petMovementFrame(
+            screenFrame: display.frame,
+            visibleFrame: display.visibleFrame
+        )
+        let presented = OverlayPetDragGeometry.clampedCenter(
+            session.proposedAnchorScreen,
+            displayWidthPt: 112,
+            visibleFrame: movementFrame
+        )
+
+        #expect(display.id == right.id)
+        #expect(hypot(
+            session.proposedAnchorScreen.x - expected.x,
+            session.proposedAnchorScreen.y - expected.y
+        ) <= 1)
+        #expect(hypot(presented.x - expected.x, presented.y - expected.y) <= 1)
+    }
+
+    @Test
+    func petDragUsesOnlyTheHardBoundaryWithNoOvershootOrProjection() {
         let movementFrame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
-        let scale: CGFloat = 0.72
+        let displayWidthPt: CGFloat = 112
         let inside = CGPoint(x: 600, y: 400)
-        #expect(OverlayPetDragMotion.rubberBandedCenter(
+        #expect(OverlayPetDragGeometry.clampedCenter(
             inside,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             visibleFrame: movementFrame
         ) == inside)
 
         let proposed = CGPoint(x: -600, y: 1_200)
         let hard = OverlayGeometry.clampedPetScreenCenter(
             proposed,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             visibleFrame: movementFrame
         )
-        let presentation = OverlayPetDragMotion.rubberBandedCenter(
+        let presentation = OverlayPetDragGeometry.clampedCenter(
             proposed,
-            scale: scale,
+            displayWidthPt: displayWidthPt,
             visibleFrame: movementFrame
         )
 
-        #expect(presentation.x < hard.x)
-        #expect(presentation.x > proposed.x)
-        #expect(presentation.y > hard.y)
-        #expect(presentation.y < proposed.y)
-        #expect(abs(presentation.x - hard.x) < 64 * scale)
-        #expect(abs(presentation.y - hard.y) < 64 * scale)
-    }
-
-    @Test
-    func petReleaseUsesBoundedRecentVelocityAndCriticallyDampedSettling() {
-        let samples = [
-            OverlayPetMotionSample(
-                point: CGPoint(x: 0, y: 0),
-                timestamp: 1
-            ),
-            OverlayPetMotionSample(
-                point: CGPoint(x: 100, y: 0),
-                timestamp: 1.05
-            ),
-            OverlayPetMotionSample(
-                point: CGPoint(x: 240, y: 0),
-                timestamp: 1.10
-            ),
-        ]
-        let velocity = OverlayPetDragMotion.estimatedVelocity(from: samples)
-        #expect(abs(hypot(velocity.dx, velocity.dy) - 1_200) < 0.001)
-
-        let movementFrame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
-        let start = CGPoint(x: 500, y: 400)
-        let target = OverlayPetDragMotion.projectedReleaseTarget(
-            from: start,
-            velocity: velocity,
-            scale: 0.72,
+        #expect(presentation == hard)
+        #expect(OverlayPetDragGeometry.clampedCenter(
+            presentation,
+            displayWidthPt: displayWidthPt,
             visibleFrame: movementFrame
-        )
-        #expect(target.x > start.x)
-
-        let initial = OverlayPetDragMotion.criticallyDampedPosition(
-            from: start,
-            to: target,
-            initialVelocity: velocity,
-            elapsed: 0
-        )
-        let moving = OverlayPetDragMotion.criticallyDampedPosition(
-            from: start,
-            to: target,
-            initialVelocity: velocity,
-            elapsed: 0.04
-        )
-        let settled = OverlayPetDragMotion.criticallyDampedPosition(
-            from: start,
-            to: target,
-            initialVelocity: velocity,
-            elapsed: OverlayPetDragMotion.releaseSettlingDuration
-        )
-
-        #expect(initial == start)
-        #expect(moving.x > start.x)
-        #expect(hypot(settled.x - target.x, settled.y - target.y) < 1)
+        ) == presentation)
     }
 
     @Test
@@ -965,7 +1228,6 @@ struct OverlayGeometryTests {
         #expect(OverlayControlVisibility.isVisible(
             pointerNearPet: false,
             petDragInProgress: false,
-            resizeInProgress: false,
             keyboardFocusActive: true
         ))
         #expect((0.12 ... 0.16).contains(OverlayMotion.controlFadeDuration))
@@ -1061,7 +1323,7 @@ struct OverlayGeometryTests {
         let state = try JSONDecoder().decode(
             ActiveAgentState.self,
             from: Data(
-                #"{"state":"tool","official_status":"running","source":"codex","session_id":"tool-session","session_active":true,"source_session_sequence":2,"priority":300,"event":{"id":"tool-event","source":"codex","session_id":"tool-session","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"tool_name":"Bash","activity_kind":"command"},"created_at":"2026-07-29T00:00:00Z"},"session_title":"构建 App","session_message":{"role":"assistant","content":"正在检查构建结果。"},"session_activity":{"kind":"command","content":null},"overlay_display":{"summary_kind":"command","navigation":{"capability":"unavailable"}}}"#.utf8
+                #"{"state":"tool","official_status":"running","source":"codex","session_id":"tool-session","session_active":true,"source_session_sequence":2,"priority":300,"event":{"id":"tool-event","source":"codex","session_id":"tool-session","event_type":"tool","title":"执行工具","detail":null,"payload_json":{"tool_name":"Bash","activity_kind":"command","activity_content":"{\"command\":\"RAW_DO_NOT_RENDER\"}"},"created_at":"2026-07-29T00:00:00Z"},"session_title":"构建 App","session_message":{"role":"assistant","content":"正在检查构建结果。"},"session_activity":{"kind":"command","content":null},"overlay_display":{"summary_kind":"command","navigation":{"capability":"unavailable"}}}"#.utf8
             )
         )
         let content = OverlaySessionContent(state: state)
@@ -1070,23 +1332,26 @@ struct OverlayGeometryTests {
         #expect(content.messageText == "正在检查构建结果。")
         #expect(content.primaryDetailText == "正在检查构建结果。")
         #expect(content.secondaryDetailText == nil)
+        #expect(!content.detailText.contains("{"))
+        #expect(!content.detailText.contains("RAW_DO_NOT_RENDER"))
         #expect(content.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
     }
 
     @Test
-    func legacyStateUsesBoundedEventActivityWithoutInventingAnAgentMessage() throws {
+    func legacyRawEventActivityIsNeverPromotedIntoDisplayContent() throws {
         let state = try JSONDecoder().decode(
             ActiveAgentState.self,
             from: Data(#"{"state":"review","official_status":"ready","source":"pi","session_id":"legacy","session_active":false,"source_session_sequence":1,"priority":400,"lease_seconds":30,"expires_at":null,"event":{"id":"legacy-review","source":"pi","session_id":"legacy","event_type":"review","title":"待查看","detail":null,"payload_json":{"message_role":"assistant","message_content":"PRIVATE_RESULT_DO_NOT_RENDER","activity_kind":"plan","activity_content":"原始活动详情现在可以显示"},"created_at":"2026-07-21T00:00:00Z"}}"#.utf8)
         )
         let content = OverlaySessionContent(state: state)
 
-        #expect(content.activityText == "原始活动详情现在可以显示")
+        #expect(content.activityText.isEmpty)
         #expect(content.messageText.isEmpty)
         #expect(content.secondaryDetailText == nil)
         #expect(content.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Pi"))
         #expect(!content.sessionTitle.contains("PRIVATE"))
         #expect(!content.detailText.contains("PRIVATE"))
+        #expect(!content.detailText.contains("原始活动详情"))
     }
 
     @Test
@@ -1149,11 +1414,11 @@ struct OverlayGeometryTests {
         let english = OverlayBubbleAccessibilityModel(content: content, locale: "en")
         let chinese = OverlayBubbleAccessibilityModel(content: content, locale: "zh-Hans")
 
-        #expect(english.sessionActionLabels == ["Open Codex", "Open Codex"])
+        #expect(english.sessionActionLabels == ["Open ChatGPT", "Open ChatGPT"])
         #expect(english.sessionCloseActionLabels == ["Hide This Session", "Hide This Session"])
         #expect(english.closeActionLabel == "Close session bubble")
         #expect(english.groupActionLabel == "Collapse 2 sessions")
-        #expect(chinese.sessionActionLabels == ["打开 Codex", "打开 Codex"])
+        #expect(chinese.sessionActionLabels == ["打开 ChatGPT", "打开 ChatGPT"])
         #expect(chinese.sessionCloseActionLabels == ["收起此会话", "收起此会话"])
         #expect(chinese.closeActionLabel == "关闭会话气泡")
         #expect(chinese.groupActionLabel == "收起 2 个会话")
@@ -1195,6 +1460,7 @@ struct OverlayGeometryTests {
 
             #expect(session.accessibilityReadingOrder == [
                 "Codex",
+                session.surfaceLabel,
                 fixture.session,
                 fixture.status,
                 fixture.message,
@@ -1280,9 +1546,9 @@ struct OverlayGeometryTests {
         #expect(requestedDelays == [OverlayControlVisibility.hoverHideDelay])
         #expect(!presentation.isVisible)
 
-        presentation.setActive(.resize, true)
+        presentation.setActive(.menu, true)
         #expect(presentation.isVisible)
-        presentation.setActive(.resize, false)
+        presentation.setActive(.menu, false)
         #expect(presentation.isVisible)
 
         presentation.setFocused(.bubble, true)
@@ -1292,16 +1558,38 @@ struct OverlayGeometryTests {
         #expect(!presentation.keyboardNavigationActive)
     }
 
-    @MainActor
-    @Test
-    func resizeAccessibilityCopyIsLocalizedForEnglishAndChinese() {
-        #expect(OverlayResizeAccessibilityView.accessibilityLabel(localeIdentifier: "en")
-            == "Display Size")
-        #expect(OverlayResizeAccessibilityView.accessibilityLabel(localeIdentifier: "zh-Hans")
-            == "显示尺寸")
-        #expect(OverlayResizeAccessibilityView.accessibilityHelp(localeIdentifier: "en")
-            == "Drag to resize the desktop pet")
-        #expect(OverlayResizeAccessibilityView.accessibilityHelp(localeIdentifier: "zh-Hans")
-            == "拖拽调整桌宠大小")
+}
+
+@MainActor
+private final class FakeOverlayDisplayTickFactory {
+    private(set) var sources: [FakeOverlayDisplayTickSource] = []
+
+    func makeSource(
+        onTick: @escaping @MainActor () -> Void
+    ) -> FakeOverlayDisplayTickSource {
+        let source = FakeOverlayDisplayTickSource(onTick: onTick)
+        sources.append(source)
+        return source
+    }
+}
+
+@MainActor
+private final class FakeOverlayDisplayTickSource: OverlayDisplayRefreshTickSource {
+    var isPaused = true
+    private(set) var invalidated = false
+    private let onTick: @MainActor () -> Void
+
+    init(onTick: @escaping @MainActor () -> Void) {
+        self.onTick = onTick
+    }
+
+    func fire() {
+        guard !invalidated, !isPaused else { return }
+        onTick()
+    }
+
+    func invalidate() {
+        invalidated = true
+        isPaused = true
     }
 }

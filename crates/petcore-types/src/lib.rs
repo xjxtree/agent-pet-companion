@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v1";
+pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v2";
 pub const ONBOARDING_PROGRESS_SCHEMA_VERSION: &str = "apc.onboarding-progress.v1";
-pub const STANDARD_FPS: u32 = 10;
-pub const SMOOTH_FPS: u32 = 20;
-pub const DEFAULT_NATIVE_FPS: u32 = STANDARD_FPS;
-pub const SHORT_ACTION_DURATION_MS: u32 = 1_000;
-pub const LONG_ACTION_DURATION_MS: u32 = 2_000;
+pub const MIN_FRAME_DURATION_MS: u32 = 50;
+pub const MAX_FRAME_DURATION_MS: u32 = 2_000;
+pub const MAX_STATE_DURATION_MS: u32 = 5_000;
+pub const MAX_PERIODIC_COOLDOWN_MS: u32 = 86_400_000;
+pub const MIN_FRAMES_PER_STATE: usize = 2;
+pub const MAX_FRAMES_PER_STATE: usize = 40;
+pub const MIN_OVERLAY_DISPLAY_WIDTH_PT: f64 = 80.0;
+pub const MAX_OVERLAY_DISPLAY_WIDTH_PT: f64 = 224.0;
+pub const DEFAULT_OVERLAY_DISPLAY_WIDTH_PT: f64 = 112.0;
+pub const OVERLAY_DISPLAY_WIDTH_STEP_PT: f64 = 1.0;
 pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
 pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
 pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
@@ -23,50 +28,31 @@ pub const REQUIRED_STATES: [PetStateName; 7] = [
     PetStateName::Done,
     PetStateName::Failed,
 ];
-/// Every package has seven states, each authored for one or two seconds, at
-/// one package-wide native rate of 10 or 20 FPS. This is the complete set of
-/// possible package totals under that closed contract.
-pub const VALID_TOTAL_FRAME_COUNTS: [usize; 15] = [
-    70, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200, 220, 240, 260, 280,
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QualityLevel {
+    Low,
     Standard,
-    High,
-    Ultra,
-    Original,
 }
 
 impl QualityLevel {
     pub fn render_size(self) -> RenderSize {
         match self {
-            Self::Standard => RenderSize {
+            Self::Low => RenderSize {
                 width: 192,
                 height: 208,
             },
-            Self::High => RenderSize {
+            Self::Standard => RenderSize {
                 width: 384,
                 height: 416,
-            },
-            Self::Ultra => RenderSize {
-                width: 768,
-                height: 832,
-            },
-            Self::Original => RenderSize {
-                width: 1536,
-                height: 1664,
             },
         }
     }
 
     pub fn zh_label(self) -> &'static str {
         match self {
-            Self::Standard => "标清",
-            Self::High => "高清",
-            Self::Ultra => "超清",
-            Self::Original => "原画",
+            Self::Low => "标清",
+            Self::Standard => "标准",
         }
     }
 }
@@ -76,22 +62,6 @@ impl QualityLevel {
 pub struct RenderSize {
     pub width: u32,
     pub height: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FpsProfileName {
-    Standard,
-    Smooth,
-}
-
-impl FpsProfileName {
-    pub fn fps(self) -> u32 {
-        match self {
-            Self::Standard => STANDARD_FPS,
-            Self::Smooth => SMOOTH_FPS,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,36 +126,6 @@ impl PetStateName {
             Self::Failed => "失败",
         }
     }
-
-    pub fn default_duration_ms(self) -> u32 {
-        if matches!(self, Self::Start | Self::Done) {
-            SHORT_ACTION_DURATION_MS
-        } else {
-            LONG_ACTION_DURATION_MS
-        }
-    }
-}
-
-pub fn default_native_fps() -> u32 {
-    DEFAULT_NATIVE_FPS
-}
-
-pub fn default_state_durations_ms() -> BTreeMap<PetStateName, u32> {
-    REQUIRED_STATES
-        .into_iter()
-        .map(|state| (state, state.default_duration_ms()))
-        .collect()
-}
-
-pub fn expected_frame_count(native_fps: u32, duration_ms: u32) -> Option<usize> {
-    native_fps
-        .checked_mul(duration_ms)?
-        .checked_div(1_000)
-        .and_then(|count| usize::try_from(count).ok())
-}
-
-pub fn is_valid_total_frame_count(frame_count: usize) -> bool {
-    VALID_TOTAL_FRAME_COUNTS.binary_search(&frame_count).is_ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -245,7 +185,6 @@ pub struct PetManifest {
     pub style: String,
     pub quality: QualityLevel,
     pub render_size: RenderSize,
-    pub native_fps: u32,
     pub states: Vec<PetState>,
     pub created_at: String,
 }
@@ -258,16 +197,6 @@ impl PetManifest {
         quality: QualityLevel,
         created_at: String,
     ) -> Self {
-        let states = REQUIRED_STATES
-            .iter()
-            .map(|state| PetState {
-                name: *state,
-                frames_dir: format!("assets/frames/{}", state.as_str()),
-                looped: !matches!(state, PetStateName::Start | PetStateName::Done),
-                duration_ms: state.default_duration_ms(),
-            })
-            .collect();
-
         Self {
             schema_version: PETPACK_SCHEMA_VERSION.to_string(),
             id,
@@ -275,11 +204,31 @@ impl PetManifest {
             style,
             quality,
             render_size: quality.render_size(),
-            native_fps: DEFAULT_NATIVE_FPS,
-            states,
+            states: default_pet_states(),
             created_at,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    Loop,
+    OnceHold,
+    Periodic,
+    BurstThenSettle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaybackContract {
+    pub mode: PlaybackMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_repeat_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_frame_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_ms: Option<[u32; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,9 +236,196 @@ impl PetManifest {
 pub struct PetState {
     pub name: PetStateName,
     pub frames_dir: String,
-    #[serde(rename = "loop")]
-    pub looped: bool,
-    pub duration_ms: u32,
+    pub frame_durations_ms: Vec<u32>,
+    pub playback: PlaybackContract,
+    pub reduced_motion_frame_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PetTimingContract {
+    pub frame_durations_ms: Vec<u32>,
+    pub playback: PlaybackContract,
+    pub reduced_motion_frame_index: usize,
+}
+
+impl PetTimingContract {
+    pub fn validate(&self) -> Result<Vec<String>, String> {
+        let frame_count = self.frame_durations_ms.len();
+        if !(MIN_FRAMES_PER_STATE..=MAX_FRAMES_PER_STATE).contains(&frame_count) {
+            return Err(format!(
+                "frame_durations_ms must contain between {MIN_FRAMES_PER_STATE} and {MAX_FRAMES_PER_STATE} entries"
+            ));
+        }
+        if let Some((index, _)) =
+            self.frame_durations_ms
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, duration)| {
+                    !(MIN_FRAME_DURATION_MS..=MAX_FRAME_DURATION_MS).contains(duration)
+                })
+        {
+            return Err(format!(
+                "frame_durations_ms[{index}] must be between {MIN_FRAME_DURATION_MS} and {MAX_FRAME_DURATION_MS}"
+            ));
+        }
+        let total_duration_ms = self
+            .frame_durations_ms
+            .iter()
+            .try_fold(0_u32, |total, duration| total.checked_add(*duration))
+            .ok_or_else(|| "frame duration total overflowed".to_string())?;
+        if total_duration_ms > MAX_STATE_DURATION_MS {
+            return Err(format!(
+                "frame duration total must not exceed {MAX_STATE_DURATION_MS} ms"
+            ));
+        }
+        if self.reduced_motion_frame_index >= frame_count {
+            return Err("reduced_motion_frame_index is outside the frame sequence".to_string());
+        }
+
+        match self.playback.mode {
+            PlaybackMode::Loop => {
+                if self.playback.entry_repeat_count.is_some()
+                    || self.playback.settle_frame_index.is_some()
+                    || self.playback.cooldown_ms.is_some()
+                {
+                    return Err(
+                        "loop playback must not declare entry_repeat_count, settle_frame_index, or cooldown_ms"
+                            .to_string(),
+                    );
+                }
+            }
+            PlaybackMode::OnceHold => {
+                validate_settle_frame(&self.playback, frame_count)?;
+                if self.playback.entry_repeat_count.is_some() || self.playback.cooldown_ms.is_some()
+                {
+                    return Err("once_hold playback allows only settle_frame_index".to_string());
+                }
+            }
+            PlaybackMode::Periodic => {
+                let [minimum, maximum] = self
+                    .playback
+                    .cooldown_ms
+                    .ok_or_else(|| "periodic playback requires cooldown_ms".to_string())?;
+                if minimum > MAX_PERIODIC_COOLDOWN_MS || maximum > MAX_PERIODIC_COOLDOWN_MS {
+                    return Err(format!(
+                        "periodic cooldown_ms values must not exceed {MAX_PERIODIC_COOLDOWN_MS}"
+                    ));
+                }
+                if minimum > maximum {
+                    return Err("periodic cooldown_ms minimum exceeds maximum".to_string());
+                }
+                if self.playback.entry_repeat_count.is_some()
+                    || self.playback.settle_frame_index.is_some()
+                {
+                    return Err("periodic playback allows only cooldown_ms".to_string());
+                }
+            }
+            PlaybackMode::BurstThenSettle => {
+                validate_settle_frame(&self.playback, frame_count)?;
+                if !matches!(self.playback.entry_repeat_count, Some(1..=8)) {
+                    return Err(
+                        "burst_then_settle playback requires entry_repeat_count between 1 and 8"
+                            .to_string(),
+                    );
+                }
+                if self.playback.cooldown_ms.is_some() {
+                    return Err(
+                        "burst_then_settle playback must not declare cooldown_ms".to_string()
+                    );
+                }
+            }
+        }
+
+        let mut warnings = Vec::new();
+        if !(4..=8).contains(&frame_count) {
+            warnings.push(format!(
+                "authored frame count {frame_count} is outside the recommended 4–8 range"
+            ));
+        }
+        if total_duration_ms > 1_500 {
+            warnings.push(format!(
+                "authored duration {total_duration_ms} ms exceeds the recommended 1500 ms"
+            ));
+        }
+        let effective_fps = frame_count as f64 * 1_000.0 / f64::from(total_duration_ms);
+        if !(4.0..=12.0).contains(&effective_fps) {
+            warnings.push(format!(
+                "average effective frame rate {effective_fps:.2} FPS is outside the recommended 4–12 FPS range"
+            ));
+        }
+        Ok(warnings)
+    }
+}
+
+fn validate_settle_frame(playback: &PlaybackContract, frame_count: usize) -> Result<(), String> {
+    let index = playback
+        .settle_frame_index
+        .ok_or_else(|| "playback requires settle_frame_index".to_string())?;
+    if index >= frame_count {
+        return Err("settle_frame_index is outside the frame sequence".to_string());
+    }
+    Ok(())
+}
+
+impl From<&PetState> for PetTimingContract {
+    fn from(state: &PetState) -> Self {
+        Self {
+            frame_durations_ms: state.frame_durations_ms.clone(),
+            playback: state.playback,
+            reduced_motion_frame_index: state.reduced_motion_frame_index,
+        }
+    }
+}
+
+pub fn default_pet_states() -> Vec<PetState> {
+    REQUIRED_STATES.into_iter().map(default_pet_state).collect()
+}
+
+pub fn default_pet_state(name: PetStateName) -> PetState {
+    let (frame_durations_ms, playback, reduced_motion_frame_index) = match name {
+        PetStateName::Idle => (
+            vec![180, 160, 180, 380],
+            PlaybackContract {
+                mode: PlaybackMode::Periodic,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: Some([4_000, 8_000]),
+            },
+            2,
+        ),
+        PetStateName::Start => (vec![120, 140, 160, 180], once_hold(3), 2),
+        PetStateName::Tool => (
+            vec![150, 150, 170, 330],
+            PlaybackContract {
+                mode: PlaybackMode::BurstThenSettle,
+                entry_repeat_count: Some(1),
+                settle_frame_index: Some(3),
+                cooldown_ms: None,
+            },
+            2,
+        ),
+        PetStateName::Waiting => (vec![150, 150, 150, 150, 170, 230], once_hold(5), 4),
+        PetStateName::Review => (vec![140, 140, 150, 150, 180, 240], once_hold(5), 4),
+        PetStateName::Done => (vec![120, 140, 160, 230], once_hold(3), 2),
+        PetStateName::Failed => (vec![150, 170, 190, 290], once_hold(3), 2),
+    };
+    PetState {
+        name,
+        frames_dir: format!("assets/frames/{}", name.as_str()),
+        frame_durations_ms,
+        playback,
+        reduced_motion_frame_index,
+    }
+}
+
+fn once_hold(settle_frame_index: usize) -> PlaybackContract {
+    PlaybackContract {
+        mode: PlaybackMode::OnceHold,
+        entry_repeat_count: None,
+        settle_frame_index: Some(settle_frame_index),
+        cooldown_ms: None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,7 +440,6 @@ pub struct BehaviorSettings {
     pub auto_hide: bool,
     pub session_group_display: SessionGroupDisplay,
     pub session_message_timeout_minutes: u16,
-    pub fps_profile: FpsProfileName,
     pub sources: BTreeMap<AgentSource, bool>,
     pub events: BTreeMap<AgentEventType, bool>,
 }
@@ -326,7 +461,6 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             auto_hide: Option<bool>,
             session_group_display: Option<SessionGroupDisplay>,
             session_message_timeout_minutes: Option<u16>,
-            fps_profile: Option<FpsProfileName>,
             sources: Option<BTreeMap<AgentSource, bool>>,
             events: Option<BTreeMap<AgentEventType, bool>>,
         }
@@ -367,7 +501,6 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             session_message_timeout_minutes: raw
                 .session_message_timeout_minutes
                 .unwrap_or(defaults.session_message_timeout_minutes),
-            fps_profile: raw.fps_profile.unwrap_or(defaults.fps_profile),
             sources,
             events,
         })
@@ -409,7 +542,6 @@ impl Default for BehaviorSettings {
             auto_hide: false,
             session_group_display: SessionGroupDisplay::Stacked,
             session_message_timeout_minutes: DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES,
-            fps_profile: FpsProfileName::Standard,
             sources,
             events,
         }
@@ -471,8 +603,15 @@ impl Default for OnboardingProgress {
 pub struct OverlayPlacement {
     pub x: f64,
     pub y: f64,
-    pub scale: f64,
+    pub display_width_pt: f64,
     pub display_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPlacementIntent {
+    ExternalReposition,
+    Reset,
 }
 
 impl Default for OverlayPlacement {
@@ -480,9 +619,28 @@ impl Default for OverlayPlacement {
         Self {
             x: 0.0,
             y: 0.0,
-            scale: 0.12,
+            display_width_pt: DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
             display_id: "main".to_string(),
         }
+    }
+}
+
+impl OverlayPlacement {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.x.is_finite() || !self.y.is_finite() {
+            return Err("x and y must be finite numbers".to_string());
+        }
+        if !(MIN_OVERLAY_DISPLAY_WIDTH_PT..=MAX_OVERLAY_DISPLAY_WIDTH_PT)
+            .contains(&self.display_width_pt)
+        {
+            return Err(format!(
+                "display_width_pt must be between {MIN_OVERLAY_DISPLAY_WIDTH_PT:.0} and {MAX_OVERLAY_DISPLAY_WIDTH_PT:.0}"
+            ));
+        }
+        if self.display_id.trim().is_empty() {
+            return Err("display_id must not be empty".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -506,10 +664,6 @@ pub struct GenerationForm {
     pub style: String,
     pub quality: QualityLevel,
     pub reference_images: Vec<String>,
-    #[serde(default = "default_native_fps")]
-    pub native_fps: u32,
-    #[serde(default = "default_state_durations_ms")]
-    pub state_durations_ms: BTreeMap<PetStateName, u32>,
 }
 
 pub const MAX_GENERATION_DESCRIPTION_CHARS: usize = 8_000;
@@ -660,10 +814,7 @@ pub struct PetSummary {
     pub style: String,
     pub quality: QualityLevel,
     pub render_size: RenderSize,
-    #[serde(default = "default_native_fps")]
-    pub native_fps: u32,
-    #[serde(default = "default_state_durations_ms")]
-    pub state_durations_ms: BTreeMap<PetStateName, u32>,
+    pub states: Vec<PetState>,
     pub petpack_path: String,
     pub cover_path: String,
     #[serde(default)]
@@ -910,13 +1061,159 @@ mod tests {
     use super::*;
 
     #[test]
-    fn total_frame_count_is_closed_over_the_two_native_rates_and_state_durations() {
-        for frame_count in VALID_TOTAL_FRAME_COUNTS {
-            assert!(is_valid_total_frame_count(frame_count));
+    fn quality_levels_have_the_fixed_v2_render_sizes() {
+        assert_eq!(
+            QualityLevel::Low.render_size(),
+            RenderSize {
+                width: 192,
+                height: 208
+            }
+        );
+        assert_eq!(
+            QualityLevel::Standard.render_size(),
+            RenderSize {
+                width: 384,
+                height: 416
+            }
+        );
+    }
+
+    #[test]
+    fn removed_high_quality_tier_is_rejected_without_an_alias() {
+        let error = serde_json::from_value::<QualityLevel>(serde_json::json!("high"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown variant `high`"), "{error}");
+    }
+
+    #[test]
+    fn overlay_placement_intent_is_a_closed_wire_enum() {
+        assert_eq!(
+            serde_json::to_value(OverlayPlacementIntent::ExternalReposition).unwrap(),
+            serde_json::json!("external_reposition")
+        );
+        assert_eq!(
+            serde_json::to_value(OverlayPlacementIntent::Reset).unwrap(),
+            serde_json::json!("reset")
+        );
+        assert!(
+            serde_json::from_value::<OverlayPlacementIntent>(serde_json::json!("move")).is_err()
+        );
+    }
+
+    #[test]
+    fn default_v2_state_timings_satisfy_the_hard_contract() {
+        let states = default_pet_states();
+        assert_eq!(states.len(), REQUIRED_STATES.len());
+        assert_eq!(
+            states
+                .iter()
+                .map(|state| state.frame_durations_ms.len())
+                .sum::<usize>(),
+            32
+        );
+        for state in &states {
+            assert!(
+                PetTimingContract::from(state).validate().is_ok(),
+                "{} timing must be valid",
+                state.name.as_str()
+            );
         }
-        for frame_count in [0, 69, 71, 150, 168, 281] {
-            assert!(!is_valid_total_frame_count(frame_count));
+    }
+
+    #[test]
+    fn timing_contract_separates_hard_failures_from_authoring_warnings() {
+        let soft_warning = PetTimingContract {
+            frame_durations_ms: vec![500; 3],
+            playback: PlaybackContract {
+                mode: PlaybackMode::Loop,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: None,
+            },
+            reduced_motion_frame_index: 1,
+        };
+        let warnings = soft_warning.validate().unwrap();
+        assert!(warnings.iter().any(|warning| warning.contains("4–8")));
+
+        let invalid = PetTimingContract {
+            frame_durations_ms: vec![49, 100],
+            ..soft_warning
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn all_four_v2_playback_modes_have_valid_typed_contracts() {
+        let cases = [
+            PlaybackContract {
+                mode: PlaybackMode::Loop,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: None,
+            },
+            PlaybackContract {
+                mode: PlaybackMode::OnceHold,
+                entry_repeat_count: None,
+                settle_frame_index: Some(1),
+                cooldown_ms: None,
+            },
+            PlaybackContract {
+                mode: PlaybackMode::Periodic,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: Some([2_000, 4_000]),
+            },
+            PlaybackContract {
+                mode: PlaybackMode::BurstThenSettle,
+                entry_repeat_count: Some(2),
+                settle_frame_index: Some(1),
+                cooldown_ms: None,
+            },
+        ];
+
+        for playback in cases {
+            let contract = PetTimingContract {
+                frame_durations_ms: vec![120, 180],
+                playback,
+                reduced_motion_frame_index: 1,
+            };
+            assert!(
+                contract.validate().is_ok(),
+                "{:?} must satisfy its mode-specific contract",
+                playback.mode
+            );
         }
+    }
+
+    #[test]
+    fn periodic_cooldown_enforces_the_published_single_value_bounds() {
+        let contract = |cooldown_ms| PetTimingContract {
+            frame_durations_ms: vec![120, 180],
+            playback: PlaybackContract {
+                mode: PlaybackMode::Periodic,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: Some(cooldown_ms),
+            },
+            reduced_motion_frame_index: 1,
+        };
+
+        for cooldown_ms in [
+            [0, 0],
+            [0, MAX_PERIODIC_COOLDOWN_MS],
+            [MAX_PERIODIC_COOLDOWN_MS, MAX_PERIODIC_COOLDOWN_MS],
+        ] {
+            assert!(
+                contract(cooldown_ms).validate().is_ok(),
+                "published boundary {cooldown_ms:?} must be accepted"
+            );
+        }
+
+        let error = contract([MAX_PERIODIC_COOLDOWN_MS + 1, MAX_PERIODIC_COOLDOWN_MS + 1])
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("must not exceed 86400000"), "{error}");
     }
 
     #[test]
@@ -935,13 +1232,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pet_summary_defaults_revision_metadata() {
+    fn pet_summary_defaults_revision_metadata() {
         let pet: PetSummary = serde_json::from_value(serde_json::json!({
-            "id": "pet_legacy",
-            "name": "Legacy",
+            "id": "pet_external",
+            "name": "External",
             "style": "pixel",
-            "quality": "high",
+            "quality": "standard",
             "render_size": { "width": 384, "height": 416 },
+            "states": default_pet_states(),
             "petpack_path": "/external.petpack",
             "cover_path": "",
             "active": false,
@@ -961,18 +1259,8 @@ mod tests {
             "form": {
                 "description": "Refine the ears",
                 "style": "pixel",
-                "quality": "high",
-                "reference_images": [],
-                "native_fps": 10,
-                "state_durations_ms": {
-                    "idle": 2000,
-                    "start": 1000,
-                    "tool": 2000,
-                    "waiting": 2000,
-                    "review": 2000,
-                    "done": 1000,
-                    "failed": 2000
-                }
+                "quality": "standard",
+                "reference_images": []
             },
             "reference_reselection_count": 0,
             "session_id": "session_1",

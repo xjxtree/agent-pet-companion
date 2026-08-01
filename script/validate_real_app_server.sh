@@ -247,7 +247,7 @@ assert_json "$FINAL_STATUS" 'data["app_server"]["ai_brief"]["states_count"] == 7
   || fail "real App Server output did not prove seven fixed states"
 assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["manifest_exists"] is True and data["artifacts"]["petpack_source"]["validation_ok"] is True and len(data["artifacts"]["petpack_files"]) >= 1' \
   || fail "generation artifacts are incomplete"
-assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v1"] and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] in ["skill-full-source", "codex_app_server_brief"] and data["artifacts"]["petpack_source"]["skill_session"]["exists"] is True' \
+assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v2"] and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] in ["skill-full-source", "codex_app_server_brief"] and data["artifacts"]["petpack_source"]["skill_session"]["exists"] is True' \
   || fail "real App Server generation did not preserve App Server provenance"
 if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"]["fallback_used"] is False and data["artifacts"]["petpack_source"]["sample_output"] is False and data["artifacts"]["petpack_source"]["repaired_validation"] is False and data["artifacts"]["petpack_source"]["materialized_by_petcore"] is False' \
@@ -273,22 +273,39 @@ from pathlib import Path
 root = Path(os.environ["SOURCE_DIR"])
 metadata = json.loads((root / "source/source.json").read_text(encoding="utf-8"))
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+motion_report = json.loads(
+    (root.parent / ".agent-pet-maker/motion-qa/report.json").read_text(encoding="utf-8")
+)
 assert metadata.get("generator") == "codex-app-server-skill"
 assert metadata.get("provenance") == "skill-full-source"
 assert metadata.get("visual_source") in {"image-generation", "user-reference-derived"}
 assert metadata.get("preview_only") is False
-native_fps = int(manifest["native_fps"])
-assert native_fps in {10, 20}
-durations = {state["name"]: int(state["duration_ms"]) for state in manifest["states"]}
-assert set(durations) == {"idle", "start", "tool", "waiting", "review", "done", "failed"}
-assert set(durations.values()) <= {1000, 2000}
-expected_counts = {
-    state: native_fps * duration_ms // 1000
-    for state, duration_ms in durations.items()
+assert manifest.get("schema_version") == "apc.petpack.v2"
+timings = manifest["states"]
+assert {state["name"] for state in timings} == {
+    "idle", "start", "tool", "waiting", "review", "done", "failed"
 }
-assert metadata.get("native_fps") == native_fps
-assert metadata.get("state_durations_ms") == durations
+expected_counts = {
+    state["name"]: len(state["frame_durations_ms"])
+    for state in timings
+}
+assert all(2 <= count <= 40 for count in expected_counts.values())
+assert all(
+    50 <= duration <= 2000
+    for state in timings
+    for duration in state["frame_durations_ms"]
+)
+assert all(sum(state["frame_durations_ms"]) <= 5000 for state in timings)
+assert metadata.get("states") == timings
 assert metadata.get("state_frame_counts") == expected_counts
+encoded_timing = json.dumps(
+    timings, ensure_ascii=False, separators=(",", ":")
+).encode("utf-8")
+assert motion_report.get("timing_digest") == hashlib.sha256(encoded_timing).hexdigest()
+assert all(
+    motion_report["states"][state]["previews"].get("authored_timing")
+    for state in expected_counts
+)
 
 first_frames = set()
 for state in ["idle", "start", "tool", "waiting", "review", "done", "failed"]:
@@ -307,7 +324,7 @@ assert_json "$SOURCE_VALIDATION" 'data["ok"] is True and len(data["manifest"]["s
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
 assert_json "$SNAPSHOT" 'len(data["pets"]) == 1 and data["pets"][0]["active"] is True and data["pets"][0]["quality"] == "standard"' \
   || fail "completed pet was not imported and activated"
-assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v1"] and data["pets"][0]["provenance"] in ["skill-full-source", "codex_app_server_brief"]' \
+assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v2"] and data["pets"][0]["provenance"] in ["skill-full-source", "codex_app_server_brief"]' \
   || fail "imported pet does not preserve real App Server provenance"
 if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] == "codex-app-server-skill" and data["pets"][0]["provenance"] == "skill-full-source"' \

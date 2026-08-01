@@ -3,10 +3,6 @@ import MetalKit
 import SwiftUI
 
 enum PetLibraryPreviewPolicy {
-    static func playbackProfile(for pet: PetSummary) -> FpsProfile {
-        pet.nativeFPS == FpsProfile.smooth.fps ? .smooth : .standard
-    }
-
     static func canOpenAssets(assetWarning: PetAssetWarning?) -> Bool {
         assetWarning == nil
     }
@@ -101,7 +97,6 @@ private struct PetLibraryIdleMetalView: NSViewRepresentable {
             pet: pet,
             stateName: "idle",
             stateEntryID: "library-hero-idle:\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
-            fpsProfile: PetLibraryPreviewPolicy.playbackProfile(for: pet),
             active: true,
             reduceMotion: reduceMotion,
             onVisualEnvelopeChanged: { envelope in

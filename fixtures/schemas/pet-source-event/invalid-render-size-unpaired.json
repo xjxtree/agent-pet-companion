@@ -1,0 +1,6 @@
+{
+  "schema_version": "apc.pet-source-event.v1",
+  "event": "render.configured",
+  "quality": "low",
+  "render_size": { "width": 192, "height": 624 }
+}

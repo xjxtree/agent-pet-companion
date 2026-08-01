@@ -20,6 +20,10 @@ time.workspace = true
 uuid.workspace = true
 zip.workspace = true
 
+[build-dependencies]
+hex.workspace = true
+sha2.workspace = true
+
 [[bin]]
 name = "petcore"
 path = "src/main.rs"

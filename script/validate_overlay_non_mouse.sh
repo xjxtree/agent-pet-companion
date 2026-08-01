@@ -22,17 +22,22 @@ restore_state() {
     "$PETCORE_CLI" behavior set-json --value-json "$ORIGINAL_BEHAVIOR_JSON" >/dev/null 2>&1 || true
   fi
   if [[ -x "$PETCORE_CLI" && -n "$ORIGINAL_PLACEMENT_JSON" ]]; then
-    PLACEMENT="$ORIGINAL_PLACEMENT_JSON" python3 - <<'PY' | while read -r x y scale display_id; do
+    PLACEMENT="$ORIGINAL_PLACEMENT_JSON" python3 - <<'PY' | while read -r x y display_width_pt display_id; do
 import json
 import os
 
 placement = json.loads(os.environ["PLACEMENT"])
-print(placement["x"], placement["y"], placement["scale"], placement.get("display_id", "main"))
+print(
+    placement["x"],
+    placement["y"],
+    placement["display_width_pt"],
+    placement.get("display_id", "main"),
+)
 PY
       "$PETCORE_CLI" overlay placement set \
         --x "$x" \
         --y "$y" \
-        --scale "$scale" \
+        --display-width-pt "$display_width_pt" \
         --display-id "$display_id" >/dev/null 2>&1 || true
     done
   fi
@@ -571,7 +576,7 @@ SWIFT
 "$PETCORE_CLI" overlay placement set \
   --x "$BOTTOM_X" \
   --y "$BOTTOM_Y" \
-  --scale 0.12 \
+  --display-width-pt 112 \
   --display-id overlay-nomouse-bottom >/dev/null
 sleep 1.5
 validate_overlay_ax above
@@ -579,7 +584,7 @@ validate_overlay_ax above
 "$PETCORE_CLI" overlay placement set \
   --x "$TOP_X" \
   --y "$TOP_Y" \
-  --scale 0.12 \
+  --display-width-pt 112 \
   --display-id overlay-nomouse-top >/dev/null
 sleep 1.5
 validate_overlay_ax below

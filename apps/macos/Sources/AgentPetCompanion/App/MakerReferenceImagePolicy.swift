@@ -240,9 +240,7 @@ enum PetStudioDraftPolicy {
         descriptionText: String,
         style: StylePreset,
         quality: QualityLevel,
-        referenceImages: [String],
-        nativeFPS: Int = PetAnimationContract.defaultNativeFPS,
-        stateDurationsMS: [String: Int] = PetAnimationContract.defaultStateDurationsMS
+        referenceImages: [String]
     ) -> GenerationForm? {
         guard session.canRetry, let submittedForm = session.submittedForm else { return nil }
         if session.operation == .modify {
@@ -258,9 +256,7 @@ enum PetStudioDraftPolicy {
             description: description,
             style: style.rawValue,
             quality: quality,
-            referenceImages: referenceImages,
-            nativeFPS: nativeFPS,
-            stateDurationsMS: stateDurationsMS
+            referenceImages: referenceImages
         )
     }
 }

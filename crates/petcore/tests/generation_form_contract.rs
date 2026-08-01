@@ -3,7 +3,7 @@ use petcore::rpc::{handle_request, CoreState, RpcRequest};
 use petcore_types::MAX_GENERATION_DESCRIPTION_CHARS;
 use serde_json::json;
 
-fn request(description: &str) -> RpcRequest {
+fn request_with_quality(description: &str, quality: &str) -> RpcRequest {
     RpcRequest {
         jsonrpc: Some("2.0".to_string()),
         id: Some(json!("generation-form-contract")),
@@ -11,10 +11,14 @@ fn request(description: &str) -> RpcRequest {
         params: json!({
             "description": description,
             "style": "半写实",
-            "quality": "standard",
+            "quality": quality,
             "reference_images": []
         }),
     }
+}
+
+fn request(description: &str) -> RpcRequest {
+    request_with_quality(description, "standard")
 }
 
 #[test]
@@ -31,4 +35,24 @@ fn generation_description_is_nonempty_and_bounded_before_job_creation() {
     let oversized_error = handle_request(&state, request(&oversized)).unwrap_err();
     assert!(oversized_error.to_string().contains("must not exceed"));
     assert!(state.database.active_generation_job().unwrap().is_none());
+}
+
+#[test]
+fn generation_rejects_removed_quality_tiers_before_job_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = CoreState::new(AppPaths::new(temp.path().to_path_buf()));
+    state.ensure_ready().unwrap();
+
+    for removed_quality in ["ultra", "original"] {
+        let error = handle_request(
+            &state,
+            request_with_quality("生成一个测试宠物", removed_quality),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(removed_quality),
+            "unexpected error for {removed_quality}: {error}"
+        );
+        assert!(state.database.active_generation_job().unwrap().is_none());
+    }
 }

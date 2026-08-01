@@ -25,10 +25,14 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
   "$ROOT_DIR/script/validate_github_release_api.py"
   "$ROOT_DIR/script/validate_codex_plugin_version.py"
+  "$ROOT_DIR/script/validate_overlay_interaction.sh"
+  "$ROOT_DIR/script/prepare_interaction_attestation.sh"
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
 )
 WORKFLOW="$ROOT_DIR/.github/workflows/release.yml"
+TEST_ALL="$ROOT_DIR/script/test_all.sh"
+OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 
 for obsolete_path in \
   "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements" \
@@ -67,6 +71,27 @@ if legacy_mode="$(rg -n -- '--(preview|public|public-signed)([=[:space:]]|$)' \
   printf 'removed release modes remain in active tooling:\n%s\n' "$legacy_mode" >&2
   exit 1
 fi
+
+# The official release source gate must execute the deterministic native
+# interaction suites, not infer their result from a runtime-produced boolean.
+rg -Fq '"$ROOT_DIR/script/prepare_interaction_attestation.sh"' "$TEST_ALL"
+rg -Fq '"$ROOT_DIR/script/validate_overlay_interaction.sh"' \
+  "$ROOT_DIR/script/prepare_interaction_attestation.sh"
+for interaction_suite in \
+  OverlayPlacementAuthorityTests \
+  AppStoreOverlaySnapshotTests \
+  OverlayGeometryTests \
+  OverlayDisplayWidthTests; do
+  rg -Fq "$interaction_suite" "$OVERLAY_INTERACTION_VALIDATOR"
+done
+rg -Fq 'swift test' "$OVERLAY_INTERACTION_VALIDATOR"
+rg -Fq -- '--attestation-out' "$OVERLAY_INTERACTION_VALIDATOR"
+rg -Fq 'interaction-contract-files.txt' "$OVERLAY_INTERACTION_VALIDATOR"
+rg -Fq 'petpack verify-production-interaction' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -Fq 'interaction-attestation.json' "$ROOT_DIR/script/build_app_bundle.sh"
+rg -Fq 'Run host-safe source, Phase A/T-B4 interaction, and integration gates' \
+  "$WORKFLOW"
 
 # Local and GitHub Release Apps are ad-hoc signed. The official path is
 # explicit, dual-architecture, protected-source-bound, and three-file-only.

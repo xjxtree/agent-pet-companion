@@ -11,18 +11,18 @@ Agent Pet Companion is a native macOS desktop companion for people who work with
 ## Highlight Features
 
 - **Ready out of the box** — includes two built-in pets with complete animations and interactions, so the full desktop-pet experience is available immediately after launch.
-- **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose higher-resolution quality when needed, and use AI to modify pets you already own; every accepted frame must retain the selected native source resolution without upscaling, while per-image and per-state checks catch bad material before the remaining animations are generated.
-- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects. A collapsed Agent bubble shows one attention-prioritized or latest session, while expanding it shows every concrete session in the bounded local snapshot. Each row keeps the exact pet-action status in its badge and uses its two detail lines for bounded Agent messages, host-exposed reasoning, commands, tool input/output, errors, or raw activity details, then opens the corresponding host or exact session when available.
+- **AI Pet Maker** — create highly customizable pets in virtually any visual style, choose low 192×208 or standard 384×416 native quality, and use AI to modify pets you already own. Standard is the default for most characters; low suits minimal or pixel-focused work. Every accepted frame retains the selected native source resolution without upscaling; each state carries its own authored frame durations, playback behavior, and reduced-motion pose.
+- **Multi-agent sessions** — groups Codex, Claude Code, Pi Coding Agent, and OpenCode sessions by Agent across all projects while distinguishing their App and CLI origins. A collapsed Agent bubble shows one attention-prioritized or latest session, while expanding it shows every concrete session in the bounded local snapshot. Each row keeps the exact pet-action status in its badge, labels the session as App or CLI, and uses its two detail lines for bounded Agent messages, host-exposed reasoning, commands, tool input/output, errors, or raw activity details. Validated routes return to the exact ChatGPT/Codex or Claude App session, a Warp CLI session, or the corresponding App/terminal host; unavailable routes remain non-interactive.
 - **Local by design** — pets, settings, bounded session context, and diagnostics stay on the Mac unless you explicitly export a file. AI Pet Maker contacts your configured Codex provider only when you start a creation or edit.
 
 ## Features
 
 - **Pet Library** — use the bundled `星雾团子` and `Bytebud 字节芽`, or import, preview, enable, export, and manage your own `.petpack` pets. A damaged local preview can be revalidated and rebuilt from its immutable package.
 - **AI Pet Maker** — describe a pet, choose its style and quality, add reference images, then create or refine it through Codex.
-- **Pet Configuration** — choose visibility, appearance, Standard/Smooth motion, and a message-attention preset; source, event, timeout, grouping, and interaction controls remain available under Advanced Settings.
+- **Pet Configuration** — choose visibility, theme, the pet's 80–224 pt display width, and a message-attention preset; source, event, timeout, grouping, and interaction controls remain available under Advanced Settings.
 - **Agent Connections** — presents Codex, Claude Code, Pi Coding Agent, and OpenCode as a concise single-selection list: select an Agent to see real-task verification, user-facing recovery guidance, check/test, setup or repair, managed-removal actions, and only the plugin, connector, or Skills installed and maintained by Agent Pet Companion for that Agent, including a verified release version when available or a clear current/required version mismatch.
 - **Service & Diagnostics** — confirm that the companion is working, recover unhealthy services, and export a privacy-filtered diagnostics ZIP when support needs more detail.
-- **Desktop overlay** — the pet body stays draggable during launch and state changes; resize it from the bottom-right handle, use the right-click menu, and open active agent sessions from native bubbles.
+- **Desktop overlay** — the pet body stays draggable during launch and state changes, moves its attached bubble and menu as one composition, and opens active Agent sessions from native bubbles. Display size is adjusted only in Pet Configuration, so dragging always means moving the pet.
 
 The app is local-first: pets, settings, normalized agent events, and diagnostics remain on the Mac unless the user explicitly exports a file. AI Pet Maker uses the current user's configured Codex provider only after the user starts a creation or edit. The app does not read agent credentials, tokens, cookies, or API keys.
 
@@ -96,7 +96,7 @@ After setup, leave the App running and work normally in your Agent. The pet show
 
 Closing the control-center window leaves the menu-bar App and enabled desktop pet running. Use the pet visibility control to hide only the pet, or **Quit** when you want to stop the complete UI host.
 
-Open the five management pages only when you want to switch or import a pet, create or edit one, adjust the ambient experience, connect an Agent, or recover and export diagnostics. AI creation requires a working Codex App Server and access through the current user's configured provider. Standard/Smooth playback never changes authored action duration, and Smooth appears only for validated native-20 pets.
+Open the five management pages only when you want to switch or import a pet, create or edit one, adjust the ambient experience, connect an Agent, or recover and export diagnostics. AI creation requires a working Codex App Server and access through the current user's configured provider. The runtime plays each V2 state's authored per-frame timing directly; it does not expose playback-speed profiles, resample frames, or catch up missed frames after a stall.
 
 Bundled pets are read-only defaults: they can be previewed, enabled, and exported, but not deleted or modified in place. App-created and imported pets can be revised; imported pets without a previous creation conversation start a new edit session from their validated package.
 
@@ -124,7 +124,7 @@ The macOS App owns the control center, menu-bar entry, desktop overlay, and rend
 | Document | Purpose |
 |---|---|
 | [Documentation index](docs/README.md) | Durable technical documentation and maintenance rules |
-| [`.petpack` V1 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V1.md) | Portable pet format and producer contract |
+| [`.petpack` V2 specification](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V2.md) | Portable pet format, authored timing, and producer contract |
 | [Contributing](CONTRIBUTING.md) | Development workflow and validation entrypoints |
 | [Changelog](CHANGELOG.md) | Versioned user-visible changes for every GitHub Release |
 

@@ -6,6 +6,21 @@ public enum PetCoreClientError: Error, LocalizedError, Sendable {
     case writeFailed
     case invalidResponse
     case rpcError(String)
+    case rpcErrorResponse(code: Int, message: String)
+
+    public var rpcCode: Int? {
+        guard case let .rpcErrorResponse(code, _) = self else { return nil }
+        return code
+    }
+
+    public var rpcMessage: String? {
+        switch self {
+        case let .rpcError(message), let .rpcErrorResponse(_, message):
+            message
+        default:
+            nil
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
@@ -13,7 +28,7 @@ public enum PetCoreClientError: Error, LocalizedError, Sendable {
         case let .connectFailed(message): "Could not connect to PetCore: \(message)"
         case .writeFailed: "Could not write request to PetCore."
         case .invalidResponse: "PetCore returned an invalid response."
-        case let .rpcError(message): message
+        case let .rpcError(message), let .rpcErrorResponse(_, message): message
         }
     }
 }
@@ -54,7 +69,16 @@ public struct PetCoreClient: Sendable {
             throw PetCoreClientError.invalidResponse
         }
         if let error = object["error"] as? [String: Any] {
-            throw PetCoreClientError.rpcError(String(describing: error["message"] ?? "Unknown PetCore error"))
+            let message = String(
+                describing: error["message"] ?? "Unknown PetCore error"
+            )
+            if let code = error["code"] as? Int {
+                throw PetCoreClientError.rpcErrorResponse(
+                    code: code,
+                    message: message
+                )
+            }
+            throw PetCoreClientError.rpcError(message)
         }
         return object["result"] ?? NSNull()
     }

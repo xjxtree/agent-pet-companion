@@ -6,26 +6,82 @@ import Testing
 
 @Suite
 struct PetFramePipelineTests {
+    @Test(arguments: QualityLevel.allCases, [
+        PlaybackMatrixFixture(
+            name: "loop",
+            contract: PlaybackContract(mode: .loop)
+        ),
+        PlaybackMatrixFixture(
+            name: "once_hold",
+            contract: PlaybackContract(mode: .onceHold, settleFrameIndex: 2)
+        ),
+        PlaybackMatrixFixture(
+            name: "periodic",
+            contract: PlaybackContract(mode: .periodic, cooldownMS: [4_000, 8_000])
+        ),
+        PlaybackMatrixFixture(
+            name: "burst_then_settle",
+            contract: PlaybackContract(
+                mode: .burstThenSettle,
+                entryRepeatCount: 2,
+                settleFrameIndex: 2
+            )
+        ),
+    ])
+    func everyQualityAndPlaybackPinsReducedMotionAndStopsBoundaryScheduling(
+        quality: QualityLevel,
+        fixture: PlaybackMatrixFixture
+    ) async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 3)
+        let prepared = try await pipeline.prepare(request(
+            quality: quality,
+            stateName: "matrix-\(fixture.name)",
+            frameDurationsMS: [100, 150, 250],
+            playback: fixture.contract,
+            reducedMotionFrameIndex: 1
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(
+            generation: generation,
+            stateID: "\(quality.rawValue):\(fixture.name)",
+            enteredAt: 10
+        )
+        #expect(handoff.publish(prepared, generation: generation))
+
+        #expect(handoff.lookup(at: 10, reducedMotion: false).frame?.hitTestIdentity
+            == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        #expect(handoff.nextBoundaryDelay(after: 10, reducedMotion: false) != nil)
+        for virtualTime in [10.0, 25.0, 70.0] {
+            let reduced = handoff.lookup(at: virtualTime, reducedMotion: true)
+            #expect(reduced.frame?.hitTestIdentity
+                == prepared.readyFrame(at: 1)?.hitTestIdentity)
+            #expect(reduced.shouldPauseAfterDraw)
+            #expect(handoff.nextBoundaryDelay(
+                after: virtualTime,
+                reducedMotion: true
+            ) == nil)
+        }
+    }
+
     @Test
-    func reducedMotionPinsPlaybackToRepresentativeFrameAndPauses() {
-        #expect(PetMotionPresentation.playbackTime(
-            now: 25,
-            enteredAt: 10,
-            reduceMotion: true
-        ) == 10)
-        #expect(PetMotionPresentation.playbackTime(
-            now: 25,
-            enteredAt: 10,
-            reduceMotion: false
-        ) == 25)
-        #expect(PetMotionPresentation.shouldPauseAfterRepresentativeFrame(
-            reduceMotion: true,
-            frameCount: 12
+    func reducedMotionPinsPlaybackToRepresentativeFrameAndStopsScheduling() async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 3)
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "tool",
+            frameCount: 3,
+            reducedMotionFrameIndex: 2
         ))
-        #expect(!PetMotionPresentation.shouldPauseAfterRepresentativeFrame(
-            reduceMotion: false,
-            frameCount: 12
-        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "tool", enteredAt: 10)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        let reduced = handoff.lookup(at: 25, reducedMotion: true)
+        #expect(reduced.frame?.hitTestIdentity == prepared.readyFrame(at: 2)?.hitTestIdentity)
+        #expect(reduced.shouldPauseAfterDraw)
+        #expect(handoff.nextBoundaryDelay(after: 25, reducedMotion: true) == nil)
     }
 
     @MainActor
@@ -118,7 +174,7 @@ struct PetFramePipelineTests {
 
     @MainActor
     @Test
-    func oneShotFinalFrameMayPublishAfterDisplayLinkPause() throws {
+    func finiteFinalFrameMayPublishAfterBoundarySchedulerStops() throws {
         let coordinator = PetFramePresentationCoordinator()
         let context = PetFramePresentationContext(
             renderGeneration: UUID(),
@@ -128,8 +184,8 @@ struct PetFramePipelineTests {
         let finalSubmission = try #require(coordinator.reserve(for: context))
         let finalMask = try presentationHitTest(alpha: 255)
 
-        // Pausing MTKView after submitting the one-shot final frame is not a
-        // renderer suspension, so its pending presented callback stays valid.
+        // Stopping boundary scheduling after submitting the settle frame is
+        // not renderer suspension, so its presented callback stays valid.
         #expect(coordinator.resolve(
             .presented(finalMask),
             token: finalSubmission
@@ -226,7 +282,11 @@ struct PetFramePipelineTests {
     func testDrawLookupNeverReadsDisk() async throws {
         let probe = FrameDecoderProbe()
         let pipeline = makePipeline(probe: probe, frameCount: 3)
-        let prepared = try await pipeline.prepare(request(quality: .standard, stateName: "tool"))
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "tool",
+            frameCount: 3
+        ))
         let readsAfterPrepare = probe.decodeCount
 
         for index in 0..<20 {
@@ -256,7 +316,11 @@ struct PetFramePipelineTests {
             memoryBudgetBytes: 32
         )
 
-        _ = try await pipeline.prepare(request(quality: .standard, stateName: "tool"))
+        _ = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "tool",
+            frameCount: 6
+        ))
         let metrics = await pipeline.cacheMetrics()
 
         #expect(metrics.byteCount <= 32)
@@ -265,156 +329,255 @@ struct PetFramePipelineTests {
     }
 
     @Test
-    func testOriginalQualityKeepsRingWindow() async throws {
-        let probe = FrameDecoderProbe()
-        let pipeline = makePipeline(
-            probe: probe,
-            frameCount: 30,
-            originalWindowSize: 7
-        )
+    func everyQualityTierEagerlyDecodesEveryAuthoredFrameWithoutSampling() async throws {
+        for quality in QualityLevel.allCases {
+            let probe = FrameDecoderProbe()
+            let pipeline = makePipeline(probe: probe, frameCount: 8)
+            let prepared = try await pipeline.prepare(request(
+                quality: quality,
+                stateName: "tool",
+                frameCount: 8
+            ))
 
-        let prepared = try await pipeline.prepare(request(quality: .original, stateName: "tool"))
-        let advanced = try await pipeline.prefetch(prepared, around: 12)
-
-        #expect(prepared.sourceKind == .ring)
-        #expect(prepared.readyFrameCount <= 7)
-        #expect(advanced.readyFrameCount <= 7)
-        #expect(advanced.readyFrame(at: 12) != nil)
+            #expect(prepared.sourceKind == .eager)
+            #expect(prepared.sourceFrameCount == 8)
+            #expect(prepared.frameCount == 8)
+            #expect(prepared.readyFrameCount == 8)
+            #expect(probe.decodeCount == 8)
+            #expect(probe.decodedPaths == (0..<8).map { "/virtual/frame-\($0).png" })
+        }
     }
 
     @Test
-    func originalQualityAutoreverseKeepsTheReverseSideOfTheRingReady() async throws {
-        let probe = FrameDecoderProbe()
-        let pipeline = makePipeline(
-            probe: probe,
-            frameCount: 20,
-            originalWindowSize: 7
-        )
+    func mismatchedAuthoredTimingAndAssetCountIsRejected() async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 3)
 
+        do {
+            _ = try await pipeline.prepare(request(
+                quality: .standard,
+                stateName: "tool",
+                frameCount: 4
+            ))
+            Issue.record("expected mismatched authored timing to be rejected")
+        } catch let error as PetFramePipelineError {
+            #expect(error == .frameCountMismatch(expected: 4, actual: 3))
+        }
+    }
+
+    @Test
+    func onceHoldUsesTheAuthoredSettleFrame() async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 4)
         let prepared = try await pipeline.prepare(request(
-            quality: .original,
-            stateName: "start",
-            nativeFPS: 20,
-            requestedFPS: 20,
-            durationMS: 1_000
-        ))
-        let atTerminalPose = try await pipeline.prefetch(prepared, around: 19)
-
-        #expect(atTerminalPose.readyFrameCount <= prepared.cacheFrameLimit)
-        #expect(atTerminalPose.readyFrame(at: 19) != nil)
-        #expect(atTerminalPose.readyFrame(at: 18) != nil)
-        #expect(atTerminalPose.readyFrame(at: 17) != nil)
-    }
-
-    @Test
-    func standardPlaybackOfSmoothPetDecodesOnlyTheSampledFrames() async throws {
-        let standardProbe = FrameDecoderProbe()
-        let standardPipeline = makePipeline(probe: standardProbe, frameCount: 40)
-        let standard = try await standardPipeline.prepare(request(
-            quality: .high,
-            stateName: "tool",
-            nativeFPS: 20,
-            requestedFPS: 10,
-            durationMS: 2_000
-        ))
-
-        #expect(standard.sourceFrameCount == 40)
-        #expect(standard.frameCount == 20)
-        #expect(standard.sampledSourceIndices == Array(stride(from: 0, to: 40, by: 2)))
-        #expect(standardProbe.decodeCount == 20)
-
-        let smoothProbe = FrameDecoderProbe()
-        let smoothPipeline = makePipeline(probe: smoothProbe, frameCount: 40)
-        let smooth = try await smoothPipeline.prepare(request(
-            quality: .high,
-            stateName: "tool",
-            nativeFPS: 20,
-            requestedFPS: 20,
-            durationMS: 2_000
-        ))
-
-        #expect(smooth.frameCount == 40)
-        #expect(smooth.sampledSourceIndices == Array(0..<40))
-        #expect(smoothProbe.decodeCount == 40)
-    }
-
-    @Test
-    func downsampledOneShotKeepsTheTrueTerminalSourceFrame() async throws {
-        let probe = FrameDecoderProbe()
-        let pipeline = makePipeline(probe: probe, frameCount: 20)
-        let prepared = try await pipeline.prepare(request(
-            quality: .high,
+            quality: .standard,
             stateName: "done",
-            nativeFPS: 20,
-            requestedFPS: 10,
-            durationMS: 1_000
+            frameDurationsMS: [100, 150, 200, 250],
+            playback: PlaybackContract(mode: .onceHold, settleFrameIndex: 2)
         ))
-
-        #expect(prepared.frameCount == 10)
-        #expect(prepared.sampledSourceIndices.first == 0)
-        #expect(prepared.sampledSourceIndices.last == 19)
-        #expect(probe.decodedPaths.contains("/virtual/frame-19.png"))
-
         let handoff = PetFrameRenderHandoff()
         let generation = UUID()
         handoff.begin(generation: generation, stateID: "done:first", enteredAt: 10)
         #expect(handoff.publish(prepared, generation: generation))
-        handoff.holdTerminalFrame(stateID: "done:seen-again")
-        let terminal = handoff.lookup(at: 10)
-        #expect(terminal.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
+
+        let terminal = handoff.lookup(at: 10.71, reducedMotion: false)
+        #expect(terminal.frame?.hitTestIdentity == prepared.readyFrame(at: 2)?.hitTestIdentity)
         #expect(terminal.shouldPauseAfterDraw)
+        #expect(handoff.nextBoundaryDelay(after: 10.71, reducedMotion: false) == nil)
+
+        handoff.holdTerminalFrame(stateID: "done:seen-again")
+        let held = handoff.lookup(at: 10, reducedMotion: false)
+        #expect(held.frame?.hitTestIdentity == prepared.readyFrame(at: 2)?.hitTestIdentity)
     }
 
     @Test
-    func persistentStartAutoreversesWithoutChangingOneShotSampling() async throws {
-        let probe = FrameDecoderProbe()
-        let pipeline = makePipeline(probe: probe, frameCount: 20)
+    func periodicCooldownHoldsRepresentativeFrameWithoutBusyDrawing() async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 3)
         let prepared = try await pipeline.prepare(request(
-            quality: .high,
-            stateName: "start",
-            nativeFPS: 20,
-            requestedFPS: 10,
-            durationMS: 1_000
+            quality: .standard,
+            stateName: "idle",
+            frameDurationsMS: [100, 150, 250],
+            playback: PlaybackContract(mode: .periodic, cooldownMS: [500, 500]),
+            reducedMotionFrameIndex: 1
         ))
-
-        #expect(prepared.sampledSourceIndices.first == 0)
-        #expect(prepared.sampledSourceIndices.last == 19)
-        #expect(prepared.playbackMode == .autoreverse)
-
         let handoff = PetFrameRenderHandoff()
         let generation = UUID()
-        handoff.begin(generation: generation, stateID: "start:first", enteredAt: 10)
+        handoff.begin(generation: generation, stateID: "idle", enteredAt: 10)
         #expect(handoff.publish(prepared, generation: generation))
 
-        let forwardStart = handoff.lookup(at: 10)
-        let forwardEnd = handoff.lookup(at: 10.9)
-        let reverseStart = handoff.lookup(at: 11)
-        let reverseNext = handoff.lookup(at: 11.1)
-        let nextCycle = handoff.lookup(at: 12)
-
-        #expect(forwardStart.frame?.hitTestIdentity == prepared.readyFrame(at: 0)?.hitTestIdentity)
-        #expect(forwardEnd.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
-        #expect(reverseStart.frame?.hitTestIdentity == prepared.readyFrame(at: 9)?.hitTestIdentity)
-        #expect(reverseNext.frame?.hitTestIdentity == prepared.readyFrame(at: 8)?.hitTestIdentity)
-        #expect(nextCycle.frame?.hitTestIdentity == prepared.readyFrame(at: 0)?.hitTestIdentity)
-        #expect(!nextCycle.shouldPauseAfterDraw)
+        let cooldown = handoff.lookup(at: 10.7, reducedMotion: false)
+        #expect(cooldown.frame?.hitTestIdentity == prepared.readyFrame(at: 1)?.hitTestIdentity)
+        let delay = try #require(handoff.nextBoundaryDelay(after: 10.7, reducedMotion: false))
+        #expect(delay > 0.299 && delay < 0.302)
     }
 
     @Test
-    func nativeStandardPetCannotPrepareSmoothPlayback() async throws {
-        let probe = FrameDecoderProbe()
-        let pipeline = makePipeline(probe: probe, frameCount: 20)
+    func periodicCooldownSamplesOncePerCycleAndStallResolvesCurrentFrame() async throws {
+        let cooldowns = PeriodicCooldownSequence(values: [500, 800, 600])
+        let pipeline = makePipeline(
+            probe: FrameDecoderProbe(),
+            frameCount: 2,
+            periodicCooldownSampler: { range in cooldowns.next(in: range) }
+        )
         let prepared = try await pipeline.prepare(request(
-            quality: .high,
-            stateName: "tool",
-            nativeFPS: 10,
-            requestedFPS: 20,
-            durationMS: 2_000
+            quality: .standard,
+            stateName: "idle",
+            frameDurationsMS: [100, 100],
+            playback: PlaybackContract(mode: .periodic, cooldownMS: [500, 800]),
+            reducedMotionFrameIndex: 1
         ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "idle", enteredAt: 0)
+        #expect(handoff.publish(prepared, generation: generation))
 
-        #expect(prepared.request.effectiveFPS == 10)
-        #expect(prepared.frameCount == 20)
-        #expect(probe.decodeCount == 20)
+        let firstCooldown = handoff.lookup(at: 0.25, reducedMotion: false)
+        #expect(firstCooldown.frame?.hitTestIdentity
+            == prepared.readyFrame(at: 1)?.hitTestIdentity)
+        _ = handoff.lookup(at: 0.4, reducedMotion: false)
+        _ = handoff.nextBoundaryDelay(after: 0.4, reducedMotion: false)
+        #expect(cooldowns.snapshot() == [500])
+
+        let secondCycle = handoff.lookup(at: 0.701, reducedMotion: false)
+        #expect(secondCycle.frame?.hitTestIdentity
+            == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        _ = handoff.lookup(at: 1.2, reducedMotion: false)
+        #expect(cooldowns.snapshot() == [500, 800])
+
+        // One lookup after a long stall samples skipped cycle cooldowns only
+        // to resolve wall-clock phase; it returns the currently due frame and
+        // never asks the renderer to replay the missed authored boundaries.
+        let afterStall = handoff.lookup(at: 1.75, reducedMotion: false)
+        #expect(afterStall.frame?.hitTestIdentity
+            == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        _ = handoff.nextBoundaryDelay(after: 1.8, reducedMotion: false)
+        #expect(cooldowns.snapshot() == [500, 800, 600])
+    }
+
+    @Test
+    func fixedPeriodicCooldownFastForwardsADayInConstantWork() async throws {
+        let cooldowns = PeriodicCooldownCounter(value: 0)
+        let pipeline = makePipeline(
+            probe: FrameDecoderProbe(),
+            frameCount: 2,
+            periodicCooldownSampler: { range in cooldowns.next(in: range) }
+        )
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "idle",
+            frameDurationsMS: [50, 50],
+            playback: PlaybackContract(mode: .periodic, cooldownMS: [0, 0])
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "idle", enteredAt: 0)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        let afterOneDay = handoff.lookup(at: 86_400, reducedMotion: false)
+        #expect(afterOneDay.frame?.hitTestIdentity
+            == prepared.readyFrame(at: 0)?.hitTestIdentity)
+        _ = handoff.nextBoundaryDelay(after: 86_400, reducedMotion: false)
+
+        // A degenerate authored range has no random choices to instantiate.
+        #expect(cooldowns.sampleCount <= 1)
+    }
+
+    @Test
+    func variablePeriodicCooldownBoundsSamplingWorkAfterALongStall() async throws {
+        let cooldowns = PeriodicCooldownCounter(value: 0)
+        let pipeline = makePipeline(
+            probe: FrameDecoderProbe(),
+            frameCount: 2,
+            periodicCooldownSampler: { range in cooldowns.next(in: range) }
+        )
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "idle",
+            frameDurationsMS: [50, 50],
+            playback: PlaybackContract(mode: .periodic, cooldownMS: [0, 1])
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "idle", enteredAt: 0)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        _ = handoff.lookup(at: 86_400, reducedMotion: false)
+        let samplesAfterStall = cooldowns.sampleCount
+        _ = handoff.lookup(at: 86_400, reducedMotion: false)
+        _ = handoff.nextBoundaryDelay(after: 86_400, reducedMotion: false)
+
+        // The renderer lock may inspect a small bounded prefix, then it must
+        // re-anchor instead of materializing every missed random cycle.
+        #expect(samplesAfterStall <= 10)
+        #expect(cooldowns.sampleCount == samplesAfterStall)
+    }
+
+    @Test
+    func sixtySecondPeriodicIdleRequestsOnlyAuthoredBoundaryDraws() async throws {
+        let idle = try #require(PetAnimationContract.defaultStates.first {
+            $0.name == "idle"
+        })
+        let pipeline = makePipeline(
+            probe: FrameDecoderProbe(),
+            frameCount: idle.frameDurationsMS.count,
+            periodicCooldownSampler: { range in
+                range.lowerBound + (range.upperBound - range.lowerBound) / 2
+            }
+        )
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: idle.name,
+            frameDurationsMS: idle.frameDurationsMS,
+            playback: idle.playback,
+            reducedMotionFrameIndex: idle.reducedMotionFrameIndex
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "idle", enteredAt: 0)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        var virtualTime = 0.0
+        var scheduledBoundaryDraws = 0
+        while scheduledBoundaryDraws < 1_000 {
+            let delay = try #require(handoff.nextBoundaryDelay(
+                after: virtualTime,
+                reducedMotion: false
+            ))
+            virtualTime += delay
+            guard virtualTime <= 60 else { break }
+            scheduledBoundaryDraws += 1
+        }
+
+        // The initial presentation plus 44 authored/cycle-boundary wakes is
+        // far below a continuously running 60 Hz display link (3,600 draws).
+        #expect(scheduledBoundaryDraws == 44)
+        #expect(1 + scheduledBoundaryDraws == 45)
+        #expect(handoff.nextBoundaryDelay(after: 60, reducedMotion: true) == nil)
+    }
+
+    @Test
+    func burstThenSettleSkipsMissedFramesAfterAStall() async throws {
+        let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 4)
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "start",
+            frameDurationsMS: [100, 200, 100, 200],
+            playback: PlaybackContract(
+                mode: .burstThenSettle,
+                entryRepeatCount: 2,
+                settleFrameIndex: 1
+            )
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "start", enteredAt: 10)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        let afterStall = handoff.lookup(at: 10.95, reducedMotion: false)
+        #expect(afterStall.frame?.hitTestIdentity == prepared.readyFrame(at: 2)?.hitTestIdentity)
+
+        let settled = handoff.lookup(at: 11.21, reducedMotion: false)
+        #expect(settled.frame?.hitTestIdentity == prepared.readyFrame(at: 1)?.hitTestIdentity)
+        #expect(settled.shouldPauseAfterDraw)
+        #expect(handoff.nextBoundaryDelay(after: 11.21, reducedMotion: false) == nil)
     }
 
     @Test
@@ -454,32 +617,31 @@ struct PetFramePipelineTests {
 
         handoff.begin(generation: generation, stateID: "tool:first", enteredAt: 10)
         #expect(handoff.publish(prepared, generation: generation))
-        #expect(handoff.lookup(at: 10).frame != nil)
+        #expect(handoff.lookup(at: 10, reducedMotion: false).frame != nil)
 
         handoff.restartPlayback(stateID: "tool:second", enteredAt: 20)
-        let restarted = handoff.lookup(at: 20)
+        let restarted = handoff.lookup(at: 20, reducedMotion: false)
 
         #expect(restarted.generation == generation)
         #expect(restarted.frame != nil)
-        #expect(handoff.prepared(generation: generation) != nil)
     }
 
     @Test
-    func testOneShotPlaybackDoesNotReplayAfterCanonicalABARotation() {
+    func onceHoldPlaybackDoesNotReplayAfterCanonicalABARotation() {
         var history = PetPlaybackEntryHistory(capacity: 8)
         let sessionA = "done:codex:session-a:activation-1"
         let sessionB = "done:codex:session-b:activation-1"
 
-        #expect(history.transition(to: sessionA, playbackMode: .oneShot).shouldRestartPlayback)
-        #expect(history.transition(to: sessionB, playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: sessionA, playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: sessionB, playbackMode: .onceHold).shouldRestartPlayback)
 
-        let rotatedBack = history.transition(to: sessionA, playbackMode: .oneShot)
+        let rotatedBack = history.transition(to: sessionA, playbackMode: .onceHold)
         #expect(rotatedBack.isNewEntry)
         #expect(!rotatedBack.shouldRestartPlayback)
     }
 
     @Test
-    func testOneShotPlaybackReplaysForGenuineNewActivation() {
+    func finitePlaybackReplaysForGenuineNewActivation() {
         var history = PetPlaybackEntryHistory(capacity: 8)
         let firstActivation = "done:codex:session-a:activation-1"
         let otherSession = "done:codex:session-b:activation-1"
@@ -487,16 +649,16 @@ struct PetFramePipelineTests {
 
         #expect(history.transition(
             to: firstActivation,
-            playbackMode: .oneShot
+            playbackMode: .burstThenSettle
         ).shouldRestartPlayback)
         #expect(history.transition(
             to: otherSession,
-            playbackMode: .oneShot
+            playbackMode: .burstThenSettle
         ).shouldRestartPlayback)
-        #expect(history.transition(to: firstActivation, playbackMode: .oneShot).isNewEntry)
+        #expect(history.transition(to: firstActivation, playbackMode: .burstThenSettle).isNewEntry)
         #expect(history.transition(
             to: nextActivation,
-            playbackMode: .oneShot
+            playbackMode: .burstThenSettle
         ).shouldRestartPlayback)
     }
 
@@ -513,31 +675,31 @@ struct PetFramePipelineTests {
     }
 
     @Test
-    func testAutoreversingStartRetainsRepeatingEntrySemantics() {
+    func testPeriodicPlaybackRetainsRepeatingEntrySemantics() {
         var history = PetPlaybackEntryHistory(capacity: 8)
 
         #expect(history.transition(
             to: "start:session-a",
-            playbackMode: .autoreverse
+            playbackMode: .periodic
         ).shouldRestartPlayback)
         #expect(history.transition(
             to: "start:session-b",
-            playbackMode: .autoreverse
+            playbackMode: .periodic
         ).shouldRestartPlayback)
         #expect(history.transition(
             to: "start:session-a",
-            playbackMode: .autoreverse
+            playbackMode: .periodic
         ).shouldRestartPlayback)
     }
 
     @Test
-    func testOneShotPlaybackHistoryIsBounded() {
+    func finitePlaybackHistoryIsBounded() {
         var history = PetPlaybackEntryHistory(capacity: 2)
 
-        #expect(history.transition(to: "done:a:1", playbackMode: .oneShot).shouldRestartPlayback)
-        #expect(history.transition(to: "done:b:1", playbackMode: .oneShot).shouldRestartPlayback)
-        #expect(history.transition(to: "done:c:1", playbackMode: .oneShot).shouldRestartPlayback)
-        #expect(history.transition(to: "done:a:1", playbackMode: .oneShot).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: "done:b:1", playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: "done:c:1", playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .onceHold).shouldRestartPlayback)
     }
 
     @Test
@@ -640,8 +802,11 @@ struct PetFramePipelineTests {
         handoff.begin(generation: generation, stateID: "tool", enteredAt: 10)
         #expect(handoff.publish(prepared, generation: generation))
 
-        let first = try #require(handoff.lookup(at: 10).frameHitTest)
-        let second = try #require(handoff.lookup(at: 10 + 1.0 / 10.0).frameHitTest)
+        let first = try #require(handoff.lookup(at: 10, reducedMotion: false).frameHitTest)
+        let second = try #require(handoff.lookup(
+            at: 10.101,
+            reducedMotion: false
+        ).frameHitTest)
 
         #expect(first.frameID != second.frameID)
         #expect(!first.alphaMask.containsOpaquePixel(atBottomLeftPoint: CGPoint(x: 0.5, y: 0.5)))
@@ -657,9 +822,17 @@ struct PetFramePipelineTests {
             memoryBudgetBytes: 1_024
         )
 
-        _ = try await pipeline.prepare(request(quality: .standard, stateName: "idle"))
+        _ = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "idle",
+            frameCount: 3
+        ))
         let firstMetrics = await pipeline.cacheMetrics()
-        let prepared = try await pipeline.prepare(request(quality: .standard, stateName: "tool"))
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: "tool",
+            frameCount: 3
+        ))
         let secondMetrics = await pipeline.cacheMetrics()
 
         #expect(firstMetrics.frameCount == 3)
@@ -676,7 +849,6 @@ struct PetFramePipelineTests {
 
         let telemetry = PetRendererTelemetry(
             prepared: prepared,
-            fpsProfile: .standard,
             active: true,
             cacheMetrics: cacheMetrics
         )
@@ -685,11 +857,12 @@ struct PetFramePipelineTests {
         #expect(telemetry.readyDecodedFrameCount == 2)
         #expect(telemetry.pipelineCacheBytes == 160)
         #expect(telemetry.pipelineCacheFrameCount == 2)
-        #expect(telemetry.nativeFPS == 20)
-        #expect(telemetry.fps == 10)
-        #expect(telemetry.durationMS == 2_000)
+        #expect(telemetry.frameDurationsMS == [100, 100])
+        #expect(telemetry.totalDurationMS == 200)
+        #expect(telemetry.playbackMode == PetPlaybackMode.loop.rawValue)
+        #expect(telemetry.reducedMotionFrameIndex == 0)
         #expect(telemetry.sourceFrameCount == 2)
-        #expect(telemetry.sampledFrameCount == 2)
+        #expect(telemetry.frameCount == 2)
     }
 
     @MainActor
@@ -708,27 +881,36 @@ struct PetFramePipelineTests {
         probe: FrameDecoderProbe,
         frameCount: Int,
         memoryBudgetBytes: Int = 1_024 * 1_024,
-        originalWindowSize: Int = 7
+        periodicCooldownSampler: @escaping PetFramePipeline.PeriodicCooldownSampler = {
+            Int.random(in: $0)
+        }
     ) -> PetFramePipeline {
         let urls = (0..<frameCount).map { URL(fileURLWithPath: "/virtual/frame-\($0).png") }
         return PetFramePipeline(
             memoryBudgetBytes: memoryBudgetBytes,
-            originalWindowSize: originalWindowSize,
             catalog: { _, _ in PetFrameAssetCatalog(frameURLs: urls, coverURL: nil) },
-            decoder: { url in probe.decode(url) }
+            decoder: { url in probe.decode(url) },
+            periodicCooldownSampler: periodicCooldownSampler
         )
     }
 
     private func request(
         quality: QualityLevel,
         stateName: String,
-        nativeFPS: Int = 20,
-        requestedFPS: Int = 10,
-        durationMS: Int? = nil
+        frameCount: Int = 2,
+        frameDurationsMS: [Int]? = nil,
+        playback: PlaybackContract = PlaybackContract(mode: .loop),
+        reducedMotionFrameIndex: Int = 0
     ) -> PetFrameLoadRequest {
-        let resolvedDurationMS = durationMS
-            ?? PetAnimationContract.defaultStateDurationsMS[stateName]
-            ?? 1_000
+        let durations = frameDurationsMS
+            ?? [Int](repeating: 100, count: frameCount)
+        let timing = PetStateTiming(
+            name: stateName,
+            framesDir: "assets/frames/\(stateName)",
+            frameDurationsMS: durations,
+            playback: playback,
+            reducedMotionFrameIndex: reducedMotionFrameIndex
+        )
         return PetFrameLoadRequest(
             pet: PetSummary(
                 id: "pet_test",
@@ -742,11 +924,7 @@ struct PetFramePipelineTests {
                 createdAt: "2026-07-10T00:00:00Z"
             ),
             stateName: stateName,
-            requestedFPS: requestedFPS,
-            nativeFPS: nativeFPS,
-            durationMS: resolvedDurationMS,
-            authoredLoops: PetAnimationContract.loops(stateName: stateName),
-            playbackMode: PetAnimationContract.playbackMode(stateName: stateName)
+            timing: timing
         )
     }
 
@@ -761,6 +939,13 @@ struct PetFramePipelineTests {
             alphaMask: mask
         )
     }
+}
+
+struct PlaybackMatrixFixture: Sendable, CustomTestStringConvertible {
+    let name: String
+    let contract: PlaybackContract
+
+    var testDescription: String { name }
 }
 
 private final class FrameDecoderProbe: @unchecked Sendable {
@@ -808,5 +993,55 @@ private final class FrameDecoderProbe: @unchecked Sendable {
             height: pixelHeight
         ))
         return PetDecodedFrame(image: image, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+    }
+}
+
+private final class PeriodicCooldownSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private let values: [Int]
+    private var consumed: [Int] = []
+
+    init(values: [Int]) {
+        precondition(!values.isEmpty)
+        self.values = values
+    }
+
+    func next(in range: ClosedRange<Int>) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = values[min(consumed.count, values.count - 1)]
+        precondition(range.contains(value))
+        consumed.append(value)
+        return value
+    }
+
+    func snapshot() -> [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return consumed
+    }
+}
+
+private final class PeriodicCooldownCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let value: Int
+    private var count = 0
+
+    init(value: Int) {
+        self.value = value
+    }
+
+    var sampleCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func next(in range: ClosedRange<Int>) -> Int {
+        precondition(range.contains(value))
+        lock.lock()
+        count += 1
+        lock.unlock()
+        return value
     }
 }

@@ -49,7 +49,7 @@
         "session_open": { "type": ["boolean", "null"] },
         "session_surface": {
           "type": ["string", "null"],
-          "enum": ["chatgpt_app", "cli_terminal", "unknown", null]
+          "enum": ["chatgpt_app", "claude_app", "opencode_app", "cli_terminal", "unknown", null]
         },
         "terminal_app": {
           "type": ["string", "null"],

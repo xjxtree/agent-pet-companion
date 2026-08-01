@@ -20,9 +20,9 @@ struct BundledPetInventoryTests {
 
         let expectedDigests = [
             "pet_xingwutuanzi.petpack":
-                "886988991cc8c40a0fdc0a997430474de28c0c26ddf83df428cae3db06307864",
+                "4d039243b3d8f02ea87489a0b8d7261e5ff5e49df04aa9b3beda7712d93cfab2",
             "pet_bytebudcodex.petpack":
-                "b936e8bda84a7a6d140b8f7629a7c111b07e4d78b0674bdc1e24eee0c8bd2d3d"
+                "22fc193a89f5c4d653fcd315c6a878f8e6269ed51db1e709a9beaae60405e4f4"
         ]
         for entry in entries {
             let data = try Data(contentsOf: entry)

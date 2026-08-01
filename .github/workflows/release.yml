@@ -40,8 +40,6 @@ jobs:
       checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
     env:
       APC_VALIDATE_HOST_UI: "0"
-      APC_VALIDATE_OVERLAY_RUNTIME: "0"
-      APC_VALIDATE_OVERLAY_INTERACTION: "0"
       APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
@@ -133,7 +131,9 @@ jobs:
             echo "$RUNNER_TEMP/apc-validation-python/bin"
           } >>"$GITHUB_PATH"
 
-      - name: Run host-safe source and integration gates
+      - name: Run host-safe source, Phase A/T-B4 interaction, and integration gates
+        env:
+          APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}
         run: ./script/test_all.sh
 
       - name: Build both official GitHub Release archives

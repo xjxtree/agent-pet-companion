@@ -4,47 +4,34 @@ import Testing
 
 @Suite
 struct GenerationSessionStateTests {
-    @Test("generation timing round-trips and legacy forms receive closed defaults")
-    func generationFormTimingCodableContract() throws {
-        var customDurations = PetAnimationContract.defaultStateDurationsMS
-        customDurations["idle"] = 1_000
-        customDurations["done"] = 2_000
+    @Test("generation forms contain only user-authored maker inputs")
+    func generationFormCodableContract() throws {
         let form = GenerationForm(
-            description: "Smooth custom timing",
+            description: "A small pixel companion",
             style: "像素",
-            quality: .high,
-            referenceImages: [],
-            nativeFPS: 20,
-            stateDurationsMS: customDurations
+            quality: .low,
+            referenceImages: ["/tmp/reference.png"]
         )
 
         let encoded = try JSONEncoder().encode(form)
         let object = try #require(
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
-        #expect(object["native_fps"] as? Int == 20)
-        #expect((object["state_durations_ms"] as? [String: Int])?["idle"] == 1_000)
+        #expect(Set(object.keys) == [
+            "description",
+            "style",
+            "quality",
+            "reference_images",
+        ])
         #expect(try JSONDecoder().decode(GenerationForm.self, from: encoded) == form)
-
-        let legacy = try JSONDecoder().decode(
-            GenerationForm.self,
-            from: Data(
-                #"{"description":"Legacy","style":"像素","quality":"standard","reference_images":[]}"#.utf8
-            )
-        )
-        #expect(legacy.nativeFPS == PetAnimationContract.defaultNativeFPS)
-        #expect(legacy.stateDurationsMS == PetAnimationContract.defaultStateDurationsMS)
     }
 
-    @Test("generation timing rejects values outside the closed contract")
-    func generationFormTimingRejectsInvalidValues() {
-        for json in [
-            #"{"description":"Invalid","style":"像素","quality":"standard","reference_images":[],"native_fps":12,"state_durations_ms":{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}}"#,
-            #"{"description":"Invalid","style":"像素","quality":"standard","reference_images":[],"native_fps":10,"state_durations_ms":{"idle":1500,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000}}"#,
-        ] {
-            #expect(throws: DecodingError.self) {
-                try JSONDecoder().decode(GenerationForm.self, from: Data(json.utf8))
-            }
+    @Test("pet summaries require the complete seven-state timing contract")
+    func petSummaryRejectsMissingTimingContract() {
+        let json = #"{"id":"pet","name":"Pet","style":"像素","quality":"standard","render_size":{"width":384,"height":416},"petpack_path":"/tmp/pet.petpack","cover_path":"/tmp/cover.png","active":false,"created_at":"2026-07-31T00:00:00Z"}"#
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(PetSummary.self, from: Data(json.utf8))
         }
     }
 
@@ -193,7 +180,7 @@ struct GenerationSessionStateTests {
         {
           "job_id":"job_snapshot",
           "status":"waiting_for_user",
-          "form":{"description":"Snapshot prompt","style":"半写实","quality":"high","reference_images":[]},
+          "form":{"description":"Snapshot prompt","style":"半写实","quality":"low","reference_images":[]},
           "session_id":"session_snapshot",
           "result_pet_id":"pet_existing",
           "operation":"modify",
@@ -519,7 +506,7 @@ struct GenerationSessionStateTests {
         GenerationForm(
             description: description,
             style: "半写实",
-            quality: .high,
+            quality: .low,
             referenceImages: ["/tmp/reference.png"]
         )
     }

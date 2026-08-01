@@ -1,14 +1,17 @@
+use crate::adapter_contracts::normalize_claude_display_message;
 use crate::agent_environment::connector_identity_environment;
 use crate::agent_state;
 use crate::connections;
 use crate::db::{
-    BehaviorSettingsPatch, Database, InsertEventOutcome, ProductConvergenceConnectorSummary,
+    BehaviorSettingsPatch, CodexRuntimeSurfaceHistory, Database, InsertEventOutcome,
+    OverlayPlacementProjection, OverlayPlacementWriteResult, ProductConvergenceConnectorSummary,
     ProductConvergenceReceipt, RevisionChecked, SessionMessageProjection,
     PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION,
 };
 use crate::diagnostics::{self, DiagnosticIngestOutcome, DiagnosticLogger, DiagnosticRejection};
 use crate::event_envelope::{
-    event_affects_activity, NormalizedAgentEvent, MAX_RECENT_EVENTS, MAX_SESSION_TITLE_BYTES,
+    event_affects_activity, validated_warp_focus_url, NormalizedAgentEvent, MAX_RECENT_EVENTS,
+    MAX_SESSION_TITLE_BYTES,
 };
 use crate::generation;
 use crate::metrics;
@@ -19,7 +22,8 @@ use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{app_server, enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, BehaviorSettings,
-    FpsProfileName, GenerationForm, OnboardingProgress, OverlayPlacement, QualityLevel,
+    GenerationForm, GenerationJobStatus, OnboardingProgress, OverlayPlacement,
+    OverlayPlacementIntent, QualityLevel,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,8 +48,6 @@ const MAX_PRODUCT_CONVERGENCE_DETAIL_BYTES: usize = 1024;
 const MAX_PRODUCT_CONVERGENCE_ERROR_BYTES: usize = 512;
 const MAX_PRODUCT_CONVERGENCE_IDENTITY_BYTES: usize = 128;
 pub use crate::runtime_manifest::{PETCORE_BUILD_ID, PETCORE_RPC_PROTOCOL_VERSION};
-const MIN_OVERLAY_SCALE: f64 = 0.10;
-const MAX_OVERLAY_SCALE: f64 = 1.8;
 const CODEX_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 30;
 const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 1;
 const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
@@ -453,6 +455,29 @@ impl CoreState {
         self
     }
 
+    fn write_overlay_placement(
+        &self,
+        placement: &OverlayPlacement,
+        intent: Option<OverlayPlacementIntent>,
+        expected_revision: Option<u64>,
+    ) -> Result<OverlayPlacementWriteResult> {
+        self.database
+            .set_overlay_placement(placement, intent, expected_revision)
+    }
+
+    fn snapshot_overlay_placement(
+        &self,
+        snapshot_state_revision: u64,
+    ) -> Result<Option<OverlayPlacementProjection>> {
+        match self
+            .database
+            .overlay_placement_at_revision(snapshot_state_revision)?
+        {
+            RevisionChecked::Matched { value, .. } => Ok(Some(value)),
+            RevisionChecked::Mismatch { .. } => Ok(None),
+        }
+    }
+
     pub fn instance_id(&self) -> &str {
         &self.instance_id
     }
@@ -761,13 +786,26 @@ impl CoreState {
             )
             .map(|snapshot| snapshot.events)
             .unwrap_or_default();
+            let runtime_surface_queries = activities
+                .iter()
+                .map(|activity| (activity.thread_id.clone(), activity.turn_id.clone()))
+                .collect::<Vec<_>>();
+            let Ok(runtime_surface_history) =
+                database.codex_runtime_surface_history(&runtime_surface_queries)
+            else {
+                return;
+            };
             for event in disappeared_events {
                 let _ = database.upsert_codex_activity_event(&event);
             }
             for activity in activities {
                 let preserve_exact_state =
                     should_preserve_exact_codex_state(existing.as_slice(), &activity);
-                for event in codex_activity_events(activity) {
+                let navigation_history = runtime_surface_history
+                    .get(&activity.thread_id)
+                    .cloned()
+                    .unwrap_or_default();
+                for event in codex_activity_events(activity, &navigation_history) {
                     if preserve_exact_state && event.id.starts_with("evt_codex_app_server_status_")
                     {
                         continue;
@@ -1008,7 +1046,10 @@ fn should_preserve_exact_codex_state(
         .is_none_or(|turn_started_at| exact_at >= turn_started_at)
 }
 
-fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<AgentEvent> {
+fn codex_activity_events(
+    activity: app_server::CodexThreadActivity,
+    navigation_history: &CodexRuntimeSurfaceHistory,
+) -> Vec<AgentEvent> {
     let Some(updated_at) = unix_timestamp_rfc3339(activity.updated_at_unix) else {
         return Vec::new();
     };
@@ -1016,6 +1057,7 @@ fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<Agent
         .turn_id
         .clone()
         .unwrap_or_else(|| "thread".to_string());
+    let navigation = codex_activity_navigation(navigation_history, &activity);
     let mut events = Vec::with_capacity(2);
     if let Some(message) = activity.latest_user_message.as_ref() {
         let created_at = activity
@@ -1043,7 +1085,9 @@ fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<Agent
                 "activity_content": null,
                 "session_title": activity.title.as_deref(),
                 "session_open": true,
-                "session_surface": activity.session_surface.as_str(),
+                "session_surface": navigation.surface.as_str(),
+                "terminal_app": navigation.terminal_app.as_deref(),
+                "session_open_url": navigation.session_open_url.as_deref(),
                 "diagnostic": false
             }),
             created_at,
@@ -1056,7 +1100,9 @@ fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<Agent
         "session_active": activity.session_active,
         "session_title": activity.title.as_deref(),
         "session_open": true,
-        "session_surface": activity.session_surface.as_str(),
+        "session_surface": navigation.surface.as_str(),
+        "terminal_app": navigation.terminal_app.as_deref(),
+        "session_open_url": navigation.session_open_url.as_deref(),
         "interaction_kind": activity.interaction_kind.as_deref(),
         "diagnostic": false
     });
@@ -1085,6 +1131,72 @@ fn codex_activity_events(activity: app_server::CodexThreadActivity) -> Vec<Agent
         created_at: updated_at,
     });
     events
+}
+
+struct CodexActivityNavigation {
+    surface: String,
+    terminal_app: Option<String>,
+    session_open_url: Option<String>,
+}
+
+fn codex_activity_navigation(
+    history: &CodexRuntimeSurfaceHistory,
+    activity: &app_server::CodexThreadActivity,
+) -> CodexActivityNavigation {
+    let unknown = || CodexActivityNavigation {
+        surface: "unknown".to_string(),
+        terminal_app: None,
+        session_open_url: None,
+    };
+    let Some(candidate) = history.latest_current_turn_marker.as_ref() else {
+        if history.has_any_trusted_marker {
+            return unknown();
+        }
+        return match activity.session_surface.as_str() {
+            "chatgpt_app" => CodexActivityNavigation {
+                surface: "chatgpt_app".to_string(),
+                terminal_app: None,
+                session_open_url: None,
+            },
+            "cli_terminal" => CodexActivityNavigation {
+                surface: "cli_terminal".to_string(),
+                terminal_app: None,
+                session_open_url: None,
+            },
+            _ => unknown(),
+        };
+    };
+    let Some(surface) = event_payload_text(&candidate.event, "session_surface") else {
+        return unknown();
+    };
+    if surface == "chatgpt_app" {
+        if event_payload_text(&candidate.event, "terminal_app").is_some()
+            || event_payload_text(&candidate.event, "session_open_url").is_some()
+        {
+            return unknown();
+        }
+        return CodexActivityNavigation {
+            surface,
+            terminal_app: None,
+            session_open_url: None,
+        };
+    }
+    if surface != "cli_terminal" {
+        return unknown();
+    }
+    let terminal_app = event_payload_text(&candidate.event, "terminal_app")
+        .filter(|value| matches!(value.as_str(), "warp" | "terminal" | "iterm2" | "ghostty"));
+    let session_open_url = (terminal_app.as_deref() == Some("warp"))
+        .then(|| {
+            event_payload_text(&candidate.event, "session_open_url")
+                .and_then(|value| validated_warp_focus_url(&value))
+        })
+        .flatten();
+    CodexActivityNavigation {
+        surface,
+        terminal_app,
+        session_open_url,
+    }
 }
 
 fn unix_timestamp_rfc3339(timestamp: i64) -> Option<String> {
@@ -1285,9 +1397,12 @@ fn known_rpc_method(method: &str) -> bool {
             | "onboarding.update"
             | "overlay.placement.get"
             | "overlay.placement.update"
+            | "overlay.placement.reposition"
+            | "overlay.placement.reset"
             | "settings.get"
             | "settings.update"
             | "agent.ingest"
+            | "agent.session.acknowledge"
             | "events.recent"
             | "pet.list"
             | "pet.history"
@@ -1340,10 +1455,19 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "state.wait" => &["after_revision", "timeout_ms"],
         "behavior.patch" => &["expected_revision", "changes"],
         "onboarding.update" => &["expected_revision", "progress"],
-        "overlay.placement.update" => &["x", "y", "scale", "display_id"],
+        "overlay.placement.update" => &[
+            "x",
+            "y",
+            "display_width_pt",
+            "display_id",
+            "expected_revision",
+        ],
+        "overlay.placement.reposition" => &["x", "y", "display_width_pt", "display_id"],
+        "overlay.placement.reset" => &[],
         "settings.get" => &["key"],
         "settings.update" => &["key", "value"],
         "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
+        "agent.session.acknowledge" => &["acknowledgement_id"],
         "events.recent" => &["limit"],
         "pet.activate" | "pet.delete" | "pet.assets.repair" => &["id"],
         "pet.history" => &["pet_id", "limit"],
@@ -1351,14 +1475,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "petpack.import" => &["path", "expect_absent"],
         "petpack.seed_bundled" => &["inventory", "inventory_root"],
         "petpack.export" => &["id", "path"],
-        "generation.start" => &[
-            "description",
-            "style",
-            "quality",
-            "reference_images",
-            "native_fps",
-            "state_durations_ms",
-        ],
+        "generation.start" => &["description", "style", "quality", "reference_images"],
         "generation.retry" => &["job_id", "form"],
         "generation.messages" | "generation.cancel" => &["job_id"],
         "generation.for_pet" => &["pet_id"],
@@ -1374,7 +1491,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
             "app_version",
             "connector_report",
         ],
-        "renderer.budget" => &["quality", "fps_profile", "fps"],
+        "renderer.budget" => &["quality", "frame_count"],
         "diagnostics.export" => &["app_environment"],
         _ => return Ok(()),
     };
@@ -1819,15 +1936,40 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 .database
                 .update_onboarding(expected_revision, &progress)?))
         }
-        "overlay.placement.get" => Ok(json!(state.database.overlay_placement()?)),
-        "overlay.placement.update" => {
-            let placement: OverlayPlacement = serde_json::from_value(request.params)?;
-            validate_overlay_placement(&placement)?;
-            state
-                .database
-                .set_setting("overlay_placement", &placement)?;
-            Ok(json!({ "ok": true, "overlay_placement": placement }))
+        "overlay.placement.get" => {
+            let projection = state.database.overlay_placement_projection()?;
+            Ok(json!({
+                "overlay_placement": projection.placement,
+                "overlay_placement_revision": projection.revision.to_string(),
+                "overlay_placement_intent": projection.intent,
+            }))
         }
+        "overlay.placement.update" => {
+            let expected_revision =
+                required_canonical_decimal_u64(&request.params, "expected_revision")?;
+            let mut placement_params = request.params;
+            placement_params
+                .as_object_mut()
+                .expect("validated RPC params are an object")
+                .remove("expected_revision");
+            let placement: OverlayPlacement = serde_json::from_value(placement_params)?;
+            persist_overlay_placement(state, placement, None, Some(expected_revision))
+        }
+        "overlay.placement.reposition" => {
+            let placement: OverlayPlacement = serde_json::from_value(request.params)?;
+            persist_overlay_placement(
+                state,
+                placement,
+                Some(OverlayPlacementIntent::ExternalReposition),
+                None,
+            )
+        }
+        "overlay.placement.reset" => persist_overlay_placement(
+            state,
+            OverlayPlacement::default(),
+            Some(OverlayPlacementIntent::Reset),
+            None,
+        ),
         "settings.get" => {
             let key = required_string(&request.params, "key")?;
             validate_client_setting_key(&key)?;
@@ -1849,6 +1991,7 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             let event = normalize_event(&request.params)?;
             ingest_event(state, event)
         }
+        "agent.session.acknowledge" => acknowledge_agent_session(state, &request.params),
         "events.recent" => {
             let limit = optional_u64_param(&request.params, "limit")?
                 .unwrap_or(20)
@@ -2059,15 +2202,12 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             })?;
             let baseline_revision_id =
                 generation::generation_job_baseline_revision_id(&state.paths, &created_job)?;
-            let accepted_form: GenerationForm = serde_json::from_str(&created_job.form_json)?;
             Ok(json!({
                 "ok": true,
                 "job_id": job_id,
                 "pet_id": pet_id,
                 "baseline_revision_id": baseline_revision_id,
-                "operation": generation::GENERATION_OPERATION_MODIFY,
-                "native_fps": accepted_form.native_fps,
-                "state_durations_ms": accepted_form.state_durations_ms
+                "operation": generation::GENERATION_OPERATION_MODIFY
             }))
         }
         "generation.messages.wait" => {
@@ -2231,13 +2371,21 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             Ok(json!(receipt))
         }
         "product.convergence.preflight" => {
-            let active_generation = state.database.active_generation_job()?.is_some();
+            let active_generation = state.database.active_generation_job()?;
+            let active_generation_status =
+                active_generation.as_ref().map(|job| enum_name(job.status));
             let connection_operation_active =
                 state.connection_operation_active.load(Ordering::Acquire);
+            let runtime_replacement_safe = active_generation
+                .as_ref()
+                .is_none_or(|job| job.status == GenerationJobStatus::WaitingForUser)
+                && !connection_operation_active;
             Ok(json!({
-                "safe": !active_generation && !connection_operation_active,
-                "active_generation": active_generation,
+                "safe": active_generation.is_none() && !connection_operation_active,
+                "active_generation": active_generation.is_some(),
+                "active_generation_status": active_generation_status,
                 "connection_operation_active": connection_operation_active,
+                "runtime_replacement_safe": runtime_replacement_safe,
             }))
         }
         "connections.uninstall" => {
@@ -2281,8 +2429,18 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
         }
         "renderer.budget" => {
             let quality = required_quality(&request.params)?;
-            let fps_profile = required_fps_profile(&request.params)?;
-            Ok(json!(metrics::renderer_budget(quality, fps_profile)))
+            let frame_count = optional_u64_param(&request.params, "frame_count")?.unwrap_or(8);
+            if !(petcore_types::MIN_FRAMES_PER_STATE as u64
+                ..=petcore_types::MAX_FRAMES_PER_STATE as u64)
+                .contains(&frame_count)
+            {
+                return Err(invalid_params(format!(
+                    "frame_count must be between {} and {}",
+                    petcore_types::MIN_FRAMES_PER_STATE,
+                    petcore_types::MAX_FRAMES_PER_STATE
+                )));
+            }
+            Ok(json!(metrics::renderer_budget(quality, frame_count as u32)))
         }
         "codex.app_server.probe" => {
             let _host_guard = state.agent_host_process_guard();
@@ -2369,6 +2527,39 @@ fn ingest_event(state: &CoreState, event: AgentEvent) -> Result<Value> {
     }))
 }
 
+fn acknowledge_agent_session(state: &CoreState, params: &Value) -> Result<Value> {
+    let acknowledgement_id = required_string(params, "acknowledgement_id")?;
+    if !agent_state::is_valid_session_acknowledgement_id(&acknowledgement_id) {
+        return Err(invalid_params("acknowledgement_id is invalid"));
+    }
+    let behavior = state.database.behavior()?;
+    let snapshot = state.snapshot_sequenced_events()?;
+    let visible = agent_state::select_display_agent_states(
+        &behavior,
+        snapshot.events.as_slice(),
+        OffsetDateTime::now_utc(),
+    );
+    if !visible.states.iter().any(|session| {
+        matches!(
+            session.event.event_type,
+            AgentEventType::Review | AgentEventType::Done
+        ) && agent_state::session_acknowledgement_id(&session.event) == acknowledgement_id
+    }) {
+        return Err(PetCoreError::Conflict(
+            "Agent session is no longer available to acknowledge".to_string(),
+        ));
+    }
+    let changed = state
+        .database
+        .acknowledge_agent_session(&acknowledgement_id)?;
+    Ok(json!({
+        "ok": true,
+        "acknowledged": true,
+        "changed": changed,
+        "acknowledgement_id": acknowledgement_id,
+    }))
+}
+
 fn canonical_agent_state(
     state: &CoreState,
     behavior: &BehaviorSettings,
@@ -2378,10 +2569,21 @@ fn canonical_agent_state(
         let snapshot = state.snapshot_sequenced_events()?;
         let state_revision = snapshot.state_revision;
         let events = snapshot.events;
-        let mut active = agent_state::select_active_agent_state(
+        let acknowledged_session_activations = match state
+            .database
+            .acknowledged_agent_sessions_at_revision(state_revision)?
+        {
+            RevisionChecked::Matched { value, .. } => value,
+            RevisionChecked::Mismatch { .. } => {
+                thread::yield_now();
+                continue;
+            }
+        };
+        let mut active = agent_state::select_active_agent_state_with_acknowledgements(
             behavior,
             events.as_slice(),
             OffsetDateTime::now_utc(),
+            &acknowledged_session_activations,
         );
         latest_consistent_event_state = active.clone();
         if let Some(active) = &mut active {
@@ -2425,6 +2627,16 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             thread::yield_now();
             continue;
         };
+        let acknowledged_session_activations = match state
+            .database
+            .acknowledged_agent_sessions_at_revision(snapshot_state_revision)?
+        {
+            RevisionChecked::Matched { value, .. } => value,
+            RevisionChecked::Mismatch { .. } => {
+                thread::yield_now();
+                continue;
+            }
+        };
         let events = current_overlay_events(&behavior, &scanned_events)
             .iter()
             .map(agent_state::overlay_event_projection)
@@ -2433,10 +2645,11 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             .iter()
             .map(agent_state::overlay_event_projection)
             .collect::<Vec<_>>();
-        let mut active_agent_state = agent_state::select_active_agent_state(
+        let mut active_agent_state = agent_state::select_active_agent_state_with_acknowledgements(
             &behavior,
             sequenced_events.as_slice(),
             OffsetDateTime::now_utc(),
+            &acknowledged_session_activations,
         );
         if let Some(active) = &mut active_agent_state {
             if !hydrate_agent_session_display(state, snapshot_state_revision, active)? {
@@ -2444,10 +2657,11 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
                 continue;
             }
         }
-        let display_agent_states = agent_state::select_display_agent_states(
+        let display_agent_states = agent_state::select_display_agent_states_with_acknowledgements(
             &behavior,
             sequenced_events.as_slice(),
             OffsetDateTime::now_utc(),
+            &acknowledged_session_activations,
         );
         let active_agent_sessions_omitted_count = display_agent_states.omitted_count;
         let mut active_agent_sessions = display_agent_states.states;
@@ -2480,7 +2694,18 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
         let connections = state.snapshot_connection_statuses()?;
         let active_generation = active_generation_snapshot(state)?;
         let onboarding = state.database.onboarding_with_revision()?;
-        return Ok(json!({
+        let Some(overlay_placement_projection) =
+            state.snapshot_overlay_placement(snapshot_state_revision)?
+        else {
+            thread::yield_now();
+            continue;
+        };
+        let OverlayPlacementProjection {
+            placement: overlay_placement,
+            intent: overlay_placement_intent,
+            revision: overlay_placement_revision,
+        } = overlay_placement_projection;
+        let mut snapshot = json!({
             // Use the revision that atomically identifies the event projection.
             // If a new event commits while the rest of this snapshot is assembled,
             // the client's next state.wait observes that later revision immediately.
@@ -2489,7 +2714,8 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             "behavior": behavior,
             "behavior_revision": versioned_behavior.revision,
             "onboarding": onboarding,
-            "overlay_placement": state.database.overlay_placement()?,
+            "overlay_placement": overlay_placement,
+            "overlay_placement_revision": overlay_placement_revision.to_string(),
             "pets": pets,
             "pet_asset_warnings": pet_asset_warnings,
             "events": events,
@@ -2503,7 +2729,17 @@ fn state_snapshot(state: &CoreState, changed: bool) -> Result<Value> {
             "connection_operation_active": state
                 .connection_operation_active
                 .load(Ordering::Acquire),
-        }));
+        });
+        if let Some(intent) = overlay_placement_intent {
+            snapshot
+                .as_object_mut()
+                .expect("state snapshot is an object")
+                .insert(
+                    "overlay_placement_intent".to_string(),
+                    serde_json::to_value(intent)?,
+                );
+        }
+        return Ok(snapshot);
     }
     Err(PetCoreError::Conflict(
         "state changed while hydrating session displays; retry the snapshot".to_string(),
@@ -2546,7 +2782,7 @@ fn hydrate_agent_session_display(
     active.latest_user_message = latest_user_message.map(|sequenced| sequenced.event);
     active.session_title = latest_title
         .as_ref()
-        .and_then(|event| event_payload_text(event, "session_title"))
+        .and_then(projected_session_title)
         .or_else(|| first_user_message.as_ref().and_then(fallback_session_title));
     active.session_message = active
         .latest_message
@@ -2652,12 +2888,30 @@ fn event_payload_text(event: &AgentEvent, key: &str) -> Option<String> {
 fn event_display_message(event: &AgentEvent) -> Option<agent_state::SessionDisplayMessage> {
     Some(agent_state::SessionDisplayMessage {
         role: event_payload_text(event, "message_role")?,
-        content: event_payload_text(event, "message_content")?,
+        content: projected_message_content(event)?,
     })
 }
 
-fn fallback_session_title(event: &AgentEvent) -> Option<String> {
+fn projected_session_title(event: &AgentEvent) -> Option<String> {
+    let title = event_payload_text(event, "session_title")?;
+    if event.source == AgentSource::ClaudeCode {
+        normalize_claude_display_message(&title)
+    } else {
+        Some(title)
+    }
+}
+
+fn projected_message_content(event: &AgentEvent) -> Option<String> {
     let message = event_payload_text(event, "message_content")?;
+    if event.source == AgentSource::ClaudeCode {
+        normalize_claude_display_message(&message)
+    } else {
+        Some(message)
+    }
+}
+
+fn fallback_session_title(event: &AgentEvent) -> Option<String> {
+    let message = projected_message_content(event)?;
     let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return None;
@@ -2939,16 +3193,53 @@ fn invalid_params(message: impl Into<String>) -> PetCoreError {
     PetCoreError::InvalidRequest(format!("invalid params: {}", message.into()))
 }
 
-fn validate_overlay_placement(placement: &OverlayPlacement) -> Result<()> {
-    if !(MIN_OVERLAY_SCALE..=MAX_OVERLAY_SCALE).contains(&placement.scale) {
+fn required_canonical_decimal_u64(params: &Value, key: &str) -> Result<u64> {
+    let value = required_string(params, key)?;
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return Err(invalid_params(format!(
-            "scale must be between {MIN_OVERLAY_SCALE:.2} and {MAX_OVERLAY_SCALE:.1}"
+            "{key} must be a canonical decimal string"
         )));
     }
-    if placement.display_id.trim().is_empty() {
-        return Err(invalid_params("display_id must not be empty"));
+    value.parse::<u64>().map_err(|_| {
+        invalid_params(format!(
+            "{key} must be a canonical decimal string within the u64 range"
+        ))
+    })
+}
+
+fn validate_overlay_placement(placement: &OverlayPlacement) -> Result<()> {
+    placement.validate().map_err(invalid_params)
+}
+
+fn persist_overlay_placement(
+    state: &CoreState,
+    placement: OverlayPlacement,
+    intent: Option<OverlayPlacementIntent>,
+    expected_revision: Option<u64>,
+) -> Result<Value> {
+    validate_overlay_placement(&placement)?;
+    match state.write_overlay_placement(&placement, intent, expected_revision)? {
+        OverlayPlacementWriteResult::Updated {
+            state_revision,
+            projection,
+        } => Ok(json!({
+            "ok": true,
+            "revision": state_revision.to_string(),
+            "overlay_placement_revision": projection.revision.to_string(),
+            "overlay_placement": projection.placement,
+            "overlay_placement_intent": projection.intent,
+        })),
+        OverlayPlacementWriteResult::Conflict { projection } => Ok(json!({
+            "ok": false,
+            "conflict": true,
+            "overlay_placement_revision": projection.revision.to_string(),
+            "overlay_placement": projection.placement,
+            "overlay_placement_intent": projection.intent,
+        })),
     }
-    Ok(())
 }
 
 fn should_trigger_event(behavior: &BehaviorSettings, event: &AgentEvent) -> bool {
@@ -3046,21 +3337,6 @@ fn required_source(params: &Value) -> Result<AgentSource> {
 fn required_quality(params: &Value) -> Result<QualityLevel> {
     let value = required_string(params, "quality")?;
     enum_from_name(&value)
-}
-
-fn required_fps_profile(params: &Value) -> Result<FpsProfileName> {
-    let profile = optional_string_param(params, "fps_profile")?;
-    let fps = optional_u64_param(params, "fps")?;
-    match (profile, fps) {
-        (Some(_), Some(_)) => Err(invalid_params(
-            "fps_profile and fps must not be provided together",
-        )),
-        (Some(profile), None) => enum_from_name(profile),
-        (None, Some(10)) => Ok(FpsProfileName::Standard),
-        (None, Some(20)) => Ok(FpsProfileName::Smooth),
-        (None, Some(_)) => Err(invalid_params("fps must be exactly 10 or 20")),
-        (None, None) => Ok(FpsProfileName::Standard),
-    }
 }
 
 fn read_http_port(paths: &AppPaths) -> Option<u16> {
@@ -3643,7 +3919,10 @@ done
             .codex_thread_display("019f5a6f-0c52-75e1-b652-004d4487c4ae", "turn-1", 0,)
             .is_none());
 
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // The host-process gate remains held for this entire budget, so a
+        // serialized refresh still cannot pass; the wider bound only absorbs
+        // App Server process startup contention in the full parallel suite.
+        let deadline = Instant::now() + Duration::from_secs(2);
         let mut completed_while_background_work_was_blocked = false;
         while Instant::now() < deadline {
             completed_while_background_work_was_blocked = state
@@ -3959,7 +4238,9 @@ done
             json!({
                 "safe": true,
                 "active_generation": false,
+                "active_generation_status": null,
                 "connection_operation_active": false,
+                "runtime_replacement_safe": true,
             })
         );
 
@@ -3973,7 +4254,9 @@ done
             json!({
                 "safe": false,
                 "active_generation": false,
+                "active_generation_status": null,
                 "connection_operation_active": true,
+                "runtime_replacement_safe": false,
             })
         );
         drop(operation);
@@ -3983,8 +4266,6 @@ done
             style: "pixel".to_string(),
             quality: QualityLevel::Standard,
             reference_images: Vec::new(),
-            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-            state_durations_ms: petcore_types::default_state_durations_ms(),
         };
         let job_dir = state.paths.jobs_dir.join("preflight-active-generation");
         std::fs::create_dir_all(&job_dir).unwrap();
@@ -3997,7 +4278,27 @@ done
             json!({
                 "safe": false,
                 "active_generation": true,
+                "active_generation_status": "pending",
                 "connection_operation_active": false,
+                "runtime_replacement_safe": false,
+            })
+        );
+        state
+            .database
+            .update_generation_job(
+                "preflight-active-generation",
+                GenerationJobStatus::WaitingForUser,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            preflight(),
+            json!({
+                "safe": false,
+                "active_generation": true,
+                "active_generation_status": "waiting_for_user",
+                "connection_operation_active": false,
+                "runtime_replacement_safe": true,
             })
         );
     }
@@ -4016,8 +4317,6 @@ done
                 "style": "pixel",
                 "quality": "standard",
                 "reference_images": [],
-                "native_fps": petcore_types::DEFAULT_NATIVE_FPS,
-                "state_durations_ms": petcore_types::default_state_durations_ms(),
             }),
         };
 
@@ -4033,8 +4332,6 @@ done
             style: "pixel".to_string(),
             quality: QualityLevel::Standard,
             reference_images: Vec::new(),
-            native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-            state_durations_ms: petcore_types::default_state_durations_ms(),
         };
         let job_dir = state.paths.jobs_dir.join("active-before-refresh");
         std::fs::create_dir_all(&job_dir).unwrap();
@@ -4135,6 +4432,158 @@ done
             }),
             display_revision: "turn-1:command-1:inProgress".to_string(),
         }
+    }
+
+    fn codex_navigation_hook(
+        surface: &str,
+        terminal_app: Option<&str>,
+        open_url: Option<&str>,
+        turn_id: &str,
+    ) -> agent_state::SequencedAgentEvent {
+        let mut event = exact_codex_state(AgentEventType::Tool, "2025-07-13T12:26:30Z");
+        event.event.payload_json = json!({
+            "source_event": "PreToolUse",
+            "turn_id": turn_id,
+            "session_active": true,
+            "session_open": true,
+            "session_surface": surface,
+            "terminal_app": terminal_app,
+            "session_open_url": open_url,
+            "activity_kind": "command",
+            "activity_content": "swift test"
+        });
+        event
+    }
+
+    fn codex_navigation_history(
+        marker: Option<agent_state::SequencedAgentEvent>,
+        has_any_trusted_marker: bool,
+    ) -> CodexRuntimeSurfaceHistory {
+        CodexRuntimeSurfaceHistory {
+            has_any_trusted_marker,
+            latest_current_turn_marker: marker,
+        }
+    }
+
+    #[test]
+    fn cli_app_server_activity_preserves_same_turn_hook_navigation_provenance() {
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.session_surface = "cli_terminal".to_string();
+        activity.latest_activity = Some(app_server::CodexThreadDisplayActivity {
+            kind: "command".to_string(),
+            content: Some("cargo test --workspace".to_string()),
+            is_current: true,
+        });
+        let warp_url = "warp://session/0123456789abcdef0123456789abcdef";
+        let hook = codex_navigation_hook("cli_terminal", Some("warp"), Some(warp_url), "turn-1");
+        let events = codex_activity_events(activity, &codex_navigation_history(Some(hook), true));
+        let status = events.last().unwrap();
+
+        assert_eq!(status.payload_json["session_surface"], "cli_terminal");
+        assert_eq!(status.payload_json["terminal_app"], "warp");
+        assert_eq!(status.payload_json["session_open_url"], warp_url);
+        assert_eq!(
+            status.payload_json["activity_content"],
+            "cargo test --workspace"
+        );
+        let navigation = agent_state::overlay_navigation(status);
+        assert_eq!(
+            navigation.capability,
+            agent_state::OverlayNavigationCapability::ExactSession
+        );
+        assert_eq!(navigation.open_url.as_deref(), Some(warp_url));
+    }
+
+    #[test]
+    fn codex_app_and_cli_surface_transitions_never_cross_inherit_navigation() {
+        let cli_hook = codex_navigation_hook("cli_terminal", Some("iterm2"), None, "turn-1");
+        let mut app_activity = inferred_codex_tool(1_752_409_560);
+        app_activity.session_surface = "chatgpt_app".to_string();
+        let app_status = codex_activity_events(
+            app_activity,
+            &codex_navigation_history(Some(cli_hook.clone()), true),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(app_status.payload_json["session_surface"], "cli_terminal");
+        assert_eq!(app_status.payload_json["terminal_app"], "iterm2");
+        assert!(app_status.payload_json["session_open_url"].is_null());
+
+        let mut app_hook = codex_navigation_hook("chatgpt_app", None, None, "turn-1");
+        app_hook.source_session_sequence = 2;
+        let mut cli_activity = inferred_codex_tool(1_752_409_560);
+        cli_activity.session_surface = "cli_terminal".to_string();
+        let cli_status = codex_activity_events(
+            cli_activity,
+            &codex_navigation_history(Some(app_hook), true),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(cli_status.payload_json["session_surface"], "chatgpt_app");
+        assert!(cli_status.payload_json["terminal_app"].is_null());
+        assert!(cli_status.payload_json["session_open_url"].is_null());
+        assert_eq!(
+            agent_state::overlay_navigation(&cli_status).capability,
+            agent_state::OverlayNavigationCapability::ExactSession
+        );
+    }
+
+    #[test]
+    fn codex_runtime_navigation_is_stable_for_ambiguous_polls_and_new_hooks_override() {
+        let mut activity = inferred_codex_tool(1_752_409_560);
+        activity.session_surface = "cli_terminal".to_string();
+        let warp_url = "warp://session/0123456789abcdef0123456789abcdef";
+        let hook = codex_navigation_hook("cli_terminal", Some("warp"), Some(warp_url), "turn-1");
+        let current = codex_navigation_history(Some(hook), true);
+        let first_status = codex_activity_events(activity.clone(), &current)
+            .pop()
+            .unwrap();
+        assert_eq!(first_status.payload_json["session_surface"], "cli_terminal");
+        assert_eq!(first_status.payload_json["terminal_app"], "warp");
+        assert_eq!(first_status.payload_json["session_open_url"], warp_url);
+        assert!(first_status
+            .payload_json
+            .get("runtime_surface_origin")
+            .is_none());
+
+        let mut app_hook = codex_navigation_hook("chatgpt_app", None, None, "turn-1");
+        app_hook.source_session_sequence = 3;
+        let overridden = codex_activity_events(
+            activity.clone(),
+            &codex_navigation_history(Some(app_hook), true),
+        )
+        .pop()
+        .unwrap();
+        assert_eq!(overridden.payload_json["session_surface"], "chatgpt_app");
+        assert!(overridden.payload_json["terminal_app"].is_null());
+        assert!(overridden.payload_json["session_open_url"].is_null());
+
+        activity.turn_id = Some("turn-2".to_string());
+        let ambiguous = codex_navigation_history(None, true);
+        for _ in 0..3 {
+            let status = codex_activity_events(activity.clone(), &ambiguous)
+                .pop()
+                .unwrap();
+            assert_eq!(status.payload_json["session_surface"], "unknown");
+            assert!(status.payload_json["terminal_app"].is_null());
+            assert!(status.payload_json["session_open_url"].is_null());
+            assert_eq!(
+                agent_state::overlay_navigation(&status).capability,
+                agent_state::OverlayNavigationCapability::Unavailable
+            );
+        }
+
+        let new_hook = codex_navigation_hook("cli_terminal", Some("iterm2"), None, "turn-2");
+        let recovered =
+            codex_activity_events(activity, &codex_navigation_history(Some(new_hook), true))
+                .pop()
+                .unwrap();
+        assert_eq!(recovered.payload_json["session_surface"], "cli_terminal");
+        assert_eq!(recovered.payload_json["terminal_app"], "iterm2");
+        assert_eq!(
+            agent_state::overlay_navigation(&recovered).capability,
+            agent_state::OverlayNavigationCapability::AgentHost
+        );
     }
 
     #[test]
@@ -4319,14 +4768,15 @@ done
     #[test]
     fn codex_status_event_id_is_stable_when_activity_kind_changes() {
         let mut activity = inferred_codex_tool(1_752_409_560);
-        let tool_id = codex_activity_events(activity.clone())
-            .last()
-            .expect("tool status")
-            .id
-            .clone();
+        let tool_id =
+            codex_activity_events(activity.clone(), &CodexRuntimeSurfaceHistory::default())
+                .last()
+                .expect("tool status")
+                .id
+                .clone();
         activity.event_type = AgentEventType::Start;
         activity.latest_activity = Some(generic_codex_activity("thinking"));
-        let thinking_id = codex_activity_events(activity)
+        let thinking_id = codex_activity_events(activity, &CodexRuntimeSurfaceHistory::default())
             .last()
             .expect("thinking status")
             .id

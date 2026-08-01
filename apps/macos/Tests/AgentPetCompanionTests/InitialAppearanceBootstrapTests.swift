@@ -490,7 +490,7 @@ struct InitialAppearanceBootstrapTests {
             id: "pet_snapshot",
             name: "Snapshot Pet",
             style: "semi-realistic",
-            quality: .high,
+            quality: .standard,
             renderSize: RenderSize(width: 384, height: 416),
             petpackPath: "/tmp/pet_snapshot.petpack",
             coverPath: "/tmp/cover.png",
@@ -599,6 +599,7 @@ struct InitialAppearanceBootstrapTests {
     ) throws -> [String: Any] {
         [
             "revision": "state-\(behaviorRevision)",
+            "overlay_placement_revision": "0",
             "behavior": try jsonObject(behavior),
             "behavior_revision": behaviorRevision,
             "pets": try jsonArray(pets),
@@ -620,9 +621,9 @@ struct InitialAppearanceBootstrapTests {
             minimumDatabaseSchemaVersion: 1,
             maximumDatabaseSchemaVersion: 6,
             agentEventSchemaVersion: "apc.agent-event.v1",
-            petpackSchemaVersion: "apc.petpack.v1",
-            petpackReadVersions: ["apc.petpack.v1"],
-            petpackWriteVersion: "apc.petpack.v1",
+            petpackSchemaVersion: "apc.petpack.v2",
+            petpackReadVersions: ["apc.petpack.v2"],
+            petpackWriteVersion: "apc.petpack.v2",
             connectorContracts: RuntimeConnectorContracts(
                 codex: "codex-hooks.v1",
                 claudeCode: "claude-hooks.v1",

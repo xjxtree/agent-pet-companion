@@ -150,6 +150,7 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
+INTERACTION_ATTESTATION="$APP_RESOURCES/interaction-attestation.json"
 DEVELOP_ARCHIVE="${APP_BUNDLE%.app}-develop.zip"
 STAGED_DEVELOP_ARCHIVE="$TMP_DIR/$APP_NAME-develop.zip"
 ARCHIVE_VERIFY_DIR=""
@@ -424,6 +425,10 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES/bin" "$APP_RESOURCES/skills"
   echo "missing app icon source: $APP_ICON_SOURCE" >&2
   exit 1
 }
+"$ROOT_DIR/script/validate_overlay_interaction.sh" \
+  --attestation-out "$INTERACTION_ATTESTATION" \
+  --build-id "$BUILD_ID"
+
 if [[ "$UNIVERSAL" == "1" ]]; then
   build_universal
 else

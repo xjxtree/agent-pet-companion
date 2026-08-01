@@ -29,15 +29,13 @@ struct BehaviorSettingsViewTests {
     }
 
     @Test
-    func appearanceCatalogKeepsTheClosedThemeAndFpsProfiles() {
+    func appearanceCatalogKeepsTheClosedLanguageThemeAndGroupingOptions() {
         #expect(BehaviorSettingsCatalog.interfaceLanguages == [
             .system,
             .english,
             .simplifiedChinese,
         ])
         #expect(BehaviorSettingsCatalog.appearanceThemes == [.system, .light, .dark])
-        #expect(BehaviorSettingsCatalog.fpsProfiles == [.standard, .smooth])
-        #expect(BehaviorSettingsCatalog.fpsProfiles.map(\.fps) == [10, 20])
         #expect(BehaviorSettingsCatalog.groupDisplays == [.stacked, .expanded])
     }
 
@@ -53,12 +51,12 @@ struct BehaviorSettingsViewTests {
             .allActivity,
         ])
         #expect(standard.allSatisfy { $0.isSelectable })
-        #expect(standard[0].detail.contains("Needs confirmation"))
-        #expect(standard[0].detail.contains("Failed"))
-        #expect(!standard[0].detail.contains("Starting"))
-        #expect(standard[1].detail.contains("Starting"))
-        #expect(!standard[1].detail.contains("Using a tool"))
-        #expect(standard[2].detail.contains("Using a tool"))
+        #expect(standard[0].detail.contains("Needs You"))
+        #expect(standard[0].detail.contains("Needs Attention"))
+        #expect(!standard[0].detail.contains("Thinking"))
+        #expect(standard[1].detail.contains("Thinking"))
+        #expect(!standard[1].detail.contains("Using Tools"))
+        #expect(standard[2].detail.contains("Using Tools"))
 
         let custom = BehaviorSettingsCatalog.attentionPresetOptions(
             selection: .custom,
@@ -72,29 +70,6 @@ struct BehaviorSettingsViewTests {
         ])
         #expect(custom.last?.isSelectable == false)
         #expect(custom.last?.detail.contains("高级消息设置") == true)
-    }
-
-    @Test
-    func nativeFrameRateLimitsTheAvailablePlaybackProfiles() {
-        let standardPet = PetSummary(
-            id: "pet_standard",
-            name: "Standard",
-            style: "pixel",
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
-            petpackPath: "/standard.petpack",
-            coverPath: "",
-            nativeFPS: 10,
-            active: true,
-            createdAt: "2026-07-22T00:00:00Z"
-        )
-        var smoothPet = standardPet
-        smoothPet.nativeFPS = 20
-
-        #expect(BehaviorSettingsCatalog.supportedFPSProfiles(for: standardPet) == [.standard])
-        #expect(BehaviorSettingsCatalog.supportedFPSProfiles(for: smoothPet) == [.standard, .smooth])
-        #expect(BehaviorSettingsCatalog.supportedFPSProfiles(for: nil) == [.standard])
-        #expect(standardPet.effectiveFPSProfile(.smooth) == .standard)
     }
 
     @Test
@@ -159,38 +134,6 @@ struct BehaviorSettingsViewTests {
                 localeIdentifier: "en"
             ) == "Not Checked"
         )
-    }
-
-    @MainActor
-    @Test
-    func appStoreDefensivelyDowngradesUnsupportedSmoothSelection() {
-        let store = AppStore(
-            bootstrapHooks: AppStoreBootstrapHooks(
-                ensureRunning: { .alreadyHealthy },
-                recover: { .alreadyHealthy },
-                refreshSnapshot: { _ in },
-                onReady: { _ in }
-            )
-        )
-        store.pets = [PetSummary(
-            id: "pet_standard",
-            name: "Standard",
-            style: "pixel",
-            quality: .high,
-            renderSize: QualityLevel.high.renderSize,
-            petpackPath: "/standard.petpack",
-            coverPath: "",
-            nativeFPS: 10,
-            active: true,
-            createdAt: "2026-07-22T00:00:00Z"
-        )]
-        var next = store.behavior
-        next.fpsProfile = .smooth
-
-        store.updateBehavior(next)
-
-        #expect(store.behavior.fpsProfile == .standard)
-        #expect(store.effectiveFPSProfile == .standard)
     }
 
     @Test
@@ -494,7 +437,18 @@ private final class BehaviorPersistenceProbe {
         case "generation.latest":
             return ["found": false]
         case "overlay.placement.update":
-            return [:]
+            var placement = try #require(params as? [String: Any])
+            let expected = try #require(
+                placement.removeValue(forKey: "expected_revision") as? String
+            )
+            let next = (UInt64(expected) ?? 0) + 1
+            return [
+                "ok": true,
+                "revision": "state-overlay-\(next)",
+                "overlay_placement_revision": String(next),
+                "overlay_placement": placement,
+                "overlay_placement_intent": NSNull(),
+            ]
         default:
             throw PetCoreClientError.rpcError("Unexpected test RPC: \(method)")
         }
@@ -542,6 +496,7 @@ private final class BehaviorPersistenceProbe {
     private func snapshot() throws -> [String: Any] {
         [
             "revision": "state-\(serverRevision)",
+            "overlay_placement_revision": "0",
             "behavior": try jsonObject(serverBehavior),
             "behavior_revision": serverRevision,
             "pets": [],

@@ -478,6 +478,44 @@ class CodexPluginVersionTests(unittest.TestCase):
 
 
 class ValidationOrderTests(unittest.TestCase):
+    def test_interaction_attestation_precedes_rust_bundle_build_and_is_consumed(self) -> None:
+        build = (ROOT / "script/build_app_bundle.sh").read_text(encoding="utf-8")
+        validate = (ROOT / "script/validate_app_bundle.sh").read_text(
+            encoding="utf-8"
+        )
+        attestation = build.index(
+            '"$ROOT_DIR/script/validate_overlay_interaction.sh" \\\n'
+            '  --attestation-out "$INTERACTION_ATTESTATION" \\\n'
+            '  --build-id "$BUILD_ID"'
+        )
+        rust_build = build.index('if [[ "$UNIVERSAL" == "1" ]]', attestation)
+        self.assertLess(attestation, rust_build)
+        self.assertIn(
+            'INTERACTION_ATTESTATION="$APP_RESOURCES/interaction-attestation.json"',
+            build,
+        )
+        self.assertIn(
+            'PRODUCTION_INTERACTION="$("$PETCORE_CLI" petpack verify-production-interaction)"',
+            validate,
+        )
+
+    def test_packaged_runtime_pins_its_own_interaction_attestation(self) -> None:
+        source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
+        packaged_attestation = source.index(
+            'export APC_INTERACTION_ATTESTATION_PATH="$INTERACTION_ATTESTATION"'
+        )
+        first_packaged_execution = min(
+            source.index(invocation)
+            for invocation in (
+                '"$PETCORE_CLI" petpack validate',
+                '"$APP_BINARY" --run-ui-validation',
+                '"$PETCORE" preflight',
+                '"$PETCORE" init',
+                '"$PETCORE_CLI" petpack verify-production-interaction',
+            )
+        )
+        self.assertLess(packaged_attestation, first_packaged_execution)
+
     def test_packaged_bundled_seed_proves_renderable_cover_and_all_states(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
         seed = source.index('"$PETCORE_CLI" petpack seed-bundled')
@@ -491,7 +529,7 @@ class ValidationOrderTests(unittest.TestCase):
             'REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")',
             bundled_gate,
         )
-        self.assertIn('RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v2"', bundled_gate)
+        self.assertIn('RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v3"', bundled_gate)
         self.assertIn("def png_dimensions(path):", bundled_gate)
         self.assertIn(
             'cover_path = require_managed(\n'
@@ -507,8 +545,11 @@ class ValidationOrderTests(unittest.TestCase):
         )
         self.assertIn('f"{pet_id}-frames"', bundled_gate)
         self.assertIn('frames_root / ".apc-runtime-assets.json"', bundled_gate)
-        self.assertIn("expected_count = native_fps * duration // 1000", bundled_gate)
+        self.assertIn('marker.get("timing") != timings', bundled_gate)
+        self.assertIn('marker.get("frame_counts")', bundled_gate)
+        self.assertIn("expected_count = len(durations)", bundled_gate)
         self.assertIn("for frame in frames:", bundled_gate)
+        self.assertIn("if schema_version != 6:", bundled_gate)
 
     def test_adhoc_signature_gate_precedes_packaged_code_execution(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
@@ -589,6 +630,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.arm = self.source[build_end:arm_end]
         self.x86 = self.source[arm_end:x86_end]
         self.publish = self.source[x86_end:]
+        self.test_all = (ROOT / "script/test_all.sh").read_text(encoding="utf-8")
+        self.overlay_interaction = (
+            ROOT / "script/validate_overlay_interaction.sh"
+        ).read_text(encoding="utf-8")
+        self.test_all_attestation = (
+            ROOT / "script/prepare_interaction_attestation.sh"
+        ).read_text(encoding="utf-8")
 
     def test_workflow_has_no_signing_environment_or_apple_trust_pipeline(self) -> None:
         self.assertNotRegex(self.source, r"(?m)^\s*environment:")
@@ -685,6 +733,37 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         for suffix in expected_assets:
             self.assertEqual(upload_block.count(suffix), 1)
         self.assertEqual(self.publish.count('"release-assets/AgentPetCompanion-'), 3)
+
+    def test_release_source_gate_executes_phase_a_and_t_b4_swift_suites(self) -> None:
+        self.assertIn(
+            "Run host-safe source, Phase A/T-B4 interaction, and integration gates",
+            self.build,
+        )
+        self.assertIn(
+            "APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}",
+            self.build,
+        )
+        self.assertIn(
+            '"$ROOT_DIR/script/prepare_interaction_attestation.sh"', self.test_all
+        )
+        self.assertIn(
+            '"$ROOT_DIR/script/validate_overlay_interaction.sh"',
+            self.test_all_attestation,
+        )
+        self.assertIn("swift test", self.overlay_interaction)
+        self.assertIn("--attestation-out", self.overlay_interaction)
+        self.assertIn("interaction-contract-files.txt", self.overlay_interaction)
+        self.assertIn(
+            "APC_INTERACTION_ATTESTATION_PATH", self.test_all
+        )
+        for suite in (
+            "OverlayPlacementAuthorityTests",
+            "AppStoreOverlaySnapshotTests",
+            "OverlayGeometryTests",
+            "OverlayDisplayWidthTests",
+        ):
+            with self.subTest(suite=suite):
+                self.assertIn(suite, self.overlay_interaction)
 
     def test_only_publish_job_can_write_repository_contents(self) -> None:
         self.assertEqual(self.source.count("contents: write"), 1)

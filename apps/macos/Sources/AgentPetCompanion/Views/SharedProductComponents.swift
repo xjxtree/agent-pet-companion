@@ -591,6 +591,20 @@ struct SessionBubbleRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
+                if let surfaceLabel = session.surfaceLabel {
+                    Text(surfaceLabel)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                }
+
                 Spacer(minLength: 8)
 
                 if !session.statusText.isEmpty {

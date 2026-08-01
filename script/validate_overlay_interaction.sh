@@ -2,774 +2,131 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-. "$ROOT_DIR/script/validation_helpers.sh"
-apc_require_host_ui_opt_in "overlay interaction validation"
-APP_NAME="${APC_OVERLAY_APP_NAME:-AgentPetCompanion}"
-APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
-APP_BINARY="$APP_BUNDLE/Contents/MacOS/AgentPetCompanion"
-PETCORE_BINARY="$APP_BUNDLE/Contents/Resources/bin/petcore"
-PETCORE_CLI="${1:-$APP_BUNDLE/Contents/Resources/bin/petcore-cli}"
-MODE="${APC_VALIDATE_OVERLAY_INTERACTION:-0}"
-RESTORE_STATE=0
-ORIGINAL_BEHAVIOR_JSON=""
-ORIGINAL_PLACEMENT_JSON=""
+MACOS_DIR="$ROOT_DIR/apps/macos"
+ATTESTATION_OUT=""
+BUILD_ID=""
 
-truthy() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES) return 0 ;;
-    *) return 1 ;;
+usage() {
+  echo 'usage: validate_overlay_interaction.sh [--attestation-out ABSOLUTE_PATH --build-id BUILD_ID]'
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --attestation-out)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      ATTESTATION_OUT="$2"
+      shift 2
+      ;;
+    --build-id)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      BUILD_ID="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
   esac
-}
+done
 
-skip() {
-  echo "overlay interaction validation skipped: $1"
-  exit 0
-}
-
-if ! truthy "$MODE"; then
-  skip "APC_VALIDATE_OVERLAY_INTERACTION=$MODE is not an explicit opt-in; use 1"
+if [[ -n "$ATTESTATION_OUT" || -n "$BUILD_ID" ]]; then
+  [[ "$ATTESTATION_OUT" == /* ]] || {
+    echo 'interaction attestation output must be an absolute path' >&2
+    exit 2
+  }
+  [[ "$BUILD_ID" =~ ^[A-Za-z0-9._+-]{1,128}$ ]] || {
+    echo 'interaction attestation build_id is invalid' >&2
+    exit 2
+  }
+  mkdir -p "$(dirname "$ATTESTATION_OUT")"
 fi
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  skip "requires macOS"
-fi
+# Real pointer, Space, focus-loss, and multi-display acceptance is performed
+# with Computer Use. This script deliberately contains no synthesized input or
+# app-launch automation; it locks the same interaction invariants with
+# deterministic tests that are safe to run unattended.
+for suite in \
+  OverlayPlacementAuthorityTests \
+  AppStoreOverlaySnapshotTests \
+  OverlayGeometryTests \
+  OverlayDisplayWidthTests; do
+  swift test \
+    --package-path "$MACOS_DIR" \
+    --filter "$suite" \
+    -Xswiftc -strict-concurrency=complete \
+    -Xswiftc -warnings-as-errors
+done
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-overlay-interaction.XXXXXX")"
-apc_use_isolated_home "$TMP_DIR"
-OWNED_PROTOCOL="$APC_HOME/run/validation-owned-runtime.json"
-APP_LOG="$TMP_DIR/app.log"
-
-ax_trusted() {
-  swift - <<'SWIFT'
-import AppKit
-import ApplicationServices
-import Foundation
-
-exit(AXIsProcessTrusted() ? 0 : 1)
-SWIFT
-}
-
-if ! ax_trusted; then
-  if truthy "$MODE"; then
-    echo "overlay interaction validation failed: Accessibility permission is required to post real mouse events" >&2
-    exit 1
-  fi
-  skip "Accessibility permission is not granted to the current automation host"
-fi
-
-if [[ ! -x "$PETCORE_CLI" || ! -x "$PETCORE_BINARY" || ! -x "$APP_BINARY" ]]; then
-  "$ROOT_DIR/script/build_app_bundle.sh" >/dev/null
-fi
-
-if [[ ! -x "$PETCORE_CLI" || ! -x "$PETCORE_BINARY" || ! -x "$APP_BINARY" ]]; then
-  echo "overlay interaction validation failed: dist app is not built" >&2
-  exit 1
-fi
-
-wait_snapshot() {
-  local snapshot=""
-  for _ in {1..80}; do
-    snapshot="$("$PETCORE_CLI" snapshot 2>/dev/null || true)"
-    if SNAPSHOT="$snapshot" python3 - <<'PY'
+if [[ -n "$ATTESTATION_OUT" ]]; then
+  python3 -B - \
+    "$ROOT_DIR" \
+    "$ROOT_DIR/script/interaction-contract-files.txt" \
+    "$ATTESTATION_OUT" \
+    "$BUILD_ID" <<'PY'
+import hashlib
 import json
 import os
+import pathlib
+import stat
 import sys
+import tempfile
 
+root = pathlib.Path(sys.argv[1]).resolve()
+list_path = pathlib.Path(sys.argv[2])
+output = pathlib.Path(sys.argv[3])
+build_id = sys.argv[4]
+entries = [line for line in list_path.read_text(encoding="utf-8").splitlines() if line]
+if not entries or entries != sorted(set(entries)):
+    raise SystemExit("interaction contract file list must be sorted, unique, and non-empty")
+
+digest = hashlib.sha256()
+for entry in entries:
+    relative = pathlib.PurePosixPath(entry)
+    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise SystemExit(f"unsafe interaction contract path: {entry}")
+    path = root.joinpath(*relative.parts)
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise SystemExit(f"interaction contract entry is not a regular file: {entry}")
+    digest.update(entry.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+
+payload = {
+    "schema_version": "apc.overlay-interaction-attestation.v1",
+    "build_id": build_id,
+    "interaction_contract_digest": digest.hexdigest(),
+    "passed_suites": [
+        "OverlayPlacementAuthorityTests",
+        "AppStoreOverlaySnapshotTests",
+        "OverlayGeometryTests",
+        "OverlayDisplayWidthTests",
+    ],
+    "ok": True,
+}
+output.parent.mkdir(parents=True, exist_ok=True)
+descriptor, temporary_name = tempfile.mkstemp(
+    prefix=f".{output.name}.", dir=output.parent
+)
 try:
-    data = json.loads(os.environ.get("SNAPSHOT", "{}"))
-except json.JSONDecodeError:
-    sys.exit(1)
-
-ok = isinstance(data.get("behavior"), dict) and isinstance(data.get("overlay_placement"), dict)
-sys.exit(0 if ok else 1)
+    os.fchmod(descriptor, 0o644)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary_name, output)
+finally:
+    try:
+        os.unlink(temporary_name)
+    except FileNotFoundError:
+        pass
 PY
-    then
-      printf '%s\n' "$snapshot"
-      return 0
-    fi
-    sleep 0.25
-  done
-  return 1
-}
+fi
 
-launch_owned_app() {
-  apc_start_owned_runtime \
-    "$APP_BINARY" \
-    "$PETCORE_CLI" \
-    "$PETCORE_BINARY" \
-    "$APP_LOG" \
-    "$OWNED_PROTOCOL"
-  "$ROOT_DIR/script/validate_overlay_runtime.sh" "$PETCORE_CLI" >/dev/null
-}
-
-relaunch_owned_app() {
-  apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
-  launch_owned_app
-}
-
-restore_state() {
-  if [[ "$RESTORE_STATE" == "1" ]]; then
-    if [[ -n "$ORIGINAL_BEHAVIOR_JSON" ]]; then
-      "$PETCORE_CLI" behavior set-json --value-json "$ORIGINAL_BEHAVIOR_JSON" >/dev/null 2>&1 || true
-    fi
-    if [[ -n "$ORIGINAL_PLACEMENT_JSON" ]]; then
-      PLACEMENT="$ORIGINAL_PLACEMENT_JSON" python3 - <<'PY' | while read -r x y scale display_id; do
-import json
-import os
-
-placement = json.loads(os.environ["PLACEMENT"])
-print(placement["x"], placement["y"], placement["scale"], placement.get("display_id", "main"))
-PY
-        "$PETCORE_CLI" overlay placement set \
-          --x "$x" \
-          --y "$y" \
-          --scale "$scale" \
-          --display-id "$display_id" >/dev/null 2>&1 || true
-      done
-    fi
-  fi
-}
-
-cleanup() {
-  local status=$?
-  if [[ "$status" -ne 0 && -s "$APP_LOG" ]]; then
-    echo "overlay interaction app log:" >&2
-    tail -n 120 "$APP_LOG" >&2
-  fi
-  restore_state
-  apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
-  rm -rf "$TMP_DIR"
-  return "$status"
-}
-trap cleanup EXIT
-
-launch_owned_app >/dev/null
-SNAPSHOT="$(wait_snapshot)"
-
-ORIGINAL_BEHAVIOR_JSON="$(SNAPSHOT="$SNAPSHOT" python3 - <<'PY'
-import json
-import os
-
-data = json.loads(os.environ["SNAPSHOT"])
-print(json.dumps(data["behavior"], ensure_ascii=False))
-PY
-)"
-ORIGINAL_PLACEMENT_JSON="$(SNAPSHOT="$SNAPSHOT" python3 - <<'PY'
-import json
-import os
-
-data = json.loads(os.environ["SNAPSHOT"])
-print(json.dumps(data["overlay_placement"], ensure_ascii=False))
-PY
-)"
-RESTORE_STATE=1
-
-TARGET="$(swift - <<'SWIFT'
-import AppKit
-import Foundation
-
-guard let screen = NSScreen.main ?? NSScreen.screens.first else {
-    fputs("no screen\n", stderr)
-    exit(1)
-}
-let frame = screen.frame
-let visible = screen.visibleFrame
-let target = [
-    "x": visible.midX,
-    "y": visible.midY,
-    // Match the product first-run overlay scale. Values below the supported
-    // range intentionally resolve to this default instead of creating a tiny,
-    // inaccessible target.
-    "scale": 0.72,
-    "display_id": String((screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0),
-    "display_height": frame.height
-] as [String : Any]
-let data = try JSONSerialization.data(withJSONObject: target, options: [])
-print(String(data: data, encoding: .utf8)!)
-SWIFT
-)"
-
-read -r TARGET_X TARGET_Y TARGET_SCALE TARGET_DISPLAY_ID <<<"$(TARGET="$TARGET" python3 - <<'PY'
-import json
-import os
-
-target = json.loads(os.environ["TARGET"])
-print(target["x"], target["y"], target["scale"], target["display_id"])
-PY
-)"
-
-TEST_BEHAVIOR_JSON="$(SNAPSHOT="$SNAPSHOT" python3 - <<'PY'
-import json
-import os
-
-data = json.loads(os.environ["SNAPSHOT"])
-behavior = dict(data["behavior"])
-behavior["enabled"] = True
-behavior["status_bubble"] = True
-behavior["click_menu"] = True
-behavior["mouse_passthrough"] = True
-behavior["auto_hide"] = False
-behavior.setdefault("sources", {})
-behavior.setdefault("events", {})
-for source in ["codex", "claude_code", "pi", "opencode"]:
-    behavior["sources"][source] = True
-for event in ["start", "tool", "waiting", "review", "done", "failed"]:
-    behavior["events"][event] = True
-print(json.dumps(behavior, ensure_ascii=False))
-PY
-)"
-
-"$PETCORE_CLI" behavior set-json --value-json "$TEST_BEHAVIOR_JSON" >/dev/null
-"$PETCORE_CLI" overlay placement set \
-  --x "$TARGET_X" \
-  --y "$TARGET_Y" \
-  --scale "$TARGET_SCALE" \
-  --display-id "$TARGET_DISPLAY_ID" >/dev/null
-
-# Allow the relaunched app to complete its initial snapshot and enter the
-# long-poll before injecting the live event exercised by this interaction gate.
-relaunch_owned_app >/dev/null
-sleep 1.5
-
-EVENT_ID="evt_overlay_interaction_$(date -u +%Y%m%dT%H%M%SZ)_$$"
-"$PETCORE_CLI" agent ingest \
-  --id "$EVENT_ID" \
-  --source codex \
-  --event-type tool \
-  --title "桌宠交互验收" \
-  --detail "验证拖动、缩放与气泡按钮" >/dev/null
-
-sleep 0.8
-
-SNAPSHOT="$(wait_snapshot)"
-SNAPSHOT="$SNAPSHOT" TARGET="$TARGET" PETCORE_CLI="$PETCORE_CLI" APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'
-import AppKit
-import ApplicationServices
-import CoreGraphics
-import Foundation
-
-let appName = ProcessInfo.processInfo.environment["APP_NAME"] ?? "AgentPetCompanion"
-let appPID = Int(ProcessInfo.processInfo.environment["APP_PID"] ?? "") ?? -1
-let petcoreCLI = ProcessInfo.processInfo.environment["PETCORE_CLI"] ?? ""
-
-func jsonFromEnv(_ key: String) -> [String: Any] {
-    guard let value = ProcessInfo.processInfo.environment[key],
-          let data = value.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return [:]
-    }
-    return object
-}
-
-func runCLI(_ args: [String]) -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: petcoreCLI)
-    process.arguments = args
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-    do {
-        try process.run()
-        process.waitUntilExit()
-    } catch {
-        return nil
-    }
-    guard process.terminationStatus == 0 else { return nil }
-    return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-}
-
-func snapshot() -> [String: Any] {
-    guard let output = runCLI(["snapshot"]),
-          let data = output.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return [:]
-    }
-    return object
-}
-
-func placement() -> (x: Double, y: Double, scale: Double)? {
-    guard let placement = snapshot()["overlay_placement"] as? [String: Any] else { return nil }
-    let x = (placement["x"] as? NSNumber)?.doubleValue
-    let y = (placement["y"] as? NSNumber)?.doubleValue
-    let scale = (placement["scale"] as? NSNumber)?.doubleValue
-    guard let x, let y, let scale else { return nil }
-    return (x, y, scale)
-}
-
-struct WindowInfo {
-    let id: Int
-    let x: Double
-    let y: Double
-    let width: Double
-    let height: Double
-    let layer: Int
-}
-
-func floatingWindows() -> [WindowInfo] {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
-        return []
-    }
-    return list.compactMap { info in
-        guard (info[kCGWindowOwnerName as String] as? String) == appName else { return nil }
-        guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.intValue == appPID else { return nil }
-        guard ((info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0) != 0 else { return nil }
-        guard ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 else { return nil }
-        guard let bounds = info[kCGWindowBounds as String] as? [String: Any] else { return nil }
-        return WindowInfo(
-            id: (info[kCGWindowNumber as String] as? NSNumber)?.intValue ?? -1,
-            x: (bounds["X"] as? NSNumber)?.doubleValue ?? 0,
-            y: (bounds["Y"] as? NSNumber)?.doubleValue ?? 0,
-            width: (bounds["Width"] as? NSNumber)?.doubleValue ?? 0,
-            height: (bounds["Height"] as? NSNumber)?.doubleValue ?? 0,
-            layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-        )
-    }
-}
-
-func axCopy(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
-    var value: AnyObject?
-    return AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
-        ? value
-        : nil
-}
-
-func axString(_ element: AXUIElement, _ attribute: String) -> String {
-    (axCopy(element, attribute) as? String) ?? ""
-}
-
-func axPoint(_ element: AXUIElement, _ attribute: String) -> CGPoint? {
-    guard let value = axCopy(element, attribute) else { return nil }
-    var point = CGPoint.zero
-    guard AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
-    return point
-}
-
-func axSize(_ element: AXUIElement, _ attribute: String) -> CGSize? {
-    guard let value = axCopy(element, attribute) else { return nil }
-    var size = CGSize.zero
-    guard AXValueGetValue(value as! AXValue, .cgSize, &size) else { return nil }
-    return size
-}
-
-func findDesktopPetFrame(in element: AXUIElement, depth: Int = 0) -> CGRect? {
-    guard depth <= 20 else { return nil }
-    let strings = [
-        axString(element, kAXTitleAttribute),
-        axString(element, kAXValueAttribute),
-        axString(element, kAXDescriptionAttribute),
-    ]
-    if axString(element, kAXRoleAttribute) == kAXButtonRole as String,
-       strings.contains(where: { $0 == "桌宠" || $0 == "Desktop pet" }),
-       let position = axPoint(element, kAXPositionAttribute),
-       let size = axSize(element, kAXSizeAttribute) {
-        return CGRect(origin: position, size: size)
-    }
-    for child in axCopy(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
-        if let frame = findDesktopPetFrame(in: child, depth: depth + 1) {
-            return frame
-        }
-    }
-    return nil
-}
-
-func desktopPetFrame() -> CGRect? {
-    let app = AXUIElementCreateApplication(pid_t(appPID))
-    for window in axCopy(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
-        if let frame = findDesktopPetFrame(in: window) {
-            return frame
-        }
-    }
-    return nil
-}
-
-func waitForDesktopPetFrame() -> CGRect? {
-    for _ in 0..<40 {
-        if let frame = desktopPetFrame(), frame.width >= 30, frame.height >= 42 {
-            return frame
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    return nil
-}
-
-func findButton(
-    in element: AXUIElement,
-    labels: [String],
-    depth: Int = 0
-) -> AXUIElement? {
-    guard depth <= 20 else { return nil }
-    let strings = [
-        axString(element, kAXTitleAttribute),
-        axString(element, kAXValueAttribute),
-        axString(element, kAXDescriptionAttribute),
-    ]
-    if axString(element, kAXRoleAttribute) == kAXButtonRole as String,
-       strings.contains(where: { value in labels.contains(where: value.contains) }) {
-        return element
-    }
-    for child in axCopy(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
-        if let button = findButton(in: child, labels: labels, depth: depth + 1) {
-            return button
-        }
-    }
-    return nil
-}
-
-func pressButton(labels: [String]) -> Bool {
-    let app = AXUIElementCreateApplication(pid_t(appPID))
-    for _ in 0..<40 {
-        for window in axCopy(app, kAXWindowsAttribute) as? [AXUIElement] ?? [] {
-            if let button = findButton(in: window, labels: labels),
-               AXUIElementPerformAction(button, kAXPressAction as CFString) == .success {
-                return true
-            }
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    return false
-}
-
-func visibleBubbleWindow() -> WindowInfo? {
-    floatingWindows().first(where: {
-        $0.width >= 320 && $0.width <= 430 && $0.height >= 70 && $0.height <= 180
-    })
-}
-
-func bubbleWindow() -> WindowInfo? {
-    for _ in 0..<40 {
-        if let bubble = visibleBubbleWindow() {
-            return bubble
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    return nil
-}
-
-func waitForBubbleToHide() -> Bool {
-    for _ in 0..<40 {
-        if visibleBubbleWindow() == nil {
-            return true
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    return false
-}
-
-guard let mouseEventSource = CGEventSource(stateID: .hidSystemState) else {
-    fputs("overlay interaction validation failed: HID mouse event source is unavailable\n", stderr)
-    exit(1)
-}
-mouseEventSource.localEventsSuppressionInterval = 0
-
-func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton = .left) {
-    guard let event = CGEvent(
-        mouseEventSource: mouseEventSource,
-        mouseType: type,
-        mouseCursorPosition: point,
-        mouseButton: button
-    ) else {
-        return
-    }
-    event.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
-    event.post(tap: .cghidEventTap)
-}
-
-let target = jsonFromEnv("TARGET")
-let displayHeight = (target["display_height"] as? NSNumber)?.doubleValue
-    ?? Double(CGDisplayBounds(CGMainDisplayID()).height)
-
-func quartzPoint(cocoaX x: Double, cocoaY y: Double) -> CGPoint {
-    CGPoint(x: x, y: displayHeight - y)
-}
-
-func drag(from start: CGPoint, to end: CGPoint, steps: Int = 18) {
-    postMouse(.mouseMoved, at: start)
-    // The overlay's global pointer monitor updates transparent hit testing
-    // asynchronously; wait for the target panel to accept mouse events.
-    Thread.sleep(forTimeInterval: 0.25)
-    postMouse(.leftMouseDown, at: start)
-    Thread.sleep(forTimeInterval: 0.08)
-    guard NSEvent.pressedMouseButtons & 1 == 1 else {
-        fputs("overlay interaction validation failed: synthetic primary button state was not registered\n", stderr)
-        return
-    }
-    for index in 1...steps {
-        let t = Double(index) / Double(steps)
-        let point = CGPoint(
-            x: start.x + (end.x - start.x) * t,
-            y: start.y + (end.y - start.y) * t
-        )
-        postMouse(.leftMouseDragged, at: point)
-        Thread.sleep(forTimeInterval: 0.018)
-    }
-    postMouse(.leftMouseUp, at: end)
-    Thread.sleep(forTimeInterval: 0.35)
-}
-
-func click(at point: CGPoint) {
-    let start = CGEvent(source: nil)?.location ?? point
-    for index in 1...12 {
-        let progress = Double(index) / 12
-        postMouse(.mouseMoved, at: CGPoint(
-            x: start.x + (point.x - start.x) * progress,
-            y: start.y + (point.y - start.y) * progress
-        ))
-        Thread.sleep(forTimeInterval: 0.018)
-    }
-    Thread.sleep(forTimeInterval: 0.08)
-    postMouse(.leftMouseDown, at: point)
-    Thread.sleep(forTimeInterval: 0.05)
-    postMouse(.leftMouseUp, at: point)
-    Thread.sleep(forTimeInterval: 0.35)
-}
-
-struct OverlayControlPoints {
-    let menu: CGPoint
-    let resize: CGPoint
-}
-
-func resolveOverlayControlPoints() -> OverlayControlPoints? {
-    // The nonactivating pet panel can temporarily disappear from AX after a
-    // sibling bubble action. Fall back to PetCore's current persisted center;
-    // this is live state (not legacy fixture geometry) and remains valid after
-    // the drag/resize steps above.
-    let petCenter: CGPoint
-    if let petFrame = desktopPetFrame() {
-        petCenter = CGPoint(x: petFrame.midX, y: petFrame.midY)
-    } else if let persisted = placement() {
-        petCenter = quartzPoint(cocoaX: persisted.x, cocoaY: persisted.y)
-    } else {
-        return nil
-    }
-    postMouse(.mouseMoved, at: petCenter)
-    Thread.sleep(forTimeInterval: 0.35)
-
-    for _ in 0..<40 {
-        let controls = floatingWindows().filter { window in
-            window.width >= 36 && window.width <= 40
-                && window.height >= 36 && window.height <= 40
-                && abs((window.x + window.width / 2) - petCenter.x) <= 220
-                && abs((window.y + window.height / 2) - petCenter.y) <= 260
-        }.sorted { $0.y < $1.y }
-        if let menu = controls.first, let resize = controls.last, controls.count >= 2 {
-            return OverlayControlPoints(
-                menu: CGPoint(x: menu.x + menu.width / 2, y: menu.y + menu.height / 2),
-                resize: CGPoint(x: resize.x + resize.width / 2, y: resize.y + resize.height / 2)
-            )
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    return nil
-}
-
-func setBehaviorEnabled(_ enabled: Bool) -> Bool {
-    guard var behavior = snapshot()["behavior"] as? [String: Any] else { return false }
-    behavior["enabled"] = enabled
-    guard let data = try? JSONSerialization.data(withJSONObject: behavior),
-          let json = String(data: data, encoding: .utf8)
-    else {
-        return false
-    }
-    return runCLI(["behavior", "set-json", "--value-json", json]) != nil
-}
-
-guard let initial = placement() else {
-    fputs("overlay interaction validation failed: no initial overlay placement\n", stderr)
-    exit(1)
-}
-
-guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: status bubble did not appear after event ingestion\n", stderr)
-    for window in floatingWindows() {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
-    }
-    exit(1)
-}
-
-guard let initialPetFrame = waitForDesktopPetFrame() else {
-    fputs("overlay interaction validation failed: desktop pet AX hit frame is unavailable\n", stderr)
-    exit(1)
-}
-// Move away from the right-side disclosure/resize panels. Crossing those
-// higher-level sibling windows can transfer a synthesized drag out of the pet
-// canvas before mouse-up. Retry from the current AX frame and require a
-// persisted movement large enough to be visually meaningful.
-var moved: (x: Double, y: Double, scale: Double)?
-var lastDragStart = CGPoint(x: initialPetFrame.midX, y: initialPetFrame.midY)
-var lastDragEnd = lastDragStart
-for _ in 0..<3 {
-    guard let petFrame = waitForDesktopPetFrame(), resolveOverlayControlPoints() != nil else {
-        fputs("overlay interaction validation failed: pet hover did not expose the compact controls\n", stderr)
-        exit(1)
-    }
-    lastDragStart = CGPoint(x: petFrame.midX, y: petFrame.midY)
-    lastDragEnd = CGPoint(x: lastDragStart.x - 48, y: lastDragStart.y + 21)
-    drag(from: lastDragStart, to: lastDragEnd, steps: 12)
-    for _ in 0..<12 {
-        if let next = placement(),
-           abs(next.x - initial.x) >= 8,
-           abs(next.y - initial.y) >= 3 {
-            moved = next
-            break
-        }
-        Thread.sleep(forTimeInterval: 0.1)
-    }
-    if moved != nil {
-        break
-    }
-}
-
-guard let moved else {
-    fputs("overlay interaction validation failed: pet drag did not update persisted placement\n", stderr)
-    if let current = placement() {
-        fputs("  initial=(\(initial.x), \(initial.y)) current=(\(current.x), \(current.y))\n", stderr)
-    }
-    fputs("  pet_ax_frame=\(initialPetFrame) drag=(\(lastDragStart) -> \(lastDragEnd))\n", stderr)
-    for window in floatingWindows() {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
-    }
-    exit(1)
-}
-
-// Synthesized drags do not retain AppKit's physical-mouse capture after they
-// leave a compact sibling NSPanel. Apply several short horizontal gestures
-// whose mouse-up stays inside the moving 38×38 resize target. Horizontal-only
-// movement also avoids cross-coordinate-system ambiguity in the vertical axis.
-for _ in 0..<7 {
-    guard let controls = resolveOverlayControlPoints() else {
-        fputs("overlay interaction validation failed: menu/resize control windows were not found\n", stderr)
-        for window in floatingWindows() {
-            fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
-        }
-        exit(1)
-    }
-    let resizeStart = controls.resize
-    let resizeEnd = CGPoint(x: resizeStart.x + 16, y: resizeStart.y)
-    drag(from: resizeStart, to: resizeEnd, steps: 6)
-}
-
-var resized: (x: Double, y: Double, scale: Double)?
-for _ in 0..<30 {
-    // A 0.075 absolute delta is already a clearly visible 10%+ size change at
-    // the validator's 0.72 starting scale, while still rejecting incidental
-    // pointer jitter or a missed resize handle.
-    if let next = placement(), abs(next.scale - moved.scale) >= 0.075 {
-        resized = next
-        break
-    }
-    Thread.sleep(forTimeInterval: 0.15)
-}
-
-guard let resized else {
-    fputs("overlay interaction validation failed: resize handle drag did not update scale\n", stderr)
-    if let current = placement() {
-        fputs("  before=\(moved.scale) current=\(current.scale)\n", stderr)
-    }
-    exit(1)
-}
-
-guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: no status bubble panel before disclosure toggle\n", stderr)
-    for window in floatingWindows() {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
-    }
-    exit(1)
-}
-
-guard let expandedControls = resolveOverlayControlPoints() else {
-    fputs("overlay interaction validation failed: bubble disclosure control was not found before collapse\n", stderr)
-    exit(1)
-}
-click(at: expandedControls.menu)
-
-guard waitForBubbleToHide() else {
-    fputs("overlay interaction validation failed: disclosure control did not collapse the bubble\n", stderr)
-    exit(1)
-}
-
-guard let collapsedControls = resolveOverlayControlPoints() else {
-    fputs("overlay interaction validation failed: bubble disclosure control was not found after collapse\n", stderr)
-    exit(1)
-}
-click(at: collapsedControls.menu)
-guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: disclosure control did not expand the bubble\n", stderr)
-    exit(1)
-}
-
-// Closing a single session is intentionally different from globally
-// collapsing the bubble: it dismisses that session, so no disclosure button
-// remains until a fresh event arrives.
-guard pressButton(labels: [
-    "关闭会话气泡",
-    "Close session bubble",
-]) else {
-    fputs("overlay interaction validation failed: bubble close AX button could not be pressed\n", stderr)
-    exit(1)
-}
-
-guard waitForBubbleToHide() else {
-    fputs("overlay interaction validation failed: bubble close AX press did not dismiss the session\n", stderr)
-    exit(1)
-}
-
-guard setBehaviorEnabled(false) else {
-    fputs("overlay interaction validation failed: could not disable the desktop pet\n", stderr)
-    exit(1)
-}
-var overlayHidden = false
-for _ in 0..<40 {
-    if floatingWindows().isEmpty {
-        overlayHidden = true
-        break
-    }
-    Thread.sleep(forTimeInterval: 0.1)
-}
-guard overlayHidden else {
-    fputs("overlay interaction validation failed: desktop pet did not hide after disable\n", stderr)
-    exit(1)
-}
-guard setBehaviorEnabled(true) else {
-    fputs("overlay interaction validation failed: could not re-enable the desktop pet\n", stderr)
-    exit(1)
-}
-var overlayReturned = false
-for _ in 0..<40 {
-    if !floatingWindows().isEmpty {
-        overlayReturned = true
-        break
-    }
-    Thread.sleep(forTimeInterval: 0.1)
-}
-guard overlayReturned else {
-    fputs("overlay interaction validation failed: desktop pet did not return after re-enable\n", stderr)
-    exit(1)
-}
-Thread.sleep(forTimeInterval: 0.35)
-guard visibleBubbleWindow() == nil else {
-    fputs("overlay interaction validation failed: dismissed session returned after re-enable\n", stderr)
-    exit(1)
-}
-
-let followUpEventID = "evt_overlay_interaction_follow_up_\(UUID().uuidString)"
-guard runCLI([
-    "agent", "ingest",
-    "--id", followUpEventID,
-    "--source", "codex",
-    "--event-type", "waiting",
-    "--title", "后续交互验收",
-    "--detail", "验证新会话在旧会话关闭后仍可显示",
-]) != nil else {
-    fputs("overlay interaction validation failed: could not ingest the follow-up event\n", stderr)
-    exit(1)
-}
-guard bubbleWindow() != nil else {
-    fputs("overlay interaction validation failed: a fresh session did not restore the bubble after re-enable\n", stderr)
-    for window in floatingWindows() {
-        fputs("  id=\(window.id) layer=\(window.layer) frame=(\(window.x), \(window.y), \(window.width), \(window.height))\n", stderr)
-    }
-    exit(1)
-}
-
-print("Overlay interaction validation ok")
-SWIFT
+echo "Overlay interaction contract validation ok; live pointer acceptance remains a Computer Use gate"

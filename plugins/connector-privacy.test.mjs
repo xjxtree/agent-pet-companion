@@ -55,8 +55,234 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v9");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v10");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
+    const piActivity = await importTemplate(
+      "./pi/agent-pet-companion.ts.tpl",
+      "semantic-activity",
+      ["activityText"],
+    );
+    const encodedAndDumpActivityCases = [
+      {
+        name: "encoded safe object",
+        value: JSON.stringify({ path: "README.md", headers: { Authorization: "Bearer private" } }),
+        expected: "README.md",
+      },
+      {
+        name: "encoded safe array",
+        value: JSON.stringify([{ file_path: "Sources/App.swift" }]),
+        expected: "Sources/App.swift",
+      },
+      {
+        name: "double encoded safe object",
+        value: JSON.stringify(JSON.stringify({ path: "README.md" })),
+        expected: "README.md",
+      },
+      {
+        name: "encoded credential object",
+        value: JSON.stringify({ headers: { message: "secret-header" } }),
+        expected: undefined,
+      },
+      {
+        name: "encoded credential array",
+        value: JSON.stringify([{ credentials: { output: "secret-credential" } }]),
+        expected: undefined,
+      },
+      {
+        name: "double encoded credentials",
+        value: JSON.stringify(JSON.stringify({ client_secret: { content: "secret-client" } })),
+        expected: undefined,
+      },
+      {
+        name: "triple encoded credentials",
+        value: JSON.stringify(JSON.stringify(JSON.stringify({
+          client_secret: { content: "secret-client-triple" },
+        }))),
+        expected: undefined,
+      },
+      {
+        name: "oversized encoded object",
+        value: JSON.stringify({ headers: { message: "x".repeat(32 * 1024) } }),
+        expected: undefined,
+      },
+      {
+        name: "oversized double encoded object",
+        value: JSON.stringify(JSON.stringify({
+          credentials: { output: "x".repeat(32 * 1024) },
+        })),
+        expected: undefined,
+      },
+      {
+        name: "authorization header dump",
+        value: "Authorization: Bearer private",
+        expected: undefined,
+      },
+      {
+        name: "environment dump",
+        value: "API_KEY=private\nPATH=/usr/bin",
+        expected: undefined,
+      },
+      {
+        name: "truncated object",
+        value: "  {\"path\":\"README.md\"",
+        expected: undefined,
+      },
+      {
+        name: "truncated array",
+        value: " \n [{\"path\":\"README.md\"}",
+        expected: undefined,
+      },
+      {
+        name: "malformed quoted encoded object",
+        value: "  \"{\\\"headers\\\":{\\\"message\\\":\\\"secret\\\"}",
+        expected: undefined,
+      },
+      {
+        name: "double encoded truncated object",
+        value: JSON.stringify("{\"headers\":{\"message\":\"secret\"}"),
+        expected: undefined,
+      },
+      {
+        name: "ordinary prose with braces",
+        value: "Planning includes {draft} markers",
+        expected: "Planning includes {draft} markers",
+      },
+      {
+        name: "valid quoted prose",
+        value: JSON.stringify("Planning includes {draft} markers"),
+        expected: "Planning includes {draft} markers",
+      },
+      {
+        name: "same-line environment dump",
+        value: "PATH=/usr/bin API_KEY=private",
+        expected: undefined,
+      },
+      {
+        name: "same-line header dump",
+        value: "Content-Type: text/plain Authorization: Bearer private",
+        expected: undefined,
+      },
+      {
+        name: "control-separated environment dump",
+        value: "PATH=/usr/bin\u0000API_KEY=private",
+        expected: undefined,
+      },
+    ];
+    for (const { name, value, expected } of encodedAndDumpActivityCases) {
+      assert.equal(
+        piActivity.activityText({ type: "tool_execution_end", result: value }),
+        expected,
+        `Pi ${name}`,
+      );
+    }
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { command: "TOKEN=secret-command" },
+      }),
+      "TOKEN=secret-command",
+      "Pi explicit command context must retain environment assignments",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { command: "PATH=/usr/bin API_KEY=secret-command" },
+      }),
+      "PATH=/usr/bin API_KEY=secret-command",
+      "Pi explicit command context must retain same-line environment assignments",
+    );
+    const sensitiveIdentifierTokens = [
+      "env", "environment", "header", "headers", "auth", "oauth", "authentication",
+      "authorization", "secret", "password", "passphrase", "credential", "credentials",
+      "cookie", "cookies", "token", "tokens", "keychain", "keystore", "pem",
+    ];
+    const capitalizedIdentifier = (value) => value[0].toUpperCase() + value.slice(1);
+    const sensitiveIdentifierMatrix = sensitiveIdentifierTokens.flatMap((sensitive) => [
+      ...["_", "-", ".", " "].flatMap((separator) => [
+        `${sensitive}${separator}value`,
+        `value${separator}${sensitive}`,
+      ]),
+      `${sensitive}Value`,
+      `value${capitalizedIdentifier(sensitive)}`,
+    ]);
+    const sensitiveKeyMatrix = [
+      "private", "api", "ssh", "signing", "encryption", "access", "client",
+    ].flatMap((qualifier) => [
+      `${qualifier}_key`,
+      `key-${qualifier}`,
+      `${qualifier}Key`,
+      `key${capitalizedIdentifier(qualifier)}`,
+    ]);
+    const credentialContainerVariants = [
+      { headers: { content: "secret-header-content" } },
+      { environment: { message: "secret-environment-message" } },
+      { tokens: { output: "secret-token-output" } },
+      { client_secret: { message: "secret-client-message" } },
+      { sessionToken: { output: "secret-session-output" } },
+      { privateKey: { content: "secret-private-key" } },
+      { Authorization: { message: "secret-authorization" } },
+      { customBearerToken: { result: "secret-bearer-token" } },
+      { processEnv: { message: "secret-process-environment" } },
+      { requestHeader: { content: "secret-request-header" } },
+      { requestHeaders: { content: "secret-request-headers" } },
+      { clientAuth: { output: "secret-client-auth" } },
+      { oauth: { result: "secret-oauth" } },
+      { processEnvironment: { message: "secret-process-environment-long" } },
+      { clientAuthentication: { content: "secret-client-authentication" } },
+      { authConfig: { output: "secret-auth-config" } },
+      { token_value: { message: "secret-token-underscore" } },
+      { "token-value": { output: "secret-token-hyphen" } },
+      { tokenValue: { content: "secret-token-camel-case" } },
+      ...sensitiveIdentifierMatrix.map((key) => ({
+        [key]: { message: `secret identifier ${key}` },
+      })),
+      ...sensitiveKeyMatrix.map((key) => ({
+        [key]: { output: `secret key identifier ${key}` },
+      })),
+    ];
+    for (const input of credentialContainerVariants) {
+      assert.equal(
+        piActivity.activityText({ type: "tool_call", input }),
+        undefined,
+        "Pi activity must not recurse through credential containers",
+      );
+    }
+    assert.equal(
+      piActivity.activityText({ type: "tool_call", input: { file_path: "Sources/App.swift" } }),
+      "Sources/App.swift",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { token_count: { message: "42 tokens processed" } },
+      }),
+      "42 tokens processed",
+      "Pi token statistics must not be mistaken for credential containers",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { token_counts: { message: "42 input, 17 output" } },
+      }),
+      "42 input, 17 output",
+      "Pi token statistics plural must remain allowlisted",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { authorMetadata: { message: "Ada Lovelace" } },
+      }),
+      "Ada Lovelace",
+      "Pi author metadata must not be mistaken for auth credentials",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_call",
+        input: { envelope: { message: "ordinary transport envelope" } },
+      }),
+      "ordinary transport envelope",
+      "Pi envelope metadata must not be mistaken for environment credentials",
+    );
 
     const piHandlers = new Map();
     pi.default({ on: (name, handler) => piHandlers.set(name, handler) });
@@ -168,7 +394,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     assert.equal(piPayloads.at(-1).message_content, "Visible Pi answer");
     assert.ok(piPayloads.some((payload) => (
       payload.type === "tool_call"
-      && payload.activity_content === "{\"command\":\"TOKEN=secret-command\"}"
+      && payload.activity_content === "TOKEN=secret-command"
     )));
     assert.ok(piPayloads.some((payload) => (
       payload.type === "tool_execution_end"
@@ -197,9 +423,10 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
         "APC_OPENCODE_CONTRACT_VERSION",
         "APC_OPENCODE_PLUGIN_HOOK_INVENTORY",
         "APC_OPENCODE_EVENT_INVENTORY",
+        "boundedActivity",
       ],
     );
-    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v10");
+    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v12");
     assert.equal(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.length, 21);
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("tool.definition"));
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("dispose"));
@@ -220,6 +447,47 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       assert.ok(opencode.APC_OPENCODE_EVENT_INVENTORY.includes(eventName));
     }
     assert.equal(opencode.APC_OPENCODE_EVENT_INVENTORY.includes("catalog.model.updated"), false);
+    for (const { name, value, expected } of encodedAndDumpActivityCases) {
+      assert.equal(opencode.boundedActivity(value), expected, `OpenCode ${name}`);
+    }
+    assert.equal(
+      opencode.boundedActivity({ command: "TOKEN=secret-command" }),
+      "TOKEN=secret-command",
+      "OpenCode explicit command context must retain environment assignments",
+    );
+    assert.equal(
+      opencode.boundedActivity({ command: "PATH=/usr/bin API_KEY=secret-command" }),
+      "PATH=/usr/bin API_KEY=secret-command",
+      "OpenCode explicit command context must retain same-line environment assignments",
+    );
+    for (const value of credentialContainerVariants) {
+      assert.equal(
+        opencode.boundedActivity(value),
+        undefined,
+        "OpenCode activity must not recurse through credential containers",
+      );
+    }
+    assert.equal(opencode.boundedActivity({ path: "README.md" }), "README.md");
+    assert.equal(
+      opencode.boundedActivity({ token_count: { message: "42 tokens processed" } }),
+      "42 tokens processed",
+      "OpenCode token statistics must not be mistaken for credential containers",
+    );
+    assert.equal(
+      opencode.boundedActivity({ token_counts: { message: "42 input, 17 output" } }),
+      "42 input, 17 output",
+      "OpenCode token statistics plural must remain allowlisted",
+    );
+    assert.equal(
+      opencode.boundedActivity({ authorMetadata: { message: "Ada Lovelace" } }),
+      "Ada Lovelace",
+      "OpenCode author metadata must not be mistaken for auth credentials",
+    );
+    assert.equal(
+      opencode.boundedActivity({ envelope: { message: "ordinary transport envelope" } }),
+      "ordinary transport envelope",
+      "OpenCode envelope metadata must not be mistaken for environment credentials",
+    );
 
     const hooks = await opencode.AgentPetCompanion({
       directory: "/secret/project",
@@ -446,6 +714,8 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       "secret-compaction-text",
       "secret-direct-permission",
       "secret-direct-metadata",
+      "secret-command-arguments",
+      "secret-command-parts",
       "opaque-direct-call",
       "secret-tool-metadata",
       "secret-compact-context",
@@ -476,8 +746,6 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "command.execute.before"
       && payload.activity_content?.includes("secret-command-name")
-      && payload.activity_content?.includes("secret-command-arguments")
-      && payload.activity_content?.includes("secret-command-parts")
     )));
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "session.compaction.started"

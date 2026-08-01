@@ -1022,8 +1022,8 @@ struct AgentConnectionsTests {
             name: "agent-pet-companion.ts",
             ownership: .appManaged,
             status: .ok,
-            expectedVersion: "pi-extension-0.80.10-activity-v9",
-            activeVersion: "pi-extension-0.80.10-activity-v9",
+            expectedVersion: "pi-extension-0.80.10-activity-v10",
+            activeVersion: "pi-extension-0.80.10-activity-v10",
             contentMatches: true
         )
         #expect(

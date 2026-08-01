@@ -10,10 +10,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-29-activity-v7";
-pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-29-activity-v6";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v9";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v10";
+pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-29-activity-v8";
+pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-31-activity-v8";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v10";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v12";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -86,10 +86,10 @@ pub fn parse_contract_event(source: AgentSource, input: &Value) -> Result<Option
 fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = hook_name(input)?;
     let (kind, outcome, session_active) = match event {
-        // Opening or resuming the host is not user work. Waiting for
-        // UserPromptSubmit also prevents short-lived internal background
-        // sessions from flashing in the overlay before they can be classified.
-        "SessionStart" => return Ok(None),
+        // Opening or resuming the host is not user work, but its bounded
+        // runtime-surface marker must remain durable so later App Server polls
+        // cannot confuse a creation source with the current process host.
+        "SessionStart" => (AgentEventType::Start, "observed", false),
         "UserPromptSubmit" => (AgentEventType::Start, "started", true),
         "PreToolUse" => (AgentEventType::Tool, "started", true),
         "PermissionRequest" => (AgentEventType::Waiting, "permission_requested", true),
@@ -116,6 +116,7 @@ fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEven
     // App Server thread/list + thread/read events set this to true only after
     // the task is confirmed as a durable desktop thread.
     contract.session_open = None;
+    contract.affects_activity = event != "SessionStart";
     contract.turn_id = bounded_string_at(input, &[&["turn_id"]], MAX_IDENTITY_BYTES);
     contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
     contract.project_label = project_label(input);
@@ -236,7 +237,7 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
     ) || (event == "Notification"
         && notification_type.as_deref() == Some("auth_success")));
     contract.project_label = project_label(input);
-    contract.session_title = session_title(input);
+    contract.session_title = claude_session_title(input);
     // SessionEnd closes a Claude process, but the durable conversation remains
     // resumable with `claude --resume <session-id>`.
     contract.session_open = Some(true);
@@ -256,11 +257,11 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
         "SubagentStart" | "TaskCreated" => Some("subagent".to_string()),
         _ => None,
     };
-    contract.activity_content = activity_content(event, input);
+    contract.activity_content = claude_activity_content(event, input);
     match event {
         "UserPromptSubmit" => {
             contract.message_role = Some("user".to_string());
-            contract.message_content = display_message_at(input, &[&["prompt"]]);
+            contract.message_content = display_claude_prompt_at(input, &[&["prompt"]]);
         }
         "PermissionRequest" => {
             contract.interaction_kind = Some("approval_required".to_string());
@@ -727,6 +728,18 @@ fn session_title(value: &Value) -> Option<String> {
     )
 }
 
+fn claude_session_title(value: &Value) -> Option<String> {
+    bounded_string_at(
+        value,
+        &[
+            &["session_title"],
+            &["sessionTitle"],
+            &["properties", "session_title"],
+        ],
+        MAX_SESSION_TITLE_BYTES,
+    )
+}
+
 fn string_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
     paths.iter().find_map(|path| {
         let mut current = value;
@@ -746,6 +759,15 @@ fn bounded_string_at(value: &Value, paths: &[&[&str]], maximum_bytes: usize) -> 
 
 fn display_message_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
     let raw = string_at(value, paths)?;
+    display_message(&raw)
+}
+
+fn display_claude_prompt_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
+    let raw = string_at(value, paths)?;
+    normalize_claude_display_message(&raw)
+}
+
+fn display_message(raw: &str) -> Option<String> {
     let sanitized = raw
         .chars()
         .map(|character| match character {
@@ -756,6 +778,61 @@ fn display_message_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
         .collect::<String>();
     let trimmed = sanitized.trim();
     (!trimmed.is_empty()).then(|| truncate_utf8(trimmed, MAX_MESSAGE_BYTES))
+}
+
+fn strip_leading_claude_attachment_references(value: &str) -> &str {
+    let mut remainder = value;
+    let mut stripped_any = false;
+    loop {
+        let candidate = remainder.trim_start();
+        let Some(after_reference) = strip_quoted_claude_attachment_reference(candidate) else {
+            break;
+        };
+        remainder = after_reference;
+        stripped_any = true;
+    }
+    if stripped_any {
+        remainder.trim_start()
+    } else {
+        value
+    }
+}
+
+fn strip_quoted_claude_attachment_reference(value: &str) -> Option<&str> {
+    let path_and_remainder = value.strip_prefix("@\"")?;
+    let mut escaped = false;
+    for (index, character) in path_and_remainder.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => {
+                let path = &path_and_remainder[..index];
+                if !looks_like_claude_attachment_path(path) {
+                    return None;
+                }
+                return Some(&path_and_remainder[index + character.len_utf8()..]);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn looks_like_claude_attachment_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("~/")
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with("file://")
+}
+
+/// Applies the Claude attachment cleanup at both ingest and read-only display
+/// projection so existing persisted audit envelopes do not need rewriting.
+pub(crate) fn normalize_claude_display_message(value: &str) -> Option<String> {
+    display_message(strip_leading_claude_attachment_references(value))
 }
 
 fn activity_content(source_event: &str, value: &Value) -> Option<String> {
@@ -801,7 +878,7 @@ fn activity_content(source_event: &str, value: &Value) -> Option<String> {
         &["properties", "error"],
     ];
 
-    let paths = if matches!(
+    let input_event = matches!(
         source_event,
         "PreToolUse"
             | "tool_call"
@@ -811,7 +888,8 @@ fn activity_content(source_event: &str, value: &Value) -> Option<String> {
             | "session.next.tool.input.started"
             | "session.next.tool.called"
             | "session.next.shell.started"
-    ) {
+    );
+    let paths = if input_event {
         TOOL_INPUT_PATHS
     } else if matches!(
         source_event,
@@ -829,10 +907,186 @@ fn activity_content(source_event: &str, value: &Value) -> Option<String> {
         EXPLICIT_OR_REASONING_PATHS
     };
 
+    let tool_name = string_at(
+        value,
+        &[
+            &["tool_name"],
+            &["toolName"],
+            &["input", "tool"],
+            &["properties", "tool"],
+        ],
+    );
+    let command_context = matches!(
+        source_event,
+        "command.execute.before" | "session.next.shell.started"
+    ) || activity_kind_for_tool(tool_name.as_deref()) == "command";
+
     paths
         .iter()
-        .find_map(|path| value_at(value, path))
-        .and_then(display_activity_value)
+        .filter_map(|path| value_at(value, path).map(|candidate| (*path, candidate)))
+        .find_map(|(path, candidate)| {
+            let explicit_command_path = path.last() == Some(&"command");
+            let policy = if input_event && (explicit_command_path || command_context) {
+                ActivityScalarPolicy::Command
+            } else {
+                ActivityScalarPolicy::Safe
+            };
+            normalize_agent_activity_value_with_policy(candidate, policy)
+        })
+}
+
+fn claude_activity_content(source_event: &str, value: &Value) -> Option<String> {
+    match source_event {
+        "PreToolUse" | "PostToolUse" => claude_tool_input_content(value).or_else(|| {
+            (source_event == "PostToolUse")
+                .then(|| claude_tool_output_content(value))
+                .flatten()
+        }),
+        "PostToolUseFailure" => display_activity_at_paths(
+            value,
+            &[
+                &["error"],
+                &["tool_response", "error"],
+                &["tool_response", "stderr"],
+            ],
+        )
+        .or_else(|| claude_tool_input_content(value))
+        .or_else(|| claude_tool_output_content(value)),
+        _ => activity_content(source_event, value),
+    }
+}
+
+fn claude_tool_input_content(value: &Value) -> Option<String> {
+    display_activity_at_paths_with_policy(
+        value,
+        &[&["tool_input", "description"]],
+        ActivityScalarPolicy::Safe,
+    )
+    .or_else(|| {
+        display_activity_at_paths_with_policy(
+            value,
+            &[&["tool_input", "command"]],
+            ActivityScalarPolicy::Command,
+        )
+    })
+    .or_else(|| {
+        display_activity_at_paths(
+            value,
+            &[
+                &["tool_input", "file_path"],
+                &["tool_input", "filePath"],
+                &["tool_input", "path"],
+                &["tool_input", "pattern"],
+                &["tool_input", "query"],
+                &["tool_input", "url"],
+                &["tool_input", "prompt"],
+                &["tool_input"],
+            ],
+        )
+    })
+}
+
+fn claude_tool_output_content(value: &Value) -> Option<String> {
+    display_activity_at_paths(
+        value,
+        &[
+            &["tool_response", "message"],
+            &["tool_response", "summary"],
+            &["tool_response", "content"],
+            &["tool_response", "output"],
+            &["tool_response", "result"],
+            &["tool_response", "stdout"],
+            &["tool_response", "stderr"],
+            &["tool_response", "file_path"],
+            &["tool_response", "filePath"],
+            &["tool_response", "path"],
+            &["tool_response", "plan"],
+            &["tool_output"],
+            &["result"],
+        ],
+    )
+}
+
+fn display_activity_at_paths(value: &Value, paths: &[&[&str]]) -> Option<String> {
+    display_activity_at_paths_with_policy(value, paths, ActivityScalarPolicy::Safe)
+}
+
+fn display_activity_at_paths_with_policy(
+    value: &Value,
+    paths: &[&[&str]],
+    policy: ActivityScalarPolicy,
+) -> Option<String> {
+    paths
+        .iter()
+        .filter_map(|path| value_at(value, path))
+        .find_map(|candidate| normalize_agent_activity_value_with_policy(candidate, policy))
+}
+
+/// Normalizes every Agent's activity detail at both ingest and read-only
+/// projection boundaries. Legacy connectors sometimes serialized a structured
+/// tool envelope into this string. Structured values are never rendered as raw
+/// JSON; only bounded scalar values under the closed semantic-key vocabulary
+/// may cross into display content.
+pub(crate) fn normalize_agent_activity_content_for_kind(
+    value: &str,
+    activity_kind: Option<&str>,
+) -> Option<String> {
+    let mut remaining_nodes = MAX_ACTIVITY_STRUCTURE_NODES;
+    normalize_activity_node(
+        &Value::String(value.to_string()),
+        0,
+        &mut remaining_nodes,
+        if activity_kind == Some("command") {
+            ActivityScalarPolicy::Command
+        } else {
+            ActivityScalarPolicy::Safe
+        },
+        0,
+    )
+}
+
+const ACTIVITY_SEMANTIC_KEYS: [&str; 18] = [
+    "description",
+    "command",
+    "file_path",
+    "filePath",
+    "path",
+    "pattern",
+    "query",
+    "url",
+    "prompt",
+    "message",
+    "summary",
+    "content",
+    "output",
+    "result",
+    "stdout",
+    "stderr",
+    "plan",
+    "error",
+];
+const MAX_ACTIVITY_STRUCTURE_DEPTH: usize = 8;
+const MAX_ACTIVITY_STRUCTURE_NODES: usize = 256;
+const MAX_ACTIVITY_ARRAY_ITEMS: usize = 64;
+const MAX_ACTIVITY_JSON_STRING_BYTES: usize = 16 * 1024;
+const MAX_ACTIVITY_JSON_DECODE_LAYERS: usize = MAX_ACTIVITY_STRUCTURE_DEPTH;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActivityScalarPolicy {
+    Safe,
+    Command,
+}
+
+pub(crate) fn normalize_agent_activity_value(value: &Value) -> Option<String> {
+    normalize_agent_activity_value_with_policy(value, ActivityScalarPolicy::Safe)
+}
+
+fn normalize_agent_activity_value_with_policy(
+    value: &Value,
+    policy: ActivityScalarPolicy,
+) -> Option<String> {
+    let mut remaining_nodes = MAX_ACTIVITY_STRUCTURE_NODES;
+    normalize_activity_node(value, 0, &mut remaining_nodes, policy, 0)
 }
 
 fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -843,22 +1097,137 @@ fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     Some(current)
 }
 
-pub(crate) fn display_activity_value(value: &Value) -> Option<String> {
+fn semantic_activity_scalar(
+    value: &Value,
+    depth: usize,
+    remaining_nodes: &mut usize,
+) -> Option<String> {
+    if depth > MAX_ACTIVITY_STRUCTURE_DEPTH || *remaining_nodes == 0 {
+        return None;
+    }
+    *remaining_nodes -= 1;
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .take(MAX_ACTIVITY_ARRAY_ITEMS)
+            .filter(|value| value.is_array() || value.is_object())
+            .find_map(|value| semantic_activity_scalar(value, depth + 1, remaining_nodes)),
+        Value::Object(values) => {
+            for key in ACTIVITY_SEMANTIC_KEYS {
+                let Some(candidate) = values.get(key) else {
+                    continue;
+                };
+                if key == "error" {
+                    let content = display_activity_scalar(
+                        candidate,
+                        ActivityScalarPolicy::Safe,
+                        depth + 1,
+                        remaining_nodes,
+                        0,
+                    )
+                    .or_else(|| {
+                        candidate.get("message").and_then(|message| {
+                            display_activity_scalar(
+                                message,
+                                ActivityScalarPolicy::Safe,
+                                depth + 1,
+                                remaining_nodes,
+                                0,
+                            )
+                        })
+                    });
+                    if let Some(content) = content {
+                        return Some(content);
+                    }
+                    continue;
+                }
+                let policy = if key == "command" {
+                    ActivityScalarPolicy::Command
+                } else {
+                    ActivityScalarPolicy::Safe
+                };
+                if let Some(content) =
+                    normalize_activity_node(candidate, depth + 1, remaining_nodes, policy, 0)
+                {
+                    return Some(content);
+                }
+            }
+            values
+                .iter()
+                .filter(|(key, value)| {
+                    !ACTIVITY_SEMANTIC_KEYS.contains(&key.as_str())
+                        && !is_credential_field(key)
+                        && (value.is_array() || value.is_object())
+                })
+                .find_map(|(_, value)| semantic_activity_scalar(value, depth + 1, remaining_nodes))
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+fn normalize_activity_node(
+    value: &Value,
+    depth: usize,
+    remaining_nodes: &mut usize,
+    policy: ActivityScalarPolicy,
+    json_decode_layers: usize,
+) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            display_activity_scalar(value, policy, depth, remaining_nodes, json_decode_layers)
+        }
+        Value::Array(_) | Value::Object(_) => {
+            semantic_activity_scalar(value, depth, remaining_nodes)
+        }
+    }
+}
+
+fn display_activity_scalar(
+    value: &Value,
+    policy: ActivityScalarPolicy,
+    depth: usize,
+    remaining_nodes: &mut usize,
+    json_decode_layers: usize,
+) -> Option<String> {
     let raw = match value {
         Value::Null => return None,
         Value::String(value) => value.clone(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
-        Value::Array(_) | Value::Object(_) => {
-            let display_value = activity_value_without_credentials(value);
-            if matches!(&display_value, Value::Array(values) if values.is_empty())
-                || matches!(&display_value, Value::Object(values) if values.is_empty())
-            {
-                return None;
-            }
-            serde_json::to_string(&display_value).ok()?
-        }
+        Value::Array(_) | Value::Object(_) => return None,
     };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(value, Value::String(_))
+        && json_decode_layers < MAX_ACTIVITY_JSON_DECODE_LAYERS
+        && trimmed.len() <= MAX_ACTIVITY_JSON_STRING_BYTES
+    {
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(decoded) => {
+                if depth >= MAX_ACTIVITY_STRUCTURE_DEPTH || *remaining_nodes == 0 {
+                    return None;
+                }
+                *remaining_nodes -= 1;
+                return normalize_activity_node(
+                    &decoded,
+                    depth + 1,
+                    remaining_nodes,
+                    policy,
+                    json_decode_layers + 1,
+                );
+            }
+            Err(_) if encoded_json_prefix(trimmed) => return None,
+            Err(_) => {}
+        }
+    } else if matches!(value, Value::String(_)) && encoded_json_prefix(trimmed) {
+        return None;
+    }
+    if policy == ActivityScalarPolicy::Safe && contains_sensitive_dump_line(trimmed) {
+        return None;
+    }
     let sanitized = raw
         .chars()
         .map(|character| match character {
@@ -867,27 +1236,33 @@ pub(crate) fn display_activity_value(value: &Value) -> Option<String> {
             character => character,
         })
         .collect::<String>();
-    let trimmed = sanitized.trim();
-    (!trimmed.is_empty()).then(|| truncate_utf8(trimmed, MAX_ACTIVITY_CONTENT_BYTES))
+    let sanitized = sanitized.trim();
+    (!sanitized.is_empty()).then(|| truncate_utf8(sanitized, MAX_ACTIVITY_CONTENT_BYTES))
 }
 
-fn activity_value_without_credentials(value: &Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(
-            values
-                .iter()
-                .map(activity_value_without_credentials)
-                .collect(),
-        ),
-        Value::Object(values) => Value::Object(
-            values
-                .iter()
-                .filter(|(key, _)| !is_credential_field(key))
-                .map(|(key, value)| (key.clone(), activity_value_without_credentials(value)))
-                .collect(),
-        ),
-        value => value.clone(),
-    }
+fn structured_json_prefix(value: &str) -> bool {
+    matches!(value.as_bytes().first(), Some(b'{') | Some(b'['))
+}
+
+fn encoded_json_prefix(value: &str) -> bool {
+    structured_json_prefix(value) || value.as_bytes().first() == Some(&b'"')
+}
+
+fn contains_sensitive_dump_line(value: &str) -> bool {
+    value.lines().any(|line| {
+        line.char_indices()
+            .filter(|(_, character)| matches!(character, ':' | '='))
+            .any(|(separator, _)| {
+                let prefix = &line[..separator];
+                let key_start = prefix
+                    .char_indices()
+                    .rev()
+                    .nth(127)
+                    .map_or(0, |(index, _)| index);
+                let key = prefix[key_start..].trim();
+                !key.is_empty() && is_credential_field(key)
+            })
+    })
 }
 
 fn is_credential_field(key: &str) -> bool {
@@ -896,26 +1271,103 @@ fn is_credential_field(key: &str) -> bool {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect::<String>();
-    matches!(
-        normalized.as_str(),
-        "auth"
-            | "authorization"
-            | "cookie"
-            | "cookies"
-            | "credential"
-            | "credentials"
-            | "env"
-            | "environment"
-            | "headers"
-            | "password"
-            | "secret"
-            | "secrets"
-            | "token"
-            | "tokens"
-            | "apikey"
-            | "accesstoken"
-            | "refreshtoken"
-    )
+    if matches!(normalized.as_str(), "tokencount" | "tokencounts") {
+        return false;
+    }
+    const SENSITIVE_TOKENS: &[&str] = &[
+        "env",
+        "environment",
+        "header",
+        "headers",
+        "auth",
+        "oauth",
+        "authentication",
+        "authorization",
+        "secret",
+        "secrets",
+        "password",
+        "passphrase",
+        "credential",
+        "credentials",
+        "cookie",
+        "cookies",
+        "token",
+        "tokens",
+        "keychain",
+        "keystore",
+        "pem",
+    ];
+    const KEY_QUALIFIERS: &[&str] = &[
+        "private",
+        "api",
+        "ssh",
+        "signing",
+        "encryption",
+        "access",
+        "client",
+    ];
+    const GLUED_SENSITIVE_FRAGMENTS: &[&str] = &[
+        "clientsecret",
+        "sessiontoken",
+        "privatekey",
+        "apikey",
+        "sshkey",
+        "signingkey",
+        "encryptionkey",
+        "accesskey",
+        "clientkey",
+        "accesstoken",
+        "refreshtoken",
+        "bearertoken",
+        "authtoken",
+        "requestheader",
+        "processenv",
+        "processenvironment",
+        "clientauth",
+        "clientauthentication",
+    ];
+
+    let tokens = identifier_tokens(key);
+    tokens
+        .iter()
+        .any(|token| SENSITIVE_TOKENS.contains(&token.as_str()))
+        || (tokens.iter().any(|token| token == "key")
+            && tokens
+                .iter()
+                .any(|token| KEY_QUALIFIERS.contains(&token.as_str())))
+        || GLUED_SENSITIVE_FRAGMENTS
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
+}
+
+fn identifier_tokens(key: &str) -> Vec<String> {
+    let characters = key.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for (index, character) in characters.iter().copied().enumerate() {
+        if !character.is_ascii_alphanumeric() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|index| characters.get(index));
+        let next = characters.get(index + 1);
+        let camel_boundary = character.is_ascii_uppercase()
+            && !current.is_empty()
+            && (previous.is_some_and(|previous| {
+                previous.is_ascii_lowercase() || previous.is_ascii_digit()
+            }) || (previous.is_some_and(|previous| previous.is_ascii_uppercase())
+                && next.is_some_and(|next| next.is_ascii_lowercase())));
+        if camel_boundary {
+            tokens.push(std::mem::take(&mut current));
+        }
+        current.push(character.to_ascii_lowercase());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn project_label(value: &Value) -> Option<String> {
@@ -966,4 +1418,357 @@ fn nonempty_value_at(value: &Value, paths: &[&[&str]]) -> bool {
             Value::Null => false,
         }
     })
+}
+
+#[cfg(test)]
+mod activity_normalization_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn structured_activity_uses_only_bounded_semantic_scalars() {
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "transport": {"opaque": true},
+                "payload": [{"command": "cargo test"}]
+            }))
+            .as_deref(),
+            Some("cargo test")
+        );
+        assert_eq!(
+            normalize_agent_activity_content_for_kind(
+                r#"{"transport":{"opaque":true},"error":{"message":"build failed"}}"#,
+                None,
+            )
+            .as_deref(),
+            Some("build failed")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!(["raw", "array"])),
+            None
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"transport": "raw envelope"})),
+            None
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"error": "readable failure"})).as_deref(),
+            Some("readable failure")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"file_path": "Sources/App.swift"})).as_deref(),
+            Some("Sources/App.swift")
+        );
+        for sensitive in [
+            json!({"headers": {"content": "secret header"}}),
+            json!({"environment": {"message": "secret environment"}}),
+            json!({"tokens": {"output": "secret token"}}),
+            json!({"client_secret": {"message": "secret client"}}),
+            json!({"sessionToken": {"output": "secret session"}}),
+            json!({"privateKey": {"content": "secret private key"}}),
+            json!({"Authorization": {"message": "secret authorization"}}),
+            json!({"customBearerToken": {"result": "secret bearer"}}),
+            json!({"processEnv": {"message": "secret process environment"}}),
+            json!({"requestHeader": {"content": "secret request header"}}),
+            json!({"requestHeaders": {"content": "secret request headers"}}),
+            json!({"clientAuth": {"output": "secret client auth"}}),
+            json!({"oauth": {"result": "secret oauth"}}),
+            json!({"processEnvironment": {"message": "secret process environment"}}),
+            json!({"clientAuthentication": {"content": "secret client authentication"}}),
+            json!({"authConfig": {"output": "secret auth config"}}),
+            json!({"token_value": {"message": "secret token underscore"}}),
+            json!({"token-value": {"output": "secret token hyphen"}}),
+            json!({"tokenValue": {"content": "secret token camel case"}}),
+        ] {
+            assert_eq!(normalize_agent_activity_value(&sensitive), None);
+        }
+        let sensitive_tokens = [
+            "env",
+            "environment",
+            "header",
+            "headers",
+            "auth",
+            "oauth",
+            "authentication",
+            "authorization",
+            "secret",
+            "password",
+            "passphrase",
+            "credential",
+            "credentials",
+            "cookie",
+            "cookies",
+            "token",
+            "tokens",
+            "keychain",
+            "keystore",
+            "pem",
+        ];
+        for sensitive in sensitive_tokens {
+            for separator in ["_", "-", ".", " "] {
+                assert!(is_credential_field(&format!("{sensitive}{separator}value")));
+                assert!(is_credential_field(&format!("value{separator}{sensitive}")));
+            }
+            let mut characters = sensitive.chars();
+            let capitalized = characters
+                .next()
+                .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
+                .unwrap();
+            assert!(is_credential_field(&format!("{sensitive}Value")));
+            assert!(is_credential_field(&format!("value{capitalized}")));
+        }
+        for qualifier in [
+            "private",
+            "api",
+            "ssh",
+            "signing",
+            "encryption",
+            "access",
+            "client",
+        ] {
+            assert!(is_credential_field(&format!("{qualifier}_key")));
+            assert!(is_credential_field(&format!("key-{qualifier}")));
+            let mut characters = qualifier.chars();
+            let capitalized = characters
+                .next()
+                .map(|first| first.to_ascii_uppercase().to_string() + characters.as_str())
+                .unwrap();
+            assert!(is_credential_field(&format!("{qualifier}Key")));
+            assert!(is_credential_field(&format!("key{capitalized}")));
+        }
+        for glued in [
+            "clientsecret",
+            "sessiontoken",
+            "privatekey",
+            "apikey",
+            "accesstoken",
+            "refreshtoken",
+        ] {
+            assert!(is_credential_field(glued));
+        }
+        for ordinary in ["envelope", "authorMetadata", "token_count", "token_counts"] {
+            assert!(!is_credential_field(ordinary));
+        }
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "token_count": {"message": "42 tokens processed"}
+            }))
+            .as_deref(),
+            Some("42 tokens processed")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "token_counts": {"message": "42 input, 17 output"}
+            }))
+            .as_deref(),
+            Some("42 input, 17 output")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "authorMetadata": {"message": "Ada Lovelace"}
+            }))
+            .as_deref(),
+            Some("Ada Lovelace")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "envelope": {"message": "ordinary transport envelope"}
+            }))
+            .as_deref(),
+            Some("ordinary transport envelope")
+        );
+
+        let encoded_safe_object = serde_json::to_string(&json!({
+            "path": "README.md",
+            "headers": {"Authorization": "Bearer private"}
+        }))
+        .unwrap();
+        let encoded_safe_array = serde_json::to_string(&json!([{
+            "file_path": "Sources/App.swift"
+        }]))
+        .unwrap();
+        let double_encoded_safe = serde_json::to_string(&encoded_safe_object).unwrap();
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"output": encoded_safe_object})).as_deref(),
+            Some("README.md")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"result": encoded_safe_array})).as_deref(),
+            Some("Sources/App.swift")
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"content": double_encoded_safe})).as_deref(),
+            Some("README.md")
+        );
+
+        let encoded_credentials = serde_json::to_string(&json!({
+            "headers": {"message": "secret header"},
+            "credentials": {"output": "secret credential"}
+        }))
+        .unwrap();
+        let encoded_credential_array = serde_json::to_string(&json!([{
+            "client_secret": {"content": "secret array credential"}
+        }]))
+        .unwrap();
+        let double_encoded_credentials = serde_json::to_string(&encoded_credentials).unwrap();
+        let triple_encoded_credentials =
+            serde_json::to_string(&double_encoded_credentials).unwrap();
+        let oversized_encoded_credentials = serde_json::to_string(&json!({
+            "headers": {"message": "x".repeat(MAX_ACTIVITY_JSON_STRING_BYTES * 2)}
+        }))
+        .unwrap();
+        let oversized_double_encoded_credentials =
+            serde_json::to_string(&oversized_encoded_credentials).unwrap();
+        for encoded in [
+            encoded_credentials,
+            encoded_credential_array,
+            double_encoded_credentials,
+            triple_encoded_credentials,
+            oversized_encoded_credentials,
+            oversized_double_encoded_credentials,
+        ] {
+            assert_eq!(
+                normalize_agent_activity_value(&json!({"output": encoded})),
+                None
+            );
+        }
+        for unsafe_text in [
+            "Authorization: Bearer private",
+            "API_KEY=private\nPATH=/usr/bin",
+            "PATH=/usr/bin API_KEY=private",
+            "Content-Type: text/plain Authorization: Bearer private",
+            "PATH=/usr/bin\u{0}API_KEY=private",
+            "  {\"path\":\"README.md\"",
+            " \n [ {\"path\":\"README.md\"}",
+            "  \"{\\\"headers\\\":{\\\"message\\\":\\\"secret\\\"}",
+        ] {
+            assert_eq!(
+                normalize_agent_activity_value(&json!({"stdout": unsafe_text})),
+                None
+            );
+        }
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "summary": "Planning includes {draft} markers"
+            }))
+            .as_deref(),
+            Some("Planning includes {draft} markers")
+        );
+        let quoted_prose = serde_json::to_string("Planning includes {draft} markers").unwrap();
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"summary": quoted_prose})).as_deref(),
+            Some("Planning includes {draft} markers")
+        );
+        let double_encoded_truncated =
+            serde_json::to_string(r#"{"headers":{"message":"secret"}"#).unwrap();
+        assert_eq!(
+            normalize_agent_activity_value(&json!({"output": double_encoded_truncated})),
+            None
+        );
+        assert_eq!(
+            normalize_agent_activity_value(&json!({
+                "command": "TOKEN=secret-command"
+            }))
+            .as_deref(),
+            Some("TOKEN=secret-command")
+        );
+        assert_eq!(
+            normalize_agent_activity_content_for_kind("TOKEN=secret-command", Some("command"))
+                .as_deref(),
+            Some("TOKEN=secret-command")
+        );
+        assert_eq!(
+            normalize_agent_activity_content_for_kind(
+                "PATH=/usr/bin API_KEY=secret-command",
+                Some("command")
+            )
+            .as_deref(),
+            Some("PATH=/usr/bin API_KEY=secret-command")
+        );
+        assert_eq!(
+            normalize_agent_activity_content_for_kind("TOKEN=secret-command", None),
+            None
+        );
+
+        let mut too_deep = json!({"command": "must not escape depth bound"});
+        for _ in 0..=MAX_ACTIVITY_STRUCTURE_DEPTH {
+            too_deep = json!({"transport": too_deep});
+        }
+        assert_eq!(normalize_agent_activity_value(&too_deep), None);
+    }
+
+    #[test]
+    fn direct_command_paths_use_command_policy_without_weakening_safe_content() {
+        let claude = parse_contract_event(
+            AgentSource::ClaudeCode,
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "claude-direct-command",
+                "tool_name": "Bash",
+                "tool_input": {"command": "TOKEN=secret-command"}
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            claude.activity_content.as_deref(),
+            Some("TOKEN=secret-command")
+        );
+
+        assert_eq!(
+            activity_content(
+                "tool_call",
+                &json!({
+                    "toolName": "bash",
+                    "tool_input": "TOKEN=secret-command"
+                })
+            )
+            .as_deref(),
+            Some("TOKEN=secret-command")
+        );
+        assert_eq!(
+            activity_content(
+                "tool_call",
+                &json!({"toolName": "read", "tool_input": "TOKEN=private"})
+            ),
+            None
+        );
+        assert_eq!(
+            activity_content(
+                "tool_call",
+                &json!({
+                    "activity_content": "Authorization: Bearer private",
+                    "command": "TOKEN=secret-command"
+                })
+            )
+            .as_deref(),
+            Some("TOKEN=secret-command")
+        );
+        assert_eq!(
+            claude_tool_input_content(&json!({
+                "tool_input": {
+                    "description": "Authorization: Bearer private",
+                    "command": "TOKEN=secret-command"
+                }
+            }))
+            .as_deref(),
+            Some("TOKEN=secret-command")
+        );
+
+        for rejected in [
+            activity_content(
+                "PostToolUse",
+                &json!({"tool_output": "Authorization: Bearer private"}),
+            ),
+            activity_content(
+                "reasoning",
+                &json!({"detail": "API_KEY=private\nPATH=/usr/bin"}),
+            ),
+            claude_tool_output_content(&json!({
+                "tool_response": {"output": "requestHeaders: private"}
+            })),
+        ] {
+            assert_eq!(rejected, None);
+        }
+    }
 }

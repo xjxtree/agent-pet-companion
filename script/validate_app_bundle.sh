@@ -101,6 +101,11 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 PETCORE="$APP_RESOURCES/bin/petcore"
 PETCORE_CLI="$APP_RESOURCES/bin/petcore-cli"
 RUNTIME_MANIFEST="$APP_RESOURCES/runtime-manifest.json"
+INTERACTION_ATTESTATION="$APP_RESOURCES/interaction-attestation.json"
+# Validation must exercise the evidence shipped with this exact bundle. A
+# caller such as test_all may export a source-build attestation for earlier
+# checks; never let that override redirect packaged PetCore or CLI processes.
+export APC_INTERACTION_ATTESTATION_PATH="$INTERACTION_ATTESTATION"
 BUNDLED_SKILL="$APP_RESOURCES/skills/agent-pet-studio/SKILL.md"
 SOURCE_SKILL="$ROOT_DIR/skills/agent-pet-studio/SKILL.md"
 BUNDLED_PORTABLE_SKILL="$APP_RESOURCES/skills/agent-pet-maker"
@@ -206,6 +211,10 @@ fi
   echo "app bundle validation failed: missing runtime manifest $RUNTIME_MANIFEST" >&2
   exit 1
 }
+[[ -f "$INTERACTION_ATTESTATION" ]] || {
+  echo "app bundle validation failed: missing interaction attestation $INTERACTION_ATTESTATION" >&2
+  exit 1
+}
 [[ -f "$BUNDLED_SKILL" ]] || {
   echo "app bundle validation failed: missing bundled agent-pet-studio skill" >&2
   exit 1
@@ -276,7 +285,6 @@ if [[ "$(find "$BUNDLED_PETS_DIR" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d
   exit 1
 fi
 python3 - "$BUNDLED_PETS_DIR" <<'PY'
-import hashlib
 import json
 import pathlib
 import sys
@@ -284,23 +292,21 @@ import zipfile
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "pet_xingwutuanzi.petpack": (
-        "pet_xingwutuanzi",
-        "886988991cc8c40a0fdc0a997430474de28c0c26ddf83df428cae3db06307864",
-    ),
-    "pet_bytebudcodex.petpack": (
-        "pet_bytebudcodex",
-        "b936e8bda84a7a6d140b8f7629a7c111b07e4d78b0674bdc1e24eee0c8bd2d3d",
-    ),
+    "pet_xingwutuanzi.petpack": ("pet_xingwutuanzi", "low", (192, 208)),
+    "pet_bytebudcodex.petpack": ("pet_bytebudcodex", "standard", (384, 416)),
 }
-for name, (pet_id, digest) in expected.items():
+for name, (pet_id, quality, size) in expected.items():
     path = root / name
-    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise SystemExit(f"app bundle validation failed: bundled pet digest mismatch: {name}")
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-    if manifest.get("id") != pet_id:
-        raise SystemExit(f"app bundle validation failed: bundled pet ID mismatch: {name}")
+    actual_size = manifest.get("render_size", {})
+    if (
+        manifest.get("schema_version") != "apc.petpack.v2"
+        or manifest.get("id") != pet_id
+        or manifest.get("quality") != quality
+        or (actual_size.get("width"), actual_size.get("height")) != size
+    ):
+        raise SystemExit(f"app bundle validation failed: bundled pet contract mismatch: {name}")
 PY
 
 python3 - "$APP_CONTENTS/Info.plist" <<'PY'
@@ -400,12 +406,93 @@ for key, value in expected.items():
         )
 PY
 
-grep -q '^name: agent-pet-studio$' "$BUNDLED_SKILL"
-grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL"
-grep -q 'Do not read agent auth' "$BUNDLED_SKILL"
-grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
-grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md"
-[[ -x "$BUNDLED_PORTABLE_SKILL/scripts/petpack_workspace.py" ]]
+python3 -B - \
+  "$ROOT_DIR" \
+  "$APP_CONTENTS/Info.plist" \
+  "$INTERACTION_ATTESTATION" \
+  "$ROOT_DIR/script/interaction-contract-files.txt" <<'PY'
+import hashlib
+import json
+import pathlib
+import plistlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+with open(sys.argv[2], "rb") as file:
+    info = plistlib.load(file)
+attestation_path = pathlib.Path(sys.argv[3])
+attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+expected_keys = {
+    "schema_version",
+    "build_id",
+    "interaction_contract_digest",
+    "passed_suites",
+    "ok",
+}
+if set(attestation) != expected_keys:
+    raise SystemExit("app bundle validation failed: interaction attestation fields are not closed")
+if attestation["schema_version"] != "apc.overlay-interaction-attestation.v1":
+    raise SystemExit("app bundle validation failed: interaction attestation schema mismatch")
+if attestation["build_id"] != info["APCBuildID"] or attestation["ok"] is not True:
+    raise SystemExit("app bundle validation failed: interaction attestation build identity mismatch")
+expected_suites = [
+    "OverlayPlacementAuthorityTests",
+    "AppStoreOverlaySnapshotTests",
+    "OverlayGeometryTests",
+    "OverlayDisplayWidthTests",
+]
+if attestation["passed_suites"] != expected_suites:
+    raise SystemExit("app bundle validation failed: interaction attestation suites are incomplete")
+
+entries = [
+    line
+    for line in pathlib.Path(sys.argv[4]).read_text(encoding="utf-8").splitlines()
+    if line
+]
+if not entries or entries != sorted(set(entries)):
+    raise SystemExit("app bundle validation failed: interaction contract file list is invalid")
+digest = hashlib.sha256()
+for entry in entries:
+    relative = pathlib.PurePosixPath(entry)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise SystemExit("app bundle validation failed: unsafe interaction contract path")
+    path = root.joinpath(*relative.parts)
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise SystemExit("app bundle validation failed: invalid interaction contract file")
+    digest.update(entry.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+if attestation["interaction_contract_digest"] != digest.hexdigest():
+    raise SystemExit("app bundle validation failed: interaction attestation digest is stale")
+PY
+
+grep -q '^name: agent-pet-studio$' "$BUNDLED_SKILL" || {
+  echo 'app bundle validation failed: bundled Studio skill name is invalid' >&2
+  exit 1
+}
+grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL" || {
+  echo 'app bundle validation failed: bundled Studio skill omits the PetCore CLI contract' >&2
+  exit 1
+}
+grep -q 'Do not read agent auth' "$BUNDLED_SKILL" || {
+  echo 'app bundle validation failed: bundled Studio skill omits the agent-auth guardrail' >&2
+  exit 1
+}
+grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md" || {
+  echo 'app bundle validation failed: bundled Maker skill name is invalid' >&2
+  exit 1
+}
+grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md" || {
+  echo 'app bundle validation failed: bundled Maker skill omits capability preflight' >&2
+  exit 1
+}
+[[ -x "$BUNDLED_PORTABLE_SKILL/scripts/petpack_workspace.py" ]] || {
+  echo 'app bundle validation failed: bundled Maker workspace helper is not executable' >&2
+  exit 1
+}
 
 if [[ "$RUN_PACKAGED_RUNTIME" == "1" ]]; then
   # Run the exact native packaged Swift/AppKit executable through its
@@ -441,16 +528,42 @@ with open(sys.argv[1], "rb") as file:
 PY
   )"
 
-  BUDGET="$("$PETCORE_CLI" renderer budget --quality high --fps-profile standard)"
+  PRODUCTION_INTERACTION="$("$PETCORE_CLI" petpack verify-production-interaction)"
+  JSON="$PRODUCTION_INTERACTION" BUNDLE_BUILD_ID="$BUNDLE_BUILD_ID" python3 - <<'PY'
+import json
+import os
+
+value = json.loads(os.environ["JSON"])
+expected_suites = [
+    "OverlayPlacementAuthorityTests",
+    "AppStoreOverlaySnapshotTests",
+    "OverlayGeometryTests",
+    "OverlayDisplayWidthTests",
+]
+assert value["ok"] is True, value
+assert value["build_id"] == os.environ["BUNDLE_BUILD_ID"], value
+assert value["interaction_evidence"] == expected_suites, value
+assert len(value["interaction_contract_digest"]) == 64, value
+PY
+
+  BUDGET="$("$PETCORE_CLI" renderer budget --quality standard --frame-count 40)"
   JSON="$BUDGET" python3 - <<'PY'
 import json
 import os
 
 data = json.loads(os.environ["JSON"])
-assert data["quality"] == "high", data
-assert data["fps"] == 10, data
-assert data["renderer_budget_mb"] == 180, data
+assert data["quality"] == "standard", data
+assert data["frame_count"] == 40, data
+assert data["runtime_cache_frame_limit"] == 40, data
+assert data["uses_ring_cache"] is False, data
+assert data["decoded_state_mb"] > 0, data
 PY
+
+  if "$PETCORE_CLI" renderer budget --quality high --frame-count 8 \
+      >"$TMP_DIR/retired-high.stdout" 2>"$TMP_DIR/retired-high.stderr"; then
+    echo 'app bundle validation failed: retired high quality was accepted' >&2
+    exit 1
+  fi
 
   (
     APC_HOME="$TMP_DIR/home" \
@@ -505,7 +618,7 @@ import sqlite3
 import struct
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v2"
+RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v3"
 REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
 
 
@@ -589,15 +702,14 @@ for pet_id in expected_ids:
     png_dimensions(cover_path)
 
     render_size = pet.get("render_size")
-    native_fps = pet.get("native_fps")
-    durations = pet.get("state_durations_ms")
+    timings = pet.get("states")
     if (
         not isinstance(render_size, dict)
         or not isinstance(render_size.get("width"), int)
         or not isinstance(render_size.get("height"), int)
-        or native_fps not in (10, 20)
-        or not isinstance(durations, dict)
-        or tuple(sorted(durations)) != tuple(sorted(REQUIRED_STATES))
+        or not isinstance(timings, list)
+        or tuple(sorted(item.get("name") for item in timings if isinstance(item, dict)))
+            != tuple(sorted(REQUIRED_STATES))
     ):
         raise SystemExit(
             f"app bundle validation failed: bundled render contract is malformed: {pet_id}"
@@ -624,23 +736,29 @@ for pet_id in expected_ids:
         marker.get("schema_version") != RUNTIME_ASSET_SCHEMA
         or marker.get("pet_id") != pet_id
         or marker.get("render_size") != render_size
-        or marker.get("native_fps") != native_fps
-        or marker.get("state_durations_ms") != durations
-        or not isinstance(marker.get("states"), dict)
-        or tuple(sorted(marker["states"])) != tuple(sorted(REQUIRED_STATES))
+        or marker.get("timing") != timings
+        or not isinstance(marker.get("frame_counts"), dict)
+        or tuple(sorted(marker["frame_counts"])) != tuple(sorted(REQUIRED_STATES))
     ):
         raise SystemExit(
             f"app bundle validation failed: bundled runtime marker mismatch: {pet_id}"
         )
 
     expected_dimensions = (render_size["width"], render_size["height"])
+    timing_by_state = {item["name"]: item for item in timings}
     for state in REQUIRED_STATES:
-        duration = durations[state]
-        if duration not in (1000, 2000):
+        timing = timing_by_state[state]
+        durations = timing.get("frame_durations_ms")
+        if (
+            not isinstance(durations, list)
+            or not (2 <= len(durations) <= 40)
+            or any(not isinstance(value, int) or not (50 <= value <= 2000) for value in durations)
+            or sum(durations) > 5000
+        ):
             raise SystemExit(
-                f"app bundle validation failed: bundled state duration is invalid: {pet_id}/{state}"
+                f"app bundle validation failed: bundled state timing is invalid: {pet_id}/{state}"
             )
-        expected_count = native_fps * duration // 1000
+        expected_count = len(durations)
         state_dir = frames_root / state
         if state_dir.is_symlink() or not state_dir.is_dir():
             raise SystemExit(
@@ -651,7 +769,7 @@ for pet_id in expected_ids:
             for path in state_dir.iterdir()
             if path.suffix.lower() == ".png"
         )
-        if len(frames) != expected_count or marker["states"].get(state) != expected_count:
+        if len(frames) != expected_count or marker["frame_counts"].get(state) != expected_count:
             raise SystemExit(
                 f"app bundle validation failed: bundled runtime frame count mismatch: {pet_id}/{state}"
             )

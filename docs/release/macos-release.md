@@ -110,11 +110,19 @@ Run the host-safe candidate gate for the exact commit:
 
 ```bash
 APC_VALIDATE_HOST_UI=0 \
-APC_VALIDATE_OVERLAY_INTERACTION=0 \
 APC_VALIDATE_REAL_AGENT_CONNECTORS=0 \
 APC_VALIDATE_REAL_APP_SERVER=0 \
 ./script/test_all.sh
 ```
+
+This source gate always prepares a build-bound interaction attestation by
+running `validate_overlay_interaction.sh` over the four exact native Swift
+overlay suites. The bundle build repeats those suites with the final build ID
+before compiling PetCore, stores the resulting closed attestation at
+`Contents/Resources/interaction-attestation.json`, and packaged validation
+requires the bundled production verifier to consume it successfully. The gate
+is host-safe and does not synthesize pointer input; live pointer acceptance
+remains an explicitly authorized Computer Use gate.
 
 Then run only the explicitly authorized real connector, App Server, visible UI,
 renderer, and profiling gates required by
@@ -321,8 +329,9 @@ runtime; one Agent failure remains isolated and repairable. See
 [Runtime and IPC](../architecture/runtime-and-ipc.md) and
 [Agent connectors](../integrations/agent-connectors.md).
 
-If replacement occurs while the old process remains alive, handoff waits for
-pending user mutations and convergence work, then revalidates the canonical
+If replacement occurs while the old process remains alive, handoff treats a
+pending overlay-placement commit as protected work and waits for it together
+with other pending user mutations and convergence work, then revalidates the canonical
 bundle's own identifier and runtime manifest immediately before scheduling
 quit and relaunch. An invalid or changed candidate leaves the old App running
 with the manual recovery guide. A legacy PetCore without the typed active

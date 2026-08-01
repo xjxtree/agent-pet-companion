@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/pet-source-event.schema.json",
-  "title": "Agent Pet Companion Pet Source Event — Privacy-Safe Producer Profile",
-  "description": "Runtime-enforced schema for one JSON Lines record in source/skill_session.jsonl when source/source.json selects the tagged Safe Producer profile. It intentionally excludes conversation text, identifiers, commands, tool arguments, environment values, and tool output.",
+  "title": "Agent Pet Companion Pet Source Event — V2 Privacy-Safe Producer Profile",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "event"],
@@ -26,7 +25,7 @@
     },
     "name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
     "style": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" },
-    "quality": { "enum": ["standard", "high", "ultra", "original"] },
+    "quality": { "enum": ["low", "standard"] },
     "render_size": { "$ref": "#/$defs/renderSize" },
     "states": {
       "type": "array",
@@ -40,8 +39,12 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/stateName" }
     },
-    "native_fps": { "enum": [10, 20] },
-    "state_durations_ms": { "$ref": "#/$defs/stateDurations" },
+    "state_timings": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": { "$ref": "#/$defs/manifestState" }
+    },
     "state_frame_counts": { "$ref": "#/$defs/stateFrameCounts" },
     "completed": { "type": "boolean" },
     "validation_ok": { "type": "boolean" },
@@ -49,7 +52,9 @@
     "extensions": {
       "type": "object",
       "maxProperties": 16,
-      "propertyNames": { "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$" }
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+(?:/[A-Za-z0-9._-]+)?$"
+      }
     }
   },
   "allOf": [
@@ -59,13 +64,16 @@
         "required": ["event"]
       },
       "then": {
-        "required": [
-          "states",
-          "native_fps",
-          "state_durations_ms",
-          "state_frame_counts"
-        ]
+        "required": ["states", "state_timings", "state_frame_counts"]
       }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "low" } }, "required": ["quality"] },
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/lowSize" } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "standard" } }, "required": ["quality"] },
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/standardSize" } } }
     }
   ],
   "$defs": {
@@ -79,26 +87,111 @@
       "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
     },
     "renderSize": {
+      "oneOf": [
+        { "$ref": "#/$defs/lowSize" },
+        { "$ref": "#/$defs/standardSize" }
+      ]
+    },
+    "renderSizeShape": {
       "type": "object",
       "additionalProperties": false,
       "required": ["width", "height"],
       "properties": {
-        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
-        "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        "width": { "type": "integer" },
+        "height": { "type": "integer" }
       }
     },
-    "stateDurations": {
+    "lowSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 192 }, "height": { "const": 208 } }
+    },
+    "standardSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 384 }, "height": { "const": 416 } }
+    },
+    "frameDurations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 40,
+      "items": { "type": "integer", "minimum": 50, "maximum": 2000 }
+    },
+    "playback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "required": ["mode"],
       "properties": {
-        "idle": { "enum": [1000, 2000] },
-        "start": { "enum": [1000, 2000] },
-        "tool": { "enum": [1000, 2000] },
-        "waiting": { "enum": [1000, 2000] },
-        "review": { "enum": [1000, 2000] },
-        "done": { "enum": [1000, 2000] },
-        "failed": { "enum": [1000, 2000] }
+        "mode": { "enum": ["loop", "once_hold", "periodic", "burst_then_settle"] },
+        "entry_repeat_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "settle_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 },
+        "cooldown_ms": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "integer", "minimum": 0, "maximum": 86400000 }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "loop" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "once_hold" } }, "required": ["mode"] },
+          "then": {
+            "required": ["settle_frame_index"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "periodic" } }, "required": ["mode"] },
+          "then": {
+            "required": ["cooldown_ms"],
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "burst_then_settle" } }, "required": ["mode"] },
+          "then": {
+            "required": ["entry_repeat_count", "settle_frame_index"],
+            "not": { "required": ["cooldown_ms"] }
+          }
+        }
+      ]
+    },
+    "manifestState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "frames_dir",
+        "frame_durations_ms",
+        "playback",
+        "reduced_motion_frame_index"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/stateName" },
+        "frames_dir": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "frame_durations_ms": { "$ref": "#/$defs/frameDurations" },
+        "playback": { "$ref": "#/$defs/playback" },
+        "reduced_motion_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 }
       }
     },
     "stateFrameCounts": {
@@ -106,13 +199,13 @@
       "additionalProperties": false,
       "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
       "properties": {
-        "idle": { "enum": [10, 20, 40] },
-        "start": { "enum": [10, 20, 40] },
-        "tool": { "enum": [10, 20, 40] },
-        "waiting": { "enum": [10, 20, 40] },
-        "review": { "enum": [10, 20, 40] },
-        "done": { "enum": [10, 20, 40] },
-        "failed": { "enum": [10, 20, 40] }
+        "idle": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "start": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "tool": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "waiting": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "review": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "done": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "failed": { "type": "integer", "minimum": 2, "maximum": 40 }
       }
     }
   }

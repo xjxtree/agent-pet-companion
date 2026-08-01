@@ -152,10 +152,8 @@ fn second_daemon_does_not_recover_first_daemon_jobs() {
     let form = GenerationForm {
         description: "singleton regression".to_string(),
         style: "pixel".to_string(),
-        quality: QualityLevel::High,
+        quality: QualityLevel::Standard,
         reference_images: Vec::new(),
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
     };
     database
         .create_generation_job(job_id, &form, &job_dir)
@@ -469,21 +467,27 @@ fn rpc_rejects_wrong_typed_and_out_of_range_named_params() {
         },
         {
             "jsonrpc": "2.0",
-            "id": "renderer-profile",
+            "id": "renderer-quality-type",
             "method": "renderer.budget",
-            "params": { "quality": "high", "fps_profile": false }
+            "params": { "quality": false, "frame_count": 8 }
         },
         {
             "jsonrpc": "2.0",
-            "id": "renderer-fps-type",
+            "id": "renderer-retired-high-quality",
             "method": "renderer.budget",
-            "params": { "quality": "high", "fps": "20" }
+            "params": { "quality": "high", "frame_count": 8 }
         },
         {
             "jsonrpc": "2.0",
-            "id": "renderer-fps-value",
+            "id": "renderer-frame-count-type",
             "method": "renderer.budget",
-            "params": { "quality": "high", "fps": 13 }
+            "params": { "quality": "standard", "frame_count": "8" }
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "renderer-frame-count-value",
+            "method": "renderer.budget",
+            "params": { "quality": "standard", "frame_count": 0 }
         },
         {
             "jsonrpc": "2.0",
@@ -520,7 +524,7 @@ fn rpc_rejects_wrong_typed_and_out_of_range_named_params() {
     let response = rpc_exchange(&daemon.paths, requests);
     let responses = response.as_array().unwrap();
 
-    assert_eq!(responses.len(), 9);
+    assert_eq!(responses.len(), 10);
     for response in responses {
         assert_eq!(
             response["error"]["code"], -32602,
@@ -886,7 +890,7 @@ fn nested_generation_form_and_overlay_placement_are_strict() {
                     "form": {
                         "description": "strict nested form",
                         "style": "pixel",
-                        "quality": "high",
+                        "quality": "standard",
                         "reference_images": [],
                         "surprise": true
                     }
@@ -894,21 +898,81 @@ fn nested_generation_form_and_overlay_placement_are_strict() {
             },
             {
                 "jsonrpc": "2.0",
-                "id": "negative-scale",
+                "id": "small-display-width",
                 "method": "overlay.placement.update",
-                "params": { "x": 0, "y": 0, "scale": -0.1, "display_id": "main" }
+                "params": { "x": 0, "y": 0, "display_width_pt": 79.9, "display_id": "main", "expected_revision": "1" }
             },
             {
                 "jsonrpc": "2.0",
-                "id": "large-scale",
+                "id": "large-display-width",
                 "method": "overlay.placement.update",
-                "params": { "x": 0, "y": 0, "scale": 1.81, "display_id": "main" }
+                "params": { "x": 0, "y": 0, "display_width_pt": 224.1, "display_id": "main", "expected_revision": "1" }
             },
             {
                 "jsonrpc": "2.0",
                 "id": "empty-display",
                 "method": "overlay.placement.update",
-                "params": { "x": 0, "y": 0, "scale": 0.12, "display_id": "   " }
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "   ", "expected_revision": "1" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "missing-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "numeric-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main", "expected_revision": 1 }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "leading-zero-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main", "expected_revision": "01" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "signed-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main", "expected_revision": "+1" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "empty-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main", "expected_revision": "" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "overflow-placement-revision",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "display_width_pt": 112, "display_id": "main", "expected_revision": "18446744073709551616" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "removed-scale",
+                "method": "overlay.placement.update",
+                "params": { "x": 0, "y": 0, "scale": 0.72, "display_id": "main" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "unknown-placement-intent",
+                "method": "overlay.placement.reposition",
+                "params": {
+                    "x": 0,
+                    "y": 0,
+                    "display_width_pt": 112,
+                    "display_id": "main",
+                    "overlay_placement_intent": "move"
+                }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "reset-with-untrusted-params",
+                "method": "overlay.placement.reset",
+                "params": { "intent": "reset" }
             }
         ]),
     );
@@ -923,7 +987,7 @@ fn nested_generation_form_and_overlay_placement_are_strict() {
     let decoded = serde_json::from_value::<OverlayPlacement>(json!({
         "x": 0,
         "y": 0,
-        "scale": 0.12,
+        "display_width_pt": 112,
         "display_id": "main",
         "surprise": true
     }));

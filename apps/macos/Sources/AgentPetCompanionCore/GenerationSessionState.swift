@@ -148,9 +148,7 @@ public enum GenerationSessionAction: Equatable, Sendable {
     case retryRequested(form: GenerationForm, initialMessage: GenerationMessage)
     case startAccepted(
         jobID: String,
-        baselineRevisionID: String? = nil,
-        nativeFPS: Int? = nil,
-        stateDurationsMS: [String: Int]? = nil
+        baselineRevisionID: String? = nil
     )
     case startFailed(message: GenerationMessage)
     case messagesReceived([GenerationMessage], revision: String?)
@@ -289,21 +287,11 @@ public struct GenerationSession: Equatable, Sendable {
             }
             return []
 
-        case let .startAccepted(jobID, baselineRevisionID, nativeFPS, stateDurationsMS):
+        case let .startAccepted(jobID, baselineRevisionID):
             guard state == .starting else { return [] }
             self.jobID = jobID
             if let baselineRevisionID {
                 self.baselineRevisionID = baselineRevisionID
-            }
-            if let nativeFPS,
-               let stateDurationsMS,
-               PetAnimationContract.supportedNativeFPS.contains(nativeFPS),
-               PetAnimationContract.hasValidStateDurations(stateDurationsMS),
-               var acceptedForm = submittedForm
-            {
-                acceptedForm.nativeFPS = nativeFPS
-                acceptedForm.stateDurationsMS = stateDurationsMS
-                submittedForm = acceptedForm
             }
             state = .running
             return [.startMessageStream]

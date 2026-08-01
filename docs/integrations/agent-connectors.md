@@ -30,6 +30,31 @@ The normal managed path invokes `runtime/current/petcore-cli`, so a PetCore runt
 
 Connections and desktop bubbles are Agent-scoped, not project-scoped. The App does not select a project folder for an Agent connection. Supported events from every project enter the same source/session projection, and each concurrent session can appear in its Agent's message-bubble group. A bounded `project_path` may still be normalized internally as event correlation metadata, but it is not a connection setting, display filter, or user-facing identity.
 
+## Session host and return routing
+
+The adapter records where each event actually originated instead of treating an
+Agent name as one application. Audited host markers take precedence over
+inherited terminal variables; without a recognized App marker, the
+`petcore-cli` hook path is classified as CLI. The closed support matrix is:
+
+| Source | App surface | CLI surface |
+|---|---|---|
+| Codex | ChatGPT/Codex App; canonical UUID routes to the exact task | Warp exact-session URL when present; otherwise a known terminal opens at host level |
+| Claude Code | Claude App; canonical UUID routes through `claude://resume?session=…` | Warp exact-session URL when present; otherwise a known terminal opens at host level |
+| OpenCode | OpenCode App production, beta, or dev host activation; no audited existing-session deep link | Warp exact-session URL when present; otherwise a known terminal opens at host level |
+| Pi Coding Agent | Not supported; Pi is CLI-only | Warp exact-session URL when present; otherwise a known terminal opens at host level |
+
+The current markers are the ChatGPT bundle identity or its inherited
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop`, Claude Desktop's
+`CLAUDE_CODE_ENTRYPOINT`, and OpenCode Desktop's `OPENCODE_CLIENT` or bundle
+identity. They are normalized into `chatgpt_app`, `claude_app`,
+`opencode_app`, or `cli_terminal`; they are never inferred from a prompt,
+session title, project path, or past display order. Unknown terminals and
+source/surface mismatches expose no navigation. Existing rows that predate
+these markers remain unchanged and fail closed when their App-versus-CLI
+origin is ambiguous; the next real event for that session can advance the
+projection with accurate metadata.
+
 ## Contract layers
 
 1. **Host input** — host-specific payloads are treated as untrusted data. Adapters extract a closed, size-bounded field set rather than forwarding arbitrary JSON.
@@ -135,10 +160,14 @@ credential-like values never cross into ordinary or accessibility presentation.
 
 Runtime version checks fail closed outside the protocol surfaces audited by the
 current connector: Codex accepts only `0.144.5`, `0.145.0-alpha.18`, and the
-ChatGPT-bundled `0.146.0-alpha.3.1`; Claude Code accepts
+ChatGPT-bundled `0.146.0-alpha.3.1` and `0.146.0-alpha.9.2`; Claude Code accepts
 `2.1.212`–`2.1.216`; Pi requires exactly `0.80.10`; and OpenCode accepts
-`1.18.0`–`1.18.4`. The Codex `0.146.0-alpha.3.1` App Server notification schema
-is an exact 70-method match to the recorded inventory, and the OpenCode
+`1.18.0`–`1.18.4`. Codex additionally requires the complete canonical
+`codex-cli <version>` output; an allowlisted-looking token embedded in warning,
+mixed-version, or otherwise extended output is not treated as compatibility
+evidence. The Codex `0.146.0-alpha.3.1` and `0.146.0-alpha.9.2` App Server
+notification schemas are exact 70-method matches to the recorded inventory,
+and the OpenCode
 `1.18.4` plugin hook plus v1/v2 event inventories are exact matches to the
 managed adapter. Pi `0.79.x` is intentionally not treated as compatible:
 although it has the older task lifecycle events, its ExtensionAPI does not
@@ -154,10 +183,16 @@ bounded daily return path: one attention-prioritized/latest row while
 collapsed, and every concrete session already present in the bounded PetCore
 snapshot while expanded. The whole session row is the navigation target; a
 chevron is visual hover/focus affordance rather than repeated action copy. The
-row badge names the exact fixed lifecycle action presented by the pet. Its two
+row badge names the exact fixed lifecycle action presented by the pet. The same
+localized lifecycle label is used by Pet Configuration response events,
+attention summaries/previews, menu-bar recent activity, and Pet Library current
+state after mapping the connector-neutral event through `ProductLifecycleState`.
+Connector protocol names and canonical persisted titles do not provide
+surface-specific UI wording. Explanatory copy may clarify that `waiting`
+includes approval or user input without renaming the state. Its two
 detail lines are reserved for a bounded current-turn Agent message,
-host-exposed reasoning, commands, tool input/output, errors, or raw activity
-details. When a concrete activity detail exists, the Agent message and activity
+host-exposed reasoning, commands, tool input/output, errors, or another
+normalized semantic activity detail. When a concrete activity detail exists, the Agent message and activity
 use one line each; otherwise the Agent message may use both detail lines. The
 App does not insert a duplicate generic thinking/working sentence. When Codex
 App Server persistence temporarily omits new hidden activity, PetCore preserves
@@ -174,13 +209,20 @@ multi-second queue. A materially changed per-thread display advances a
 process-local display epoch and wakes the current `state.wait` immediately;
 the App retains a one-second active-session timeout only as a fallback.
 
+After these connector-specific inputs enter the shared source/session
+projection, completion consumption is connector-neutral. Opening a completed
+or review-ready row sends its opaque projected `acknowledgement_id` to PetCore;
+PetCore persists and reapplies the same filter for Codex, Claude Code, Pi, and
+OpenCode across App or service relaunch. A later normalized activity event
+produces a new identity and reopens that session normally.
+
 Concrete activity availability follows the host API rather than the generic pet
 state:
 
 | Source | Concrete running detail available to the bubble |
 |---|---|
 | Codex | Persisted App Server reasoning summaries and tool/command/file activity, plus managed-hook tool input/output when the host invokes those hooks. A separately spawned App Server may lag activity still hidden inside the live desktop turn. |
-| Claude Code | Tool input/output, tool failures, permission/input requests, sub-Agent/task and compaction details exposed by hooks. Claude hooks do not expose private model reasoning, so prompt-only thinking has no concrete second-line text. |
+| Claude Code | Concise tool descriptions, commands or semantic result/error text, plus permission/input requests, sub-Agent/task and compaction details exposed by hooks. Claude's structured tool-response envelope and internal status flags never become bubble copy. Claude hooks do not expose private model reasoning, so prompt-only thinking has no concrete second-line text. |
 | Pi Coding Agent | Tool start/end input/output and provider-visible reasoning content carried by stable message/settled events. High-frequency update deltas are observation-only and do not become bubble text. |
 | OpenCode | Stable reasoning, command/tool input/output, plan, compaction, error, and session-step details exposed by the managed plugin. |
 
@@ -195,9 +237,10 @@ only its bounded `thread/read` detail refresh fails.
 ## Security and privacy boundary
 
 - Never read or export Agent auth, token, cookie, API key, or secret files.
-- Session-scoped reasoning, commands, tool input/output, errors, and raw activity details may cross only as bounded `activity_content`; the adapter does not preserve the arbitrary host envelope. Stable completion content is preferred over persisting every high-frequency token delta.
+- Session-scoped reasoning, commands, tool input/output, errors, and other semantic activity details may cross only as bounded scalar `activity_content`. Adapters recursively discard credential-shaped containers and never stringify an arbitrary host object or array for display. A bounded JSON-encoded string is decoded through the same semantic filter instead of bypassing it. Stable completion content is preferred over persisting every high-frequency token delta.
 - Explicit, bounded session titles, first/latest user and latest assistant display messages, host-exposed activity content, and closed tool categories are product data and remain available to the desktop bubble. Each Agent connector forwards later generated-title metadata without inventing activity; PetCore uses the first user message only until that explicit title arrives.
-- Never read or forward credential stores, auth headers, cookies, API keys, complete environment dumps, or complete transcript archives. Credential-shaped object fields are removed recursively before structured tool/activity values are serialized; plain command/output strings remain visible as supplied by the host.
+- Claude Code display projection removes only leading quoted file-attachment references from `UserPromptSubmit` copy, so an attachment path cannot become the first-message title fallback. Uncontracted generic `title` input is ignored. For successful tool hooks, a bounded host description or concise input is preferred over a semantic result leaf; the complete structured response object is never serialized into the bubble. The read-only session projection reapplies the same cleanup to older persisted rows without rewriting their audit envelope.
+- Never read or forward credential stores, auth headers, cookies, API keys, complete environment dumps, or complete transcript archives. Credential-shaped object fields are removed recursively before structured tool/activity values are selected. Explicit command text may remain visible, including an inline environment assignment authored as part of that command; non-command header/environment dumps and JSON-encoded structured output are re-normalized and cannot bypass the credential filter.
 - Project paths and session IDs are normalized for local correlation and removed or redacted from diagnostics.
 - Internal Codex suggestion/Pet Studio sessions are suppressed from ordinary desktop activity.
 - Connector files must be attributable to Agent Pet Companion, updated atomically, and removed without changing unrelated user configuration or projects.
@@ -220,6 +263,12 @@ version and content against the active Codex plugin state. A marketplace source
 write and installed/enabled flags do not prove convergence when Codex still
 loads an older versioned cache. A stale or unverifiable active cache remains a
 typed repairable condition and cannot project `connected`.
+
+The repair ownership check also recognizes the one exact App-managed retired V1
+Studio Skill signature so an App upgrade can replace it with the current V2
+Skill. This is an upgrade-only ownership rule: it does not make V1 packages
+valid at runtime, and a customized or merely similar Skill remains a managed
+path conflict and is preserved.
 
 In-app Maker work uses the internal Studio Skill; portable user-invoked work
 uses the Maker Skill. They ship together but remain separate behavioral

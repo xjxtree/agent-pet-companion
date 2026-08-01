@@ -125,6 +125,67 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
 }
 
 #[test]
+fn activity_ingress_never_recurses_through_credential_containers() {
+    let sources = [
+        (AgentSource::Codex, "PostToolUse"),
+        (AgentSource::ClaudeCode, "PostToolUse"),
+        (AgentSource::Pi, "tool_execution_end"),
+        (AgentSource::Opencode, "tool.execute.after"),
+    ];
+    for (source_index, (source, source_event)) in sources.into_iter().enumerate() {
+        for (container_index, container) in [
+            json!({"headers": {"content": "secret header"}}),
+            json!({"environment": {"message": "secret environment"}}),
+            json!({"tokens": {"output": "secret token"}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event = NormalizedAgentEvent::from_external(
+                source,
+                json!({
+                    "id": format!("sensitive-activity-{source_index}-{container_index}"),
+                    "session_id": format!("sensitive-session-{source_index}"),
+                    "event_type": "tool",
+                    "payload": {
+                        "source_event": source_event,
+                        "session_active": true,
+                        "activity_kind": "thinking",
+                        "activity_content": serde_json::to_string(&container).unwrap(),
+                        "diagnostic": false
+                    }
+                }),
+                RECEIVED_AT,
+            )
+            .unwrap();
+            assert!(event.payload_json["activity_content"].is_null());
+        }
+    }
+
+    let readable = NormalizedAgentEvent::from_external(
+        AgentSource::Codex,
+        json!({
+            "id": "readable-structured-activity",
+            "session_id": "readable-structured-session",
+            "event_type": "tool",
+            "payload": {
+                "source_event": "PostToolUse",
+                "session_active": true,
+                "activity_kind": "thinking",
+                "activity_content": "{\"file_path\":\"Sources/App.swift\"}",
+                "diagnostic": false
+            }
+        }),
+        RECEIVED_AT,
+    )
+    .unwrap();
+    assert_eq!(
+        readable.payload_json["activity_content"],
+        "Sources/App.swift"
+    );
+}
+
+#[test]
 fn session_display_fields_enforce_exact_utf8_byte_boundaries() {
     let session_title = format!("{}a", "界".repeat(53));
     let message_content = format!("{}a", "界".repeat(1365));
@@ -709,9 +770,9 @@ fn event_retention_prunes_oldest_rows() {
     let database = Database::new(temp.path().join("events.sqlite"));
     database.init().unwrap();
     for (id, created_at) in [
-        ("oldest", "2026-07-01T00:00:00Z"),
-        ("middle", "2026-07-02T00:00:00Z"),
-        ("newest", "2026-07-03T00:00:00Z"),
+        ("oldest", "2099-07-01T00:00:00Z"),
+        ("middle", "2099-07-02T00:00:00Z"),
+        ("newest", "2099-07-03T00:00:00Z"),
     ] {
         database
             .insert_event(&strict_event(
@@ -743,7 +804,7 @@ fn event_retention_prunes_oldest_rows() {
             r#"
             SELECT event_count
             FROM agent_event_daily_counts
-            WHERE event_day = '2026-07-01'
+            WHERE event_day = '2099-07-01'
               AND source = 'claude_code'
               AND event_type = 'tool'
             "#,
@@ -1047,13 +1108,12 @@ fn state_revision_changes_for_every_client_visible_pet_field() {
         id: "pet-revision".to_string(),
         name: "Pet".to_string(),
         style: "pixel".to_string(),
-        quality: QualityLevel::High,
+        quality: QualityLevel::Standard,
         render_size: RenderSize {
             width: 384,
             height: 416,
         },
-        native_fps: petcore_types::DEFAULT_NATIVE_FPS,
-        state_durations_ms: petcore_types::default_state_durations_ms(),
+        states: petcore_types::default_pet_states(),
         petpack_path: "/tmp/pet.petpack".to_string(),
         cover_path: "/tmp/cover.png".to_string(),
         origin: PetOrigin::ExternalImport,
@@ -1078,9 +1138,9 @@ fn state_revision_changes_for_every_client_visible_pet_field() {
 
     mutate_and_assert_revision!(pet.name = "Renamed".to_string());
     mutate_and_assert_revision!(pet.style = "watercolor".to_string());
-    mutate_and_assert_revision!(pet.quality = QualityLevel::Ultra);
-    mutate_and_assert_revision!(pet.render_size.width = 512);
-    mutate_and_assert_revision!(pet.render_size.height = 560);
+    mutate_and_assert_revision!(pet.quality = QualityLevel::Low);
+    mutate_and_assert_revision!(pet.render_size.width = 192);
+    mutate_and_assert_revision!(pet.render_size.height = 208);
     mutate_and_assert_revision!(pet.petpack_path = "/tmp/revision.petpack".to_string());
     mutate_and_assert_revision!(pet.cover_path = "/tmp/revision-cover.png".to_string());
     mutate_and_assert_revision!(pet.origin = PetOrigin::GeneratedByPetcoreJob);

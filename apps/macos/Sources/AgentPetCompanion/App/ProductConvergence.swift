@@ -195,12 +195,30 @@ struct ProductConvergenceReceipt: Codable, Equatable, Sendable {
 struct ProductConvergencePreflight: Codable, Equatable, Sendable {
     let safe: Bool
     let activeGeneration: Bool
+    let activeGenerationStatus: String?
     let connectionOperationActive: Bool
+    let runtimeReplacementSafe: Bool?
 
     enum CodingKeys: String, CodingKey {
         case safe
         case activeGeneration = "active_generation"
+        case activeGenerationStatus = "active_generation_status"
         case connectionOperationActive = "connection_operation_active"
+        case runtimeReplacementSafe = "runtime_replacement_safe"
+    }
+
+    init(
+        safe: Bool,
+        activeGeneration: Bool,
+        activeGenerationStatus: String? = nil,
+        connectionOperationActive: Bool,
+        runtimeReplacementSafe: Bool? = nil
+    ) {
+        self.safe = safe
+        self.activeGeneration = activeGeneration
+        self.activeGenerationStatus = activeGenerationStatus
+        self.connectionOperationActive = connectionOperationActive
+        self.runtimeReplacementSafe = runtimeReplacementSafe
     }
 }
 

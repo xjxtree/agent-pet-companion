@@ -1,5 +1,6 @@
 use petcore::paths::AppPaths;
 use petcore::rpc::{handle_json_line, handle_request, CoreState, RpcRequest};
+use petcore_types::{AgentEvent, AgentEventType, AgentSource};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -212,6 +213,117 @@ fn stale_event_does_not_override_current_state() {
 }
 
 #[test]
+fn acknowledged_completed_sessions_stay_hidden_across_restart_until_new_activity() {
+    let (temp, state) = ready();
+    let sources = [
+        ("codex", "UserPromptSubmit", "Stop"),
+        ("claude_code", "UserPromptSubmit", "Stop"),
+        ("pi", "input", "agent_settled"),
+        ("opencode", "message.user", "session.idle"),
+    ];
+
+    for (index, (source, start_event, done_event)) in sources.iter().enumerate() {
+        let session_id = format!("{source}-acknowledged-session");
+        ingest_source_payload(
+            &state,
+            source,
+            &format!("{source}-start"),
+            &session_id,
+            "start",
+            &timestamp(10 + index as i64),
+            json!({
+                "source_event": start_event,
+                "session_active": true,
+                "affects_activity": true
+            }),
+        );
+        ingest_source_payload(
+            &state,
+            source,
+            &format!("{source}-done"),
+            &session_id,
+            "done",
+            &timestamp(5 + index as i64),
+            json!({
+                "source_event": done_event,
+                "session_active": false,
+                "affects_activity": true
+            }),
+        );
+    }
+
+    let completed = snapshot(&state);
+    let sessions = completed["active_agent_sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), sources.len());
+    let acknowledgement_ids = sessions
+        .iter()
+        .map(|session| {
+            session["acknowledgement_id"]
+                .as_str()
+                .expect("projected sessions must expose an acknowledgement identity")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    for acknowledgement_id in &acknowledgement_ids {
+        let result = handle_request(
+            &state,
+            request(
+                "agent.session.acknowledge",
+                json!({ "acknowledgement_id": acknowledgement_id }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(result["acknowledged"], true);
+    }
+    let acknowledged = snapshot(&state);
+    assert_eq!(acknowledged["active_agent_sessions"], json!([]));
+    assert_eq!(acknowledged["active_agent_state"], Value::Null);
+
+    drop(state);
+    let restarted = CoreState::new(AppPaths::new(temp.path().join("home")));
+    restarted.ensure_ready().unwrap();
+    let restored = snapshot(&restarted);
+    assert_eq!(restored["active_agent_sessions"], json!([]));
+    assert_eq!(restored["active_agent_state"], Value::Null);
+
+    for (index, (source, start_event, _)) in sources.iter().enumerate() {
+        let session_id = format!("{source}-acknowledged-session");
+        ingest_source_payload(
+            &restarted,
+            source,
+            &format!("{source}-restart"),
+            &session_id,
+            "start",
+            &timestamp(index as i64),
+            json!({
+                "source_event": start_event,
+                "session_active": true,
+                "affects_activity": true
+            }),
+        );
+    }
+    let reactivated = snapshot(&restarted);
+    assert_eq!(
+        reactivated["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        sources.len()
+    );
+    assert!(reactivated["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|session| {
+            let acknowledgement_id = session["acknowledgement_id"].as_str().unwrap();
+            !acknowledgement_ids
+                .iter()
+                .any(|old| old == acknowledgement_id)
+        }));
+}
+
+#[test]
 fn older_review_remains_in_the_bubble_without_overriding_newer_cross_session_states() {
     for (event_type, expected_status, expected_summary) in [
         ("tool", "running", "tool"),
@@ -385,7 +497,7 @@ fn concurrent_behavior_patches_do_not_lose_fields() {
     assert_eq!(final_snapshot["behavior"]["enabled"], false);
     assert_eq!(final_snapshot["behavior"]["auto_hide"], true);
     assert_eq!(final_snapshot["behavior"]["status_bubble"], true);
-    assert_eq!(final_snapshot["behavior"]["fps_profile"], "standard");
+    assert!(final_snapshot["behavior"].get("fps_profile").is_none());
 }
 
 #[test]
@@ -1286,18 +1398,34 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
 }
 
 #[test]
-fn overlay_projection_exposes_only_a_strict_codex_uuid_for_session_routing() {
+fn overlay_projection_exposes_only_strict_audited_app_uuids_for_session_routing() {
     let (_temp, state) = ready();
     let codex_uuid = "019f5b0f-88ff-7413-8953-29de4ed0951c";
-    for (source, id, session_id, seconds_ago) in [
-        ("codex", "route-codex", codex_uuid, 2),
+    let claude_uuid = "657555f8-108e-44af-96ac-a306b50451bd";
+    for (source, id, session_id, surface, seconds_ago) in [
+        ("codex", "route-codex", codex_uuid, "chatgpt_app", 4),
         (
             "codex",
             "route-invalid",
             "019f5b0f_88ff_7413_8953_29de4ed0951c",
+            "chatgpt_app",
+            3,
+        ),
+        ("claude_code", "route-claude", claude_uuid, "claude_app", 2),
+        (
+            "claude_code",
+            "route-claude-mismatch",
+            codex_uuid,
+            "chatgpt_app",
             1,
         ),
-        ("claude_code", "route-claude", codex_uuid, 0),
+        (
+            "opencode",
+            "route-opencode",
+            "ses_052d7fe89ffeVWsrMygGA3AKvL",
+            "opencode_app",
+            0,
+        ),
     ] {
         ingest_source_payload(
             &state,
@@ -1310,7 +1438,7 @@ fn overlay_projection_exposes_only_a_strict_codex_uuid_for_session_routing() {
                 "source_event": "PreToolUse",
                 "session_active": true,
                 "session_open": true,
-                "session_surface": "chatgpt_app",
+                "session_surface": surface,
                 "diagnostic": false
             }),
         );
@@ -1324,7 +1452,9 @@ fn overlay_projection_exposes_only_a_strict_codex_uuid_for_session_routing() {
             session["overlay_display"]["navigation"]["routable_session_id"].as_str()
         })
         .collect::<Vec<_>>();
-    assert_eq!(routable, vec![codex_uuid]);
+    assert_eq!(routable.len(), 2);
+    assert!(routable.contains(&codex_uuid));
+    assert!(routable.contains(&claude_uuid));
     let capability_for = |source: &str, raw_session_id: &str| {
         sessions
             .iter()
@@ -1341,7 +1471,12 @@ fn overlay_projection_exposes_only_a_strict_codex_uuid_for_session_routing() {
         capability_for("codex", "019f5b0f_88ff_7413_8953_29de4ed0951c"),
         "agent_host"
     );
+    assert_eq!(capability_for("claude_code", claude_uuid), "exact_session");
     assert_eq!(capability_for("claude_code", codex_uuid), "unavailable");
+    assert_eq!(
+        capability_for("opencode", "ses_052d7fe89ffeVWsrMygGA3AKvL"),
+        "agent_host"
+    );
     assert!(sessions.iter().all(|session| {
         session["session_id"]
             .as_str()
@@ -2835,6 +2970,248 @@ fn every_agent_uses_first_user_message_until_an_explicit_title_arrives() {
             .unwrap();
         assert_eq!(session["session_title"], expected_title);
         assert_eq!(session["overlay_display"]["summary_kind"], "done");
+    }
+}
+
+#[test]
+fn legacy_claude_display_projection_sanitizes_attachment_title_and_tool_envelope() {
+    let (_temp, state) = ready();
+    let session_id = "legacy-claude-display";
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "legacy-claude-prompt",
+        session_id,
+        "start",
+        &timestamp(2),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "message_role": "user",
+            "message_content": concat!(
+                "@\"/Users/alice/Documents/private-research.md\"\n\n",
+                "以上文档是针对本项目宠物相关调研、优化方案。"
+            ),
+            "session_title": "@\"/Users/alice/Documents/private-research.md\"",
+            "diagnostic": false
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "legacy-claude-tool",
+        session_id,
+        "tool",
+        &timestamp(0),
+        json!({
+            "source_event": "PostToolUse",
+            "session_active": true,
+            "activity_kind": "thinking",
+            "activity_content": concat!(
+                "{\"interrupted\":false,\"isImage\":false,",
+                "\"noOutputExpected\":false,\"stderr\":\"\",",
+                "\"stdout\":\"=== PetAnimationContract / Quality checks passed ===\"}"
+            ),
+            "diagnostic": false
+        }),
+    );
+
+    let current = snapshot(&state);
+    let session = current["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected_session_id(session_id))
+        .unwrap();
+    assert_eq!(
+        session["session_title"],
+        "以上文档是针对本项目宠物相关调研、优化方案。"
+    );
+    assert_eq!(
+        session["session_user_message"],
+        json!({
+            "role": "user",
+            "content": "以上文档是针对本项目宠物相关调研、优化方案。"
+        })
+    );
+    assert_eq!(
+        session["session_activity"],
+        json!({
+            "kind": "thinking",
+            "content": "=== PetAnimationContract / Quality checks passed ==="
+        })
+    );
+
+    let serialized = serde_json::to_string(session).unwrap();
+    for forbidden in [
+        "/Users/alice/Documents",
+        "\"interrupted\"",
+        "\"isImage\"",
+        "\"noOutputExpected\"",
+        "\"stderr\"",
+        "\"stdout\"",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "legacy Claude display projection leaked transport detail: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn legacy_structured_activity_rows_project_only_readable_scalars_for_every_agent() {
+    let (_temp, state) = ready();
+    let cases = [
+        (
+            "codex",
+            AgentSource::Codex,
+            "UserPromptSubmit",
+            "PostToolUse",
+            "stdout",
+            "Codex legacy output",
+        ),
+        (
+            "claude_code",
+            AgentSource::ClaudeCode,
+            "UserPromptSubmit",
+            "PostToolUse",
+            "file_path",
+            "Claude legacy output",
+        ),
+        (
+            "pi",
+            AgentSource::Pi,
+            "input",
+            "tool_execution_end",
+            "filePath",
+            "Pi legacy output",
+        ),
+        (
+            "opencode",
+            AgentSource::Opencode,
+            "message.user",
+            "tool.execute.after",
+            "path",
+            "OpenCode legacy output",
+        ),
+    ];
+
+    for (index, (source_name, source, start_event, tool_event, content_key, expected)) in
+        cases.into_iter().enumerate()
+    {
+        let session_id = format!("legacy-structured-{source_name}");
+        ingest_source_payload(
+            &state,
+            source_name,
+            &format!("legacy-start-{index}"),
+            &session_id,
+            "start",
+            &timestamp(4),
+            json!({
+                "source_event": start_event,
+                "session_active": true,
+                "message_role": "user",
+                "message_content": format!("start {source_name}"),
+                "affects_activity": true,
+                "diagnostic": false
+            }),
+        );
+        let mut legacy_activity =
+            serde_json::Map::from_iter([("transport".to_string(), json!({"opaque": true}))]);
+        legacy_activity.insert(content_key.to_string(), json!(expected));
+        state
+            .database
+            .insert_event(&AgentEvent {
+                id: format!("legacy-tool-{index}"),
+                source,
+                project_path: None,
+                session_id: Some(session_id.clone()),
+                event_type: AgentEventType::Tool,
+                title: "legacy tool activity".to_string(),
+                detail: None,
+                payload_json: json!({
+                    "source_event": tool_event,
+                    "session_active": true,
+                    "affects_activity": true,
+                    "activity_kind": "thinking",
+                    "activity_content": serde_json::to_string(&legacy_activity).unwrap(),
+                    "diagnostic": false
+                }),
+                created_at: timestamp(1),
+            })
+            .unwrap();
+    }
+
+    for (index, sensitive) in [
+        r#"{"headers":{"content":"secret header"}}"#,
+        r#"{"environment":{"message":"secret environment"}}"#,
+        r#"{"tokens":{"output":"secret token"}}"#,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let session_id = format!("legacy-sensitive-{index}");
+        ingest_source_payload(
+            &state,
+            "codex",
+            &format!("legacy-sensitive-start-{index}"),
+            &session_id,
+            "start",
+            &timestamp(4),
+            json!({
+                "source_event": "UserPromptSubmit",
+                "session_active": true,
+                "message_role": "user",
+                "message_content": "start sensitive legacy row",
+                "affects_activity": true,
+                "diagnostic": false
+            }),
+        );
+        state
+            .database
+            .insert_event(&AgentEvent {
+                id: format!("legacy-sensitive-tool-{index}"),
+                source: AgentSource::Codex,
+                project_path: None,
+                session_id: Some(session_id),
+                event_type: AgentEventType::Tool,
+                title: "legacy sensitive tool activity".to_string(),
+                detail: None,
+                payload_json: json!({
+                    "source_event": "PostToolUse",
+                    "session_active": true,
+                    "affects_activity": true,
+                    "activity_kind": "thinking",
+                    "activity_content": sensitive,
+                    "diagnostic": false
+                }),
+                created_at: timestamp(1),
+            })
+            .unwrap();
+    }
+
+    let current = snapshot(&state);
+    for (source_name, _, _, _, _, expected) in cases {
+        let session_id = format!("legacy-structured-{source_name}");
+        let session = current["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["session_id"] == projected_session_id(&session_id))
+            .unwrap();
+        assert_eq!(session["session_activity"]["content"], expected);
+        let content = session["session_activity"]["content"].as_str().unwrap();
+        assert!(!content.contains('{') && !content.contains('}'));
+    }
+    for index in 0..3 {
+        let session_id = format!("legacy-sensitive-{index}");
+        let session = current["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["session_id"] == projected_session_id(&session_id))
+            .unwrap();
+        assert!(session["session_activity"]["content"].is_null());
     }
 }
 

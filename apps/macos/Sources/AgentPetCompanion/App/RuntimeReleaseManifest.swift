@@ -8,7 +8,7 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     let pi: String
     let opencode: String
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case codex
         case claudeCode = "claude_code"
         case pi
@@ -22,8 +22,14 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     }
 }
 
+enum RuntimeManifestValidationProfile: Equatable, Sendable {
+    case strictV2
+    case publishedV1Rollback
+}
+
 struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     static let schemaVersion = "apc.runtime-manifest.v1"
+    static let requiredPetpackVersion = "apc.petpack.v2"
 
     let schemaVersion: String
     let releaseChannel: String
@@ -41,7 +47,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     let petpackWriteVersion: String
     let connectorContracts: RuntimeConnectorContracts
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion = "schema_version"
         case releaseChannel = "release_channel"
         case appVersion = "app_version"
@@ -59,23 +65,85 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         case connectorContracts = "connector_contracts"
     }
 
-    static func read(from url: URL) throws -> RuntimeReleaseManifest {
-        let manifest = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
-        try manifest.validateForApp()
+    static func read(
+        from url: URL,
+        validationProfile: RuntimeManifestValidationProfile = .strictV2
+    ) throws -> RuntimeReleaseManifest {
+        let manifest = try decodeClosed(Data(contentsOf: url))
+        try manifest.validate(for: validationProfile)
         return manifest
     }
 
-    static func decodeHealthValue(_ value: Any?) -> RuntimeReleaseManifest? {
+    static func decodeHealthValue(
+        _ value: Any?,
+        validationProfile: RuntimeManifestValidationProfile = .strictV2
+    ) -> RuntimeReleaseManifest? {
         guard let value,
               JSONSerialization.isValidJSONObject(value),
               let data = try? JSONSerialization.data(withJSONObject: value),
-              let manifest = try? JSONDecoder().decode(Self.self, from: data),
-              (try? manifest.validateForApp()) != nil
+              let manifest = try? decodeClosed(data),
+              (try? manifest.validate(for: validationProfile)) != nil
         else { return nil }
         return manifest
     }
 
+    private static func decodeClosed(_ data: Data) throws -> RuntimeReleaseManifest {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw RuntimeManifestError.invalid("运行时清单必须是 JSON 对象")
+        }
+        try rejectUnknownKeys(
+            in: object,
+            allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+            context: "运行时清单"
+        )
+        if let connectors = object[CodingKeys.connectorContracts.rawValue] as? [String: Any] {
+            try rejectUnknownKeys(
+                in: connectors,
+                allowed: Set(RuntimeConnectorContracts.CodingKeys.allCases.map(\.rawValue)),
+                context: "运行时清单 connector_contracts"
+            )
+        }
+        return try JSONDecoder().decode(Self.self, from: data)
+    }
+
+    private static func rejectUnknownKeys(
+        in object: [String: Any],
+        allowed: Set<String>,
+        context: String
+    ) throws {
+        let unknown = Set(object.keys).subtracting(allowed).sorted()
+        guard unknown.isEmpty else {
+            throw RuntimeManifestError.invalid(
+                "\(context)包含未知字段：\(unknown.joined(separator: ", "))"
+            )
+        }
+    }
+
     func validateForApp() throws {
+        try validate(for: .strictV2)
+    }
+
+    func validate(for profile: RuntimeManifestValidationProfile) throws {
+        switch profile {
+        case .strictV2:
+            try validateStrictV2()
+        case .publishedV1Rollback:
+            try validatePublishedV1Rollback()
+        }
+    }
+
+    private func validateStrictV2() throws {
+        try validateSharedIdentity()
+        guard petpackSchemaVersion == Self.requiredPetpackVersion,
+              petpackReadVersions == [Self.requiredPetpackVersion],
+              petpackWriteVersion == Self.requiredPetpackVersion
+        else {
+            throw RuntimeManifestError.invalid("Petpack 必须严格使用 apc.petpack.v2")
+        }
+    }
+
+    private func validateSharedIdentity() throws {
         guard schemaVersion == Self.schemaVersion else {
             throw RuntimeManifestError.invalid("运行时清单协议不受支持")
         }
@@ -101,13 +169,63 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         guard minimumDatabaseSchemaVersion <= maximumDatabaseSchemaVersion else {
             throw RuntimeManifestError.invalid("数据库兼容范围无效")
         }
-        guard petpackSchemaVersion == petpackWriteVersion,
-              petpackReadVersions.contains(petpackWriteVersion),
-              petpackReadVersions.allSatisfy(matchesNonempty)
+    }
+
+    private func validatePublishedV1Rollback() throws {
+        try validateSharedIdentity()
+        guard releaseChannel == "release",
+              minimumDatabaseSchemaVersion == 0,
+              agentEventSchemaVersion == "apc.agent-event.v1",
+              petpackSchemaVersion == "apc.petpack.v1",
+              petpackReadVersions == ["apc.petpack.v1"],
+              petpackWriteVersion == "apc.petpack.v1",
+              connectorContracts == Self.publishedV1ConnectorContracts,
+              Self.publishedV1ReleaseIdentities.contains(where: {
+                  $0.appVersion == appVersion
+                      && $0.appBuild == appBuild
+                      && $0.buildID == buildID
+                      && $0.maximumDatabaseSchemaVersion
+                          == maximumDatabaseSchemaVersion
+              })
         else {
-            throw RuntimeManifestError.invalid("Petpack 读写版本范围无效")
+            throw RuntimeManifestError.invalid("运行时清单不是可回滚的已发布 V1 身份")
         }
     }
+
+    private struct PublishedV1ReleaseIdentity {
+        let appVersion: String
+        let appBuild: String
+        let buildID: String
+        let maximumDatabaseSchemaVersion: UInt32
+    }
+
+    private static let publishedV1ConnectorContracts = RuntimeConnectorContracts(
+        codex: "codex-hooks-2026-07-17-schema-v6",
+        claudeCode: "claude-hooks-2026-07-17-activity-v5",
+        pi: "pi-extension-0.80.10-activity-v7",
+        opencode: "opencode-v1.18.0-activity-v8"
+    )
+
+    private static let publishedV1ReleaseIdentities = [
+        PublishedV1ReleaseIdentity(
+            appVersion: "0.1.0",
+            appBuild: "1",
+            buildID: "0.1.0.1.910f8bfd1130",
+            maximumDatabaseSchemaVersion: 5
+        ),
+        PublishedV1ReleaseIdentity(
+            appVersion: "0.1.1",
+            appBuild: "3",
+            buildID: "0.1.1.3.7e074dfec8e56742e00bffe02d1ec5de23d0a09c",
+            maximumDatabaseSchemaVersion: 6
+        ),
+        PublishedV1ReleaseIdentity(
+            appVersion: "0.2.1",
+            appBuild: "5",
+            buildID: "0.2.1.5.ce1c8cdd9d080dc2f2a7d13e20829f90dc3c82cd",
+            maximumDatabaseSchemaVersion: 6
+        ),
+    ]
 
     private func matchesSafeBuildID(_ value: String) -> Bool {
         value.range(of: "^[A-Za-z0-9._+-]{1,128}$", options: .regularExpression) != nil
@@ -115,48 +233,6 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
 
     private func matchesNonempty(_ value: String) -> Bool {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-}
-
-extension RuntimeReleaseManifest {
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
-        releaseChannel = try container.decode(String.self, forKey: .releaseChannel)
-        appVersion = try container.decode(String.self, forKey: .appVersion)
-        appBuild = try container.decode(String.self, forKey: .appBuild)
-        buildID = try container.decode(String.self, forKey: .buildID)
-        petCoreRPCProtocol = try container.decode(String.self, forKey: .petCoreRPCProtocol)
-        petCoreBuildID = try container.decode(String.self, forKey: .petCoreBuildID)
-        petCoreCLIBuildID = try container.decode(String.self, forKey: .petCoreCLIBuildID)
-        minimumDatabaseSchemaVersion = try container.decode(
-            UInt32.self,
-            forKey: .minimumDatabaseSchemaVersion
-        )
-        maximumDatabaseSchemaVersion = try container.decode(
-            UInt32.self,
-            forKey: .maximumDatabaseSchemaVersion
-        )
-        agentEventSchemaVersion = try container.decode(
-            String.self,
-            forKey: .agentEventSchemaVersion
-        )
-        petpackSchemaVersion = try container.decode(String.self, forKey: .petpackSchemaVersion)
-        // These fields were introduced without changing the v1 runtime-manifest
-        // identifier. Reconstruct the old single-version contract so a new App
-        // can still inspect and roll back to an installed v1 last-known-good.
-        petpackReadVersions = try container.decodeIfPresent(
-            [String].self,
-            forKey: .petpackReadVersions
-        ) ?? [petpackSchemaVersion]
-        petpackWriteVersion = try container.decodeIfPresent(
-            String.self,
-            forKey: .petpackWriteVersion
-        ) ?? petpackSchemaVersion
-        connectorContracts = try container.decode(
-            RuntimeConnectorContracts.self,
-            forKey: .connectorContracts
-        )
     }
 }
 
@@ -286,10 +362,27 @@ struct PreparedPetCoreRuntime: Sendable {
     let cliURL: URL
     let manifestURL: URL?
     let manifest: RuntimeReleaseManifest?
+    let manifestValidationProfile: RuntimeManifestValidationProfile
     let previous: InstalledPetCoreRuntime?
 
     var buildID: String? { manifest?.buildID }
     var isManaged: Bool { manifest != nil && manifestURL != nil }
+
+    init(
+        executableURL: URL,
+        cliURL: URL,
+        manifestURL: URL?,
+        manifest: RuntimeReleaseManifest?,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        previous: InstalledPetCoreRuntime?
+    ) {
+        self.executableURL = executableURL
+        self.cliURL = cliURL
+        self.manifestURL = manifestURL
+        self.manifest = manifest
+        self.manifestValidationProfile = manifestValidationProfile
+        self.previous = previous
+    }
 }
 
 actor PetCoreRuntimeStore {
@@ -313,6 +406,7 @@ actor PetCoreRuntimeStore {
                 cliURL: sourceCLIURL,
                 manifestURL: nil,
                 manifest: nil,
+                manifestValidationProfile: .strictV2,
                 previous: nil
             )
         }
@@ -330,23 +424,43 @@ actor PetCoreRuntimeStore {
             )
         }
 
-        let candidate = try installedRuntime(buildID: manifest.buildID)
+        let candidate = try installedRuntime(
+            buildID: manifest.buildID,
+            validationProfile: .strictV2
+        )
         guard candidate.manifest == manifest else {
             throw RuntimeManifestError.invalid("已暂存运行时与 App 清单不一致")
         }
-        try await preflight(candidate)
-
         let current = try readPointer(at: currentPointerURL)
         let lastKnownGood = try readPointer(at: lastKnownGoodPointerURL)
-        let previous = [current, lastKnownGood]
-            .compactMap { $0 }
-            .first { $0.buildID != manifest.buildID && (try? installedRuntime(buildID: $0.buildID)) != nil }
+        let previous: InstalledPetCoreRuntime?
+        if current?.buildID == manifest.buildID {
+            // The candidate has already crossed the healthy commit boundary.
+            // A stale LKG is not a rollback source for restarting that same build.
+            previous = nil
+        } else if let current,
+                  (try? rollbackCompatibleInstalledRuntime(
+                      buildID: current.buildID
+                  )) != nil
+        {
+            previous = current
+        } else if let lastKnownGood,
+                  lastKnownGood.buildID != manifest.buildID,
+                  (try? rollbackCompatibleInstalledRuntime(
+                      buildID: lastKnownGood.buildID
+                  )) != nil
+        {
+            previous = lastKnownGood
+        } else {
+            previous = nil
+        }
 
         return PreparedPetCoreRuntime(
             executableURL: candidate.executableURL,
             cliURL: candidate.cliURL,
             manifestURL: candidate.manifestURL,
             manifest: candidate.manifest,
+            manifestValidationProfile: candidate.manifestValidationProfile,
             previous: previous
         )
     }
@@ -359,7 +473,7 @@ actor PetCoreRuntimeStore {
         }
         let current = try readPointer(at: currentPointerURL)
         if let current, current.buildID != buildID,
-           (try? installedRuntime(buildID: current.buildID)) != nil
+           (try? rollbackCompatibleInstalledRuntime(buildID: current.buildID)) != nil
         {
             try writePointer(current, to: lastKnownGoodPointerURL)
         }
@@ -369,14 +483,32 @@ actor PetCoreRuntimeStore {
     }
 
     func resolve(_ installation: InstalledPetCoreRuntime) throws -> PreparedPetCoreRuntime {
-        let runtime = try installedRuntime(buildID: installation.buildID)
+        let runtime = try rollbackCompatibleInstalledRuntime(
+            buildID: installation.buildID
+        )
         return PreparedPetCoreRuntime(
             executableURL: runtime.executableURL,
             cliURL: runtime.cliURL,
             manifestURL: runtime.manifestURL,
             manifest: runtime.manifest,
+            manifestValidationProfile: runtime.manifestValidationProfile,
             previous: nil
         )
+    }
+
+    func revalidateCandidate(_ candidate: PreparedPetCoreRuntime) async throws {
+        guard let buildID = candidate.buildID, candidate.isManaged else { return }
+        let runtime = try installedRuntime(
+            buildID: buildID,
+            validationProfile: candidate.manifestValidationProfile
+        )
+        guard runtime.executableURL == candidate.executableURL,
+              runtime.manifestURL == candidate.manifestURL,
+              runtime.manifest == candidate.manifest
+        else {
+            throw RuntimeManifestError.invalid("候选 PetCore 在启动前发生变化")
+        }
+        try await preflight(runtime)
     }
 
     private struct ManagedRuntime {
@@ -384,6 +516,7 @@ actor PetCoreRuntimeStore {
         let cliURL: URL
         let manifestURL: URL
         let manifest: RuntimeReleaseManifest
+        let manifestValidationProfile: RuntimeManifestValidationProfile
     }
 
     private var runtimeRootURL: URL {
@@ -402,7 +535,10 @@ actor PetCoreRuntimeStore {
         runtimeRootURL.appendingPathComponent("current", isDirectory: true)
     }
 
-    private func installedRuntime(buildID: String) throws -> ManagedRuntime {
+    private func installedRuntime(
+        buildID: String,
+        validationProfile: RuntimeManifestValidationProfile
+    ) throws -> ManagedRuntime {
         guard buildID.range(of: "^[A-Za-z0-9._+-]{1,128}$", options: .regularExpression) != nil else {
             throw RuntimeManifestError.invalid("运行时指针包含无效构建标识")
         }
@@ -418,7 +554,10 @@ actor PetCoreRuntimeStore {
         else {
             throw RuntimeManifestError.invalid("暂存运行时不完整")
         }
-        let manifest = try RuntimeReleaseManifest.read(from: manifestURL)
+        let manifest = try RuntimeReleaseManifest.read(
+            from: manifestURL,
+            validationProfile: validationProfile
+        )
         guard manifest.buildID == buildID else {
             throw RuntimeManifestError.invalid("运行时目录与清单构建标识不一致")
         }
@@ -426,7 +565,23 @@ actor PetCoreRuntimeStore {
             executableURL: executableURL,
             cliURL: cliURL,
             manifestURL: manifestURL,
-            manifest: manifest
+            manifest: manifest,
+            manifestValidationProfile: validationProfile
+        )
+    }
+
+    private func rollbackCompatibleInstalledRuntime(
+        buildID: String
+    ) throws -> ManagedRuntime {
+        if let runtime = try? installedRuntime(
+            buildID: buildID,
+            validationProfile: .strictV2
+        ) {
+            return runtime
+        }
+        return try installedRuntime(
+            buildID: buildID,
+            validationProfile: .publishedV1Rollback
         )
     }
 

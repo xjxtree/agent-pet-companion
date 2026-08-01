@@ -3,24 +3,15 @@
   "generator": "external-image-agent",
   "provenance": "skill-full-source",
   "visual_source": "image-generation",
-  "native_fps": 10,
-  "state_durations_ms": {
-    "idle": 2000,
-    "start": 1000,
-    "tool": 2000,
-    "waiting": 2000,
-    "review": 2000,
-    "done": 1000,
-    "failed": 2000
-  },
-  "state_frame_counts": {
-    "idle": 20,
-    "start": 11,
-    "tool": 20,
-    "waiting": 20,
-    "review": 20,
-    "done": 10,
-    "failed": 20
-  },
+  "states": [
+    { "name": "idle", "frames_dir": "assets/frames/idle", "frame_durations_ms": [180, 160, 180, 380], "playback": { "mode": "periodic", "cooldown_ms": [4000, 8000] }, "reduced_motion_frame_index": 2 },
+    { "name": "start", "frames_dir": "assets/frames/start", "frame_durations_ms": [120, 140, 160, 180], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
+    { "name": "tool", "frames_dir": "assets/frames/tool", "frame_durations_ms": [150, 150, 170, 330], "playback": { "mode": "burst_then_settle", "entry_repeat_count": 1, "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
+    { "name": "waiting", "frames_dir": "assets/frames/waiting", "frame_durations_ms": [150, 150, 150, 150, 170, 230], "playback": { "mode": "once_hold", "settle_frame_index": 5 }, "reduced_motion_frame_index": 4 },
+    { "name": "review", "frames_dir": "assets/frames/review", "frame_durations_ms": [140, 140, 150, 150, 180, 240], "playback": { "mode": "once_hold", "settle_frame_index": 5 }, "reduced_motion_frame_index": 4 },
+    { "name": "done", "frames_dir": "assets/frames/done", "frame_durations_ms": [120, 140, 160, 230], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
+    { "name": "failed", "frames_dir": "assets/frames/failed", "frame_durations_ms": [150, 170, 190, 290], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 }
+  ],
+  "state_frame_counts": { "idle": 4, "start": 1, "tool": 4, "waiting": 6, "review": 6, "done": 4, "failed": 4 },
   "preview_only": false
 }

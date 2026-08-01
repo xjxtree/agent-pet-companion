@@ -75,16 +75,14 @@ struct PetLibraryTests {
         #expect(bundled.revisionCountSummary == "2 个")
         #expect(bundled.revisionSummary.contains("App 内置只读基线"))
         #expect(bundled.stateSummary == "idle · start · tool · waiting · review · done · failed")
-        #expect(bundled.fpsSummary == "原生 20 FPS · 可播放 10 / 20 FPS")
-        #expect(
-            bundled.durationSummary
-                == "1 秒：start · done   2 秒：idle · tool · waiting · review · failed"
-        )
+        #expect(bundled.timingSummary == "32 帧 · 7 个状态 · 逐帧创作时序")
+        #expect(bundled.durationSummary.contains("idle：900 毫秒"))
+        #expect(bundled.durationSummary.contains("waiting：1,000 毫秒"))
         #expect(bundled.heroSummary == "半写实 · App 内置")
         #expect(bundled.provenanceSummary.contains("verified_skill_source"))
         #expect(bundled.provenanceSummary.contains("apc.bundled-pets.v1"))
-        #expect(bundled.frameCountSummary.contains("idle：40 帧"))
-        #expect(bundled.frameCountSummary.contains("start：20 帧"))
+        #expect(bundled.frameCountSummary.contains("idle：4 帧"))
+        #expect(bundled.frameCountSummary.contains("waiting：6 帧"))
         #expect(Set(bundled.technicalInformation.map(\.field))
             == Set(PetLibraryTechnicalItem.Field.allCases))
         #expect(bundled.technicalInformation.first?.field == .stableID)
@@ -118,16 +116,15 @@ struct PetLibraryTests {
         #expect(nonOwned.revisionIDSummary == "未提供（非 PetCore 自有）")
         #expect(nonOwned.revisionCountSummary == "0 个（非 PetCore 自有）")
 
-        var standardPet = nonOwned.pet
-        standardPet.nativeFPS = 10
-        standardPet.stateDurationsMS["idle"] = 1_000
-        let standard = PetLibraryPresentation(
-            pet: standardPet,
+        var customTimingPet = nonOwned.pet
+        customTimingPet.states[0].frameDurationsMS = [250, 250, 250, 250]
+        let customTiming = PetLibraryPresentation(
+            pet: customTimingPet,
             assetWarning: nil,
             localeIdentifier: "zh-Hans"
         )
-        #expect(standard.fpsSummary == "原生 10 FPS · 可播放 10 FPS")
-        #expect(standard.durationSummary.contains("1 秒：idle · start · done"))
+        #expect(customTiming.timingSummary == "32 帧 · 7 个状态 · 逐帧创作时序")
+        #expect(customTiming.durationSummary.contains("idle：1,000 毫秒"))
     }
 
     @Test
@@ -291,8 +288,6 @@ struct PetLibraryTests {
 
         var bundled = makeBundledPet()
         bundled.coverPath = cover.path
-        bundled.nativeFPS = 20
-        bundled.stateDurationsMS["idle"] = 1_000
         let occupiedCopy = makePet(
             id: "pet_xingwutuanzicopy",
             name: "已有副本",
@@ -309,8 +304,6 @@ struct PetLibraryTests {
         #expect(store.descriptionText.contains("pet_xingwutuanzicopy2"))
         #expect(store.selectedStyle == .semiRealistic)
         #expect(store.selectedQuality == bundled.quality)
-        #expect(store.selectedNativeFPS == bundled.nativeFPS)
-        #expect(store.generationStateDurationsMS == bundled.stateDurationsMS)
         #expect(store.referenceImages == [cover.standardizedFileURL.path])
         #expect(store.generationSession.state == .idle)
         #expect(store.generationSession.jobID == nil)
@@ -325,24 +318,26 @@ struct PetLibraryTests {
     }
 
     @Test
-    func transportProjectionDecodesRevisionMetadataAndLegacyDefaults() throws {
+    func transportProjectionRequiresV2TimingAndDecodesRevisionMetadata() throws {
+        let expected = makePet(
+            id: "pet_current",
+            name: "Current",
+            origin: .externalImport,
+            revisionID: "rev_00000000000000000000000000000003",
+            revisionCount: 4
+        )
         let current = try JSONDecoder().decode(
             PetSummary.self,
-            from: Data(
-                #"{"id":"pet_current","name":"Current","style":"pixel","quality":"high","render_size":{"width":384,"height":416},"petpack_path":"/owned.petpack","cover_path":"","origin":"external_import","revision_id":"rev_00000000000000000000000000000003","revision_count":4,"native_fps":20,"state_durations_ms":{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000},"active":false,"created_at":"2026-07-21T00:00:00Z"}"#.utf8
-            )
+            from: JSONEncoder().encode(expected)
         )
         #expect(current.revisionID == "rev_00000000000000000000000000000003")
         #expect(current.revisionCount == 4)
+        #expect(current.states == PetAnimationContract.defaultStates)
 
-        let legacy = try JSONDecoder().decode(
-            PetSummary.self,
-            from: Data(
-                #"{"id":"pet_legacy","name":"Legacy","style":"pixel","quality":"high","render_size":{"width":384,"height":416},"petpack_path":"/external.petpack","cover_path":"","native_fps":10,"state_durations_ms":{"idle":2000,"start":1000,"tool":2000,"waiting":2000,"review":2000,"done":1000,"failed":2000},"active":false,"created_at":"2026-07-21T00:00:00Z"}"#.utf8
-            )
-        )
-        #expect(legacy.revisionID == nil)
-        #expect(legacy.revisionCount == 0)
+        let missingTiming = #"{"id":"pet_missing","name":"Missing","style":"pixel","quality":"standard","render_size":{"width":384,"height":416},"petpack_path":"/external.petpack","cover_path":"","active":false,"created_at":"2026-07-21T00:00:00Z"}"#
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(PetSummary.self, from: Data(missingTiming.utf8))
+        }
     }
 
     @Test
@@ -386,17 +381,14 @@ struct PetLibraryTests {
     }
 
     @Test
-    func motionPreviewUsesTheAuthoredNativeRateWithoutRetiming() {
-        var standard = makePet(id: "pet_standard", name: "Standard", origin: .externalImport)
-        standard.nativeFPS = 10
-        var smooth = standard
-        smooth.id = "pet_smooth"
-        smooth.nativeFPS = 20
+    func motionPreviewUsesTheAuthoredPerFrameTimingWithoutRetiming() {
+        let pet = makePet(id: "pet_timing", name: "Timing", origin: .externalImport)
+        let idle = pet.timing(for: "idle")
+        let timeline = FrameTimeline(state: idle, periodicCooldownMS: 4_000)
 
-        #expect(PetLibraryPreviewPolicy.playbackProfile(for: standard) == .standard)
-        #expect(PetLibraryPreviewPolicy.playbackProfile(for: smooth) == .smooth)
         #expect(PetLibraryPreviewPolicy.canRender(assetWarning: nil))
-        #expect(standard.durationMS(for: "idle") == smooth.durationMS(for: "idle"))
+        #expect(timeline.durationsMS == idle.frameDurationsMS)
+        #expect(timeline.frameCount == idle.frameDurationsMS.count)
     }
 
     @Test
@@ -605,7 +597,6 @@ struct PetLibraryTests {
         #expect(animationSource.contains("loadIfValidated"))
         #expect(animationSource.contains("PetMetalFrameRenderer()"))
         #expect(animationSource.contains("stateName: \"idle\""))
-        #expect(animationSource.contains("PetLibraryPreviewPolicy.playbackProfile(for: pet)"))
         #expect(animationSource.contains("PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning)"))
         #expect(animationSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(animationSource.contains("reduceMotion: reduceMotion"))
@@ -651,10 +642,10 @@ struct PetLibraryTests {
     @Test
     func inspectorInfoRowsWrapRealValuesWithoutPaintingPastTheirAvailableWidth() throws {
         let values = [
-            (".petpack 版本", "apc.petpack.v1"),
+            (".petpack 版本", "apc.petpack.v2"),
             ("七状态", "idle · start · tool · waiting · review · done · failed"),
-            ("帧率", "原生 20 FPS · 可播放 10 / 20 FPS"),
-            ("动作时长", "1 秒：start · done   2 秒：idle · tool · waiting · review · failed"),
+            ("动画时序", "32 帧 · 7 个状态 · 逐帧创作时序"),
+            ("动作时长", "idle：900 毫秒 · waiting：1000 毫秒 · review：1000 毫秒"),
             ("Revision ID", "rev_00000000000000000000000000000003"),
         ]
 
@@ -947,7 +938,6 @@ struct PetLibraryTests {
         )
         pet.generator = "agent-pet-companion.release-inventory"
         pet.provenance = "apc.bundled-pets.v1"
-        pet.nativeFPS = 20
         pet.revisionID = "rev_00000000000000000000000000000001"
         pet.revisionCount = 2
         return pet
@@ -964,8 +954,8 @@ struct PetLibraryTests {
             id: id,
             name: name,
             style: "半写实",
-            quality: .high,
-            renderSize: RenderSize(width: 384, height: 416),
+            quality: .standard,
+            renderSize: QualityLevel.standard.renderSize,
             petpackPath: "/tmp/\(id).petpack",
             coverPath: "",
             origin: origin,

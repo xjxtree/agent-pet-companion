@@ -73,18 +73,15 @@ struct MakerExperiencePresentation: Equatable {
 
 /// Stable, compact display projection of the immutable submitted form.
 ///
-/// It deliberately omits reference paths and keeps exact animation mechanics
-/// separate from the ordinary summary.
+/// It deliberately omits reference paths and package-authored animation
+/// mechanics from the ordinary summary.
 struct MakerSubmittedBriefPresentation: Equatable {
     static let maximumDescriptionScalars = 180
 
     let descriptionSummary: String
     let styleTitle: String
     let qualityTitle: String
-    let motionTitle: String
     let referenceCount: Int
-    let nativeFPS: Int
-    let stateDurationsMS: [String: Int]
 
     init(
         form: GenerationForm,
@@ -107,16 +104,10 @@ struct MakerSubmittedBriefPresentation: Equatable {
             form.quality,
             locale: localeIdentifier
         )
-        motionTitle = MakerMotionPresentation.title(
-            nativeFPS: form.nativeFPS,
-            localeIdentifier: localeIdentifier
-        )
         referenceCount = min(
             MakerReferenceImagePolicy.maximumCount,
             max(0, form.referenceImages.count)
         )
-        nativeFPS = form.nativeFPS
-        stateDurationsMS = form.stateDurationsMS
     }
 
     static func boundedSummary(
@@ -132,26 +123,6 @@ struct MakerSubmittedBriefPresentation: Equatable {
         return String(
             String.UnicodeScalarView(scalars.prefix(maximumScalars))
         ) + "…"
-    }
-}
-
-enum MakerMotionPresentation {
-    static func profile(nativeFPS: Int) -> FpsProfile {
-        nativeFPS == FpsProfile.smooth.fps ? .smooth : .standard
-    }
-
-    static func title(
-        nativeFPS: Int,
-        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
-    ) -> String {
-        APCLocalizedPresentation.playbackProfileTitle(
-            profile(nativeFPS: nativeFPS),
-            locale: localeIdentifier
-        )
-    }
-
-    static func exactValue(nativeFPS: Int) -> String {
-        "\(nativeFPS) FPS"
     }
 }
 

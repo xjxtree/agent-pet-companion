@@ -1,0 +1,13 @@
+apps/macos/Sources/AgentPetCompanion/App/AppStore.swift
+apps/macos/Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift
+apps/macos/Sources/AgentPetCompanion/Overlay/OverlayPlacementAuthority.swift
+apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift
+apps/macos/Sources/AgentPetCompanion/Overlay/OverlayValidationContract.swift
+apps/macos/Sources/AgentPetCompanion/Overlay/PetOverlayController.swift
+apps/macos/Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift
+apps/macos/Sources/AgentPetCompanionCore/AppModels.swift
+apps/macos/Tests/AgentPetCompanionTests/AppStoreOverlaySnapshotTests.swift
+apps/macos/Tests/AgentPetCompanionTests/OverlayDisplayWidthTests.swift
+apps/macos/Tests/AgentPetCompanionTests/OverlayGeometryTests.swift
+apps/macos/Tests/AgentPetCompanionTests/OverlayPlacementAuthorityTests.swift
+script/validate_overlay_interaction.sh

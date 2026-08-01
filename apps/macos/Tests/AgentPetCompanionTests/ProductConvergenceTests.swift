@@ -605,9 +605,9 @@ struct ProductConvergenceTests {
             minimumDatabaseSchemaVersion: 1,
             maximumDatabaseSchemaVersion: 6,
             agentEventSchemaVersion: "apc.agent-event.v1",
-            petpackSchemaVersion: "apc.petpack.v1",
-            petpackReadVersions: ["apc.petpack.v1"],
-            petpackWriteVersion: "apc.petpack.v1",
+            petpackSchemaVersion: "apc.petpack.v2",
+            petpackReadVersions: ["apc.petpack.v2"],
+            petpackWriteVersion: "apc.petpack.v2",
             connectorContracts: RuntimeConnectorContracts(
                 codex: "codex-hooks.v1",
                 claudeCode: "claude-hooks.v1",

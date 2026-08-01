@@ -913,7 +913,6 @@ private struct OnboardingPetMetalView: NSViewRepresentable {
             pet: pet,
             stateName: stateName,
             stateEntryID: "onboarding-local-demo:\(pet.id):\(stateName)",
-            fpsProfile: PetLibraryPreviewPolicy.playbackProfile(for: pet),
             active: true,
             reduceMotion: reduceMotion,
             onVisualEnvelopeChanged: { envelope in

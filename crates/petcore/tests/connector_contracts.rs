@@ -110,8 +110,12 @@ fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
             "session_id": "codex-passive-session"
         }),
     )
+    .unwrap()
     .unwrap();
-    assert!(codex_session_start.is_none());
+    assert_eq!(codex_session_start.kind, AgentEventType::Start);
+    assert_eq!(codex_session_start.source_event, "SessionStart");
+    assert!(!codex_session_start.session_active);
+    assert!(!codex_session_start.affects_activity);
 
     let stop = parsed(AgentSource::Codex, "codex/stop.json");
     assert_eq!(stop.session_id.as_deref(), Some("codex-session-stop"));
@@ -197,7 +201,116 @@ fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
 }
 
 #[test]
-fn every_non_codex_connector_preserves_host_exposed_tool_activity() {
+fn claude_display_prompt_excludes_leading_attachment_paths_and_unofficial_title() {
+    let prompt = parse_contract_event(
+        AgentSource::ClaudeCode,
+        &serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "claude-attachment-prompt",
+            "title": "@\"/Users/alice/Documents/private-research.md\"",
+            "prompt": concat!(
+                "@\"/Users/alice/Documents/private-research.md\"\n\n",
+                "以上文档是针对本项目宠物相关调研、优化方案。"
+            )
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        prompt.message_content.as_deref(),
+        Some("以上文档是针对本项目宠物相关调研、优化方案。")
+    );
+    assert_eq!(prompt.session_title, None);
+    assert!(!serde_json::to_string(&prompt)
+        .unwrap()
+        .contains("/Users/alice/Documents"));
+}
+
+#[test]
+fn claude_display_tool_activity_excludes_structured_response_envelope() {
+    let post_tool = parse_contract_event(
+        AgentSource::ClaudeCode,
+        &serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "claude-attachment-prompt",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "swift test",
+                "description": "运行 PetAnimationContract 质量检查"
+            },
+            "tool_response": {
+                "interrupted": false,
+                "isImage": false,
+                "noOutputExpected": false,
+                "stderr": "",
+                "stdout": "=== PetAnimationContract / Quality checks passed ==="
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        post_tool.activity_content.as_deref(),
+        Some("运行 PetAnimationContract 质量检查")
+    );
+
+    let post_tool_without_description = parse_contract_event(
+        AgentSource::ClaudeCode,
+        &serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "claude-attachment-prompt",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "swift test"
+            },
+            "tool_response": {
+                "interrupted": false,
+                "isImage": false,
+                "noOutputExpected": false,
+                "stderr": "",
+                "stdout": "=== PetAnimationContract / Quality checks passed ==="
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        post_tool_without_description.activity_content.as_deref(),
+        Some("swift test")
+    );
+
+    let serialized = serde_json::to_string(&[post_tool, post_tool_without_description]).unwrap();
+    for forbidden in [
+        "\"interrupted\"",
+        "\"isImage\"",
+        "\"noOutputExpected\"",
+        "\"stderr\"",
+        "\"stdout\"",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "Claude display projection leaked a transport detail: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn every_connector_extracts_a_readable_scalar_from_structured_tool_activity() {
+    let codex = parse_contract_event(
+        AgentSource::Codex,
+        &serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "codex-tool-detail",
+            "turn_id": "codex-turn-detail",
+            "tool_name": "Bash",
+            "tool_input": {
+                "transport": {"opaque": true},
+                "command": "cargo test"
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
     let claude = parse_contract_event(
         AgentSource::ClaudeCode,
         &serde_json::json!({
@@ -231,7 +344,10 @@ fn every_non_codex_connector_preserves_host_exposed_tool_activity() {
                 "tool": "bash"
             },
             "properties": {
-                "command": "pnpm test"
+                "input": {
+                    "transport": {"opaque": true},
+                    "query": "find failing tests"
+                }
             },
             "outcome": "started"
         }),
@@ -239,7 +355,7 @@ fn every_non_codex_connector_preserves_host_exposed_tool_activity() {
     .unwrap()
     .unwrap();
 
-    for event in [&claude, &pi, &opencode] {
+    for event in [&codex, &claude, &pi, &opencode] {
         assert_eq!(event.kind, AgentEventType::Tool);
         assert!(event.session_active);
         assert!(
@@ -251,15 +367,17 @@ fn every_non_codex_connector_preserves_host_exposed_tool_activity() {
             event.source
         );
     }
+    assert_eq!(codex.activity_content.as_deref(), Some("cargo test"));
+    assert_eq!(claude.activity_content.as_deref(), Some("swift test"));
+    assert_eq!(pi.activity_content.as_deref(), Some("README.md"));
     assert_eq!(
-        claude.activity_content.as_deref(),
-        Some(r#"{"command":"swift test"}"#)
+        opencode.activity_content.as_deref(),
+        Some("find failing tests")
     );
-    assert_eq!(
-        pi.activity_content.as_deref(),
-        Some(r#"{"path":"README.md"}"#)
-    );
-    assert_eq!(opencode.activity_content.as_deref(), Some("pnpm test"));
+    for event in [codex, claude, pi, opencode] {
+        let content = event.activity_content.unwrap();
+        assert!(!content.contains('{') && !content.contains('}'));
+    }
 }
 
 #[test]
@@ -286,7 +404,7 @@ fn opaque_tool_invocation_identity_prevents_same_turn_collisions_without_leaking
     let first_completed = codex_tool("PostToolUse", "raw-call-one");
     assert_eq!(
         first.activity_content.as_deref(),
-        Some(r#"{"command":"TOKEN=must-not-cross"}"#)
+        Some("TOKEN=must-not-cross")
     );
     assert_eq!(first.external_event_id, first_retry.external_event_id);
     assert_ne!(first.external_event_id, second.external_event_id);
@@ -882,7 +1000,7 @@ fn opencode_v1_17_18_reads_discriminated_and_direct_payloads() {
     for (fixture_name, expected_activity) in [
         (
             "tool_execute_before.json",
-            r#"{"command":"TOKEN=opencode-secret-command-do-not-persist"}"#,
+            "TOKEN=opencode-secret-command-do-not-persist",
         ),
         (
             "tool_execute_after.json",
@@ -1026,7 +1144,7 @@ fn versioned_templates_only_claim_supported_contracts() {
         std::fs::read_to_string(root.join("plugins/claude-code/settings.fragment.json.tpl"))
             .unwrap();
     assert!(claude.contains("PostToolUseFailure"));
-    assert!(claude.contains("claude-hooks-2026-07-29-activity-v6"));
+    assert!(claude.contains("claude-hooks-2026-07-31-activity-v8"));
     assert!(claude.contains("\"release_version\": \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(claude.contains("\"async\":false"));
     assert!(claude.contains("\"timeout\":2"));
@@ -1048,7 +1166,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-activity-v9"));
+    assert!(pi.contains("pi-extension-0.80.10-activity-v10"));
     assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
@@ -1067,7 +1185,7 @@ fn versioned_templates_only_claim_supported_contracts() {
 
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
-    assert!(opencode.contains("opencode-v1.18.4-activity-v10"));
+    assert!(opencode.contains("opencode-v1.18.4-activity-v12"));
     assert!(opencode.contains(
         "APC_OPENCODE_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""
     ));

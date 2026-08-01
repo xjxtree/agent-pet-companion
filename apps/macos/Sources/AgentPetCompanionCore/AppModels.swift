@@ -54,31 +54,27 @@ public enum StylePreset: String, CaseIterable, Identifiable, Codable, Sendable {
 public enum AIPetMakerDefaults {
     public static let descriptionText = ""
     public static let style = StylePreset.semiRealistic
-    public static let quality = QualityLevel.high
+    public static let quality = QualityLevel.standard
     public static let maximumDescriptionCharacters = 8_000
 }
 
 public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable {
+    case low
     case standard
-    case high
-    case ultra
-    case original
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .standard: "标清"
-        case .high: "高清"
-        case .ultra: "超清"
-        case .original: "原画"
+        case .low: "标清"
+        case .standard: "标准"
         }
     }
 
     public var detail: String {
         let size = renderSize
         switch self {
-        case .high:
+        case .standard:
             return "\(size.width)×\(size.height) · 推荐"
         default:
             return "\(size.width)×\(size.height)"
@@ -87,10 +83,8 @@ public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable 
 
     public var renderSize: RenderSize {
         switch self {
-        case .standard: RenderSize(width: 192, height: 208)
-        case .high: RenderSize(width: 384, height: 416)
-        case .ultra: RenderSize(width: 768, height: 832)
-        case .original: RenderSize(width: 1536, height: 1664)
+        case .low: RenderSize(width: 192, height: 208)
+        case .standard: RenderSize(width: 384, height: 416)
         }
     }
 }
@@ -105,31 +99,7 @@ public struct RenderSize: Codable, Hashable, Sendable {
     }
 }
 
-public enum FpsProfile: String, CaseIterable, Identifiable, Codable, Sendable {
-    case standard
-    case smooth
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .standard: "标准动效"
-        case .smooth: "流畅动效"
-        }
-    }
-
-    public var fps: Int {
-        switch self {
-        case .standard: 10
-        case .smooth: 20
-        }
-    }
-}
-
 public enum PetAnimationContract {
-    public static let defaultNativeFPS = 10
-    public static let supportedNativeFPS: Set<Int> = [10, 20]
-    public static let supportedDurationsMS: Set<Int> = [1_000, 2_000]
     public static let orderedStateNames = [
         "idle",
         "start",
@@ -139,38 +109,163 @@ public enum PetAnimationContract {
         "done",
         "failed",
     ]
-    public static let defaultStateDurationsMS: [String: Int] = [
-        "idle": 2_000,
-        "start": 1_000,
-        "tool": 2_000,
-        "waiting": 2_000,
-        "review": 2_000,
-        "done": 1_000,
-        "failed": 2_000,
+    public static let defaultStates: [PetStateTiming] = [
+        .init(
+            name: "idle",
+            framesDir: "assets/frames/idle",
+            frameDurationsMS: [180, 160, 180, 380],
+            playback: .init(mode: .periodic, cooldownMS: [4_000, 8_000]),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "start",
+            framesDir: "assets/frames/start",
+            frameDurationsMS: [120, 140, 160, 180],
+            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "tool",
+            framesDir: "assets/frames/tool",
+            frameDurationsMS: [150, 150, 170, 330],
+            playback: .init(
+                mode: .burstThenSettle,
+                entryRepeatCount: 1,
+                settleFrameIndex: 3
+            ),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "waiting",
+            framesDir: "assets/frames/waiting",
+            frameDurationsMS: [150, 150, 150, 150, 170, 230],
+            playback: .init(mode: .onceHold, settleFrameIndex: 5),
+            reducedMotionFrameIndex: 4
+        ),
+        .init(
+            name: "review",
+            framesDir: "assets/frames/review",
+            frameDurationsMS: [140, 140, 150, 150, 180, 240],
+            playback: .init(mode: .onceHold, settleFrameIndex: 5),
+            reducedMotionFrameIndex: 4
+        ),
+        .init(
+            name: "done",
+            framesDir: "assets/frames/done",
+            frameDurationsMS: [120, 140, 160, 230],
+            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "failed",
+            framesDir: "assets/frames/failed",
+            frameDurationsMS: [150, 170, 190, 290],
+            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            reducedMotionFrameIndex: 2
+        ),
     ]
 
-    /// V1 package authoring topology. Runtime presentation may continue a
-    /// persistent state without changing this manifest-level contract.
-    public static func loops(stateName: String) -> Bool {
-        stateName != "start" && stateName != "done"
+    public static func hasValidStates(_ states: [PetStateTiming]) -> Bool {
+        states.count == orderedStateNames.count
+            && Set(states.map(\.name)) == Set(orderedStateNames)
+            && states.allSatisfy(\.isValid)
+    }
+}
+
+public enum PetPlaybackMode: String, Codable, Hashable, Sendable {
+    case loop
+    case onceHold = "once_hold"
+    case periodic
+    case burstThenSettle = "burst_then_settle"
+}
+
+public struct PlaybackContract: Codable, Hashable, Sendable {
+    public static let maximumPeriodicCooldownMS = 86_400_000
+
+    public var mode: PetPlaybackMode
+    public var entryRepeatCount: Int?
+    public var settleFrameIndex: Int?
+    public var cooldownMS: [Int]?
+
+    public init(
+        mode: PetPlaybackMode,
+        entryRepeatCount: Int? = nil,
+        settleFrameIndex: Int? = nil,
+        cooldownMS: [Int]? = nil
+    ) {
+        self.mode = mode
+        self.entryRepeatCount = entryRepeatCount
+        self.settleFrameIndex = settleFrameIndex
+        self.cooldownMS = cooldownMS
     }
 
-    /// App playback while one projected state remains active.
-    public static func playbackMode(stateName: String) -> FramePlaybackMode {
-        switch stateName {
-        case "start":
-            .autoreverse
-        case "done":
-            .oneShot
-        default:
-            .loop
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case entryRepeatCount = "entry_repeat_count"
+        case settleFrameIndex = "settle_frame_index"
+        case cooldownMS = "cooldown_ms"
+    }
+}
+
+public struct PetStateTiming: Codable, Hashable, Sendable {
+    public var name: String
+    public var framesDir: String
+    public var frameDurationsMS: [Int]
+    public var playback: PlaybackContract
+    public var reducedMotionFrameIndex: Int
+
+    public init(
+        name: String,
+        framesDir: String,
+        frameDurationsMS: [Int],
+        playback: PlaybackContract,
+        reducedMotionFrameIndex: Int
+    ) {
+        self.name = name
+        self.framesDir = framesDir
+        self.frameDurationsMS = frameDurationsMS
+        self.playback = playback
+        self.reducedMotionFrameIndex = reducedMotionFrameIndex
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case framesDir = "frames_dir"
+        case frameDurationsMS = "frame_durations_ms"
+        case playback
+        case reducedMotionFrameIndex = "reduced_motion_frame_index"
+    }
+
+    public var isValid: Bool {
+        guard (2...40).contains(frameDurationsMS.count),
+              frameDurationsMS.allSatisfy({ (50...2_000).contains($0) }),
+              frameDurationsMS.reduce(0, +) <= 5_000,
+              frameDurationsMS.indices.contains(reducedMotionFrameIndex)
+        else { return false }
+        switch playback.mode {
+        case .loop:
+            return playback.entryRepeatCount == nil
+                && playback.settleFrameIndex == nil
+                && playback.cooldownMS == nil
+        case .onceHold:
+            return playback.entryRepeatCount == nil
+                && playback.cooldownMS == nil
+                && playback.settleFrameIndex.map(frameDurationsMS.indices.contains) == true
+        case .periodic:
+            return playback.entryRepeatCount == nil
+                && playback.settleFrameIndex == nil
+                && playback.cooldownMS?.count == 2
+                && playback.cooldownMS.map { $0[0] <= $0[1] } == true
+                && playback.cooldownMS.map { cooldowns in
+                    cooldowns.allSatisfy {
+                        (0...PlaybackContract.maximumPeriodicCooldownMS).contains($0)
+                    }
+                } == true
+        case .burstThenSettle:
+            return playback.cooldownMS == nil
+                && playback.entryRepeatCount.map { (1...8).contains($0) } == true
+                && playback.settleFrameIndex.map(frameDurationsMS.indices.contains) == true
         }
-    }
-
-    public static func hasValidStateDurations(_ durations: [String: Int]) -> Bool {
-        durations.keys.count == orderedStateNames.count
-            && Set(durations.keys) == Set(orderedStateNames)
-            && durations.values.allSatisfy(supportedDurationsMS.contains)
     }
 }
 
@@ -276,7 +371,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public var autoHide: Bool
     public var sessionMessageTimeoutMinutes: Int
     public var sessionGroupDisplay: SessionGroupDisplay
-    public var fpsProfile: FpsProfile
     public var sources: [AgentSource: Bool]
     public var events: [AgentEventKind: Bool]
 
@@ -291,7 +385,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         autoHide: Bool = false,
         sessionMessageTimeoutMinutes: Int = 15,
         sessionGroupDisplay: SessionGroupDisplay = .stacked,
-        fpsProfile: FpsProfile = .standard,
         sources: [AgentSource: Bool] = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { ($0, true) }),
         events: [AgentEventKind: Bool] = Dictionary(uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, true) })
     ) {
@@ -305,7 +398,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         self.autoHide = autoHide
         self.sessionMessageTimeoutMinutes = sessionMessageTimeoutMinutes
         self.sessionGroupDisplay = sessionGroupDisplay
-        self.fpsProfile = fpsProfile
         self.sources = sources
         self.events = events
     }
@@ -321,7 +413,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         case autoHide = "auto_hide"
         case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
         case sessionGroupDisplay = "session_group_display"
-        case fpsProfile = "fps_profile"
         case sources
         case events
     }
@@ -352,8 +443,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
             SessionGroupDisplay.self,
             forKey: .sessionGroupDisplay
         ) ?? defaults.sessionGroupDisplay
-        fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile) ?? defaults.fpsProfile
-
         let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources) ?? [:]
         sources = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { source in
             (source, rawSources[source.rawValue] ?? defaults.sources[source, default: true])
@@ -377,7 +466,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         try container.encode(autoHide, forKey: .autoHide)
         try container.encode(sessionMessageTimeoutMinutes, forKey: .sessionMessageTimeoutMinutes)
         try container.encode(sessionGroupDisplay, forKey: .sessionGroupDisplay)
-        try container.encode(fpsProfile, forKey: .fpsProfile)
         try container.encode(
             Dictionary(uniqueKeysWithValues: sources.map { ($0.key.rawValue, $0.value) }),
             forKey: .sources
@@ -408,7 +496,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var autoHide: Bool?
     public var sessionMessageTimeoutMinutes: Int?
     public var sessionGroupDisplay: SessionGroupDisplay?
-    public var fpsProfile: FpsProfile?
     public var sources: [AgentSource: Bool]?
     public var events: [AgentEventKind: Bool]?
 
@@ -433,7 +520,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         sessionGroupDisplay = previous.sessionGroupDisplay == next.sessionGroupDisplay
             ? nil
             : next.sessionGroupDisplay
-        fpsProfile = previous.fpsProfile == next.fpsProfile ? nil : next.fpsProfile
         let changedSources = next.sources.filter { previous.sources[$0.key] != $0.value }
         sources = changedSources.isEmpty ? nil : changedSources
         let changedEvents = next.events.filter { previous.events[$0.key] != $0.value }
@@ -451,7 +537,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             && autoHide == nil
             && sessionMessageTimeoutMinutes == nil
             && sessionGroupDisplay == nil
-            && fpsProfile == nil
             && sources?.isEmpty != false
             && events?.isEmpty != false
     }
@@ -467,7 +552,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         case autoHide = "auto_hide"
         case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
         case sessionGroupDisplay = "session_group_display"
-        case fpsProfile = "fps_profile"
         case sources
         case events
     }
@@ -493,7 +577,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             SessionGroupDisplay.self,
             forKey: .sessionGroupDisplay
         )
-        fpsProfile = try container.decodeIfPresent(FpsProfile.self, forKey: .fpsProfile)
         let rawSources = try container.decodeIfPresent([String: Bool].self, forKey: .sources)
         sources = rawSources.map { values in
             Dictionary(uniqueKeysWithValues: values.compactMap { key, value in
@@ -523,7 +606,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             forKey: .sessionMessageTimeoutMinutes
         )
         try container.encodeIfPresent(sessionGroupDisplay, forKey: .sessionGroupDisplay)
-        try container.encodeIfPresent(fpsProfile, forKey: .fpsProfile)
         if let sources {
             try container.encode(
                 Dictionary(uniqueKeysWithValues: sources.map { ($0.key.rawValue, $0.value) }),
@@ -557,8 +639,7 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
     public var provenance: String?
     public var revisionID: String?
     public var revisionCount: Int
-    public var nativeFPS: Int
-    public var stateDurationsMS: [String: Int]
+    public var states: [PetStateTiming]
     public var active: Bool
     public var createdAt: String
 
@@ -575,13 +656,11 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         provenance: String? = nil,
         revisionID: String? = nil,
         revisionCount: Int = 0,
-        nativeFPS: Int = PetAnimationContract.defaultNativeFPS,
-        stateDurationsMS: [String: Int] = PetAnimationContract.defaultStateDurationsMS,
+        states: [PetStateTiming] = PetAnimationContract.defaultStates,
         active: Bool,
         createdAt: String
     ) {
-        precondition(PetAnimationContract.supportedNativeFPS.contains(nativeFPS))
-        precondition(PetAnimationContract.hasValidStateDurations(stateDurationsMS))
+        precondition(PetAnimationContract.hasValidStates(states))
         self.id = id
         self.name = name
         self.style = style
@@ -594,8 +673,7 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         self.provenance = provenance
         self.revisionID = revisionID
         self.revisionCount = max(0, revisionCount)
-        self.nativeFPS = nativeFPS
-        self.stateDurationsMS = stateDurationsMS
+        self.states = states
         self.active = active
         self.createdAt = createdAt
     }
@@ -613,8 +691,7 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         case provenance
         case revisionID = "revision_id"
         case revisionCount = "revision_count"
-        case nativeFPS = "native_fps"
-        case stateDurationsMS = "state_durations_ms"
+        case states
         case active
         case createdAt = "created_at"
     }
@@ -633,38 +710,22 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
         provenance = try container.decodeIfPresent(String.self, forKey: .provenance)
         revisionID = try container.decodeIfPresent(String.self, forKey: .revisionID)
         revisionCount = max(0, try container.decodeIfPresent(Int.self, forKey: .revisionCount) ?? 0)
-        nativeFPS = try container.decode(Int.self, forKey: .nativeFPS)
-        guard PetAnimationContract.supportedNativeFPS.contains(nativeFPS) else {
+        states = try container.decode([PetStateTiming].self, forKey: .states)
+        guard PetAnimationContract.hasValidStates(states) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .nativeFPS,
+                forKey: .states,
                 in: container,
-                debugDescription: "native_fps must be 10 or 20"
-            )
-        }
-        stateDurationsMS = try container.decode([String: Int].self, forKey: .stateDurationsMS)
-        guard PetAnimationContract.hasValidStateDurations(stateDurationsMS) else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .stateDurationsMS,
-                in: container,
-                debugDescription: "state_durations_ms must contain exactly the seven states at 1000 or 2000 ms"
+                debugDescription: "states must contain the seven valid V2 timing contracts"
             )
         }
         active = try container.decode(Bool.self, forKey: .active)
         createdAt = try container.decode(String.self, forKey: .createdAt)
     }
 
-    public var supportedFPSProfiles: [FpsProfile] {
-        nativeFPS == FpsProfile.smooth.fps ? [.standard, .smooth] : [.standard]
-    }
-
-    public func effectiveFPSProfile(_ requested: FpsProfile) -> FpsProfile {
-        supportedFPSProfiles.contains(requested) ? requested : .standard
-    }
-
-    public func durationMS(for stateName: String) -> Int {
-        stateDurationsMS[stateName]
-            ?? PetAnimationContract.defaultStateDurationsMS[stateName]
-            ?? 1_000
+    public func timing(for stateName: String) -> PetStateTiming {
+        states.first(where: { $0.name == stateName })
+            ?? PetAnimationContract.defaultStates.first(where: { $0.name == stateName })
+            ?? PetAnimationContract.defaultStates[0]
     }
 
     /// Mirrors PetCore's closed bundled identity. A
@@ -773,23 +834,116 @@ public enum PetOrigin: String, Codable, Hashable, Sendable {
 }
 
 public struct OverlayPlacement: Codable, Hashable, Sendable {
+    public static let minimumDisplayWidthPt = 80.0
+    public static let maximumDisplayWidthPt = 224.0
+    public static let defaultDisplayWidthPt = 112.0
+
     public var x: Double
     public var y: Double
-    public var scale: Double
+    public var displayWidthPt: Double
     public var displayId: String
 
-    public init(x: Double = 0, y: Double = 0, scale: Double = 0.72, displayId: String = "main") {
+    public init(
+        x: Double = 0,
+        y: Double = 0,
+        displayWidthPt: Double = defaultDisplayWidthPt,
+        displayId: String = "main"
+    ) {
         self.x = x
         self.y = y
-        self.scale = scale
+        self.displayWidthPt = Self.clampedDisplayWidth(displayWidthPt)
         self.displayId = displayId
     }
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case x
         case y
-        case scale
+        case displayWidthPt = "display_width_pt"
         case displayId = "display_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        try OverlayPlacementClosedDecoding.requireOnlyKeys(
+            CodingKeys.self,
+            from: decoder
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedX = try container.decode(Double.self, forKey: .x)
+        let decodedY = try container.decode(Double.self, forKey: .y)
+        let decodedDisplayWidthPt = try container.decode(
+            Double.self,
+            forKey: .displayWidthPt
+        )
+        let decodedDisplayId = try container.decode(String.self, forKey: .displayId)
+        guard decodedX.isFinite,
+              decodedY.isFinite,
+              decodedDisplayWidthPt.isFinite,
+              (Self.minimumDisplayWidthPt ... Self.maximumDisplayWidthPt)
+                  .contains(decodedDisplayWidthPt),
+              !decodedDisplayId.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty
+        else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Overlay placement values are outside the closed contract"
+                )
+            )
+        }
+        x = decodedX
+        y = decodedY
+        displayWidthPt = decodedDisplayWidthPt
+        displayId = decodedDisplayId
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(displayWidthPt, forKey: .displayWidthPt)
+        try container.encode(displayId, forKey: .displayId)
+    }
+
+    private static func clampedDisplayWidth(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultDisplayWidthPt }
+        return min(maximumDisplayWidthPt, max(minimumDisplayWidthPt, value))
+    }
+}
+
+private enum OverlayPlacementClosedDecoding {
+    private struct DynamicCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int?
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+            intValue = nil
+        }
+
+        init?(intValue: Int) {
+            stringValue = String(intValue)
+            self.intValue = intValue
+        }
+    }
+
+    static func requireOnlyKeys<Key>(
+        _ keyType: Key.Type,
+        from decoder: Decoder
+    ) throws where Key: CodingKey & CaseIterable {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        let allowed = Set(keyType.allCases.map(\.stringValue))
+        let unknown = container.allKeys
+            .map(\.stringValue)
+            .filter { !allowed.contains($0) }
+        guard unknown.isEmpty else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Unknown overlay placement fields: \(unknown.sorted())"
+                )
+            )
+        }
     }
 }
 
@@ -1005,6 +1159,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
     public var sessionMessage: AgentSessionDisplayMessage?
     public var sessionUserMessage: AgentSessionDisplayMessage?
     public var sessionActivity: AgentSessionActivity?
+    public var acknowledgementID: String? = nil
     public var overlayDisplay: AgentOverlayDisplay? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -1026,6 +1181,7 @@ public struct ActiveAgentState: Codable, Equatable, Sendable {
         case sessionMessage = "session_message"
         case sessionUserMessage = "session_user_message"
         case sessionActivity = "session_activity"
+        case acknowledgementID = "acknowledgement_id"
         case overlayDisplay = "overlay_display"
     }
 }
@@ -2185,25 +2341,17 @@ public struct GenerationForm: Codable, Equatable, Sendable {
     public var style: String
     public var quality: QualityLevel
     public var referenceImages: [String]
-    public var nativeFPS: Int
-    public var stateDurationsMS: [String: Int]
 
     public init(
         description: String,
         style: String,
         quality: QualityLevel,
-        referenceImages: [String],
-        nativeFPS: Int = PetAnimationContract.defaultNativeFPS,
-        stateDurationsMS: [String: Int] = PetAnimationContract.defaultStateDurationsMS
+        referenceImages: [String]
     ) {
-        precondition(PetAnimationContract.supportedNativeFPS.contains(nativeFPS))
-        precondition(PetAnimationContract.hasValidStateDurations(stateDurationsMS))
         self.description = description
         self.style = style
         self.quality = quality
         self.referenceImages = referenceImages
-        self.nativeFPS = nativeFPS
-        self.stateDurationsMS = stateDurationsMS
     }
 
     enum CodingKeys: String, CodingKey {
@@ -2211,8 +2359,6 @@ public struct GenerationForm: Codable, Equatable, Sendable {
         case style
         case quality
         case referenceImages = "reference_images"
-        case nativeFPS = "native_fps"
-        case stateDurationsMS = "state_durations_ms"
     }
 
     public init(from decoder: Decoder) throws {
@@ -2221,26 +2367,6 @@ public struct GenerationForm: Codable, Equatable, Sendable {
         style = try container.decode(String.self, forKey: .style)
         quality = try container.decode(QualityLevel.self, forKey: .quality)
         referenceImages = try container.decode([String].self, forKey: .referenceImages)
-        nativeFPS = try container.decodeIfPresent(Int.self, forKey: .nativeFPS)
-            ?? PetAnimationContract.defaultNativeFPS
-        guard PetAnimationContract.supportedNativeFPS.contains(nativeFPS) else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .nativeFPS,
-                in: container,
-                debugDescription: "native_fps must be 10 or 20"
-            )
-        }
-        stateDurationsMS = try container.decodeIfPresent(
-            [String: Int].self,
-            forKey: .stateDurationsMS
-        ) ?? PetAnimationContract.defaultStateDurationsMS
-        guard PetAnimationContract.hasValidStateDurations(stateDurationsMS) else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .stateDurationsMS,
-                in: container,
-                debugDescription: "state_durations_ms must contain exactly the seven states at 1000 or 2000 ms"
-            )
-        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2249,7 +2375,5 @@ public struct GenerationForm: Codable, Equatable, Sendable {
         try container.encode(style, forKey: .style)
         try container.encode(quality, forKey: .quality)
         try container.encode(referenceImages, forKey: .referenceImages)
-        try container.encode(nativeFPS, forKey: .nativeFPS)
-        try container.encode(stateDurationsMS, forKey: .stateDurationsMS)
     }
 }

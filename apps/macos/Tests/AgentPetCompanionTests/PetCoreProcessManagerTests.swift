@@ -360,6 +360,80 @@ struct PetCoreProcessManagerTests {
     }
 
     @Test
+    func existingInvalidRuntimeManifestFailsClosedWhileExplicitAbsenceRemainsAllowed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let manifest = runtimeManifest(buildID: "build-a")
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest))
+                as? [String: Any]
+        )
+        object.removeValue(forKey: "petpack_write_version")
+        let manifestURL = directory.appendingPathComponent("runtime-manifest.json")
+        try JSONSerialization.data(withJSONObject: object).write(to: manifestURL)
+
+        let invalid = PetCoreRuntimeContract.manifestRequirement(at: manifestURL)
+        guard case let .invalid(message) = invalid else {
+            Issue.record("existing invalid manifest must not become an absent manifest")
+            return
+        }
+        #expect(message.contains("App 运行时清单无效"))
+        #expect(!PetCoreRuntimeContract.acceptsHealth(
+            [
+                "ok": true,
+                "rpc_protocol": "apc.petcore-rpc.v2",
+                "build_id": "build-a",
+            ],
+            expectedBuildID: "build-a",
+            manifestRequirement: invalid
+        ))
+        do {
+            try PetCoreRuntimeContract.validateManifestForStartup(invalid)
+            Issue.record("invalid manifest must fail startup")
+        } catch {
+            #expect(error.localizedDescription.contains("App 运行时清单无效"))
+        }
+
+        let missingAllowed = PetCoreRuntimeContract.manifestRequirement(at: nil)
+        #expect(missingAllowed == .missingAllowed)
+        #expect(throws: Never.self) {
+            try PetCoreRuntimeContract.validateManifestForStartup(missingAllowed)
+        }
+
+        let packagedBundle = directory.appendingPathComponent(
+            "AgentPetCompanion.app",
+            isDirectory: true
+        )
+        let packagedMissingURL = PetCoreRuntimeContract.requiredManifestLocation(
+            overridePath: nil,
+            bundleURL: packagedBundle,
+            bundleResourceURL: nil,
+            isPackagedApp: true,
+            bundleManifestExists: false
+        )
+        #expect(packagedMissingURL == packagedBundle.appendingPathComponent(
+            "Contents/Resources/runtime-manifest.json"
+        ))
+        guard case .invalid = PetCoreRuntimeContract.manifestRequirement(
+            at: packagedMissingURL
+        ) else {
+            Issue.record("a packaged App must require its manifest even when the file is missing")
+            return
+        }
+
+        #expect(PetCoreRuntimeContract.requiredManifestLocation(
+            overridePath: nil,
+            bundleURL: directory,
+            bundleResourceURL: directory,
+            isPackagedApp: false,
+            bundleManifestExists: false
+        ) == nil)
+    }
+
+    @Test
     func runtimeInfoUsesTheVerifiedPetCoreHealthAndManifest() throws {
         let manifest = runtimeManifest(buildID: "build-a")
         let manifestObject = try #require(
@@ -408,24 +482,605 @@ struct PetCoreProcessManagerTests {
         #expect(throws: RuntimeManifestError.self) {
             try legacyMismatch.validateForApp()
         }
+
+        let legacyReadCompatibility = runtimeManifest(
+            buildID: "build-a",
+            petpackReadVersions: ["apc.petpack.v2", "apc.petpack.v1"]
+        )
+        #expect(throws: RuntimeManifestError.self) {
+            try legacyReadCompatibility.validateForApp()
+        }
     }
 
     @Test
-    func legacyV1RuntimeManifestReconstructsPetpackReadWriteRange() throws {
+    func runtimeManifestRejectsMissingPetpackReadWriteFields() throws {
         let manifest = runtimeManifest(buildID: "build-a")
-        var object = try #require(
+        let object = try #require(
             try JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest))
                 as? [String: Any]
         )
-        object.removeValue(forKey: "petpack_read_versions")
-        object.removeValue(forKey: "petpack_write_version")
+        for key in [
+            "petpack_schema_version",
+            "petpack_read_versions",
+            "petpack_write_version",
+        ] {
+            var missingField = object
+            missingField.removeValue(forKey: key)
+            let data = try JSONSerialization.data(withJSONObject: missingField)
+            #expect(throws: DecodingError.self, "missing \(key)") {
+                try JSONDecoder().decode(RuntimeReleaseManifest.self, from: data)
+            }
+        }
+    }
 
-        let data = try JSONSerialization.data(withJSONObject: object)
-        let decoded = try JSONDecoder().decode(RuntimeReleaseManifest.self, from: data)
-        try decoded.validateForApp()
-        #expect(decoded.petpackReadVersions == ["apc.petpack.v1"])
-        #expect(decoded.petpackWriteVersion == "apc.petpack.v1")
-        #expect(decoded == manifest)
+    @Test
+    func runtimeManifestRejectsUnknownTopLevelAndConnectorFields() throws {
+        let manifest = runtimeManifest(buildID: "build-a")
+        let encoded = try JSONEncoder().encode(manifest)
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var unknownTopLevel = object
+        unknownTopLevel["future_contract"] = true
+        var unknownConnector = object
+        var connectors = try #require(
+            unknownConnector["connector_contracts"] as? [String: Any]
+        )
+        connectors["future_agent"] = "future.v1"
+        unknownConnector["connector_contracts"] = connectors
+
+        for (index, value) in [unknownTopLevel, unknownConnector].enumerated() {
+            let url = directory.appendingPathComponent("unknown-\(index).json")
+            try JSONSerialization.data(withJSONObject: value).write(to: url)
+            #expect(throws: RuntimeManifestError.self) {
+                try RuntimeReleaseManifest.read(from: url)
+            }
+        }
+
+        #expect(!PetCoreRuntimeContract.acceptsHealth(
+            [
+                "ok": true,
+                "rpc_protocol": "apc.petcore-rpc.v2",
+                "build_id": "build-a",
+                "runtime_manifest": unknownConnector,
+            ],
+            expectedBuildID: "build-a",
+            expectedManifest: manifest
+        ))
+    }
+
+    @Test
+    func runtimeManifestRejectsPureV1PetpackContract() throws {
+        let legacy = runtimeManifest(
+            buildID: "build-a",
+            petpackSchemaVersion: "apc.petpack.v1",
+            petpackReadVersions: ["apc.petpack.v1"],
+            petpackWriteVersion: "apc.petpack.v1"
+        )
+
+        #expect(throws: RuntimeManifestError.self) {
+            try legacy.validateForApp()
+        }
+    }
+
+    @Test
+    func publishedV1RollbackProfileIsExactAndNeverBecomesCandidatePolicy() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let manifestURL = directory.appendingPathComponent("runtime-manifest.json")
+        let publishedManifests = [
+            publishedV1RuntimeManifest(
+                appVersion: "0.1.0",
+                appBuild: "1",
+                buildID: "0.1.0.1.910f8bfd1130",
+                maximumDatabaseSchemaVersion: 5
+            ),
+            publishedV1RuntimeManifest(
+                appVersion: "0.1.1",
+                appBuild: "3",
+                buildID: "0.1.1.3.7e074dfec8e56742e00bffe02d1ec5de23d0a09c",
+                maximumDatabaseSchemaVersion: 6
+            ),
+            publishedV021RuntimeManifest(),
+        ]
+        for manifest in publishedManifests {
+            try JSONEncoder().encode(manifest).write(to: manifestURL)
+            #expect(throws: RuntimeManifestError.self) {
+                try RuntimeReleaseManifest.read(from: manifestURL)
+            }
+            #expect(
+                try RuntimeReleaseManifest.read(
+                    from: manifestURL,
+                    validationProfile: .publishedV1Rollback
+                ) == manifest
+            )
+        }
+
+        let manifest = publishedV021RuntimeManifest()
+        var forged = try #require(
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(manifest)
+            ) as? [String: Any]
+        )
+        let forgedBuildID = "0.2.1.5.0000000000000000000000000000000000000000"
+        forged["build_id"] = forgedBuildID
+        forged["petcore_build_id"] = forgedBuildID
+        forged["petcore_cli_build_id"] = forgedBuildID
+        try JSONSerialization.data(withJSONObject: forged).write(to: manifestURL)
+        #expect(throws: RuntimeManifestError.self) {
+            try RuntimeReleaseManifest.read(
+                from: manifestURL,
+                validationProfile: .publishedV1Rollback
+            )
+        }
+
+        var wrongAppBuild = try #require(
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(manifest)
+            ) as? [String: Any]
+        )
+        wrongAppBuild["app_build"] = "1"
+        try JSONSerialization.data(withJSONObject: wrongAppBuild).write(to: manifestURL)
+        #expect(throws: RuntimeManifestError.self) {
+            try RuntimeReleaseManifest.read(
+                from: manifestURL,
+                validationProfile: .publishedV1Rollback
+            )
+        }
+    }
+
+    @Test
+    func stagedV2CandidateSelectsPublishedV1CurrentAndLKGForRollback() async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: home) }
+
+        let publishedV1 = publishedV021RuntimeManifest()
+        try installManagedRuntime(
+            publishedV1,
+            homeURL: home,
+            fileManager: fileManager
+        )
+        let runtimeRoot = home.appendingPathComponent("runtime", isDirectory: true)
+        try writeRuntimePointer(
+            .init(buildID: publishedV1.buildID),
+            to: runtimeRoot.appendingPathComponent("current.json")
+        )
+
+        let source = home.appendingPathComponent("candidate-source", isDirectory: true)
+        try fileManager.createDirectory(at: source, withIntermediateDirectories: true)
+        let sourceExecutable = source.appendingPathComponent("petcore")
+        let sourceCLI = source.appendingPathComponent("petcore-cli")
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: "/usr/bin/true"),
+            to: sourceExecutable
+        )
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: "/usr/bin/true"),
+            to: sourceCLI
+        )
+        let strictV2 = runtimeManifest(buildID: "build-new")
+        let sourceManifest = source.appendingPathComponent("runtime-manifest.json")
+        try JSONEncoder().encode(strictV2).write(to: sourceManifest)
+
+        let store = PetCoreRuntimeStore(homeURL: home)
+        let fromCurrent = try await store.prepareCandidate(
+            sourceExecutableURL: sourceExecutable,
+            sourceCLIURL: sourceCLI,
+            sourceManifestURL: sourceManifest
+        )
+        #expect(fromCurrent.manifestValidationProfile == .strictV2)
+        #expect(fromCurrent.previous?.buildID == publishedV1.buildID)
+
+        let rollback = try await store.resolve(
+            try #require(fromCurrent.previous)
+        )
+        #expect(rollback.manifest == publishedV1)
+        #expect(
+            rollback.manifestValidationProfile == .publishedV1Rollback
+        )
+
+        let publishedHealth: [String: Any] = [
+            "ok": true,
+            "rpc_protocol": PetCoreRuntimeContract.requiredRPCProtocol,
+            "build_id": publishedV1.buildID,
+            "runtime_manifest": try #require(
+                try JSONSerialization.jsonObject(
+                    with: JSONEncoder().encode(publishedV1)
+                ) as? [String: Any]
+            ),
+        ]
+        #expect(!PetCoreRuntimeContract.acceptsHealth(
+            publishedHealth,
+            expectedBuildID: publishedV1.buildID,
+            expectedManifest: publishedV1
+        ))
+        #expect(PetCoreRuntimeContract.acceptsHealth(
+            publishedHealth,
+            expectedBuildID: publishedV1.buildID,
+            expectedManifest: publishedV1,
+            manifestValidationProfile: rollback.manifestValidationProfile
+        ))
+
+        try writeRuntimePointer(
+            .init(buildID: strictV2.buildID),
+            to: runtimeRoot.appendingPathComponent("current.json")
+        )
+        try writeRuntimePointer(
+            .init(buildID: publishedV1.buildID),
+            to: runtimeRoot.appendingPathComponent("last-known-good.json")
+        )
+        let fromLKG = try await store.prepareCandidate(
+            sourceExecutableURL: sourceExecutable,
+            sourceCLIURL: sourceCLI,
+            sourceManifestURL: sourceManifest
+        )
+        #expect(fromLKG.previous == nil)
+
+        try fileManager.removeItem(
+            at: runtimeRoot.appendingPathComponent("current.json")
+        )
+        let fromLKGWithoutCurrent = try await store.prepareCandidate(
+            sourceExecutableURL: sourceExecutable,
+            sourceCLIURL: sourceCLI,
+            sourceManifestURL: sourceManifest
+        )
+        #expect(fromLKGWithoutCurrent.previous?.buildID == publishedV1.buildID)
+    }
+
+    @Test
+    func rollbackCheckpointCommandBindsTheSourceAndCandidateBuilds() async throws {
+        let home = URL(fileURLWithPath: "/tmp/apc-checkpoint-test", isDirectory: true)
+        #expect(try PetCoreRollbackCheckpointCommand.arguments(
+            operation: .create,
+            homeURL: home,
+            sourceBuildID: "build-previous",
+            candidateBuildID: "build-candidate"
+        ) == [
+            "rollback-checkpoint", "create",
+            "--home", home.path,
+            "--source-build-id", "build-previous",
+            "--candidate-build-id", "build-candidate",
+        ])
+        #expect(try PetCoreRollbackCheckpointCommand.arguments(
+            operation: .restore,
+            homeURL: home
+        ) == ["rollback-checkpoint", "restore", "--home", home.path])
+        #expect(try PetCoreRollbackCheckpointCommand.arguments(
+            operation: .status,
+            homeURL: home
+        ) == ["rollback-checkpoint", "status", "--home", home.path])
+        #expect(throws: (any Error).self) {
+            try PetCoreRollbackCheckpointCommand.arguments(
+                operation: .create,
+                homeURL: home
+            )
+        }
+
+        try await PetCoreRollbackCheckpointCommand.run(
+            operation: .create,
+            executableURL: URL(fileURLWithPath: "/usr/bin/true"),
+            homeURL: home,
+            sourceBuildID: "build-previous",
+            candidateBuildID: "build-candidate"
+        )
+        do {
+            try await PetCoreRollbackCheckpointCommand.run(
+                operation: .discard,
+                executableURL: URL(fileURLWithPath: "/usr/bin/false"),
+                homeURL: home
+            )
+            Issue.record("a nonzero checkpoint command must fail")
+        } catch {
+            #expect(error.localizedDescription.contains("discard 失败"))
+        }
+    }
+
+    @Test
+    func rollbackCheckpointStatusIsClosedAndBypassesOnlyExactReadyRecovery() throws {
+        let readyData = try JSONSerialization.data(withJSONObject: [
+            "schema_version": PetCoreRollbackCheckpointStatus.schemaVersion,
+            "present": true,
+            "phase": "ready",
+            "source_build_id": "build-previous",
+            "candidate_build_id": "build-candidate",
+        ])
+        let ready = try #require(
+            PetCoreRollbackCheckpointStatus.decodeClosed(readyData)
+        )
+        #expect(ready.isReadyRecovery(
+            sourceBuildID: "build-previous",
+            candidateBuildID: "build-candidate"
+        ))
+        #expect(!ready.isReadyRecovery(
+            sourceBuildID: "build-foreign",
+            candidateBuildID: "build-candidate"
+        ))
+
+        let restoredData = try JSONSerialization.data(withJSONObject: [
+            "schema_version": PetCoreRollbackCheckpointStatus.schemaVersion,
+            "present": true,
+            "phase": "restored",
+            "source_build_id": "build-previous",
+            "candidate_build_id": "build-candidate",
+        ])
+        let restored = try #require(
+            PetCoreRollbackCheckpointStatus.decodeClosed(restoredData)
+        )
+        #expect(!restored.isReadyRecovery(
+            sourceBuildID: "build-previous",
+            candidateBuildID: "build-candidate"
+        ))
+
+        var unknown = try #require(
+            try JSONSerialization.jsonObject(with: readyData) as? [String: Any]
+        )
+        unknown["unexpected"] = true
+        #expect(PetCoreRollbackCheckpointStatus.decodeClosed(
+            try JSONSerialization.data(withJSONObject: unknown)
+        ) == nil)
+
+        var missing = try #require(
+            try JSONSerialization.jsonObject(with: readyData) as? [String: Any]
+        )
+        missing.removeValue(forKey: "candidate_build_id")
+        #expect(PetCoreRollbackCheckpointStatus.decodeClosed(
+            try JSONSerialization.data(withJSONObject: missing)
+        ) == nil)
+
+        let malformedAbsent = try JSONSerialization.data(withJSONObject: [
+            "schema_version": PetCoreRollbackCheckpointStatus.schemaVersion,
+            "present": false,
+            "phase": "ready",
+            "source_build_id": NSNull(),
+            "candidate_build_id": NSNull(),
+        ])
+        #expect(PetCoreRollbackCheckpointStatus.decodeClosed(malformedAbsent) == nil)
+    }
+
+    @Test
+    func runtimeUpgradeCheckpointWrapsOnlyTheUncommittedCandidateWindow() async throws {
+        let probe = RuntimeUpgradeTransactionProbe()
+
+        try await PetCoreRuntimeUpgradeTransaction.run(
+            rollbackAvailable: true,
+            stopPriorRuntime: { try await probe.record("stop_prior") },
+            revalidateCandidate: { try await probe.record("revalidate") },
+            createCheckpoint: { try await probe.record("create") },
+            launchCandidate: { try await probe.record("launch_candidate") },
+            verifyCandidateHealth: { try await probe.record("candidate_health") },
+            commitCandidate: { try await probe.record("commit") },
+            stopCandidateRuntime: { try await probe.record("stop_candidate") },
+            restoreCheckpoint: { try await probe.record("restore") },
+            launchRollback: { try await probe.record("launch_rollback") },
+            discardCheckpoint: { try await probe.record("discard") },
+            recordCleanupFailure: { _ in
+                try? await probe.record("cleanup_failure")
+            }
+        )
+
+        #expect(await probe.snapshot() == [
+            "stop_prior",
+            "create",
+            "revalidate",
+            "launch_candidate",
+            "candidate_health",
+            "commit",
+            "discard",
+        ])
+    }
+
+    @Test
+    func candidateFailureStopsThenRestoresBeforeHistoricalRuntimeStarts() async {
+        let probe = RuntimeUpgradeTransactionProbe()
+
+        do {
+            try await PetCoreRuntimeUpgradeTransaction.run(
+                rollbackAvailable: true,
+                stopPriorRuntime: { try await probe.record("stop_prior") },
+                revalidateCandidate: { try await probe.record("revalidate") },
+                createCheckpoint: { try await probe.record("create") },
+                launchCandidate: { try await probe.record("launch_candidate") },
+                verifyCandidateHealth: {
+                    try await probe.record("candidate_health", failure: "health failed")
+                },
+                commitCandidate: { try await probe.record("commit") },
+                stopCandidateRuntime: { try await probe.record("stop_candidate") },
+                restoreCheckpoint: { try await probe.record("restore") },
+                launchRollback: { try await probe.record("launch_rollback") },
+                discardCheckpoint: { try await probe.record("discard") },
+                recordCleanupFailure: { _ in
+                    try? await probe.record("cleanup_failure")
+                }
+            )
+            Issue.record("candidate failure must surface after rollback")
+        } catch {
+            #expect(error.localizedDescription.hasPrefix(
+                "PetCore 更新失败，已恢复上一个可用版本"
+            ))
+        }
+
+        #expect(await probe.snapshot() == [
+            "stop_prior",
+            "create",
+            "revalidate",
+            "launch_candidate",
+            "candidate_health",
+            "stop_candidate",
+            "restore",
+            "launch_rollback",
+            "discard",
+        ])
+    }
+
+    @Test
+    func restoreFailureFailsClosedWithoutStartingTheHistoricalRuntime() async {
+        let probe = RuntimeUpgradeTransactionProbe()
+
+        do {
+            try await PetCoreRuntimeUpgradeTransaction.run(
+                rollbackAvailable: true,
+                stopPriorRuntime: { try await probe.record("stop_prior") },
+                revalidateCandidate: { try await probe.record("revalidate") },
+                createCheckpoint: { try await probe.record("create") },
+                launchCandidate: { try await probe.record("launch_candidate") },
+                verifyCandidateHealth: {
+                    try await probe.record("candidate_health", failure: "health failed")
+                },
+                commitCandidate: { try await probe.record("commit") },
+                stopCandidateRuntime: { try await probe.record("stop_candidate") },
+                restoreCheckpoint: {
+                    try await probe.record("restore", failure: "restore failed")
+                },
+                launchRollback: { try await probe.record("launch_rollback") },
+                discardCheckpoint: { try await probe.record("discard") },
+                recordCleanupFailure: { _ in
+                    try? await probe.record("cleanup_failure")
+                }
+            )
+            Issue.record("restore failure must fail closed")
+        } catch {
+            #expect(error.localizedDescription.contains("回滚未完成"))
+            #expect(error.localizedDescription.contains("恢复数据检查点失败"))
+        }
+
+        #expect(await probe.snapshot() == [
+            "stop_prior",
+            "create",
+            "revalidate",
+            "launch_candidate",
+            "candidate_health",
+            "stop_candidate",
+            "restore",
+        ])
+    }
+
+    @Test
+    func staleReadyCheckpointCreateFailureNeverStartsHistoricalRuntime() async {
+        let probe = RuntimeUpgradeTransactionProbe()
+        try? await probe.record("stale_ready_with_candidate_mutated_database")
+
+        do {
+            try await PetCoreRuntimeUpgradeTransaction.run(
+                rollbackAvailable: true,
+                stopPriorRuntime: { try await probe.record("stop_prior") },
+                revalidateCandidate: { try await probe.record("revalidate") },
+                createCheckpoint: {
+                    try await probe.record(
+                        "reconcile_stale_ready_with_corrupt_digest",
+                        failure: "checkpoint digest mismatch"
+                    )
+                },
+                launchCandidate: { try await probe.record("launch_candidate") },
+                verifyCandidateHealth: { try await probe.record("candidate_health") },
+                commitCandidate: { try await probe.record("commit") },
+                stopCandidateRuntime: { try await probe.record("stop_candidate") },
+                restoreCheckpoint: { try await probe.record("restore") },
+                launchRollback: { try await probe.record("launch_rollback") },
+                discardCheckpoint: { try await probe.record("discard") },
+                recordCleanupFailure: { _ in
+                    try? await probe.record("cleanup_failure")
+                }
+            )
+            Issue.record("an unverified stale checkpoint must fail closed")
+        } catch {
+            #expect(error.localizedDescription.contains("回滚未完成"))
+            #expect(error.localizedDescription.contains("已停止启动历史版本"))
+        }
+
+        #expect(await probe.snapshot() == [
+            "stale_ready_with_candidate_mutated_database",
+            "stop_prior",
+            "reconcile_stale_ready_with_corrupt_digest",
+        ])
+    }
+
+    @Test
+    func postCommitDiscardFailureNeverRollsBackTheHealthyCandidate() async throws {
+        let probe = RuntimeUpgradeTransactionProbe()
+
+        try await PetCoreRuntimeUpgradeTransaction.run(
+            rollbackAvailable: true,
+            stopPriorRuntime: { try await probe.record("stop_prior") },
+            revalidateCandidate: { try await probe.record("revalidate") },
+            createCheckpoint: { try await probe.record("create") },
+            launchCandidate: { try await probe.record("launch_candidate") },
+            verifyCandidateHealth: { try await probe.record("candidate_health") },
+            commitCandidate: { try await probe.record("commit") },
+            stopCandidateRuntime: { try await probe.record("stop_candidate") },
+            restoreCheckpoint: { try await probe.record("restore") },
+            launchRollback: { try await probe.record("launch_rollback") },
+            discardCheckpoint: {
+                try await probe.record("discard", failure: "discard failed")
+            },
+            recordCleanupFailure: { _ in
+                try? await probe.record("cleanup_failure")
+            }
+        )
+
+        #expect(await probe.snapshot() == [
+            "stop_prior",
+            "create",
+            "revalidate",
+            "launch_candidate",
+            "candidate_health",
+            "commit",
+            "discard",
+            "cleanup_failure",
+        ])
+    }
+
+    @Test
+    func checkpointRecoveryPrecedesThePostStopWaitingJobPreflight() async {
+        let probe = RuntimeUpgradeTransactionProbe()
+        try? await probe.record("candidate_staged")
+        try? await probe.record("v1_waiting_job_inserted")
+
+        do {
+            try await PetCoreRuntimeUpgradeTransaction.run(
+                rollbackAvailable: true,
+                stopPriorRuntime: { try await probe.record("stop_prior") },
+                revalidateCandidate: {
+                    try await probe.record("second_preflight", failure: "waiting job detected")
+                },
+                createCheckpoint: { try await probe.record("create") },
+                launchCandidate: { try await probe.record("launch_candidate") },
+                verifyCandidateHealth: { try await probe.record("candidate_health") },
+                commitCandidate: { try await probe.record("commit") },
+                stopCandidateRuntime: { try await probe.record("stop_candidate") },
+                restoreCheckpoint: { try await probe.record("restore") },
+                launchRollback: { try await probe.record("launch_rollback") },
+                discardCheckpoint: { try await probe.record("discard") },
+                recordCleanupFailure: { _ in
+                    try? await probe.record("cleanup_failure")
+                }
+            )
+            Issue.record("the second preflight must reject newly inserted work")
+        } catch {
+            #expect(error.localizedDescription.contains("已恢复上一个可用版本"))
+        }
+
+        #expect(await probe.snapshot() == [
+            "candidate_staged",
+            "v1_waiting_job_inserted",
+            "stop_prior",
+            "create",
+            "second_preflight",
+            "restore",
+            "launch_rollback",
+            "discard",
+        ])
     }
 
     @Test
@@ -504,6 +1159,37 @@ struct PetCoreProcessManagerTests {
 
     @Test
     func runtimeReplacementDistinguishesProtectedRecoverableAndUnknownWork() {
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": true,
+            "active_generation": false,
+            "connection_operation_active": false
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": false,
+            "active_generation": true,
+            "connection_operation_active": false
+        ]) == .snapshotRequired)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": false,
+            "active_generation": true,
+            "active_generation_status": "waiting_for_user",
+            "connection_operation_active": false,
+            "runtime_replacement_safe": true
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": false,
+            "active_generation": true,
+            "active_generation_status": "running",
+            "connection_operation_active": false,
+            "runtime_replacement_safe": false
+        ]) == .protectedWork)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": true,
+            "active_generation": true,
+            "active_generation_status": "running",
+            "connection_operation_active": false,
+            "runtime_replacement_safe": false
+        ]) == .unknown)
         #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
             "active_generation": ["job_id": "job-1", "status": "running"]
         ]) == .protectedWork)
@@ -540,12 +1226,53 @@ struct PetCoreProcessManagerTests {
         #expect(PetCoreRuntimeReplacementSafetyPolicy.assessLegacyConnectionProbeError(
             PetCoreClientError.rpcError("unknown method connections.test")
         ) == .unknown)
-        #expect(PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSnapshotError(
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.shouldFallbackToSnapshotAfterPreflightError(
+            PetCoreClientError.rpcErrorResponse(
+                code: -32601,
+                message: "method not found: product.convergence.preflight"
+            )
+        ))
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.shouldFallbackToSnapshotAfterPreflightError(
+            PetCoreClientError.rpcError(
+                "method not found: product.convergence.preflight"
+            )
+        ))
+        #expect(!PetCoreRuntimeReplacementSafetyPolicy.shouldFallbackToSnapshotAfterPreflightError(
+            PetCoreClientError.rpcErrorResponse(
+                code: -32603,
+                message: "method not found: product.convergence.preflight"
+            )
+        ))
+        #expect(!PetCoreRuntimeReplacementSafetyPolicy.shouldFallbackToSnapshotAfterPreflightError(
+            PetCoreClientError.rpcError(
+                "invalid request: unknown method product.convergence.preflight"
+            )
+        ))
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSafetyProbeError(
             PetCoreTransportError.timedOut
         ))
-        #expect(!PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSnapshotError(
+        #expect(!PetCoreRuntimeReplacementSafetyPolicy.shouldDeferAfterSafetyProbeError(
             PetCoreTransportError.systemCall(operation: "connect", code: ECONNREFUSED)
         ))
+    }
+
+    @Test
+    func v011MethodNotFoundFrameFallsBackAcrossTheVersionJump() throws {
+        let response = Data(
+            """
+            {"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found: product.convergence.preflight"}}
+
+            """.utf8
+        )
+        do {
+            _ = try PetCoreClient.decodeResult(from: response)
+            Issue.record("The v0.1.1 method-not-found frame must be an RPC error")
+        } catch {
+            #expect(
+                PetCoreRuntimeReplacementSafetyPolicy
+                    .shouldFallbackToSnapshotAfterPreflightError(error)
+            )
+        }
     }
 
     @MainActor
@@ -1111,9 +1838,9 @@ struct PetCoreProcessManagerTests {
         buildID: String,
         releaseChannel: String = "develop",
         codexContract: String = "codex-hooks.v1",
-        petpackSchemaVersion: String = "apc.petpack.v1",
-        petpackReadVersions: [String] = ["apc.petpack.v1"],
-        petpackWriteVersion: String = "apc.petpack.v1"
+        petpackSchemaVersion: String = "apc.petpack.v2",
+        petpackReadVersions: [String] = ["apc.petpack.v2"],
+        petpackWriteVersion: String = "apc.petpack.v2"
     ) -> RuntimeReleaseManifest {
         RuntimeReleaseManifest(
             schemaVersion: RuntimeReleaseManifest.schemaVersion,
@@ -1137,6 +1864,81 @@ struct PetCoreProcessManagerTests {
                 opencode: "opencode-plugin.v1"
             )
         )
+    }
+
+    private func publishedV021RuntimeManifest() -> RuntimeReleaseManifest {
+        publishedV1RuntimeManifest(
+            appVersion: "0.2.1",
+            appBuild: "5",
+            buildID: "0.2.1.5.ce1c8cdd9d080dc2f2a7d13e20829f90dc3c82cd",
+            maximumDatabaseSchemaVersion: 6
+        )
+    }
+
+    private func publishedV1RuntimeManifest(
+        appVersion: String,
+        appBuild: String,
+        buildID: String,
+        maximumDatabaseSchemaVersion: UInt32
+    ) -> RuntimeReleaseManifest {
+        RuntimeReleaseManifest(
+            schemaVersion: RuntimeReleaseManifest.schemaVersion,
+            releaseChannel: "release",
+            appVersion: appVersion,
+            appBuild: appBuild,
+            buildID: buildID,
+            petCoreRPCProtocol: PetCoreRuntimeContract.requiredRPCProtocol,
+            petCoreBuildID: buildID,
+            petCoreCLIBuildID: buildID,
+            minimumDatabaseSchemaVersion: 0,
+            maximumDatabaseSchemaVersion: maximumDatabaseSchemaVersion,
+            agentEventSchemaVersion: "apc.agent-event.v1",
+            petpackSchemaVersion: "apc.petpack.v1",
+            petpackReadVersions: ["apc.petpack.v1"],
+            petpackWriteVersion: "apc.petpack.v1",
+            connectorContracts: RuntimeConnectorContracts(
+                codex: "codex-hooks-2026-07-17-schema-v6",
+                claudeCode: "claude-hooks-2026-07-17-activity-v5",
+                pi: "pi-extension-0.80.10-activity-v7",
+                opencode: "opencode-v1.18.0-activity-v8"
+            )
+        )
+    }
+
+    private func installManagedRuntime(
+        _ manifest: RuntimeReleaseManifest,
+        homeURL: URL,
+        fileManager: FileManager
+    ) throws {
+        let directory = homeURL
+            .appendingPathComponent("runtime/versions", isDirectory: true)
+            .appendingPathComponent(manifest.buildID, isDirectory: true)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: "/usr/bin/true"),
+            to: directory.appendingPathComponent("petcore")
+        )
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: "/usr/bin/true"),
+            to: directory.appendingPathComponent("petcore-cli")
+        )
+        try JSONEncoder().encode(manifest).write(
+            to: directory.appendingPathComponent("runtime-manifest.json")
+        )
+    }
+
+    private func writeRuntimePointer(
+        _ pointer: InstalledPetCoreRuntime,
+        to url: URL
+    ) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(pointer).write(to: url)
     }
 
     private func makeManager(probe: ProcessManagerProbe) -> PetCoreProcessManager {
@@ -1174,6 +1976,29 @@ private actor ProcessManagerProbe {
     func runDirect() async throws { directRuns += 1 }
 
     func counts() -> (launchctl: Int, direct: Int) { (launchctlRuns, directRuns) }
+}
+
+private actor RuntimeUpgradeTransactionProbe {
+    private var events: [String] = []
+
+    func record(_ event: String, failure: String? = nil) throws {
+        events.append(event)
+        if let failure {
+            throw RuntimeUpgradeTransactionProbeError.failed(failure)
+        }
+    }
+
+    func snapshot() -> [String] { events }
+}
+
+private enum RuntimeUpgradeTransactionProbeError: LocalizedError {
+    case failed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .failed(message): message
+        }
+    }
 }
 
 private actor AppStoreBootstrapProbe {

@@ -648,9 +648,9 @@ struct PetLibraryPresentation: Equatable {
                 value: packageVersionSummary
             ),
             PetLibraryTechnicalItem(
-                field: .nativeRate,
-                title: APCLocalization.text(.libraryFieldFPS, locale: localeIdentifier),
-                value: fpsSummary
+                field: .timing,
+                title: APCLocalization.text(.libraryFieldTiming, locale: localeIdentifier),
+                value: timingSummary
             ),
             PetLibraryTechnicalItem(
                 field: .durations,
@@ -717,11 +717,11 @@ struct PetLibraryPresentation: Equatable {
         "\(revisionIDSummary) · \(revisionCountSummary) · \(revisionPolicySummary)"
     }
 
-    /// PetCore only admits packages that satisfy the currently supported V1
+    /// PetCore only admits packages that satisfy the currently supported V2
     /// package contract. Keeping the package format separate from the
     /// immutable revision ID prevents the Inspector from conflating the two.
     var packageVersionSummary: String {
-        "apc.petpack.v1"
+        "apc.petpack.v2"
     }
 
     var revisionIDSummary: String {
@@ -755,43 +755,40 @@ struct PetLibraryPresentation: Equatable {
             : nil
     }
 
-    var fpsSpecification: String? {
+    var timingSpecification: String? {
         validationStatus == .verified
-            ? fpsSummary
+            ? timingSummary
             : nil
     }
 
-    var fpsSummary: String {
-        APCLocalization.text(
-            pet.nativeFPS == FpsProfile.smooth.fps
-                ? .libraryFPSSummary
-                : .libraryFPSStandardSummary,
-            locale: localeIdentifier
+    var timingSummary: String {
+        APCLocalization.format(
+            .libraryAuthoredTimingSummaryFormat,
+            locale: localeIdentifier,
+            pet.states.reduce(0) { $0 + $1.frameDurationsMS.count },
+            pet.states.count
         )
     }
 
     var durationSummary: String {
-        [1_000, 2_000].compactMap { durationMS in
-            let states = Self.stateNames.filter { pet.durationMS(for: $0) == durationMS }
-            guard !states.isEmpty else { return nil }
+        Self.stateNames.map { stateName in
+            let durationMS = pet.timing(for: stateName).frameDurationsMS.reduce(0, +)
             return APCLocalization.format(
-                .libraryDurationGroupFormat,
+                .libraryDurationStateFormat,
                 locale: localeIdentifier,
-                durationMS / 1_000,
-                states.joined(separator: " · ")
+                stateName,
+                durationMS
             )
-        }.joined(separator: "   ")
+        }.joined(separator: " · ")
     }
 
     var frameCountSummary: String {
         Self.stateNames.map { stateName in
-            let durationMS = pet.durationMS(for: stateName)
-            let frameCount = pet.nativeFPS * durationMS / 1_000
             return APCLocalization.format(
                 .libraryFrameCountStateFormat,
                 locale: localeIdentifier,
                 stateName,
-                frameCount
+                pet.timing(for: stateName).frameDurationsMS.count
             )
         }.joined(separator: " · ")
     }
@@ -852,7 +849,7 @@ struct PetLibraryTechnicalItem: Identifiable, Equatable {
         case revisionID
         case revisionCount
         case packageVersion
-        case nativeRate
+        case timing
         case durations
         case frameCounts
         case states

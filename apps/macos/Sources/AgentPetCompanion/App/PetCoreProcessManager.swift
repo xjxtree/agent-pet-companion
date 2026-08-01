@@ -1,6 +1,18 @@
 import AgentPetCompanionCore
 import Darwin
 import Foundation
+import OSLog
+
+enum RuntimeManifestRequirement: Equatable, Sendable {
+    case missingAllowed
+    case required(RuntimeReleaseManifest)
+    case invalid(String)
+
+    var manifest: RuntimeReleaseManifest? {
+        guard case let .required(manifest) = self else { return nil }
+        return manifest
+    }
+}
 
 enum PetCoreRuntimeContract {
     static let requiredRPCProtocol = "apc.petcore-rpc.v2"
@@ -10,19 +22,23 @@ enum PetCoreRuntimeContract {
         "APC_REQUIRE_EXTERNAL_SKILL_SOURCE": "1"
     ]
     static let requiredManifestURL: URL? = {
-        if let override = ProcessInfo.processInfo.environment["APC_RUNTIME_MANIFEST_PATH"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !override.isEmpty
-        {
-            return URL(fileURLWithPath: override)
-        }
-        let url = Bundle.main.resourceURL?.appendingPathComponent("runtime-manifest.json")
-        return url.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        let bundleManifestURL = Bundle.main.resourceURL?
+            .appendingPathComponent("runtime-manifest.json")
+        return requiredManifestLocation(
+            overridePath: ProcessInfo.processInfo.environment["APC_RUNTIME_MANIFEST_PATH"],
+            bundleURL: Bundle.main.bundleURL,
+            bundleResourceURL: Bundle.main.resourceURL,
+            isPackagedApp: Bundle.main.bundleURL.pathExtension.caseInsensitiveCompare("app")
+                == .orderedSame,
+            bundleManifestExists: bundleManifestURL.map {
+                FileManager.default.fileExists(atPath: $0.path)
+            } ?? false
+        )
     }()
-    static let requiredManifest: RuntimeReleaseManifest? = {
-        guard let requiredManifestURL else { return nil }
-        return try? RuntimeReleaseManifest.read(from: requiredManifestURL)
-    }()
+    static let requiredManifestRequirement = manifestRequirement(at: requiredManifestURL)
+    static var requiredManifest: RuntimeReleaseManifest? {
+        requiredManifestRequirement.manifest
+    }
     static let requiredBuildID: String? = {
         if let override = ProcessInfo.processInfo.environment["APC_BUILD_ID"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -44,6 +60,8 @@ enum PetCoreRuntimeContract {
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
         expectedManifest: RuntimeReleaseManifest? = requiredManifest,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        manifestRequirement: RuntimeManifestRequirement? = nil,
         expectedConnectorEnvironment: [String: String]? = nil
     ) -> Bool {
         guard let health = result as? [String: Any] else { return false }
@@ -53,8 +71,19 @@ enum PetCoreRuntimeContract {
         if let expectedBuildID, health["build_id"] as? String != expectedBuildID {
             return false
         }
-        if let expectedManifest {
-            guard RuntimeReleaseManifest.decodeHealthValue(health["runtime_manifest"])
+        let resolvedManifestRequirement = manifestRequirement
+            ?? expectedManifest.map(RuntimeManifestRequirement.required)
+            ?? requiredManifestRequirement
+        switch resolvedManifestRequirement {
+        case .missingAllowed:
+            break
+        case .invalid:
+            return false
+        case let .required(expectedManifest):
+            guard RuntimeReleaseManifest.decodeHealthValue(
+                    health["runtime_manifest"],
+                    validationProfile: manifestValidationProfile
+                  )
                     == expectedManifest
             else { return false }
         }
@@ -73,12 +102,16 @@ enum PetCoreRuntimeContract {
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
         expectedManifest: RuntimeReleaseManifest? = requiredManifest,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        manifestRequirement: RuntimeManifestRequirement? = nil,
         expectedConnectorEnvironment: [String: String]? = nil
     ) -> String? {
         guard !acceptsHealth(
                   result,
                   expectedBuildID: expectedBuildID,
                   expectedManifest: expectedManifest,
+                  manifestValidationProfile: manifestValidationProfile,
+                  manifestRequirement: manifestRequirement,
                   expectedConnectorEnvironment: expectedConnectorEnvironment
               ),
               let health = result as? [String: Any],
@@ -87,6 +120,55 @@ enum PetCoreRuntimeContract {
               !instanceID.isEmpty
         else { return nil }
         return instanceID
+    }
+
+    static func manifestRequirement(at url: URL?) -> RuntimeManifestRequirement {
+        guard let url else {
+            // Source/test startup without a packaged manifest is the sole
+            // explicitly unmanaged stage. A supplied path is always required.
+            return .missingAllowed
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .invalid("未找到 App 运行时清单")
+        }
+        do {
+            return .required(try RuntimeReleaseManifest.read(from: url))
+        } catch {
+            return .invalid(
+                "App 运行时清单无效或缺少 V2 必需字段：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    static func requiredManifestLocation(
+        overridePath: String?,
+        bundleURL: URL,
+        bundleResourceURL: URL?,
+        isPackagedApp: Bool,
+        bundleManifestExists: Bool
+    ) -> URL? {
+        if let override = overridePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty
+        {
+            return URL(fileURLWithPath: override)
+        }
+        if isPackagedApp {
+            // A packaged App always owns this resource contract. Returning
+            // the expected path even when packaging omitted the file makes
+            // requirement resolution fail closed instead of becoming nil.
+            return bundleURL.appendingPathComponent(
+                "Contents/Resources/runtime-manifest.json"
+            )
+        }
+        guard bundleManifestExists else { return nil }
+        return bundleResourceURL?.appendingPathComponent("runtime-manifest.json")
+    }
+
+    static func validateManifestForStartup(
+        _ requirement: RuntimeManifestRequirement = requiredManifestRequirement
+    ) throws {
+        guard case let .invalid(message) = requirement else { return }
+        throw RuntimeManifestError.invalid(message)
     }
 }
 
@@ -321,8 +403,49 @@ enum PetCoreRuntimeReplacementSafetyPolicy {
     enum Assessment: Equatable {
         case safe
         case protectedWork
+        case snapshotRequired
         case legacyConnectionStateNeedsProbe
         case unknown
+    }
+
+    static func assess(preflightValue: Any) -> Assessment {
+        guard let preflight = preflightValue as? [String: Any],
+              let convergenceSafe = preflight["safe"] as? Bool,
+              let activeGeneration = preflight["active_generation"] as? Bool,
+              let connectionOperation = preflight["connection_operation_active"] as? Bool,
+              convergenceSafe == (!activeGeneration && !connectionOperation)
+        else { return .unknown }
+
+        guard let replacementValue = preflight["runtime_replacement_safe"] else {
+            return convergenceSafe ? .safe : .snapshotRequired
+        }
+        guard let replacementSafe = replacementValue as? Bool else {
+            return .unknown
+        }
+
+        let expectedReplacementSafe: Bool
+        if activeGeneration {
+            guard let status = preflight["active_generation_status"] as? String else {
+                return .unknown
+            }
+            switch status {
+            case "pending", "running":
+                expectedReplacementSafe = false
+            case "waiting_for_user":
+                expectedReplacementSafe = !connectionOperation
+            default:
+                return .unknown
+            }
+        } else {
+            let status = preflight["active_generation_status"]
+            guard status == nil || status is NSNull else { return .unknown }
+            expectedReplacementSafe = !connectionOperation
+        }
+
+        guard replacementSafe == expectedReplacementSafe else {
+            return .unknown
+        }
+        return replacementSafe ? .safe : .protectedWork
     }
 
     static func assess(snapshotValue: Any) -> Assessment {
@@ -369,13 +492,26 @@ enum PetCoreRuntimeReplacementSafetyPolicy {
     }
 
     static func assessLegacyConnectionProbeError(_ error: Error) -> Assessment {
-        guard case let PetCoreClientError.rpcError(message) = error,
+        guard let error = error as? PetCoreClientError,
+              let message = error.rpcMessage,
               message.contains("another Agent connection operation is already running")
         else { return .unknown }
         return .protectedWork
     }
 
-    static func shouldDeferAfterSnapshotError(_ error: Error) -> Bool {
+    static func shouldFallbackToSnapshotAfterPreflightError(_ error: Error) -> Bool {
+        guard let error = error as? PetCoreClientError else {
+            return false
+        }
+        if error.rpcCode == -32601 {
+            return true
+        }
+        return error.rpcCode == nil
+            && error.rpcMessage
+                == "method not found: product.convergence.preflight"
+    }
+
+    static func shouldDeferAfterSafetyProbeError(_ error: Error) -> Bool {
         guard let transportError = error as? PetCoreTransportError,
               case let .systemCall(operation, code) = transportError,
               operation == "connect",
@@ -386,6 +522,294 @@ enum PetCoreRuntimeReplacementSafetyPolicy {
             return true
         }
         return false
+    }
+}
+
+enum PetCoreRollbackCheckpointOperation: String, Sendable {
+    case create
+    case restore
+    case discard
+    case status
+}
+
+struct PetCoreRollbackCheckpointStatus: Decodable, Equatable, Sendable {
+    static let schemaVersion = "apc.runtime-rollback-checkpoint.v1"
+
+    enum Phase: String, Decodable, Equatable, Sendable {
+        case creating
+        case ready
+        case restored
+    }
+
+    let schemaVersion: String
+    let present: Bool
+    let phase: Phase?
+    let sourceBuildID: String?
+    let candidateBuildID: String?
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion = "schema_version"
+        case present
+        case phase
+        case sourceBuildID = "source_build_id"
+        case candidateBuildID = "candidate_build_id"
+    }
+
+    static func decodeClosed(_ data: Data) -> PetCoreRollbackCheckpointStatus? {
+        guard data.count <= 4 * 1_024,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == Set(CodingKeys.allCases.map(\.rawValue)),
+              let status = try? JSONDecoder().decode(Self.self, from: data),
+              status.schemaVersion == schemaVersion
+        else { return nil }
+
+        if status.present {
+            guard status.phase != nil,
+                  let sourceBuildID = status.sourceBuildID,
+                  let candidateBuildID = status.candidateBuildID,
+                  isSafeBuildID(sourceBuildID),
+                  isSafeBuildID(candidateBuildID)
+            else { return nil }
+        } else {
+            guard status.phase == nil,
+                  status.sourceBuildID == nil,
+                  status.candidateBuildID == nil
+            else { return nil }
+        }
+        return status
+    }
+
+    func isReadyRecovery(sourceBuildID: String, candidateBuildID: String) -> Bool {
+        present
+            && phase == .ready
+            && self.sourceBuildID == sourceBuildID
+            && self.candidateBuildID == candidateBuildID
+    }
+
+    private static func isSafeBuildID(_ value: String) -> Bool {
+        value.range(
+            of: "^[A-Za-z0-9._+-]{1,128}$",
+            options: .regularExpression
+        ) != nil
+    }
+}
+
+enum PetCoreRollbackCheckpointCommand {
+    static func arguments(
+        operation: PetCoreRollbackCheckpointOperation,
+        homeURL: URL,
+        sourceBuildID: String? = nil,
+        candidateBuildID: String? = nil
+    ) throws -> [String] {
+        var arguments = [
+            "rollback-checkpoint", operation.rawValue,
+            "--home", homeURL.path
+        ]
+        if operation == .create {
+            guard let sourceBuildID, !sourceBuildID.isEmpty,
+                  let candidateBuildID, !candidateBuildID.isEmpty
+            else {
+                throw PetCoreServiceLauncherError.message(
+                    "创建 PetCore 回滚检查点时缺少运行时构建标识"
+                )
+            }
+            arguments.append(contentsOf: [
+                "--source-build-id", sourceBuildID,
+                "--candidate-build-id", candidateBuildID
+            ])
+        }
+        return arguments
+    }
+
+    static func run(
+        operation: PetCoreRollbackCheckpointOperation,
+        executableURL: URL,
+        homeURL: URL,
+        sourceBuildID: String? = nil,
+        candidateBuildID: String? = nil
+    ) async throws {
+        let result = try await BoundedProcessRunner.run(
+            executableURL: executableURL,
+            arguments: try arguments(
+                operation: operation,
+                homeURL: homeURL,
+                sourceBuildID: sourceBuildID,
+                candidateBuildID: candidateBuildID
+            ),
+            timeout: .seconds(30),
+            outputLimit: 64 * 1_024
+        )
+        guard result.termination == .exited(status: 0) else {
+            let detail = String(data: result.standardError, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw PetCoreServiceLauncherError.message(
+                detail?.isEmpty == false
+                    ? "PetCore 回滚检查点 \(operation.rawValue) 失败：\(detail!)"
+                    : "PetCore 回滚检查点 \(operation.rawValue) 失败"
+            )
+        }
+    }
+
+    static func status(
+        executableURL: URL,
+        homeURL: URL
+    ) async -> PetCoreRollbackCheckpointStatus? {
+        do {
+            let result = try await BoundedProcessRunner.run(
+                executableURL: executableURL,
+                arguments: try arguments(operation: .status, homeURL: homeURL),
+                timeout: .seconds(2),
+                outputLimit: 8 * 1_024
+            )
+            guard result.termination == .exited(status: 0) else { return nil }
+            return PetCoreRollbackCheckpointStatus.decodeClosed(result.standardOutput)
+        } catch {
+            return nil
+        }
+    }
+}
+
+enum PetCoreRuntimeUpgradeTransactionError: LocalizedError {
+    case recovered(original: String)
+    case recoveryFailed(original: String, recovery: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .recovered(original):
+            "PetCore 更新失败，已恢复上一个可用版本：\(original)"
+        case let .recoveryFailed(original, recovery):
+            "PetCore 更新失败且回滚未完成：\(original)；回滚：\(recovery)"
+        }
+    }
+}
+
+enum PetCoreRuntimeUpgradeTransaction {
+    typealias AsyncStep = () async throws -> Void
+    typealias CleanupFailureRecorder = (Error) async -> Void
+
+    static func run(
+        isolation: isolated (any Actor)? = #isolation,
+        rollbackAvailable: Bool,
+        stopPriorRuntime: AsyncStep,
+        revalidateCandidate: AsyncStep,
+        createCheckpoint: AsyncStep,
+        launchCandidate: AsyncStep,
+        verifyCandidateHealth: AsyncStep,
+        commitCandidate: AsyncStep,
+        stopCandidateRuntime: AsyncStep,
+        restoreCheckpoint: AsyncStep,
+        launchRollback: AsyncStep,
+        discardCheckpoint: AsyncStep,
+        recordCleanupFailure: CleanupFailureRecorder
+    ) async throws {
+        var priorRuntimeStopped = false
+        var checkpointCreateAttempted = false
+        var checkpointCreated = false
+        var candidateMayBeRunning = false
+
+        do {
+            try await stopPriorRuntime()
+            priorRuntimeStopped = true
+
+            if rollbackAvailable {
+                // create also reconciles a ready checkpoint left by a crashed
+                // candidate. It must run before preflight so a partially migrated
+                // database cannot prevent restoration of rollback authority.
+                checkpointCreateAttempted = true
+                try await createCheckpoint()
+                checkpointCreated = true
+            }
+
+            // The sole candidate preflight runs after the old owner exits and,
+            // when rollback exists, after crash recovery has restored the source
+            // snapshot. It remains read-only before candidate initialization.
+            try await revalidateCandidate()
+
+            // A launch operation can fail after partially starting a process or
+            // installing a launchd job, so cleanup owns it from this point onward.
+            candidateMayBeRunning = true
+            try await launchCandidate()
+            try await verifyCandidateHealth()
+            try await commitCandidate()
+        } catch {
+            let originalError = error
+            let original = originalError.localizedDescription
+
+            if candidateMayBeRunning {
+                do {
+                    try await stopCandidateRuntime()
+                } catch {
+                    throw PetCoreRuntimeUpgradeTransactionError.recoveryFailed(
+                        original: original,
+                        recovery: "无法确认候选 PetCore 已完全停止：\(error.localizedDescription)"
+                    )
+                }
+            }
+
+            guard priorRuntimeStopped, rollbackAvailable else {
+                throw originalError
+            }
+
+            // create can fail while reconciling a crash-left Ready checkpoint.
+            // Until it succeeds, the live database may still be partially migrated;
+            // starting a historical runtime against that unknown state is unsafe.
+            if checkpointCreateAttempted, !checkpointCreated {
+                throw PetCoreRuntimeUpgradeTransactionError.recoveryFailed(
+                    original: original,
+                    recovery: "未能建立可验证的数据恢复点，已停止启动历史版本"
+                )
+            }
+
+            if checkpointCreated {
+                do {
+                    try await restoreCheckpoint()
+                } catch {
+                    throw PetCoreRuntimeUpgradeTransactionError.recoveryFailed(
+                        original: original,
+                        recovery: "恢复数据检查点失败：\(error.localizedDescription)"
+                    )
+                }
+            }
+
+            do {
+                try await launchRollback()
+            } catch {
+                throw PetCoreRuntimeUpgradeTransactionError.recoveryFailed(
+                    original: original,
+                    recovery: error.localizedDescription
+                )
+            }
+
+            if checkpointCreated {
+                await discardBestEffort(
+                    discardCheckpoint,
+                    recordFailure: recordCleanupFailure
+                )
+            }
+            throw PetCoreRuntimeUpgradeTransactionError.recovered(original: original)
+        }
+
+        // commitCandidate is the irreversible success boundary. A stale private
+        // checkpoint is safe to overwrite on the next update, so cleanup failure
+        // must never restore an old database after the new runtime was committed.
+        if checkpointCreated {
+            await discardBestEffort(
+                discardCheckpoint,
+                recordFailure: recordCleanupFailure
+            )
+        }
+    }
+
+    private static func discardBestEffort(
+        isolation: isolated (any Actor)? = #isolation,
+        _ discardCheckpoint: AsyncStep,
+        recordFailure: CleanupFailureRecorder
+    ) async {
+        do {
+            try await discardCheckpoint()
+        } catch {
+            await recordFailure(error)
+        }
     }
 }
 
@@ -474,6 +898,10 @@ actor PetCoreProcessManager {
 }
 
 private actor PetCoreServiceLauncher {
+    private static let logger = Logger(
+        subsystem: "dev.agentpet.companion",
+        category: "petcore-runtime-upgrade"
+    )
     private let launchAgentLabel = "dev.agentpet.petcore"
     private let homeURL: URL
     private let runtimeStore: PetCoreRuntimeStore
@@ -578,6 +1006,7 @@ private actor PetCoreServiceLauncher {
     }
 
     private func prepareCandidate() async throws -> PreparedPetCoreRuntime {
+        try PetCoreRuntimeContract.validateManifestForStartup()
         guard let executable = locatePetCore() else {
             throw PetCoreServiceLauncherError.message("未找到 petcore 可执行文件")
         }
@@ -599,49 +1028,73 @@ private actor PetCoreServiceLauncher {
         // A protected deferral is not a candidate failure and must never enter
         // the rollback transaction below. The prior runtime remains untouched.
         try await deferRuntimeReplacementWhileProtectedWorkIsActive(candidate)
-        do {
-            // A loaded KeepAlive job would immediately respawn the old binary after shutdown.
-            // Explicit direct/isolated validation mode must never touch the user's global
-            // launchd job; normal launch-agent and direct fallback flows still own it.
-            if PetCoreLaunchControlPolicy.shouldBootoutGlobalLaunchAgent(
-                launchAgentDisabled: launchAgentDisabled
-            ) {
-                _ = await runLaunchctl(["bootout", launchDomainAndLabel()])
-            }
-            await shutdownActiveRuntime()
-            await waitForPriorRuntimeExit()
-            switch mode {
-            case .launchAgent:
-                try await performLaunchAgentStart(candidate)
-            case .direct:
-                try await performDirectStart(candidate)
-            }
-            guard await waitForHealth(candidate) else {
-                throw PetCoreServiceLauncherError.message("候选 PetCore 启动后未通过版本与健康检查")
-            }
-            try await runtimeStore.commitHealthy(candidate)
-        } catch {
-            guard allowsRollback, let previous = candidate.previous else { throw error }
-            let original = error.localizedDescription
-            do {
-                let rollback = try await runtimeStore.resolve(previous)
-                try await start(rollback, mode: mode, allowsRollback: false)
-                throw PetCoreServiceLauncherError.message(
-                    "PetCore 更新失败，已恢复上一个可用版本：\(original)"
+        let previous = allowsRollback ? candidate.previous : nil
+        try await PetCoreRuntimeUpgradeTransaction.run(
+            rollbackAvailable: previous != nil,
+            stopPriorRuntime: {
+                try await self.stopActiveRuntimeCompletely()
+            },
+            revalidateCandidate: {
+                guard allowsRollback else { return }
+                try await self.runtimeStore.revalidateCandidate(candidate)
+            },
+            createCheckpoint: {
+                try await PetCoreRollbackCheckpointCommand.run(
+                    operation: .create,
+                    executableURL: candidate.executableURL,
+                    homeURL: self.homeURL,
+                    sourceBuildID: previous?.buildID,
+                    candidateBuildID: candidate.buildID
                 )
-            } catch let rollbackError as PetCoreServiceLauncherError {
-                if rollbackError.localizedDescription.hasPrefix("PetCore 更新失败，已恢复") {
-                    throw rollbackError
+            },
+            launchCandidate: {
+                switch mode {
+                case .launchAgent:
+                    try await self.performLaunchAgentStart(candidate)
+                case .direct:
+                    try await self.performDirectStart(candidate)
                 }
-                throw PetCoreServiceLauncherError.message(
-                    "PetCore 更新失败且回滚未完成：\(original)；回滚：\(rollbackError.localizedDescription)"
+            },
+            verifyCandidateHealth: {
+                guard await self.waitForHealth(candidate) else {
+                    throw PetCoreServiceLauncherError.message(
+                        "候选 PetCore 启动后未通过版本与健康检查"
+                    )
+                }
+            },
+            commitCandidate: {
+                try await self.runtimeStore.commitHealthy(candidate)
+            },
+            stopCandidateRuntime: {
+                try await self.stopActiveRuntimeCompletely()
+            },
+            restoreCheckpoint: {
+                try await PetCoreRollbackCheckpointCommand.run(
+                    operation: .restore,
+                    executableURL: candidate.executableURL,
+                    homeURL: self.homeURL
                 )
-            } catch {
-                throw PetCoreServiceLauncherError.message(
-                    "PetCore 更新失败且回滚未完成：\(original)；回滚：\(error.localizedDescription)"
+            },
+            launchRollback: {
+                guard let previous else {
+                    throw PetCoreServiceLauncherError.message("缺少可回滚的 PetCore 运行时")
+                }
+                let rollback = try await self.runtimeStore.resolve(previous)
+                try await self.start(rollback, mode: mode, allowsRollback: false)
+            },
+            discardCheckpoint: {
+                try await PetCoreRollbackCheckpointCommand.run(
+                    operation: .discard,
+                    executableURL: candidate.executableURL,
+                    homeURL: self.homeURL
+                )
+            },
+            recordCleanupFailure: { error in
+                Self.logger.error(
+                    "PetCore rollback checkpoint cleanup failed: \(error.localizedDescription, privacy: .private)"
                 )
             }
-        }
+        )
     }
 
     private func deferRuntimeReplacementWhileProtectedWorkIsActive(
@@ -653,37 +1106,41 @@ private actor PetCoreServiceLauncher {
             .appendingPathComponent("petcore.sock")
             .path
         let client = PetCoreClient(socketPath: socketPath)
+        let initialAssessment: PetCoreRuntimeReplacementSafetyPolicy.Assessment
         do {
-            let response = try await client.requestData(
-                method: "state.snapshot",
-                timeout: .milliseconds(500)
-            )
-            let snapshot = try PetCoreClient.decodeResult(from: response)
-            switch PetCoreRuntimeReplacementSafetyPolicy.assess(
-                snapshotValue: snapshot
-            ) {
-            case .safe:
-                return
-            case .protectedWork:
-                throw ServiceStartupDeferredError(
-                    reason: "正在等待当前任务完成，再继续更新本地服务"
-                )
-            case .legacyConnectionStateNeedsProbe:
-                try await requireLegacyConnectionOperationsAreIdle(client: client)
-            case .unknown:
-                throw ServiceStartupDeferredError(
-                    reason: "暂时无法确认当前任务状态，稍后会自动重试本地服务更新"
-                )
-            }
-        } catch let deferred as ServiceStartupDeferredError {
-            throw deferred
+            initialAssessment = try await runtimeReplacementSafetyAssessment(client: client)
         } catch {
             guard PetCoreRuntimeReplacementSafetyPolicy
-                .shouldDeferAfterSnapshotError(error)
+                .shouldDeferAfterSafetyProbeError(error)
             else {
                 // No process accepted the Unix-domain connection. A stale or
                 // absent socket cannot own active work, so replacement may
                 // continue through the bounded transaction.
+                return
+            }
+            if await hasReadyRollbackRecovery(candidate) {
+                return
+            }
+            throw ServiceStartupDeferredError(
+                reason: "暂时无法确认当前任务状态，稍后会自动重试本地服务更新"
+            )
+        }
+
+        let assessment: PetCoreRuntimeReplacementSafetyPolicy.Assessment
+        if initialAssessment == .legacyConnectionStateNeedsProbe {
+            assessment = await legacyConnectionOperationsAssessment(client: client)
+        } else {
+            assessment = initialAssessment
+        }
+        switch assessment {
+        case .safe:
+            return
+        case .protectedWork:
+            throw ServiceStartupDeferredError(
+                reason: "正在等待当前任务完成，再继续更新本地服务"
+            )
+        case .snapshotRequired, .legacyConnectionStateNeedsProbe, .unknown:
+            if await hasReadyRollbackRecovery(candidate) {
                 return
             }
             throw ServiceStartupDeferredError(
@@ -692,32 +1149,70 @@ private actor PetCoreServiceLauncher {
         }
     }
 
-    private func requireLegacyConnectionOperationsAreIdle(
-        client: PetCoreClient
-    ) async throws {
-        let params = try JSONSerialization.data(
-            withJSONObject: ["source": "codex"]
+    private func hasReadyRollbackRecovery(_ candidate: PreparedPetCoreRuntime) async -> Bool {
+        guard let sourceBuildID = candidate.previous?.buildID,
+              let candidateBuildID = candidate.buildID,
+              let status = await PetCoreRollbackCheckpointCommand.status(
+                  executableURL: candidate.executableURL,
+                  homeURL: homeURL
+              )
+        else { return false }
+        return status.isReadyRecovery(
+            sourceBuildID: sourceBuildID,
+            candidateBuildID: candidateBuildID
         )
+    }
+
+    private func runtimeReplacementSafetyAssessment(
+        client: PetCoreClient
+    ) async throws -> PetCoreRuntimeReplacementSafetyPolicy.Assessment {
         do {
+            let response = try await client.requestData(
+                method: "product.convergence.preflight",
+                timeout: .milliseconds(500)
+            )
+            let preflight = try PetCoreClient.decodeResult(from: response)
+            let assessment = PetCoreRuntimeReplacementSafetyPolicy.assess(
+                preflightValue: preflight
+            )
+            if assessment != .snapshotRequired {
+                return assessment
+            }
+        } catch {
+            guard PetCoreRuntimeReplacementSafetyPolicy
+                .shouldFallbackToSnapshotAfterPreflightError(error)
+            else {
+                throw error
+            }
+        }
+
+        let response = try await client.requestData(
+            method: "state.snapshot",
+            timeout: .milliseconds(500)
+        )
+        let snapshot = try PetCoreClient.decodeResult(from: response)
+        return PetCoreRuntimeReplacementSafetyPolicy.assess(
+            snapshotValue: snapshot
+        )
+    }
+
+    private func legacyConnectionOperationsAssessment(
+        client: PetCoreClient
+    ) async -> PetCoreRuntimeReplacementSafetyPolicy.Assessment {
+        do {
+            let params = try JSONSerialization.data(
+                withJSONObject: ["source": "codex"]
+            )
             let response = try await client.requestData(
                 method: "connections.test",
                 paramsJSONData: params,
                 timeout: .seconds(2)
             )
             _ = try PetCoreClient.decodeResult(from: response)
+            return .safe
         } catch {
-            switch PetCoreRuntimeReplacementSafetyPolicy
+            return PetCoreRuntimeReplacementSafetyPolicy
                 .assessLegacyConnectionProbeError(error)
-            {
-            case .protectedWork:
-                throw ServiceStartupDeferredError(
-                    reason: "正在等待当前 Agent 连接操作完成，再继续更新本地服务"
-                )
-            case .safe, .legacyConnectionStateNeedsProbe, .unknown:
-                throw ServiceStartupDeferredError(
-                    reason: "暂时无法确认旧版服务的连接操作状态，稍后会自动重试更新"
-                )
-            }
         }
     }
 
@@ -770,6 +1265,56 @@ private actor PetCoreServiceLauncher {
         }
     }
 
+    private func stopActiveRuntimeCompletely() async throws {
+        // A loaded KeepAlive job would immediately respawn the binary after shutdown.
+        // Explicit direct/isolated validation mode never touches the user's global job.
+        if PetCoreLaunchControlPolicy.shouldBootoutGlobalLaunchAgent(
+            launchAgentDisabled: launchAgentDisabled
+        ) {
+            _ = await runLaunchctl(["bootout", launchDomainAndLabel()])
+            guard !(await isLaunchAgentLoaded()) else {
+                throw PetCoreServiceLauncherError.message(
+                    "无法确认 PetCore LaunchAgent 已完全停止"
+                )
+            }
+        }
+
+        await shutdownActiveRuntime()
+        try await stopTrackedDirectProcess()
+        guard await waitForPriorRuntimeExit() else {
+            throw PetCoreServiceLauncherError.message("无法确认 PetCore 进程已完全退出")
+        }
+    }
+
+    private func stopTrackedDirectProcess() async throws {
+        guard let process else { return }
+        if process.isRunning {
+            process.terminate()
+            for _ in 0 ..< 50 where process.isRunning {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        if process.isRunning {
+            let result = Darwin.kill(process.processIdentifier, SIGKILL)
+            guard result == 0 || errno == ESRCH else {
+                throw PetCoreServiceLauncherError.message(
+                    "无法终止 PetCore 直接运行进程"
+                )
+            }
+            for _ in 0 ..< 25 where process.isRunning {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        guard !process.isRunning else {
+            throw PetCoreServiceLauncherError.message(
+                "无法确认 PetCore 直接运行进程已完全停止"
+            )
+        }
+        self.process = nil
+        try? logHandle?.close()
+        logHandle = nil
+    }
+
     private func shutdownActiveRuntime() async {
         let client = PetCoreClient(socketPath: socketPath)
         guard let healthResponse = try? await client.requestData(
@@ -799,6 +1344,7 @@ private actor PetCoreServiceLauncher {
                 result,
                 expectedBuildID: candidate.buildID,
                 expectedManifest: candidate.manifest,
+                manifestValidationProfile: candidate.manifestValidationProfile,
                 expectedConnectorEnvironment: PetCoreServiceEnvironmentPolicy
                     .serviceIdentityEnvironment()
             ) {
@@ -809,16 +1355,17 @@ private actor PetCoreServiceLauncher {
         return false
     }
 
-    private func waitForPriorRuntimeExit() async {
+    private func waitForPriorRuntimeExit() async -> Bool {
         let client = PetCoreClient(socketPath: socketPath)
         for _ in 0 ..< 25 {
             guard let response = try? await client.requestData(
                 method: "petcore.health",
                 timeout: .milliseconds(100)
             ), (try? PetCoreClient.decodeResult(from: response)) != nil
-            else { return }
+            else { return true }
             try? await Task.sleep(for: .milliseconds(20))
         }
+        return false
     }
 
     private var socketPath: String {
