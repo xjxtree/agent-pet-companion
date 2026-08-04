@@ -148,12 +148,12 @@ fn petpack_schema_accepts_and_rejects_executable_fixtures() {
 
     let root = workspace_root();
     let schema = compiled_schema("petpack.schema.json");
-    let mut retired_high = read_json(&root.join("fixtures/schemas/petpack/valid-standard.json"));
-    retired_high["quality"] = json!("high");
-    retired_high["render_size"] = json!({ "width": 576, "height": 624 });
+    let mut high = read_json(&root.join("fixtures/schemas/petpack/valid-standard.json"));
+    high["quality"] = json!("high");
+    high["render_size"] = json!({ "width": 576, "height": 624 });
     assert!(
-        !schema.is_valid(&retired_high),
-        "petpack schema accepted the retired high tier"
+        schema.is_valid(&high),
+        "petpack schema rejected the high 576x624 tier"
     );
 }
 
@@ -193,10 +193,6 @@ fn producer_playback_modes_are_closed_by_mode() {
     let valid_playback = [
         ("loop", json!({ "mode": "loop" })),
         (
-            "once_hold",
-            json!({ "mode": "once_hold", "settle_frame_index": 1 }),
-        ),
-        (
             "periodic",
             json!({ "mode": "periodic", "cooldown_ms": [4000, 8000] }),
         ),
@@ -208,6 +204,14 @@ fn producer_playback_modes_are_closed_by_mode() {
                 "settle_frame_index": 1
             }),
         ),
+        (
+            "burst_then_idle",
+            json!({
+                "mode": "burst_then_idle",
+                "entry_repeat_count": 3
+            }),
+        ),
+        ("once_then_return", json!({ "mode": "once_then_return" })),
     ];
     let invalid_playback = [
         (
@@ -222,22 +226,9 @@ fn producer_playback_modes_are_closed_by_mode() {
             "loop with cooldown_ms",
             json!({ "mode": "loop", "cooldown_ms": [4000, 8000] }),
         ),
-        ("once_hold without settle", json!({ "mode": "once_hold" })),
         (
-            "once_hold with entry_repeat_count",
-            json!({
-                "mode": "once_hold",
-                "settle_frame_index": 1,
-                "entry_repeat_count": 1
-            }),
-        ),
-        (
-            "once_hold with cooldown_ms",
-            json!({
-                "mode": "once_hold",
-                "settle_frame_index": 1,
-                "cooldown_ms": [4000, 8000]
-            }),
+            "retired once_hold",
+            json!({ "mode": "once_hold", "settle_frame_index": 1 }),
         ),
         ("periodic without cooldown", json!({ "mode": "periodic" })),
         (
@@ -273,6 +264,22 @@ fn producer_playback_modes_are_closed_by_mode() {
                 "cooldown_ms": [4000, 8000]
             }),
         ),
+        (
+            "burst_then_idle without repeat",
+            json!({ "mode": "burst_then_idle" }),
+        ),
+        (
+            "burst_then_idle with settle",
+            json!({
+                "mode": "burst_then_idle",
+                "entry_repeat_count": 3,
+                "settle_frame_index": 1
+            }),
+        ),
+        (
+            "once_then_return with repeat",
+            json!({ "mode": "once_then_return", "entry_repeat_count": 1 }),
+        ),
     ];
 
     for (schema_name, fixture_name, playback_pointer) in producers {
@@ -302,7 +309,11 @@ fn producer_render_sizes_are_exact_quality_pairs() {
     let root = workspace_root();
     let brief_schema = compiled_schema("pet-brief.schema.json");
     let brief = read_json(&root.join("fixtures/schemas/pet-brief/valid-standard.json"));
-    for (quality, width, height) in [("low", 192, 208), ("standard", 384, 416)] {
+    for (quality, width, height) in [
+        ("low", 192, 208),
+        ("standard", 384, 416),
+        ("high", 576, 624),
+    ] {
         let mut instance = brief.clone();
         instance["quality"] = json!(quality);
         instance["runtime"]["render_size"] = json!({ "width": width, "height": height });
@@ -314,7 +325,7 @@ fn producer_render_sizes_are_exact_quality_pairs() {
     for (quality, width, height) in [
         ("low", 192, 624),
         ("standard", 384, 208),
-        ("high", 576, 624),
+        ("high", 384, 416),
     ] {
         let mut instance = brief.clone();
         instance["quality"] = json!(quality);
@@ -335,17 +346,21 @@ fn producer_render_sizes_are_exact_quality_pairs() {
             "pet source rejected low at {quality_pointer}"
         );
 
-        let mut retired_high = source.clone();
-        *retired_high.pointer_mut(quality_pointer).unwrap() = json!("high");
+        let mut high = source.clone();
+        *high.pointer_mut(quality_pointer).unwrap() = json!("high");
         assert!(
-            !source_schema.is_valid(&retired_high),
-            "pet source accepted retired high at {quality_pointer}"
+            source_schema.is_valid(&high),
+            "pet source rejected high at {quality_pointer}"
         );
     }
 
     let event_schema = compiled_schema("pet-source-event.schema.json");
     let event = read_json(&root.join("fixtures/schemas/pet-source-event/valid-rendered.json"));
-    for (quality, width, height) in [("low", 192, 208), ("standard", 384, 416)] {
+    for (quality, width, height) in [
+        ("low", 192, 208),
+        ("standard", 384, 416),
+        ("high", 576, 624),
+    ] {
         let mut instance = event.clone();
         instance["quality"] = json!(quality);
         instance["render_size"] = json!({ "width": width, "height": height });
@@ -357,7 +372,7 @@ fn producer_render_sizes_are_exact_quality_pairs() {
     for (quality, width, height) in [
         ("low", 192, 624),
         ("standard", 192, 208),
-        ("high", 576, 624),
+        ("high", 384, 416),
     ] {
         let mut instance = event.clone();
         instance["quality"] = json!(quality);

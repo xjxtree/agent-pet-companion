@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 const APC_OPENCODE_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-activity-v12";
+const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-events-v13";
 
 // OpenCode 1.18.0–1.18.4 plugin hooks. Agent Pet Companion implements only observation
 // hooks; configuration, auth, headers, and environment data are never modified
@@ -522,6 +522,7 @@ function isPassiveCompletionTail(event) {
     || event?.type === "tool.execute.after"
     || event?.type === "command.execute.after"
     || event?.type === "session.compaction.ended"
+    || event?.type === "session.next.reasoning.ended"
     || event?.type === "session.plan.updated"
     || event?.type === "session.created"
     || event?.type === "permission.replied"
@@ -950,7 +951,7 @@ function compatibleNextEvent(type, properties, id) {
       );
     case "session.next.reasoning.ended":
       return {
-        type: "session.plan.updated",
+        type,
         properties: {
           sessionID: id,
           activity_content: activityDetail(properties),
@@ -1032,9 +1033,12 @@ function compatibleEvent(event) {
       ["reasoning", "thinking", "analysis"].includes(part?.type)
       && typeof (part?.text ?? part?.content) === "string"
       && part?.synthetic !== true
+      // v1 publishes this hook repeatedly while reasoning grows. Only its
+      // stable completion edge is a user-meaningful session event.
+      && part?.time?.end != null
     ) {
       return {
-        type: "session.plan.updated",
+        type: "session.next.reasoning.ended",
         properties: {
           sessionID: part?.sessionID ?? messageSessions.get(part.messageID) ?? id,
           activity_content: boundedActivity(part?.text ?? part?.content),

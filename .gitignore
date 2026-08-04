@@ -38,6 +38,7 @@ __pycache__/
 !apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/
 !apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/pet_xingwutuanzi.petpack
 !apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/pet_bytebudcodex.petpack
+!apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets/pet_pinklace.petpack
 *.job.jsonl
 generation-jobs/
 .agent-pet-companion/

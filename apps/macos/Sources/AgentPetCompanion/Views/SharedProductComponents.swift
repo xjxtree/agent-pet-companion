@@ -84,9 +84,9 @@ enum ProductStatusAppearance: String, CaseIterable {
         switch lifecycle {
         case .idle, .done:
             self = .normal
-        case .start, .tool:
+        case .thinking, .tool:
             self = .checking
-        case .waiting, .review:
+        case .waiting:
             self = .attention
         case .failed:
             self = .error
@@ -556,23 +556,17 @@ struct SessionBubbleRow: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        Group {
-            if session.canOpen {
-                Button(action: action) {
-                    rowContent
-                }
-                .buttonStyle(.plain)
-                .focused($focused)
-            } else {
-                rowContent
-            }
+        Button(action: action) {
+            rowContent
         }
+        .buttonStyle(.plain)
+        .focused($focused)
         .onHover { hovered = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("overlay.session.\(session.id)")
         .accessibilityLabel(session.accessibilityLabel)
         .modifier(SessionBubbleAccessibilityActions(
-            openLabel: session.canOpen ? session.actionLabel : nil,
+            openLabel: session.actionLabel,
             closeLabel: dismissAction == nil
                 ? nil
                 : APCLocalization.text(.overlayDismissSession),
@@ -626,20 +620,23 @@ struct SessionBubbleRow: View {
                         }
                 }
 
-                if session.canOpen {
-                    Image(systemName: "arrow.up.forward")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.primary)
-                        .frame(width: 9)
-                        .opacity(hovered || focused ? 1 : 0)
-                        .animation(
-                            reduceMotion
-                                ? nil
-                                : .easeOut(duration: OverlayMotion.controlFadeDuration),
-                            value: hovered || focused
-                        )
-                        .accessibilityHidden(true)
-                }
+                // Every row reserves one trailing affordance slot so status
+                // badges align. Hover/focus reveals either the destination
+                // arrow or an explicit unavailable indicator.
+                Image(systemName: session.canOpen
+                    ? "arrow.up.forward"
+                    : "exclamationmark.circle")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(session.canOpen ? Color.primary : Color.secondary)
+                    .frame(width: 9)
+                    .opacity(hovered || focused ? 1 : 0)
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                        value: hovered || focused
+                    )
+                    .accessibilityHidden(true)
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -671,7 +668,7 @@ struct SessionBubbleRow: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill((statusColor ?? .clear).opacity(0.12))
 
-                if (hovered || focused) && session.canOpen {
+                if hovered || focused {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.primary.opacity(0.05))
                 }
@@ -680,22 +677,21 @@ struct SessionBubbleRow: View {
     }
 
     private var helpText: String {
-        if session.dismissesAfterActivation {
-            return APCLocalization.text(
-                session.canOpen ? .overlayHelpOpenAndDismiss : .overlayHelpDismiss
-            )
+        guard session.canOpen else {
+            return APCLocalization.text(.overlayHelpUnavailable)
         }
-        return APCLocalization.text(
-            session.canOpen ? .overlayHelpOpen : .overlayHelpUnavailable
-        )
+        if session.dismissesAfterActivation {
+            return APCLocalization.text(.overlayHelpOpenAndDismiss)
+        }
+        return APCLocalization.text(.overlayHelpOpen)
     }
 
     private var statusColor: Color? {
         switch session.eventType {
-        case .waiting, .review: .orange
+        case .waiting: .orange
         case .failed: .red
         case .done: .green
-        case .start, .tool, nil: nil
+        case .start, .thinking, .plan, .tool, nil: nil
         }
     }
 }

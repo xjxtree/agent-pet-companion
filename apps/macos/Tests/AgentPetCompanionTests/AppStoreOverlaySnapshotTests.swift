@@ -861,6 +861,61 @@ struct AppStoreOverlaySnapshotTests {
     }
 
     @MainActor
+    @Test
+    func normalMouseUpWinsTheFallbackGraceWindowExactlyOnce() async throws {
+        let screen = try #require(NSScreen.main)
+        let displayID = screenDisplayID(screen)
+        let start = CGPoint(
+            x: screen.visibleFrame.midX,
+            y: screen.visibleFrame.midY
+        )
+        let presented = CGPoint(x: start.x + 40, y: start.y + 24)
+        var requestCount = 0
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method == "overlay.placement.update" else {
+                    throw PetCoreClientError.rpcError(
+                        "Unexpected test RPC: \(method)"
+                    )
+                }
+                requestCount += 1
+                return try placementUpdateSuccess(
+                    params,
+                    placementRevision: 41
+                )
+            }
+        )
+        try store.applyStateSnapshot(try placementSnapshot(
+            revision: 40,
+            placement: placement(at: start, displayID: displayID)
+        ))
+
+        let interactionID = UUID()
+        store.beginOverlayPetDrag(interactionID: interactionID)
+        store.presentOverlayPetDrag(
+            at: presented,
+            visibleFrame: screen.visibleFrame,
+            interactionID: interactionID
+        )
+        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        store.commitOverlayPetDrag(
+            at: presented,
+            visibleFrame: screen.visibleFrame,
+            interactionID: interactionID
+        )
+        for _ in 0 ..< 1_000 where requestCount == 0 {
+            await Task.yield()
+        }
+        for _ in 0 ..< 100 { await Task.yield() }
+
+        #expect(requestCount == 1)
+        #expect(!store.overlayPetDragInProgress)
+        #expect(store.overlayPetScreenCenter == presented)
+    }
+
+    @MainActor
     @Test(arguments: [
         (20.0, 500.0),
         (300.0, 16.0),
@@ -934,7 +989,7 @@ struct AppStoreOverlaySnapshotTests {
 
     @MainActor
     @Test
-    func latestPlacementRemainsProtectedThroughFiveFailuresAndSixthSuccess() async throws {
+    func placementWorkerExhaustsAtFiveThenExplicitRetryRecoversLatest() async throws {
         let screen = try #require(NSScreen.main)
         let displayID = (
             screen.deviceDescription[
@@ -945,12 +1000,14 @@ struct AppStoreOverlaySnapshotTests {
         let stale = CGPoint(x: start.x + 20, y: start.y + 10)
         let latest = CGPoint(x: start.x + 70, y: start.y + 35)
         let sleeper = OverlayPlacementRetrySleeperProbe()
+        let journal = OverlayPlacementJournalMemoryProbe()
         var requests: [[String: Any]] = []
         let store = AppStore(
             bootstrapHooks: testBootstrapHooks(),
             overlayPlacementRetrySleeper: { duration in
                 await sleeper.sleep(duration)
             },
+            overlayPlacementJournalStore: journal.store,
             applicationAppearanceApplier: { _ in },
             petCoreRequestOverride: { method, params, _ in
                 guard method == "overlay.placement.update" else {
@@ -990,7 +1047,7 @@ struct AppStoreOverlaySnapshotTests {
         )
         #expect(!store.isSafeForAppUpdateHandoff)
 
-        for expectedWaitCount in 1 ... 5 {
+        for expectedWaitCount in 1 ... 4 {
             for _ in 0 ..< 1_000 {
                 let waitCount = await sleeper.waitCount
                 if requests.count == expectedWaitCount,
@@ -1006,25 +1063,198 @@ struct AppStoreOverlaySnapshotTests {
             await sleeper.resumeNext()
         }
 
-        for _ in 0 ..< 1_000 where requests.count < 6
-            || !store.isSafeForAppUpdateHandoff {
+        for _ in 0 ..< 1_000 where requests.count < 5 {
             await Task.yield()
         }
 
-        #expect(requests.count == 6)
-        #expect(store.isSafeForAppUpdateHandoff)
+        #expect(requests.count == 5)
+        #expect(!store.isSafeForAppUpdateHandoff)
+        #expect(journal.entry != nil)
         let delays = await sleeper.delays
         #expect(delays == [
             .milliseconds(250),
             .milliseconds(500),
             .seconds(1),
             .seconds(2),
-            .seconds(2),
         ])
         #expect(requests.allSatisfy { request in
             abs((request["x"] as? Double ?? 0) - latest.x) < 0.001
                 && abs((request["y"] as? Double ?? 0) - latest.y) < 0.001
         })
+
+        // Ordinary snapshots and a long virtual idle window cannot revive an
+        // exhausted generation.
+        try store.applyStateSnapshot(try placementSnapshot(
+            revision: 50,
+            placement: OverlayPlacement(
+                x: start.x,
+                y: start.y,
+                displayWidthPt: 112,
+                displayId: displayID
+            )
+        ))
+        for _ in 0 ..< 1_000 { await Task.yield() }
+        #expect(requests.count == 5)
+        #expect(await sleeper.waitCount == 4)
+
+        store.retryPendingOverlayPlacementSave()
+        for _ in 0 ..< 1_000 where requests.count < 6
+            || !store.isSafeForAppUpdateHandoff {
+            await Task.yield()
+        }
+        #expect(requests.count == 6)
+        #expect(store.isSafeForAppUpdateHandoff)
+        #expect(journal.entry == nil)
+    }
+
+    @MainActor
+    @Test
+    func consecutiveConflictsConsumeOneSharedFiveAttemptBudget() async throws {
+        let screen = try #require(NSScreen.main)
+        let displayID = screenDisplayID(screen)
+        let start = CGPoint(
+            x: screen.visibleFrame.midX,
+            y: screen.visibleFrame.midY
+        )
+        let latest = CGPoint(x: start.x + 72, y: start.y + 36)
+        let sleeper = OverlayPlacementRetrySleeperProbe()
+        let journal = OverlayPlacementJournalMemoryProbe()
+        var requests: [[String: Any]] = []
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            overlayPlacementRetrySleeper: { duration in
+                await sleeper.sleep(duration)
+            },
+            overlayPlacementJournalStore: journal.store,
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method == "overlay.placement.update" else {
+                    throw PetCoreClientError.rpcError(
+                        "Unexpected test RPC: \(method)"
+                    )
+                }
+                requests.append(try #require(params as? [String: Any]))
+                return try placementUpdateConflict(
+                    placement: placement(at: start, displayID: displayID),
+                    placementRevision: 70 + UInt64(requests.count),
+                    intent: nil
+                )
+            }
+        )
+        try store.applyStateSnapshot(try placementSnapshot(
+            revision: 70,
+            placement: placement(at: start, displayID: displayID)
+        ))
+        store.moveOverlayPet(
+            to: latest,
+            visibleFrame: screen.visibleFrame,
+            commit: true
+        )
+
+        for expectedWaitCount in 1 ... 4 {
+            for _ in 0 ..< 1_000 {
+                if requests.count == expectedWaitCount,
+                   await sleeper.waitCount == expectedWaitCount {
+                    break
+                }
+                await Task.yield()
+            }
+            await sleeper.resumeNext()
+        }
+        for _ in 0 ..< 1_000 where requests.count < 5 {
+            await Task.yield()
+        }
+        for _ in 0 ..< 1_000 { await Task.yield() }
+
+        #expect(requests.count == 5)
+        #expect(requests.map { $0["expected_revision"] as? String }
+            == ["70", "71", "72", "73", "74"])
+        #expect(await sleeper.delays == [
+            .milliseconds(250),
+            .milliseconds(500),
+            .seconds(1),
+            .seconds(2),
+        ])
+        #expect(journal.entry != nil)
+        #expect(!store.isSafeForAppUpdateHandoff)
+    }
+
+    @MainActor
+    @Test
+    func thirdAttemptSuccessStopsRetriesAndRemainsSilent() async throws {
+        let screen = try #require(NSScreen.main)
+        let displayID = screenDisplayID(screen)
+        let start = CGPoint(
+            x: screen.visibleFrame.midX,
+            y: screen.visibleFrame.midY
+        )
+        let latest = CGPoint(x: start.x + 52, y: start.y - 28)
+        let sleeper = OverlayPlacementRetrySleeperProbe()
+        let journal = OverlayPlacementJournalMemoryProbe()
+        var requestCount = 0
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            overlayPlacementRetrySleeper: { duration in
+                await sleeper.sleep(duration)
+            },
+            overlayPlacementJournalStore: journal.store,
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, params, _ in
+                guard method == "overlay.placement.update" else {
+                    throw PetCoreClientError.rpcError(
+                        "Unexpected test RPC: \(method)"
+                    )
+                }
+                requestCount += 1
+                if requestCount < 3 {
+                    throw PetCoreClientError.rpcError("synthetic transport")
+                }
+                return try placementUpdateSuccess(
+                    params,
+                    placementRevision: 91
+                )
+            }
+        )
+        try store.applyStateSnapshot(try placementSnapshot(
+            revision: 90,
+            placement: placement(at: start, displayID: displayID)
+        ))
+        store.moveOverlayPet(
+            to: latest,
+            visibleFrame: screen.visibleFrame,
+            commit: true
+        )
+
+        for expectedAttempt in 1 ... 2 {
+            for _ in 0 ..< 1_000 {
+                let waitCount = await sleeper.waitCount
+                if requestCount == expectedAttempt,
+                   waitCount == expectedAttempt {
+                    break
+                }
+                await Task.yield()
+            }
+            await sleeper.resumeNext()
+        }
+        for _ in 0 ..< 1_000 where requestCount < 3
+            || !store.isSafeForAppUpdateHandoff {
+            await Task.yield()
+        }
+
+        #expect(requestCount == 3)
+        #expect(await sleeper.delays == [
+            .milliseconds(250),
+            .milliseconds(500),
+        ])
+        #expect(store.isSafeForAppUpdateHandoff)
+        #expect(journal.entry == nil)
+
+        try store.applyStateSnapshot(try placementSnapshot(
+            revision: 91,
+            placement: placement(at: latest, displayID: displayID)
+        ))
+        for _ in 0 ..< 10_000 { await Task.yield() }
+        #expect(requestCount == 3)
     }
 
     @MainActor
@@ -1109,6 +1339,7 @@ struct AppStoreOverlaySnapshotTests {
         var requests: [[String: Any]] = []
         let store = AppStore(
             bootstrapHooks: testBootstrapHooks(),
+            overlayPlacementRetrySleeper: { _ in },
             overlayPlacementJournalStore: journal.store,
             applicationAppearanceApplier: { _ in },
             petCoreRequestOverride: { method, params, _ in
@@ -1154,10 +1385,11 @@ struct AppStoreOverlaySnapshotTests {
             await Task.yield()
         }
         #expect(requests.count == 2)
+        let secondRequest = try #require(requests.dropFirst().first)
         #expect(requests[0]["expected_revision"] as? String == "11")
-        #expect(requests[1]["expected_revision"] as? String == "12")
-        #expect(abs((requests[1]["x"] as? Double ?? 0) - latest.x) < 0.001)
-        #expect(abs((requests[1]["y"] as? Double ?? 0) - latest.y) < 0.001)
+        #expect(secondRequest["expected_revision"] as? String == "12")
+        #expect(abs((secondRequest["x"] as? Double ?? 0) - latest.x) < 0.001)
+        #expect(abs((secondRequest["y"] as? Double ?? 0) - latest.y) < 0.001)
         #expect(store.overlayPetScreenCenter == latest)
         #expect(store.isSafeForAppUpdateHandoff)
         #expect(journal.entry == nil)
@@ -1176,6 +1408,7 @@ struct AppStoreOverlaySnapshotTests {
         var requests: [[String: Any]] = []
         let store = AppStore(
             bootstrapHooks: testBootstrapHooks(),
+            overlayPlacementRetrySleeper: { _ in },
             overlayPlacementJournalStore: journal.store,
             applicationAppearanceApplier: { _ in },
             petCoreRequestOverride: { method, params, _ in
@@ -1228,14 +1461,15 @@ struct AppStoreOverlaySnapshotTests {
         }
         #expect(requests.count == 3)
         #expect(requests.map { $0["expected_revision"] as? String }
-            == ["20", "21", "22"])
+            == ["20", "20", "22"])
         #expect(abs((requests[1]["x"] as? Double ?? 0) - latest.x) < 0.001)
         #expect(abs((requests[2]["x"] as? Double ?? 0) - latest.x) < 0.001)
         #expect(store.overlayPetScreenCenter == latest)
         #expect(journal.entry == nil)
         #expect(journal.savedEntries.last?.interactionID == latestIdentity)
-        #expect(journal.removalAttempts.contains { attempt in
-            attempt.expectedInteractionID != latestIdentity
+        #expect(!journal.removalAttempts.isEmpty)
+        #expect(journal.removalAttempts.allSatisfy { attempt in
+            attempt.expectedInteractionID == latestIdentity
                 && attempt.currentInteractionID == latestIdentity
         })
     }
@@ -1524,16 +1758,17 @@ struct AppStoreOverlaySnapshotTests {
         activatedSecond: Int
     ) -> ActiveAgentState {
         let summary: AgentOverlaySummaryKind = switch event {
-        case .start: .running
+        case .start: .start
+        case .thinking: .thinking
+        case .plan: .plan
         case .tool: .tool
         case .waiting: .needsInput
-        case .review: .review
         case .done: .done
         case .failed: .failed
         }
         let timestamp = String(format: "2026-07-22T00:00:%02dZ", activatedSecond)
         return ActiveAgentState(
-            state: event.rawValue,
+            state: event.petState,
             officialStatus: "running",
             source: source,
             sessionID: session,

@@ -204,7 +204,7 @@ fi
 assert_json "$PROBE" 'data["initialized"] is True and data["transport"] == "stdio"' \
   || fail "Codex App Server probe did not initialize"
 
-FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。请返回完整七状态设计 brief；不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
+FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。请返回完整九动作 V3 设计 brief；不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
 JOB_JSON="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation start --form-json "$FORM")"
 JOB_ID="$(JSON="$JOB_JSON" python3 - <<'PY'
 import json
@@ -243,11 +243,11 @@ assert_json "$FINAL_STATUS" 'data["app_server"]["thread_id"] is not None and dat
   || fail "App Server session is missing thread_id or turn_id"
 assert_json "$FINAL_STATUS" 'data["app_server"]["completed"] is True or data["artifacts"]["petpack_source"]["manifest_exists"] is True' \
   || fail "App Server turn did not complete and no Skill full-source artifact was written"
-assert_json "$FINAL_STATUS" 'data["app_server"]["ai_brief"]["states_count"] == 7 or data["artifacts"]["petpack_source"]["states_count"] == 7' \
-  || fail "real App Server output did not prove seven fixed states"
+assert_json "$FINAL_STATUS" 'data["app_server"]["ai_brief"]["states_count"] == 9 or data["artifacts"]["petpack_source"]["states_count"] == 9' \
+  || fail "real App Server output did not prove nine fixed actions"
 assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["manifest_exists"] is True and data["artifacts"]["petpack_source"]["validation_ok"] is True and len(data["artifacts"]["petpack_files"]) >= 1' \
   || fail "generation artifacts are incomplete"
-assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v2"] and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] in ["skill-full-source", "codex_app_server_brief"] and data["artifacts"]["petpack_source"]["skill_session"]["exists"] is True' \
+assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["source_metadata"]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v3"] and data["artifacts"]["petpack_source"]["source_metadata"]["provenance"] in ["skill-full-source", "codex_app_server_brief"] and data["artifacts"]["petpack_source"]["skill_session"]["exists"] is True' \
   || fail "real App Server generation did not preserve App Server provenance"
 if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"]["fallback_used"] is False and data["artifacts"]["petpack_source"]["sample_output"] is False and data["artifacts"]["petpack_source"]["repaired_validation"] is False and data["artifacts"]["petpack_source"]["materialized_by_petcore"] is False' \
@@ -258,7 +258,7 @@ if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
     || fail "strict full-source mode did not produce trusted Skill provenance"
 fi
 if truthy "${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-1}"; then
-  assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"].get("materializer") is None and data["artifacts"]["petpack_source"].get("skill_helper") != "agent-pet-studio-preview-helper-v2"' \
+  assert_json "$FINAL_STATUS" 'data["artifacts"]["petpack_source"]["generation_mode"] == "skill_full_source" and data["artifacts"]["petpack_source"]["real_skill_source"] is True and data["artifacts"]["petpack_source"].get("materializer") is None and (data["artifacts"]["petpack_source"].get("skill_helper") is None or not data["artifacts"]["petpack_source"]["skill_helper"].startswith("agent-pet-studio-preview-helper"))' \
     || fail "external full-source mode accepted preview or internally materialized output"
 fi
 
@@ -280,10 +280,11 @@ assert metadata.get("generator") == "codex-app-server-skill"
 assert metadata.get("provenance") == "skill-full-source"
 assert metadata.get("visual_source") in {"image-generation", "user-reference-derived"}
 assert metadata.get("preview_only") is False
-assert manifest.get("schema_version") == "apc.petpack.v2"
+assert manifest.get("schema_version") == "apc.petpack.v3"
 timings = manifest["states"]
 assert {state["name"] for state in timings} == {
-    "idle", "start", "tool", "waiting", "review", "done", "failed"
+    "idle", "thinking", "tool", "waiting", "done", "failed",
+    "acknowledge", "drag_left", "drag_right"
 }
 expected_counts = {
     state["name"]: len(state["frame_durations_ms"])
@@ -308,7 +309,10 @@ assert all(
 )
 
 first_frames = set()
-for state in ["idle", "start", "tool", "waiting", "review", "done", "failed"]:
+for state in [
+    "idle", "thinking", "tool", "waiting", "done", "failed",
+    "acknowledge", "drag_left", "drag_right",
+]:
     frames = sorted((root / "assets/frames" / state).glob("*.png"))
     assert len(frames) == expected_counts[state]
     digests = {hashlib.sha256(path.read_bytes()).hexdigest() for path in frames}
@@ -318,13 +322,13 @@ assert len(first_frames) >= 4
 PY
 fi
 SOURCE_VALIDATION="$("$ROOT_DIR/target/debug/petcore-cli" petpack validate "$SOURCE_DIR")"
-assert_json "$SOURCE_VALIDATION" 'data["ok"] is True and len(data["manifest"]["states"]) == 7' \
+assert_json "$SOURCE_VALIDATION" 'data["ok"] is True and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42' \
   || fail "built petpack-source validation failed"
 
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"
 assert_json "$SNAPSHOT" 'len(data["pets"]) == 1 and data["pets"][0]["active"] is True and data["pets"][0]["quality"] == "standard"' \
   || fail "completed pet was not imported and activated"
-assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v2"] and data["pets"][0]["provenance"] in ["skill-full-source", "codex_app_server_brief"]' \
+assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] in ["codex-app-server-skill", "codex-app-server-brief-petpack-v3"] and data["pets"][0]["provenance"] in ["skill-full-source", "codex_app_server_brief"]' \
   || fail "imported pet does not preserve real App Server provenance"
 if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
   assert_json "$SNAPSHOT" 'data["pets"][0]["generator"] == "codex-app-server-skill" and data["pets"][0]["provenance"] == "skill-full-source"' \

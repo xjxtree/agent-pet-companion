@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-activity-v10";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-events-v11";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered

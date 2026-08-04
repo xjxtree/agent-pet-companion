@@ -856,7 +856,7 @@ fn generation_mode(
             Some("petcore-internal-skill-materializer"),
         ) => "petcore_internal_skill_materialized",
         (Some("codex-app-server-skill"), Some("skill-full-source"), None) => "skill_full_source",
-        (Some("codex-app-server-brief-petpack-v2"), Some("codex_app_server_brief"), _) => {
+        (Some("codex-app-server-brief-petpack-v3"), Some("codex_app_server_brief"), _) => {
             "codex_brief_materialized"
         }
         (_, Some("app_server_cli_materialized"), _) => "app_server_cli_materialized",
@@ -1208,7 +1208,7 @@ fn materialized_source_identity(output: &Path) -> Result<(String, String)> {
         .as_ref()
         .and_then(|value| value.get("generator"))
         .and_then(Value::as_str)
-        .unwrap_or("local-form-driven-petpack-v2")
+        .unwrap_or("local-form-driven-petpack-v3")
         .to_string();
     let provenance = metadata
         .as_ref()
@@ -1393,11 +1393,11 @@ fn contract_event_for_hook(
             turn_id: None,
             message_role: None,
             message_content: None,
-            activity_kind: (!matches!(
-                kind,
-                AgentEventType::Done | AgentEventType::Failed | AgentEventType::Waiting
-            ))
-            .then(|| "thinking".to_string()),
+            activity_kind: match kind {
+                AgentEventType::Thinking => Some("thinking".to_string()),
+                AgentEventType::Plan => Some("plan".to_string()),
+                _ => None,
+            },
             activity_content: None,
             interaction_kind: (kind == AgentEventType::Waiting)
                 .then(|| "approval_required".to_string()),
@@ -1708,8 +1708,11 @@ fn classify_event_label(label: &str) -> Option<AgentEventType> {
     {
         return Some(AgentEventType::Waiting);
     }
-    if raw.contains("待查看") || raw.contains("查看") || raw.contains("审阅") {
-        return Some(AgentEventType::Review);
+    if raw.contains("规划") || raw.contains("计划") {
+        return Some(AgentEventType::Plan);
+    }
+    if raw.contains("思考") || raw.contains("推理") {
+        return Some(AgentEventType::Thinking);
     }
     if raw.contains("执行") || raw.contains("工具") || raw.contains("命令") {
         return Some(AgentEventType::Tool);
@@ -1765,23 +1768,12 @@ fn classify_event_label(label: &str) -> Option<AgentEventType> {
             ],
         ),
         (
-            AgentEventType::Review,
-            &[
-                "review",
-                "posttooluse",
-                "toolexecuteafter",
-                "toolcomplete",
-                "toolcompleted",
-                "tooldone",
-                "toolresult",
-                "toolresultend",
-                "toolfinished",
-                "toolresponse",
-                "aftertool",
-                "result",
-                "output",
-                "sessiondiff",
-            ],
+            AgentEventType::Plan,
+            &["plan", "planning", "planupdated", "todoupdated"],
+        ),
+        (
+            AgentEventType::Thinking,
+            &["thinking", "reasoning", "analysis", "reasoningended"],
         ),
         (
             AgentEventType::Tool,
@@ -1796,6 +1788,16 @@ fn classify_event_label(label: &str) -> Option<AgentEventType> {
                 "toolinvoke",
                 "toolinvocation",
                 "toolexecutionstart",
+                "posttooluse",
+                "toolexecuteafter",
+                "toolcomplete",
+                "toolcompleted",
+                "tooldone",
+                "toolresult",
+                "toolresultend",
+                "toolfinished",
+                "toolresponse",
+                "aftertool",
                 "tooluse",
                 "toolinput",
                 "command",
@@ -2088,7 +2090,7 @@ mod tests {
         );
         assert_eq!(
             infer_event_type(Some("auto"), &json!({ "type": "tool_result" }), None, None).unwrap(),
-            AgentEventType::Review
+            AgentEventType::Tool
         );
         assert_eq!(
             infer_event_type(Some("auto"), &json!({ "type": "session.idle" }), None, None).unwrap(),
@@ -2126,7 +2128,27 @@ mod tests {
                 None
             )
             .unwrap(),
-            AgentEventType::Review
+            AgentEventType::Tool
+        );
+        assert_eq!(
+            infer_event_type(
+                Some("auto"),
+                &json!({ "event": { "name": "reasoning.ended" } }),
+                None,
+                None
+            )
+            .unwrap(),
+            AgentEventType::Thinking
+        );
+        assert_eq!(
+            infer_event_type(
+                Some("auto"),
+                &json!({ "event": { "name": "plan.updated" } }),
+                None,
+                None
+            )
+            .unwrap(),
+            AgentEventType::Plan
         );
         assert_eq!(
             infer_event_type(

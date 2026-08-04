@@ -18,48 +18,75 @@ import sys
 import time
 import zlib
 
-HELPER_ID = "agent-pet-studio-preview-helper-v5"
+HELPER_ID = "agent-pet-studio-preview-helper-v7"
 FORM_PATH = Path("apc_skill_form.json")
 OUTPUT_DIR = Path("petpack-source")
-STATES = ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+STATES = [
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+]
 DEFAULT_STATE_TIMINGS = {
     "idle": {
-        "frame_durations_ms": [180, 160, 180, 380],
-        "playback": {"mode": "periodic", "cooldown_ms": [4000, 8000]},
+        "frame_durations_ms": [300, 260, 300, 640],
+        "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
-    "start": {
+    "thinking": {
         "frame_durations_ms": [120, 140, 160, 180],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "tool": {
         "frame_durations_ms": [150, 150, 170, 330],
         "playback": {
-            "mode": "burst_then_settle",
-            "entry_repeat_count": 1,
-            "settle_frame_index": 3,
+            "mode": "burst_then_idle",
+            "entry_repeat_count": 3,
         },
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
         "frame_durations_ms": [150, 150, 150, 150, 170, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
-        "reduced_motion_frame_index": 4,
-    },
-    "review": {
-        "frame_durations_ms": [140, 140, 150, 150, 180, 240],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 2,
+            "settle_frame_index": 5,
+        },
         "reduced_motion_frame_index": 4,
     },
     "done": {
         "frame_durations_ms": [120, 140, 160, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "failed": {
         "frame_durations_ms": [150, 170, 190, 290],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 3,
+            "settle_frame_index": 3,
+        },
+        "reduced_motion_frame_index": 2,
+    },
+    "acknowledge": {
+        "frame_durations_ms": [180, 140, 180, 300],
+        "playback": {"mode": "once_then_return"},
+        "reduced_motion_frame_index": 1,
+    },
+    "drag_left": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
+        "reduced_motion_frame_index": 2,
+    },
+    "drag_right": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
         "reduced_motion_frame_index": 2,
     },
 }
@@ -69,12 +96,14 @@ RENDER_SIZES = {
 }
 STATE_COLORS = {
     "idle": (96, 169, 232),
-    "start": (129, 81, 247),
+    "thinking": (129, 81, 247),
     "tool": (60, 189, 214),
     "waiting": (240, 176, 64),
-    "review": (116, 113, 255),
     "done": (64, 196, 129),
     "failed": (232, 90, 110),
+    "acknowledge": (244, 151, 88),
+    "drag_left": (102, 132, 227),
+    "drag_right": (82, 154, 217),
 }
 TINY_WEBP_BASE64 = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"
 
@@ -100,7 +129,7 @@ def timing_from_form(form):
     legacy_fields = {"native_fps", "state_durations_ms"} & set(form)
     if legacy_fields:
         raise SystemExit(
-            "V1 timing fields are unsupported; use the fixed V2 authored timing contract"
+            "legacy timing fields are unsupported; use the fixed V3 authored timing contract"
         )
     state_timings = {
         state: json.loads(json.dumps(DEFAULT_STATE_TIMINGS[state])) for state in STATES
@@ -207,7 +236,7 @@ def build_source(form):
     name = "Skill Studio Pet"
     style = str(form.get("style") or "不指定")
     manifest = {
-        "schema_version": "apc.petpack.v2",
+        "schema_version": "apc.petpack.v3",
         "id": pet_id,
         "name": name,
         "style": style,

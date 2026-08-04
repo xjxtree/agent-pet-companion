@@ -774,7 +774,7 @@ fn rpc_ingest_deduplicates_and_filters_events() {
         request(json!({
             "id": "evt_test_diagnostic",
             "source": "codex",
-            "event_type": "review",
+            "event_type": "done",
             "title": "连接自检",
             "payload": {
                 "diagnostic": true
@@ -1110,9 +1110,10 @@ fn passive_connector_events_do_not_satisfy_ordinary_event_seen() {
                     "session_active": matches!(
                         event_type,
                         AgentEventType::Start
+                            | AgentEventType::Thinking
+                            | AgentEventType::Plan
                             | AgentEventType::Tool
                             | AgentEventType::Waiting
-                            | AgentEventType::Review
                     )
                 }),
                 created_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
@@ -1497,7 +1498,7 @@ fn connection_test_event_is_diagnostic_and_does_not_drive_overlay() {
     assert_eq!(test_event["ok"], true);
     assert_eq!(test_event["inserted"], true);
     assert_eq!(test_event["triggered"], false);
-    assert_eq!(test_event["state"], "start");
+    assert_eq!(test_event["state"], "idle");
     assert_eq!(test_event["event"]["source"], "opencode");
     assert_eq!(test_event["event"]["event_type"], "start");
     assert_eq!(test_event["event"]["title"], "开始处理");
@@ -1659,7 +1660,7 @@ fn snapshot_separates_overlay_events_from_recent_agent_history() {
             params: json!({
                 "id": "evt_recent_history_diagnostic",
                 "source": "codex",
-                "event_type": "review",
+                "event_type": "done",
                 "title": "连接自检",
                 "payload": {
                     "diagnostic": true
@@ -1981,7 +1982,7 @@ fn snapshot_overlay_events_keep_only_latest_message_per_agent() {
                 "id": "evt_codex_new_session",
                 "source": "codex",
                 "session_id": "codex-new",
-                "event_type": "review",
+                "event_type": "done",
                 "title": "Codex 新会话",
                 "created_at": newer_codex_time
             }),
@@ -2097,7 +2098,7 @@ fn snapshot_overlay_events_survive_diagnostic_noise() {
                 json!({
                     "id": format!("evt_diagnostic_noise_{index}"),
                     "source": "codex",
-                    "event_type": "review",
+                    "event_type": "done",
                     "title": "连接自检",
                     "payload": {
                         "diagnostic": true
@@ -2223,6 +2224,65 @@ fn overlay_placement_persists_through_snapshot() {
         update["overlay_placement_revision"],
         (initial_placement_revision + 1).to_string()
     );
+
+    let placement_updated_at_before_noop: String =
+        rusqlite::Connection::open(state.database.path())
+            .unwrap()
+            .query_row(
+                "SELECT updated_at FROM settings WHERE key = 'overlay_placement'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+    let equivalent_noop = handle_request(
+        &state,
+        request(
+            "overlay.placement.update",
+            json!({
+                "x": 321.0001,
+                "y": 654.0001,
+                "display_width_pt": 180.0,
+                "display_id": "display-test",
+                "expected_revision": update["overlay_placement_revision"]
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(equivalent_noop["ok"], true);
+    assert_eq!(equivalent_noop["changed"], false);
+    assert_eq!(equivalent_noop["revision"], update["revision"]);
+    assert_eq!(
+        equivalent_noop["overlay_placement_revision"],
+        update["overlay_placement_revision"]
+    );
+    let placement_updated_at_after_noop: String = rusqlite::Connection::open(state.database.path())
+        .unwrap()
+        .query_row(
+            "SELECT updated_at FROM settings WHERE key = 'overlay_placement'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        placement_updated_at_after_noop,
+        placement_updated_at_before_noop
+    );
+    let stale_equivalent = handle_request(
+        &state,
+        request(
+            "overlay.placement.update",
+            json!({
+                "x": 321.0,
+                "y": 654.0,
+                "display_width_pt": 180.0,
+                "display_id": "display-test",
+                "expected_revision": initial_placement_revision.to_string()
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(stale_equivalent["ok"], false);
+    assert_eq!(stale_equivalent["conflict"], true);
 
     let snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
     assert_eq!(snapshot["overlay_placement"]["x"], 321.0);
@@ -2531,7 +2591,7 @@ fn database_migrates_v2_pet_generation_source_columns() {
         .unwrap();
     assert_eq!(schema_version, 6);
 
-    pet.generator = Some("codex-app-server-brief-petpack-v2".to_string());
+    pet.generator = Some("codex-app-server-brief-petpack-v3".to_string());
     pet.provenance = Some("codex_app_server_brief".to_string());
     database.upsert_pet(&pet).unwrap();
 
@@ -2539,13 +2599,14 @@ fn database_migrates_v2_pet_generation_source_columns() {
     assert_eq!(stored.origin, petcore_types::PetOrigin::ExternalImport);
     assert_eq!(
         stored.generator.as_deref(),
-        Some("codex-app-server-brief-petpack-v2")
+        Some("codex-app-server-brief-petpack-v3")
     );
     assert_eq!(stored.provenance.as_deref(), Some("codex_app_server_brief"));
 }
 
 #[test]
 fn renderer_budget_uses_actual_authored_frame_count_without_ring_cache() {
+    let high = petcore::metrics::renderer_budget(QualityLevel::High, 40);
     let standard = petcore::metrics::renderer_budget(QualityLevel::Standard, 40);
     assert_eq!(standard.frame_count, 40);
     assert_eq!(standard.runtime_cache_frame_limit, 40);
@@ -2560,6 +2621,9 @@ fn renderer_budget_uses_actual_authored_frame_count_without_ring_cache() {
     assert_eq!(low.runtime_cache_frame_limit, 2);
     assert!(!low.uses_ring_cache);
     assert!(low.estimated_runtime_cache_mb < standard.estimated_runtime_cache_mb);
+    assert!(standard.estimated_runtime_cache_mb < high.estimated_runtime_cache_mb);
+    assert_eq!(high.runtime_cache_frame_limit, 40);
+    assert!(!high.uses_ring_cache);
 }
 
 #[test]
@@ -3466,7 +3530,7 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
         serde_json::from_slice(&std::fs::read(source_path).unwrap()).unwrap();
     assert_eq!(source["generator"], "agent-pet-studio-preview-helper");
     assert_eq!(source["provenance"], "deterministic_preview");
-    assert_eq!(source["skill_helper"], "agent-pet-studio-preview-helper-v5");
+    assert_eq!(source["skill_helper"], "agent-pet-studio-preview-helper-v7");
     assert_eq!(source["preview_only"], true);
     assert_eq!(source["states"][0]["name"], "idle");
     assert_eq!(
@@ -3477,7 +3541,7 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
         4
     );
     assert_eq!(source["state_frame_counts"]["idle"], 4);
-    assert_eq!(source["state_frame_counts"]["start"], 4);
+    assert_eq!(source["state_frame_counts"]["thinking"], 4);
     assert!(source.get("materialized_by").is_none());
 
     let snapshot = handle_request(
@@ -4045,7 +4109,7 @@ fn generation_waits_for_user_input_and_resumes_after_reply() {
                 .contains("粉白长裙")
     }));
 
-    // The resumed turn still performs a full seven-state materialization. It can
+    // The resumed turn still performs a full nine-action materialization. It can
     // share the runner with other image-heavy integration tests.
     let deadline = Instant::now() + Duration::from_secs(240);
     loop {
@@ -4181,7 +4245,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
             .join("input/references/reference-00.png"),
     );
 
-    // Full seven-state materialization decodes and repacks every animation while
+    // Full nine-action materialization decodes and repacks every animation while
     // other image-heavy integration tests may be running on the same host.
     let deadline = Instant::now() + Duration::from_secs(240);
     loop {
@@ -4243,7 +4307,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     let pet = &pets[0];
     assert_eq!(pet["name"], "AI 云袖");
     assert_eq!(pet["origin"], "generated_by_petcore_job");
-    assert_eq!(pet["generator"], "codex-app-server-brief-petpack-v2");
+    assert_eq!(pet["generator"], "codex-app-server-brief-petpack-v3");
     assert_eq!(pet["provenance"], "codex_app_server_brief");
     assert!(std::path::Path::new(pet["cover_path"].as_str().unwrap()).is_file());
 
@@ -4313,7 +4377,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
         message["content"]
             .as_str()
             .unwrap()
-            .contains("已按固定 7 状态 petpack 契约补齐")
+            .contains("已按固定九动作 petpack V3 契约补齐")
     }));
 
     let file = std::fs::File::open(petpack_path).unwrap();
@@ -4366,19 +4430,19 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     );
     assert_eq!(brief["ai_brief"]["name"], "AI 云袖");
     assert_eq!(brief["ai_brief"]["visual_brief"], "AI brief");
-    assert_eq!(brief["ai_brief"]["states"].as_array().unwrap().len(), 7);
+    assert_eq!(brief["ai_brief"]["states"].as_array().unwrap().len(), 9);
     assert_eq!(
         brief["generation"]["generator"],
-        "codex-app-server-brief-petpack-v2"
+        "codex-app-server-brief-petpack-v3"
     );
     assert_eq!(brief["generation"]["provenance"], "codex_app_server_brief");
     assert_eq!(brief["states"][0]["motion"], "breathing");
-    assert_eq!(brief["states"][1]["name"], "start");
-    assert_eq!(brief["states"][1]["motion"], "抬头进入工作状态");
+    assert_eq!(brief["states"][1]["name"], "thinking");
+    assert_eq!(brief["states"][1]["motion"], "抬头并进入思考状态");
     let source: serde_json::Value =
         serde_json::from_reader(archive.by_name("source/source.json").unwrap()).unwrap();
     assert_matches_petpack_metadata_schema("pet-source.schema.json", &source);
-    assert_eq!(source["generator"], "codex-app-server-brief-petpack-v2");
+    assert_eq!(source["generator"], "codex-app-server-brief-petpack-v3");
     assert_eq!(source["provenance"], "codex_app_server_brief");
     assert_eq!(source["palette_source"], "codex-ai-brief");
     assert_eq!(source["palette"]["source"], "codex-ai-brief");
@@ -4386,7 +4450,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(source["states"][0]["name"], "idle");
     assert_eq!(
         source["states"][0]["frame_durations_ms"],
-        json!([180, 160, 180, 380])
+        json!([300, 260, 300, 640])
     );
     assert_eq!(source["states"][0]["playback"]["mode"], "periodic");
     assert_eq!(source["state_frame_counts"]["idle"], 4);
@@ -4414,11 +4478,11 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_matches_petpack_metadata_schema("pet-validation.schema.json", &validation_metadata);
     assert_eq!(
         validation_metadata["generator"],
-        "codex-app-server-brief-petpack-v2"
+        "codex-app-server-brief-petpack-v3"
     );
     assert_eq!(validation_metadata["provenance"], "codex_app_server_brief");
-    assert_eq!(validation_metadata["states"][1]["name"], "start");
-    assert_eq!(validation_metadata["state_frame_counts"]["start"], 4);
+    assert_eq!(validation_metadata["states"][1]["name"], "thinking");
+    assert_eq!(validation_metadata["state_frame_counts"]["thinking"], 4);
 
     let reply_messages = handle_request(
         &state,
@@ -4445,7 +4509,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
                 .contains("正在恢复 Codex 会话")
     }));
 
-    // A revision repeats the strict 7-state decode/validation pass. Leave enough
+    // A revision repeats the strict 6-state decode/validation pass. Leave enough
     // headroom for the full core_validation suite to run concurrently on CI.
     let revision_deadline = Instant::now() + Duration::from_secs(240);
     let reply_message_count = reply_items.len();
@@ -4798,19 +4862,22 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         serde_json::from_str(&codex_marketplace_content).unwrap();
     let codex_skill_content = std::fs::read_to_string(&codex_skill).unwrap();
     assert!(codex_plugin.is_file());
-    assert!(codex_skill_content.contains(".petpack V2 assets"));
+    assert!(codex_skill_content.contains(".petpack V3 assets"));
     assert!(codex_skill_content.contains("authored per-frame timing"));
     assert!(codex_skill_content.contains("APC_PETCORE_CLI"));
     let maker_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/agent-pet-maker");
     for relative_path in [
         "SKILL.md",
-        "references/petpack-v2.md",
+        "references/petpack-v3.md",
         "references/create-modify.md",
         "references/visual-production-and-native-resolution.md",
+        "references/transparent-frame-production.md",
         "references/security.md",
         "scripts/petpack_workspace.py",
+        "scripts/prepare_transparent_frames.py",
         "agents/openai.yaml",
         "tests/test_petpack_workspace.py",
+        "tests/test_prepare_transparent_frames.py",
     ] {
         assert_eq!(
             std::fs::read(codex_maker.join(relative_path)).unwrap(),
@@ -4832,6 +4899,15 @@ fn repair_generates_real_pi_and_opencode_connectors() {
             & 0o111,
         0,
         "the installed agent-pet-maker helper must remain executable"
+    );
+    assert_ne!(
+        std::fs::metadata(codex_maker.join("scripts/prepare_transparent_frames.py"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0,
+        "the installed transparent-frame helper must remain executable"
     );
     assert!(codex_marketplace_content.contains("agent-pet-companion"));
     let codex_marketplace_plugin = codex_marketplace_json["plugins"]
@@ -4909,7 +4985,7 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         .join("agent-pet-companion-hook.sh");
     let claude_helper_content = std::fs::read_to_string(&claude_hook_script).unwrap();
     assert!(claude_helper_content.contains("agent hook --source claude_code"));
-    assert!(claude_helper_content.contains("claude-hooks-2026-07-31-activity-v8"));
+    assert!(claude_helper_content.contains("claude-hooks-2026-08-01-events-v9"));
     let mut claude_hook_child = Command::new(&claude_hook_script)
         .env("APC_FAKE_CLI_CAPTURE", &capture_path)
         .stdin(Stdio::piped())
@@ -5653,8 +5729,8 @@ fn codex_app_server_probe_uses_configured_stdio_command() {
     assert_eq!(session["completed"], true);
     assert_eq!(session["turn_id"], "turn_fake_pet_studio");
     assert_eq!(session["ai_brief"]["name"], "AI 云袖");
-    assert_eq!(session["ai_brief"]["states"].as_array().unwrap().len(), 7);
-    assert!(session["ai_brief_warnings"].as_array().unwrap().len() >= 6);
+    assert_eq!(session["ai_brief"]["states"].as_array().unwrap().len(), 9);
+    assert!(session["ai_brief_warnings"].as_array().unwrap().len() >= 5);
 }
 
 #[test]

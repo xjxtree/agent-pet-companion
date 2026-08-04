@@ -26,7 +26,7 @@ struct GenerationSessionStateTests {
         #expect(try JSONDecoder().decode(GenerationForm.self, from: encoded) == form)
     }
 
-    @Test("pet summaries require the complete seven-state timing contract")
+    @Test("pet summaries require the complete nine-action timing contract")
     func petSummaryRejectsMissingTimingContract() {
         let json = #"{"id":"pet","name":"Pet","style":"像素","quality":"standard","render_size":{"width":384,"height":416},"petpack_path":"/tmp/pet.petpack","cover_path":"/tmp/cover.png","active":false,"created_at":"2026-07-31T00:00:00Z"}"#
 
@@ -401,7 +401,7 @@ struct GenerationSessionStateTests {
           "status":"completed",
           "result_pet_id":"pet_created",
           "revision_id":"rev_0123456789abcdef0123456789abcdef",
-          "validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":0},
+          "validation_summary":{"ok":true,"state_count":9,"frame_count":120,"warning_count":0},
           "messages":[]
         }
         """#.utf8)
@@ -424,7 +424,7 @@ struct GenerationSessionStateTests {
         #expect(session.resultPetID == "pet_created")
         #expect(session.resultRevisionID == "rev_0123456789abcdef0123456789abcdef")
         #expect(session.resultPetID != session.resultRevisionID)
-        #expect(session.validationSummary?.stateCount == 7)
+        #expect(session.validationSummary?.stateCount == 9)
         #expect(session.validationSummary?.frameCount == 120)
         #expect(!session.canSendReply)
     }

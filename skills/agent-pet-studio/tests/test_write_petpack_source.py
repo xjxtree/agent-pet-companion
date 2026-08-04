@@ -14,6 +14,16 @@ SPEC.loader.exec_module(studio_helper)
 
 
 class StudioTimingTests(unittest.TestCase):
+    def test_skill_explains_why_portable_high_is_not_a_studio_option(self) -> None:
+        skill = (SCRIPT_PATH.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        skill = " ".join(skill.split())
+        self.assertIn("portable package and App", skill)
+        self.assertIn("ChatGPT/Codex built-in `imagegen`", skill)
+        self.assertIn("Reject `high` before image generation", skill)
+        self.assertIn("image model to return the selected runtime dimensions exactly", skill)
+        self.assertIn("stable equal-size", skill)
+        self.assertIn("exact-tier runtime PNGs", skill)
+
     def test_quality_contract_has_only_low_and_standard(self) -> None:
         self.assertEqual(
             studio_helper.RENDER_SIZES,
@@ -34,15 +44,18 @@ class StudioTimingTests(unittest.TestCase):
             with self.subTest(quality=quality), self.assertRaises(SystemExit):
                 studio_helper.quality_from_form({"quality": quality})
 
-    def test_defaults_use_the_v2_authored_timing_contract(self) -> None:
+    def test_defaults_use_the_v3_authored_timing_contract(self) -> None:
         timings, counts = studio_helper.timing_from_form({})
         self.assertEqual(timings, studio_helper.DEFAULT_STATE_TIMINGS)
         self.assertEqual(counts["idle"], 4)
         self.assertEqual(counts["waiting"], 6)
-        self.assertEqual(counts["review"], 6)
-        self.assertEqual(sum(counts.values()), 32)
+        self.assertEqual(counts["thinking"], 4)
+        self.assertEqual(counts["acknowledge"], 4)
+        self.assertEqual(counts["drag_left"], 6)
+        self.assertEqual(counts["drag_right"], 6)
+        self.assertEqual(sum(counts.values()), 42)
 
-    def test_v2_timing_flows_to_all_artifacts(self) -> None:
+    def test_v3_timing_flows_to_all_artifacts(self) -> None:
         expected_counts = {
             state: len(timing["frame_durations_ms"])
             for state, timing in studio_helper.DEFAULT_STATE_TIMINGS.items()
@@ -74,7 +87,7 @@ class StudioTimingTests(unittest.TestCase):
                 (output / "build" / "validation.json").read_text(encoding="utf-8")
             )
 
-            self.assertEqual(manifest["schema_version"], "apc.petpack.v2")
+            self.assertEqual(manifest["schema_version"], "apc.petpack.v3")
             self.assertEqual(manifest["quality"], "standard")
             self.assertEqual(
                 manifest["render_size"], {"width": 384, "height": 416}
@@ -105,7 +118,7 @@ class StudioTimingTests(unittest.TestCase):
                     expected,
                 )
 
-    def test_low_quality_uses_exact_native_render_size(self) -> None:
+    def test_low_quality_uses_exact_runtime_render_size(self) -> None:
         def write_fake_png(path, *_args, **_kwargs):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"test-png")
@@ -169,7 +182,7 @@ class StudioTimingTests(unittest.TestCase):
             (output / "manifest.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": "apc.petpack.v2",
+                        "schema_version": "apc.petpack.v3",
                         "states": manifest_states,
                     }
                 ),
@@ -184,7 +197,7 @@ class StudioTimingTests(unittest.TestCase):
             persisted = json.loads(
                 (output / "build" / "validation.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(validation["frame_count"], 32)
+            self.assertEqual(validation["frame_count"], 42)
             self.assertEqual(validation["states"], manifest_states)
             self.assertEqual(validation["state_frame_counts"], counts)
             self.assertEqual(persisted, validation)

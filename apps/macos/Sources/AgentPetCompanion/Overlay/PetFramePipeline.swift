@@ -709,7 +709,7 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
         case .loop:
             let phase = elapsed.truncatingRemainder(dividingBy: total)
             delayMS = nextAuthoredBoundary(after: phase) - phase
-        case .onceHold:
+        case .onceThenReturn:
             guard elapsed < total else { return nil }
             delayMS = nextAuthoredBoundary(after: elapsed) - elapsed
         case .periodic:
@@ -724,7 +724,7 @@ final class PetFrameRenderHandoff: @unchecked Sendable {
             } else {
                 delayMS = position.cycleDurationMS - position.phaseMS
             }
-        case .burstThenSettle:
+        case .burstThenSettle, .burstThenIdle:
             let activeDuration = total
                 * Double(max(1, timeline.playback.entryRepeatCount ?? 1))
             guard elapsed < activeDuration else { return nil }
@@ -1145,7 +1145,10 @@ struct PetPlaybackEntryHistory: Sendable {
         }
         currentEntryID = entryID
 
-        guard playbackMode == .onceHold || playbackMode == .burstThenSettle else {
+        guard playbackMode == .burstThenSettle
+                || playbackMode == .burstThenIdle
+                || playbackMode == .onceThenReturn
+        else {
             return PetPlaybackEntryTransition(
                 isNewEntry: true,
                 shouldRestartPlayback: true
@@ -1238,7 +1241,11 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     private var hasPublishedCurrentEntry = false
     private var visualEnvelopeHandler: ((OverlayPetVisualEnvelope?) -> Void)?
     private var publishedVisualEnvelope: OverlayPetVisualEnvelope?
+    private var frameContentHandler: (@MainActor (Bool) -> Void)?
+    private var publishedFrameContent = false
     private var frameHitTestHandler: (@MainActor (OverlayPetFrameHitTest?) -> Void)?
+    private var playbackCompletionHandler: (@MainActor (String, PetPlaybackMode) -> Void)?
+    private var completedPlaybackEntryID: String?
 
     @MainActor
     func makeView() -> MTKView {
@@ -1271,7 +1278,9 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         stateEntryID: String,
         active: Bool,
         reduceMotion: Bool,
+        onPlaybackCompleted: @escaping @MainActor (String, PetPlaybackMode) -> Void = { _, _ in },
         onVisualEnvelopeChanged: @escaping (OverlayPetVisualEnvelope?) -> Void,
+        onFrameContentChanged: @escaping @MainActor (Bool) -> Void = { _ in },
         onFrameHitTestChanged: @escaping @MainActor (OverlayPetFrameHitTest?) -> Void = { _ in }
     ) {
         let configuration = Configuration(
@@ -1292,9 +1301,15 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             // prevents both an old Metal callback and the new SwiftUI closure
             // from relabelling a stale frame as the new semantic entry.
             invalidateFramePresentations(notifyHandler: false)
+            publishedFrameContent = false
         }
         visualEnvelopeHandler = onVisualEnvelopeChanged
+        playbackCompletionHandler = onPlaybackCompleted
+        if priorConfiguration?.stateEntryID != configuration.stateEntryID {
+            completedPlaybackEntryID = nil
+        }
         lastConfiguration = configuration
+        setFrameContentHandler(onFrameContentChanged)
         setFrameHitTestHandler(onFrameHitTestChanged)
 
         guard active else {
@@ -1388,6 +1403,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     func suspendPipeline() {
         suspended = true
         invalidateFramePresentations(notifyHandler: true)
+        publishFrameContent(false)
         cancelLoading(releaseFrames: true)
     }
 
@@ -1400,6 +1416,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         invalidateFramePresentations(notifyHandler: false)
         cancelLoading(releaseFrames: true)
         frameHitTestHandler = nil
+        frameContentHandler = nil
+        playbackCompletionHandler = nil
     }
 
     @MainActor
@@ -1442,6 +1460,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
 
         clear(drawable: drawable, commandBuffer: commandBuffer)
         let presentedFrameHitTest: OverlayPetFrameHitTest?
+        let presentedFrameHasContent: Bool
         if let decoded = lookup.frame, let ciContext {
             render(
                 decoded.image,
@@ -1452,8 +1471,20 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 drawableSize: view.drawableSize
             )
             presentedFrameHitTest = lookup.frameHitTest
+            presentedFrameHasContent = true
         } else {
             presentedFrameHitTest = nil
+            presentedFrameHasContent = false
+        }
+        let completedPlaybackMode: PetPlaybackMode?
+        if lookup.shouldPauseAfterDraw,
+           lastConfiguration?.reduceMotion == false,
+           let mode = lastConfiguration?.playbackMode,
+           mode == .burstThenIdle || mode == .onceThenReturn
+        {
+            completedPlaybackMode = mode
+        } else {
+            completedPlaybackMode = nil
         }
 
         // A successful command-buffer completion only means the GPU work
@@ -1468,6 +1499,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
                 presentedDrawable.presentedTime > 0
                     ? .presented(presentedFrameHitTest)
                     : .skipped,
+                presentedFrameHasContent: presentedFrameHasContent,
+                completedPlaybackMode: completedPlaybackMode,
                 token: presentationToken
             )
         }
@@ -1475,6 +1508,8 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
             guard completedBuffer.status != .completed else { return }
             self?.enqueueFramePresentationResolution(
                 .failed,
+                presentedFrameHasContent: presentedFrameHasContent,
+                completedPlaybackMode: nil,
                 token: presentationToken
             )
         }
@@ -1489,23 +1524,48 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
 
     nonisolated private func enqueueFramePresentationResolution(
         _ resolution: PetFramePresentationResolution,
+        presentedFrameHasContent: Bool,
+        completedPlaybackMode: PetPlaybackMode?,
         token: PetFramePresentationToken
     ) {
         Task { @MainActor [weak self] in
-            self?.resolveFramePresentation(resolution, token: token)
+            self?.resolveFramePresentation(
+                resolution,
+                presentedFrameHasContent: presentedFrameHasContent,
+                completedPlaybackMode: completedPlaybackMode,
+                token: token
+            )
         }
     }
 
     @MainActor
     private func resolveFramePresentation(
         _ resolution: PetFramePresentationResolution,
+        presentedFrameHasContent: Bool,
+        completedPlaybackMode: PetPlaybackMode?,
         token: PetFramePresentationToken
     ) {
-        if case let .publish(hitTest) = presentationCoordinator.resolve(
+        let decision = presentationCoordinator.resolve(
             resolution,
             token: token
-        ) {
+        )
+        guard decision != .rejected else { return }
+        if case .presented = resolution {
+            publishFrameContent(presentedFrameHasContent)
+        }
+        if case let .publish(hitTest) = decision {
             frameHitTestHandler?(hitTest)
+        }
+        if case .presented = resolution,
+           let completedPlaybackMode,
+           completedPlaybackEntryID != token.context.stateEntryID,
+           lastConfiguration?.stateEntryID == token.context.stateEntryID
+        {
+            completedPlaybackEntryID = token.context.stateEntryID
+            playbackCompletionHandler?(
+                token.context.stateEntryID,
+                completedPlaybackMode
+            )
         }
     }
 
@@ -1720,6 +1780,23 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         // configuration. Replay only the coordinator's last accepted
         // presentation, never a fresh playback lookup.
         presentationCoordinator.replayCurrent(to: handler)
+    }
+
+    @MainActor
+    private func setFrameContentHandler(
+        _ handler: @escaping @MainActor (Bool) -> Void
+    ) {
+        frameContentHandler = handler
+        // SwiftUI may replace this closure without changing renderer assets.
+        // Replay only content that reached a drawable presentation callback.
+        handler(publishedFrameContent)
+    }
+
+    @MainActor
+    private func publishFrameContent(_ hasContent: Bool) {
+        guard publishedFrameContent != hasContent else { return }
+        publishedFrameContent = hasContent
+        frameContentHandler?(hasContent)
     }
 
     @MainActor

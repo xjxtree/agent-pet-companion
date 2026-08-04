@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Pet Maker"
-  short_description: "Create per-frame-timed, validated .petpack V2 pets"
-  default_prompt: "Use $agent-pet-companion:agent-pet-maker to create or revise a real, validated Agent Pet Companion .petpack V2 pet."
+  short_description: "Create nine-action, validated .petpack V3 pets"
+  default_prompt: "Use $agent-pet-companion:agent-pet-maker to create or revise a real, validated nine-action Agent Pet Companion .petpack V3 pet."

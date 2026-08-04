@@ -132,7 +132,7 @@ fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
     assert_eq!(codex_prompt.kind, AgentEventType::Start);
     assert!(codex_prompt.session_active);
     assert_eq!(codex_prompt.source_event, "UserPromptSubmit");
-    assert_eq!(codex_prompt.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(codex_prompt.activity_kind, None);
     assert_eq!(codex_prompt.session_open, None);
     assert_eq!(codex_prompt.message_role.as_deref(), Some("user"));
     assert_eq!(
@@ -148,7 +148,7 @@ fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
     assert_eq!(post_tool.kind, AgentEventType::Tool);
     assert_eq!(post_tool.tool_name.as_deref(), Some("Bash"));
     assert_eq!(post_tool.outcome.as_deref(), Some("completed"));
-    assert_eq!(post_tool.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(post_tool.activity_kind, None);
     assert_eq!(
         post_tool.activity_content.as_deref(),
         Some("codex-secret-output-do-not-persist")
@@ -176,7 +176,7 @@ fn codex_and_claude_official_hooks_normalize_bounded_display_activity() {
     assert_eq!(tool_failure.kind, AgentEventType::Tool);
     assert!(tool_failure.session_active);
     assert_eq!(tool_failure.outcome.as_deref(), Some("tool_failure"));
-    assert_eq!(tool_failure.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(tool_failure.activity_kind, None);
     assert_eq!(
         tool_failure.activity_content.as_deref(),
         Some("claude-secret-tool-output-do-not-persist")
@@ -813,7 +813,7 @@ fn claude_metadata_prompt_fence_and_background_events_are_semantic() {
     .unwrap()
     .unwrap();
     assert_eq!(denied.outcome.as_deref(), Some("auto_denied"));
-    assert_eq!(denied.kind, AgentEventType::Tool);
+    assert_eq!(denied.kind, AgentEventType::Start);
 
     let background = parse_contract_event(
         AgentSource::ClaudeCode,
@@ -994,7 +994,7 @@ fn opencode_v1_17_18_reads_discriminated_and_direct_payloads() {
         AgentSource::Opencode,
         "opencode-v1.17.18/permission_replied.json",
     );
-    assert_eq!(replied.kind, AgentEventType::Tool);
+    assert_eq!(replied.kind, AgentEventType::Start);
     assert_eq!(replied.outcome.as_deref(), Some("permission_replied_once"));
 
     for (fixture_name, expected_activity) in [
@@ -1071,7 +1071,7 @@ fn opencode_v1_18_maps_v2_waiting_and_prompt_events_without_private_content() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(permission_replied.kind, AgentEventType::Tool);
+    assert_eq!(permission_replied.kind, AgentEventType::Start);
     assert_eq!(
         permission_replied.outcome.as_deref(),
         Some("permission_replied_once")
@@ -1105,7 +1105,7 @@ fn opencode_v1_18_maps_v2_waiting_and_prompt_events_without_private_content() {
     .unwrap();
     assert_eq!(prompt_admitted.kind, AgentEventType::Start);
     assert_eq!(prompt_admitted.outcome.as_deref(), Some("prompt_admitted"));
-    assert_eq!(prompt_admitted.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(prompt_admitted.activity_kind, None);
     assert_eq!(
         prompt_admitted.turn_id.as_deref(),
         Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -1115,9 +1115,41 @@ fn opencode_v1_18_maps_v2_waiting_and_prompt_events_without_private_content() {
         .as_deref()
         .is_some_and(|id| id.starts_with("evt_hook_")));
 
+    let reasoning = parse_contract_event(
+        AgentSource::Opencode,
+        &serde_json::json!({
+            "type": "session.next.reasoning.ended",
+            "properties": {
+                "sessionID": "opencode-v2-session",
+                "activity_content": "Stable reasoning checkpoint"
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(reasoning.kind, AgentEventType::Thinking);
+    assert_eq!(reasoning.activity_kind.as_deref(), Some("thinking"));
+
+    let plan = parse_contract_event(
+        AgentSource::Opencode,
+        &serde_json::json!({
+            "type": "session.plan.updated",
+            "properties": {
+                "sessionID": "opencode-v2-session",
+                "activity_content": "Stable plan checkpoint"
+            }
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(plan.kind, AgentEventType::Plan);
+    assert_eq!(plan.activity_kind.as_deref(), Some("plan"));
+
     let serialized = serde_json::to_string(&[
         permission_asked,
         permission_replied,
+        reasoning,
+        plan,
         question_asked,
         prompt_admitted,
     ])
@@ -1144,7 +1176,7 @@ fn versioned_templates_only_claim_supported_contracts() {
         std::fs::read_to_string(root.join("plugins/claude-code/settings.fragment.json.tpl"))
             .unwrap();
     assert!(claude.contains("PostToolUseFailure"));
-    assert!(claude.contains("claude-hooks-2026-07-31-activity-v8"));
+    assert!(claude.contains("claude-hooks-2026-08-01-events-v9"));
     assert!(claude.contains("\"release_version\": \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(claude.contains("\"async\":false"));
     assert!(claude.contains("\"timeout\":2"));
@@ -1166,7 +1198,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-activity-v10"));
+    assert!(pi.contains("pi-extension-0.80.10-events-v11"));
     assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
@@ -1185,7 +1217,7 @@ fn versioned_templates_only_claim_supported_contracts() {
 
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
-    assert!(opencode.contains("opencode-v1.18.4-activity-v12"));
+    assert!(opencode.contains("opencode-v1.18.4-events-v13"));
     assert!(opencode.contains(
         "APC_OPENCODE_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""
     ));

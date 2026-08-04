@@ -1,4 +1,4 @@
-# Agent Pet Companion `.petpack` V2
+# Agent Pet Companion `.petpack` V3
 
 ## Contents
 
@@ -16,7 +16,7 @@ Create one source root:
 ```text
 manifest.json
 brief.json
-assets/frames/{idle,start,tool,waiting,review,done,failed}/*.png
+assets/frames/{idle,thinking,tool,waiting,done,failed,acknowledge,drag_left,drag_right}/*.png
 assets/preview/cover.png
 assets/preview/animated_preview.webp
 source/prompt.md
@@ -31,9 +31,9 @@ sidecars outside `petpack-source`.
 
 ## Manifest and quality
 
-`manifest.json` is closed and declares `apc.petpack.v2`. PetCore does not read
-V1 packages; recreate them through the V2 Maker instead of migrating, sampling,
-or retiming their frames.
+`manifest.json` is closed and declares `apc.petpack.v3`. PetCore does not read
+V1 or V2 packages; recreate them through the V3 Maker instead of migrating,
+aliasing, sampling, or retiming their frames.
 
 Use one render tier for every PNG:
 
@@ -41,16 +41,19 @@ Use one render tier for every PNG:
 | --- | ---: | --- |
 | `low` | 192×208 | pixel/minimal characters and low-resource devices |
 | `standard` | 384×416 | default for most characters |
+| `high` | 576×624 | externally produced high-resolution artwork |
 
-Both tiers are 12:13. Width is a multiple of 192, so both sprite-sheet edges are
-multiples of 16. Unsupported quality names, including the retired `high`, fail
-closed; do not alias or map them onto a supported tier.
+All three tiers are 12:13. Every width is a multiple of 192, so sprite-sheet
+edges remain multiples of 16. Unsupported quality names such as `ultra` and
+`original` fail closed; do not alias or map them onto a supported tier. The
+App runtime can import and play all three tiers, while its Codex-backed Studio
+form intentionally offers only `low` and `standard`.
 
 Example manifest:
 
 ```json
 {
-  "schema_version": "apc.petpack.v2",
+  "schema_version": "apc.petpack.v3",
   "id": "pet_starlightfox",
   "name": "Starlight Fox",
   "style": "soft luminous storybook creature",
@@ -60,15 +63,15 @@ Example manifest:
     {
       "name": "idle",
       "frames_dir": "assets/frames/idle",
-      "frame_durations_ms": [180, 160, 180, 380],
-      "playback": { "mode": "periodic", "cooldown_ms": [4000, 8000] },
+      "frame_durations_ms": [300, 260, 300, 640],
+      "playback": { "mode": "periodic", "cooldown_ms": [2500, 5000] },
       "reduced_motion_frame_index": 2
     },
     {
-      "name": "start",
-      "frames_dir": "assets/frames/start",
+      "name": "thinking",
+      "frames_dir": "assets/frames/thinking",
       "frame_durations_ms": [120, 140, 160, 180],
-      "playback": { "mode": "once_hold", "settle_frame_index": 3 },
+      "playback": { "mode": "burst_then_idle", "entry_repeat_count": 3 },
       "reduced_motion_frame_index": 2
     },
     {
@@ -76,9 +79,8 @@ Example manifest:
       "frames_dir": "assets/frames/tool",
       "frame_durations_ms": [150, 150, 170, 330],
       "playback": {
-        "mode": "burst_then_settle",
-        "entry_repeat_count": 1,
-        "settle_frame_index": 3
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
       },
       "reduced_motion_frame_index": 2
     },
@@ -86,28 +88,42 @@ Example manifest:
       "name": "waiting",
       "frames_dir": "assets/frames/waiting",
       "frame_durations_ms": [150, 150, 150, 150, 170, 230],
-      "playback": { "mode": "once_hold", "settle_frame_index": 5 },
-      "reduced_motion_frame_index": 4
-    },
-    {
-      "name": "review",
-      "frames_dir": "assets/frames/review",
-      "frame_durations_ms": [140, 140, 150, 150, 180, 240],
-      "playback": { "mode": "once_hold", "settle_frame_index": 5 },
+      "playback": { "mode": "burst_then_settle", "entry_repeat_count": 2, "settle_frame_index": 5 },
       "reduced_motion_frame_index": 4
     },
     {
       "name": "done",
       "frames_dir": "assets/frames/done",
       "frame_durations_ms": [120, 140, 160, 230],
-      "playback": { "mode": "once_hold", "settle_frame_index": 3 },
+      "playback": { "mode": "burst_then_idle", "entry_repeat_count": 3 },
       "reduced_motion_frame_index": 2
     },
     {
       "name": "failed",
       "frames_dir": "assets/frames/failed",
       "frame_durations_ms": [150, 170, 190, 290],
-      "playback": { "mode": "once_hold", "settle_frame_index": 3 },
+      "playback": { "mode": "burst_then_settle", "entry_repeat_count": 3, "settle_frame_index": 3 },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "acknowledge",
+      "frames_dir": "assets/frames/acknowledge",
+      "frame_durations_ms": [180, 140, 180, 300],
+      "playback": { "mode": "once_then_return" },
+      "reduced_motion_frame_index": 1
+    },
+    {
+      "name": "drag_left",
+      "frames_dir": "assets/frames/drag_left",
+      "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+      "playback": { "mode": "loop" },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "drag_right",
+      "frames_dir": "assets/frames/drag_right",
+      "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+      "playback": { "mode": "loop" },
       "reduced_motion_frame_index": 2
     }
   ],
@@ -115,36 +131,50 @@ Example manifest:
 }
 ```
 
-Use an ID matching `^pet_[a-z0-9]+$`. Use every fixed state exactly once and
-its exact `assets/frames/<state>` directory.
+Use an ID matching `^pet_[a-z0-9]+$`. Use every fixed action exactly once and
+its exact `assets/frames/<action>` directory.
 
 ## State timing and defaults
 
 The array length is the exact authored PNG count. Each duration is 50–2000ms;
-each state has 2–40 frames; a package has at most 280 frames. These structural
+each action has 2–40 frames; a package has at most 360 frames. These structural
 limits do not turn the 4–8 frame creative budget into a hard gate.
 
-The default is 32 frames:
+The default is 42 frames:
 
 | State | Durations (ms) | Total | Playback |
 | --- | --- | ---: | --- |
-| `idle` | 180, 160, 180, 380 | 900 | `periodic`, cooldown 4000–8000 |
-| `start` | 120, 140, 160, 180 | 600 | `once_hold` |
-| `tool` | 150, 150, 170, 330 | 800 | `burst_then_settle`, repeat 1 |
-| `waiting` | 150, 150, 150, 150, 170, 230 | 1000 | `once_hold` |
-| `review` | 140, 140, 150, 150, 180, 240 | 1000 | `once_hold` |
-| `done` | 120, 140, 160, 230 | 650 | `once_hold` |
-| `failed` | 150, 170, 190, 290 | 800 | `once_hold` |
+| `idle` | 300, 260, 300, 640 | 1500 | `periodic`, cooldown 2500–5000 |
+| `thinking` | 120, 140, 160, 180 | 600 | `burst_then_idle`, repeat 3 |
+| `tool` | 150, 150, 170, 330 | 800 | `burst_then_idle`, repeat 3 |
+| `waiting` | 150, 150, 150, 150, 170, 230 | 1000 | `burst_then_settle`, repeat 2, settle 5 |
+| `done` | 120, 140, 160, 230 | 650 | `burst_then_idle`, repeat 3 |
+| `failed` | 150, 170, 190, 290 | 800 | `burst_then_settle`, repeat 3, settle 3 |
+| `acknowledge` | 180, 140, 180, 300 | 800 | `once_then_return` |
+| `drag_left` | 100, 90, 100, 110, 100, 200 | 700 | `loop` |
+| `drag_right` | 100, 90, 100, 110, 100, 200 | 700 | `loop` |
+
+The action set is closed. Removed package state names such as `start` and
+`review` are rejected rather than mapped to a current action; recreate that
+source with all nine current actions. V3 deliberately has no gaze-direction
+rows, hover reaction, or autonomous-motion action.
 
 End with a longer hold when it improves settle. For every mode, use only its
 fields:
 
 - `loop`: `mode` only.
-- `once_hold`: add an in-range `settle_frame_index`.
 - `periodic`: add ordered `[minimum, maximum]` `cooldown_ms`; each value is an
   integer in `0...86_400_000` milliseconds.
 - `burst_then_settle`: add `entry_repeat_count` 1–8 and an in-range
   `settle_frame_index`.
+- `burst_then_idle`: add `entry_repeat_count` 1–8. After the final pass the
+  renderer presents the package idle action while the semantic state remains.
+- `once_then_return`: `mode` only. After completion the renderer returns to the
+  underlying semantic presentation.
+
+The pairing is fixed: idle/periodic; thinking, tool, done/burst_then_idle;
+waiting, failed/burst_then_settle; acknowledge/once_then_return; and both drag
+actions/loop.
 
 Choose `reduced_motion_frame_index` as an independently readable still for the
 state. Do not default it to frame 0 or select a transitional in-between.
@@ -155,18 +185,23 @@ unchanged semantic state.
 
 ## Visual and frame rules
 
-- Generate/edit every frame at the manifest tier or extract one exact
-  target-size crop without resampling.
+- Treat the manifest tier as the exact runtime PNG target, not a model-output
+  instruction. Require every generated source crop to be 12:13 and at least as
+  large as that target. Crop without resampling, then use the shared
+  transparent-frame pipeline for an exact-size copy or its sole direct
+  downscale to the runtime tier.
 - Keep transparent surroundings and at least one transparent pixel on every
   edge.
 - Preserve identity, anatomy, palette, costume, and prop relationships.
-- Make each adjacent pose genuine; reject duplicates, crossfades, morphs,
+- Keep one state's source crop geometry stable and preserve intentional
+  translation and baseline; never independently fit each pose to its subject
+  bounds. Make each adjacent pose genuine; reject duplicates, crossfades, morphs,
   optical flow, transformed copies, or procedural filler.
 - Use non-uniform spacing and a readable anticipation–action–settle arc where
   appropriate.
 - Keep resident/high-frequency `idle`, `tool`, and `waiting` motion restrained
-  around a stable root. Allow short full-body reactions for `start`, `review`,
-  `done`, and `failed` within the crop budget.
+  around a stable root. Allow short full-body reactions for `thinking`, `done`,
+  and `failed` within the crop budget.
 - Make loop boundaries deliberate. Make hold/settle indices readable.
 - Name frames with zero-padded ASCII natural order, such as `0000.png`.
 - Provide a useful `cover.png` and animated WebP preview.
@@ -176,7 +211,7 @@ unchanged semantic state.
 `source/source.json` is closed. Use the current safe-producer schema. Record
 `schema_version: apc.pet-source.v1`, the actual `generator` and `runner`,
 `provenance: skill-full-source`, manifest identity/style/quality,
-`visual_source`, `preview_only: false`, the seven complete manifest state
+`visual_source`, `preview_only: false`, the nine complete manifest action
 objects under `states`, array-length-derived `state_frame_counts`,
 package-relative `reference_files`, and `skill_helper: agent-pet-maker`.
 
@@ -186,7 +221,7 @@ For a reference-derived result, use `user-reference-derived`, set
 
 Each `brief.json` state has `name` or `state`, `motion`, and the matching
 `frame_durations_ms`, `playback`, and `reduced_motion_frame_index`. Optional
-`runtime` contains the complete seven states, `state_frame_counts`, and
+`runtime` contains the complete nine actions, `state_frame_counts`, and
 `render_size`.
 
 Write only the bounded user brief to `source/prompt.md`. Lifecycle events use
@@ -212,7 +247,8 @@ regenerate it rather than adapting old frames.
     "OverlayPlacementAuthorityTests",
     "AppStoreOverlaySnapshotTests",
     "OverlayGeometryTests",
-    "OverlayDisplayWidthTests"
+    "OverlayDisplayWidthTests",
+    "OverlayInteractionTelemetryTests"
   ],
   "runtime_ok": true,
   "visual_ok": true,
@@ -226,7 +262,7 @@ and prevents finalization. A true `interaction_ok` also requires the complete,
 non-empty, closed `interaction_evidence` list above; unknown, duplicate, or
 partial evidence prevents finalization.
 
-The completed result sidecar includes the V2 manifest summary with all state
+The completed result sidecar includes the V3 manifest summary with all action
 contracts, the package hash and path, changed states, PetCore validation,
 Motion QA/review evidence, and result path. The archive is a new immutable
 revision; the helper never edits an installed revision in place.

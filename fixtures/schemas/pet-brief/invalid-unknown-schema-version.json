@@ -5,11 +5,13 @@
   "quality": "standard",
   "states": [
     "idle",
-    "start",
+    "thinking",
     "tool",
     "waiting",
-    "review",
     "done",
-    "failed"
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right"
   ]
 }

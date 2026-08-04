@@ -60,7 +60,7 @@ done
     assert_eq!(activities.len(), 1);
     let activity = &activities[0];
     assert_eq!(activity.title.as_deref(), Some("Active task"));
-    assert_eq!(activity.event_type, AgentEventType::Start);
+    assert_eq!(activity.event_type, AgentEventType::Thinking);
     assert!(activity.session_active);
     assert_eq!(activity.session_surface, "chatgpt_app");
     assert_eq!(
@@ -111,6 +111,9 @@ while IFS= read -r request; do
       ;;
     *\"method\":\"thread/list\"*)
       case "$phase" in
+        paged)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[],"nextCursor":"remaining-page"}}}}'
+          ;;
         missing)
           printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[]}}}}'
           ;;
@@ -225,6 +228,30 @@ done
             .is_empty()
     );
     assert_eq!(read_count(), 3, "expired candidates must not be read");
+    assert!(cache
+        .listed_thread_ids()
+        .contains("019f5b0f-88ff-7413-8953-29de4ed0951c"));
+    assert_eq!(
+        cache
+            .listed_thread_surfaces()
+            .get("019f5b0f-88ff-7413-8953-29de4ed0951c")
+            .map(String::as_str),
+        Some("chatgpt_app")
+    );
+    assert!(cache.listing_complete());
+
+    std::fs::write(&phase_file, "paged").unwrap();
+    assert!(
+        read_codex_recent_thread_activities_cached(Duration::from_secs(900), 8, &mut cache,)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(cache.listed_thread_ids().is_empty());
+    assert!(
+        !cache.listing_complete(),
+        "a continuation cursor cannot prove that an omitted task disappeared"
+    );
+
     std::fs::write(&phase_file, "changed").unwrap();
     let reappeared =
         read_codex_recent_thread_activities_cached(Duration::from_secs(900), 8, &mut cache)
@@ -952,8 +979,8 @@ while IFS= read -r request; do
       source_dir="$APC_TEST_JOB_DIR/petpack-source"
       mkdir -p "$source_dir/build" "$source_dir/assets/frames" \
         "$APC_TEST_JOB_DIR/motion-qa"
-      printf '%s\n' '{"schema_version":"apc.petpack.v2","id":"pet_checkpoint","name":"Checkpoint Pet","style":"storybook","quality":"standard","render_size":{"width":384,"height":416},"states":[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[180,160,180,380],"playback":{"mode":"periodic","cooldown_ms":[4000,8000]},"reduced_motion_frame_index":2},{"name":"start","frames_dir":"assets/frames/start","frame_durations_ms":[120,140,160,180],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_settle","entry_repeat_count":1,"settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[150,150,150,150,170,230],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"review","frames_dir":"assets/frames/review","frame_durations_ms":[140,140,150,150,180,240],"playback":{"mode":"once_hold","settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[150,170,190,290],"playback":{"mode":"once_hold","settle_frame_index":3},"reduced_motion_frame_index":2}],"created_at":"2026-07-31T00:00:00Z"}' > "$source_dir/manifest.json"
-      for state_count in idle:4 start:4 tool:4 waiting:6 review:6 done:4 failed:4; do
+      printf '%s\n' '{"schema_version":"apc.petpack.v3","id":"pet_checkpoint","name":"Checkpoint Pet","style":"storybook","quality":"standard","render_size":{"width":384,"height":416},"states":[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[300,260,300,640],"playback":{"mode":"periodic","cooldown_ms":[2500,5000]},"reduced_motion_frame_index":2},{"name":"thinking","frames_dir":"assets/frames/thinking","frame_durations_ms":[120,140,160,180],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[150,150,150,150,170,230],"playback":{"mode":"burst_then_settle","entry_repeat_count":2,"settle_frame_index":5},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[150,170,190,290],"playback":{"mode":"burst_then_settle","entry_repeat_count":3,"settle_frame_index":3},"reduced_motion_frame_index":2},{"name":"acknowledge","frames_dir":"assets/frames/acknowledge","frame_durations_ms":[180,140,180,300],"playback":{"mode":"once_then_return"},"reduced_motion_frame_index":1},{"name":"drag_left","frames_dir":"assets/frames/drag_left","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2},{"name":"drag_right","frames_dir":"assets/frames/drag_right","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2}],"created_at":"2026-07-31T00:00:00Z"}' > "$source_dir/manifest.json"
+      for state_count in idle:4 thinking:4 tool:4 waiting:6 done:4 failed:4 acknowledge:4 drag_left:6 drag_right:6; do
         state=${state_count%%:*}
         count=${state_count##*:}
         state_dir="$source_dir/assets/frames/$state"

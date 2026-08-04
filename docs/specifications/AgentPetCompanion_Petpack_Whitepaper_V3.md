@@ -1,13 +1,13 @@
-# Agent Pet Companion `.petpack` V2 Specification
+# Agent Pet Companion `.petpack` V3 Specification
 
-Schema identity: `apc.petpack.v2`
+Schema identity: `apc.petpack.v3`
 
 `.petpack` is Agent Pet Companion's app-owned, portable desktop-pet container.
-It is a ZIP archive containing a strict manifest, seven fixed animation states,
+It is a ZIP archive containing a strict manifest, nine fixed authored actions,
 static and animated previews, privacy-bounded production metadata, and
 validation metadata. Package content is untrusted data and is never executed.
 
-This document defines the current V2 reader, writer, runtime, and producer
+This document defines the current V3 reader, writer, runtime, and producer
 contract. Exact enforcement lives in
 [PetManifest](../../crates/petcore-types/src/lib.rs),
 [petpack.rs](../../crates/petcore/src/petpack.rs),
@@ -18,13 +18,13 @@ contract. Exact enforcement lives in
 | Profile | Meaning |
 |---|---|
 | Runtime package | Passes the container, path, budget, manifest, media, metadata, and import checks required by PetCore. |
-| Safe Producer | `source/source.json` declares `apc.pet-source.v1`; all four metadata schemas, cross-file consistency, and recursive privacy checks pass. V2 has no untagged metadata compatibility profile. |
+| Safe Producer | `source/source.json` declares `apc.pet-source.v1`; all four metadata schemas, cross-file consistency, and recursive privacy checks pass. V3 has no untagged metadata compatibility profile. |
 | Verified visual source | Safe Producer package with trusted full-source provenance, an exact authored frame inventory, visibly distinct adjacent motion, current `authored_timing` QA, and complete per-state visual review. The strict Studio and portable Maker paths enforce this profile; ordinary import does not certify artistic quality. |
 
 An unknown, malformed, older, or newer manifest or source-metadata version
 fails closed. In particular, PetCore does not read or migrate
-`apc.petpack.v1`; the user-facing validation error directs the user to recreate
-the pet with the V2 maker.
+`apc.petpack.v1` or `apc.petpack.v2`; the user-facing validation error directs
+the user to recreate the pet with the V3 maker.
 
 ## 2. Container identity
 
@@ -49,12 +49,14 @@ build or validation input.
 ├── assets/
 │   ├── frames/
 │   │   ├── idle/*.png
-│   │   ├── start/*.png
+│   │   ├── thinking/*.png
 │   │   ├── tool/*.png
 │   │   ├── waiting/*.png
-│   │   ├── review/*.png
 │   │   ├── done/*.png
-│   │   └── failed/*.png
+│   │   ├── failed/*.png
+│   │   ├── acknowledge/*.png
+│   │   ├── drag_left/*.png
+│   │   └── drag_right/*.png
 │   └── preview/
 │       ├── cover.png
 │       └── animated_preview.webp
@@ -86,60 +88,94 @@ optional non-executable extension data below
 
 | Field | Contract |
 |---|---|
-| `schema_version` | Exactly `apc.petpack.v2` |
+| `schema_version` | Exactly `apc.petpack.v3` |
 | `id` | `^pet_[a-z0-9]+$`, at most 128 characters; stable logical identity |
 | `name` | Non-blank display name; not unique |
 | `style` | Non-blank visual or production style |
-| `quality` | Exactly `low` or `standard` |
+| `quality` | Exactly `low`, `standard`, or `high` |
 | `render_size` | Exact canvas for the selected quality |
-| `states` | Exactly one of each fixed state, with the fixed directory and a complete timing contract |
+| `states` | Exactly one of each fixed action, with the fixed directory, timing, and state-specific playback mode |
 | `created_at` | RFC 3339 timestamp |
 
 There is no package-wide FPS, duration, playback profile, or uniform frame
 count. Every state owns its complete authored timing.
 
-### Quality and native canvas
+### Quality and exact runtime canvas
 
 | Quality | Width | Height | Selection guidance |
 |---|---:|---:|---|
 | `low` | 192 | 208 | Minimal, pixel-focused, or resource-sensitive characters; 1:1 through 96 pt at 2× |
 | `standard` | 384 | 416 | Default for most characters; 1:1 through 192 pt at 2× |
+| `high` | 576 | 624 | High-resolution art from an externally source-capable producer; 1:1 through 288 pt at 2× |
 
-Both tiers are 12:13 and their widths are multiples of 192. One package uses one
-tier for every frame. `render_size` is both the exact decoded PNG size and the
-minimum native source-pixel crop for every accepted frame. A producer may crop
-an exact target-size rectangle from a larger decoded source. Upscaling,
-super-resolution, stretching, resampling, or padding a smaller crop into the
-target canvas is invalid. The currently qualified image path does not preserve
-native 576×624 cells in an eight-cell state sheet, so V2 has no `high` tier;
-splitting that state across multiple batches is not a substitute for missing
-native single-batch capacity. The qualification evidence and rerun conditions
-are documented in [Validation Profiles](../development/validation.md).
+All tiers are 12:13 and their widths are multiples of 192. One package uses one
+tier for every frame. `render_size` is the exact decoded runtime PNG size and
+the minimum accepted 12:13 source crop, not a model-output instruction. A
+producer must inspect the untouched image at its actual returned dimensions and
+may crop a complete 12:13 cell at or above the target from a larger decoded
+source. Prompted dimensions and layout guides may guide composition but never
+prove output pixels. Within one state, source crop windows keep stable geometry
+and preserve authored translation and baseline rather than independently
+fitting each pose to its subject bounds.
+
+The shared Maker/Studio transparency pipeline retains that source-resolution
+transparent master and may perform one direct linear-light
+premultiplied-Alpha downscale to the runtime tier for `low`, `standard`, or
+`high`. Upscaling, super-resolution, stretching, resizing before matting,
+independent per-pose fitting, cascaded or post-process resizing, or padding a
+smaller crop into the target canvas is invalid. Package support does not claim
+that every producer can create every tier. The measured ChatGPT/Codex built-in
+`imagegen` path does not preserve a 12:13 crop of at least 576×624 for each cell
+in an eight-cell state sheet, so the App's Codex-backed Studio and that image
+tool are limited to `low` and `standard`. Another producer may author `high`
+only when its untouched decoded source proves sufficient pixels for every cell;
+splitting a state across multiple batches is not a substitute for missing
+source capacity. Qualification evidence and rerun conditions are documented in
+[Validation Profiles](../development/validation.md).
 
 Display size is a separate App preference and never changes package identity or
 authored pixels. The App exposes an 80–224 pt logical-width slider; it does not
 rewrite, upscale, or retime a package.
 
-### Fixed states and defaults
+### Fixed actions and defaults
 
-The seven state names and directories are fixed. State array order is not
-semantic, but writers use this order for deterministic output and review.
+The nine action names and directories are fixed. The first six represent Agent
+semantics; the final three are App-local presentation interactions. Array order
+is not semantic, but writers use this order for deterministic output and review.
 
-| State | `frames_dir` | Default `frame_durations_ms` | Default playback | Reduced-motion index |
+| Action | `frames_dir` | Default `frame_durations_ms` | Required playback | Reduced-motion index |
 |---|---|---|---|---:|
-| `idle` | `assets/frames/idle` | `[180, 160, 180, 380]` | `periodic`, cooldown `[4000, 8000]` | 2 |
-| `start` | `assets/frames/start` | `[120, 140, 160, 180]` | `once_hold`, settle 3 | 2 |
-| `tool` | `assets/frames/tool` | `[150, 150, 170, 330]` | `burst_then_settle`, repeat 1, settle 3 | 2 |
-| `waiting` | `assets/frames/waiting` | `[150, 150, 150, 150, 170, 230]` | `once_hold`, settle 5 | 4 |
-| `review` | `assets/frames/review` | `[140, 140, 150, 150, 180, 240]` | `once_hold`, settle 5 | 4 |
-| `done` | `assets/frames/done` | `[120, 140, 160, 230]` | `once_hold`, settle 3 | 2 |
-| `failed` | `assets/frames/failed` | `[150, 170, 190, 290]` | `once_hold`, settle 3 | 2 |
+| `idle` | `assets/frames/idle` | `[300, 260, 300, 640]` | `periodic`, cooldown `[2500, 5000]` | 2 |
+| `thinking` | `assets/frames/thinking` | `[120, 140, 160, 180]` | `burst_then_idle`, repeat 3 | 2 |
+| `tool` | `assets/frames/tool` | `[150, 150, 170, 330]` | `burst_then_idle`, repeat 3 | 2 |
+| `waiting` | `assets/frames/waiting` | `[150, 150, 150, 150, 170, 230]` | `burst_then_settle`, repeat 2, settle 5 | 4 |
+| `done` | `assets/frames/done` | `[120, 140, 160, 230]` | `burst_then_idle`, repeat 3 | 2 |
+| `failed` | `assets/frames/failed` | `[150, 170, 190, 290]` | `burst_then_settle`, repeat 3, settle 3 | 2 |
+| `acknowledge` | `assets/frames/acknowledge` | `[180, 140, 180, 300]` | `once_then_return` | 1 |
+| `drag_left` | `assets/frames/drag_left` | `[100, 90, 100, 110, 100, 200]` | `loop` | 2 |
+| `drag_right` | `assets/frames/drag_right` | `[100, 90, 100, 110, 100, 200]` | `loop` | 2 |
 
 These defaults are a production starting point, not a reason to make every pet
 move identically. A producer may author another valid rhythm and playback
 contract when it better expresses the character.
 
-## 5. Per-state timing and playback
+Package actions are not all Agent session events. The normalized Agent
+event `start` has no pet reaction and renders `idle`; Agent events `thinking`
+and `plan` both select the package `thinking` action. The remaining reactive
+events select their namesake semantic action. `acknowledge` is activated only by
+an idle primary click. When no bubble content is available, pointer-down also
+adds a 160 ms, low-amplitude press-scale response; starting a drag cancels that
+response. `drag_left` and `drag_right` are selected from the current pointer-drag
+direction. These three interactions and the press response do not emit Agent
+events, change the underlying semantic state, or persist. Reduce Motion omits
+both acknowledge playback and the press-scale response.
+
+V3 intentionally provides no 16-direction gaze set or any other gaze action.
+It also defines no hover jump, autonomous roaming, audio, particles, momentum,
+or post-release movement. Interaction presentation priority is drag,
+acknowledge, then the current semantic presentation.
+
+## 5. Per-action timing and playback
 
 Every state object contains:
 
@@ -149,9 +185,8 @@ Every state object contains:
   "frames_dir": "assets/frames/tool",
   "frame_durations_ms": [150, 150, 170, 330],
   "playback": {
-    "mode": "burst_then_settle",
-    "entry_repeat_count": 1,
-    "settle_frame_index": 3
+    "mode": "burst_then_idle",
+    "entry_repeat_count": 3
   },
   "reduced_motion_frame_index": 2
 }
@@ -174,16 +209,28 @@ Playback fields are closed by mode:
 | Mode | Meaning | Required fields | Forbidden fields |
 |---|---|---|---|
 | `loop` | Repeat the sequence continuously | none | repeat, settle, cooldown |
-| `once_hold` | Play once, then hold a declared pose | `settle_frame_index` | repeat, cooldown |
 | `periodic` | Play once, wait a randomized bounded cooldown, then repeat | `cooldown_ms` | repeat, settle |
 | `burst_then_settle` | Repeat the authored burst a fixed number of times, then hold | `entry_repeat_count`, `settle_frame_index` | cooldown |
+| `burst_then_idle` | Repeat the authored burst, then present the package idle action without changing the semantic state | `entry_repeat_count` | settle, cooldown |
+| `once_then_return` | Play once, then return to the underlying semantic presentation | none | repeat, settle, cooldown |
+
+The action/mode mapping in §4 is a hard invariant; structurally valid fields are
+still rejected when attached to the wrong fixed action.
 
 The runtime uses the authored duration of each frame directly. It never samples,
 subsamples, duplicates, interpolates, or retimes frames and exposes no
 Standard/Smooth playback choice. An unchanged semantic state does not restart.
 After a rendering stall, playback resumes from the currently due frame without
-rapidly presenting missed frames. Reduce Motion presents only the declared
-representative frame.
+rapidly presenting missed frames. `burst_then_idle` is the key long-lease
+guard: thinking, tool, and done cannot hold their last pose for the remaining
+semantic lease. They show their bounded authored burst and then visually use
+idle while the bubble and semantic state continue to communicate activity.
+Waiting and failed retain their explicit persistent settle pose.
+
+With Reduce Motion, the runtime presents the declared representative frame
+without boundary scheduling. A finite semantic action still returns visually
+to idle after its authored active duration; acknowledge is skipped; a drag uses
+the declared representative left/right pose only while dragging.
 
 The following common production targets are warnings, not package validity
 limits: 4–8 authored frames, at most about 1,500 ms, and an average effective
@@ -215,21 +262,35 @@ must not be used to infer runtime timing.
 - Production begins from one canonical identity lock: silhouette, face
   landmarks, anatomy and proportions, outfit and accessories, palette,
   rendering treatment, lighting, scale, baseline, crop, and camera.
-- Each state communicates one readable intent, with deliberate spacing and
+- Maker and Studio generate new rows as fully opaque art on one uniform
+  contrasting background, not model-native transparent output. Their shared
+  script owns the conservative border-connected soft matte, Alpha-boundary-only
+  RGB reconstruction, the sole optional downscale from a source crop at least
+  as large as the target, source-resolution transparent-master retention, and
+  checkerboard/white/gray/black/complementary-background QA. Agents cannot tune
+  thresholds or substitute per-run color/edge filters. An unchanged frame in
+  an edit remains byte-identical.
+- Each action communicates one readable intent, with deliberate spacing and
   non-uniform holds. Whole-character travel, rotation, recoil, squash/stretch,
   or scale change is valid when identity, continuity, crop, props, timing, and
   settle or return remain convincing.
 - Frames for one state form a coherent authored sequence. A smaller storyboard
   may not be expanded through duplicates, crossfade, morph, optical flow,
   transformed copies, or procedural interpolation.
+- The image model does not need to return exact target dimensions. The producer
+  records actual decoded dimensions, verifies exact frame count/order and
+  complete action poses, and extracts stable equal-size 12:13 source windows
+  without independently recentering subjects.
 - Each state is normally produced in one image batch. An exceptional
   multi-batch row within a supported tier carries accepted boundary poses and
   the canonical base into the next batch and receives explicit join review. A
   producer must not claim a larger quality tier by spreading a state across
-  multiple batches when the image path cannot provide the required native cell
-  size.
-- The seven states may not reuse one identical visual sequence. The strict
-  producer gate requires cross-state distinction.
+  multiple batches when the image path cannot provide enough source pixels per
+  cell.
+- The nine actions may not reuse one identical visual sequence. The strict
+  producer gate requires cross-action distinction. Acknowledge remains a
+  restrained return gesture; both drag actions remain compact direction-readable
+  loops. Neither requirement introduces gaze tracking.
 - `cover.png` identifies the same character without animation; the animated
   preview may not depict assets absent from the package.
 
@@ -240,8 +301,11 @@ motion QA outside the closed package tree:
 
 - one runtime-size keyframe sheet;
 - one actual-duration `authored_timing` WebP for every audited state;
+- one 8–12 second `presence-preview.webp` for the final combined run, with
+  authored idle rests separating thinking, tool, and done bursts;
 - a `timing_digest` bound to the complete manifest state contracts;
-- decoded frame and frame-set digests;
+- decoded frame and frame-set digests, including a presence-preview digest bound
+  to all nine actions even when a revision changes only a subset;
 - measurements for visible edge contact, frame deltas, silhouette, scale,
   centroid, baseline, interpolation candidates, and relevant playback
   boundaries;
@@ -255,6 +319,13 @@ loop, repeat, settle, or return. Clipped visible pixels and synthetic
 blend/interpolation are hard failures. Motion magnitude and shape metrics are
 review evidence rather than automatic aesthetic failures.
 
+The combined presence preview is a production gate, not runtime media. It uses
+the authored frames and durations without retiming, lasts 8–12 seconds, keeps at
+least three calm idle-rest phases, and retains visible motion late enough to
+expose premature settling. Effective active playback for thinking, tool,
+waiting, done, and failed must be 1,000–3,200 ms. A semantic action that becomes
+static in under one second or loops mechanically through the review is rejected.
+
 Any frame edit or timing-contract edit invalidates the old QA and review
 evidence. Maker finalization, Studio, and strict Studio import call the same
 `petcore-cli petpack verify-production` implementation for changed-state
@@ -265,7 +336,7 @@ recreate or certify this artistic review.
 
 ## 7. Metadata and privacy
 
-Every V2 package satisfies the Safe Producer metadata gate:
+Every V3 package satisfies the Safe Producer metadata gate:
 
 | Artifact | Schema identity | Schema |
 |---|---|---|
@@ -277,14 +348,14 @@ Every V2 package satisfies the Safe Producer metadata gate:
 `source/prompt.md` is non-empty UTF-8 text, `source/references/` exists,
 `source/skill_session.jsonl` contains valid typed records, and
 `build/validation.json.ok` is exactly `true`. PetCore cross-checks manifest
-identity, name and style, quality and render size, all seven state timing
+identity, name and style, quality and render size, all nine action timing
 contracts, per-state and total frame counts, reference inventory,
 generator/provenance, validation outcome, and event lifecycle. Closed objects
 reject unknown fields; explicitly defined reverse-domain `extensions`
 containers are the only metadata extension point.
 
 `provenance: skill-full-source` additionally requires an allowed full visual
-source, `preview_only: false`, complete V2 state timing metadata, exact decoded
+source, `preview_only: false`, complete V3 action timing metadata, exact decoded
 frame counts, and absence of deterministic or materializer-only provenance.
 
 Portable metadata must not contain:
@@ -318,8 +389,8 @@ Validation proceeds in this order:
 1. Resolve a regular ZIP file or real directory without following disallowed
    links or file types.
 2. Apply archive, path, and decoded-resource budgets.
-3. Parse exactly `apc.petpack.v2`; reject V1 before typed decoding.
-4. Validate the manifest, quality canvas, fixed states, per-frame timing,
+3. Parse exactly `apc.petpack.v3`; reject V1/V2 before typed decoding.
+4. Validate the manifest, quality canvas, fixed actions, per-frame timing,
    playback fields, reduced-motion indices, media, and metadata.
 5. Validate Safe Producer schemas, cross-file consistency, and recursive
    privacy.
@@ -357,12 +428,14 @@ verification, optional explicit install, and separately explicit activation.
 It requires real image understanding and generation or editing; otherwise it
 returns `capability_missing` instead of fabricating a package.
 
-Creation defaults to `standard` 384×416 and the state table in this
-specification; `low` 192×208 is the smaller alternative. The App's
+Creation defaults to `standard` 384×416 and the action table in this
+specification; `low` 192×208 is the smaller alternative and `high` 576×624 is
+available only with a source-capable image source. ChatGPT/Codex built-in
+`imagegen` must not attempt `high`. The App's
 `GenerationForm` contains only description, style, quality, and bounded
 reference-image paths. Users do not configure timing in
 the form; the visual producer authors the complete timing contract as part of
-each state. Modification preserves every unrequested state byte-for-byte.
+each action. Modification preserves every unrequested action byte-for-byte.
 Changing durations, playback behavior, settle or cooldown data, or the
 reduced-motion frame is an authored state change and requires a regenerated or
 edited complete sequence plus fresh QA. It may not sample, retime, pad,
@@ -370,21 +443,27 @@ duplicate, or interpolate the old sequence.
 
 The in-app AI Pet Maker uses Codex App Server and the internal
 [agent-pet-studio Skill](../../skills/agent-pet-studio/). Connecting Claude
-Code, Pi, or OpenCode does not make those hosts in-app generation backends.
+Code, Pi, or OpenCode does not make those hosts in-app generation backends. Its
+quality form remains closed to `low` and `standard`; `high` packages are made
+externally and become usable after ordinary validation and import.
 
 ## 10. Version and compatibility
 
-- Current readers and writers use exactly `apc.petpack.v2`.
-- The runtime manifest reads and writes V2 only.
-- `apc.petpack.v1` is deliberately unsupported and has no migration path. A V1
-  archive must be recreated by a V2-capable maker.
+- Current readers and writers use exactly `apc.petpack.v3`.
+- The runtime manifest reads and writes V3 only.
+- `apc.petpack.v1` and `apc.petpack.v2` are deliberately unsupported and have
+  no migration or aliasing path. Their archives must be recreated by a
+  V3-capable maker.
 - Manifest unknown fields fail closed. Package-wide FPS, fixed-duration,
-  Standard/Smooth profile, unsupported `high`/`ultra`/`original` quality,
+  Standard/Smooth profile, unsupported `ultra`/`original` quality,
   uniform frame-count, and legacy loop fields are not accepted.
-- Source metadata requires its explicit schema identity; V2 has no untagged
+- Source metadata requires its explicit schema identity; V3 has no untagged
   compatibility branch.
-- No package content is executed, and no extension changes the seven core
-  states or runtime behavior.
+- Packages authored with the removed `start` or `review` state names are not
+  migrated or aliased. Stored rows are quarantined before typed projection and
+  the package must be recreated with the nine current actions.
+- No package content is executed, and no extension changes the nine fixed
+  actions or runtime behavior. Gaze rows are not an extension point.
 
 ## 11. Security budgets
 
@@ -397,7 +476,7 @@ These limits are unchanged from the preceding format:
 | One entry | 256 MiB |
 | Total expanded data | 4 GiB |
 | Frames per state | 40 |
-| Frames per package | 280 |
+| Frames per package | 360 |
 | Pixels in one decoded image | 16,777,216 |
 | Decoded RGBA per state | 420 MiB |
 | Decoded animated-preview frames | 120 |
@@ -429,14 +508,17 @@ in CI or matching release evidence, not in this specification.
 
 ## 13. Producer checklist
 
-- [ ] Archive identity, layout, metadata, and manifest exactly match V2.
+- [ ] Archive identity, layout, metadata, and manifest exactly match V3.
 - [ ] ID is stable and is not derived from the display name.
-- [ ] Quality and exact canvas are low 192×208 or standard 384×416.
-- [ ] All seven fixed states declare valid per-frame durations, playback fields, and a representative reduced-motion frame.
+- [ ] Quality and exact canvas are low 192×208, standard 384×416, or high 576×624.
+- [ ] All nine fixed actions declare valid per-frame durations, the required action-specific playback mode, and a representative reduced-motion frame.
+- [ ] No gaze directions, hover reaction, or autonomous-motion action is present.
 - [ ] Every state has exactly one PNG per duration entry; frames and previews decode within the unchanged budgets.
 - [ ] One canonical identity, readable state intent, coherent trajectory and crop, deliberate spacing, and prop continuity are explicit for every generated state.
-- [ ] Every actual-duration `authored_timing` preview and the keyframe sheet were inspected; `timing_digest`, frame digests, and per-state review are current.
+- [ ] Every actual-duration `authored_timing` preview, the keyframe sheet, and the 8–12 second combined presence preview were inspected; no semantic action freezes in under one second or loops mechanically, and all timing/frame digests and per-state reviews are current.
 - [ ] No state was fabricated through sampling, retiming, duplicates, interpolation, or an undersized source crop.
+- [ ] Every newly generated or regenerated frame has a passing shared transparency report, an inspected five-background preview, a retained source-resolution transparent master, zero changed opaque-interior RGB pixels, and at most one direct runtime downscale.
+- [ ] The exact-tier runtime animation after any downscale passes the same identity, distinct-pose, action, anatomy, prop, crop, continuity, reduced-motion, and loop/settle review as an exact-size source.
 - [ ] Metadata passes all schemas, cross-file consistency, privacy checks, and reference bounds.
 - [ ] No credentials, local paths, runtime identifiers, transcripts, commands, tool data, hidden reasoning, or executable content are present.
 - [ ] Build, validate, import, activate, render all states, export, and reimport succeed in an isolated home.

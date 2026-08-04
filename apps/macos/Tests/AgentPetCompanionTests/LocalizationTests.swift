@@ -50,6 +50,22 @@ struct LocalizationTests {
             locale: "zh-Hans",
             "Bytebud"
         ) == "删除 Bytebud")
+        #expect(APCLocalization.text(.libraryAnimationActionPicker, locale: "en")
+            == "Preview action")
+        #expect(APCLocalization.text(.libraryAnimationActionPicker, locale: "zh-Hans")
+            == "预览动作")
+        #expect(APCLocalization.format(
+            .libraryAnimationAccessibilityFormat,
+            locale: "en",
+            "Bytebud",
+            "Thinking"
+        ) == "Bytebud — Thinking action preview")
+        #expect(APCLocalization.format(
+            .libraryAnimationAccessibilityFormat,
+            locale: "zh-Hans",
+            "字节芽",
+            "正在思考"
+        ) == "字节芽——“正在思考”动作预览")
         #expect(APCLocalization.text(.appActionFocusPetSessions, locale: "en")
             == "Focus Pet Sessions")
         #expect(APCLocalization.text(.appActionFocusPetSessions, locale: "zh-Hans")
@@ -96,43 +112,51 @@ struct LocalizationTests {
         #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "zh-Hans") == "标准")
 
         let contract = APCLocalization.text(.studioOutputContractDetail, locale: "en")
-        for protocolState in ["idle", "start", "tool", "waiting", "review", "done", "failed"] {
+        for protocolState in ["idle", "thinking", "tool", "waiting", "done", "failed"] {
             #expect(contract.contains(protocolState))
         }
     }
 
     @Test
-    func responseEventsUseTheSameLifecycleLabelsAsThePetBubble() {
+    func sessionEventLabelsRemainDistinctFromSparsePetActions() {
         for locale in ["en", "zh-Hans"] {
-            for event in AgentEventKind.allCases {
-                #expect(
-                    APCLocalizedPresentation.eventTitle(event, locale: locale)
-                        == APCLocalizedPresentation.lifecycleTitle(
-                            ProductLifecycleState(eventKind: event),
-                            locale: locale
-                        )
-                )
-            }
+            #expect(
+                APCLocalizedPresentation.eventTitle(.start, locale: locale)
+                    != APCLocalizedPresentation.lifecycleTitle(
+                        ProductLifecycleState(eventKind: .start),
+                        locale: locale
+                    )
+            )
+            #expect(
+                APCLocalizedPresentation.eventTitle(.thinking, locale: locale)
+                    == APCLocalizedPresentation.lifecycleTitle(.thinking, locale: locale)
+            )
+            #expect(
+                APCLocalizedPresentation.eventTitle(.plan, locale: locale)
+                    != APCLocalizedPresentation.lifecycleTitle(.thinking, locale: locale)
+            )
         }
     }
 
     @Test
     func responseEventDetailsExplainTheUnifiedLifecycleMeaning() {
         let expectedEnglish: [(APCLocalizationKey, String)] = [
-            (.configEventStartDetail, "Agent is thinking through your request"),
+            (.configEventStartDetail, "The request was accepted; this event does not trigger a pet action"),
+            (.configEventThinkingDetail, "The host explicitly reported stable reasoning activity; the pet uses its Thinking action"),
+            (.configEventPlanDetail, "The Agent updated its plan; the pet uses its Thinking action"),
             (.configEventToolDetail, "Agent is using a local tool"),
-            (.configEventWaitingDetail, "Needs your approval, answer, or decision"),
-            (.configEventReviewDetail, "The result is ready to review"),
+            (.configEventWaitingDetail, "The Agent is paused until you approve, answer, or decide"),
             (.configEventDoneDetail, "The task is complete"),
-            (.configEventFailedDetail, "The task needs your attention"),
+            (.configEventFailedDetail, "The task failed"),
         ]
         let expectedChinese: [(APCLocalizationKey, String)] = [
-            (.configEventStartDetail, "Agent 正在思考你的请求"),
+            (.configEventStartDetail, "Agent 已接收请求；开始事件不触发宠物动作"),
+            (.configEventThinkingDetail, "宿主明确上报了稳定的思考或推理活动；宠物使用“思考”动作"),
+            (.configEventPlanDetail, "Agent 更新了规划；宠物使用“思考”动作"),
             (.configEventToolDetail, "Agent 正在调用本地工具"),
-            (.configEventWaitingDetail, "需要你的确认、回答或决策"),
-            (.configEventReviewDetail, "结果可以查看"),
+            (.configEventWaitingDetail, "Agent 已暂停，必须等你确认、回答或决策后才能继续"),
             (.configEventDoneDetail, "任务已完成"),
-            (.configEventFailedDetail, "任务需要处理"),
+            (.configEventFailedDetail, "任务执行失败"),
         ]
 
         for (key, expected) in expectedEnglish {
@@ -147,26 +171,26 @@ struct LocalizationTests {
     func persistentResponseCopyUsesTheUnifiedAttentionLabels() {
         #expect(
             APCLocalization.text(.configPersistenceNote, locale: "en")
-                == "Needs You, Ready to Review, and Needs Attention sessions remain visible regardless of the normal message timeout."
+                == "Waiting for You and Failed sessions remain visible regardless of the normal message timeout."
         )
         #expect(
             APCLocalization.text(.configPersistencePreview, locale: "en")
-                == "Needs You, Ready to Review, and Needs Attention remain visible until the state changes or you dismiss the session."
+                == "Waiting for You and Failed remain visible until the event changes or you dismiss the session."
         )
         #expect(
             APCLocalization.text(.configPersistenceNote, locale: "zh-Hans")
-                == "“等你处理”“可以查看”和“需要处理”的会话始终保持显示，不受普通消息收起时间影响。"
+                == "“等待你操作”和“执行失败”的会话始终保持显示，不受普通消息收起时间影响。"
         )
         #expect(
             APCLocalization.text(.configPersistencePreview, locale: "zh-Hans")
-                == "“等你处理”“可以查看”和“需要处理”会持续显示，直到状态变化或你关闭该会话。"
+                == "“等待你操作”和“执行失败”会持续显示，直到事件变化或你关闭该会话。"
         )
     }
 
     @Test
     func productPresentationHasExplicitBilingualMeaningAndActions() {
-        #expect(APCLocalizedPresentation.lifecycleTitle(.waiting, locale: "en") == "Needs You")
-        #expect(APCLocalizedPresentation.lifecycleTitle(.review, locale: "zh-Hans") == "可以查看")
+        #expect(APCLocalizedPresentation.lifecycleTitle(.waiting, locale: "en") == "Waiting for You")
+        #expect(APCLocalizedPresentation.lifecycleTitle(.done, locale: "zh-Hans") == "已完成")
 
         #expect(APCLocalizedPresentation.navigationActionTitle(
             .exactSession,
@@ -208,6 +232,8 @@ struct LocalizationTests {
         #expect(APCLocalizedPresentation.qualityTitle(.low, locale: "en") == "Low")
         #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "zh-Hans") == "标准")
         #expect(APCLocalizedPresentation.qualityTitle(.standard, locale: "en") == "Standard")
+        #expect(APCLocalizedPresentation.qualityTitle(.high, locale: "en") == "High")
+        #expect(APCLocalizedPresentation.qualityTitle(.high, locale: "zh-Hans") == "高清")
 
         for health in AgentConnectionHealthState.allCases {
             #expect(!APCLocalizedPresentation.connectionHealthTitle(
@@ -242,21 +268,19 @@ struct LocalizationTests {
     func everyProductPresentationCaseHasAnExplicitBilingualMapping() {
         let lifecycleEnglish: [ProductLifecycleState: String] = [
             .idle: "Resting",
-            .start: "Thinking",
+            .thinking: "Thinking",
             .tool: "Using Tools",
-            .waiting: "Needs You",
-            .review: "Ready to Review",
+            .waiting: "Waiting for You",
             .done: "Completed",
-            .failed: "Needs Attention",
+            .failed: "Failed",
         ]
         let lifecycleChinese: [ProductLifecycleState: String] = [
             .idle: "正在休息",
-            .start: "正在思考",
+            .thinking: "正在思考",
             .tool: "正在调用工具",
-            .waiting: "等你处理",
-            .review: "可以查看",
+            .waiting: "等待你操作",
             .done: "已完成",
-            .failed: "需要处理",
+            .failed: "执行失败",
         ]
         for state in ProductLifecycleState.allCases {
             #expect(APCLocalizedPresentation.lifecycleTitle(

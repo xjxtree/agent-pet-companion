@@ -1,24 +1,23 @@
 import Foundation
 
-/// Closed product meaning for the seven authored pet states.
+/// Closed product meaning for the six Agent-driven semantic pet actions.
 ///
 /// Stored protocol/package names remain the raw values. UI code consumes this
 /// type instead of interpreting arbitrary state strings or localized copy.
 public enum ProductLifecycleState: String, CaseIterable, Codable, Hashable, Sendable {
     case idle
-    case start
+    case thinking
     case tool
     case waiting
-    case review
     case done
     case failed
 
     public init(eventKind: AgentEventKind) {
         switch eventKind {
-        case .start: self = .start
+        case .start: self = .idle
+        case .thinking, .plan: self = .thinking
         case .tool: self = .tool
         case .waiting: self = .waiting
-        case .review: self = .review
         case .done: self = .done
         case .failed: self = .failed
         }
@@ -70,9 +69,9 @@ public enum AttentionPreset: String, CaseIterable, Identifiable, Hashable, Senda
     public var enabledEvents: Set<AgentEventKind>? {
         switch self {
         case .onlyWhenNeeded:
-            [.waiting, .review, .failed]
+            [.waiting, .failed]
         case .standard:
-            [.start, .waiting, .review, .done, .failed]
+            [.start, .thinking, .plan, .waiting, .done, .failed]
         case .allActivity:
             Set(AgentEventKind.allCases)
         case .custom:

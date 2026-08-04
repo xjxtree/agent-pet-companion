@@ -81,7 +81,7 @@ pub struct OverlaySessionDisplay {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlaySummaryKind {
-    Running,
+    Start,
     Thinking,
     Plan,
     Command,
@@ -94,7 +94,6 @@ pub enum OverlaySummaryKind {
     Image,
     Compaction,
     NeedsInput,
-    Review,
     Done,
     Failed,
 }
@@ -203,9 +202,11 @@ struct TimedCandidate<'a> {
 ///    are ordered by activity time so a newly active task immediately moves the
 ///    pet away from an older completion pose.
 ///
-/// Ordinary expiration happens after phase one so an expired done event closes
-/// its session instead of allowing older activity to reappear. Waiting,
-/// review, and failed attention states do not expire locally.
+/// Ordinary expiration happens after phase one so an expired event closes its
+/// session instead of allowing older activity to reappear. A host
+/// `session_active` hint extends ordinary activity only through the configured
+/// session window; it is not durable proof that a connector session is still
+/// running. Waiting and failed attention states do not expire locally.
 pub fn select_active_agent_state(
     behavior: &BehaviorSettings,
     candidates: &[SequencedAgentEvent],
@@ -227,6 +228,7 @@ pub fn select_active_agent_state_with_acknowledgements(
     latest_candidates_by_session(candidates, now)
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
+        .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
             !acknowledged_session_activations
@@ -236,11 +238,10 @@ pub fn select_active_agent_state_with_acknowledgements(
             let event = &candidate.candidate.event;
             matches!(
                 event.event_type,
-                AgentEventType::Waiting | AgentEventType::Review | AgentEventType::Failed
-            ) || event_session_active(event) == Some(true)
-                || candidate.created_at
-                    + Duration::seconds(event_lease_seconds_for_behavior(behavior, event))
-                    >= now
+                AgentEventType::Waiting | AgentEventType::Failed
+            ) || candidate.created_at
+                + Duration::seconds(event_lease_seconds_for_behavior(behavior, event))
+                >= now
         })
         .max_by_key(|candidate| {
             (
@@ -255,10 +256,13 @@ pub fn select_active_agent_state_with_acknowledgements(
 }
 
 /// Returns the bounded set of sessions that should be rendered in status
-/// bubbles. Waiting, review, and failed sessions remain visible until a newer
+/// bubbles. Waiting and failed sessions remain visible until a newer
 /// event replaces them, regardless of host `session_active` metadata.
 /// Completed and ordinary sessions are hidden after the configured interval
-/// and reappear when the next user activation/start event arrives.
+/// and reappear when the next user activation/start event arrives. A completed
+/// session whose host explicitly reports `session_open = false` is already
+/// archived/closed and leaves the bubble immediately while remaining in audit
+/// history.
 pub fn select_display_agent_states(
     behavior: &BehaviorSettings,
     candidates: &[SequencedAgentEvent],
@@ -284,6 +288,7 @@ pub fn select_display_agent_states_with_acknowledgements(
     let mut visible = latest_candidates_by_session(candidates, now)
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
+        .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
             !acknowledged_session_activations
@@ -292,14 +297,15 @@ pub fn select_display_agent_states_with_acknowledgements(
         .filter(|candidate| {
             let event = &candidate.candidate.event;
             match event.event_type {
-                // Review is an attention state: it remains until the user
-                // opens/dismisses it in the App or a newer session event
-                // replaces it. It must not disappear on the ordinary message
-                // timeout used for running/completed activity.
-                AgentEventType::Waiting | AgentEventType::Review | AgentEventType::Failed => true,
-                AgentEventType::Start | AgentEventType::Tool | AgentEventType::Done => {
-                    candidate.created_at + timeout >= now
-                }
+                // User-blocked and failed work remains until a newer session
+                // event replaces it. These states do not disappear on the
+                // ordinary message timeout used for running/completed work.
+                AgentEventType::Waiting | AgentEventType::Failed => true,
+                AgentEventType::Start
+                | AgentEventType::Thinking
+                | AgentEventType::Plan
+                | AgentEventType::Tool
+                | AgentEventType::Done => candidate.created_at + timeout >= now,
             }
         })
         .collect::<Vec<_>>();
@@ -364,9 +370,10 @@ pub fn event_lease_seconds(event_type: AgentEventType) -> i64 {
     match event_type {
         AgentEventType::Done | AgentEventType::Failed => TERMINAL_LEASE_SECONDS,
         AgentEventType::Start
+        | AgentEventType::Thinking
+        | AgentEventType::Plan
         | AgentEventType::Tool
-        | AgentEventType::Waiting
-        | AgentEventType::Review => ACTIVITY_LEASE_SECONDS,
+        | AgentEventType::Waiting => ACTIVITY_LEASE_SECONDS,
     }
 }
 
@@ -377,8 +384,11 @@ fn event_priority(event_type: AgentEventType) -> u16 {
         // interrupt tier before comparing Ready and Running activity time.
         AgentEventType::Waiting => 600,
         AgentEventType::Failed => 500,
-        AgentEventType::Review | AgentEventType::Done => 400,
-        AgentEventType::Tool | AgentEventType::Start => 300,
+        AgentEventType::Done => 400,
+        AgentEventType::Tool
+        | AgentEventType::Thinking
+        | AgentEventType::Plan
+        | AgentEventType::Start => 300,
     }
 }
 
@@ -389,9 +399,10 @@ fn interrupt_priority(event_type: AgentEventType) -> u16 {
         // intentionally in the same tier so newer work drives the animation.
         AgentEventType::Waiting => 2,
         AgentEventType::Failed => 1,
-        AgentEventType::Review
-        | AgentEventType::Done
+        AgentEventType::Done
         | AgentEventType::Tool
+        | AgentEventType::Thinking
+        | AgentEventType::Plan
         | AgentEventType::Start => 0,
     }
 }
@@ -484,8 +495,9 @@ fn display_interrupt_priority(event: &AgentEvent) -> u8 {
         AgentEventType::Waiting => 2,
         AgentEventType::Failed => 1,
         AgentEventType::Start
+        | AgentEventType::Thinking
+        | AgentEventType::Plan
         | AgentEventType::Tool
-        | AgentEventType::Review
         | AgentEventType::Done => 0,
     }
 }
@@ -493,6 +505,18 @@ fn display_interrupt_priority(event: &AgentEvent) -> u8 {
 fn terminal_event_has_prior_activation(candidate: &TimedCandidate<'_>) -> bool {
     !event_requires_prior_user_activation(&candidate.candidate.event)
         || candidate.candidate.session_activated_at.is_some()
+}
+
+/// A successful completion remains useful in the return bubble only while the
+/// host still exposes a destination. An explicit close/archive edge is durable
+/// audit history, not an unavailable message the user must manually dismiss.
+fn event_is_explicitly_closed_completion(event: &AgentEvent) -> bool {
+    event.event_type == AgentEventType::Done
+        && event
+            .payload_json
+            .get("session_open")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
 }
 
 fn active_state_from_candidate(
@@ -504,10 +528,10 @@ fn active_state_from_candidate(
     let session_active = event_session_active(event) == Some(true);
     let attention_state = matches!(
         event.event_type,
-        AgentEventType::Waiting | AgentEventType::Review | AgentEventType::Failed
+        AgentEventType::Waiting | AgentEventType::Failed
     );
-    let lease_seconds = (!session_active && !attention_state)
-        .then(|| event_lease_seconds_for_behavior(behavior, event));
+    let lease_seconds =
+        (!attention_state).then(|| event_lease_seconds_for_behavior(behavior, event));
     let expires_at = lease_seconds.map(|lease_seconds| {
         (candidate.created_at + Duration::seconds(lease_seconds))
             .format(&Rfc3339)
@@ -574,21 +598,21 @@ fn overlay_session_display(
 }
 
 fn overlay_state_entry_id(event: &AgentEvent, session_activated_at: Option<&str>) -> String {
+    let Some(reaction) = event.event_type.pet_reaction() else {
+        return "idle".to_string();
+    };
     if matches!(
-        event.event_type,
-        AgentEventType::Tool
-            | AgentEventType::Waiting
-            | AgentEventType::Review
-            | AgentEventType::Failed
+        reaction,
+        PetStateName::Tool | PetStateName::Waiting | PetStateName::Failed
     ) {
-        return enum_name(event.event_type);
+        return enum_name(reaction);
     }
 
     let marker = session_activated_at
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            (event.event_type == AgentEventType::Done)
+            (reaction == PetStateName::Done)
                 .then(|| {
                     event
                         .payload_json
@@ -601,11 +625,14 @@ fn overlay_state_entry_id(event: &AgentEvent, session_activated_at: Option<&str>
         })
         .unwrap_or("initial");
     let mut digest = Sha256::new();
-    let event_type = enum_name(event.event_type);
+    // Thinking and plan deliberately share the same authored action and the
+    // same per-activation identity, so changing the badge from Thinking to
+    // Planning does not restart the pet animation.
+    let reaction = enum_name(reaction);
     let source = enum_name(event.source);
     let session_id = normalized_session_key(event.session_id.as_deref());
     for component in [
-        event_type.as_str(),
+        reaction.as_str(),
         source.as_str(),
         session_id.as_str(),
         marker,
@@ -657,22 +684,18 @@ fn opaque_overlay_identity(domain: &str, value: &str, prefix: &str) -> String {
 
 fn overlay_summary_kind(event: &AgentEvent) -> OverlaySummaryKind {
     match event.event_type {
+        AgentEventType::Start => OverlaySummaryKind::Start,
+        AgentEventType::Thinking => OverlaySummaryKind::Thinking,
+        AgentEventType::Plan => OverlaySummaryKind::Plan,
         AgentEventType::Waiting => OverlaySummaryKind::NeedsInput,
-        AgentEventType::Review => OverlaySummaryKind::Review,
         AgentEventType::Done => OverlaySummaryKind::Done,
         AgentEventType::Failed => OverlaySummaryKind::Failed,
-        AgentEventType::Start | AgentEventType::Tool => event
+        AgentEventType::Tool => event
             .payload_json
             .get("activity_kind")
             .and_then(serde_json::Value::as_str)
             .and_then(overlay_activity_summary_kind)
-            .unwrap_or_else(|| {
-                if event.event_type == AgentEventType::Tool {
-                    OverlaySummaryKind::Tool
-                } else {
-                    OverlaySummaryKind::Running
-                }
-            }),
+            .unwrap_or(OverlaySummaryKind::Tool),
     }
 }
 
@@ -854,16 +877,17 @@ fn event_activity(event: &AgentEvent) -> Option<SessionActivity> {
 }
 
 fn event_lease_seconds_for_behavior(behavior: &BehaviorSettings, event: &AgentEvent) -> i64 {
-    if event
+    let source_event = event
         .payload_json
         .get("source_event")
-        .and_then(serde_json::Value::as_str)
-        == Some("app_server_activity")
+        .and_then(serde_json::Value::as_str);
+    if (event_session_active(event) == Some(true) || source_event == Some("app_server_activity"))
         && matches!(
             event.event_type,
             AgentEventType::Start
+                | AgentEventType::Thinking
+                | AgentEventType::Plan
                 | AgentEventType::Tool
-                | AgentEventType::Review
                 | AgentEventType::Done
         )
     {
@@ -874,9 +898,10 @@ fn event_lease_seconds_for_behavior(behavior: &BehaviorSettings, event: &AgentEv
 
 fn official_status(event_type: AgentEventType) -> &'static str {
     match event_type {
-        AgentEventType::Start | AgentEventType::Tool => "running",
+        AgentEventType::Start => "started",
+        AgentEventType::Thinking | AgentEventType::Plan | AgentEventType::Tool => "running",
         AgentEventType::Waiting => "needs_input",
-        AgentEventType::Review | AgentEventType::Done => "ready",
+        AgentEventType::Done => "ready",
         AgentEventType::Failed => "blocked",
     }
 }

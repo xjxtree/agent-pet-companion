@@ -755,9 +755,18 @@ impl CoreState {
                     app_server::MAX_RECENT_CODEX_ACTIVITY_THREADS,
                     &mut cache,
                 );
-                result.map(|activities| (activities, cache.listed_thread_ids()))
+                result.map(|activities| {
+                    (
+                        activities,
+                        cache.listed_thread_ids(),
+                        cache.listed_thread_surfaces(),
+                        cache.listing_complete(),
+                    )
+                })
             };
-            let Ok((mut activities, listed_threads)) = activity_round else {
+            let Ok((mut activities, listed_threads, listed_thread_surfaces, listing_complete)) =
+                activity_round
+            else {
                 if let Ok(mut sync) = shared_sync.lock() {
                     sync.in_flight = false;
                 }
@@ -770,15 +779,33 @@ impl CoreState {
                 reconcile_codex_activity_observation(&mut sync.observations, activity);
             }
             let closed_at_unix = OffsetDateTime::now_utc().unix_timestamp();
-            let disappeared_events = disappeared_codex_activity_events(
-                &sync.observations,
-                &listed_threads,
-                closed_at_unix,
-            );
+            let disappeared_events = if listing_complete {
+                disappeared_codex_activity_events(
+                    &sync.observations,
+                    &listed_threads,
+                    closed_at_unix,
+                )
+            } else {
+                // A bounded page with a continuation cursor cannot prove that
+                // an omitted task was archived. Forget ambiguous observations
+                // and let their finite leases expire naturally.
+                Vec::new()
+            };
             sync.observations
                 .retain(|thread_id, _| listed_threads.contains(thread_id));
             sync.in_flight = false;
             drop(sync);
+
+            // Raw unarchived-list membership is authoritative even when a task
+            // has aged out of bounded detail hydration. This also repairs
+            // synthetic closures written by an earlier runtime that conflated
+            // the message-age window with task disappearance.
+            if database
+                .reconcile_listed_codex_activity_sessions(&listed_thread_surfaces)
+                .is_err()
+            {
+                return;
+            }
 
             let existing = snapshot_sequenced_events_cached(
                 &database,
@@ -848,23 +875,20 @@ fn reconcile_codex_activity_observation(
     });
     let running = matches!(
         activity.event_type,
-        AgentEventType::Start | AgentEventType::Tool
+        AgentEventType::Start
+            | AgentEventType::Thinking
+            | AgentEventType::Plan
+            | AgentEventType::Tool
     );
     let raw_activity = activity.latest_activity.clone();
     let inferred_activity = if running && visible_clock_advanced {
         // A separately spawned App Server sees the thread timestamp advance,
         // but persisted turns intentionally omit some live interactions (most
         // notably command executions). Keep the newest concrete host-exposed
-        // detail until a newer one arrives; a content-free inferred category
-        // must not erase useful reasoning or tool information from the bubble.
-        Some(latest_known_codex_activity(
-            raw_activity.as_ref(),
-            if raw_activity.is_none() {
-                "thinking"
-            } else {
-                "tool"
-            },
-        ))
+        // detail until a newer one arrives. Timestamp movement alone is not
+        // evidence of thinking and must never turn `start` into `thinking`.
+        latest_known_codex_activity(raw_activity.as_ref())
+            .or_else(|| previous.and_then(|previous| previous.inferred_activity.clone()))
     } else if running && same_visible_revision {
         previous.and_then(|previous| previous.inferred_activity.clone())
     } else if running
@@ -876,10 +900,8 @@ fn reconcile_codex_activity_observation(
         // A completed operation remains the latest useful activity detail
         // while the turn continues. Keep concrete host text, but use a neutral
         // category when the lossy persisted item has no displayable content.
-        Some(latest_known_codex_activity(
-            raw_activity.as_ref(),
-            "thinking",
-        ))
+        latest_known_codex_activity(raw_activity.as_ref())
+            .or_else(|| previous.and_then(|previous| previous.inferred_activity.clone()))
     } else {
         None
     };
@@ -892,15 +914,11 @@ fn reconcile_codex_activity_observation(
         raw_activity.filter(|candidate| candidate.is_current)
     };
     if running {
-        activity.event_type = if activity
+        activity.event_type = activity
             .latest_activity
             .as_ref()
-            .is_some_and(|candidate| codex_activity_kind_is_tool(&candidate.kind))
-        {
-            AgentEventType::Tool
-        } else {
-            AgentEventType::Start
-        };
+            .map(|candidate| codex_activity_event_type(&candidate.kind))
+            .unwrap_or(AgentEventType::Start);
     }
 
     observations.insert(
@@ -951,8 +969,7 @@ fn disappeared_codex_activity_events(
 
 fn latest_known_codex_activity(
     candidate: Option<&app_server::CodexThreadDisplayActivity>,
-    fallback_kind: &str,
-) -> app_server::CodexThreadDisplayActivity {
+) -> Option<app_server::CodexThreadDisplayActivity> {
     if let Some(candidate) = candidate.filter(|candidate| {
         candidate
             .content
@@ -961,11 +978,12 @@ fn latest_known_codex_activity(
     }) {
         let mut activity = candidate.clone();
         activity.is_current = true;
-        return activity;
+        return Some(activity);
     }
-    generic_codex_activity(fallback_kind)
+    None
 }
 
+#[cfg(test)]
 fn generic_codex_activity(kind: &str) -> app_server::CodexThreadDisplayActivity {
     app_server::CodexThreadDisplayActivity {
         kind: kind.to_string(),
@@ -981,6 +999,15 @@ fn codex_activity_kind_is_tool(kind: &str) -> bool {
     )
 }
 
+fn codex_activity_event_type(kind: &str) -> AgentEventType {
+    match kind {
+        "thinking" => AgentEventType::Thinking,
+        "plan" => AgentEventType::Plan,
+        _ if codex_activity_kind_is_tool(kind) => AgentEventType::Tool,
+        _ => AgentEventType::Start,
+    }
+}
+
 fn should_preserve_exact_codex_state(
     existing: &[agent_state::SequencedAgentEvent],
     activity: &app_server::CodexThreadActivity,
@@ -990,7 +1017,10 @@ fn should_preserve_exact_codex_state(
     // hook-backed interaction or terminal state remains authoritative.
     if !matches!(
         activity.event_type,
-        AgentEventType::Start | AgentEventType::Tool
+        AgentEventType::Start
+            | AgentEventType::Thinking
+            | AgentEventType::Plan
+            | AgentEventType::Tool
     ) {
         return false;
     }
@@ -1002,9 +1032,10 @@ fn should_preserve_exact_codex_state(
             && matches!(
                 candidate.event.event_type,
                 AgentEventType::Start
+                    | AgentEventType::Thinking
+                    | AgentEventType::Plan
                     | AgentEventType::Tool
                     | AgentEventType::Waiting
-                    | AgentEventType::Review
                     | AgentEventType::Done
                     | AgentEventType::Failed
             )
@@ -1021,7 +1052,10 @@ fn should_preserve_exact_codex_state(
     let current_public_activity_supersedes_running_hook =
         matches!(
             exact.event.event_type,
-            AgentEventType::Start | AgentEventType::Tool
+            AgentEventType::Start
+                | AgentEventType::Thinking
+                | AgentEventType::Plan
+                | AgentEventType::Tool
         ) && activity.latest_activity.as_ref().is_some_and(|candidate| {
             candidate.is_current
                 && candidate
@@ -2540,10 +2574,8 @@ fn acknowledge_agent_session(state: &CoreState, params: &Value) -> Result<Value>
         OffsetDateTime::now_utc(),
     );
     if !visible.states.iter().any(|session| {
-        matches!(
-            session.event.event_type,
-            AgentEventType::Review | AgentEventType::Done
-        ) && agent_state::session_acknowledgement_id(&session.event) == acknowledgement_id
+        session.event.event_type == AgentEventType::Done
+            && agent_state::session_acknowledgement_id(&session.event) == acknowledgement_id
     }) {
         return Err(PetCoreError::Conflict(
             "Agent session is no longer available to acknowledge".to_string(),
@@ -2804,7 +2836,10 @@ fn hydrate_agent_session_display(
         .unwrap_or_else(|| format!("{}:{}", active.event.id, active.source_session_sequence));
     let refresh_seconds = if matches!(
         active.event.event_type,
-        AgentEventType::Start | AgentEventType::Tool
+        AgentEventType::Start
+            | AgentEventType::Thinking
+            | AgentEventType::Plan
+            | AgentEventType::Tool
     ) {
         CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS
     } else {
@@ -2843,7 +2878,10 @@ fn hydrate_agent_session_display(
         if should_replace_hydrated_codex_activity(active.session_activity.as_ref(), &activity) {
             if matches!(
                 active.event.event_type,
-                AgentEventType::Start | AgentEventType::Tool
+                AgentEventType::Start
+                    | AgentEventType::Thinking
+                    | AgentEventType::Plan
+                    | AgentEventType::Tool
             ) {
                 if let Some(summary_kind) =
                     agent_state::overlay_activity_summary_kind(&activity.kind)
@@ -3227,6 +3265,18 @@ fn persist_overlay_placement(
             projection,
         } => Ok(json!({
             "ok": true,
+            "changed": true,
+            "revision": state_revision.to_string(),
+            "overlay_placement_revision": projection.revision.to_string(),
+            "overlay_placement": projection.placement,
+            "overlay_placement_intent": projection.intent,
+        })),
+        OverlayPlacementWriteResult::Unchanged {
+            state_revision,
+            projection,
+        } => Ok(json!({
+            "ok": true,
+            "changed": false,
             "revision": state_revision.to_string(),
             "overlay_placement_revision": projection.revision.to_string(),
             "overlay_placement": projection.placement,
@@ -3922,7 +3972,7 @@ done
         // The host-process gate remains held for this entire budget, so a
         // serialized refresh still cannot pass; the wider bound only absorbs
         // App Server process startup contention in the full parallel suite.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(4);
         let mut completed_while_background_work_was_blocked = false;
         while Instant::now() < deadline {
             completed_while_background_work_was_blocked = state
@@ -4702,7 +4752,7 @@ done
                 .map(|value| value.kind.as_str()),
             Some("thinking")
         );
-        assert_eq!(activity.event_type, AgentEventType::Start);
+        assert_eq!(activity.event_type, AgentEventType::Thinking);
 
         activity.updated_at_unix += 1;
         reconcile_codex_activity_observation(&mut observations, &mut activity);
@@ -4720,7 +4770,7 @@ done
                 .and_then(|value| value.content.as_ref()),
             Some(&"Assessing manual length and detail".to_string())
         );
-        assert_eq!(activity.event_type, AgentEventType::Start);
+        assert_eq!(activity.event_type, AgentEventType::Thinking);
 
         reconcile_codex_activity_observation(&mut observations, &mut activity);
         assert_eq!(
@@ -4755,14 +4805,8 @@ done
             is_current: false,
         });
         reconcile_codex_activity_observation(&mut observations, &mut activity);
-        assert_eq!(
-            activity
-                .latest_activity
-                .as_ref()
-                .map(|value| value.kind.as_str()),
-            Some("tool")
-        );
-        assert_eq!(activity.event_type, AgentEventType::Tool);
+        assert_eq!(activity.latest_activity, None);
+        assert_eq!(activity.event_type, AgentEventType::Start);
     }
 
     #[test]

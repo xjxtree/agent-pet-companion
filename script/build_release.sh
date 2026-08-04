@@ -119,6 +119,20 @@ if [[ "$TAG_COMMIT" != "$RELEASE_COMMIT" ]]; then
   exit 1
 fi
 
+PREVIOUS_RELEASE_TAG="$({
+  git -C "$ROOT_DIR" describe \
+    --tags \
+    --match 'v[0-9]*.[0-9]*.[0-9]*' \
+    --abbrev=0 \
+    "$RELEASE_COMMIT^"
+} 2>/dev/null || true)"
+if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+  echo 'GitHub Release distribution requires a previous version tag baseline' >&2
+  exit 1
+fi
+"$ROOT_DIR/script/validate_codex_plugin_version.py" \
+  --base-ref "$PREVIOUS_RELEASE_TAG"
+
 DIST_DIR="$ROOT_DIR/dist"
 CHECKSUM_NAME="AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-github-release.XXXXXX")"

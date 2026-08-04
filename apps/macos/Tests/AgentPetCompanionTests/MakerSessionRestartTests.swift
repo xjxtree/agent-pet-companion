@@ -390,7 +390,7 @@ struct MakerSessionRestartTests {
             payload["revision_id"] = "rev_completed"
             payload["validation_summary"] = [
                 "ok": true,
-                "state_count": 7,
+                "state_count": 9,
                 "frame_count": 120,
                 "warning_count": 0,
             ]

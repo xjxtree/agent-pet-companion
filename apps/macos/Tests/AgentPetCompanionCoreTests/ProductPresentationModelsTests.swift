@@ -8,17 +8,20 @@ struct ProductPresentationModelsTests {
     func lifecycleKeepsProtocolNamesAndMapsEveryEventKind() {
         #expect(ProductLifecycleState.allCases.map(\.rawValue) == [
             "idle",
-            "start",
+            "thinking",
             "tool",
             "waiting",
-            "review",
             "done",
             "failed",
         ])
 
-        for eventKind in AgentEventKind.allCases {
-            #expect(ProductLifecycleState(eventKind: eventKind).rawValue == eventKind.rawValue)
-        }
+        #expect(ProductLifecycleState(eventKind: .start) == .idle)
+        #expect(ProductLifecycleState(eventKind: .thinking) == .thinking)
+        #expect(ProductLifecycleState(eventKind: .plan) == .thinking)
+        #expect(ProductLifecycleState(eventKind: .tool) == .tool)
+        #expect(ProductLifecycleState(eventKind: .waiting) == .waiting)
+        #expect(ProductLifecycleState(eventKind: .done) == .done)
+        #expect(ProductLifecycleState(eventKind: .failed) == .failed)
     }
 
     @Test
@@ -59,13 +62,13 @@ struct ProductPresentationModelsTests {
     func attentionPresetsOwnExactEventSets() {
         #expect(AttentionPreset.onlyWhenNeeded.enabledEvents == [
             .waiting,
-            .review,
             .failed,
         ])
         #expect(AttentionPreset.standard.enabledEvents == [
             .start,
+            .thinking,
+            .plan,
             .waiting,
-            .review,
             .done,
             .failed,
         ])

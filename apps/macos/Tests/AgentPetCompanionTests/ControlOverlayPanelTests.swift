@@ -97,6 +97,29 @@ struct ControlOverlayPanelTests {
     }
 
     @Test
+    func idlePetBodyClickAcknowledgesAndTogglesBubbleWhileSessionRowsOwnNavigation() throws {
+        let overlaySource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/OverlayRootView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(overlaySource.contains(
+            "interactionPresentation.acknowledge(reduceMotion: reduceMotion)"
+        ))
+        #expect(overlaySource.contains("if isIdlePetPresentation"))
+        #expect(!overlaySource.contains("offerInitialAcknowledge"))
+        #expect(overlaySource.contains(
+            "store.toggleOverlayBubble()"
+        ))
+        #expect(!overlaySource.contains("private func activatePet()"))
+        #expect(overlaySource.contains(
+            "onActivateSession: { session in\n                        store.activateOverlaySession(session)"
+        ))
+    }
+
+    @Test
     func visibleOverlayTransitionsNeverCreateDeadInputWindows() throws {
         let controllerSource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(

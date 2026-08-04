@@ -104,7 +104,8 @@ ok = (
     and data.get("source_kind") == "eager"
     and data.get("frame_durations_ms") == durations
     and data.get("total_duration_ms") == sum(durations)
-    and data.get("playback_mode") == "once_hold"
+    and data.get("playback_mode") == "burst_then_settle"
+    and data.get("entry_repeat_count") == 2
     and data.get("settle_frame_index") == 5
     and data.get("reduced_motion_frame_index") == 4
     and data.get("source_frame_count") == len(durations)
@@ -134,7 +135,7 @@ PY
     fi
     sleep 0.25
   done
-  echo "renderer runtime validation failed: V2 telemetry did not settle for $quality" >&2
+  echo "renderer runtime validation failed: V3 telemetry did not settle for $quality" >&2
   return 1
 }
 
@@ -206,21 +207,20 @@ PY
 LOW_BUDGET="$("$PETCORE_CLI" renderer budget --quality low --frame-count 2)"
 STANDARD_BUDGET="$("$PETCORE_CLI" renderer budget --quality standard --frame-count 8)"
 STANDARD_MAX_BUDGET="$("$PETCORE_CLI" renderer budget --quality standard --frame-count 40)"
+HIGH_BUDGET="$("$PETCORE_CLI" renderer budget --quality high --frame-count 8)"
+HIGH_MAX_BUDGET="$("$PETCORE_CLI" renderer budget --quality high --frame-count 40)"
 assert_json "$LOW_BUDGET" 'data["quality"] == "low" and data["frame_count"] == 2 and data["runtime_cache_frame_limit"] == 2 and data["uses_ring_cache"] is False'
 assert_json "$STANDARD_BUDGET" 'data["quality"] == "standard" and data["frame_count"] == 8 and data["runtime_cache_frame_limit"] == 8 and data["uses_ring_cache"] is False'
 assert_json "$STANDARD_MAX_BUDGET" 'data["quality"] == "standard" and data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == 40 and data["uses_ring_cache"] is False'
-if "$PETCORE_CLI" renderer budget --quality high --frame-count 8 \
-    >"$TMP_DIR/retired-high.stdout" 2>"$TMP_DIR/retired-high.stderr"; then
-  echo 'renderer runtime validation failed: retired high quality was accepted' >&2
-  exit 1
-fi
+assert_json "$HIGH_BUDGET" 'data["quality"] == "high" and data["frame_count"] == 8 and data["runtime_cache_frame_limit"] == 8 and data["uses_ring_cache"] is False'
+assert_json "$HIGH_MAX_BUDGET" 'data["quality"] == "high" and data["frame_count"] == 40 and data["runtime_cache_frame_limit"] == 40 and data["uses_ring_cache"] is False'
 
 declare -a PET_IDS=()
-for quality in low standard; do
+for quality in low standard high; do
   source_dir="$TMP_DIR/$quality-source"
   "$PETCORE_CLI" petpack sample --output "$source_dir" --quality "$quality" >/dev/null
   imported="$(APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" petpack import --offline "$source_dir")"
-  assert_json "$imported" 'data["quality"] in {"low", "standard"} and len(data["states"]) == 7 and len(data["states"][3]["frame_durations_ms"]) == 6'
+  assert_json "$imported" 'data["quality"] in {"low", "standard", "high"} and len(data["states"]) == 9 and len(data["states"][3]["frame_durations_ms"]) == 6'
   PET_IDS+=("$(JSON="$imported" python3 - <<'PY'
 import json
 import os
@@ -251,9 +251,9 @@ activate_waiting_state() {
   APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" agent ingest \
     --source codex \
     --event-type waiting \
-    --id "renderer-v2-${quality}-$$" \
-    --session-id "renderer-v2-${quality}" \
-    --title "Renderer V2 timing" \
+    --id "renderer-v3-${quality}-$$" \
+    --session-id "renderer-v3-${quality}" \
+    --title "Renderer V3 timing" \
     --payload-json '{"schema_version":"apc.agent-event.v1","diagnostic":false,"session_active":true,"session_open":true,"interaction_kind":"input_required"}' \
     >/dev/null
 }
@@ -262,9 +262,11 @@ activate_waiting_state low "${PET_IDS[0]}"
 LOW_TELEMETRY="$(wait_for_telemetry low 1 192 208)"
 activate_waiting_state standard "${PET_IDS[1]}"
 STANDARD_TELEMETRY="$(wait_for_telemetry standard 10 384 416)"
-ACTIVE_METRICS="$(sample_process_metrics standard)"
+activate_waiting_state high "${PET_IDS[2]}"
+HIGH_TELEMETRY="$(wait_for_telemetry high 10 576 624)"
+ACTIVE_METRICS="$(sample_process_metrics high)"
 
-TELEMETRY="$STANDARD_TELEMETRY" \
+TELEMETRY="$HIGH_TELEMETRY" \
 BASELINE="$BASELINE_METRICS" \
 ACTIVE="$ACTIVE_METRICS" \
 python3 - <<'PY'
@@ -276,7 +278,7 @@ baseline = json.loads(os.environ["BASELINE"])
 active = json.loads(os.environ["ACTIVE"])
 if telemetry["actual_draw_count"] > telemetry["frame_count"] + 2:
     raise SystemExit(
-        "renderer runtime validation failed: once_hold kept drawing after settling"
+        "renderer runtime validation failed: burst_then_settle kept drawing after settling"
     )
 if telemetry["observed_draws_per_second"] >= 1:
     raise SystemExit(
@@ -288,9 +290,9 @@ if active["cpu_average_percent"] > 4:
     )
 if max(0, active["rss_peak_mib"] - baseline["rss_median_mib"]) > 165:
     raise SystemExit(
-        "renderer runtime validation failed: standard-tier renderer exceeds memory budget"
+        "renderer runtime validation failed: high-tier renderer exceeds memory budget"
     )
 PY
 
-printf 'Renderer V2 runtime validation ok: low=%s standard=%s\n' \
-  "$LOW_TELEMETRY" "$STANDARD_TELEMETRY"
+printf 'Renderer V3 runtime validation ok: low=%s standard=%s high=%s\n' \
+  "$LOW_TELEMETRY" "$STANDARD_TELEMETRY" "$HIGH_TELEMETRY"

@@ -113,7 +113,7 @@ struct OnboardingAppStoreTests {
 
     @MainActor
     @Test
-    func explicitRestoreRequiresBothIncludedIDsInTheAuthoritativeSnapshot() async throws {
+    func explicitRestoreRequiresAllIncludedIDsInTheAuthoritativeSnapshot() async throws {
         let probe = OnboardingRPCProbe()
         let store = makeStore(
             probe: probe,
@@ -130,6 +130,17 @@ struct OnboardingAppStoreTests {
                         coverPath: "/tmp/pet_bytebudcodex-cover.png",
                         active: false,
                         createdAt: "2026-07-23T00:00:00Z"
+                    ),
+                    PetSummary(
+                        id: "pet_pinklace",
+                        name: "桃蕾",
+                        style: "anime",
+                        quality: .standard,
+                        renderSize: QualityLevel.standard.renderSize,
+                        petpackPath: "/tmp/pet_pinklace.petpack",
+                        coverPath: "/tmp/pet_pinklace-cover.png",
+                        active: false,
+                        createdAt: "2026-08-03T00:00:00Z"
                     ),
                 ]
                 return true

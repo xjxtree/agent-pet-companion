@@ -621,9 +621,9 @@ struct InitialAppearanceBootstrapTests {
             minimumDatabaseSchemaVersion: 1,
             maximumDatabaseSchemaVersion: 6,
             agentEventSchemaVersion: "apc.agent-event.v1",
-            petpackSchemaVersion: "apc.petpack.v2",
-            petpackReadVersions: ["apc.petpack.v2"],
-            petpackWriteVersion: "apc.petpack.v2",
+            petpackSchemaVersion: "apc.petpack.v3",
+            petpackReadVersions: ["apc.petpack.v3"],
+            petpackWriteVersion: "apc.petpack.v3",
             connectorContracts: RuntimeConnectorContracts(
                 codex: "codex-hooks.v1",
                 claudeCode: "claude-hooks.v1",

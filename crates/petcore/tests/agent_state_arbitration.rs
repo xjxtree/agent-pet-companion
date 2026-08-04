@@ -324,7 +324,86 @@ fn acknowledged_completed_sessions_stay_hidden_across_restart_until_new_activity
 }
 
 #[test]
-fn older_review_remains_in_the_bubble_without_overriding_newer_cross_session_states() {
+fn acknowledging_current_completion_does_not_reveal_an_expired_active_tool() {
+    let (_temp, state) = ready();
+    ingest_source_payload(
+        &state,
+        "codex",
+        "ghost-start",
+        "ghost-session",
+        "start",
+        &timestamp(7_200),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "affects_activity": true
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "codex",
+        "ghost-tool",
+        "ghost-session",
+        "tool",
+        &timestamp(3_600),
+        json!({
+            "source_event": "PreToolUse",
+            "session_active": true,
+            "affects_activity": true
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "codex",
+        "current-start",
+        "current-session",
+        "start",
+        &timestamp(3),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "session_active": true,
+            "affects_activity": true
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "codex",
+        "current-done",
+        "current-session",
+        "done",
+        &timestamp(1),
+        json!({
+            "source_event": "Stop",
+            "session_active": false,
+            "affects_activity": true
+        }),
+    );
+
+    let completed = snapshot(&state);
+    let current = completed["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected_session_id("current-session"))
+        .expect("current completion should be visible");
+    let acknowledgement_id = current["acknowledgement_id"].as_str().unwrap();
+    let result = handle_request(
+        &state,
+        request(
+            "agent.session.acknowledge",
+            json!({ "acknowledgement_id": acknowledgement_id }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(result["acknowledged"], true);
+
+    let acknowledged = snapshot(&state);
+    assert_eq!(acknowledged["active_agent_sessions"], json!([]));
+    assert_eq!(acknowledged["active_agent_state"], Value::Null);
+}
+
+#[test]
+fn older_completion_remains_in_the_bubble_without_overriding_newer_cross_session_states() {
     for (event_type, expected_status, expected_summary) in [
         ("tool", "running", "tool"),
         ("failed", "blocked", "failed"),
@@ -333,9 +412,9 @@ fn older_review_remains_in_the_bubble_without_overriding_newer_cross_session_sta
         let (_temp, state) = ready();
         ingest(
             &state,
-            "ready-to-review",
+            "completed",
             "completed-session",
-            "review",
+            "done",
             &timestamp(2),
         );
         let newer_id = format!("new-{event_type}-work");
@@ -365,7 +444,7 @@ fn older_review_remains_in_the_bubble_without_overriding_newer_cross_session_sta
             .as_array()
             .unwrap()
             .iter()
-            .any(|session| session["overlay_display"]["summary_kind"] == "review"));
+            .any(|session| session["overlay_display"]["summary_kind"] == "done"));
     }
 }
 
@@ -611,8 +690,9 @@ fn idle_auto_hide_semantics_are_consistent() {
 }
 
 #[test]
-fn active_session_persists_with_bounded_user_context_for_the_overlay() {
+fn active_session_hint_uses_the_bounded_overlay_window() {
     let (_temp, state) = ready();
+    let tool_created_at = timestamp(600);
     handle_request(
         &state,
         request(
@@ -622,7 +702,7 @@ fn active_session_persists_with_bounded_user_context_for_the_overlay() {
                 "source": "codex",
                 "session_id": "persistent-session",
                 "event_type": "start",
-                "created_at": timestamp(7_200),
+                "created_at": timestamp(720),
                 "payload": {
                     "source_event": "UserPromptSubmit",
                     "session_active": true,
@@ -643,7 +723,7 @@ fn active_session_persists_with_bounded_user_context_for_the_overlay() {
                 "source": "codex",
                 "session_id": "persistent-session",
                 "event_type": "tool",
-                "created_at": timestamp(3_600),
+                "created_at": tool_created_at,
                 "payload": {
                     "source_event": "PreToolUse",
                     "session_active": true,
@@ -661,8 +741,15 @@ fn active_session_persists_with_bounded_user_context_for_the_overlay() {
     );
     assert_eq!(active["active_agent_state"]["official_status"], "running");
     assert_eq!(active["active_agent_state"]["session_active"], true);
-    assert_eq!(active["active_agent_state"]["lease_seconds"], Value::Null);
-    assert_eq!(active["active_agent_state"]["expires_at"], Value::Null);
+    assert_eq!(active["active_agent_state"]["lease_seconds"], 900);
+    let expected_expiration = (OffsetDateTime::parse(&tool_created_at, &Rfc3339).unwrap()
+        + Duration::minutes(15))
+    .format(&Rfc3339)
+    .unwrap();
+    assert_eq!(
+        active["active_agent_state"]["expires_at"],
+        expected_expiration
+    );
     assert_eq!(
         active["active_agent_state"]["overlay_display"]["summary_kind"],
         "tool"
@@ -679,29 +766,18 @@ fn active_session_persists_with_bounded_user_context_for_the_overlay() {
     assert!(active["active_agent_state"]
         .get("latest_user_message")
         .is_none());
-    assert_eq!(active["active_agent_sessions"], json!([]));
-    assert_eq!(active["overlay_visibility"]["status_bubble_visible"], false);
+    assert_eq!(active["active_agent_sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(active["overlay_visibility"]["status_bubble_visible"], true);
 
-    handle_request(
+    patch(
         &state,
-        request(
-            "agent.ingest",
-            json!({
-                "id": "terminal-done",
-                "source": "codex",
-                "session_id": "persistent-session",
-                "event_type": "done",
-                "created_at": timestamp(6),
-                "payload": {
-                    "source_event": "Stop",
-                    "session_active": false,
-                    "diagnostic": false
-                }
-            }),
-        ),
+        active["behavior_revision"].as_str().unwrap(),
+        json!({ "session_message_timeout_minutes": 5 }),
     )
     .unwrap();
-    assert_eq!(snapshot(&state)["active_agent_state"], Value::Null);
+    let expired = snapshot(&state);
+    assert_eq!(expired["active_agent_state"], Value::Null);
+    assert_eq!(expired["active_agent_sessions"], json!([]));
 }
 
 #[test]
@@ -1019,7 +1095,7 @@ fn sessions_without_a_user_activation_keep_their_first_seen_order() {
             "opencode",
             id,
             session_id,
-            "start",
+            "plan",
             &timestamp(seconds_ago),
             json!({
                 "source_event": "session.plan.updated",
@@ -1051,7 +1127,7 @@ fn sessions_without_a_user_activation_keep_their_first_seen_order() {
         "opencode",
         "older-plan-churn",
         "session-older",
-        "start",
+        "plan",
         &timestamp(0),
         json!({
             "source_event": "session.plan.updated",
@@ -1067,6 +1143,100 @@ fn sessions_without_a_user_activation_keep_their_first_seen_order() {
             projected_session_id("session-older")
         ],
         "a session first discovered without a user message must not reorder on later metadata churn"
+    );
+}
+
+#[test]
+fn start_is_display_only_while_thinking_and_plan_share_one_pet_reaction() {
+    let (_temp, state) = ready();
+    let session_id = "atomic-event-reaction";
+    let projected = projected_session_id(session_id);
+
+    ingest_source_payload(
+        &state,
+        "opencode",
+        "atomic-start",
+        session_id,
+        "start",
+        &timestamp(3),
+        json!({
+            "source_event": "message.user",
+            "message_role": "user",
+            "message_content": "先规划再执行",
+            "session_active": true,
+            "affects_activity": true,
+            "diagnostic": false
+        }),
+    );
+    let started = snapshot(&state);
+    let started = started["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected)
+        .unwrap();
+    assert_eq!(started["event"]["event_type"], "start");
+    assert_eq!(started["state"], "idle");
+    assert_eq!(started["official_status"], "started");
+    assert_eq!(started["overlay_display"]["summary_kind"], "start");
+    assert_eq!(started["overlay_display"]["state_entry_id"], "idle");
+
+    ingest_source_payload(
+        &state,
+        "opencode",
+        "atomic-thinking",
+        session_id,
+        "thinking",
+        &timestamp(2),
+        json!({
+            "source_event": "session.next.reasoning.ended",
+            "activity_kind": "thinking",
+            "session_active": true,
+            "affects_activity": true,
+            "diagnostic": false
+        }),
+    );
+    let thinking = snapshot(&state);
+    let thinking = thinking["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected)
+        .unwrap();
+    assert_eq!(thinking["event"]["event_type"], "thinking");
+    assert_eq!(thinking["state"], "thinking");
+    assert_eq!(thinking["overlay_display"]["summary_kind"], "thinking");
+    let thinking_entry_id = thinking["overlay_display"]["state_entry_id"].clone();
+    assert_ne!(thinking_entry_id, "idle");
+
+    ingest_source_payload(
+        &state,
+        "opencode",
+        "atomic-plan",
+        session_id,
+        "plan",
+        &timestamp(1),
+        json!({
+            "source_event": "session.plan.updated",
+            "activity_kind": "plan",
+            "session_active": true,
+            "affects_activity": true,
+            "diagnostic": false
+        }),
+    );
+    let planning = snapshot(&state);
+    let planning = planning["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected)
+        .unwrap();
+    assert_eq!(planning["event"]["event_type"], "plan");
+    assert_eq!(planning["state"], "thinking");
+    assert_eq!(planning["overlay_display"]["summary_kind"], "plan");
+    assert_eq!(
+        planning["overlay_display"]["state_entry_id"],
+        thinking_entry_id
     );
 }
 
@@ -1114,60 +1284,6 @@ fn waiting_and_failed_sessions_ignore_the_ordinary_display_timeout() {
     assert_eq!(current["behavior"]["session_message_timeout_minutes"], 15);
     assert_eq!(current["behavior"]["bubble_transparency"], 0.55);
     assert_eq!(current["behavior"]["appearance_theme"], "system");
-}
-
-#[test]
-fn review_session_remains_visible_until_a_newer_event_replaces_it() {
-    let (_temp, state) = ready();
-    ingest_payload(
-        &state,
-        "review-old",
-        "review-attention",
-        "review",
-        &timestamp(86_400),
-        json!({
-            "source_event": "PostToolUse",
-            "session_active": false,
-            "message_role": "assistant",
-            "message_content": "private review result",
-            "diagnostic": false
-        }),
-    );
-
-    let retained = snapshot(&state);
-    let session = retained["active_agent_sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|session| session["overlay_display"]["summary_kind"] == "review")
-        .expect("review attention state should not expire on the ordinary timeout");
-    assert_eq!(session["overlay_display"]["summary_kind"], "review");
-    assert_eq!(retained["active_agent_state"]["state"], "review");
-    assert_eq!(
-        retained["active_agent_state"]["overlay_display"]["summary_kind"],
-        "review"
-    );
-    assert_eq!(retained["active_agent_state"]["lease_seconds"], Value::Null);
-    assert_eq!(retained["active_agent_state"]["expires_at"], Value::Null);
-    assert_eq!(session["lease_seconds"], Value::Null);
-    assert_eq!(session["expires_at"], Value::Null);
-
-    ingest(
-        &state,
-        "review-advanced",
-        "review-attention",
-        "tool",
-        &timestamp(0),
-    );
-    let advanced = snapshot(&state);
-    let session = advanced["active_agent_sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|session| session["overlay_display"]["summary_kind"] == "tool")
-        .unwrap();
-    assert_eq!(session["overlay_display"]["summary_kind"], "tool");
-    assert_eq!(advanced["active_agent_state"]["state"], "tool");
 }
 
 #[test]
@@ -1302,8 +1418,8 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
     .unwrap();
     ingest_payload(
         &state,
-        "privacy-review-user",
-        "privacy-review-session",
+        "privacy-completed-user",
+        "privacy-completed-session",
         "start",
         &timestamp(2),
         json!({
@@ -1317,8 +1433,8 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
     ingest_payload(
         &state,
         "privacy-assistant",
-        "privacy-review-session",
-        "review",
+        "privacy-completed-session",
+        "done",
         &timestamp(1),
         json!({
             "source_event": "PostToolUse",
@@ -1364,12 +1480,12 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
         tool["session_user_message"],
         json!({"role": "user", "content": prompt})
     );
-    let review = sessions
+    let completed = sessions
         .iter()
-        .find(|session| session["overlay_display"]["summary_kind"] == "review")
+        .find(|session| session["overlay_display"]["summary_kind"] == "done")
         .unwrap();
     assert_eq!(
-        review["session_message"],
+        completed["session_message"],
         json!({"role": "assistant", "content": assistant})
     );
     assert_eq!(
@@ -1764,9 +1880,9 @@ fn new_user_activation_hides_previous_turn_reply_until_agent_responds() {
         .iter()
         .find(|session| session["session_id"] == projected_session_id("turn-boundary"))
         .unwrap();
-    assert_eq!(session["overlay_display"]["summary_kind"], "running");
+    assert_eq!(session["overlay_display"]["summary_kind"], "start");
 
-    ingest_message("new-reply", "review", "assistant", "本轮回复", 0);
+    ingest_message("new-reply", "done", "assistant", "本轮回复", 0);
     let responded = snapshot(&state);
     let session = responded["active_agent_sessions"]
         .as_array()
@@ -1775,7 +1891,7 @@ fn new_user_activation_hides_previous_turn_reply_until_agent_responds() {
         .find(|session| session["session_id"] == projected_session_id("turn-boundary"))
         .unwrap();
     assert_eq!(session["event"]["id"], projected_event_id("new-reply"));
-    assert_eq!(session["overlay_display"]["summary_kind"], "review");
+    assert_eq!(session["overlay_display"]["summary_kind"], "done");
 }
 
 #[test]
@@ -1817,7 +1933,7 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
     ingest_message(
         "same-time-assistant-after",
         "same-time-reply-after",
-        "review",
+        "done",
         "assistant",
         "后到回复",
     );
@@ -1832,7 +1948,7 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
         replied_session["event"]["id"],
         projected_event_id("same-time-assistant-after")
     );
-    assert_eq!(replied_session["overlay_display"]["summary_kind"], "review");
+    assert_eq!(replied_session["overlay_display"]["summary_kind"], "done");
     assert_eq!(
         replied_session["session_message"],
         json!({"role": "assistant", "content": "后到回复"})
@@ -1841,7 +1957,7 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
     ingest_message(
         "same-time-assistant-first",
         "same-time-user-after",
-        "review",
+        "done",
         "assistant",
         "上一轮旧回复",
     );
@@ -1865,7 +1981,7 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
     );
     assert_eq!(
         reactivated_session["overlay_display"]["summary_kind"],
-        "running"
+        "start"
     );
     assert_eq!(
         reactivated_session["session_user_message"],
@@ -2161,6 +2277,90 @@ fn production_terminal_edges_require_activation_and_close_legacy_active_work() {
 }
 
 #[test]
+fn explicitly_closed_completion_leaves_the_bubble_but_remains_in_audit_history() {
+    let (_temp, state) = ready();
+    let session_id = "019f5b0f-88ff-7413-8953-29de4ed0951c";
+
+    ingest_source_payload(
+        &state,
+        "codex",
+        "archived-session-prompt",
+        session_id,
+        "start",
+        &timestamp(3),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "outcome": "started",
+            "affects_activity": true,
+            "session_active": true,
+            "session_open": true,
+            "session_surface": "chatgpt_app",
+            "message_role": "user",
+            "message_content": "Keep an unarchived completion openable"
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "codex",
+        "archived-session-completed",
+        session_id,
+        "done",
+        &timestamp(2),
+        json!({
+            "source_event": "app_server_activity",
+            "outcome": "completed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "chatgpt_app"
+        }),
+    );
+
+    let completed = snapshot(&state);
+    let completed_session = completed["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected_session_id(session_id))
+        .expect("unarchived completed session");
+    assert_eq!(completed_session["event"]["event_type"], "done");
+    assert_eq!(
+        completed_session["overlay_display"]["navigation"]["capability"],
+        "exact_session"
+    );
+
+    ingest_source_payload(
+        &state,
+        "codex",
+        "archived-session-closed",
+        session_id,
+        "done",
+        &timestamp(1),
+        json!({
+            "source_event": "app_server_activity",
+            "outcome": "session_closed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": false,
+            "session_surface": "chatgpt_app"
+        }),
+    );
+
+    let archived = snapshot(&state);
+    assert_eq!(archived["active_agent_state"], Value::Null);
+    assert!(archived["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|session| session["session_id"] != projected_session_id(session_id)));
+    assert!(archived["recent_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["id"] == projected_event_id("archived-session-closed")));
+}
+
+#[test]
 fn failed_terminal_state_is_latched_until_new_activity_epoch() {
     for (label, source, activation, failure, completed) in [
         (
@@ -2290,14 +2490,14 @@ fn failed_terminal_state_is_latched_until_new_activity_epoch() {
             .iter()
             .find(|session| session["session_id"] == projected_session_id(&session_id))
             .unwrap();
-        assert_eq!(session["official_status"], "running", "source={source}");
+        assert_eq!(session["official_status"], "started", "source={source}");
         assert_eq!(
             session["event"]["id"],
             projected_event_id(&format!("{label}-reactivated")),
             "source={source}"
         );
         assert_eq!(
-            session["overlay_display"]["summary_kind"], "running",
+            session["overlay_display"]["summary_kind"], "start",
             "source={source}"
         );
     }
@@ -2313,7 +2513,7 @@ fn failure_latch_ignores_completion_tails_but_explicit_epochs_restart_work() {
         ("epoch-assistant", "start", "message.assistant", 10, true),
         ("epoch-tool-after", "tool", "tool.execute.after", 9, true),
         ("epoch-created", "start", "session.created", 8, false),
-        ("epoch-plan", "start", "session.plan.updated", 7, true),
+        ("epoch-plan", "plan", "session.plan.updated", 7, true),
         (
             "epoch-compaction-tail",
             "start",
@@ -2323,7 +2523,7 @@ fn failure_latch_ignores_completion_tails_but_explicit_epochs_restart_work() {
         ),
         (
             "epoch-reasoning-tail",
-            "start",
+            "thinking",
             "session.next.reasoning.ended",
             5,
             true,
@@ -2391,9 +2591,9 @@ fn failure_latch_ignores_completion_tails_but_explicit_epochs_restart_work() {
         .iter()
         .find(|session| session["session_id"] == projected_session_id(session_id))
         .unwrap();
-    assert_eq!(session["official_status"], "running");
+    assert_eq!(session["official_status"], "started");
     assert_eq!(session["event"]["id"], projected_event_id("epoch-retry"));
-    assert_eq!(session["overlay_display"]["summary_kind"], "running");
+    assert_eq!(session["overlay_display"]["summary_kind"], "start");
 }
 
 #[test]
@@ -2521,7 +2721,7 @@ fn active_waiting_and_compaction_starts_open_epochs_without_faking_user_activati
                 .iter()
                 .find(|session| session["session_id"] == projected_session_id(session_id))
                 .unwrap()["official_status"],
-            "running"
+            "started"
         );
     }
     ingest_source_payload(
@@ -2768,7 +2968,7 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
         assert_eq!(session["official_status"], "ready", "source={source}");
         assert!(matches!(
             session["overlay_display"]["summary_kind"].as_str(),
-            Some("review" | "done")
+            Some("done")
         ));
         assert_eq!(session["session_title"], "第一条问题", "source={source}");
         assert_eq!(
@@ -2793,9 +2993,9 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             .iter()
             .find(|candidate| candidate["session_id"] == projected_session_id(session_id))
             .unwrap();
-        assert_eq!(session["official_status"], "running", "source={source}");
+        assert_eq!(session["official_status"], "started", "source={source}");
         assert_eq!(
-            session["overlay_display"]["summary_kind"], "running",
+            session["overlay_display"]["summary_kind"], "start",
             "source={source}"
         );
         assert_eq!(

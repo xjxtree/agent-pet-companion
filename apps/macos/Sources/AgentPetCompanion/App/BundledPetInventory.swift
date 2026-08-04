@@ -10,11 +10,13 @@ enum BundledPetInventory {
     static let resourceDirectoryName = "BuiltInPets"
     static let fileNames = [
         "pet_xingwutuanzi.petpack",
-        "pet_bytebudcodex.petpack"
+        "pet_bytebudcodex.petpack",
+        "pet_pinklace.petpack"
     ]
     static let petIDs = [
         "pet_xingwutuanzi",
-        "pet_bytebudcodex"
+        "pet_bytebudcodex",
+        "pet_pinklace"
     ]
 
     static var directoryURL: URL {

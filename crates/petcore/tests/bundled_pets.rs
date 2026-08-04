@@ -35,24 +35,27 @@ fn response_result(response: &str) -> Value {
 }
 
 #[test]
-fn bundled_pets_are_exact_compact_v2_packages() {
+fn bundled_pets_are_exact_v3_packages() {
     let expected_counts = [
         (PetStateName::Idle, 4),
-        (PetStateName::Start, 4),
+        (PetStateName::Thinking, 4),
         (PetStateName::Tool, 4),
         (PetStateName::Waiting, 6),
-        (PetStateName::Review, 6),
         (PetStateName::Done, 4),
         (PetStateName::Failed, 4),
+        (PetStateName::Acknowledge, 4),
+        (PetStateName::DragLeft, 6),
+        (PetStateName::DragRight, 6),
     ];
     for (file_name, expected_quality) in [
         ("pet_xingwutuanzi.petpack", QualityLevel::Low),
         ("pet_bytebudcodex.petpack", QualityLevel::Standard),
+        ("pet_pinklace.petpack", QualityLevel::Standard),
     ] {
         let validation = validate_petpack_path(&inventory_root().join(file_name)).unwrap();
         assert_eq!(validation.manifest.schema_version, PETPACK_SCHEMA_VERSION);
         assert_eq!(validation.manifest.quality, expected_quality);
-        assert_eq!(validation.frame_count, 32);
+        assert_eq!(validation.frame_count, 42);
         for (state, expected_count) in expected_counts {
             assert_eq!(
                 validation.state_frame_counts.get(&state),
@@ -74,20 +77,21 @@ fn bundled_pets_are_exact_compact_v2_packages() {
 }
 
 #[test]
-fn fresh_library_installs_both_bundled_pets_with_stable_identity() {
+fn fresh_library_installs_all_bundled_pets_with_stable_identity() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_store(&temp.path().join("home"));
 
     let outcomes = seed_bundled_pet_inventory(&paths, &database, &inventory_root()).unwrap();
 
-    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes.len(), 3);
     assert!(outcomes
         .iter()
         .all(|outcome| outcome.status == BundledPetSeedStatus::Installed));
     assert_eq!(outcomes[0].pet_id, "pet_xingwutuanzi");
     assert_eq!(outcomes[1].pet_id, "pet_bytebudcodex");
+    assert_eq!(outcomes[2].pet_id, "pet_pinklace");
     let pets = database.list_pets().unwrap();
-    assert_eq!(pets.len(), 2);
+    assert_eq!(pets.len(), 3);
     assert!(pets
         .iter()
         .all(|pet| pet.origin == PetOrigin::VerifiedSkillSource && is_bundled_pet(pet)));
@@ -105,6 +109,13 @@ fn fresh_library_installs_both_bundled_pets_with_stable_identity() {
         !pets
             .iter()
             .find(|pet| pet.id == "pet_bytebudcodex")
+            .unwrap()
+            .active
+    );
+    assert!(
+        !pets
+            .iter()
+            .find(|pet| pet.id == "pet_pinklace")
             .unwrap()
             .active
     );
@@ -136,7 +147,7 @@ fn repeated_seed_uses_idempotent_fast_path_without_reading_resources() {
     let unavailable_root = temp.path().join("removed-app-resources");
     let repeated = seed_bundled_pet_inventory(&paths, &database, &unavailable_root).unwrap();
 
-    assert_eq!(repeated.len(), 2);
+    assert_eq!(repeated.len(), 3);
     assert!(repeated.iter().all(|outcome| {
         outcome.status == BundledPetSeedStatus::PreservedExistingId
             && installed_paths.get(&outcome.pet_id) == Some(&outcome.pet.petpack_path)
@@ -340,7 +351,11 @@ fn tampered_or_replaced_inventory_fails_before_installing_any_pet() {
     let temp = tempfile::tempdir().unwrap();
     let inventory = temp.path().join("inventory");
     fs::create_dir(&inventory).unwrap();
-    for name in ["pet_xingwutuanzi.petpack", "pet_bytebudcodex.petpack"] {
+    for name in [
+        "pet_xingwutuanzi.petpack",
+        "pet_bytebudcodex.petpack",
+        "pet_pinklace.petpack",
+    ] {
         fs::copy(inventory_root().join(name), inventory.join(name)).unwrap();
     }
     let mut bytebud = fs::OpenOptions::new()
@@ -377,6 +392,11 @@ fn symlinked_inventory_member_is_rejected() {
         inventory.join("pet_bytebudcodex.petpack"),
     )
     .unwrap();
+    fs::copy(
+        inventory_root().join("pet_pinklace.petpack"),
+        inventory.join("pet_pinklace.petpack"),
+    )
+    .unwrap();
     let (paths, database) = ready_store(&temp.path().join("home"));
 
     let error = seed_bundled_pet_inventory(&paths, &database, &inventory)
@@ -407,7 +427,7 @@ fn rpc_seeds_fixed_inventory_and_rejects_unknown_inventory_version() {
     )
     .unwrap();
     let result = response_result(&response);
-    assert_eq!(result["outcomes"].as_array().unwrap().len(), 2);
+    assert_eq!(result["outcomes"].as_array().unwrap().len(), 3);
 
     let rejected: Value = serde_json::from_str(
         &handle_json_line(

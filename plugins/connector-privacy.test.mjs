@@ -55,7 +55,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-activity-v10");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-events-v11");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
     const piActivity = await importTemplate(
       "./pi/agent-pet-companion.ts.tpl",
@@ -426,7 +426,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
         "boundedActivity",
       ],
     );
-    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-activity-v12");
+    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-events-v13");
     assert.equal(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.length, 21);
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("tool.definition"));
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("dispose"));
@@ -606,7 +606,54 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     await hooks.event({
       event: {
         type: "session.next.reasoning.delta",
-        properties: { sessionID: "opencode-session", delta: "secret-hidden-reasoning" },
+        properties: { sessionID: "opencode-reasoning-session", delta: "secret-hidden-reasoning" },
+      },
+    });
+    await hooks.event({
+      event: {
+        type: "session.next.reasoning.ended",
+        properties: {
+          sessionID: "opencode-reasoning-session",
+          summary: "Stable reasoning checkpoint",
+        },
+      },
+    });
+    await hooks.event({
+      event: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "reasoning-growing",
+            messageID: "reasoning-message",
+            sessionID: "opencode-reasoning-session",
+            type: "reasoning",
+            text: "Transient growing reasoning",
+          },
+        },
+      },
+    });
+    await hooks.event({
+      event: {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "reasoning-finished",
+            messageID: "reasoning-message",
+            sessionID: "opencode-reasoning-session",
+            type: "reasoning",
+            text: "Stable v1 reasoning checkpoint",
+            time: { end: 1 },
+          },
+        },
+      },
+    });
+    await hooks.event({
+      event: {
+        type: "todo.updated",
+        properties: {
+          sessionID: "opencode-plan-session",
+          todos: [{ content: "Stable plan checkpoint" }],
+        },
       },
     });
     await hooks.event({
@@ -754,6 +801,20 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       payload.type === "session.next.prompt.admitted"
       && /^[0-9a-f]{64}$/.test(payload.turn_id)
       && /^[0-9a-f]{64}$/.test(payload.eventID)
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "session.next.reasoning.ended"
+      && payload.properties?.activity_content === "Stable reasoning checkpoint"
+    )));
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "session.next.reasoning.ended"
+      && payload.properties?.activity_content === "Stable v1 reasoning checkpoint"
+    )));
+    assert.equal(opencodePayloads.some((payload) => (
+      payload.properties?.activity_content === "Transient growing reasoning"
+    )), false);
+    assert.ok(opencodePayloads.some((payload) => (
+      payload.type === "session.plan.updated"
     )));
     assert.ok(opencodePayloads.some((payload) => (
       payload.type === "permission.v2.replied"

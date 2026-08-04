@@ -4,12 +4,149 @@
   "style": "schema fixture",
   "quality": "standard",
   "states": [
-    { "name": "idle", "motion": "Idle.", "frame_durations_ms": [100, 100], "playback": { "mode": "loop", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "start", "motion": "Start.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "tool", "motion": "Tool.", "frame_durations_ms": [100, 100], "playback": { "mode": "burst_then_settle", "entry_repeat_count": 1, "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "waiting", "motion": "Waiting.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "review", "motion": "Review.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "done", "motion": "Done.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 },
-    { "name": "failed", "motion": "Failed.", "frame_durations_ms": [100, 100], "playback": { "mode": "once_hold", "settle_frame_index": 1 }, "reduced_motion_frame_index": 0 }
+    {
+      "name": "idle",
+      "motion": "Idle.",
+      "frame_durations_ms": [
+        300,
+        260,
+        300,
+        640
+      ],
+      "playback": {
+        "mode": "periodic",
+        "cooldown_ms": [
+          2500,
+          5000
+        ]
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "thinking",
+      "motion": "Start.",
+      "frame_durations_ms": [
+        120,
+        140,
+        160,
+        180
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "tool",
+      "motion": "Tool.",
+      "frame_durations_ms": [
+        150,
+        150,
+        170,
+        330
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "waiting",
+      "motion": "Waiting.",
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        170,
+        230
+      ],
+      "playback": {
+        "mode": "burst_then_settle",
+        "entry_repeat_count": 2,
+        "settle_frame_index": 5
+      },
+      "reduced_motion_frame_index": 4
+    },
+    {
+      "name": "done",
+      "motion": "Done.",
+      "frame_durations_ms": [
+        120,
+        140,
+        160,
+        230
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "failed",
+      "motion": "Failed.",
+      "frame_durations_ms": [
+        150,
+        170,
+        190,
+        290
+      ],
+      "playback": {
+        "mode": "burst_then_settle",
+        "entry_repeat_count": 3,
+        "settle_frame_index": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "acknowledge",
+      "motion": "acknowledge fixture motion.",
+      "frame_durations_ms": [
+        180,
+        140,
+        180,
+        300
+      ],
+      "playback": {
+        "mode": "once_then_return"
+      },
+      "reduced_motion_frame_index": 1
+    },
+    {
+      "name": "drag_left",
+      "motion": "drag_left fixture motion.",
+      "frame_durations_ms": [
+        100,
+        90,
+        100,
+        110,
+        100,
+        200
+      ],
+      "playback": {
+        "mode": "loop",
+        "settle_frame_index": 1
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "drag_right",
+      "motion": "drag_right fixture motion.",
+      "frame_durations_ms": [
+        100,
+        90,
+        100,
+        110,
+        100,
+        200
+      ],
+      "playback": {
+        "mode": "loop"
+      },
+      "reduced_motion_frame_index": 2
+    }
   ]
 }

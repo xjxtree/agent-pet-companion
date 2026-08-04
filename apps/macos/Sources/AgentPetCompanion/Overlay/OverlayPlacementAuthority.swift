@@ -22,6 +22,30 @@ enum OverlayPlacementCommitReconciliation: Equatable, Sendable {
     case stale
 }
 
+enum OverlayPlacementSaveResumeReason: Equatable, Sendable {
+    case bootstrap
+    case reconnect
+    case newLocalCommit
+    case explicitRetry
+    case ordinarySnapshot
+
+    var mayResumeExhaustedGeneration: Bool {
+        switch self {
+        case .bootstrap, .reconnect, .newLocalCommit, .explicitRetry:
+            true
+        case .ordinarySnapshot:
+            false
+        }
+    }
+}
+
+enum OverlayPlacementSaveRunOutcome: Equatable, Sendable {
+    case converged
+    case superseded
+    case exhausted(generation: UInt64)
+    case cancelled
+}
+
 /// Owns the placement that is actually presented on screen. Remote snapshots,
 /// save acknowledgements, and local interactions must all pass through this
 /// value before they can change the overlay's position.
@@ -41,7 +65,8 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         pending: OverlayPlacementCommit? = nil,
         bootstrapCompleted: Bool = false
     ) {
-        self.presented = presented
+        self.presented = OverlayPlacementCanonicalization.placement(presented)
+            ?? OverlayPlacement()
         self.localRevision = localRevision
         self.appliedRemoteRevision = appliedRemoteRevision
         self.pending = pending
@@ -67,6 +92,9 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         remoteRevision: UInt64 = 0
     ) -> OverlayPlacement {
         guard !bootstrapCompleted else { return presented }
+        guard let placement = OverlayPlacementCanonicalization.placement(
+            placement
+        ) else { return presented }
         presented = placement
         appliedRemoteRevision = remoteRevision
         bootstrapCompleted = true
@@ -78,6 +106,8 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         _ placement: OverlayPlacement,
         interactionID: UUID
     ) -> OverlayPlacementCommit {
+        let placement = OverlayPlacementCanonicalization.placement(placement)
+            ?? presented
         localRevision &+= 1
         presented = placement
         let commit = OverlayPlacementCommit(
@@ -92,26 +122,17 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
     }
 
     /// Reconciles a successful CAS (or an idempotent conflict whose actual
-    /// placement is the attempted placement). If a newer local commit was made
-    /// while this request was in flight, that latest value is rebased instead
-    /// of allowing the old response to clear or revive anything.
+    /// placement is the attempted placement). A response from any superseded
+    /// local generation is discarded without changing revision knowledge.
     @discardableResult
     mutating func acknowledge(
         _ commit: OverlayPlacementCommit,
         remoteRevision: UInt64
     ) -> OverlayPlacementCommitReconciliation {
+        guard pending == commit else { return .stale }
         appliedRemoteRevision = max(appliedRemoteRevision, remoteRevision)
-        if pending == commit {
-            pending = nil
-            return .acknowledged
-        }
-        guard let latest = pending,
-              latest.localRevision > commit.localRevision else {
-            return .stale
-        }
-        let rebased = rebase(latest, remoteRevision: appliedRemoteRevision)
-        pending = rebased
-        return .retry(rebased)
+        pending = nil
+        return .acknowledged
     }
 
     /// Reconciles an ordinary CAS conflict. The caller handles explicit remote
@@ -123,15 +144,15 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         actualPlacement: OverlayPlacement,
         remoteRevision: UInt64
     ) -> OverlayPlacementCommitReconciliation {
-        if actualPlacement == commit.placement {
+        guard pending == commit else { return .stale }
+        if OverlayPlacementCanonicalization.areEquivalent(
+            actualPlacement,
+            commit.placement
+        ) {
             return acknowledge(commit, remoteRevision: remoteRevision)
         }
         appliedRemoteRevision = max(appliedRemoteRevision, remoteRevision)
-        guard let latest = pending,
-              latest.localRevision >= commit.localRevision else {
-            return .stale
-        }
-        let rebased = rebase(latest, remoteRevision: appliedRemoteRevision)
+        let rebased = rebase(commit, remoteRevision: appliedRemoteRevision)
         pending = rebased
         return .retry(rebased)
     }
@@ -145,6 +166,9 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         interactionID: UUID
     ) -> OverlayPlacementCommit? {
         guard remoteRevision >= appliedRemoteRevision else { return nil }
+        guard let placement = OverlayPlacementCanonicalization.placement(
+            placement
+        ) else { return nil }
         presented = placement
         appliedRemoteRevision = remoteRevision
         pending = nil
@@ -171,6 +195,9 @@ struct OverlayPlacementAuthority: Equatable, Sendable {
         ) else {
             return presented
         }
+        guard let placement = OverlayPlacementCanonicalization.placement(
+            placement
+        ) else { return presented }
         presented = placement
         appliedRemoteRevision = remoteRevision
         bootstrapCompleted = true

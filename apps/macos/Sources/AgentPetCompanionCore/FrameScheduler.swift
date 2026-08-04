@@ -66,7 +66,7 @@ public struct FrameTimeline: Equatable, Sendable {
         switch playback.mode {
         case .loop:
             return authoredFrame(at: elapsed % totalDurationMS)
-        case .onceHold:
+        case .onceThenReturn:
             guard elapsed < totalDurationMS else {
                 return settleFrameIndex ?? frameCount - 1
             }
@@ -81,7 +81,7 @@ public struct FrameTimeline: Equatable, Sendable {
                 return settleFrameIndex ?? frameCount - 1
             }
             return authoredFrame(at: phase)
-        case .burstThenSettle:
+        case .burstThenSettle, .burstThenIdle:
             let repeats = max(1, playback.entryRepeatCount ?? 1)
             let activeDuration = totalDurationMS * repeats
             guard elapsed < activeDuration else {
@@ -96,9 +96,9 @@ public struct FrameTimeline: Equatable, Sendable {
         switch playback.mode {
         case .loop, .periodic:
             return false
-        case .onceHold:
+        case .onceThenReturn:
             return elapsed >= totalDurationMS
-        case .burstThenSettle:
+        case .burstThenSettle, .burstThenIdle:
             return elapsed >= totalDurationMS * max(1, playback.entryRepeatCount ?? 1)
         }
     }

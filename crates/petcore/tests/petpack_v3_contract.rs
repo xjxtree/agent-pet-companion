@@ -15,27 +15,29 @@ fn rewrite_manifest(
 }
 
 #[test]
-fn v1_packages_are_rejected_instead_of_silently_migrated() {
-    let temp = tempfile::tempdir().unwrap();
-    write_sample_petpack_dir(
-        temp.path(),
-        QualityLevel::Standard,
-        "V1 rejection",
-        "contract test",
-    )
-    .unwrap();
-    rewrite_manifest(temp.path(), |manifest| {
-        manifest.insert("schema_version".to_string(), json!("apc.petpack.v1"));
-    });
+fn v1_and_v2_packages_are_rejected_instead_of_silently_migrated() {
+    for version in ["apc.petpack.v1", "apc.petpack.v2"] {
+        let temp = tempfile::tempdir().unwrap();
+        write_sample_petpack_dir(
+            temp.path(),
+            QualityLevel::Standard,
+            "Legacy rejection",
+            "contract test",
+        )
+        .unwrap();
+        rewrite_manifest(temp.path(), |manifest| {
+            manifest.insert("schema_version".to_string(), json!(version));
+        });
 
-    let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
-    assert!(error.contains("V1 is no longer supported"), "{error}");
-    assert!(error.contains("recreate"), "{error}");
+        let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("V1/V2 is no longer supported"), "{error}");
+        assert!(error.contains("V3 maker"), "{error}");
+    }
 }
 
 #[test]
-fn removed_quality_tiers_are_rejected() {
-    for removed_quality in ["high", "original", "ultra"] {
+fn unsupported_quality_tiers_are_rejected() {
+    for removed_quality in ["original", "ultra"] {
         let temp = tempfile::tempdir().unwrap();
         write_sample_petpack_dir(
             temp.path(),
@@ -51,6 +53,24 @@ fn removed_quality_tiers_are_rejected() {
         let error = validate_petpack_path(temp.path()).unwrap_err().to_string();
         assert!(error.contains(removed_quality), "{error}");
     }
+}
+
+#[test]
+fn high_quality_uses_native_576_by_624_frames() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = write_sample_petpack_dir(
+        temp.path(),
+        QualityLevel::High,
+        "High resolution",
+        "contract test",
+    )
+    .unwrap();
+
+    assert_eq!(manifest.render_size.width, 576);
+    assert_eq!(manifest.render_size.height, 624);
+    let validation = validate_petpack_path(temp.path()).unwrap();
+    assert_eq!(validation.manifest.quality, QualityLevel::High);
+    assert_eq!(validation.manifest.render_size, manifest.render_size);
 }
 
 #[test]

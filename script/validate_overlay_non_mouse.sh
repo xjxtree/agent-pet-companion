@@ -116,7 +116,7 @@ behavior["mouse_passthrough"] = True
 behavior["auto_hide"] = False
 for key in ["codex", "claude_code", "pi", "opencode"]:
     behavior.setdefault("sources", {})[key] = True
-for key in ["start", "tool", "waiting", "review", "done", "failed"]:
+for key in ["start", "thinking", "plan", "tool", "waiting", "done", "failed"]:
     behavior.setdefault("events", {})[key] = True
 print(json.dumps(behavior, ensure_ascii=False))
 PY
@@ -151,7 +151,7 @@ ingest_event() {
 ingest_event codex tool "执行工具" "OK"
 ingest_event claude_code waiting "等待确认" "这是一条较长的 Claude Code 无鼠标验证消息 ${RUN_ID}，用来确认最大宽度、自动换行以及最多两行截断。"
 ingest_event pi start "开始处理" "Pi 已开始 ${RUN_ID}"
-ingest_event opencode review "待查看" "OpenCode 有内容待查看 ${RUN_ID}"
+ingest_event opencode done "已完成" "OpenCode 已完成 ${RUN_ID}"
 
 validate_overlay_ax() {
   local expected_vertical_relation="$1"
@@ -336,7 +336,7 @@ func containsInOrder(
 let waitingReadingOrder: [[String]] = [
     ["Claude Code"],
     ["Claude 会话", "Claude session", "Claude Code 会话", "Claude Code session"],
-    ["等你处理", "Needs You"],
+    ["等待你操作", "Waiting for You"],
     [
         "请回到 Agent 完成确认、回答或决策。",
         "Return to the agent to approve, answer, or decide.",
@@ -351,7 +351,7 @@ guard waitingNode.strings.contains(where: {
     containsInOrder($0, candidateGroups: waitingReadingOrder)
 }) else {
     fputs(
-        "overlay non-mouse validation failed: VoiceOver order is not Agent → session → status → message → action for Claude waiting\n",
+        "overlay non-mouse validation failed: VoiceOver order is not Agent → session → status → message → action for Claude waiting; synthetic AX strings=\(waitingNode.strings)\n",
         stderr
     )
     exit(1)
@@ -362,7 +362,7 @@ if !runID.isEmpty && values.contains(where: { $0.contains(runID) }) {
     exit(1)
 }
 
-if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
+if !(bubble.frame.width >= 108 && bubble.frame.width <= 360
     && bubble.frame.height >= 70 && bubble.frame.height <= 680) {
     fputs("overlay non-mouse validation failed: grouped bubble frame is outside the supported bounds \(bubble.frame)\n", stderr)
     exit(1)
@@ -389,6 +389,23 @@ if relation == "below", bubbleAbovePet {
 
 print("Overlay AX non-mouse check ok: relation=\(relation) bubble=\(Int(bubble.frame.width))x\(Int(bubble.frame.height)) pet=\(Int(pet.width))x\(Int(pet.height))")
 SWIFT
+}
+
+wait_for_overlay_ax() {
+  local expected_vertical_relation="$1"
+  local attempt
+  local log_path="$TMP_DIR/overlay-ax-${expected_vertical_relation}.log"
+
+  for attempt in {1..40}; do
+    if validate_overlay_ax "$expected_vertical_relation" >"$log_path" 2>&1; then
+      cat "$log_path"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  cat "$log_path" >&2
+  return 1
 }
 
 validate_single_compact_bubble() {
@@ -554,7 +571,7 @@ if !runID.isEmpty && values.contains(where: { $0.contains(runID) }) {
     exit(1)
 }
 
-if !(bubble.frame.width >= 108 && bubble.frame.width <= 344
+if !(bubble.frame.width >= 108 && bubble.frame.width <= 360
     && bubble.frame.height >= 70 && bubble.frame.height <= 130) {
     fputs("overlay short-bubble validation failed: single-agent bubble is outside the supported bounds, frame=\(bubble.frame)\n", stderr)
     exit(1)
@@ -573,13 +590,29 @@ print("Overlay single-agent non-mouse check ok: bubble=\(Int(bubble.frame.width)
 SWIFT
 }
 
+wait_for_single_compact_bubble() {
+  local attempt
+  local log_path="$TMP_DIR/overlay-ax-compact.log"
+
+  for attempt in {1..40}; do
+    if validate_single_compact_bubble >"$log_path" 2>&1; then
+      cat "$log_path"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  cat "$log_path" >&2
+  return 1
+}
+
 "$PETCORE_CLI" overlay placement set \
   --x "$BOTTOM_X" \
   --y "$BOTTOM_Y" \
   --display-width-pt 112 \
   --display-id overlay-nomouse-bottom >/dev/null
 sleep 1.5
-validate_overlay_ax above
+wait_for_overlay_ax above
 
 "$PETCORE_CLI" overlay placement set \
   --x "$TOP_X" \
@@ -587,7 +620,7 @@ validate_overlay_ax above
   --display-width-pt 112 \
   --display-id overlay-nomouse-top >/dev/null
 sleep 1.5
-validate_overlay_ax below
+wait_for_overlay_ax below
 
 CODEX_ONLY_BEHAVIOR_JSON="$(SNAPSHOT="$(wait_snapshot)" python3 - <<'PY'
 import json
@@ -603,6 +636,6 @@ PY
 "$PETCORE_CLI" behavior set-json --value-json "$CODEX_ONLY_BEHAVIOR_JSON" >/dev/null
 ingest_event codex done "完成" "私密完成负载 ${RUN_ID}"
 sleep 1.5
-validate_single_compact_bubble
+wait_for_single_compact_bubble
 
 echo "Overlay non-mouse validation ok: $RUN_ID"

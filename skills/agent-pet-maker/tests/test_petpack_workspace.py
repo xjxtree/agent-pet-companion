@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -88,7 +89,7 @@ calls_path.write_text(json.dumps(calls))
 
 pet_id = os.environ.get("FAKE_MANIFEST_ID", "pet_test")
 manifest = {
-    "schema_version": "apc.petpack.v2",
+    "schema_version": "apc.petpack.v3",
     "id": pet_id,
     "name": "Test Pet",
     "style": "storybook",
@@ -97,7 +98,7 @@ manifest = {
 }
 
 if args[:2] == ["petpack", "validate"]:
-    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 32, "warnings": []}))
+    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 42, "warnings": []}))
 elif args[:2] == ["pet", "list"]:
     print(json.dumps(state["pets"]))
 elif args[:2] == ["petpack", "import"]:
@@ -144,6 +145,25 @@ else:
 
 
 class SkillDirectionContractTests(unittest.TestCase):
+    def test_builtin_imagegen_limit_is_separate_from_portable_high_support(self) -> None:
+        combined = " ".join("\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "SKILL.md",
+                ROOT / "references" / "create-modify.md",
+                ROOT / "references" / "visual-production-and-native-resolution.md",
+            )
+        ).split())
+        for required in (
+            "`high` 576×624",
+            "ChatGPT/Codex built-in `imagegen`",
+            "do not attempt `high`",
+            "sufficiently large user artwork",
+            "do not need to equal the target dimensions exactly",
+            "exact-tier runtime frames after any downscale",
+        ):
+            self.assertIn(required, combined)
+
     def test_portable_skill_requires_runtime_readable_motion_without_fixed_layers(
         self,
     ) -> None:
@@ -171,7 +191,7 @@ class SkillDirectionContractTests(unittest.TestCase):
             for path in (
                 ROOT / "SKILL.md",
                 ROOT / "references" / "create-modify.md",
-                ROOT / "references" / "petpack-v2.md",
+                ROOT / "references" / "petpack-v3.md",
             )
         )
         for scenario_specific in (
@@ -862,47 +882,39 @@ class MetadataContractTests(unittest.TestCase):
 
 
 class TimingContractTests(unittest.TestCase):
-    def test_default_authored_timing_matches_the_shared_seven_state_contract(self) -> None:
+    def test_default_authored_timing_matches_the_shared_nine_action_contract(self) -> None:
         self.assertEqual(
             workspace_helper.DEFAULT_STATE_TIMINGS,
             {
                 "idle": {
-                    "frame_durations_ms": [180, 160, 180, 380],
+                    "frame_durations_ms": [300, 260, 300, 640],
                     "playback": {
                         "mode": "periodic",
-                        "cooldown_ms": [4000, 8000],
+                        "cooldown_ms": [2500, 5000],
                     },
                     "reduced_motion_frame_index": 2,
                 },
-                "start": {
+                "thinking": {
                     "frame_durations_ms": [120, 140, 160, 180],
                     "playback": {
-                        "mode": "once_hold",
-                        "settle_frame_index": 3,
+                        "mode": "burst_then_idle",
+                        "entry_repeat_count": 3,
                     },
                     "reduced_motion_frame_index": 2,
                 },
                 "tool": {
                     "frame_durations_ms": [150, 150, 170, 330],
                     "playback": {
-                        "mode": "burst_then_settle",
-                        "entry_repeat_count": 1,
-                        "settle_frame_index": 3,
+                        "mode": "burst_then_idle",
+                        "entry_repeat_count": 3,
                     },
                     "reduced_motion_frame_index": 2,
                 },
                 "waiting": {
                     "frame_durations_ms": [150, 150, 150, 150, 170, 230],
                     "playback": {
-                        "mode": "once_hold",
-                        "settle_frame_index": 5,
-                    },
-                    "reduced_motion_frame_index": 4,
-                },
-                "review": {
-                    "frame_durations_ms": [140, 140, 150, 150, 180, 240],
-                    "playback": {
-                        "mode": "once_hold",
+                        "mode": "burst_then_settle",
+                        "entry_repeat_count": 2,
                         "settle_frame_index": 5,
                     },
                     "reduced_motion_frame_index": 4,
@@ -910,28 +922,50 @@ class TimingContractTests(unittest.TestCase):
                 "done": {
                     "frame_durations_ms": [120, 140, 160, 230],
                     "playback": {
-                        "mode": "once_hold",
-                        "settle_frame_index": 3,
+                        "mode": "burst_then_idle",
+                        "entry_repeat_count": 3,
                     },
                     "reduced_motion_frame_index": 2,
                 },
                 "failed": {
                     "frame_durations_ms": [150, 170, 190, 290],
                     "playback": {
-                        "mode": "once_hold",
+                        "mode": "burst_then_settle",
+                        "entry_repeat_count": 3,
                         "settle_frame_index": 3,
                     },
+                    "reduced_motion_frame_index": 2,
+                },
+                "acknowledge": {
+                    "frame_durations_ms": [180, 140, 180, 300],
+                    "playback": {"mode": "once_then_return"},
+                    "reduced_motion_frame_index": 1,
+                },
+                "drag_left": {
+                    "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+                    "playback": {"mode": "loop"},
+                    "reduced_motion_frame_index": 2,
+                },
+                "drag_right": {
+                    "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+                    "playback": {"mode": "loop"},
                     "reduced_motion_frame_index": 2,
                 },
             },
         )
 
-    def test_default_authored_timing_contains_32_frames_without_sampling(self) -> None:
+    def test_default_authored_timing_contains_42_frames_without_sampling(self) -> None:
         timing = workspace_helper.manifest_timing_contract(default_manifest())
-        self.assertEqual(sum(timing["state_frame_counts"].values()), 32)
+        self.assertEqual(sum(timing["state_frame_counts"].values()), 42)
         self.assertEqual(
             {entry["playback"]["mode"] for entry in timing["states"]},
-            {"once_hold", "periodic", "burst_then_settle"},
+            {
+                "loop",
+                "periodic",
+                "burst_then_settle",
+                "burst_then_idle",
+                "once_then_return",
+            },
         )
         self.assertTrue(
             any(
@@ -940,14 +974,8 @@ class TimingContractTests(unittest.TestCase):
             )
         )
 
-        loop_manifest = default_manifest()
-        loop_manifest["states"][-1]["playback"] = {"mode": "loop"}
-        loop_timing = workspace_helper.manifest_timing_contract(loop_manifest)
         self.assertEqual(
-            {
-                entry["playback"]["mode"]
-                for entry in loop_timing["states"]
-            },
+            {entry["playback"]["mode"] for entry in timing["states"]},
             workspace_helper.PLAYBACK_MODES,
         )
 
@@ -955,7 +983,7 @@ class TimingContractTests(unittest.TestCase):
         timing = workspace_helper.manifest_timing_contract(default_manifest())
         workspace_helper.validate_exact_state_counts(DEFAULT_FRAME_COUNTS, timing)
         invalid = dict(DEFAULT_FRAME_COUNTS)
-        invalid["start"] -= 1
+        invalid["thinking"] -= 1
         with self.assertRaises(workspace_helper.MakerError) as raised:
             workspace_helper.validate_exact_state_counts(invalid, timing)
         self.assertEqual(raised.exception.code, "invalid_assets")
@@ -975,12 +1003,13 @@ class TimingContractTests(unittest.TestCase):
         with self.assertRaises(workspace_helper.MakerError):
             workspace_helper.manifest_timing_contract(manifest)
 
-    def test_two_quality_tiers_have_fixed_12_by_13_sizes(self) -> None:
+    def test_three_quality_tiers_have_fixed_12_by_13_sizes(self) -> None:
         self.assertEqual(
             workspace_helper.QUALITY_RENDER_SIZES,
             {
                 "low": {"width": 192, "height": 208},
                 "standard": {"width": 384, "height": 416},
+                "high": {"width": 576, "height": 624},
             },
         )
         for quality in workspace_helper.QUALITY_RENDER_SIZES:
@@ -988,16 +1017,24 @@ class TimingContractTests(unittest.TestCase):
                 default_manifest(quality=quality)
             )
 
-    def test_retired_high_quality_is_rejected_without_alias_or_shim(self) -> None:
+    def test_high_quality_uses_the_exact_runtime_576_by_624_contract(self) -> None:
+        manifest = default_manifest(quality="high")
+        workspace_helper.manifest_timing_contract(manifest)
+        self.assertEqual(
+            manifest["render_size"],
+            {"width": 576, "height": 624},
+        )
+
+    def test_unknown_quality_is_rejected_without_alias_or_shim(self) -> None:
         manifest = default_manifest()
-        manifest["quality"] = "high"
+        manifest["quality"] = "ultra"
         manifest["render_size"] = {"width": 576, "height": 624}
         with self.assertRaises(workspace_helper.MakerError) as raised:
             workspace_helper.manifest_timing_contract(manifest)
         self.assertEqual(raised.exception.code, "invalid_manifest")
         self.assertEqual(
             raised.exception.message,
-            "manifest.quality must be low or standard",
+            "manifest.quality must be low, standard, or high",
         )
 
     def test_frame_digests_follow_petcore_natural_filename_order(self) -> None:
@@ -1051,11 +1088,25 @@ class MotionQualityTests(unittest.TestCase):
                     "name": state,
                     "frames_dir": f"assets/frames/{state}",
                     "frame_durations_ms": durations,
-                    "playback": (
-                        {"mode": "once_hold", "settle_frame_index": 9}
-                        if state in {"start", "done"}
-                        else {"mode": "loop"}
-                    ),
+                    "playback": {
+                        "idle": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
+                        "thinking": {"mode": "burst_then_idle", "entry_repeat_count": 1},
+                        "tool": {"mode": "burst_then_idle", "entry_repeat_count": 1},
+                        "waiting": {
+                            "mode": "burst_then_settle",
+                            "entry_repeat_count": 1,
+                            "settle_frame_index": 9,
+                        },
+                        "done": {"mode": "burst_then_idle", "entry_repeat_count": 1},
+                        "failed": {
+                            "mode": "burst_then_settle",
+                            "entry_repeat_count": 1,
+                            "settle_frame_index": 9,
+                        },
+                        "acknowledge": {"mode": "once_then_return"},
+                        "drag_left": {"mode": "loop"},
+                        "drag_right": {"mode": "loop"},
+                    }[state],
                     "reduced_motion_frame_index": 5,
                 }
                 for state in workspace_helper.STATES
@@ -1069,7 +1120,7 @@ class MotionQualityTests(unittest.TestCase):
             for frame_index in range(10):
                 frame = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(frame)
-                offset = (frame_index if state == "start" else frame_index % 3) * 3
+                offset = (frame_index if state == "thinking" else frame_index % 3) * 3
                 draw.ellipse(
                     (48 + offset, 34, 136 + offset, 178),
                     fill=(40 + state_index * 10, 100, 160, 255),
@@ -1177,6 +1228,80 @@ class MotionQualityTests(unittest.TestCase):
             self.assertEqual(report["audited_states"], ["tool"])
             self.assertEqual(report["states"]["tool"]["frame_count"], 10)
 
+    def test_combined_motion_qa_writes_an_eight_to_twelve_second_presence_preview(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-presence-") as temporary:
+            workspace, _ = self.make_workspace(Path(temporary))
+            qa = workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=str(workspace),
+                    source=None,
+                    output_dir=None,
+                    state=None,
+                )
+            )
+            report_path = Path(qa["report_path"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            presence = report["presence_preview"]
+
+            self.assertGreaterEqual(
+                presence["duration_ms"],
+                workspace_helper.PRESENCE_PREVIEW_MIN_MS,
+            )
+            self.assertLessEqual(
+                presence["duration_ms"],
+                workspace_helper.PRESENCE_PREVIEW_MAX_MS,
+            )
+            self.assertGreaterEqual(presence["late_motion_boundary_ms"], 1_000)
+            self.assertGreaterEqual(presence["rest_phase_count"], 3)
+            self.assertEqual(len(presence["frame_set_digest"]), 64)
+            preview = report_path.parent / presence["path"]
+            self.assertEqual(Path(qa["presence_preview_path"]), preview)
+            with Image.open(preview) as decoded:
+                self.assertEqual(decoded.size, workspace_helper.MOTION_PREVIEW_SIZE)
+                self.assertGreater(decoded.n_frames, 2)
+
+    def test_presence_preview_rejects_under_one_second_semantic_activity_and_looping(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-presence-") as temporary:
+            workspace, source = self.make_workspace(Path(temporary))
+            manifest_path = source / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            thinking = next(
+                state for state in manifest["states"] if state["name"] == "thinking"
+            )
+            thinking["frame_durations_ms"] = [50] * 10
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                workspace_helper.MakerError,
+                "freezes in under a second",
+            ):
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=None,
+                    )
+                )
+
+            thinking["frame_durations_ms"] = [100] * 10
+            thinking["playback"] = {"mode": "loop"}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(
+                workspace_helper.MakerError,
+                "must be burst_then_idle",
+            ):
+                workspace_helper.motion_qa(
+                    workspace_helper.argparse.Namespace(
+                        workspace=str(workspace),
+                        source=None,
+                        output_dir=None,
+                        state=None,
+                    )
+                )
+
     def test_motion_qa_rejects_v1_instead_of_migrating_it(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
@@ -1202,7 +1327,7 @@ class MotionQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
-            state_dir = source / "assets" / "frames" / "start"
+            state_dir = source / "assets" / "frames" / "thinking"
             first = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
             last = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
             ImageDraw.Draw(first).ellipse(
@@ -1226,7 +1351,7 @@ class MotionQualityTests(unittest.TestCase):
                         workspace=str(workspace),
                         source=None,
                         output_dir=None,
-                        state=["start"],
+                        state=["thinking"],
                     )
                 )
 
@@ -1241,7 +1366,7 @@ class MotionQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
-            state_dir = source / "assets" / "frames" / "start"
+            state_dir = source / "assets" / "frames" / "thinking"
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
@@ -1263,12 +1388,12 @@ class MotionQualityTests(unittest.TestCase):
                     workspace=str(workspace),
                     source=None,
                     output_dir=None,
-                    state=["start"],
+                    state=["thinking"],
                 )
             )
             report = json.loads(Path(result["report_path"]).read_text())
             warning_codes = {
-                warning["code"] for warning in report["states"]["start"]["warnings"]
+                warning["code"] for warning in report["states"]["thinking"]["warnings"]
             }
             self.assertIn("large_silhouette_or_scale_change", warning_codes)
             self.assertIn("large_subject_displacement", warning_codes)
@@ -1278,7 +1403,7 @@ class MotionQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
-            state_dir = source / "assets" / "frames" / "start"
+            state_dir = source / "assets" / "frames" / "thinking"
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
@@ -1301,7 +1426,7 @@ class MotionQualityTests(unittest.TestCase):
                         workspace=str(workspace),
                         source=None,
                         output_dir=None,
-                        state=["start"],
+                        state=["thinking"],
                     )
                 )
 
@@ -1317,6 +1442,13 @@ class MotionQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
+            manifest_path = source / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            waiting = next(
+                state for state in manifest["states"] if state["name"] == "waiting"
+            )
+            waiting["playback"]["entry_repeat_count"] = 2
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             state_dir = source / "assets" / "frames" / "waiting"
             for path in state_dir.glob("*.png"):
                 path.unlink()
@@ -1374,14 +1506,14 @@ class MotionQualityTests(unittest.TestCase):
             _, source = self.make_workspace(Path(temporary))
             moving_mask = Image.new("L", (192, 208), 0)
             ImageDraw.Draw(moving_mask).rectangle((0, 0, 191, 103), fill=255)
-            mask_path = Path(temporary) / "start-moving-mask.png"
+            mask_path = Path(temporary) / "thinking-moving-mask.png"
             moving_mask.save(mask_path)
-            output_dir = Path(temporary) / "locked-start"
+            output_dir = Path(temporary) / "locked-thinking"
 
             result = workspace_helper.motion_lock(
                 workspace_helper.argparse.Namespace(
                     source=str(source),
-                    state="start",
+                    state="thinking",
                     moving_mask=str(mask_path),
                     output_dir=str(output_dir),
                     report=None,
@@ -1392,9 +1524,9 @@ class MotionQualityTests(unittest.TestCase):
 
             self.assertEqual(result["frame_count"], 10)
             with Image.open(
-                source / "assets" / "frames" / "start" / "frame-000.png"
+                source / "assets" / "frames" / "thinking" / "frame-000.png"
             ) as reference, Image.open(
-                source / "assets" / "frames" / "start" / "frame-005.png"
+                source / "assets" / "frames" / "thinking" / "frame-005.png"
             ) as source_frame, Image.open(
                 output_dir / "frame-005.png"
             ) as locked:
@@ -1423,7 +1555,7 @@ class MotionQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             _, source = self.make_workspace(Path(temporary))
-            state_dir = source / "assets" / "frames" / "start"
+            state_dir = source / "assets" / "frames" / "thinking"
             for path in state_dir.glob("*.png"):
                 path.unlink()
             for index in range(10):
@@ -1453,7 +1585,7 @@ class MotionQualityTests(unittest.TestCase):
             workspace_helper.motion_lock(
                 workspace_helper.argparse.Namespace(
                     source=str(source),
-                    state="start",
+                    state="thinking",
                     moving_mask=str(mask_path),
                     output_dir=str(output_dir),
                     report=None,
@@ -1467,7 +1599,7 @@ class MotionQualityTests(unittest.TestCase):
                 for path in sorted(output_dir.glob("*.png"))
             ]
             metrics, _ = workspace_helper.motion_metrics(frames, False)
-            workspace_helper.reject_objective_motion_integrity_failures("start", metrics)
+            workspace_helper.reject_objective_motion_integrity_failures("thinking", metrics)
             self.assertLess(metrics["maximum_bbox_width_step"], 0.12)
             self.assertLess(metrics["maximum_bbox_height_step"], 0.12)
 
@@ -1650,7 +1782,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     build_destinations.append(staged)
                     staged.write_bytes(b"partial-new-package")
                     raise workspace_helper.MakerError("build_failed", "simulated failure")
-                return {"ok": True, "frame_count": 32, "warnings": []}
+                return {"ok": True, "frame_count": 42, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1681,7 +1813,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     raise workspace_helper.MakerError(
                         "validation_failed", "simulated staged validation failure"
                     )
-                return {"ok": True, "frame_count": 32, "warnings": []}
+                return {"ok": True, "frame_count": 42, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1717,7 +1849,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                                 encoding="utf-8"
                             )
                         )
-                        self.assertEqual(validation["frame_count"], 32)
+                        self.assertEqual(validation["frame_count"], 42)
                         self.assertEqual(
                             validation["states"],
                             default_state_entries(),
@@ -1730,7 +1862,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                         self.assertEqual(candidate.read_bytes(), b"validated-new-package")
                         self.assertEqual(output.read_bytes(), b"known-good-old-package")
                         calls.append(("validate-staged", candidate))
-                return {"ok": True, "frame_count": 32, "warnings": []}
+                return {"ok": True, "frame_count": 42, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1741,6 +1873,43 @@ class FinalizeSafetyTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual(output.read_bytes(), b"validated-new-package")
             self.assertEqual([name for name, _ in calls], ["build", "validate-staged"])
+
+    def test_atomic_publish_uses_a_normal_leaf_inside_a_private_stage(self) -> None:
+        for replace in (False, True):
+            with self.subTest(replace=replace), tempfile.TemporaryDirectory(
+                prefix="agent-pet-maker-publish-"
+            ) as temporary:
+                root = Path(temporary)
+                source = root / "petpack-source"
+                source.mkdir()
+                output = root / "pet.petpack"
+                if replace:
+                    output.write_bytes(b"known-good-old-package")
+
+                def successful_cli(
+                    _cli: Path, arguments: list[str], _code: str
+                ) -> dict:
+                    candidate = Path(arguments[-1])
+                    if arguments[:2] == ["petpack", "build"]:
+                        self.assertEqual(candidate.name, "package.petpack")
+                        self.assertTrue(
+                            candidate.parent.name.startswith(".apc-petpack-publish-")
+                        )
+                        self.assertFalse(candidate.name.startswith("."))
+                        candidate.write_bytes(b"validated-new-package")
+                    elif arguments[:2] == ["petpack", "validate"]:
+                        self.assertEqual(candidate.read_bytes(), b"validated-new-package")
+                    return {"ok": True, "frame_count": 42, "warnings": []}
+
+                with mock.patch.object(
+                    workspace_helper, "run_cli", side_effect=successful_cli
+                ):
+                    workspace_helper.build_petpack_atomically(
+                        Path("/fake/petcore-cli"), source, output, replace
+                    )
+
+                self.assertEqual(output.read_bytes(), b"validated-new-package")
+                self.assertEqual(list(root.glob(".apc-petpack-publish-*")), [])
 
     @unittest.skipUnless(sys.platform == "darwin", "macOS file flags only")
     def test_successful_publish_clears_the_finder_hidden_flag(self) -> None:
@@ -1758,7 +1927,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                         staged = Path(arguments[-1])
                         staged.write_bytes(b"validated-new-package")
                         os.chflags(staged, stat.UF_HIDDEN)
-                    return {"ok": True, "frame_count": 32, "warnings": []}
+                    return {"ok": True, "frame_count": 42, "warnings": []}
 
                 patches = self.finalize_patches()
                 with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1767,6 +1936,48 @@ class FinalizeSafetyTests(unittest.TestCase):
                     workspace_helper.finalize(args)
 
                 self.assertEqual(os.stat(output).st_flags & stat.UF_HIDDEN, 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS file flags only")
+    def test_successful_publish_clears_a_delayed_finder_hidden_flag(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="agent-pet-maker-finalize-"
+        ) as temporary:
+            root = Path(temporary)
+            source = root / "petpack-source"
+            source.mkdir()
+            output = root / "pet.petpack"
+
+            def successful_cli(
+                _cli: Path, arguments: list[str], _code: str
+            ) -> dict:
+                candidate = Path(arguments[-1])
+                if arguments[:2] == ["petpack", "build"]:
+                    candidate.write_bytes(b"validated-new-package")
+                return {"ok": True, "frame_count": 42, "warnings": []}
+
+            def apply_delayed_hidden_flag() -> None:
+                while not output.exists():
+                    workspace_helper.time.sleep(0.005)
+                workspace_helper.time.sleep(0.03)
+                flags = os.stat(output).st_flags
+                os.chflags(output, flags | stat.UF_HIDDEN)
+
+            delayed_marker = threading.Thread(target=apply_delayed_hidden_flag)
+            delayed_marker.start()
+            with mock.patch.object(
+                workspace_helper, "run_cli", side_effect=successful_cli
+            ), mock.patch.object(
+                workspace_helper, "FINDER_VISIBILITY_SETTLE_SECONDS", 0.2
+            ), mock.patch.object(
+                workspace_helper, "FINDER_VISIBILITY_POLL_SECONDS", 0.01
+            ):
+                workspace_helper.build_petpack_atomically(
+                    Path("/fake/petcore-cli"), source, output, False
+                )
+            delayed_marker.join(timeout=1)
+
+            self.assertFalse(delayed_marker.is_alive())
+            self.assertEqual(os.stat(output).st_flags & stat.UF_HIDDEN, 0)
 
 
 class PrivacyHelpersTests(unittest.TestCase):
@@ -1906,7 +2117,7 @@ class PrivacyHelpersTests(unittest.TestCase):
 
     def test_path_like_prose_and_non_private_words_remain_allowed(self) -> None:
         value = {
-            "note": "Animate idle/start/tool with variable holds; use / as a separator and (https-inspired) highlights.",
+            "note": "Animate idle/thinking/tool with variable holds; use / as a separator and (https-inspired) highlights.",
             "reference_note": "reference(images/moon.png) and assets/frames/idle/frame_000.png",
             "authentic_style": "storybook",
             "commanding_motion": "confident pose",

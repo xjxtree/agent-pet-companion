@@ -1,41 +1,57 @@
 use petcore_types::{AgentEvent, AgentSource};
+use serde_json::Value;
 
 pub const CODEX_INTERNAL_SUGGESTIONS_REASON: &str = "codex_internal_suggestions";
 
-const CODEX_INTERNAL_SUGGESTIONS_PREFIX: &str =
-    "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:";
+const CODEX_INTERNAL_SUGGESTIONS_PREFIXES: [&str; 2] = [
+    "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:",
+    "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task",
+];
 
 /// Codex Desktop runs short-lived background turns to prepare suggested next
 /// actions. Those turns emit the same public hooks as a user conversation but
 /// are not persisted as resumable rollouts. Until the upstream hook schema
 /// exposes explicit provenance, keep this recognizer deliberately narrow and
-/// anchored to the complete, normalized prompt prefix.
+/// anchored to the complete, normalized prompt prefixes observed for local
+/// projects and Projectless tasks.
 pub fn is_codex_internal_suggestions_prompt(message: &str) -> bool {
     let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    normalized.starts_with(CODEX_INTERNAL_SUGGESTIONS_PREFIX)
+    CODEX_INTERNAL_SUGGESTIONS_PREFIXES
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
+}
+
+/// Recognizes the same internal task at both Codex ingress boundaries. Public
+/// hooks carry the original user prompt, while App Server persistence can omit
+/// that item and expose only the prompt-derived thread title.
+pub fn is_codex_internal_suggestions_payload(payload: &Value) -> bool {
+    let source_event = payload.get("source_event").and_then(Value::as_str);
+    let user_prompt_matches = payload.get("message_role").and_then(Value::as_str) == Some("user")
+        && payload
+            .get("message_content")
+            .and_then(Value::as_str)
+            .is_some_and(is_codex_internal_suggestions_prompt);
+
+    match source_event {
+        Some("UserPromptSubmit") => user_prompt_matches,
+        Some("app_server_activity") => {
+            user_prompt_matches
+                || payload
+                    .get("session_title")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_codex_internal_suggestions_prompt)
+        }
+        _ => false,
+    }
 }
 
 pub fn suppressed_agent_session_reason(event: &AgentEvent) -> Option<&'static str> {
     if event.source != AgentSource::Codex
-        || event
-            .payload_json
-            .get("source_event")
-            .and_then(serde_json::Value::as_str)
-            != Some("UserPromptSubmit")
-        || event
-            .payload_json
-            .get("message_role")
-            .and_then(serde_json::Value::as_str)
-            != Some("user")
+        || !is_codex_internal_suggestions_payload(&event.payload_json)
     {
         return None;
     }
-    event
-        .payload_json
-        .get("message_content")
-        .and_then(serde_json::Value::as_str)
-        .filter(|message| is_codex_internal_suggestions_prompt(message))
-        .map(|_| CODEX_INTERNAL_SUGGESTIONS_REASON)
+    Some(CODEX_INTERNAL_SUGGESTIONS_REASON)
 }
 
 #[cfg(test)]
@@ -50,11 +66,29 @@ mod tests {
         assert!(is_codex_internal_suggestions_prompt(
             "  # Overview   Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project"
         ));
+        assert!(is_codex_internal_suggestions_prompt(
+            "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task\n\nGet an understanding of the user's intent"
+        ));
         assert!(!is_codex_internal_suggestions_prompt(
             "Please analyze this text: # Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project"
         ));
         assert!(!is_codex_internal_suggestions_prompt(
             "# Overview\nGenerate project suggestions for this user"
         ));
+    }
+
+    #[test]
+    fn recognizes_title_only_app_server_suggestion_activity() {
+        assert!(is_codex_internal_suggestions_payload(&serde_json::json!({
+            "source_event": "app_server_activity",
+            "session_title": "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+            "message_role": "assistant",
+            "message_content": "{\"suggestions\":[]}"
+        })));
+        assert!(!is_codex_internal_suggestions_payload(&serde_json::json!({
+            "source_event": "app_server_activity",
+            "session_title": "Analyze this # Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:",
+            "message_role": "assistant"
+        })));
     }
 }

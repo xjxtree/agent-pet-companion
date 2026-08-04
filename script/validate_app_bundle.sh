@@ -267,7 +267,7 @@ cmp -s "$SOURCE_BRAND_MARK" "$BUNDLED_BRAND_MARK" || {
   echo "app bundle validation failed: bundled brand mark differs from approved transparent mark" >&2
   exit 1
 }
-for petpack_name in pet_xingwutuanzi.petpack pet_bytebudcodex.petpack; do
+for petpack_name in pet_xingwutuanzi.petpack pet_bytebudcodex.petpack pet_pinklace.petpack; do
   [[ -f "$BUNDLED_PETS_DIR/$petpack_name" && ! -L "$BUNDLED_PETS_DIR/$petpack_name" ]] || {
     echo "app bundle validation failed: missing bundled pet $petpack_name" >&2
     exit 1
@@ -280,8 +280,8 @@ for petpack_name in pet_xingwutuanzi.petpack pet_bytebudcodex.petpack; do
     "$PETCORE_CLI" petpack validate "$BUNDLED_PETS_DIR/$petpack_name" >/dev/null
   fi
 done
-if [[ "$(find "$BUNDLED_PETS_DIR" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" != "2" ]]; then
-  echo "app bundle validation failed: bundled pet inventory must contain exactly the two approved entries" >&2
+if [[ "$(find "$BUNDLED_PETS_DIR" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" != "3" ]]; then
+  echo "app bundle validation failed: bundled pet inventory must contain exactly the three approved entries" >&2
   exit 1
 fi
 python3 - "$BUNDLED_PETS_DIR" <<'PY'
@@ -294,6 +294,7 @@ root = pathlib.Path(sys.argv[1])
 expected = {
     "pet_xingwutuanzi.petpack": ("pet_xingwutuanzi", "low", (192, 208)),
     "pet_bytebudcodex.petpack": ("pet_bytebudcodex", "standard", (384, 416)),
+    "pet_pinklace.petpack": ("pet_pinklace", "standard", (384, 416)),
 }
 for name, (pet_id, quality, size) in expected.items():
     path = root / name
@@ -301,7 +302,7 @@ for name, (pet_id, quality, size) in expected.items():
         manifest = json.loads(archive.read("manifest.json"))
     actual_size = manifest.get("render_size", {})
     if (
-        manifest.get("schema_version") != "apc.petpack.v2"
+        manifest.get("schema_version") != "apc.petpack.v3"
         or manifest.get("id") != pet_id
         or manifest.get("quality") != quality
         or (actual_size.get("width"), actual_size.get("height")) != size
@@ -441,6 +442,7 @@ expected_suites = [
     "AppStoreOverlaySnapshotTests",
     "OverlayGeometryTests",
     "OverlayDisplayWidthTests",
+    "OverlayInteractionTelemetryTests",
 ]
 if attestation["passed_suites"] != expected_suites:
     raise SystemExit("app bundle validation failed: interaction attestation suites are incomplete")
@@ -493,6 +495,14 @@ grep -q 'capability-missing' "$BUNDLED_PORTABLE_SKILL/SKILL.md" || {
   echo 'app bundle validation failed: bundled Maker workspace helper is not executable' >&2
   exit 1
 }
+[[ -x "$BUNDLED_PORTABLE_SKILL/scripts/prepare_transparent_frames.py" ]] || {
+  echo 'app bundle validation failed: bundled Maker transparent-frame helper is not executable' >&2
+  exit 1
+}
+grep -q 'transparent-frame-production.md' "$BUNDLED_SKILL" || {
+  echo 'app bundle validation failed: bundled Studio skill omits the shared transparency contract' >&2
+  exit 1
+}
 
 if [[ "$RUN_PACKAGED_RUNTIME" == "1" ]]; then
   # Run the exact native packaged Swift/AppKit executable through its
@@ -539,6 +549,7 @@ expected_suites = [
     "AppStoreOverlaySnapshotTests",
     "OverlayGeometryTests",
     "OverlayDisplayWidthTests",
+    "OverlayInteractionTelemetryTests",
 ]
 assert value["ok"] is True, value
 assert value["build_id"] == os.environ["BUNDLE_BUILD_ID"], value
@@ -559,11 +570,18 @@ assert data["uses_ring_cache"] is False, data
 assert data["decoded_state_mb"] > 0, data
 PY
 
-  if "$PETCORE_CLI" renderer budget --quality high --frame-count 8 \
-      >"$TMP_DIR/retired-high.stdout" 2>"$TMP_DIR/retired-high.stderr"; then
-    echo 'app bundle validation failed: retired high quality was accepted' >&2
-    exit 1
-  fi
+  HIGH_BUDGET="$("$PETCORE_CLI" renderer budget --quality high --frame-count 40)"
+  JSON="$HIGH_BUDGET" python3 - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["JSON"])
+assert data["quality"] == "high", data
+assert data["frame_count"] == 40, data
+assert data["runtime_cache_frame_limit"] == 40, data
+assert data["uses_ring_cache"] is False, data
+assert data["decoded_state_mb"] > 0, data
+PY
 
   (
     APC_HOME="$TMP_DIR/home" \
@@ -619,7 +637,17 @@ import struct
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v3"
-REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+REQUIRED_STATES = (
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+)
 
 
 def png_dimensions(path):
@@ -659,18 +687,18 @@ def require_managed(path, root, label, pet_id):
 
 seed = json.loads(os.environ["BUNDLED_SEED"])
 pets = json.loads(os.environ["BUNDLED_PETS"])
-expected_ids = ["pet_xingwutuanzi", "pet_bytebudcodex"]
+expected_ids = ["pet_xingwutuanzi", "pet_bytebudcodex", "pet_pinklace"]
 outcomes = seed.get("outcomes")
 if seed.get("inventory") != "apc.bundled-pets.v1":
     raise SystemExit("app bundle validation failed: bundled seed inventory mismatch")
 if not isinstance(outcomes, list) or [item.get("pet_id") for item in outcomes] != expected_ids:
     raise SystemExit("app bundle validation failed: bundled seed outcomes mismatch")
 if any(item.get("status") != "installed" for item in outcomes):
-    raise SystemExit("app bundle validation failed: clean-home bundled seed did not install both pets")
+    raise SystemExit("app bundle validation failed: clean-home bundled seed did not install all pets")
 
 by_id = {pet.get("id"): pet for pet in pets if isinstance(pet, dict)}
-if len(pets) != 2 or set(by_id) != set(expected_ids):
-    raise SystemExit("app bundle validation failed: clean-home library does not contain exactly both bundled pets")
+if len(pets) != 3 or set(by_id) != set(expected_ids):
+    raise SystemExit("app bundle validation failed: clean-home library does not contain exactly all bundled pets")
 managed_pets_root = pathlib.Path(os.environ["BUNDLED_HOME"]).resolve() / "pets"
 for pet_id in expected_ids:
     pet = by_id[pet_id]

@@ -58,6 +58,11 @@ struct OverlayRootView: View {
         !store.overlayBubbleContents.isEmpty
     }
 
+    private var isIdlePetPresentation: Bool {
+        guard let currentEvent else { return true }
+        return ProductLifecycleState(eventKind: currentEvent.eventType) == .idle
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let petCenter = OverlayGeometry.localPoint(
@@ -87,6 +92,8 @@ struct OverlayRootView: View {
                     stateEntryID: OverlayPetAnimationIdentity.stateEntryID(
                         for: store.presentedActiveAgentState
                     ),
+                    interaction: interactionPresentation.petInteraction,
+                    pressFeedbackActive: interactionPresentation.pressFeedbackActive,
                     displayWidthPt: presentedDisplayWidthPt,
                     appearanceTheme: store.behavior.appearanceTheme,
                     clickMenuEnabled: store.behavior.clickMenu,
@@ -97,6 +104,9 @@ struct OverlayRootView: View {
                     controlsVisible: controlsVisible,
                     active: store.behavior.enabled,
                     reduceMotion: reduceMotion,
+                    onInteractionCompleted: { entryID in
+                        interactionPresentation.complete(entryID: entryID)
+                    },
                     onVisualEnvelopeChanged: { [weak store] envelope, petID, stateEntryID in
                         store?.updateOverlayPetVisualEnvelope(
                             envelope,
@@ -111,7 +121,12 @@ struct OverlayRootView: View {
                             stateEntryID: stateEntryID
                         )
                     },
-                    onActivate: activatePet,
+                    onPrimaryClick: {
+                        if isIdlePetPresentation {
+                            interactionPresentation.acknowledge(reduceMotion: reduceMotion)
+                        }
+                        store.toggleOverlayBubble()
+                    },
                     onToggleBubble: { store.toggleOverlayBubble() },
                     onOpenMainWindow: { store.presentMainWindow() },
                     onHidePet: { store.toggleOverlay() },
@@ -122,16 +137,31 @@ struct OverlayRootView: View {
                     onDragActiveChanged: { active, interactionID in
                         controlPresentation.setActive(.pet, active)
                         if active, let interactionID {
+                            interactionPresentation.beginPressFeedback(
+                                enabled: !store.hasAvailableOverlayBubbleContent,
+                                reduceMotion: reduceMotion
+                            )
+                            interactionPresentation.beginDrag(
+                                interactionID: interactionID,
+                                center: store.overlayPresentedPetScreenCenter
+                            )
                             store.beginOverlayPetDrag(
                                 interactionID: interactionID
                             )
                         } else {
+                            interactionPresentation.endDrag(
+                                interactionID: interactionID
+                            )
                             store.endOverlayPetDrag(
                                 interactionID: interactionID
                             )
                         }
                     },
                     onDragChanged: { center, visibleFrame, interactionID in
+                        interactionPresentation.updateDrag(
+                            interactionID: interactionID,
+                            center: center
+                        )
                         store.presentOverlayPetDrag(
                             at: center,
                             visibleFrame: visibleFrame,
@@ -139,6 +169,10 @@ struct OverlayRootView: View {
                         )
                     },
                     onDragEnded: { center, visibleFrame, interactionID in
+                        interactionPresentation.updateDrag(
+                            interactionID: interactionID,
+                            center: center
+                        )
                         store.commitOverlayPetDrag(
                             at: center,
                             visibleFrame: visibleFrame,
@@ -153,22 +187,6 @@ struct OverlayRootView: View {
         .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
 
-    private func activatePet() {
-        switch OverlayPetActivationDestination.resolve(
-            activeState: store.presentedActiveAgentState,
-            bubbleDismissed: store.overlayBubbleDismissed,
-            hasAvailableBubbleContent: store.overlayBubbleSessionCount > 0
-        ) {
-        case let .session(session):
-            store.activateOverlaySession(session)
-        case .bubble:
-            store.revealOverlayBubble()
-            controlPresentation.setFocused(.bubble, true)
-            controlPresentation.setFocused(.bubble, false)
-        case .controlCenter:
-            store.presentMainWindow()
-        }
-    }
 }
 
 struct OverlayMenuControlRootView: View {
@@ -528,10 +546,17 @@ private typealias PetFrameHitTestHandler = @MainActor (
     String
 ) -> Void
 
+private typealias PetPlaybackCompletionHandler = @MainActor (
+    String,
+    PetPlaybackMode
+) -> Void
+
 private struct PetInteractionLayer: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
+    var interaction: OverlayPetInteractionPresentation?
+    var pressFeedbackActive: Bool
     var displayWidthPt: CGFloat
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
@@ -542,9 +567,10 @@ private struct PetInteractionLayer: View {
     var controlsVisible: Bool
     var active: Bool
     var reduceMotion: Bool
+    var onInteractionCompleted: @MainActor (String) -> Void
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler?
     var onFrameHitTestChanged: PetFrameHitTestHandler?
-    var onActivate: () -> Void
+    var onPrimaryClick: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
@@ -561,9 +587,10 @@ private struct PetInteractionLayer: View {
                 appearanceTheme: appearanceTheme,
                 clickMenuEnabled: clickMenuEnabled,
                 bubbleVisible: bubbleVisible,
+                menuVisible: controlsVisible,
                 bubbleToggleAvailable: bubbleToggleAvailable,
                 petVisualEnvelope: petVisualEnvelope,
-                onActivate: onActivate,
+                onPrimaryClick: onPrimaryClick,
                 onToggleBubble: onToggleBubble,
                 onOpenMainWindow: onOpenMainWindow,
                 onHidePet: onHidePet,
@@ -585,12 +612,19 @@ private struct PetInteractionLayer: View {
                 pet: pet,
                 state: state,
                 stateEntryID: stateEntryID,
+                interaction: interaction,
                 displayWidthPt: displayWidthPt,
                 active: active,
                 reduceMotion: reduceMotion,
                 hovered: controlsVisible,
+                onInteractionCompleted: onInteractionCompleted,
                 onVisualEnvelopeChanged: onVisualEnvelopeChanged,
                 onFrameHitTestChanged: onFrameHitTestChanged
+            )
+            .scaleEffect(pressFeedbackActive ? 0.97 : 1)
+            .animation(
+                .easeOut(duration: OverlayPetInteractionPolicy.pressFeedbackDurationSeconds),
+                value: pressFeedbackActive
             )
             .allowsHitTesting(false)
         }
@@ -614,6 +648,7 @@ private struct PetInteractionLayer: View {
         )
         .contentShape(Rectangle())
     }
+
 }
 
 struct WindowDragRegion: NSViewRepresentable {
@@ -622,9 +657,10 @@ struct WindowDragRegion: NSViewRepresentable {
     var appearanceTheme: AppearanceTheme
     var clickMenuEnabled: Bool
     var bubbleVisible: Bool
+    var menuVisible: Bool
     var bubbleToggleAvailable: Bool
     var petVisualEnvelope: OverlayPetVisualEnvelope?
-    var onActivate: () -> Void
+    var onPrimaryClick: () -> Void
     var onToggleBubble: () -> Void
     var onOpenMainWindow: () -> Void
     var onHidePet: () -> Void
@@ -640,9 +676,10 @@ struct WindowDragRegion: NSViewRepresentable {
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.menuVisible = menuVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
-        view.onActivate = onActivate
+        view.onPrimaryClick = onPrimaryClick
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -659,9 +696,10 @@ struct WindowDragRegion: NSViewRepresentable {
         view.appearanceTheme = appearanceTheme
         view.clickMenuEnabled = clickMenuEnabled
         view.bubbleVisible = bubbleVisible
+        view.menuVisible = menuVisible
         view.bubbleToggleAvailable = bubbleToggleAvailable
         view.petVisualEnvelope = petVisualEnvelope
-        view.onActivate = onActivate
+        view.onPrimaryClick = onPrimaryClick
         view.onToggleBubble = onToggleBubble
         view.onOpenMainWindow = onOpenMainWindow
         view.onHidePet = onHidePet
@@ -676,6 +714,10 @@ struct WindowDragRegion: NSViewRepresentable {
             let center: CGPoint
             let visibleFrame: CGRect?
             let interactionID: UUID
+            let boundaryClamped: Bool
+            let eventTimestamp: TimeInterval
+            let handlerCPUms: Double
+            let refreshIntervalMS: Double
         }
 
         var displayWidthPt = OverlayGeometry.defaultDisplayWidthPt
@@ -685,9 +727,10 @@ struct WindowDragRegion: NSViewRepresentable {
             didSet { configureAccessibilityActions() }
         }
         var bubbleVisible = true
+        var menuVisible = false
         var bubbleToggleAvailable = true
         var petVisualEnvelope: OverlayPetVisualEnvelope?
-        var onActivate: () -> Void = {}
+        var onPrimaryClick: () -> Void = {}
         var onToggleBubble: () -> Void = {}
         var onOpenMainWindow: () -> Void = {}
         var onHidePet: () -> Void = {}
@@ -729,7 +772,7 @@ struct WindowDragRegion: NSViewRepresentable {
         }
 
         override func accessibilityPerformPress() -> Bool {
-            onActivate()
+            onPrimaryClick()
             return true
         }
 
@@ -770,13 +813,18 @@ struct WindowDragRegion: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
-            let pointer = NSEvent.mouseLocation
+            let pointer = window.convertPoint(toScreen: event.locationInWindow)
             let interactionID = UUID()
             dragSession = OverlayDragSession(
                 interactionID: interactionID,
                 startPointerScreen: pointer,
                 startAnchorScreen: petScreenCenter,
                 startDisplayID: displayID(for: window.screen)
+            )
+            OverlayInteractionTelemetry.shared.pointerDown(
+                interactionID: interactionID,
+                bubbleVisible: bubbleVisible,
+                menuVisible: menuVisible
             )
             window.ignoresMouseEvents = false
             onDragActiveChanged(true, interactionID)
@@ -785,25 +833,38 @@ struct WindowDragRegion: NSViewRepresentable {
         override func mouseDragged(with event: NSEvent) {
             guard let window else { return }
             updateDragPresentation(
-                pointer: NSEvent.mouseLocation,
+                pointer: window.convertPoint(
+                    toScreen: event.locationInWindow
+                ),
                 window: window,
+                eventTimestamp: event.timestamp,
                 flushImmediately: false
             )
         }
 
         override func mouseUp(with event: NSEvent) {
             guard let session = dragSession else { return }
+            OverlayInteractionTelemetry.shared.normalMouseUp(
+                interactionID: session.interactionID
+            )
             if let window {
+                let releasePointer = window.convertPoint(
+                    toScreen: event.locationInWindow
+                )
                 updateDragPresentation(
-                    pointer: NSEvent.mouseLocation,
+                    pointer: releasePointer,
                     window: window,
+                    eventTimestamp: event.timestamp,
                     flushImmediately: true
                 )
             } else {
                 presentationDriver.flushNow()
             }
-            let finalSession = dragSession ?? session
+            var finalSession = dragSession ?? session
             let interactionID = finalSession.interactionID
+            guard finalSession.compareAndFinalize(
+                interactionID: interactionID
+            ) else { return }
             let didDrag = finalSession.hasCrossedThreshold
             let finalCenter = petScreenCenter
             let visibleFrame = window.flatMap { window in
@@ -816,9 +877,24 @@ struct WindowDragRegion: NSViewRepresentable {
             dragSession = nil
             presentationDriver.cancelPending()
             if didDrag {
+                OverlayInteractionTelemetry.shared.finalFrameApplied(
+                    interactionID: interactionID
+                )
                 onDragEnded(finalCenter, visibleFrame, interactionID)
+            } else if OverlayPetPointerGesture.shouldPerformPrimaryClick(
+                clickCount: event.clickCount,
+                didDrag: didDrag
+            ) {
+                onPrimaryClick()
+                OverlayInteractionTelemetry.shared.finish(
+                    interactionID: interactionID,
+                    result: .success
+                )
             } else {
-                onActivate()
+                OverlayInteractionTelemetry.shared.finish(
+                    interactionID: interactionID,
+                    result: .suppressed
+                )
             }
             onDragActiveChanged(false, interactionID)
         }
@@ -826,12 +902,20 @@ struct WindowDragRegion: NSViewRepresentable {
         private func updateDragPresentation(
             pointer: CGPoint,
             window: NSWindow,
+            eventTimestamp: TimeInterval,
             flushImmediately: Bool
         ) {
+            let handlerStartedAt = ProcessInfo.processInfo.systemUptime
             guard var session = dragSession else { return }
+            let previousPhase = session.phase
             session.updatePointer(pointer)
             dragSession = session
             guard session.hasCrossedThreshold else { return }
+            if previousPhase != .dragging, session.phase == .dragging {
+                OverlayInteractionTelemetry.shared.thresholdCrossed(
+                    interactionID: session.interactionID
+                )
+            }
 
             let proposedCenter = session.proposedAnchorScreen
             let targetScreen = resolvedScreen(
@@ -856,14 +940,29 @@ struct WindowDragRegion: NSViewRepresentable {
                 clickMenuEnabled: clickMenuEnabled,
                 petVisualEnvelope: petVisualEnvelope
             )
+            let canonicalProposed = CGPoint(
+                x: OverlayPlacementCanonicalization.cgFloatCoordinate(
+                    proposedCenter.x
+                ),
+                y: OverlayPlacementCanonicalization.cgFloatCoordinate(
+                    proposedCenter.y
+                )
+            )
             let cadence = OverlayDisplayRefreshCadence.resolved(
                 for: targetScreen ?? window.screen
             )
+            let updateHandlerCPUms = (
+                ProcessInfo.processInfo.systemUptime - handlerStartedAt
+            ) * 1_000
             presentationDriver.submit(
                 PendingPresentation(
                     center: center,
                     visibleFrame: visibleFrame,
-                    interactionID: session.interactionID
+                    interactionID: session.interactionID,
+                    boundaryClamped: center != canonicalProposed,
+                    eventTimestamp: eventTimestamp,
+                    handlerCPUms: updateHandlerCPUms,
+                    refreshIntervalMS: cadence.intervalSeconds * 1_000
                 ),
                 targetDisplayID: cadence.displayID,
                 screen: targetScreen ?? window.screen,
@@ -877,12 +976,27 @@ struct WindowDragRegion: NSViewRepresentable {
         }
 
         private func present(_ pendingPresentation: PendingPresentation) {
+            let handlerStartedAt = ProcessInfo.processInfo.systemUptime
+            guard let session = dragSession,
+                  session.interactionID == pendingPresentation.interactionID,
+                  session.phase == .dragging else { return }
             petScreenCenter = pendingPresentation.center
             window?.ignoresMouseEvents = false
             onDragChanged(
                 pendingPresentation.center,
                 pendingPresentation.visibleFrame,
                 pendingPresentation.interactionID
+            )
+            let presentationHandlerCPUms = (
+                ProcessInfo.processInfo.systemUptime - handlerStartedAt
+            ) * 1_000
+            OverlayInteractionTelemetry.shared.presentationApplied(
+                interactionID: pendingPresentation.interactionID,
+                boundaryClamped: pendingPresentation.boundaryClamped,
+                eventTimestamp: pendingPresentation.eventTimestamp,
+                handlerCPUms: pendingPresentation.handlerCPUms
+                    + presentationHandlerCPUms,
+                refreshIntervalMS: pendingPresentation.refreshIntervalMS
             )
         }
 
@@ -1032,10 +1146,12 @@ private struct PetStage: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
+    var interaction: OverlayPetInteractionPresentation?
     var displayWidthPt: CGFloat
     var active: Bool
     var reduceMotion: Bool
     var hovered: Bool
+    var onInteractionCompleted: @MainActor (String) -> Void
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
     var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
 
@@ -1045,9 +1161,11 @@ private struct PetStage: View {
                 pet: pet,
                 state: state,
                 stateEntryID: stateEntryID,
+                interaction: interaction,
                 displayWidthPt: displayWidthPt,
                 active: active,
                 reduceMotion: reduceMotion,
+                onInteractionCompleted: onInteractionCompleted,
                 onVisualEnvelopeChanged: onVisualEnvelopeChanged,
                 onFrameHitTestChanged: onFrameHitTestChanged
             )
@@ -1069,23 +1187,51 @@ private struct FloatingPetSprite: View {
     var pet: PetSummary?
     var state: AgentEventKind?
     var stateEntryID: String
+    var interaction: OverlayPetInteractionPresentation?
     var displayWidthPt: CGFloat
     var active: Bool
     var reduceMotion: Bool
+    var onInteractionCompleted: @MainActor (String) -> Void
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
     var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
+    @State private var settledSemanticEntryID: String?
+
+    private var semanticStateName: String {
+        state?.petState ?? "idle"
+    }
+
+    private var semanticTiming: PetStateTiming? {
+        pet?.timing(for: semanticStateName)
+    }
+
+    private var presentsSettledIdle: Bool {
+        settledSemanticEntryID == stateEntryID
+            && semanticTiming?.playback.mode == .burstThenIdle
+    }
+
+    private var presentedStateName: String {
+        interaction?.stateName
+            ?? (presentsSettledIdle ? "idle" : semanticStateName)
+    }
+
+    private var presentedEntryID: String {
+        interaction?.entryID
+            ?? (presentsSettledIdle ? "\(stateEntryID):settled-idle" : stateEntryID)
+    }
 
     var body: some View {
-        if let pet {
-            PetFrameLayerView(
-                pet: pet,
-                stateName: state?.petState ?? "idle",
-                stateEntryID: stateEntryID,
-                active: active,
-                reduceMotion: reduceMotion,
-                onVisualEnvelopeChanged: onVisualEnvelopeChanged,
-                onFrameHitTestChanged: onFrameHitTestChanged
-            )
+        Group {
+            if let pet {
+                PetFrameLayerView(
+                    pet: pet,
+                    stateName: presentedStateName,
+                    stateEntryID: presentedEntryID,
+                    active: active,
+                    reduceMotion: reduceMotion,
+                    onPlaybackCompleted: playbackCompleted,
+                    onVisualEnvelopeChanged: onVisualEnvelopeChanged,
+                    onFrameHitTestChanged: onFrameHitTestChanged
+                )
                 .frame(
                     width: OverlayGeometry.petVisibleSize(
                         displayWidthPt: displayWidthPt
@@ -1094,18 +1240,49 @@ private struct FloatingPetSprite: View {
                         displayWidthPt: displayWidthPt
                     ).height
                 )
-        } else {
-            Color.clear
-                .frame(
-                    width: OverlayGeometry.petVisibleSize(
-                        displayWidthPt: displayWidthPt
-                    ).width,
-                    height: OverlayGeometry.petVisibleSize(
-                        displayWidthPt: displayWidthPt
-                    ).height
-                )
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(APCLocalization.text(.overlayNoPet))
+            } else {
+                Color.clear
+                    .frame(
+                        width: OverlayGeometry.petVisibleSize(
+                            displayWidthPt: displayWidthPt
+                        ).width,
+                        height: OverlayGeometry.petVisibleSize(
+                            displayWidthPt: displayWidthPt
+                        ).height
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(APCLocalization.text(.overlayNoPet))
+            }
+        }
+        .onChange(of: stateEntryID) { _, _ in
+            settledSemanticEntryID = nil
+        }
+        .task(id: "\(stateEntryID):\(reduceMotion)") {
+            guard reduceMotion,
+                  active,
+                  let semanticTiming,
+                  semanticTiming.playback.mode == .burstThenIdle
+            else { return }
+            let repeats = max(1, semanticTiming.playback.entryRepeatCount ?? 1)
+            let durationMS = semanticTiming.frameDurationsMS.reduce(0, +) * repeats
+            do {
+                try await Task.sleep(for: .milliseconds(durationMS))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            settledSemanticEntryID = stateEntryID
+        }
+    }
+
+    @MainActor
+    private func playbackCompleted(_ entryID: String, _ mode: PetPlaybackMode) {
+        if mode == .onceThenReturn, interaction?.entryID == entryID {
+            onInteractionCompleted(entryID)
+            return
+        }
+        if mode == .burstThenIdle, entryID == stateEntryID {
+            settledSemanticEntryID = stateEntryID
         }
     }
 }
@@ -1116,6 +1293,7 @@ private struct PetFrameLayerView: NSViewRepresentable {
     var stateEntryID: String
     var active: Bool
     var reduceMotion: Bool
+    var onPlaybackCompleted: PetPlaybackCompletionHandler = { _, _ in }
     var onVisualEnvelopeChanged: PetVisualEnvelopeHandler? = nil
     var onFrameHitTestChanged: PetFrameHitTestHandler? = nil
 
@@ -1139,6 +1317,7 @@ private struct PetFrameLayerView: NSViewRepresentable {
             stateEntryID: stateEntryID,
             active: active,
             reduceMotion: reduceMotion,
+            onPlaybackCompleted: onPlaybackCompleted,
             onVisualEnvelopeChanged: { envelope in
                 onVisualEnvelopeChanged?(
                     envelope,

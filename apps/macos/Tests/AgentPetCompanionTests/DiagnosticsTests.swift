@@ -388,7 +388,8 @@ struct DiagnosticsTests {
         #expect(!text.contains("\"name\""))
         #expect(AppDiagnosticEnvironment.sanitizedRuntimeToken("1.2.3") == "1.2.3")
         #expect(AppDiagnosticEnvironment.sanitizedRuntimeToken("/private/Client Project") == nil)
-        #expect(AppDiagnosticEnvironment.sanitizedPetState("working") == "working")
+        #expect(AppDiagnosticEnvironment.sanitizedPetState("thinking") == "thinking")
+        #expect(AppDiagnosticEnvironment.sanitizedPetState("working") == nil)
         #expect(AppDiagnosticEnvironment.sanitizedPetState("/private/Client Project") == nil)
     }
 

@@ -20,7 +20,7 @@ use petcore_types::{
     GenerationForm, GenerationJobHistoryRecord, GenerationJobStatus, GenerationMessageRecord,
     GenerationOperation, GenerationResultSummary, GenerationValidationSummary, PetHistorySnapshot,
     PetManifest, PetOrigin, PetRevisionHistoryRecord, PetState, PetStateName, PetSummary,
-    PetTimingContract, MAX_GENERATION_DESCRIPTION_CHARS, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    MAX_GENERATION_DESCRIPTION_CHARS, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -53,6 +53,10 @@ const MAX_MOTION_EVIDENCE_JSON_BYTES: u64 = 512 * 1024;
 const MAX_MOTION_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
 const MOTION_QA_SCHEMA: &str = "apc.pet-motion-qa.v1";
 const MOTION_REVIEW_SCHEMA: &str = "apc.pet-motion-review.v1";
+const PRESENCE_PREVIEW_MIN_MS: u64 = 8_000;
+const PRESENCE_PREVIEW_MAX_MS: u64 = 12_000;
+const MIN_SEMANTIC_ACTIVE_MS: u64 = 1_000;
+const MAX_SEMANTIC_ACTIVE_MS: u64 = 3_200;
 const VISUAL_PRODUCTION_VERIFICATION_SCHEMA: &str = "apc.pet-visual-production-verification.v1";
 const EDIT_BASELINE_SNAPSHOT_FILENAME: &str = "baseline-input.petpack";
 pub const DEFAULT_PET_HISTORY_LIMIT: usize = 16;
@@ -594,6 +598,12 @@ fn start_generation_with_retry(
 }
 
 fn validate_generation_form(form: &GenerationForm) -> Result<()> {
+    if !form.quality.is_studio_supported() {
+        return Err(PetCoreError::InvalidRequest(
+            "in-app Pet Studio supports only low 192x208 or standard 384x416; high 576x624 packages must be produced by an external workflow with sufficient source resolution and can then be imported"
+                .to_string(),
+        ));
+    }
     let description = form.description.trim();
     if description.is_empty() {
         return Err(PetCoreError::InvalidRequest(
@@ -1871,7 +1881,7 @@ fn run_local_petpack_generation(
         database,
         job_id,
         "assistant",
-        "已根据描述、风格和参考图生成 7 个状态动作。",
+        "已根据描述、风格和参考图生成 9 个状态与交互动作。",
         0.35,
     )?;
     thread::sleep(Duration::from_millis(120));
@@ -2714,7 +2724,7 @@ fn ensure_timing_changed_frames(
         let output_frames = decoded_state_frame_digests(&output_dir.join(&relative))?;
         if base_frames == output_frames {
             return Err(PetCoreError::Validation(format!(
-                "pet modification changed V2 timing for state {} without replacing its authored frames",
+                "pet modification changed V3 timing for action {} without replacing its authored frames",
                 state.as_str()
             )));
         }
@@ -3164,7 +3174,7 @@ fn visual_production_required_states(
     for state in REQUIRED_STATES {
         if timing_changed_states.contains(&state) && !changed.contains(&state.as_str()) {
             return Err(PetCoreError::Validation(format!(
-                "changing V2 timing requires regenerated frames for state {}",
+                "changing V3 timing requires regenerated frames for action {}",
                 state.as_str()
             )));
         }
@@ -3205,6 +3215,192 @@ fn evidence_state_names(value: &Value, label: &str) -> Result<Vec<String>> {
         )));
     }
     Ok(names)
+}
+
+fn verify_presence_preview(
+    source_dir: &Path,
+    motion_root: &Path,
+    manifest: &PetManifest,
+    report: &Value,
+) -> Result<()> {
+    let presence = report
+        .get("presence_preview")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production motion QA is missing its 8–12 second presence preview"
+                    .to_string(),
+            )
+        })?;
+    let path = presence
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production presence preview is missing its artifact path".to_string(),
+            )
+        })?;
+    safe_motion_artifact(motion_root, path, "presence preview")?;
+
+    let duration_ms = presence
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production presence preview is missing duration_ms".to_string(),
+            )
+        })?;
+    if !(PRESENCE_PREVIEW_MIN_MS..=PRESENCE_PREVIEW_MAX_MS).contains(&duration_ms)
+        || presence.get("minimum_duration_ms").and_then(Value::as_u64)
+            != Some(PRESENCE_PREVIEW_MIN_MS)
+        || presence.get("maximum_duration_ms").and_then(Value::as_u64)
+            != Some(PRESENCE_PREVIEW_MAX_MS)
+    {
+        return Err(PetCoreError::Validation(format!(
+            "visual production presence preview must last 8–12 seconds; found {duration_ms} ms"
+        )));
+    }
+
+    let late_motion_boundary_ms = presence
+        .get("late_motion_boundary_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let declared_rest_count = presence
+        .get("rest_phase_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    if !(MIN_SEMANTIC_ACTIVE_MS..duration_ms).contains(&late_motion_boundary_ms)
+        || declared_rest_count < 3
+    {
+        return Err(PetCoreError::Validation(
+            "visual production presence preview must show late motion separated by at least three calm rests"
+                .to_string(),
+        ));
+    }
+
+    let sequence = presence
+        .get("sequence")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production presence preview is missing its authored sequence".to_string(),
+            )
+        })?;
+    let mut sequence_duration_ms = 0_u64;
+    let mut observed_rest_count = 0_u64;
+    for segment in sequence {
+        let segment = segment.as_object().ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production presence preview contains an invalid sequence segment"
+                    .to_string(),
+            )
+        })?;
+        let segment_duration_ms = segment
+            .get("duration_ms")
+            .and_then(Value::as_u64)
+            .filter(|duration| *duration > 0)
+            .ok_or_else(|| {
+                PetCoreError::Validation(
+                    "visual production presence preview contains a zero-duration sequence segment"
+                        .to_string(),
+                )
+            })?;
+        sequence_duration_ms = sequence_duration_ms
+            .checked_add(segment_duration_ms)
+            .ok_or_else(|| {
+                PetCoreError::Validation(
+                    "visual production presence preview duration overflowed".to_string(),
+                )
+            })?;
+        match segment.get("kind").and_then(Value::as_str) {
+            Some("action") => {}
+            Some("idle_rest") if segment.get("state").and_then(Value::as_str) == Some("idle") => {
+                observed_rest_count += 1;
+            }
+            _ => {
+                return Err(PetCoreError::Validation(
+                    "visual production presence preview has an unsupported sequence segment"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    if sequence_duration_ms != duration_ms || observed_rest_count != declared_rest_count {
+        return Err(PetCoreError::Validation(
+            "visual production presence preview sequence does not match its duration metadata"
+                .to_string(),
+        ));
+    }
+    for required_action in ["idle", "thinking", "tool", "done"] {
+        if !sequence.iter().any(|segment| {
+            segment.get("kind").and_then(Value::as_str) == Some("action")
+                && segment.get("state").and_then(Value::as_str) == Some(required_action)
+        }) {
+            return Err(PetCoreError::Validation(format!(
+                "visual production presence preview is missing action {required_action}"
+            )));
+        }
+    }
+
+    for semantic_name in [
+        PetStateName::Thinking,
+        PetStateName::Tool,
+        PetStateName::Waiting,
+        PetStateName::Done,
+        PetStateName::Failed,
+    ] {
+        let state = manifest
+            .states
+            .iter()
+            .find(|state| state.name == semantic_name)
+            .ok_or_else(|| {
+                PetCoreError::Validation(format!(
+                    "visual production manifest is missing state {}",
+                    semantic_name.as_str()
+                ))
+            })?;
+        let authored_ms = state
+            .frame_durations_ms
+            .iter()
+            .try_fold(0_u64, |total, duration| {
+                total.checked_add(u64::from(*duration))
+            })
+            .ok_or_else(|| {
+                PetCoreError::Validation(
+                    "visual production semantic action duration overflowed".to_string(),
+                )
+            })?;
+        let repeat_count = u64::from(state.playback.entry_repeat_count.unwrap_or(1));
+        let active_ms = authored_ms.checked_mul(repeat_count).ok_or_else(|| {
+            PetCoreError::Validation(
+                "visual production semantic action duration overflowed".to_string(),
+            )
+        })?;
+        if !(MIN_SEMANTIC_ACTIVE_MS..=MAX_SEMANTIC_ACTIVE_MS).contains(&active_ms) {
+            return Err(PetCoreError::Validation(format!(
+                "visual production action {} stays active for {active_ms} ms; it must remain active for 1000–3200 ms so it neither freezes in under a second nor loops mechanically",
+                semantic_name.as_str()
+            )));
+        }
+    }
+
+    let mut all_state_digest = Sha256::new();
+    for state in REQUIRED_STATES {
+        let state_name = state.as_str();
+        let digest = portable_motion_state_digest(source_dir, state_name)?;
+        all_state_digest.update(state_name.as_bytes());
+        all_state_digest.update(b"\0");
+        all_state_digest.update(digest.as_bytes());
+        all_state_digest.update(b"\0");
+    }
+    let expected_digest = hex::encode(all_state_digest.finalize());
+    if presence.get("frame_set_digest").and_then(Value::as_str) != Some(expected_digest.as_str()) {
+        return Err(PetCoreError::Validation(
+            "visual production presence preview is stale for the current nine-action frame set"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn verify_visual_production(
@@ -3405,6 +3601,7 @@ fn verify_visual_production_dir(
             "visual production motion evidence has a stale frame-set digest".to_string(),
         ));
     }
+    verify_presence_preview(source_dir, motion_root, &manifest, &report)?;
     validate_visual_frame_diversity(source_dir, &required)?;
     let visual_ok = true;
 
@@ -3462,12 +3659,12 @@ fn validate_visual_build_contract(manifest: &PetManifest) -> Result<()> {
     }
     if manifest.render_size != manifest.quality.render_size() {
         return Err(PetCoreError::Validation(
-            "visual production render_size does not match its V2 quality tier".to_string(),
+            "visual production render_size does not match its V3 quality tier".to_string(),
         ));
     }
     if manifest.states.len() != REQUIRED_STATES.len() {
         return Err(PetCoreError::Validation(
-            "visual production manifest must contain exactly seven states".to_string(),
+            "visual production manifest must contain exactly nine authored actions".to_string(),
         ));
     }
     for required in REQUIRED_STATES {
@@ -3494,14 +3691,12 @@ fn validate_visual_interaction_contract() -> Result<Vec<String>> {
 
 fn validate_visual_runtime_contract(source_dir: &Path, manifest: &PetManifest) -> Result<()> {
     for state in &manifest.states {
-        PetTimingContract::from(state)
-            .validate()
-            .map_err(|message| {
-                PetCoreError::Validation(format!(
-                    "visual production state {} timing is invalid: {message}",
-                    state.name.as_str()
-                ))
-            })?;
+        state.validate().map_err(|message| {
+            PetCoreError::Validation(format!(
+                "visual production state {} timing is invalid: {message}",
+                state.name.as_str()
+            ))
+        })?;
         let state_dir = source_dir.join(&state.frames_dir);
         let mut frames = fs::read_dir(&state_dir)?
             .filter_map(std::result::Result::ok)
@@ -3976,7 +4171,7 @@ fn validate_skill_manifest_contract(source_dir: &Path, form: &GenerationForm) ->
     let manifest_bytes = fs::read(&manifest_path)?;
     let manifest: PetManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
         PetCoreError::Validation(format!(
-            "skill manifest must be an exact current V2 manifest: {error}"
+            "skill manifest must be an exact current V3 manifest: {error}"
         ))
     })?;
     crate::petpack::validate_manifest(&manifest)?;
@@ -4270,7 +4465,7 @@ fn append_ai_brief_normalization_message(
             database,
             job_id,
             "assistant",
-            &format!("Codex brief 缺少 {warning_count} 项约束，已按固定 7 状态 petpack 契约补齐后继续渲染。"),
+            &format!("Codex brief 缺少 {warning_count} 项约束，已按固定九动作 petpack V3 契约补齐后继续渲染。"),
             progress,
         )?;
     }
@@ -4385,9 +4580,7 @@ fn form_with_manifest_timing(
     manifest: &PetManifest,
 ) -> Result<GenerationForm> {
     for state in &manifest.states {
-        PetTimingContract::from(state)
-            .validate()
-            .map_err(PetCoreError::Validation)?;
+        state.validate().map_err(PetCoreError::Validation)?;
     }
     Ok(form.clone())
 }
@@ -4417,7 +4610,7 @@ fn form_with_ai_timing(form: &GenerationForm, ai_brief: Option<&Value>) -> Resul
             })
             .ok_or_else(|| {
                 PetCoreError::Validation(format!(
-                    "AI edit marked timing_changed but state {} lacks V2 timing",
+                    "AI edit marked timing_changed but action {} lacks V3 timing",
                     state.as_str()
                 ))
             })?;
@@ -4449,9 +4642,7 @@ fn form_with_ai_timing(form: &GenerationForm, ai_brief: Option<&Value>) -> Resul
                     ))
                 })?,
         };
-        PetTimingContract::from(&candidate)
-            .validate()
-            .map_err(PetCoreError::Validation)?;
+        candidate.validate().map_err(PetCoreError::Validation)?;
     }
     Ok(form.clone())
 }
@@ -4676,6 +4867,19 @@ mod tests {
     }
 
     #[test]
+    fn in_app_studio_rejects_high_without_changing_the_portable_tier() {
+        let mut form = timing_form();
+        form.quality = QualityLevel::High;
+
+        let error = validate_generation_form(&form).unwrap_err().to_string();
+        assert!(
+            error.contains("only low 192x208 or standard 384x416"),
+            "{error}"
+        );
+        assert!(error.contains("high 576x624"), "{error}");
+    }
+
+    #[test]
     fn app_server_failure_detail_extracts_nested_provider_message() {
         let session = json!({
             "error": r#"{"error":{"codexErrorInfo":"usageLimitExceeded","message":"Usage limit reached; retry later."},"willRetry":false}"#
@@ -4779,6 +4983,11 @@ mod tests {
             frame_set.update(b"\0");
         }
         let frame_set_digest = hex::encode(frame_set.finalize());
+        fs::write(
+            previews_dir.join("presence-preview.webp"),
+            b"presence-preview",
+        )
+        .unwrap();
         let audited_states = REQUIRED_STATES
             .iter()
             .map(|state| state.as_str())
@@ -4789,6 +4998,24 @@ mod tests {
             "audited_states": audited_states,
             "frame_set_digest": frame_set_digest,
             "keyframes": "keyframes.png",
+            "presence_preview": {
+                "path": "previews/presence-preview.webp",
+                "duration_ms": 10_000,
+                "minimum_duration_ms": 8_000,
+                "maximum_duration_ms": 12_000,
+                "late_motion_boundary_ms": 9_050,
+                "rest_phase_count": 3,
+                "frame_set_digest": frame_set_digest,
+                "sequence": [
+                    {"kind": "action", "state": "idle", "repeat_count": 1, "duration_ms": 1_500},
+                    {"kind": "action", "state": "thinking", "repeat_count": 3, "duration_ms": 1_800},
+                    {"kind": "idle_rest", "state": "idle", "duration_ms": 700},
+                    {"kind": "action", "state": "tool", "repeat_count": 3, "duration_ms": 2_400},
+                    {"kind": "idle_rest", "state": "idle", "duration_ms": 700},
+                    {"kind": "action", "state": "done", "repeat_count": 3, "duration_ms": 1_950},
+                    {"kind": "idle_rest", "state": "idle", "duration_ms": 950}
+                ]
+            },
             "states": report_states
         });
         let report_bytes = serde_json::to_vec_pretty(&report).unwrap();
@@ -5141,6 +5368,30 @@ mod tests {
     }
 
     #[test]
+    fn presence_preview_gate_rejects_short_or_stale_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_dir = write_motion_evidence_fixture(temp.path());
+        let motion_root = temp.path().join("motion-qa");
+        let manifest: PetManifest =
+            serde_json::from_slice(&fs::read(source_dir.join("manifest.json")).unwrap()).unwrap();
+        let report_path = motion_root.join("report.json");
+        let mut report: Value = serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+
+        report["presence_preview"]["duration_ms"] = json!(999);
+        let error = verify_presence_preview(&source_dir, &motion_root, &manifest, &report)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("8–12 seconds"), "{error}");
+
+        report = serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+        report["presence_preview"]["frame_set_digest"] = json!("stale");
+        let error = verify_presence_preview(&source_dir, &motion_root, &manifest, &report)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stale"), "{error}");
+    }
+
+    #[test]
     fn production_readiness_usable_requires_every_independent_gate() {
         let all_ready = ProductionReadiness {
             build_ok: true,
@@ -5175,8 +5426,8 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         let form = timing_form();
         let current = PetManifest::new(
-            "pet_strictv2".to_string(),
-            "Strict V2".to_string(),
+            "pet_strictv3".to_string(),
+            "Strict V3".to_string(),
             "storybook".to_string(),
             form.quality,
             now_rfc3339(),
@@ -5192,7 +5443,8 @@ mod tests {
         let error = validate_skill_manifest_contract(&source_dir, &form)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("V1 is no longer supported"), "{error}");
+        assert!(error.contains("V1/V2 is no longer supported"), "{error}");
+        assert!(error.contains("V3 maker"), "{error}");
         assert_eq!(fs::read(&manifest_path).unwrap(), v1_bytes);
 
         for legacy_field in ["fps_profiles", "default_fps_profile", "native_fps"] {
@@ -5221,7 +5473,7 @@ mod tests {
         let error = validate_skill_manifest_contract(&source_dir, &form)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("current V2 manifest"), "{error}");
+        assert!(error.contains("current V3 manifest"), "{error}");
         assert_eq!(fs::read(&manifest_path).unwrap(), bytes);
     }
 
@@ -5309,7 +5561,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_timing_validates_the_refreshed_v2_manifest() {
+    fn reply_timing_validates_the_refreshed_v3_manifest() {
         let original_job_form = timing_form();
         let mut current_manifest = PetManifest::new(
             "pet_currenttiming".to_string(),

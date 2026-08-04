@@ -66,7 +66,7 @@ PY
 )"
 
 sources=(codex claude_code pi opencode)
-events=(start tool waiting review done failed)
+events=(start thinking plan tool waiting done failed)
 start_seconds="$SECONDS"
 for ((index = 0; index < EVENT_COUNT; index++)); do
   source="${sources[$((index % ${#sources[@]}))]}"
@@ -117,7 +117,7 @@ if expected >= 12:
         "codex", "claude_code", "pi", "opencode"
     }
     assert {event["event_type"] for event in events} == {
-        "start", "tool", "waiting", "review", "done", "failed"
+        "start", "thinking", "plan", "tool", "waiting", "done", "failed"
     }
 PY
 

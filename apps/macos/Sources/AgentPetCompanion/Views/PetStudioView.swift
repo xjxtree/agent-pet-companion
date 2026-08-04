@@ -271,7 +271,7 @@ struct MakerBriefView: View {
                 get: { store.selectedQuality },
                 set: { store.selectGenerationQuality($0) }
             )) {
-                ForEach(QualityLevel.allCases) { quality in
+                ForEach(QualityLevel.studioCases) { quality in
                     Text(APCLocalizedPresentation.qualityTitle(quality)).tag(quality)
                 }
             }

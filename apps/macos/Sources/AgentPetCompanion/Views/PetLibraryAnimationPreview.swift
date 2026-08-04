@@ -1,4 +1,5 @@
 import AgentPetCompanionCore
+import AppKit
 import MetalKit
 import SwiftUI
 
@@ -20,65 +21,133 @@ enum PetLibraryPreviewPolicy {
     }
 }
 
-/// A single, library-scoped idle preview. It owns an independent renderer and
-/// never writes to AppStore or the desktop overlay's visual-envelope state.
+struct PetPreviewRenderIdentity: Hashable, Sendable {
+    let assetKey: String
+    let assetWarningFingerprint: String?
+
+    init(
+        pet: PetSummary,
+        stateName: String,
+        assetWarning: PetAssetWarning?
+    ) {
+        assetKey = PetFrameLoadRequest(
+            pet: pet,
+            stateName: stateName,
+            timing: pet.timing(for: stateName)
+        ).assetKey
+        assetWarningFingerprint = assetWarning?.fingerprint
+    }
+}
+
+struct PetPreviewContentState: Equatable {
+    private(set) var presentedIdentities: Set<PetPreviewRenderIdentity> = []
+
+    func hasPresentedContent(for identity: PetPreviewRenderIdentity) -> Bool {
+        presentedIdentities.contains(identity)
+    }
+
+    mutating func receive(
+        hasContent: Bool,
+        for identity: PetPreviewRenderIdentity
+    ) {
+        if hasContent {
+            presentedIdentities.insert(identity)
+        } else {
+            presentedIdentities.remove(identity)
+        }
+    }
+}
+
+struct PetActionFallbackImage: View {
+    let pet: PetSummary
+    let stateName: String
+    let assetWarning: PetAssetWarning?
+    let fallbackScale: CGFloat
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .padding(6)
+        } else {
+            MissingPetCoverPlaceholder(scale: fallbackScale)
+        }
+    }
+
+    private var image: NSImage? {
+        let frameURLs = PetAssetLocator.frameURLs(for: pet, stateName: stateName)
+        guard !frameURLs.isEmpty else { return nil }
+        let representativeIndex = min(
+            pet.timing(for: stateName).reducedMotionFrameIndex,
+            frameURLs.count - 1
+        )
+        return PetLibraryPreviewPolicy.loadIfValidated(assetWarning: assetWarning) {
+            NSImage(contentsOf: frameURLs[representativeIndex])
+        }
+    }
+}
+
+/// A library-scoped action preview. It owns an independent renderer and never
+/// writes to AppStore or the desktop overlay's visual-envelope state.
 struct PetLibraryAnimationPreview: View {
     let pet: PetSummary
+    let action: PetAnimationAction
     let assetWarning: PetAssetWarning?
 
-    @State private var rendererHasContent = false
+    @State private var contentState = PetPreviewContentState()
 
-    init(pet: PetSummary, assetWarning: PetAssetWarning? = nil) {
+    init(
+        pet: PetSummary,
+        action: PetAnimationAction = PetLibraryPreviewActionPolicy.defaultAction,
+        assetWarning: PetAssetWarning? = nil
+    ) {
         self.pet = pet
+        self.action = action
         self.assetWarning = assetWarning
     }
 
     var body: some View {
+        let identity = previewIdentity
         ZStack {
-            PetCoverImage(
+            PetActionFallbackImage(
                 pet: pet,
+                stateName: action.rawValue,
                 assetWarning: assetWarning,
                 fallbackScale: 0.44
             )
-                .opacity(rendererHasContent ? 0 : 1)
+                .opacity(contentState.hasPresentedContent(for: identity) ? 0 : 1)
 
             if PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning) {
-                PetLibraryIdleMetalView(pet: pet) { hasContent in
-                    rendererHasContent = hasContent
+                PetLibraryMetalView(pet: pet, action: action) { hasContent in
+                    contentState.receive(hasContent: hasContent, for: identity)
                 }
-                .id(previewIdentity)
+                .id(identity)
             }
         }
         .clipped()
         .allowsHitTesting(false)
-        .onAppear {
-            rendererHasContent = false
-        }
-        .onChange(of: previewIdentity) {
-            rendererHasContent = false
-        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(APCLocalization.format(
-            .libraryAnimationAccessibilityFormat,
-            pet.name
+        .accessibilityLabel(PetLibraryPreviewActionPolicy.accessibilityLabel(
+            petName: pet.name,
+            action: action
         ))
-        .accessibilityIdentifier("pet-library.inspector.idle-preview")
+        .accessibilityIdentifier("pet-library.animation-preview")
     }
 
-    private var previewIdentity: String {
-        [
-            pet.id,
-            pet.petpackPath,
-            pet.coverPath,
-            pet.revisionID ?? "legacy",
-            assetWarning?.fingerprint ?? "validated",
-        ].joined(separator: ":")
+    private var previewIdentity: PetPreviewRenderIdentity {
+        PetPreviewRenderIdentity(
+            pet: pet,
+            stateName: action.rawValue,
+            assetWarning: assetWarning
+        )
     }
 }
 
-private struct PetLibraryIdleMetalView: NSViewRepresentable {
+private struct PetLibraryMetalView: NSViewRepresentable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let pet: PetSummary
+    let action: PetAnimationAction
     let onRendererContentChanged: @MainActor (Bool) -> Void
 
     func makeCoordinator() -> PetMetalFrameRenderer {
@@ -95,13 +164,12 @@ private struct PetLibraryIdleMetalView: NSViewRepresentable {
         context.coordinator.configure(
             view: view,
             pet: pet,
-            stateName: "idle",
-            stateEntryID: "library-hero-idle:\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
+            stateName: action.rawValue,
+            stateEntryID: "library-preview-\(action.rawValue):\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
             active: true,
             reduceMotion: reduceMotion,
-            onVisualEnvelopeChanged: { envelope in
-                onRendererContentChanged(envelope != nil)
-            }
+            onVisualEnvelopeChanged: { _ in },
+            onFrameContentChanged: onRendererContentChanged
         )
     }
 

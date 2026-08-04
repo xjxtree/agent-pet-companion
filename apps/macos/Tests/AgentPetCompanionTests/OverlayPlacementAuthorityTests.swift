@@ -6,6 +6,99 @@ import Testing
 @Suite("Overlay placement authority")
 struct OverlayPlacementAuthorityTests {
     @Test
+    func sharedCanonicalizationFixtureMatchesSwiftJSONRoundTrips() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "fixtures/overlay-placement-canonicalization-v1.json"
+            )
+        let fixture = try #require(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: fixtureURL)
+            ) as? [String: Any]
+        )
+        #expect(
+            fixture["schema_version"] as? String
+                == "apc.overlay-placement-canonicalization.v1"
+        )
+        let cases = try #require(fixture["cases"] as? [[String: Any]])
+        for testCase in cases {
+            let inputObject = try #require(
+                testCase["input"] as? [String: Any]
+            )
+            let expectedObject = try #require(
+                testCase["expected"] as? [String: Any]
+            )
+            let input = try JSONDecoder().decode(
+                OverlayPlacement.self,
+                from: JSONSerialization.data(withJSONObject: inputObject)
+            )
+            let expected = try JSONDecoder().decode(
+                OverlayPlacement.self,
+                from: JSONSerialization.data(withJSONObject: expectedObject)
+            )
+            #expect(input == expected, Comment(rawValue: String(
+                describing: testCase["id"]
+            )))
+            let canonical = try #require(
+                OverlayPlacementCanonicalization.placement(input)
+            )
+            #expect(canonical == input)
+            let roundTrip = try JSONDecoder().decode(
+                OverlayPlacement.self,
+                from: JSONEncoder().encode(canonical)
+            )
+            #expect(roundTrip == canonical)
+            if canonical.x == 0 { #expect(canonical.x.sign == .plus) }
+            if canonical.y == 0 { #expect(canonical.y.sign == .plus) }
+        }
+    }
+
+    @Test
+    func coordinateCanonicalizationIsMonotonicIdempotentAndClosed() throws {
+        let values = [
+            -1_000_000.001953125,
+            -10.001953125,
+            -0.001953125,
+            -0.0,
+            0.001953125,
+            10.001953125,
+            1_000_000.001953125,
+        ]
+        let canonical = try values.map {
+            try #require(OverlayPlacementCanonicalization.coordinate($0))
+        }
+        for pair in zip(canonical, canonical.dropFirst()) {
+            #expect(pair.0 <= pair.1)
+        }
+        for value in canonical {
+            #expect(
+                OverlayPlacementCanonicalization.coordinate(value) == value
+            )
+            #expect(
+                value * OverlayPlacementCanonicalization.gridUnitsPerPoint
+                    == (value
+                        * OverlayPlacementCanonicalization.gridUnitsPerPoint)
+                        .rounded()
+            )
+        }
+        for invalid in [
+            Double.nan,
+            -Double.infinity,
+            Double.infinity,
+            Double.greatestFiniteMagnitude,
+        ] {
+            #expect(
+                OverlayPlacementCanonicalization.coordinate(invalid) == nil
+            )
+        }
+    }
+
+    @Test
     func firstRemotePlacementBootstrapsThePresentedValueAndRevision() {
         var authority = OverlayPlacementAuthority()
         let placement = OverlayPlacement(
@@ -67,7 +160,7 @@ struct OverlayPlacementAuthorityTests {
     }
 
     @Test
-    func outOfOrderAcknowledgementCannotClearTheLatestLocalCommit() {
+    func outOfOrderAcknowledgementCannotMutateTheLatestLocalCommit() {
         var authority = OverlayPlacementAuthority()
         _ = authority.bootstrap(
             OverlayPlacement(x: 700, y: 500, displayWidthPt: 112, displayId: "main"),
@@ -82,18 +175,14 @@ struct OverlayPlacementAuthorityTests {
             interactionID: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         )
 
-        let firstResult = authority.acknowledge(first, remoteRevision: 8)
-        guard case let .retry(rebasedSecond) = firstResult else {
-            Issue.record("Expected the latest commit to be rebased")
-            return
-        }
-        #expect(rebasedSecond.localRevision == second.localRevision)
-        #expect(rebasedSecond.placement == second.placement)
-        #expect(rebasedSecond.baseRemoteRevision == 8)
-        #expect(authority.pending == rebasedSecond)
+        #expect(
+            authority.acknowledge(first, remoteRevision: 8) == .stale
+        )
+        #expect(authority.pending == second)
+        #expect(authority.appliedRemoteRevision == 3)
         #expect(authority.presented == second.placement)
 
-        authority.acknowledge(rebasedSecond, remoteRevision: 9)
+        authority.acknowledge(second, remoteRevision: 9)
         #expect(authority.pending == nil)
         #expect(authority.appliedRemoteRevision == 9)
         #expect(authority.presented == second.placement)
@@ -189,7 +278,7 @@ struct OverlayPlacementAuthorityTests {
     }
 
     @Test
-    func ordinaryConflictRebasesOnlyTheLatestLocalCommit() {
+    func ordinaryConflictFromAnOldGenerationIsDiscarded() {
         var authority = OverlayPlacementAuthority()
         let server = OverlayPlacement(
             x: 700,
@@ -213,16 +302,47 @@ struct OverlayPlacementAuthorityTests {
             remoteRevision: 11
         )
 
-        guard case let .retry(rebased) = result else {
-            Issue.record("Expected the latest local commit to retry")
-            return
-        }
-        #expect(rebased.localRevision == latest.localRevision)
-        #expect(rebased.interactionID == latest.interactionID)
-        #expect(rebased.placement == latest.placement)
-        #expect(rebased.baseRemoteRevision == 11)
+        #expect(result == .stale)
+        #expect(authority.appliedRemoteRevision == 10)
         #expect(authority.presented == latest.placement)
-        #expect(authority.pending == rebased)
+        #expect(authority.pending == latest)
+    }
+
+    @Test
+    func canonicalEquivalentConflictAcknowledgesWithoutAnotherRequest() {
+        var authority = OverlayPlacementAuthority()
+        _ = authority.bootstrap(
+            OverlayPlacement(
+                x: 700,
+                y: 500,
+                displayWidthPt: 112,
+                displayId: "main"
+            ),
+            remoteRevision: 10
+        )
+        let commit = authority.commitLocal(
+            OverlayPlacement(
+                x: 800,
+                y: 520,
+                displayWidthPt: 112,
+                displayId: "main"
+            ),
+            interactionID: UUID()
+        )
+        var equivalentWireValue = commit.placement
+        equivalentWireValue.x += 0.0001
+        equivalentWireValue.y -= 0.0001
+
+        let result = authority.reconcileOrdinaryConflict(
+            for: commit,
+            actualPlacement: equivalentWireValue,
+            remoteRevision: 11
+        )
+
+        #expect(result == .acknowledged)
+        #expect(authority.pending == nil)
+        #expect(authority.appliedRemoteRevision == 11)
+        #expect(authority.presented == commit.placement)
     }
 
     @Test

@@ -646,6 +646,21 @@ final class AppStore: ObservableObject {
         }
         return projection.hitTest
     }
+    var overlayPetPointerMaskState: OverlayPointerMaskState {
+        guard let projection = overlayPetFrameHitTestProjection else {
+            return .missing
+        }
+        guard activePet?.id == projection.petID,
+              OverlayPetAnimationIdentity.stateEntryID(
+                  for: presentedActiveAgentState
+              ) == projection.stateEntryID else {
+            return .stale
+        }
+        return projection.hitTest == nil ? .missing : .valid
+    }
+    var overlayActivePointerInteractionID: UUID? {
+        overlayDragInteractionID
+    }
     @Published var overlayBubbleDismissed = false
     @Published var overlayDismissedBubbleEventIDs: Set<String> = []
     @Published private var overlaySessionNavigationNotices:
@@ -690,6 +705,7 @@ final class AppStore: ObservableObject {
     private var overlayPetPositionInitialized = false
     private var overlayPlacementAuthority = OverlayPlacementAuthority()
     private var overlayPlacementSaveTask: Task<Void, Never>?
+    private var overlayPlacementExhaustedGeneration: UInt64?
     private var overlayPlacementJournalDidLoad = false
     private let overlayPlacementPreviewDriver =
         OverlayDisplayLinkCoalescer<CGFloat>()
@@ -697,6 +713,7 @@ final class AppStore: ObservableObject {
     private var overlayDisplayWidthCommitDeadline: TimeInterval?
     private var overlayPetDragPresentationCenter: CGPoint?
     private var overlayDragInteractionID: UUID?
+    private var overlayLostMouseUpFallbackTask: Task<Void, Never>?
     private var pendingDisplayWidthPt: CGFloat?
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
@@ -2369,6 +2386,7 @@ final class AppStore: ObservableObject {
     }
 
     private func setServiceOnline() {
+        let reconnected = petCoreOperationalState != .online
         lastServiceFailureCode = .none
         petCoreOperationalState = .online
         var nextRuntimeInfo = petCoreRuntimeInfo
@@ -2377,7 +2395,9 @@ final class AppStore: ObservableObject {
             petCoreRuntimeInfo = nextRuntimeInfo
         }
         setServiceStatusText("本地服务运行中")
-        resumePendingOverlayPlacementSaveIfNeeded()
+        if reconnected {
+            resumePendingOverlayPlacementSaveIfNeeded(reason: .reconnect)
+        }
     }
 
     private func setServiceStatusText(_ value: String) {
@@ -2394,6 +2414,7 @@ final class AppStore: ObservableObject {
     }
 
     func applyStateSnapshot(_ result: Any) throws {
+        let isBootstrapSnapshot = !hasLoadedStateSnapshot
         let previousOverlayBubbleLayout = OverlayBubbleLayoutSignature(
             contents: overlayBubbleContents,
             bubbleDismissed: overlayBubbleDismissed
@@ -2583,7 +2604,9 @@ final class AppStore: ObservableObject {
         if !hasLoadedStateSnapshot {
             hasLoadedStateSnapshot = true
         }
-        resumePendingOverlayPlacementSaveIfNeeded()
+        resumePendingOverlayPlacementSaveIfNeeded(
+            reason: isBootstrapSnapshot ? .bootstrap : .ordinarySnapshot
+        )
         presentOverlayAfterFirstSnapshotIfNeeded()
     }
 
@@ -2826,7 +2849,7 @@ final class AppStore: ObservableObject {
     }
 
     func selectGenerationQuality(_ quality: QualityLevel) {
-        guard !generationSession.isActive else { return }
+        guard !generationSession.isActive, quality.isStudioSupported else { return }
         recordMakerUserMutation()
         selectedQuality = quality
     }
@@ -2872,6 +2895,10 @@ final class AppStore: ObservableObject {
         }
         guard !pet.isBundled else {
             statusText = "App 内置宠物不可原地修改；请导出并使用新的宠物 ID 创建副本"
+            return
+        }
+        guard pet.quality.isStudioSupported else {
+            statusText = APCLocalization.text(.studioHighQualityUnsupported)
             return
         }
         let instruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3985,7 +4012,7 @@ final class AppStore: ObservableObject {
                         event: "petpack_import_failed",
                         metadata: ["file_index": .integer(Int64(fileIndex))]
                     )
-                    failures.append(.file(at: url))
+                    failures.append(.requestFailure(at: url, error: error))
                 }
                 petpackImportProgress = PetLibraryImportProgress(
                     phase: .importing,
@@ -4577,6 +4604,8 @@ final class AppStore: ObservableObject {
 
     func beginOverlayPetDrag(interactionID: UUID) {
         guard overlayDragInteractionID == nil else { return }
+        overlayLostMouseUpFallbackTask?.cancel()
+        overlayLostMouseUpFallbackTask = nil
         overlayDragInteractionID = interactionID
         if overlayPetDragInProgress != true {
             overlayPetDragInProgress = true
@@ -4594,6 +4623,14 @@ final class AppStore: ObservableObject {
         interactionID: UUID
     ) {
         guard overlayDragInteractionID == interactionID else { return }
+        if overlayLostMouseUpFallbackTask != nil {
+            OverlayInteractionTelemetry.shared.fallback(
+                .fallbackSuppressed,
+                interactionID: interactionID
+            )
+        }
+        overlayLostMouseUpFallbackTask?.cancel()
+        overlayLostMouseUpFallbackTask = nil
         if let visibleFrame,
            !visibleFrame.isEmpty,
            !rect(overlayScreenVisibleFrame, nearlyEquals: visibleFrame)
@@ -4638,12 +4675,13 @@ final class AppStore: ObservableObject {
         )
         let targetDisplayWidthPt = pendingDisplayWidthPt
             ?? overlayDisplayWidthPt
-        var targetCenter = OverlayPetDragGeometry.clampedCenter(
-            presentationCenter,
-            displayWidthPt: overlayDisplayWidthPt,
-            visibleFrame: movementFrame,
-            clickMenuEnabled: behavior.clickMenu,
-            petVisualEnvelope: overlayPetVisualEnvelope
+        var targetCenter = CGPoint(
+            x: OverlayPlacementCanonicalization.cgFloatCoordinate(
+                presentationCenter.x
+            ),
+            y: OverlayPlacementCanonicalization.cgFloatCoordinate(
+                presentationCenter.y
+            )
         )
         if targetDisplayWidthPt != overlayDisplayWidthPt {
             targetCenter = OverlayGeometry.bottomAnchoredCenter(
@@ -4686,7 +4724,16 @@ final class AppStore: ObservableObject {
            overlayDragInteractionID != interactionID {
             return
         }
+        if let interactionID, overlayLostMouseUpFallbackTask != nil {
+            OverlayInteractionTelemetry.shared.fallback(
+                .fallbackSuppressed,
+                interactionID: interactionID
+            )
+        }
+        overlayLostMouseUpFallbackTask?.cancel()
+        overlayLostMouseUpFallbackTask = nil
         overlayDragInteractionID = nil
+        overlayController.endPetDragInteraction(interactionID)
         if overlayPetDragInProgress {
             overlayPetDragInProgress = false
             overlayController.updateLayoutDuringInteraction()
@@ -4927,8 +4974,8 @@ final class AppStore: ObservableObject {
     }
 
     /// Idempotently reveal the bubble without turning an already-visible
-    /// bubble into a collapsed one. Pet activation uses this safe fallback
-    /// when its current Agent session cannot be opened directly.
+    /// bubble into a collapsed one. Keyboard focus uses this path so focus
+    /// acquisition never hides the content it is about to enter.
     func revealOverlayBubble() {
         guard overlayBubbleDismissed, !overlayAvailableBubbleContents.isEmpty else {
             overlayController.updateLayout()
@@ -4982,12 +5029,39 @@ final class AppStore: ObservableObject {
     }
 
     func reconcileOverlayPointerInteractions(pressedMouseButtons: Int) {
-        guard pressedMouseButtons == 0 else { return }
-        cancelOverlayPointerInteractions()
+        guard pressedMouseButtons == 0,
+              let interactionID = overlayDragInteractionID else {
+            if pressedMouseButtons != 0 {
+                overlayLostMouseUpFallbackTask?.cancel()
+                overlayLostMouseUpFallbackTask = nil
+            }
+            return
+        }
+        guard overlayLostMouseUpFallbackTask == nil else { return }
+        OverlayInteractionTelemetry.shared.fallback(
+            .fallbackArmed,
+            interactionID: interactionID
+        )
+        overlayLostMouseUpFallbackTask = Task { @MainActor [weak self] in
+            // Give the normal DragView mouseUp finalizer one main-runloop
+            // opportunity before treating this as lost pointer capture.
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.overlayLostMouseUpFallbackTask = nil
+            guard self.overlayDragInteractionID == interactionID,
+                  NSEvent.pressedMouseButtons == 0 else { return }
+            OverlayInteractionTelemetry.shared.fallback(
+                .fallbackFired,
+                interactionID: interactionID
+            )
+            self.cancelOverlayPointerInteractions()
+        }
     }
 
     func cancelOverlayPointerInteractions() {
         guard overlayPetDragInProgress else { return }
+        overlayLostMouseUpFallbackTask?.cancel()
+        overlayLostMouseUpFallbackTask = nil
         let interactionID = overlayDragInteractionID
         if let interactionID,
            let interruptedDragCenter = overlayPetDragPresentationCenter {
@@ -4998,8 +5072,13 @@ final class AppStore: ObservableObject {
             )
         } else {
             endOverlayPetDrag(interactionID: interactionID)
+            if let interactionID {
+                OverlayInteractionTelemetry.shared.finish(
+                    interactionID: interactionID,
+                    result: .suppressed
+                )
+            }
         }
-        overlayController.updateLayoutDuringInteraction()
     }
 
     private func rect(_ lhs: CGRect, nearlyEquals rhs: CGRect, tolerance: CGFloat = 0.5) -> Bool {
@@ -5108,14 +5187,20 @@ final class AppStore: ObservableObject {
                     // from an older App process. Its consume commit atomically
                     // replaces the stale journal entry below.
                 } else if remoteIntent == nil,
-                          placement == journal.placement {
+                          OverlayPlacementCanonicalization.areEquivalent(
+                              placement,
+                              journal.placement
+                          ) {
                     _ = overlayPlacementAuthority.bootstrap(
                         normalized,
                         remoteRevision: remoteRevision
                     )
                     applyPresentedOverlayPlacement(normalized)
                     removeOverlayPlacementJournalIfMatching(journal)
-                    if normalized != placement {
+                    if !OverlayPlacementCanonicalization.areEquivalent(
+                        normalized,
+                        placement
+                    ) {
                         commitCurrentOverlayPlacement(interactionID: UUID())
                     }
                     return
@@ -5138,7 +5223,10 @@ final class AppStore: ObservableObject {
                 remoteRevision: remoteRevision
             )
             applyPresentedOverlayPlacement(normalized)
-            if normalized != placement || remoteIntent != nil {
+            if !OverlayPlacementCanonicalization.areEquivalent(
+                normalized,
+                placement
+            ) || remoteIntent != nil {
                 commitCurrentOverlayPlacement(interactionID: UUID())
             }
             return
@@ -5222,7 +5310,15 @@ final class AppStore: ObservableObject {
 
     private func commitCurrentOverlayPlacement(interactionID: UUID) {
         let placement = currentOverlayPlacement()
-        if overlayPlacementAuthority.pending?.placement == placement {
+        if let pending = overlayPlacementAuthority.pending,
+           OverlayPlacementCanonicalization.areEquivalent(
+               pending.placement,
+               placement
+           ) {
+            OverlayInteractionTelemetry.shared.finish(
+                interactionID: interactionID,
+                result: .success
+            )
             return
         }
         let commit = overlayPlacementAuthority.commitLocal(
@@ -5235,32 +5331,62 @@ final class AppStore: ObservableObject {
     private func enqueueOverlayPlacementCommit(
         _ commit: OverlayPlacementCommit
     ) {
+        OverlayInteractionTelemetry.shared.commitQueued(
+            interactionID: commit.interactionID
+        )
         saveOverlayPlacementJournal(commit)
-        startOverlayPlacementSaveWorkerIfNeeded()
+        startOverlayPlacementSaveWorkerIfNeeded(reason: .newLocalCommit)
     }
 
-    private func startOverlayPlacementSaveWorkerIfNeeded() {
+    private func startOverlayPlacementSaveWorkerIfNeeded(
+        reason: OverlayPlacementSaveResumeReason
+    ) {
         guard overlayPlacementSaveTask == nil,
-              overlayPlacementAuthority.pending != nil else { return }
+              let pending = overlayPlacementAuthority.pending else { return }
+        if overlayPlacementExhaustedGeneration == pending.localRevision {
+            guard reason.mayResumeExhaustedGeneration else { return }
+            overlayPlacementExhaustedGeneration = nil
+        } else if reason == .newLocalCommit {
+            overlayPlacementExhaustedGeneration = nil
+        }
         overlayPlacementSaveTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            while !Task.isCancelled,
+            workerLoop: while !Task.isCancelled,
                   let commit = self.overlayPlacementAuthority.pending {
-                await self.saveOverlayPlacement(commit)
+                let outcome = await self.saveOverlayPlacement(commit)
+                switch outcome {
+                case .converged, .superseded:
+                    continue workerLoop
+                case let .exhausted(generation):
+                    if self.overlayPlacementAuthority.pending?.localRevision
+                        == generation {
+                        self.overlayPlacementExhaustedGeneration =
+                            generation
+                    }
+                    break workerLoop
+                case .cancelled:
+                    break workerLoop
+                }
             }
             self.overlayPlacementSaveTask = nil
         }
     }
 
-    private func resumePendingOverlayPlacementSaveIfNeeded() {
+    private func resumePendingOverlayPlacementSaveIfNeeded(
+        reason: OverlayPlacementSaveResumeReason
+    ) {
         guard overlayPlacementSaveTask == nil,
               overlayPlacementAuthority.pending != nil else { return }
-        startOverlayPlacementSaveWorkerIfNeeded()
+        startOverlayPlacementSaveWorkerIfNeeded(reason: reason)
+    }
+
+    func retryPendingOverlayPlacementSave() {
+        resumePendingOverlayPlacementSaveIfNeeded(reason: .explicitRetry)
     }
 
     private func saveOverlayPlacement(
         _ initialCommit: OverlayPlacementCommit
-    ) async {
+    ) async -> OverlayPlacementSaveRunOutcome {
         let retryDelays: [Duration] = [
             .zero,
             .milliseconds(250),
@@ -5268,20 +5394,39 @@ final class AppStore: ObservableObject {
             .seconds(1),
             .seconds(2),
         ]
+        let telemetryInteractionID = initialCommit.interactionID
+        let saveStartedAt = ProcessInfo.processInfo.systemUptime
+        func superseded() -> OverlayPlacementSaveRunOutcome {
+            OverlayInteractionTelemetry.shared.finish(
+                interactionID: telemetryInteractionID,
+                result: .stale
+            )
+            return .superseded
+        }
+        func cancelled() -> OverlayPlacementSaveRunOutcome {
+            OverlayInteractionTelemetry.shared.finish(
+                interactionID: telemetryInteractionID,
+                result: .suppressed
+            )
+            return .cancelled
+        }
         var commit = initialCommit
-        var attempt = 0
-        while !Task.isCancelled {
-            guard overlayPlacementAuthority.pending == commit else { return }
-            let delay = retryDelays[min(attempt, retryDelays.count - 1)]
+        for attempt in retryDelays.indices {
+            guard !Task.isCancelled else { return cancelled() }
+            guard overlayPlacementAuthority.pending?.localRevision
+                == commit.localRevision else { return superseded() }
+            let delay = retryDelays[attempt]
             if delay != .zero {
                 do {
                     try await overlayPlacementRetrySleeper(delay)
                 } catch {
-                    return
+                    return cancelled()
                 }
             }
             guard !Task.isCancelled,
-                  overlayPlacementAuthority.pending == commit else { return }
+                  overlayPlacementAuthority.pending?.localRevision
+                    == commit.localRevision else { return superseded() }
+            let attemptStartedAt = ProcessInfo.processInfo.systemUptime
             do {
                 let data = try JSONEncoder().encode(commit.placement)
                 guard var object = try JSONSerialization.jsonObject(
@@ -5290,15 +5435,26 @@ final class AppStore: ObservableObject {
                     throw PetCoreClientError.invalidResponse
                 }
                 object["expected_revision"] = String(commit.baseRemoteRevision)
+                OverlayInteractionTelemetry.shared.requestAttempt(
+                    interactionID: telemetryInteractionID,
+                    attempt: attempt + 1
+                )
                 let result = try await requestPetCore(
                     method: "overlay.placement.update",
                     params: object
                 )
                 let response = try OverlayPlacementUpdateResponse(result: result)
+                guard overlayPlacementAuthority.pending?.localRevision
+                    == commit.localRevision else { return superseded() }
                 guard response.ok else {
                     guard response.conflict else {
                         throw PetCoreClientError.invalidResponse
                     }
+                    OverlayInteractionTelemetry.shared.requestResult(
+                        interactionID: telemetryInteractionID,
+                        attempt: attempt + 1,
+                        result: .conflict
+                    )
                     if response.intent != nil {
                         guard let normalized = normalizedOverlayPlacement(
                             response.placement
@@ -5309,12 +5465,11 @@ final class AppStore: ObservableObject {
                                 remoteRevision: response.placementRevision,
                                 interactionID: UUID()
                             ) else {
-                            return
+                            return superseded()
                         }
                         applyPresentedOverlayPlacement(normalized)
                         saveOverlayPlacementJournal(consume)
                         commit = consume
-                        attempt = 0
                         continue
                     }
                     let reconciliation = overlayPlacementAuthority
@@ -5328,23 +5483,34 @@ final class AppStore: ObservableObject {
                         removeOverlayPlacementJournalIfMatching(
                             journalEntry(for: commit)
                         )
-                        return
+                        OverlayInteractionTelemetry.shared.finish(
+                            interactionID: telemetryInteractionID,
+                            result: .success
+                        )
+                        return .converged
                     case let .retry(rebased):
                         saveOverlayPlacementJournal(rebased)
                         commit = rebased
-                        attempt = 0
                         continue
                     case .stale:
                         removeOverlayPlacementJournalIfMatching(
                             journalEntry(for: commit)
                         )
-                        return
+                        return superseded()
                     }
                 }
                 guard response.intent == nil,
-                      response.placement == commit.placement else {
+                      OverlayPlacementCanonicalization.areEquivalent(
+                          response.placement,
+                          commit.placement
+                      ) else {
                     throw PetCoreClientError.invalidResponse
                 }
+                OverlayInteractionTelemetry.shared.requestResult(
+                    interactionID: telemetryInteractionID,
+                    attempt: attempt + 1,
+                    result: .success
+                )
                 let reconciliation = overlayPlacementAuthority.acknowledge(
                     commit,
                     remoteRevision: response.placementRevision
@@ -5354,21 +5520,29 @@ final class AppStore: ObservableObject {
                     removeOverlayPlacementJournalIfMatching(
                         journalEntry(for: commit)
                     )
-                    return
+                    OverlayInteractionTelemetry.shared.finish(
+                        interactionID: telemetryInteractionID,
+                        result: .success
+                    )
+                    return .converged
                 case let .retry(rebased):
                     removeOverlayPlacementJournalIfMatching(
                         journalEntry(for: commit)
                     )
                     saveOverlayPlacementJournal(rebased)
                     commit = rebased
-                    attempt = 0
                 case .stale:
                     removeOverlayPlacementJournalIfMatching(
                         journalEntry(for: commit)
                     )
-                    return
+                    return superseded()
                 }
             } catch {
+                OverlayInteractionTelemetry.shared.requestResult(
+                    interactionID: telemetryInteractionID,
+                    attempt: attempt + 1,
+                    result: .transportFailure
+                )
                 overlayPlacementAuthority.failCommit(commit)
                 diagnostics.log(
                     .warning,
@@ -5376,17 +5550,47 @@ final class AppStore: ObservableObject {
                     event: "placement_save_failed",
                     metadata: [
                         "attempt": .integer(Int64(attempt + 1)),
-                        "local_revision": .integer(
-                            Int64(clamping: commit.localRevision)
+                        "duration_bucket": .string(
+                            OverlayInteractionDurationBucket(
+                                milliseconds: (
+                                    ProcessInfo.processInfo.systemUptime
+                                        - attemptStartedAt
+                                ) * 1_000
+                            ).rawValue
                         ),
+                        "generation_category": .string("current"),
+                        "result_kind": .string("transport_or_protocol_failure"),
                     ]
                 )
                 if attempt >= retryDelays.count - 1 {
                     statusText = "桌宠位置保存失败"
                 }
-                attempt = min(attempt + 1, retryDelays.count)
             }
         }
+        if Task.isCancelled { return cancelled() }
+        OverlayInteractionTelemetry.shared.finish(
+            interactionID: telemetryInteractionID,
+            result: .exhausted
+        )
+        diagnostics.log(
+            .warning,
+            category: "overlay",
+            event: "placement_save_exhausted",
+            metadata: [
+                "attempt": .integer(Int64(retryDelays.count)),
+                "duration_bucket": .string(
+                    OverlayInteractionDurationBucket(
+                        milliseconds: (
+                            ProcessInfo.processInfo.systemUptime
+                                - saveStartedAt
+                        ) * 1_000
+                    ).rawValue
+                ),
+                "generation_category": .string("current"),
+                "result_kind": .string("exhausted"),
+            ]
+        )
+        return .exhausted(generation: commit.localRevision)
     }
 
     private func loadOverlayPlacementJournalOnce()

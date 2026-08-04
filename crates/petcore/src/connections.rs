@@ -30,6 +30,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -41,8 +42,8 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         include_str!("../../../skills/agent-pet-maker/SKILL.md"),
     ),
     (
-        "references/petpack-v2.md",
-        include_str!("../../../skills/agent-pet-maker/references/petpack-v2.md"),
+        "references/petpack-v3.md",
+        include_str!("../../../skills/agent-pet-maker/references/petpack-v3.md"),
     ),
     (
         "references/create-modify.md",
@@ -55,12 +56,20 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "references/transparent-frame-production.md",
+        include_str!("../../../skills/agent-pet-maker/references/transparent-frame-production.md"),
+    ),
+    (
         "references/security.md",
         include_str!("../../../skills/agent-pet-maker/references/security.md"),
     ),
     (
         "scripts/petpack_workspace.py",
         include_str!("../../../skills/agent-pet-maker/scripts/petpack_workspace.py"),
+    ),
+    (
+        "scripts/prepare_transparent_frames.py",
+        include_str!("../../../skills/agent-pet-maker/scripts/prepare_transparent_frames.py"),
     ),
     (
         "agents/openai.yaml",
@@ -70,9 +79,20 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         "tests/test_petpack_workspace.py",
         include_str!("../../../skills/agent-pet-maker/tests/test_petpack_workspace.py"),
     ),
+    (
+        "tests/test_prepare_transparent_frames.py",
+        include_str!("../../../skills/agent-pet-maker/tests/test_prepare_transparent_frames.py"),
+    ),
+];
+const AGENT_PET_MAKER_EXECUTABLE_FILES: &[&str] = &[
+    "scripts/petpack_workspace.py",
+    "scripts/prepare_transparent_frames.py",
 ];
 const CODEX_PLUGIN_JSON: &str = include_str!("../../../plugins/codex/.codex-plugin/plugin.json");
 const CODEX_HOOKS_TEMPLATE: &str = include_str!("../../../plugins/codex/hooks/hooks.json.tpl");
+const CODEX_STUDIO_SKILL_HISTORY_JSON: &str =
+    include_str!("../resources/codex-studio-skill-history.json");
+const CODEX_STUDIO_SKILL_HISTORY_SCHEMA: &str = "apc.codex-studio-skill-history.v1";
 const CLAUDE_SETTINGS_TEMPLATE: &str =
     include_str!("../../../plugins/claude-code/settings.fragment.json.tpl");
 const PI_EXTENSION_TEMPLATE: &str = include_str!("../../../plugins/pi/agent-pet-companion.ts.tpl");
@@ -115,6 +135,33 @@ enum CodexMarketplaceEntryState {
     OwnedOutdated,
     Conflict,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexStudioSkillHistory {
+    schema_version: String,
+    retired_sha256: Vec<String>,
+}
+
+static RETIRED_CODEX_STUDIO_SKILL_SHA256: LazyLock<Option<BTreeSet<String>>> =
+    LazyLock::new(|| {
+        let history: CodexStudioSkillHistory =
+            serde_json::from_str(CODEX_STUDIO_SKILL_HISTORY_JSON).ok()?;
+        if history.schema_version != CODEX_STUDIO_SKILL_HISTORY_SCHEMA
+            || history.retired_sha256.is_empty()
+            || !history
+                .retired_sha256
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            || !history
+                .retired_sha256
+                .iter()
+                .all(|digest| is_lowercase_sha256(digest))
+        {
+            return None;
+        }
+        Some(history.retired_sha256.into_iter().collect())
+    });
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -3036,7 +3083,7 @@ fn write_codex_agent_pet_maker(root: &Path) -> Result<()> {
     }
     for (relative_path, content) in AGENT_PET_MAKER_FILES {
         let path = skill_root.join(relative_path);
-        let mode = if *relative_path == "scripts/petpack_workspace.py" {
+        let mode = if AGENT_PET_MAKER_EXECUTABLE_FILES.contains(relative_path) {
             0o755
         } else {
             0o644
@@ -3620,7 +3667,7 @@ fn check_codex_hooks(
             CheckStatus::NeedsFix
         },
         if configured {
-            "configured: Hook 键、group、command 与当前 App 模板精确一致；review/failed 不由 hooks 宣称".to_string()
+            "configured: Hook 键、group、command 与当前 App 模板精确一致；failed 不由 hooks 直接宣称".to_string()
         } else if conflict {
             format!(
                 "路径是符号链接或非普通受管文件，拒绝覆盖：{}",
@@ -3996,16 +4043,23 @@ fn check_codex_agent_pet_maker(root: &Path) -> ConnectionCheckItem {
             },
         ));
     }
-    let helper_is_executable = directories_are_safe
-        && fs::symlink_metadata(skill_root.join("scripts/petpack_workspace.py"))
-            .map(|metadata| {
-                metadata.is_file()
-                    && !metadata.file_type().is_symlink()
-                    && metadata.permissions().mode() & 0o111 != 0
-            })
-            .unwrap_or(false);
+    let non_executable_helpers = AGENT_PET_MAKER_EXECUTABLE_FILES
+        .iter()
+        .filter(|relative_path| {
+            !directories_are_safe
+                || !fs::symlink_metadata(skill_root.join(relative_path))
+                    .map(|metadata| {
+                        metadata.is_file()
+                            && !metadata.file_type().is_symlink()
+                            && metadata.permissions().mode() & 0o111 != 0
+                    })
+                    .unwrap_or(false)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let helpers_are_executable = non_executable_helpers.is_empty();
 
-    let installed = missing_or_outdated.is_empty() && helper_is_executable;
+    let installed = missing_or_outdated.is_empty() && helpers_are_executable;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if path_conflict {
@@ -4032,9 +4086,11 @@ fn check_codex_agent_pet_maker(root: &Path) -> ConnectionCheckItem {
             )
         } else if fs::symlink_metadata(&skill_root).is_ok() {
             let mut reasons = missing_or_outdated;
-            if !helper_is_executable {
-                reasons.push("scripts/petpack_workspace.py（不可执行）".to_string());
-            }
+            reasons.extend(
+                non_executable_helpers
+                    .iter()
+                    .map(|path| format!("{path}（不可执行）")),
+            );
             format!("已安装不完整或旧版本，待更新：{}", reasons.join("、"))
         } else {
             format!("待写入 {}", skill_root.display())
@@ -5593,7 +5649,7 @@ fn check_event_roundtrip(
                 "--source".to_string(),
                 source_arg.to_string(),
                 "--event-type".to_string(),
-                "review".to_string(),
+                "done".to_string(),
                 "--title".to_string(),
                 "连接自检".to_string(),
                 "--detail".to_string(),
@@ -6090,11 +6146,12 @@ fn codex_hooks_are_owned(path: &Path, root: &Path) -> bool {
         })
 }
 
-// This is the byte-for-byte V1 Studio Skill shipped before the V2 transition.
-// Add a historical digest here before changing an App-owned Studio Skill;
-// semantic markers are intentionally insufficient ownership evidence.
-const RETIRED_CODEX_STUDIO_SKILL_SHA256: &[&str] =
-    &["b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"];
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
 fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
     managed_regular_file_state(root, path) == ManagedPathState::Safe
@@ -6103,7 +6160,9 @@ fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
                 return true;
             }
             let digest = hex::encode(Sha256::digest(&content));
-            RETIRED_CODEX_STUDIO_SKILL_SHA256.contains(&digest.as_str())
+            RETIRED_CODEX_STUDIO_SKILL_SHA256
+                .as_ref()
+                .is_some_and(|retired| retired.contains(&digest))
         })
 }
 
@@ -6944,7 +7003,7 @@ fn is_agent_pet_claude_arguments(arguments: &str) -> bool {
         .map_or((arguments, ""), |(event_type, suffix)| (event_type, suffix));
     let known_event = matches!(
         event_type,
-        "auto" | "start" | "tool" | "waiting" | "review" | "done" | "failed"
+        "auto" | "start" | "thinking" | "plan" | "tool" | "waiting" | "done" | "failed"
     );
     known_event && matches!(suffix, "" | ">/dev/null 2>&1" | ">/dev/null 2>&1 || true")
 }
@@ -9012,10 +9071,15 @@ mod tests {
 
         let retired_v1 =
             include_bytes!("../tests/fixtures/retired-agent-pet-studio-v1.md").as_slice();
+        let retired_digests = super::RETIRED_CODEX_STUDIO_SKILL_SHA256
+            .as_ref()
+            .expect("retired Studio Skill history must be valid");
         assert_eq!(
             hex::encode(Sha256::digest(retired_v1)),
-            super::RETIRED_CODEX_STUDIO_SKILL_SHA256[0]
+            "b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"
         );
+        assert!(retired_digests
+            .contains("b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"));
         std::fs::write(&studio, retired_v1).unwrap();
         assert!(super::codex_studio_skill_is_owned(&studio, &root));
         super::repair_codex(&root, &cli).unwrap();
@@ -9042,6 +9106,22 @@ mod tests {
 
         super::remove_owned_codex_connector_files(&root).unwrap();
         assert_eq!(std::fs::read(&studio).unwrap(), customized_retired);
+    }
+
+    #[test]
+    fn codex_upgrade_history_includes_exact_retired_skills_but_not_the_current_skill() {
+        let retired = super::RETIRED_CODEX_STUDIO_SKILL_SHA256
+            .as_ref()
+            .expect("retired Studio Skill history must be valid");
+        assert!(
+            retired.contains("98ab92e04810099587bf50f2d340ea588568dd305a3d4a6fb177f08d6c344f59")
+        );
+        assert!(
+            retired.contains("b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc")
+        );
+        assert!(!retired.contains(&hex::encode(Sha256::digest(
+            super::PET_STUDIO_SKILL_MD.as_bytes()
+        ))));
     }
 
     #[test]
@@ -9315,7 +9395,7 @@ mod tests {
         let forged_build = "'/Users/test/Library/Application Support/AgentPetCompanion/runtime/versions/../../foreign/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let foreign = "'/Users/test/other/runtime/versions/0.1.0/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
         let legacy_bundle = "'/Users/test/project/dist/AgentPetCompanion.app/Contents/Resources/bin/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1";
-        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-07-31-activity-v8' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
+        let current_with_contract = "APC_CONNECTOR_CONTRACT_VERSION='claude-hooks-2026-08-01-events-v9' '/Users/test/Library/Application Support/AgentPetCompanion/runtime/current/petcore-cli' agent hook --source claude_code --event-type auto >/dev/null 2>&1 || true";
 
         assert!(is_agent_pet_claude_command(
             prior,

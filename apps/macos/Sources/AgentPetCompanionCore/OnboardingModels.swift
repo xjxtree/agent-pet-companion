@@ -107,7 +107,7 @@ public enum OnboardingDemoPhase: String, CaseIterable, Equatable, Sendable {
 
     public var lifecycleState: ProductLifecycleState {
         switch self {
-        case .thinking: .start
+        case .thinking: .thinking
         case .working: .tool
         case .needsAttention: .waiting
         case .done: .done

@@ -20,7 +20,7 @@
     "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
     "project_path": { "type": ["string", "null"], "maxLength": 1024, "x-maxUtf8Bytes": 1024 },
     "session_id": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
-    "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
+    "event_type": { "enum": ["start", "thinking", "plan", "tool", "waiting", "done", "failed"] },
     "title": { "type": "string" },
     "detail": { "type": "null" },
     "payload_json": { "$ref": "#/$defs/persistedEnvelope" },
@@ -28,9 +28,10 @@
   },
   "oneOf": [
     { "properties": { "event_type": { "const": "start" }, "title": { "const": "开始处理" } } },
+    { "properties": { "event_type": { "const": "thinking" }, "title": { "const": "思考" } } },
+    { "properties": { "event_type": { "const": "plan" }, "title": { "const": "规划" } } },
     { "properties": { "event_type": { "const": "tool" }, "title": { "const": "执行工具" } } },
     { "properties": { "event_type": { "const": "waiting" }, "title": { "const": "等待确认" } } },
-    { "properties": { "event_type": { "const": "review" }, "title": { "const": "待查看" } } },
     { "properties": { "event_type": { "const": "done" }, "title": { "const": "完成" } } },
     { "properties": { "event_type": { "const": "failed" }, "title": { "const": "失败" } } }
   ],
@@ -51,7 +52,7 @@
         "external_event_id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S", "x-maxUtf8Bytes": 256 },
         "source_event": {
           "enum": [
-            "start", "tool", "waiting", "review", "done", "failed",
+            "start", "thinking", "plan", "tool", "waiting", "done", "failed",
             "SessionStart", "Setup", "InstructionsLoaded", "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PermissionRequest",
             "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure",
             "SessionEnd", "Notification", "Elicitation", "ElicitationResult",
@@ -64,7 +65,7 @@
             "permission.v2.asked", "permission.v2.replied",
             "question.asked", "question.replied", "question.rejected",
             "question.v2.asked", "question.v2.replied", "question.v2.rejected",
-            "session.next.prompt.admitted", "session.next.step.ended", "session.next.step.failed",
+            "session.next.prompt.admitted", "session.next.reasoning.ended", "session.next.step.ended", "session.next.step.failed",
             "message.user", "message.assistant",
             "tool.execute.before", "tool.execute.after", "command.execute.before", "command.execute.after",
             "session.compaction.started", "session.compaction.ended", "session.plan.updated", "connector.probe",
@@ -101,7 +102,7 @@
         "activity_content": { "type": ["string", "null"], "maxLength": 1024, "x-maxUtf8Bytes": 1024 },
         "interaction_kind": {
           "type": ["string", "null"],
-          "enum": ["approval_required", "input_required", "review_required", null]
+          "enum": ["approval_required", "input_required", null]
         },
         "project_label": { "type": ["string", "null"], "maxLength": 128, "x-maxUtf8Bytes": 128 },
         "session_title": { "type": ["string", "null"], "maxLength": 160, "x-maxUtf8Bytes": 160 },

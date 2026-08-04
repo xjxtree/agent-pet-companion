@@ -1,6 +1,6 @@
 {
   "release_version": "__APC_CONNECTOR_RELEASE_VERSION__",
-  "contract_version": "claude-hooks-2026-07-31-activity-v8",
+  "contract_version": "claude-hooks-2026-08-01-events-v9",
   "hooks": {
     "SessionStart": [{"hooks":[{"type":"command","command":"__APC_HOOK__ >/dev/null 2>&1 || true","async":false,"timeout":2}]}],
     "Setup": [{"hooks":[{"type":"command","command":"__APC_HOOK__ >/dev/null 2>&1 || true","async":false,"timeout":2}]}],

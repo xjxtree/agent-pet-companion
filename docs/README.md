@@ -23,7 +23,7 @@ When sources disagree, use this order:
 | Architecture | [Runtime and IPC](architecture/runtime-and-ipc.md) | Processes, startup/update lifecycle, transports, RPC, and diagnostics / 进程、启动与更新、传输、RPC 和诊断 |
 | Architecture | [Data model](architecture/data-model.md) | SQLite, file-backed revisions, typed contracts, retention, and invariants / SQLite、文件 revision、类型契约、保留与不变量 |
 | Integrations | [Agent connectors](integrations/agent-connectors.md) | Codex, Claude Code, Pi, and OpenCode event boundaries / 四类 Agent 的连接与事件边界 |
-| Specifications | [`.petpack` V2](specifications/AgentPetCompanion_Petpack_Whitepaper_V2.md) | Portable pet package, authored timing, and producer contract / 可移植宠物包、制作时序与生产者契约 |
+| Specifications | [`.petpack` V3](specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) | Portable nine-action pet package, authored timing, interactions, and producer contract / 九动作可移植宠物包、制作时序、交互与生产者契约 |
 | Development | [Validation profiles](development/validation.md) | What each gate proves and when it may run / 各门禁的证明范围与运行条件 |
 | Release | [macOS GitHub Release procedure](release/macos-release.md) | Ad-hoc-signed thin arm64/x86_64 archives, latest stable API validation, manual replacement, downloaded-asset revalidation, post-replacement convergence, and first-open consent / ad-hoc 签名的 arm64/x86_64 thin 归档、latest stable API 校验、手动替换、下载后复验、替换后收敛与首次打开授权 |
 | Repository root | [CHANGELOG](../CHANGELOG.md) | One versioned user-visible change record per GitHub Release / 每个 GitHub Release 对应的版本变更记录 |

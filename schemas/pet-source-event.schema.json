@@ -25,24 +25,24 @@
     },
     "name": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
     "style": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" },
-    "quality": { "enum": ["low", "standard"] },
+    "quality": { "enum": ["low", "standard", "high"] },
     "render_size": { "$ref": "#/$defs/renderSize" },
     "states": {
       "type": "array",
-      "maxItems": 7,
+      "maxItems": 9,
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/stateName" }
     },
     "changed_states": {
       "type": "array",
-      "maxItems": 7,
+      "maxItems": 9,
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/stateName" }
     },
     "state_timings": {
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 9,
+      "maxItems": 9,
       "items": { "$ref": "#/$defs/manifestState" }
     },
     "state_frame_counts": { "$ref": "#/$defs/stateFrameCounts" },
@@ -74,6 +74,10 @@
     {
       "if": { "properties": { "quality": { "const": "standard" } }, "required": ["quality"] },
       "then": { "properties": { "render_size": { "$ref": "#/$defs/standardSize" } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "high" } }, "required": ["quality"] },
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/highSize" } } }
     }
   ],
   "$defs": {
@@ -84,12 +88,13 @@
       "pattern": "\\S"
     },
     "stateName": {
-      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+      "enum": ["idle", "thinking", "tool", "waiting", "done", "failed", "acknowledge", "drag_left", "drag_right"]
     },
     "renderSize": {
       "oneOf": [
         { "$ref": "#/$defs/lowSize" },
-        { "$ref": "#/$defs/standardSize" }
+        { "$ref": "#/$defs/standardSize" },
+        { "$ref": "#/$defs/highSize" }
       ]
     },
     "renderSizeShape": {
@@ -109,6 +114,10 @@
       "$ref": "#/$defs/renderSizeShape",
       "properties": { "width": { "const": 384 }, "height": { "const": 416 } }
     },
+    "highSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 576 }, "height": { "const": 624 } }
+    },
     "frameDurations": {
       "type": "array",
       "minItems": 2,
@@ -120,7 +129,7 @@
       "additionalProperties": false,
       "required": ["mode"],
       "properties": {
-        "mode": { "enum": ["loop", "once_hold", "periodic", "burst_then_settle"] },
+        "mode": { "enum": ["loop", "periodic", "burst_then_settle", "burst_then_idle", "once_then_return"] },
         "entry_repeat_count": { "type": "integer", "minimum": 1, "maximum": 8 },
         "settle_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 },
         "cooldown_ms": {
@@ -144,18 +153,6 @@
           }
         },
         {
-          "if": { "properties": { "mode": { "const": "once_hold" } }, "required": ["mode"] },
-          "then": {
-            "required": ["settle_frame_index"],
-            "not": {
-              "anyOf": [
-                { "required": ["entry_repeat_count"] },
-                { "required": ["cooldown_ms"] }
-              ]
-            }
-          }
-        },
-        {
           "if": { "properties": { "mode": { "const": "periodic" } }, "required": ["mode"] },
           "then": {
             "required": ["cooldown_ms"],
@@ -172,6 +169,30 @@
           "then": {
             "required": ["entry_repeat_count", "settle_frame_index"],
             "not": { "required": ["cooldown_ms"] }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "burst_then_idle" } }, "required": ["mode"] },
+          "then": {
+            "required": ["entry_repeat_count"],
+            "not": {
+              "anyOf": [
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "once_then_return" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
           }
         }
       ]
@@ -197,15 +218,17 @@
     "stateFrameCounts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["idle", "start", "tool", "waiting", "review", "done", "failed"],
+      "required": ["idle", "thinking", "tool", "waiting", "done", "failed", "acknowledge", "drag_left", "drag_right"],
       "properties": {
         "idle": { "type": "integer", "minimum": 2, "maximum": 40 },
-        "start": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "thinking": { "type": "integer", "minimum": 2, "maximum": 40 },
         "tool": { "type": "integer", "minimum": 2, "maximum": 40 },
         "waiting": { "type": "integer", "minimum": 2, "maximum": 40 },
-        "review": { "type": "integer", "minimum": 2, "maximum": 40 },
         "done": { "type": "integer", "minimum": 2, "maximum": 40 },
-        "failed": { "type": "integer", "minimum": 2, "maximum": 40 }
+        "failed": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "acknowledge": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "drag_left": { "type": "integer", "minimum": 2, "maximum": 40 },
+        "drag_right": { "type": "integer", "minimum": 2, "maximum": 40 }
       }
     }
   }

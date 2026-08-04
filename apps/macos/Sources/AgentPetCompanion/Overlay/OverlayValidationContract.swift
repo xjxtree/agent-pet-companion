@@ -443,12 +443,10 @@ public enum AgentPetCompanionUIValidationContract {
                 title: "arbitrary transport title",
                 createdAt: "2026-07-23T00:00:00Z"
             ))
-            let expectedStatus = APCLocalizedPresentation.lifecycleTitle(
-                ProductLifecycleState(eventKind: eventType)
-            )
+            let expectedStatus = APCLocalizedPresentation.eventTitle(eventType)
             try require(
                 content.statusText == expectedStatus,
-                "bubble status did not match the authored pet action for \(eventType)"
+                "bubble status did not preserve the filtered event for \(eventType)"
             )
             try require(
                 content.sessionTitle != content.statusText
@@ -545,7 +543,8 @@ public enum AgentPetCompanionUIValidationContract {
         let oneShot = FrameTimeline(
             durationsMS: [100, 200, 300],
             playback: PlaybackContract(
-                mode: .onceHold,
+                mode: .burstThenSettle,
+                entryRepeatCount: 1,
                 settleFrameIndex: 1
             ),
             reducedMotionFrameIndex: 2
@@ -639,7 +638,7 @@ public enum AgentPetCompanionUIValidationContract {
             try await pipeline.prepare(request)
         }.value
 
-        try require(prepared.sourceKind == .eager, "V2 state did not use eager frame handoff")
+        try require(prepared.sourceKind == .eager, "V3 action did not use eager frame handoff")
         try require(
             prepared.sourceFrameCount == timing.frameDurationsMS.count,
             "source frame count did not match the timing contract"

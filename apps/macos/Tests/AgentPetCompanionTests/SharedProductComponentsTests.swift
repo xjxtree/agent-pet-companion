@@ -16,7 +16,6 @@ struct SharedProductComponentsTests {
                     .checking,
                     .checking,
                     .attention,
-                    .attention,
                     .normal,
                     .error,
                 ]
@@ -196,14 +195,19 @@ struct SharedProductComponentsTests {
         #expect(!overlaySource.contains("struct SessionBubbleRow: View"))
         #expect(overlaySource.contains("SessionBubbleRow(\n                    session: session,"))
 
-        #expect(sharedSource.contains("if session.canOpen {"))
+        #expect(sharedSource.contains("Button(action: action) {\n            rowContent"))
+        #expect(!sharedSource.contains("if session.canOpen {"))
         #expect(sharedSource.contains(".focused($focused)"))
+        #expect(sharedSource.contains(
+            "Image(systemName: session.canOpen\n                    ? \"arrow.up.forward\"\n                    : \"exclamationmark.circle\")"
+        ))
         #expect(sharedSource.contains(".opacity(hovered || focused ? 1 : 0)"))
+        #expect(sharedSource.contains("if hovered || focused {"))
         #expect(!sharedSource.contains("Text(session.actionLabel)"))
         #expect(sharedSource.contains(".accessibilityIdentifier(\"overlay.session.\\(session.id)\")"))
         #expect(sharedSource.contains(".accessibilityLabel(session.accessibilityLabel)"))
         #expect(sharedSource.contains(".fill((statusColor ?? .clear).opacity(0.12))"))
-        #expect(sharedSource.contains("case .start, .tool, nil: nil"))
+        #expect(sharedSource.contains("case .start, .thinking, .plan, .tool, nil: nil"))
         #expect(!sharedSource.contains("case .start, .tool: .blue"))
         let adaptiveDetailLineLimit = """
         Text(session.primaryDetailText)
@@ -215,7 +219,7 @@ struct SharedProductComponentsTests {
         """
         #expect(sharedSource.contains(adaptiveDetailLineLimit))
         #expect(sharedSource.contains(
-            "openLabel: session.canOpen ? session.actionLabel : nil"
+            "openLabel: session.actionLabel"
         ))
     }
 
@@ -430,7 +434,7 @@ struct SharedProductCopyFixture: CustomTestStringConvertible, Sendable {
             AttentionPresetOption(
                 preset: .onlyWhenNeeded,
                 title: "Only When I Am Needed",
-                detail: "Show waiting, review, and failed messages."
+                detail: "Show waiting and failed messages."
             ),
             AttentionPresetOption(
                 preset: .standard,
@@ -440,7 +444,7 @@ struct SharedProductCopyFixture: CustomTestStringConvertible, Sendable {
             AttentionPresetOption(
                 preset: .allActivity,
                 title: "All Activity",
-                detail: "Show all six persisted event types."
+                detail: "Show all eight persisted event types."
             ),
             AttentionPresetOption(
                 preset: .custom,
@@ -472,7 +476,7 @@ struct SharedProductCopyFixture: CustomTestStringConvertible, Sendable {
             AttentionPresetOption(
                 preset: .allActivity,
                 title: "全部活动",
-                detail: "显示全部六种持久化消息事件。"
+                detail: "显示全部八种持久化消息事件。"
             ),
             AttentionPresetOption(
                 preset: .custom,

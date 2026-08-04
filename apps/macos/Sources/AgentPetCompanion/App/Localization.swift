@@ -97,7 +97,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayStatusTool = "overlay.status.tool"
     case overlayStatusNeedsInput = "overlay.status.needs_input"
     case overlayStatusReady = "overlay.status.ready"
-    case overlayStatusReview = "overlay.status.review"
     case overlayStatusDone = "overlay.status.done"
     case overlayStatusBlocked = "overlay.status.blocked"
     case overlayActivityThinking = "overlay.activity.thinking"
@@ -118,7 +117,6 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case overlayDetailBlocked = "overlay.detail.blocked"
     case overlayActionOpen = "overlay.action.open"
     case overlayActionHandle = "overlay.action.handle"
-    case overlayActionReview = "overlay.action.review"
     case commonCancel = "common.cancel"
     case commonClose = "common.close"
     case commonRetry = "common.retry"
@@ -220,12 +218,21 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case aboutLicense = "about.link.license"
     case aboutVersionFormat = "about.version.format"
     case productLifecycleIdle = "product.lifecycle.idle"
-    case productLifecycleStart = "product.lifecycle.start"
+    case productLifecycleThinking = "product.lifecycle.thinking"
     case productLifecycleTool = "product.lifecycle.tool"
     case productLifecycleWaiting = "product.lifecycle.waiting"
-    case productLifecycleReview = "product.lifecycle.review"
     case productLifecycleDone = "product.lifecycle.done"
     case productLifecycleFailed = "product.lifecycle.failed"
+    case productInteractionAcknowledge = "product.interaction.acknowledge"
+    case productInteractionDragLeft = "product.interaction.drag_left"
+    case productInteractionDragRight = "product.interaction.drag_right"
+    case productEventStart = "product.event.start"
+    case productEventThinking = "product.event.thinking"
+    case productEventPlan = "product.event.plan"
+    case productEventTool = "product.event.tool"
+    case productEventWaiting = "product.event.waiting"
+    case productEventDone = "product.event.done"
+    case productEventFailed = "product.event.failed"
     case productNavigationExactSession = "product.navigation.exact_session"
     case productNavigationAgentHostFormat = "product.navigation.agent_host_format"
     case productNavigationUnavailable = "product.navigation.unavailable"
@@ -252,8 +259,10 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case styleUnspecified = "style.unspecified"
     case qualityLow = "quality.low"
     case qualityStandard = "quality.standard"
+    case qualityHigh = "quality.high"
     case qualityLowDetailFormat = "quality.low_detail.format"
     case qualityStandardDetailFormat = "quality.standard_detail.format"
+    case qualityHighDetailFormat = "quality.high_detail.format"
     case appearanceSystem = "appearance.system"
     case appearanceLight = "appearance.light"
     case appearanceDark = "appearance.dark"
@@ -310,6 +319,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case studioStyleHeading = "studio.brief.style_heading"
     case studioQualityHeading = "studio.brief.quality_heading"
     case studioQualityContractFormat = "studio.brief.quality_contract_format"
+    case studioHighQualityUnsupported = "studio.brief.high_quality_unsupported"
     case studioAuthoredTimingSummaryFormat = "studio.authored_timing_summary.format"
     case studioReferencesHeading = "studio.brief.references_heading"
     case studioReferencesPrivacy = "studio.brief.references_privacy"
@@ -471,11 +481,13 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configTimeoutPreviewFormat = "config.preview.timeout_format"
     case configPersistencePreview = "config.preview.persistence"
     case configEventStartDetail = "config.event.start_detail"
+    case configEventThinkingDetail = "config.event.thinking_detail"
+    case configEventPlanDetail = "config.event.plan_detail"
     case configEventToolDetail = "config.event.tool_detail"
     case configEventWaitingDetail = "config.event.waiting_detail"
-    case configEventReviewDetail = "config.event.review_detail"
     case configEventDoneDetail = "config.event.done_detail"
     case configEventFailedDetail = "config.event.failed_detail"
+    case configEventReactionMapping = "config.event.reaction_mapping"
     case connectionsPaneDetail = "connections.pane.detail"
     case connectionsPaneEnvironment = "connections.pane.environment"
     case connectionsHealthPending = "connections.health.pending"
@@ -852,6 +864,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryExportAction = "library.action.export"
     case libraryDeleteAction = "library.action.delete"
     case libraryMissingPreview = "library.missing_preview"
+    case libraryAnimationActionPicker = "library.animation.action_picker"
+    // Arguments: pet display name, localized action title.
     case libraryAnimationAccessibilityFormat = "library.animation.accessibility_format"
     case libraryCopyBriefSourceFormat = "library.copy.brief_source_format"
     case libraryCopyBriefIDFormat = "library.copy.brief_id_format"
@@ -865,6 +879,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case libraryImportNone = "library.import.none"
     case libraryImportValidPetpack = "library.import.valid_petpack"
     case libraryImportFailedFileFormat = "library.import.failed_file_format"
+    case libraryImportServiceFailedFileFormat = "library.import.service_failed_file_format"
     case libraryHistoryCheckingTitle = "library.history.checking_title"
     case libraryHistoryAvailableTitle = "library.history.available_title"
     case libraryHistoryUnavailableTitle = "library.history.unavailable_title"
@@ -1163,16 +1178,41 @@ enum UIControlSemantics {
 }
 
 enum APCLocalizedPresentation {
+    static func animationActionTitle(
+        _ action: PetAnimationAction,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        switch action {
+        case .idle:
+            lifecycleTitle(.idle, locale: locale)
+        case .thinking:
+            lifecycleTitle(.thinking, locale: locale)
+        case .tool:
+            lifecycleTitle(.tool, locale: locale)
+        case .waiting:
+            lifecycleTitle(.waiting, locale: locale)
+        case .done:
+            lifecycleTitle(.done, locale: locale)
+        case .failed:
+            lifecycleTitle(.failed, locale: locale)
+        case .acknowledge:
+            APCLocalization.text(.productInteractionAcknowledge, locale: locale)
+        case .dragLeft:
+            APCLocalization.text(.productInteractionDragLeft, locale: locale)
+        case .dragRight:
+            APCLocalization.text(.productInteractionDragRight, locale: locale)
+        }
+    }
+
     static func lifecycleTitle(
         _ state: ProductLifecycleState,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
         let key: APCLocalizationKey = switch state {
         case .idle: .productLifecycleIdle
-        case .start: .productLifecycleStart
+        case .thinking: .productLifecycleThinking
         case .tool: .productLifecycleTool
         case .waiting: .productLifecycleWaiting
-        case .review: .productLifecycleReview
         case .done: .productLifecycleDone
         case .failed: .productLifecycleFailed
         }
@@ -1328,10 +1368,40 @@ enum APCLocalizedPresentation {
         _ event: AgentEventKind,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
-        lifecycleTitle(
-            ProductLifecycleState(eventKind: event),
-            locale: locale
-        )
+        let key: APCLocalizationKey = switch event {
+        case .start: .productEventStart
+        case .thinking: .productEventThinking
+        case .plan: .productEventPlan
+        case .tool: .productEventTool
+        case .waiting: .productEventWaiting
+        case .done: .productEventDone
+        case .failed: .productEventFailed
+        }
+        return APCLocalization.text(key, locale: locale)
+    }
+
+    static func overlayEventTitle(
+        _ event: AgentOverlaySummaryKind,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        let key: APCLocalizationKey = switch event {
+        case .start: .productEventStart
+        case .thinking: .productEventThinking
+        case .plan: .productEventPlan
+        case .command: .overlayActivityCommand
+        case .file: .overlayActivityFile
+        case .fileChange: .overlayActivityFileChange
+        case .tool: .productEventTool
+        case .subagent: .overlayActivitySubagent
+        case .search: .overlayActivitySearch
+        case .network: .overlayActivityNetwork
+        case .image: .overlayActivityImage
+        case .compaction: .overlayActivityCompaction
+        case .needsInput: .productEventWaiting
+        case .done: .productEventDone
+        case .failed: .productEventFailed
+        }
+        return APCLocalization.text(key, locale: locale)
     }
 
     static func styleTitle(
@@ -1356,6 +1426,7 @@ enum APCLocalizedPresentation {
         let key: APCLocalizationKey = switch quality {
         case .low: .qualityLow
         case .standard: .qualityStandard
+        case .high: .qualityHigh
         }
         return APCLocalization.text(key, locale: locale)
     }
@@ -1368,6 +1439,7 @@ enum APCLocalizedPresentation {
         let key: APCLocalizationKey = switch quality {
         case .low: .qualityLowDetailFormat
         case .standard: .qualityStandardDetailFormat
+        case .high: .qualityHighDetailFormat
         }
         return APCLocalization.format(
             key,

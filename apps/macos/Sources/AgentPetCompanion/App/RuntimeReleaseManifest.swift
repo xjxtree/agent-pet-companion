@@ -23,13 +23,13 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
 }
 
 enum RuntimeManifestValidationProfile: Equatable, Sendable {
-    case strictV2
+    case strictV3
     case publishedV1Rollback
 }
 
 struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     static let schemaVersion = "apc.runtime-manifest.v1"
-    static let requiredPetpackVersion = "apc.petpack.v2"
+    static let requiredPetpackVersion = "apc.petpack.v3"
 
     let schemaVersion: String
     let releaseChannel: String
@@ -67,7 +67,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
 
     static func read(
         from url: URL,
-        validationProfile: RuntimeManifestValidationProfile = .strictV2
+        validationProfile: RuntimeManifestValidationProfile = .strictV3
     ) throws -> RuntimeReleaseManifest {
         let manifest = try decodeClosed(Data(contentsOf: url))
         try manifest.validate(for: validationProfile)
@@ -76,7 +76,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
 
     static func decodeHealthValue(
         _ value: Any?,
-        validationProfile: RuntimeManifestValidationProfile = .strictV2
+        validationProfile: RuntimeManifestValidationProfile = .strictV3
     ) -> RuntimeReleaseManifest? {
         guard let value,
               JSONSerialization.isValidJSONObject(value),
@@ -121,25 +121,25 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     }
 
     func validateForApp() throws {
-        try validate(for: .strictV2)
+        try validate(for: .strictV3)
     }
 
     func validate(for profile: RuntimeManifestValidationProfile) throws {
         switch profile {
-        case .strictV2:
-            try validateStrictV2()
+        case .strictV3:
+            try validateStrictV3()
         case .publishedV1Rollback:
             try validatePublishedV1Rollback()
         }
     }
 
-    private func validateStrictV2() throws {
+    private func validateStrictV3() throws {
         try validateSharedIdentity()
         guard petpackSchemaVersion == Self.requiredPetpackVersion,
               petpackReadVersions == [Self.requiredPetpackVersion],
               petpackWriteVersion == Self.requiredPetpackVersion
         else {
-            throw RuntimeManifestError.invalid("Petpack 必须严格使用 apc.petpack.v2")
+            throw RuntimeManifestError.invalid("Petpack 必须严格使用 apc.petpack.v3")
         }
     }
 
@@ -373,7 +373,7 @@ struct PreparedPetCoreRuntime: Sendable {
         cliURL: URL,
         manifestURL: URL?,
         manifest: RuntimeReleaseManifest?,
-        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV3,
         previous: InstalledPetCoreRuntime?
     ) {
         self.executableURL = executableURL
@@ -386,6 +386,7 @@ struct PreparedPetCoreRuntime: Sendable {
 }
 
 actor PetCoreRuntimeStore {
+    private static let interactionAttestationFilename = "interaction-attestation.json"
     private let homeURL: URL
     private let fileManager: FileManager
     private var recordedBuildIDs: Set<String> = []
@@ -406,7 +407,7 @@ actor PetCoreRuntimeStore {
                 cliURL: sourceCLIURL,
                 manifestURL: nil,
                 manifest: nil,
-                manifestValidationProfile: .strictV2,
+                manifestValidationProfile: .strictV3,
                 previous: nil
             )
         }
@@ -426,7 +427,7 @@ actor PetCoreRuntimeStore {
 
         let candidate = try installedRuntime(
             buildID: manifest.buildID,
-            validationProfile: .strictV2
+            validationProfile: .strictV3
         )
         guard candidate.manifest == manifest else {
             throw RuntimeManifestError.invalid("已暂存运行时与 App 清单不一致")
@@ -548,9 +549,14 @@ actor PetCoreRuntimeStore {
         let executableURL = directory.appendingPathComponent("petcore")
         let cliURL = directory.appendingPathComponent("petcore-cli")
         let manifestURL = directory.appendingPathComponent("runtime-manifest.json")
+        let interactionAttestationURL = directory.appendingPathComponent(
+            Self.interactionAttestationFilename
+        )
         guard fileManager.isExecutableFile(atPath: executableURL.path),
               fileManager.isExecutableFile(atPath: cliURL.path),
-              fileManager.fileExists(atPath: manifestURL.path)
+              fileManager.fileExists(atPath: manifestURL.path),
+              validationProfile == .publishedV1Rollback
+                || isRegularNonSymlinkFile(interactionAttestationURL)
         else {
             throw RuntimeManifestError.invalid("暂存运行时不完整")
         }
@@ -575,7 +581,7 @@ actor PetCoreRuntimeStore {
     ) throws -> ManagedRuntime {
         if let runtime = try? installedRuntime(
             buildID: buildID,
-            validationProfile: .strictV2
+            validationProfile: .strictV3
         ) {
             return runtime
         }
@@ -602,13 +608,36 @@ actor PetCoreRuntimeStore {
         let executableURL = stagingURL.appendingPathComponent("petcore")
         let cliURL = stagingURL.appendingPathComponent("petcore-cli")
         let manifestURL = stagingURL.appendingPathComponent("runtime-manifest.json")
+        let sourceInteractionAttestationURL = sourceManifestURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(Self.interactionAttestationFilename)
+        let interactionAttestationURL = stagingURL.appendingPathComponent(
+            Self.interactionAttestationFilename
+        )
+        guard isRegularNonSymlinkFile(sourceInteractionAttestationURL) else {
+            throw RuntimeManifestError.invalid("App 缺少构建绑定的交互验证证明")
+        }
         try fileManager.copyItem(at: sourceExecutableURL, to: executableURL)
         try fileManager.copyItem(at: sourceCLIURL, to: cliURL)
         try fileManager.copyItem(at: sourceManifestURL, to: manifestURL)
+        try fileManager.copyItem(
+            at: sourceInteractionAttestationURL,
+            to: interactionAttestationURL
+        )
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executableURL.path)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: cliURL.path)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: interactionAttestationURL.path
+        )
         try fileManager.moveItem(at: stagingURL, to: candidateURL)
         shouldRemoveStaging = false
+    }
+
+    private func isRegularNonSymlinkFile(_ url: URL) -> Bool {
+        var metadata = stat()
+        return lstat(url.path, &metadata) == 0
+            && metadata.st_mode & S_IFMT == S_IFREG
     }
 
     private func preflight(_ runtime: ManagedRuntime) async throws {

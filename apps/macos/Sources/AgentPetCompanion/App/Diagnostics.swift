@@ -857,9 +857,7 @@ struct AppDiagnosticEnvironment: Codable, Equatable, Sendable {
 
     static func sanitizedPetState(_ value: String?) -> String? {
         guard let value else { return nil }
-        let allowed: Set<String> = [
-            "idle", "thinking", "start", "working", "tool", "waiting", "review", "done", "failed"
-        ]
+        let allowed: Set<String> = ["idle", "thinking", "tool", "waiting", "done", "failed"]
         return allowed.contains(value) ? value : nil
     }
 

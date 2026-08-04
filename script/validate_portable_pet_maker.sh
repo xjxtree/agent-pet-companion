@@ -115,54 +115,83 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 root = Path(sys.argv[1])
-states = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+states = (
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+)
 state_colors = {
     "idle": (111, 92, 219, 235),
-    "start": (72, 143, 235, 235),
+    "thinking": (72, 143, 235, 235),
     "tool": (35, 174, 132, 235),
     "waiting": (230, 168, 48, 235),
-    "review": (190, 92, 217, 235),
     "done": (62, 184, 91, 235),
     "failed": (210, 72, 87, 235),
+    "acknowledge": (226, 118, 69, 235),
+    "drag_left": (82, 112, 208, 235),
+    "drag_right": (58, 144, 206, 235),
 }
 state_timings = {
     "idle": {
-        "frame_durations_ms": [180, 160, 180, 380],
-        "playback": {"mode": "periodic", "cooldown_ms": [4000, 8000]},
+        "frame_durations_ms": [300, 260, 300, 640],
+        "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
-    "start": {
+    "thinking": {
         "frame_durations_ms": [120, 140, 160, 180],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "tool": {
         "frame_durations_ms": [150, 150, 170, 330],
         "playback": {
-            "mode": "burst_then_settle",
-            "entry_repeat_count": 1,
-            "settle_frame_index": 3,
+            "mode": "burst_then_idle",
+            "entry_repeat_count": 3,
         },
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
         "frame_durations_ms": [150, 150, 150, 150, 170, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
-        "reduced_motion_frame_index": 4,
-    },
-    "review": {
-        "frame_durations_ms": [140, 140, 150, 150, 180, 240],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 2,
+            "settle_frame_index": 5,
+        },
         "reduced_motion_frame_index": 4,
     },
     "done": {
         "frame_durations_ms": [120, 140, 160, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "failed": {
         "frame_durations_ms": [150, 170, 190, 290],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 3,
+            "settle_frame_index": 3,
+        },
+        "reduced_motion_frame_index": 2,
+    },
+    "acknowledge": {
+        "frame_durations_ms": [180, 140, 180, 300],
+        "playback": {"mode": "once_then_return"},
+        "reduced_motion_frame_index": 1,
+    },
+    "drag_left": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
+        "reduced_motion_frame_index": 2,
+    },
+    "drag_right": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
         "reduced_motion_frame_index": 2,
     },
 }
@@ -234,7 +263,7 @@ frames[0].resize((384, 416), Image.Resampling.NEAREST).save(
 
 created_at = "2026-07-16T00:00:00Z"
 manifest = {
-    "schema_version": "apc.petpack.v2",
+    "schema_version": "apc.petpack.v3",
     "id": "pet_portablefixture",
     "name": "Portable Validation Fixture",
     "style": "deterministic repository validation fixture",
@@ -354,18 +383,20 @@ assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capab
 
 CREATE_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
   --workspace "$CREATE_WORKSPACE")"
-assert_json "$CREATE_MOTION_QA" 'data["status"] == "completed" and data["capability"] == "motion-qa" and data["audited_states"] == ["idle", "start", "tool", "waiting", "review", "done", "failed"]'
+assert_json "$CREATE_MOTION_QA" 'data["status"] == "completed" and data["capability"] == "motion-qa" and data["audited_states"] == ["idle", "thinking", "tool", "waiting", "done", "failed", "acknowledge", "drag_left", "drag_right"]'
 
 CREATE_MOTION_REVIEW="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-review \
   --workspace "$CREATE_WORKSPACE" \
   --state-note "idle=Fixture body and baseline remain stable through the complete idle loop." \
-  --state-note "start=Fixture start pose advances smoothly and ends on a readable final pose." \
+  --state-note "thinking=Fixture thinking pose advances smoothly and ends on a readable final pose." \
   --state-note "tool=Fixture tool action stays attached and the body anchor remains stable." \
   --state-note "waiting=Fixture waiting action reads clearly and returns through a clean loop seam." \
-  --state-note "review=Fixture review action stays coherent without scale or silhouette popping." \
   --state-note "done=Fixture completion action has a readable success pose and clean settle." \
-  --state-note "failed=Fixture failure action remains identifiable and returns without a seam pop.")"
-assert_json "$CREATE_MOTION_REVIEW" 'data["status"] == "completed" and data["capability"] == "motion-review" and len(data["audited_states"]) == 7'
+  --state-note "failed=Fixture failure action remains identifiable and returns without a seam pop." \
+  --state-note "acknowledge=Fixture acknowledgement is restrained, readable, and returns cleanly." \
+  --state-note "drag_left=Fixture left drag cadence is directional and loops without a seam pop." \
+  --state-note "drag_right=Fixture right drag cadence is directional and loops without a seam pop.")"
+assert_json "$CREATE_MOTION_REVIEW" 'data["status"] == "completed" and data["capability"] == "motion-review" and len(data["audited_states"]) == 9'
 
 CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --operation create \
@@ -373,10 +404,10 @@ CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --output "$CREATE_OUTPUT" \
   --result "$CREATE_RESULT" \
   --cli "$CLI")"
-assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 32 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 7'
+assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 42 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 9'
 
 CREATE_VALIDATION="$("$CLI" petpack validate "$CREATE_OUTPUT")"
-assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["frame_count"] == 32 and data["warnings"] == []'
+assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42 and data["warnings"] == []'
 
 MODIFY_WORKSPACE="$TMP_DIR/modify-workspace"
 MODIFY_OUTPUT="$TMP_DIR/portable-fixture-revised.petpack"
@@ -396,7 +427,17 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 root = Path(sys.argv[1])
-states = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+states = (
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+)
 created_at = "2026-07-16T00:01:00Z"
 
 
@@ -537,14 +578,24 @@ MODIFY_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
 assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True and data["motion_quality"]["human_reviewed"] is True and data["motion_quality"]["audited_states"] == ["tool"]'
 
 MODIFY_VALIDATION="$("$CLI" petpack validate "$MODIFY_OUTPUT")"
-assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 7 and data["frame_count"] == 32 and data["warnings"] == []'
+assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42 and data["warnings"] == []'
 
 "$PET_MAKER_PYTHON" -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
 import hashlib
 import sys
 import zipfile
 
-states = ("idle", "start", "tool", "waiting", "review", "done", "failed")
+states = (
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+)
 
 
 def state_hashes(path: str) -> dict[str, dict[str, str]]:

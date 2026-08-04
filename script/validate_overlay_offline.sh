@@ -23,6 +23,7 @@ for suite in \
   AppStoreOverlaySnapshotTests \
   OverlayGeometryTests \
   OverlayDisplayWidthTests \
+  OverlayInteractionTelemetryTests \
   FrameTimelineTests \
   PetFramePipelineTests; do
   swift test \
@@ -45,4 +46,4 @@ if rg -n 'OverlayResizeAccessibility|resizePanel|resizeHitSize|resizeVisualSize|
   exit 1
 fi
 
-echo "Overlay offline V2 validation ok"
+echo "Overlay offline V3 validation ok"

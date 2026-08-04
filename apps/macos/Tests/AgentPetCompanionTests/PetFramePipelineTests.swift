@@ -12,8 +12,12 @@ struct PetFramePipelineTests {
             contract: PlaybackContract(mode: .loop)
         ),
         PlaybackMatrixFixture(
-            name: "once_hold",
-            contract: PlaybackContract(mode: .onceHold, settleFrameIndex: 2)
+            name: "burst_then_idle",
+            contract: PlaybackContract(mode: .burstThenIdle, entryRepeatCount: 2)
+        ),
+        PlaybackMatrixFixture(
+            name: "once_then_return",
+            contract: PlaybackContract(mode: .onceThenReturn)
         ),
         PlaybackMatrixFixture(
             name: "periodic",
@@ -365,13 +369,17 @@ struct PetFramePipelineTests {
     }
 
     @Test
-    func onceHoldUsesTheAuthoredSettleFrame() async throws {
+    func burstThenSettleUsesTheAuthoredSettleFrame() async throws {
         let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 4)
         let prepared = try await pipeline.prepare(request(
             quality: .standard,
             stateName: "done",
             frameDurationsMS: [100, 150, 200, 250],
-            playback: PlaybackContract(mode: .onceHold, settleFrameIndex: 2)
+            playback: PlaybackContract(
+                mode: .burstThenSettle,
+                entryRepeatCount: 1,
+                settleFrameIndex: 2
+            )
         ))
         let handoff = PetFrameRenderHandoff()
         let generation = UUID()
@@ -546,10 +554,10 @@ struct PetFramePipelineTests {
             scheduledBoundaryDraws += 1
         }
 
-        // The initial presentation plus 44 authored/cycle-boundary wakes is
+        // The initial presentation plus 59 authored/cycle-boundary wakes is
         // far below a continuously running 60 Hz display link (3,600 draws).
-        #expect(scheduledBoundaryDraws == 44)
-        #expect(1 + scheduledBoundaryDraws == 45)
+        #expect(scheduledBoundaryDraws == 59)
+        #expect(1 + scheduledBoundaryDraws == 60)
         #expect(handoff.nextBoundaryDelay(after: 60, reducedMotion: true) == nil)
     }
 
@@ -558,7 +566,7 @@ struct PetFramePipelineTests {
         let pipeline = makePipeline(probe: FrameDecoderProbe(), frameCount: 4)
         let prepared = try await pipeline.prepare(request(
             quality: .standard,
-            stateName: "start",
+            stateName: "thinking",
             frameDurationsMS: [100, 200, 100, 200],
             playback: PlaybackContract(
                 mode: .burstThenSettle,
@@ -627,15 +635,15 @@ struct PetFramePipelineTests {
     }
 
     @Test
-    func onceHoldPlaybackDoesNotReplayAfterCanonicalABARotation() {
+    func finitePlaybackDoesNotReplayAfterCanonicalABARotation() {
         var history = PetPlaybackEntryHistory(capacity: 8)
         let sessionA = "done:codex:session-a:activation-1"
         let sessionB = "done:codex:session-b:activation-1"
 
-        #expect(history.transition(to: sessionA, playbackMode: .onceHold).shouldRestartPlayback)
-        #expect(history.transition(to: sessionB, playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: sessionA, playbackMode: .burstThenIdle).shouldRestartPlayback)
+        #expect(history.transition(to: sessionB, playbackMode: .burstThenIdle).shouldRestartPlayback)
 
-        let rotatedBack = history.transition(to: sessionA, playbackMode: .onceHold)
+        let rotatedBack = history.transition(to: sessionA, playbackMode: .burstThenIdle)
         #expect(rotatedBack.isNewEntry)
         #expect(!rotatedBack.shouldRestartPlayback)
     }
@@ -696,10 +704,10 @@ struct PetFramePipelineTests {
     func finitePlaybackHistoryIsBounded() {
         var history = PetPlaybackEntryHistory(capacity: 2)
 
-        #expect(history.transition(to: "done:a:1", playbackMode: .onceHold).shouldRestartPlayback)
-        #expect(history.transition(to: "done:b:1", playbackMode: .onceHold).shouldRestartPlayback)
-        #expect(history.transition(to: "done:c:1", playbackMode: .onceHold).shouldRestartPlayback)
-        #expect(history.transition(to: "done:a:1", playbackMode: .onceHold).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .burstThenIdle).shouldRestartPlayback)
+        #expect(history.transition(to: "done:b:1", playbackMode: .burstThenIdle).shouldRestartPlayback)
+        #expect(history.transition(to: "done:c:1", playbackMode: .burstThenIdle).shouldRestartPlayback)
+        #expect(history.transition(to: "done:a:1", playbackMode: .burstThenIdle).shouldRestartPlayback)
     }
 
     @Test

@@ -81,7 +81,8 @@ for interaction_suite in \
   OverlayPlacementAuthorityTests \
   AppStoreOverlaySnapshotTests \
   OverlayGeometryTests \
-  OverlayDisplayWidthTests; do
+  OverlayDisplayWidthTests \
+  OverlayInteractionTelemetryTests; do
   rg -Fq "$interaction_suite" "$OVERLAY_INTERACTION_VALIDATOR"
 done
 rg -Fq 'swift test' "$OVERLAY_INTERACTION_VALIDATOR"
@@ -106,6 +107,12 @@ rg -q 'GitHub Release distribution requires --arch all' \
 rg -q 'release builds require a clean worktree' "$ROOT_DIR/script/build_release.sh"
 rg -q 'CHANGELOG.md must contain a frozen' "$ROOT_DIR/script/build_release.sh"
 rg -q 'GitHub Release distribution requires tag' "$ROOT_DIR/script/build_release.sh"
+rg -q 'GitHub Release distribution requires a previous version tag baseline' \
+  "$ROOT_DIR/script/build_release.sh"
+rg -Fq '"$ROOT_DIR/script/validate_codex_plugin_version.py"' \
+  "$ROOT_DIR/script/build_release.sh"
+rg -Fq -- '--base-ref "$PREVIOUS_RELEASE_TAG"' \
+  "$ROOT_DIR/script/build_release.sh"
 rg -q 'full-commit-derived release build identity' "$ROOT_DIR/script/build_release.sh"
 rg -Fq 'BUILD_ID="${RELEASE_VERSION}.${RELEASE_BUILD}.${RELEASE_COMMIT}"' \
   "$ROOT_DIR/script/build_release.sh"
@@ -189,6 +196,8 @@ rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
 rg -q 'validate_github_release_api.py' "$WORKFLOW"
 rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
+rg -q 'codex-studio-skill-history.json' \
+  "$ROOT_DIR/script/validate_codex_plugin_version.py"
 rg -Fq 'gh release edit "$RELEASE_TAG" --draft=false --latest' "$WORKFLOW"
 rg -Fq '"repos/$GITHUB_REPOSITORY/releases/latest"' "$WORKFLOW"
 if rg -q 'published_immutable|value[.]get[(]"immutable"|immutable-releases' "$WORKFLOW"; then

@@ -60,12 +60,20 @@ The Codex plugin has an internal strict `X.Y.Z` version. It does not have to
 equal the App version, but any change under `plugins/codex`,
 `skills/agent-pet-studio`, or `skills/agent-pet-maker` must strictly increase
 the plugin version from the previous release. The release workflow compares
-the candidate with the previous version tag and fails otherwise.
+the candidate with the previous version tag and fails otherwise. If the Studio
+Skill changed, the candidate must also preserve the previous release's exact
+SHA-256 in PetCore's structured retired-Skill history. That history is
+append-only; validation rejects removed digests, unrelated additions, and the
+current Skill digest. The workflow and `build_release.sh` both run this gate
+before packaging.
 
 Codex 插件使用独立的严格 `X.Y.Z` 内部版本，不要求与 App 版本相同；但
 `plugins/codex`、`skills/agent-pet-studio` 或 `skills/agent-pet-maker`
 任意内容发生变化时，插件版本都必须高于上一正式版本。发布 workflow 会与上一版本
-tag 比较，不满足时直接失败。
+tag 比较，不满足时直接失败。如果 Studio Skill 发生变化，候选版本还必须把上一正式
+版本 Skill 的精确 SHA-256 保存在 PetCore 共用的历史所有权清单中。该清单只能追加；
+删除旧摘要、加入并非上一发布 Skill 的摘要，或把当前 Skill 标记为历史内容都会直接
+失败。Workflow 与 `build_release.sh` 都会在打包前执行此门禁。
 
 One version maps to exactly one tag, one changelog section, and one GitHub
 Release. Release evidence belongs in CI artifacts and Release notes, not in
@@ -179,16 +187,16 @@ official asset set.
 sidecar。正式 GitHub Release 的资产清单必须恰好是这三个文件。
 
 Native packaged validation starts the bundled PetCore and CLI against a clean
-isolated home, seeds exactly `星雾团子` and `Bytebud 字节芽`, and reads the
+isolated home, seeds exactly `星雾团子`, `Bytebud 字节芽`, and `桃蕾`, and reads the
 same library projection consumed by the App. It rejects the archive unless
-both canonical covers and every exact-size PNG frame for all seven fixed
-states exist under the managed store with a matching runtime completion
+all three canonical covers and every exact-size PNG frame for all nine fixed
+actions exist under the managed store with a matching runtime completion
 marker and authored frame count. Static bundled-resource digest checks and a
 database row alone are not sufficient.
 
 原生包内验收会在干净隔离目录中启动随包 PetCore 与 CLI，精确种入
-`星雾团子` 和 `Bytebud 字节芽`，并读取 App 使用的同一份宠物库投影。两只宠物的
-规范封面、七个固定状态的全部正确尺寸 PNG 帧、运行资源完成标记及制作帧数必须在
+`星雾团子`、`Bytebud 字节芽` 和 `桃蕾`，并读取 App 使用的同一份宠物库投影。三只宠物的
+规范封面、九个固定动作的全部正确尺寸 PNG 帧、运行资源完成标记及制作帧数必须在
 受管目录中逐项匹配；仅有随包资源摘要或数据库记录不能通过发布门禁。
 
 The validator's input directory itself must contain exactly those three regular
@@ -241,7 +249,9 @@ The workflow:
 
 1. proves tag, source version, changelog version, and full commit equality,
    and requires a Codex plugin version increase when its bundled content
-   differs from the previous version tag;
+   differs from the previous version tag; a Studio Skill change additionally
+   requires the previous tag's exact digest in the append-only ownership
+   history;
 2. runs the host-safe candidate gate;
 3. builds the exact three-file candidate with `--github-release --arch all`;
 4. records a trusted SHA-256 digest for each candidate file before artifact

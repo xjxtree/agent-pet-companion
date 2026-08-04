@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentpetcompanion.local/schemas/petpack.schema.json",
-  "title": "Agent Pet Companion Petpack V2 Manifest",
+  "title": "Agent Pet Companion Petpack V3 Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,25 +15,27 @@
     "created_at"
   ],
   "properties": {
-    "schema_version": { "const": "apc.petpack.v2" },
+    "schema_version": { "const": "apc.petpack.v3" },
     "id": { "type": "string", "pattern": "^pet_[a-z0-9]+$", "maxLength": 128 },
     "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
     "style": { "type": "string", "minLength": 1, "pattern": "\\S" },
-    "quality": { "enum": ["low", "standard"] },
+    "quality": { "enum": ["low", "standard", "high"] },
     "render_size": { "$ref": "#/$defs/renderSize" },
     "states": {
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 9,
+      "maxItems": 9,
       "items": { "$ref": "#/$defs/state" },
       "allOf": [
         { "contains": { "$ref": "#/$defs/idleState" }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "$ref": "#/$defs/startState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/thinkingState" }, "minContains": 1, "maxContains": 1 },
         { "contains": { "$ref": "#/$defs/toolState" }, "minContains": 1, "maxContains": 1 },
         { "contains": { "$ref": "#/$defs/waitingState" }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "$ref": "#/$defs/reviewState" }, "minContains": 1, "maxContains": 1 },
         { "contains": { "$ref": "#/$defs/doneState" }, "minContains": 1, "maxContains": 1 },
-        { "contains": { "$ref": "#/$defs/failedState" }, "minContains": 1, "maxContains": 1 }
+        { "contains": { "$ref": "#/$defs/failedState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/acknowledgeState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/dragLeftState" }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "$ref": "#/$defs/dragRightState" }, "minContains": 1, "maxContains": 1 }
       ]
     },
     "created_at": { "type": "string", "format": "date-time" }
@@ -46,16 +48,31 @@
     {
       "if": { "properties": { "quality": { "const": "standard" } }, "required": ["quality"] },
       "then": { "properties": { "render_size": { "$ref": "#/$defs/standardSize" } } }
+    },
+    {
+      "if": { "properties": { "quality": { "const": "high" } }, "required": ["quality"] },
+      "then": { "properties": { "render_size": { "$ref": "#/$defs/highSize" } } }
     }
   ],
   "$defs": {
     "stateName": {
-      "enum": ["idle", "start", "tool", "waiting", "review", "done", "failed"]
+      "enum": [
+        "idle",
+        "thinking",
+        "tool",
+        "waiting",
+        "done",
+        "failed",
+        "acknowledge",
+        "drag_left",
+        "drag_right"
+      ]
     },
     "renderSize": {
       "oneOf": [
         { "$ref": "#/$defs/lowSize" },
-        { "$ref": "#/$defs/standardSize" }
+        { "$ref": "#/$defs/standardSize" },
+        { "$ref": "#/$defs/highSize" }
       ]
     },
     "renderSizeShape": {
@@ -75,6 +92,10 @@
       "$ref": "#/$defs/renderSizeShape",
       "properties": { "width": { "const": 384 }, "height": { "const": 416 } }
     },
+    "highSize": {
+      "$ref": "#/$defs/renderSizeShape",
+      "properties": { "width": { "const": 576 }, "height": { "const": 624 } }
+    },
     "frameDurations": {
       "type": "array",
       "minItems": 2,
@@ -86,7 +107,15 @@
       "additionalProperties": false,
       "required": ["mode"],
       "properties": {
-        "mode": { "enum": ["loop", "once_hold", "periodic", "burst_then_settle"] },
+        "mode": {
+          "enum": [
+            "loop",
+            "periodic",
+            "burst_then_settle",
+            "burst_then_idle",
+            "once_then_return"
+          ]
+        },
         "entry_repeat_count": { "type": "integer", "minimum": 1, "maximum": 8 },
         "settle_frame_index": { "type": "integer", "minimum": 0, "maximum": 39 },
         "cooldown_ms": {
@@ -110,18 +139,6 @@
           }
         },
         {
-          "if": { "properties": { "mode": { "const": "once_hold" } }, "required": ["mode"] },
-          "then": {
-            "required": ["settle_frame_index"],
-            "not": {
-              "anyOf": [
-                { "required": ["entry_repeat_count"] },
-                { "required": ["cooldown_ms"] }
-              ]
-            }
-          }
-        },
-        {
           "if": { "properties": { "mode": { "const": "periodic" } }, "required": ["mode"] },
           "then": {
             "required": ["cooldown_ms"],
@@ -138,6 +155,30 @@
           "then": {
             "required": ["entry_repeat_count", "settle_frame_index"],
             "not": { "required": ["cooldown_ms"] }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "burst_then_idle" } }, "required": ["mode"] },
+          "then": {
+            "required": ["entry_repeat_count"],
+            "not": {
+              "anyOf": [
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "once_then_return" } }, "required": ["mode"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["entry_repeat_count"] },
+                { "required": ["settle_frame_index"] },
+                { "required": ["cooldown_ms"] }
+              ]
+            }
           }
         }
       ]
@@ -165,15 +206,17 @@
       "required": ["name", "frames_dir"],
       "properties": {
         "name": { "const": "idle" },
-        "frames_dir": { "const": "assets/frames/idle" }
+        "frames_dir": { "const": "assets/frames/idle" },
+        "playback": { "properties": { "mode": { "const": "periodic" } } }
       }
     },
-    "startState": {
+    "thinkingState": {
       "type": "object",
       "required": ["name", "frames_dir"],
       "properties": {
-        "name": { "const": "start" },
-        "frames_dir": { "const": "assets/frames/start" }
+        "name": { "const": "thinking" },
+        "frames_dir": { "const": "assets/frames/thinking" },
+        "playback": { "properties": { "mode": { "const": "burst_then_idle" } } }
       }
     },
     "toolState": {
@@ -181,7 +224,8 @@
       "required": ["name", "frames_dir"],
       "properties": {
         "name": { "const": "tool" },
-        "frames_dir": { "const": "assets/frames/tool" }
+        "frames_dir": { "const": "assets/frames/tool" },
+        "playback": { "properties": { "mode": { "const": "burst_then_idle" } } }
       }
     },
     "waitingState": {
@@ -189,15 +233,8 @@
       "required": ["name", "frames_dir"],
       "properties": {
         "name": { "const": "waiting" },
-        "frames_dir": { "const": "assets/frames/waiting" }
-      }
-    },
-    "reviewState": {
-      "type": "object",
-      "required": ["name", "frames_dir"],
-      "properties": {
-        "name": { "const": "review" },
-        "frames_dir": { "const": "assets/frames/review" }
+        "frames_dir": { "const": "assets/frames/waiting" },
+        "playback": { "properties": { "mode": { "const": "burst_then_settle" } } }
       }
     },
     "doneState": {
@@ -205,7 +242,8 @@
       "required": ["name", "frames_dir"],
       "properties": {
         "name": { "const": "done" },
-        "frames_dir": { "const": "assets/frames/done" }
+        "frames_dir": { "const": "assets/frames/done" },
+        "playback": { "properties": { "mode": { "const": "burst_then_idle" } } }
       }
     },
     "failedState": {
@@ -213,7 +251,35 @@
       "required": ["name", "frames_dir"],
       "properties": {
         "name": { "const": "failed" },
-        "frames_dir": { "const": "assets/frames/failed" }
+        "frames_dir": { "const": "assets/frames/failed" },
+        "playback": { "properties": { "mode": { "const": "burst_then_settle" } } }
+      }
+    },
+    "acknowledgeState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "acknowledge" },
+        "frames_dir": { "const": "assets/frames/acknowledge" },
+        "playback": { "properties": { "mode": { "const": "once_then_return" } } }
+      }
+    },
+    "dragLeftState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "drag_left" },
+        "frames_dir": { "const": "assets/frames/drag_left" },
+        "playback": { "properties": { "mode": { "const": "loop" } } }
+      }
+    },
+    "dragRightState": {
+      "type": "object",
+      "required": ["name", "frames_dir"],
+      "properties": {
+        "name": { "const": "drag_right" },
+        "frames_dir": { "const": "assets/frames/drag_right" },
+        "playback": { "properties": { "mode": { "const": "loop" } } }
       }
     }
   }

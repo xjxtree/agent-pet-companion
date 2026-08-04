@@ -36,7 +36,7 @@ fn compiled_runtime_manifest_round_trips_and_rejects_mismatch() {
 }
 
 #[test]
-fn runtime_manifest_requires_explicit_v2_petpack_range() {
+fn runtime_manifest_requires_explicit_v3_petpack_range() {
     let temp = tempfile::tempdir().expect("tempdir");
     let manifest_path = temp.path().join("runtime-manifest.json");
     let compiled = RuntimeReleaseManifest::compiled();
@@ -54,7 +54,7 @@ fn runtime_manifest_requires_explicit_v2_petpack_range() {
     .expect("write legacy manifest");
 
     let error = validate_expected_manifest(&manifest_path)
-        .expect_err("missing V2 compatibility fields must fail closed");
+        .expect_err("missing V3 compatibility fields must fail closed");
     assert!(error.to_string().contains("runtime manifest is invalid"));
 }
 

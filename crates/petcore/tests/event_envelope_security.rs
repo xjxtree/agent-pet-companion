@@ -264,13 +264,15 @@ fn session_display_fields_enforce_exact_utf8_byte_boundaries() {
 
 #[test]
 fn opencode_v2_activity_events_are_first_class_allowlisted_lifecycle_names() {
-    for (index, source_event) in [
-        "permission.v2.asked",
-        "permission.v2.replied",
-        "question.v2.asked",
-        "question.v2.replied",
-        "question.v2.rejected",
-        "session.next.prompt.admitted",
+    for (index, (source_event, event_type)) in [
+        ("permission.v2.asked", "waiting"),
+        ("permission.v2.replied", "start"),
+        ("question.v2.asked", "waiting"),
+        ("question.v2.replied", "start"),
+        ("question.v2.rejected", "start"),
+        ("session.next.prompt.admitted", "start"),
+        ("session.next.reasoning.ended", "thinking"),
+        ("session.plan.updated", "plan"),
     ]
     .into_iter()
     .enumerate()
@@ -280,7 +282,7 @@ fn opencode_v2_activity_events_are_first_class_allowlisted_lifecycle_names() {
             json!({
                 "id": format!("opencode-v2-source-event-{index}"),
                 "session_id": "opencode-v2-source-event-session",
-                "event_type": if source_event.ends_with("asked") { "waiting" } else { "start" },
+                "event_type": event_type,
                 "payload": {
                     "source_event": source_event,
                     "session_active": true,
@@ -655,7 +657,7 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
             "source_event": "UserPromptSubmit",
             "session_active": true,
             "message_role": "user",
-            "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+            "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task\n\nGet an understanding of the user's intent",
             "diagnostic": false
         }),
         created_at: RECEIVED_AT.to_string(),
@@ -688,6 +690,63 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
 }
 
 #[test]
+fn title_only_app_server_activity_removes_an_existing_projected_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    let session_id = "019f6ed7-de50-7623-8462-6a857e367a96";
+
+    let ordinary_activity = AgentEvent {
+        id: "app-server-title-only-status".to_string(),
+        source: AgentSource::Codex,
+        project_path: None,
+        session_id: Some(session_id.to_string()),
+        event_type: AgentEventType::Done,
+        title: AgentEventType::Done.zh_label().to_string(),
+        detail: None,
+        payload_json: json!({
+            "source_event": "app_server_activity",
+            "session_active": false,
+            "session_title": "Visible user task",
+            "message_role": "assistant",
+            "message_content": "Done",
+            "diagnostic": false
+        }),
+        created_at: RECEIVED_AT.to_string(),
+    };
+    assert!(database
+        .upsert_codex_activity_event(&ordinary_activity)
+        .unwrap());
+    assert_eq!(database.recent_events(10).unwrap().len(), 1);
+
+    let internal_activity = AgentEvent {
+        payload_json: json!({
+            "source_event": "app_server_activity",
+            "session_active": false,
+            "session_title": "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+            "message_role": "assistant",
+            "message_content": "{\"suggestions\":[]}",
+            "diagnostic": false
+        }),
+        ..ordinary_activity
+    };
+    assert!(!database
+        .upsert_codex_activity_event(&internal_activity)
+        .unwrap());
+    assert!(database.recent_events(10).unwrap().is_empty());
+
+    let marker_count: i64 = Connection::open(database.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM suppressed_agent_sessions WHERE source = 'codex' AND session_key = ?1",
+            params![format!("1:{session_id}")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker_count, 1);
+}
+
+#[test]
 fn schema_upgrade_scrubs_historical_internal_codex_suggestion_sessions() {
     let temp = tempfile::tempdir().unwrap();
     let database = Database::new(temp.path().join("events.sqlite"));
@@ -707,10 +766,11 @@ fn schema_upgrade_scrubs_historical_internal_codex_suggestion_sessions() {
                     "historical-internal-prompt",
                     session_id,
                     serde_json::to_string(&json!({
-                        "source_event": "UserPromptSubmit",
-                        "session_active": true,
-                        "message_role": "user",
-                        "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/project",
+                        "source_event": "app_server_activity",
+                        "session_active": false,
+                        "session_title": "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task",
+                        "message_role": "assistant",
+                        "message_content": "{\"suggestions\":[]}",
                         "diagnostic": false
                     }))
                     .unwrap(),

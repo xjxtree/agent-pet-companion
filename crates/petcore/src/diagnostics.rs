@@ -1547,9 +1547,10 @@ struct AppEnvironmentSources {
 #[serde(deny_unknown_fields)]
 struct AppEnvironmentEvents {
     start: bool,
+    thinking: bool,
+    plan: bool,
     tool: bool,
     waiting: bool,
-    review: bool,
     done: bool,
     failed: bool,
 }
@@ -2054,9 +2055,10 @@ mod tests {
                 },
                 "events": {
                     "start": true,
+                    "thinking": true,
+                    "plan": true,
                     "tool": true,
                     "waiting": true,
-                    "review": true,
                     "done": true,
                     "failed": true
                 }

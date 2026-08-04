@@ -70,6 +70,37 @@ fn rename_petpack_source(source: &std::path::Path, name: &str) {
 }
 
 #[test]
+fn high_quality_package_imports_as_an_immediately_usable_pet() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("high-source");
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::High,
+        "Native High Pet",
+        "external high-capable producer",
+    )
+    .unwrap();
+
+    let pet = import_petpack(&paths, &database, &source).unwrap();
+    assert_eq!(pet.quality, QualityLevel::High);
+    assert_eq!(pet.render_size, QualityLevel::High.render_size());
+    assert!(pet.active);
+    assert!(std::path::Path::new(&pet.petpack_path).is_file());
+    assert!(std::path::Path::new(&pet.cover_path).is_file());
+
+    let idle_frame = std::path::Path::new(&pet.petpack_path)
+        .parent()
+        .unwrap()
+        .join(format!("{}-frames/idle/0000.png", pet.id));
+    assert_eq!(image::image_dimensions(idle_frame).unwrap(), (576, 624));
+    let stored = database.get_pet(&pet.id).unwrap().unwrap();
+    assert_eq!(stored.quality, QualityLevel::High);
+    assert_eq!(stored.render_size, QualityLevel::High.render_size());
+    assert!(stored.active);
+}
+
+#[test]
 fn petpack_import_atomic_rejects_unsafe_manifest_id_without_writing_assets() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));

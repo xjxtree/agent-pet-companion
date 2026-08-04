@@ -766,7 +766,7 @@ fn latest_generation_returns_durable_completed_result_metadata() {
             .jobs_dir
             .join("job-completed-metadata")
             .join("result.json"),
-        br#"{"result_pet_id":"pet-completed-metadata","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":2}}"#,
+        br#"{"result_pet_id":"pet-completed-metadata","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":9,"frame_count":120,"warning_count":2}}"#,
     )
     .unwrap();
     let state = CoreState::new(paths);
@@ -783,7 +783,7 @@ fn latest_generation_returns_durable_completed_result_metadata() {
         latest["validation_summary"],
         json!({
             "ok": true,
-            "state_count": 7,
+            "state_count": 9,
             "frame_count": 120,
             "warning_count": 2
         })
@@ -798,7 +798,7 @@ fn completed_result_rejects_symlink_leaf() {
     let outside = temp.path().join("outside-result.json");
     fs::write(
         &outside,
-        br#"{"result_pet_id":"pet-symlink","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":120,"warning_count":0}}"#,
+        br#"{"result_pet_id":"pet-symlink","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":9,"frame_count":120,"warning_count":0}}"#,
     )
     .unwrap();
     symlink(
@@ -871,7 +871,7 @@ fn completed_result_rejects_a_noncontract_total_frame_count() {
             .jobs_dir
             .join("job-invalid-frame-total")
             .join("result.json"),
-        br#"{"result_pet_id":"pet-expected","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":7,"frame_count":281,"warning_count":0}}"#,
+        br#"{"result_pet_id":"pet-expected","revision_id":"rev_0123456789abcdef0123456789abcdef","validation_summary":{"ok":true,"state_count":9,"frame_count":361,"warning_count":0}}"#,
     )
     .unwrap();
 

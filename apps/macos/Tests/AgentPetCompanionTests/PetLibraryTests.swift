@@ -32,14 +32,18 @@ struct PetLibraryTests {
     }
 
     @Test
-    func twoBundledPetsRemainScannableWithoutSearchAndPreferTheActivePet() {
+    func threeBundledPetsRemainScannableWithoutSearchAndPreferTheActivePet() {
         var first = makeBundledPet()
         first.active = false
         var second = makeBundledPet()
         second.id = "pet_bytebudcodex"
         second.name = "Bytebud 字节芽"
         second.active = true
-        let pets = [first, second]
+        var third = makeBundledPet()
+        third.id = "pet_pinklace"
+        third.name = "桃蕾"
+        third.active = false
+        let pets = [first, second, third]
 
         #expect(pets.allSatisfy { $0.isBundled })
         #expect(!PetLibraryDensityPolicy.showsSearch(petCount: pets.count))
@@ -74,9 +78,9 @@ struct PetLibraryTests {
         #expect(bundled.revisionIDSummary == "rev_00000000000000000000000000000001")
         #expect(bundled.revisionCountSummary == "2 个")
         #expect(bundled.revisionSummary.contains("App 内置只读基线"))
-        #expect(bundled.stateSummary == "idle · start · tool · waiting · review · done · failed")
-        #expect(bundled.timingSummary == "32 帧 · 7 个状态 · 逐帧创作时序")
-        #expect(bundled.durationSummary.contains("idle：900 毫秒"))
+        #expect(bundled.stateSummary == "idle · thinking · tool · waiting · done · failed")
+        #expect(bundled.timingSummary == "42 帧 · 9 个动作 · 逐帧创作时序")
+        #expect(bundled.durationSummary.contains("idle：1,500 毫秒"))
         #expect(bundled.durationSummary.contains("waiting：1,000 毫秒"))
         #expect(bundled.heroSummary == "半写实 · App 内置")
         #expect(bundled.provenanceSummary.contains("verified_skill_source"))
@@ -108,6 +112,21 @@ struct PetLibraryTests {
         #expect(imported.revisionSummary.contains("3 个"))
         #expect(imported.revisionSummary.contains("同一 ID 的新 revision"))
 
+        var highPet = imported.pet
+        highPet.quality = .high
+        highPet.renderSize = .init(width: 576, height: 624)
+        let high = PetLibraryPresentation(
+            pet: highPet,
+            assetWarning: nil,
+            localeIdentifier: "zh-Hans"
+        )
+        #expect(!high.canModify)
+        #expect(high.canDelete)
+        #expect(!high.canCustomizeAsCopy)
+        #expect(high.technicalInformation.contains {
+            $0.field == .renderSize && $0.value == "576×624"
+        })
+
         let nonOwned = PetLibraryPresentation(
             pet: makePet(id: "pet_external", name: "外部包", origin: .externalImport),
             assetWarning: nil,
@@ -123,7 +142,7 @@ struct PetLibraryTests {
             assetWarning: nil,
             localeIdentifier: "zh-Hans"
         )
-        #expect(customTiming.timingSummary == "32 帧 · 7 个状态 · 逐帧创作时序")
+        #expect(customTiming.timingSummary == "42 帧 · 9 个动作 · 逐帧创作时序")
         #expect(customTiming.durationSummary.contains("idle：1,000 毫秒"))
     }
 
@@ -318,7 +337,7 @@ struct PetLibraryTests {
     }
 
     @Test
-    func transportProjectionRequiresV2TimingAndDecodesRevisionMetadata() throws {
+    func transportProjectionRequiresV3TimingAndDecodesRevisionMetadata() throws {
         let expected = makePet(
             id: "pet_current",
             name: "Current",
@@ -383,12 +402,74 @@ struct PetLibraryTests {
     @Test
     func motionPreviewUsesTheAuthoredPerFrameTimingWithoutRetiming() {
         let pet = makePet(id: "pet_timing", name: "Timing", origin: .externalImport)
-        let idle = pet.timing(for: "idle")
-        let timeline = FrameTimeline(state: idle, periodicCooldownMS: 4_000)
 
         #expect(PetLibraryPreviewPolicy.canRender(assetWarning: nil))
-        #expect(timeline.durationsMS == idle.frameDurationsMS)
-        #expect(timeline.frameCount == idle.frameDurationsMS.count)
+        for action in PetLibraryPreviewActionPolicy.orderedActions {
+            let timing = pet.timing(for: action.rawValue)
+            let timeline = FrameTimeline(state: timing, periodicCooldownMS: 4_000)
+
+            #expect(timeline.durationsMS == timing.frameDurationsMS)
+            #expect(timeline.frameCount == timing.frameDurationsMS.count)
+        }
+    }
+
+    @Test
+    func motionPreviewDefaultsToIdleAndFollowsThePortableActionOrder() {
+        #expect(PetLibraryPreviewActionPolicy.defaultAction == .idle)
+        #expect(
+            PetLibraryPreviewActionPolicy.orderedActions.map(\.rawValue)
+                == PetAnimationContract.orderedStateNames
+        )
+        #expect(PetLibraryPreviewActionPolicy.accessibilityLabel(
+            petName: "Bytebud",
+            action: .thinking,
+            localeIdentifier: "en"
+        ) == "Bytebud — Thinking action preview")
+        #expect(PetLibraryPreviewActionPolicy.accessibilityLabel(
+            petName: "字节芽",
+            action: .thinking,
+            localeIdentifier: "zh-Hans"
+        ) == "字节芽——“正在思考”动作预览")
+    }
+
+    @Test
+    func motionPreviewContentReadinessIsScopedToTheExactRenderIdentity() {
+        let pet = makePet(
+            id: "pet_preview_identity",
+            name: "Preview",
+            origin: .externalImport
+        )
+        let idle = PetPreviewRenderIdentity(
+            pet: pet,
+            stateName: ProductLifecycleState.idle.rawValue,
+            assetWarning: nil
+        )
+        let thinking = PetPreviewRenderIdentity(
+            pet: pet,
+            stateName: ProductLifecycleState.thinking.rawValue,
+            assetWarning: nil
+        )
+        var state = PetPreviewContentState()
+
+        #expect(!state.hasPresentedContent(for: idle))
+        #expect(!state.hasPresentedContent(for: thinking))
+
+        state.receive(hasContent: true, for: idle)
+        #expect(state.hasPresentedContent(for: idle))
+        #expect(!state.hasPresentedContent(for: thinking))
+
+        state.receive(hasContent: true, for: thinking)
+        state.receive(hasContent: false, for: idle)
+        #expect(!state.hasPresentedContent(for: idle))
+        #expect(state.hasPresentedContent(for: thinking))
+
+        // A late positive callback from the replaced renderer must not hide
+        // the current action's fallback or clear its already-presented state.
+        state.receive(hasContent: true, for: idle)
+        #expect(state.hasPresentedContent(for: thinking))
+        state.receive(hasContent: false, for: thinking)
+        #expect(!state.hasPresentedContent(for: thinking))
+        #expect(state.hasPresentedContent(for: idle))
     }
 
     @Test
@@ -509,6 +590,33 @@ struct PetLibraryTests {
     }
 
     @Test
+    func importFailureDistinguishesPackageRejectionFromLocalServiceFailure() {
+        let url = URL(fileURLWithPath: "/private/backend-detail/realistic.petpack")
+        let serviceFailure = PetLibraryImportFailure.requestFailure(
+            at: url,
+            error: PetCoreClientError.rpcErrorResponse(
+                code: -32603,
+                message: "private sqlite detail"
+            )
+        )
+        let packageFailure = PetLibraryImportFailure.requestFailure(
+            at: url,
+            error: PetCoreClientError.rpcErrorResponse(
+                code: -32000,
+                message: "private validation detail"
+            )
+        )
+
+        let serviceDetail = serviceFailure.localizedDetail(localeIdentifier: "zh-Hans")
+        let packageDetail = packageFailure.localizedDetail(localeIdentifier: "zh-Hans")
+        #expect(serviceDetail.contains("本地服务"))
+        #expect(serviceDetail.contains("请重试"))
+        #expect(!serviceDetail.contains("sqlite"))
+        #expect(packageDetail.contains("有效的本 App .petpack"))
+        #expect(!packageDetail.contains("validation"))
+    }
+
+    @Test
     func sourceContractCentersTheMotionHeroAndKeepsCardsSelectionOnly() throws {
         let source = try String(contentsOf: petLibraryViewURL, encoding: .utf8)
         let animationSource = try String(contentsOf: animationPreviewURL, encoding: .utf8)
@@ -543,6 +651,13 @@ struct PetLibraryTests {
         #expect(source.contains("pet-library.hero.history"))
         #expect(source.contains("pet-library.hero.export"))
         #expect(source.contains("pet-library.hero.more"))
+        #expect(source.contains("pet-library.hero.action-picker"))
+        #expect(source.contains(
+            "@State private var selectedPreviewAction = PetLibraryPreviewActionPolicy.defaultAction"
+        ))
+        #expect(source.contains("PetLibraryPreviewActionPolicy.orderedActions"))
+        #expect(source.contains("action: selectedPreviewAction"))
+        #expect(source.contains(".pickerStyle(.segmented)"))
         #expect(source.contains("presentation.technicalInformation"))
         #expect(source.contains("PetLibrarySourceBadge("))
         #expect(!source.contains("apcFloatingControlGlass"))
@@ -573,7 +688,7 @@ struct PetLibraryTests {
         #expect(!importSource.contains("error.localizedDescription"))
         #expect(importSource.contains("diagnostics.logFailure("))
         #expect(importSource.contains("\"file_index\": .integer"))
-        #expect(importSource.contains("failures.append(.file(at: url))"))
+        #expect(importSource.contains("failures.append(.requestFailure(at: url, error: error))"))
 
         let cardStart = try #require(source.range(of: "struct PetCard: View"))
         let coverStart = try #require(source.range(
@@ -591,17 +706,24 @@ struct PetLibraryTests {
         #expect(cardSource.contains("assetWarning: PetAssetWarning?"))
         #expect(cardSource.contains("assetWarning: assetWarning"))
 
-        #expect(animationSource.contains("PetCoverImage("))
+        #expect(animationSource.contains("PetActionFallbackImage("))
+        #expect(animationSource.contains("reducedMotionFrameIndex"))
         #expect(animationSource.contains("pet: pet"))
         #expect(animationSource.contains("assetWarning: assetWarning"))
         #expect(animationSource.contains("loadIfValidated"))
         #expect(animationSource.contains("PetMetalFrameRenderer()"))
-        #expect(animationSource.contains("stateName: \"idle\""))
+        #expect(animationSource.contains("let action: PetAnimationAction"))
+        #expect(animationSource.contains("stateName: action.rawValue"))
+        #expect(animationSource.contains("action.rawValue"))
+        #expect(!animationSource.contains("stateName: \"idle\""))
         #expect(animationSource.contains("PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning)"))
         #expect(animationSource.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(animationSource.contains("reduceMotion: reduceMotion"))
         #expect(animationSource.contains("static func dismantleNSView"))
         #expect(animationSource.contains("coordinator.suspendPipeline()"))
+        #expect(animationSource.contains("onFrameContentChanged: onRendererContentChanged"))
+        #expect(!animationSource.contains("rendererHasContent"))
+        #expect(!animationSource.contains("onChange(of: previewIdentity)"))
         #expect(!animationSource.contains("updateOverlayPetVisualEnvelope"))
 
         let copyStart = try #require(appStoreSource.range(of: "func preparePetCustomizationCopy"))
@@ -642,10 +764,10 @@ struct PetLibraryTests {
     @Test
     func inspectorInfoRowsWrapRealValuesWithoutPaintingPastTheirAvailableWidth() throws {
         let values = [
-            (".petpack 版本", "apc.petpack.v2"),
-            ("七状态", "idle · start · tool · waiting · review · done · failed"),
-            ("动画时序", "32 帧 · 7 个状态 · 逐帧创作时序"),
-            ("动作时长", "idle：900 毫秒 · waiting：1000 毫秒 · review：1000 毫秒"),
+            (".petpack 版本", "apc.petpack.v3"),
+            ("九动作", "idle · thinking · tool · waiting · done · failed · acknowledge · drag_left · drag_right"),
+            ("动画时序", "42 帧 · 9 个动作 · 逐帧创作时序"),
+            ("动作时长", "idle：1500 毫秒 · thinking：600 毫秒 · waiting：1000 毫秒"),
             ("Revision ID", "rev_00000000000000000000000000000003"),
         ]
 
@@ -679,13 +801,13 @@ struct PetLibraryTests {
     @MainActor
     @Test
     func inspectorInfoRowsLayOutTrailingStateAndRevisionGlyphsInsideTheValueView() throws {
-        let states = "idle · start · tool · waiting · review · done · failed"
+        let states = "idle · thinking · tool · waiting · done · failed · acknowledge · drag_left · drag_right"
         let revision = "rev_00000000000000000000000000000003"
 
         for width: CGFloat in [240, 272, 290] {
             let statesRendering = try renderedInfoRowValueView(
                 width: width,
-                title: "七状态",
+                title: "九动作",
                 value: states
             )
             let statesView = statesRendering.textView
@@ -729,12 +851,12 @@ struct PetLibraryTests {
     @MainActor
     @Test
     func inspectorScrollViewConstrainsInfoRowsToItsVisibleWidth() throws {
-        let states = "idle · start · tool · waiting · review · done · failed"
+        let states = "idle · thinking · tool · waiting · done · failed · acknowledge · drag_left · drag_right"
 
         for viewportWidth: CGFloat in [286, 330, 390] {
             let rendering = try renderedInfoRowInInspectorScrollView(
                 viewportWidth: viewportWidth,
-                title: "七状态",
+                title: "九动作",
                 value: states
             )
             let doneBounds = try glyphBounds(of: "done", in: rendering.textView)

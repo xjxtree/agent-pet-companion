@@ -341,7 +341,7 @@ for _ in 0..<80 {
     let libraryInventoryIsVisible =
         containsIdentifier("pet-library.collection-title", in: nodes)
         && containsIdentifier("pet-library.grid", in: nodes)
-        && ["星雾团子", "Bytebud 字节芽"].allSatisfy { petName in
+        && ["星雾团子", "Bytebud 字节芽", "桃蕾"].allSatisfy { petName in
             strings.contains { $0 == petName || $0.contains(petName) }
         }
     if libraryInventoryIsVisible {
@@ -353,6 +353,7 @@ requireIdentifier("pet-library.collection-title", "library collection title")
 requireIdentifier("pet-library.grid", "library grid")
 requireAny(["星雾团子"], "bundled pet")
 requireAny(["Bytebud 字节芽"], "bundled pet")
+requireAny(["桃蕾"], "bundled pet")
 
 let libraryNavigationLabel = resolveVisibleControlLabel(
     ["宠物库", "Pet Library"],

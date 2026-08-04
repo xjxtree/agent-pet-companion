@@ -392,12 +392,15 @@ enum OverlayPetAnimationIdentity {
         let event = state.event
         switch event.eventType {
         case .start:
+            return "idle"
+        case .thinking, .plan:
             let activation = nonEmpty(state.sessionActivatedAt)
                 ?? event.id
             return scopedEntryID(
                 event: event,
                 sessionID: state.sessionID ?? event.sessionID,
-                marker: activation
+                marker: activation,
+                reaction: "thinking"
             )
         case .done:
             let completion = nonEmpty(state.sessionActivatedAt)
@@ -405,9 +408,10 @@ enum OverlayPetAnimationIdentity {
             return scopedEntryID(
                 event: event,
                 sessionID: state.sessionID ?? event.sessionID,
-                marker: completion
+                marker: completion,
+                reaction: "done"
             )
-        case .tool, .waiting, .review, .failed:
+        case .tool, .waiting, .failed:
             return event.eventType.rawValue
         }
     }
@@ -415,10 +419,11 @@ enum OverlayPetAnimationIdentity {
     private static func scopedEntryID(
         event: AgentEvent,
         sessionID: String?,
-        marker: String
+        marker: String,
+        reaction: String
     ) -> String {
         [
-            event.eventType.rawValue,
+            reaction,
             event.source.rawValue,
             nonEmpty(sessionID),
             marker
@@ -584,6 +589,10 @@ final class OverlayInteractionPresentationState: ObservableObject {
     }
 
     @Published private var displayWidthPresentation: DisplayWidthPresentation?
+    @Published private(set) var petInteraction: OverlayPetInteractionPresentation?
+    @Published private(set) var pressFeedbackActive = false
+    private var dragInteractionID: UUID?
+    private var lastDragCenter: CGPoint?
 
     func resolvedDisplayWidthPt(fallback: CGFloat) -> CGFloat {
         displayWidthPresentation?.displayWidthPt ?? fallback
@@ -606,14 +615,148 @@ final class OverlayInteractionPresentationState: ObservableObject {
         guard displayWidthPresentation != nil else { return }
         displayWidthPresentation = nil
     }
+
+    func acknowledge(reduceMotion: Bool) {
+        guard !reduceMotion, dragInteractionID == nil else { return }
+        let interactionID = UUID()
+        petInteraction = OverlayPetInteractionPresentation(
+            stateName: "acknowledge",
+            entryID: "interaction:\(interactionID.uuidString):acknowledge"
+        )
+    }
+
+    func beginPressFeedback(enabled: Bool, reduceMotion: Bool) {
+        guard enabled, !reduceMotion, dragInteractionID == nil else { return }
+        pressFeedbackActive = true
+    }
+
+    func beginDrag(interactionID: UUID, center: CGPoint) {
+        dragInteractionID = interactionID
+        lastDragCenter = center
+        petInteraction = nil
+    }
+
+    func updateDrag(interactionID: UUID, center: CGPoint) {
+        guard dragInteractionID == interactionID else { return }
+        pressFeedbackActive = false
+        let priorCenter = lastDragCenter ?? center
+        lastDragCenter = center
+        let horizontalDelta = center.x - priorCenter.x
+        guard abs(horizontalDelta) >= OverlayPetInteractionPolicy.directionThresholdPt else {
+            return
+        }
+        let stateName = horizontalDelta < 0 ? "drag_left" : "drag_right"
+        guard petInteraction?.stateName != stateName else { return }
+        petInteraction = OverlayPetInteractionPresentation(
+            stateName: stateName,
+            entryID: "interaction:\(interactionID.uuidString):\(stateName)"
+        )
+    }
+
+    func endDrag(interactionID: UUID?) {
+        if let interactionID, dragInteractionID != interactionID { return }
+        dragInteractionID = nil
+        lastDragCenter = nil
+        pressFeedbackActive = false
+        if petInteraction?.stateName == "drag_left"
+            || petInteraction?.stateName == "drag_right"
+        {
+            petInteraction = nil
+        }
+    }
+
+    func complete(entryID: String) {
+        guard petInteraction?.entryID == entryID,
+              petInteraction?.stateName == "acknowledge"
+        else { return }
+        petInteraction = nil
+    }
+}
+
+struct OverlayPetInteractionPresentation: Equatable, Sendable {
+    var stateName: String
+    var entryID: String
+}
+
+enum OverlayPetInteractionPolicy {
+    static let directionThresholdPt: CGFloat = 0.5
+    static let pressFeedbackDurationSeconds = 0.16
+}
+
+enum OverlayPointerMaskState: Equatable, Sendable {
+    case missing
+    case valid
+    case stale
+}
+
+struct OverlayPointerOwnershipInput: Equatable, Sendable {
+    var overlayVisible: Bool
+    var primaryButtonDown: Bool
+    var activeInteractionID: UUID?
+    var maskState: OverlayPointerMaskState
+    var validMaskPixelIsOpaque: Bool
+    var pointerInBubble: Bool
+    var pointerInMenu: Bool
+    var pointerInGeometricPetRegion: Bool
+}
+
+enum OverlayPointerOwnership: Equatable, Sendable {
+    case passthrough
+    case pet
+    case auxiliarySurface
+    case activeLease(UUID)
+
+    var isOwnedByOverlay: Bool {
+        self != .passthrough
+    }
+}
+
+/// The only policy that decides whether the overlay owns a pointer location.
+/// AppKit event routing remains a defensive delivery mechanism; it does not
+/// redefine mask fallback or active-gesture ownership.
+enum OverlayPointerOwnershipPolicy {
+    static func resolve(
+        _ input: OverlayPointerOwnershipInput
+    ) -> OverlayPointerOwnership {
+        guard input.overlayVisible else { return .passthrough }
+        if let interactionID = input.activeInteractionID {
+            return .activeLease(interactionID)
+        }
+        if input.pointerInBubble || input.pointerInMenu {
+            return .auxiliarySurface
+        }
+        guard input.pointerInGeometricPetRegion else {
+            return .passthrough
+        }
+        switch input.maskState {
+        case .valid:
+            return input.validMaskPixelIsOpaque ? .pet : .passthrough
+        case .missing, .stale:
+            return .pet
+        }
+    }
 }
 
 enum OverlayPetPointerGesture {
     static let dragThreshold: CGFloat = 4
 
     static func exceedsDragThreshold(from start: CGPoint, to current: CGPoint) -> Bool {
-        hypot(current.x - start.x, current.y - start.y) > dragThreshold
+        hypot(current.x - start.x, current.y - start.y) >= dragThreshold
     }
+
+    /// AppKit reports a double-click as click counts one and two. Performing
+    /// the primary action only for the first release preserves responsive
+    /// single-click behavior without toggling the bubble back on the second.
+    static func shouldPerformPrimaryClick(clickCount: Int, didDrag: Bool) -> Bool {
+        !didDrag && clickCount == 1
+    }
+}
+
+enum OverlayPointerGesturePhase: Equatable, Sendable {
+    case idle
+    case pressed
+    case dragging
+    case finalized
 }
 
 struct OverlayDragSession: Equatable, Sendable {
@@ -623,6 +766,7 @@ struct OverlayDragSession: Equatable, Sendable {
     var latestPointerScreen: CGPoint
     let startDisplayID: String
     var hasCrossedThreshold: Bool
+    private(set) var phase: OverlayPointerGesturePhase
 
     init(
         interactionID: UUID = UUID(),
@@ -636,6 +780,7 @@ struct OverlayDragSession: Equatable, Sendable {
         latestPointerScreen = startPointerScreen
         self.startDisplayID = startDisplayID
         hasCrossedThreshold = false
+        phase = .pressed
     }
 
     var proposedAnchorScreen: CGPoint {
@@ -650,13 +795,24 @@ struct OverlayDragSession: Equatable, Sendable {
     }
 
     mutating func updatePointer(_ point: CGPoint) {
+        guard phase != .finalized else { return }
         latestPointerScreen = point
         if !hasCrossedThreshold {
             hasCrossedThreshold = OverlayPetPointerGesture.exceedsDragThreshold(
                 from: startPointerScreen,
                 to: point
             )
+            if hasCrossedThreshold {
+                phase = .dragging
+            }
         }
+    }
+
+    mutating func compareAndFinalize(interactionID: UUID) -> Bool {
+        guard self.interactionID == interactionID,
+              phase != .finalized else { return false }
+        phase = .finalized
+        return true
     }
 }
 
@@ -693,6 +849,62 @@ enum OverlayInteractionWindowRole: Equatable, Sendable {
 struct OverlayInteractionWindowMove: Equatable, Sendable {
     let role: OverlayInteractionWindowRole
     let frame: CGRect
+}
+
+enum OverlayAuxiliaryPanelAttachmentPlan: Equatable, Sendable {
+    case none
+    case attach
+    case reparent
+    case rejectCycle
+}
+
+enum OverlayAuxiliaryPanelAttachmentPolicy {
+    static func plan(
+        currentParentMatchesTarget: Bool,
+        hasCurrentParent: Bool,
+        wouldCreateCycle: Bool
+    ) -> OverlayAuxiliaryPanelAttachmentPlan {
+        if wouldCreateCycle { return .rejectCycle }
+        if currentParentMatchesTarget { return .none }
+        return hasCurrentParent ? .reparent : .attach
+    }
+}
+
+enum OverlayCompositionLayoutMode: Equatable, Sendable {
+    case resting
+    case directManipulation
+}
+
+enum OverlayBubbleAnchorDirection: String, CaseIterable, Equatable, Sendable {
+    case above
+    case below
+    case left
+    case right
+}
+
+struct OverlayBubblePanelLayout: Equatable, Sendable {
+    let frame: CGRect
+    let direction: OverlayBubbleAnchorDirection
+}
+
+struct OverlayAuxiliaryRelativeFrameSnapshot: Equatable, Sendable {
+    let bubbleFrame: CGRect?
+    let menuFrame: CGRect?
+
+    static func capture(
+        parentFrame: CGRect,
+        bubbleFrame: CGRect?,
+        menuFrame: CGRect?
+    ) -> Self {
+        Self(
+            bubbleFrame: bubbleFrame.map {
+                $0.offsetBy(dx: -parentFrame.minX, dy: -parentFrame.minY)
+            },
+            menuFrame: menuFrame.map {
+                $0.offsetBy(dx: -parentFrame.minX, dy: -parentFrame.minY)
+            }
+        )
+    }
 }
 
 /// The display-link delivery path translates only the parent pet panel. Child
@@ -736,57 +948,20 @@ enum OverlayPetDragGeometry {
     }
 }
 
-enum OverlayPetActivationDestination: Equatable {
-    case session(OverlaySessionContent)
-    case bubble
-    case controlCenter
-
-    static func resolve(
-        activeState: ActiveAgentState?,
-        bubbleDismissed: Bool,
-        hasAvailableBubbleContent: Bool
-    ) -> OverlayPetActivationDestination {
-        resolve(
-            activeSession: activeState.map(OverlaySessionContent.init(state:)),
-            bubbleDismissed: bubbleDismissed,
-            hasAvailableBubbleContent: hasAvailableBubbleContent
-        )
-    }
-
-    static func resolve(
-        activeSession: OverlaySessionContent?,
-        bubbleDismissed _: Bool,
-        hasAvailableBubbleContent: Bool
-    ) -> OverlayPetActivationDestination {
-        if let activeSession {
-            if activeSession.canOpen {
-                return .session(activeSession)
-            }
-            if hasAvailableBubbleContent {
-                return .bubble
-            }
-        }
-        return .controlCenter
-    }
-}
-
 enum OverlayPresentedAgentState {
+    /// Current PetCore snapshots use `activeSessions` as the bounded liveness
+    /// projection for both bubbles and pet reactions. `AppStore` already
+    /// synthesizes that array from `canonicalState` when decoding an older
+    /// compatible snapshot, so a current empty array must not fall back to a
+    /// canonical session that PetCore deliberately omitted as expired.
     static func resolve(
-        canonicalState: ActiveAgentState?,
+        canonicalState _: ActiveAgentState?,
         activeSessions: [ActiveAgentState],
         dismissedSessionIDs: Set<String>
     ) -> ActiveAgentState? {
-        if let visible = activeSessions.first(where: {
+        activeSessions.first(where: {
             !isDismissed($0, dismissedSessionIDs: dismissedSessionIDs)
-        }) {
-            return visible
-        }
-        guard let canonicalState,
-              !isDismissed(canonicalState, dismissedSessionIDs: dismissedSessionIDs)
-        else {
-            return nil
-        }
-        return canonicalState
+        })
     }
 
     static func newlyActivatedDismissalIDs(
@@ -831,10 +1006,12 @@ enum OverlayGeometry {
     )
     static let displayAspectHeightRatio: CGFloat = 208 / 192
     static let bubbleWidth: CGFloat = 344
+    static let bubbleAdaptiveMinimumWidth: CGFloat = 304
+    static let bubbleAdaptiveMaximumWidth: CGFloat = 360
     static let bubbleMinimumHeight: CGFloat = 70
     static let bubbleMaximumHeight: CGFloat = 680
     static let bubbleGap: CGFloat = 3
-    static let bubbleMinimumWidth: CGFloat = 108
+    static let bubbleMinimumWidth: CGFloat = 304
     static let bubbleStackSpacing: CGFloat = 4
     static let bubbleCornerRadius: CGFloat = 14
     static let bubbleLeadingPadding: CGFloat = 8
@@ -885,13 +1062,19 @@ enum OverlayGeometry {
         content: OverlayBubbleContent = .measurementPlaceholder
     ) -> CGSize {
         let availableWidth = max(96, size.width - 32)
-        let maximumWidth = min(bubbleWidth, availableWidth)
-        let minimumWidth = min(bubbleMinimumWidth, maximumWidth)
-        let width = max(minimumWidth, maximumWidth)
+        let maximumWidth = min(bubbleAdaptiveMaximumWidth, availableWidth)
+        let width = maximumWidth < bubbleAdaptiveMinimumWidth
+            ? maximumWidth
+            : min(bubbleWidth, maximumWidth)
         let measuredHeight = measuredBubbleHeight(width: width, content: content)
+        let availableHeight = max(44, size.height - 16)
         return CGSize(
             width: width,
-            height: min(bubbleMaximumHeight, max(bubbleMinimumHeight, measuredHeight))
+            height: min(
+                bubbleMaximumHeight,
+                availableHeight,
+                max(bubbleMinimumHeight, measuredHeight)
+            )
         )
     }
 
@@ -1057,8 +1240,16 @@ enum OverlayGeometry {
         let maxY = visibleFrame.maxY - relativeBounds.maxY - edgeInset
 
         return CGPoint(
-            x: clamp(proposedCenter.x, lower: minX, upper: maxX),
-            y: clamp(proposedCenter.y, lower: minY, upper: maxY)
+            x: inwardCanonicalClamp(
+                proposedCenter.x,
+                lower: minX,
+                upper: maxX
+            ),
+            y: inwardCanonicalClamp(
+                proposedCenter.y,
+                lower: minY,
+                upper: maxY
+            )
         )
     }
 
@@ -1104,6 +1295,24 @@ enum OverlayGeometry {
         screenFrame: CGRect,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGPoint {
+        bubblePlacement(
+            bubbleSize: bubbleSize,
+            displayWidthPt: displayWidthPt,
+            petScreenCenter: petScreenCenter,
+            screenFrame: screenFrame,
+            petVisualEnvelope: petVisualEnvelope,
+            previousDirection: nil
+        ).center
+    }
+
+    static func bubblePlacement(
+        bubbleSize: CGSize,
+        displayWidthPt: CGFloat,
+        petScreenCenter: CGPoint,
+        screenFrame: CGRect,
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
+        previousDirection: OverlayBubbleAnchorDirection?
+    ) -> (center: CGPoint, direction: OverlayBubbleAnchorDirection) {
         let petSize = petVisibleSize(displayWidthPt: displayWidthPt)
         let verticalOffsets = petVisualVerticalOffsets(
             displayWidthPt: displayWidthPt,
@@ -1114,37 +1323,104 @@ enum OverlayGeometry {
         let petTop = petScreenCenter.y + verticalOffsets.top
         let petBottom = petScreenCenter.y + verticalOffsets.bottom
 
-        let alignLeft = screenFrame.isEmpty ? false : petScreenCenter.x < screenFrame.midX
-        let aboveCenter = petTop + bubbleGap + bubbleSize.height / 2
-        let belowCenter = petBottom - bubbleGap - bubbleSize.height / 2
-        let hasSpaceAbove = screenFrame.isEmpty || aboveCenter <= screenFrame.maxY - 8
-        let hasSpaceBelow = screenFrame.isEmpty || belowCenter >= screenFrame.minY + 8
-        // The bubble is visually attached to the pet's top edge. Only fall
-        // below when the top side genuinely cannot fit and the bottom can.
-        let placeBelow = !hasSpaceAbove && hasSpaceBelow
-
-        let unclampedX = alignLeft
+        let alignLeft = screenFrame.isEmpty
+            ? false
+            : petScreenCenter.x < screenFrame.midX
+        let attachedX = alignLeft
             ? petLeft + bubbleSize.width / 2
             : petRight - bubbleSize.width / 2
-
-        let unclampedY = placeBelow
-            ? petBottom - bubbleGap - bubbleSize.height / 2
-            : petTop + bubbleGap + bubbleSize.height / 2
-
+        let candidates: [(OverlayBubbleAnchorDirection, CGPoint)] = [
+            (.above, CGPoint(
+                x: attachedX,
+                y: petTop + bubbleGap + bubbleSize.height / 2
+            )),
+            (.below, CGPoint(
+                x: attachedX,
+                y: petBottom - bubbleGap - bubbleSize.height / 2
+            )),
+            (.left, CGPoint(
+                x: petLeft - bubbleGap - bubbleSize.width / 2,
+                y: petScreenCenter.y
+            )),
+            (.right, CGPoint(
+                x: petRight + bubbleGap + bubbleSize.width / 2,
+                y: petScreenCenter.y
+            )),
+        ]
         guard !screenFrame.isEmpty else {
-            return CGPoint(x: unclampedX, y: unclampedY)
+            return (candidates[0].1, candidates[0].0)
         }
+        let safeFrame = screenFrame.insetBy(dx: 8, dy: 8)
+        func candidateRect(_ center: CGPoint) -> CGRect {
+            rect(center: center, size: bubbleSize)
+        }
+        if let previousDirection,
+           let previous = candidates.first(where: {
+               $0.0 == previousDirection
+                   && safeFrame.contains(candidateRect($0.1))
+           }) {
+            return (previous.1, previous.0)
+        }
+        let selected = candidates.enumerated().max { lhs, rhs in
+            let lhsRect = candidateRect(lhs.element.1)
+            let rhsRect = candidateRect(rhs.element.1)
+            let lhsIntersection = lhsRect.intersection(safeFrame)
+            let rhsIntersection = rhsRect.intersection(safeFrame)
+            let lhsArea = lhsIntersection.isNull
+                ? 0
+                : lhsIntersection.width * lhsIntersection.height
+            let rhsArea = rhsIntersection.isNull
+                ? 0
+                : rhsIntersection.width * rhsIntersection.height
+            if lhsArea != rhsArea { return lhsArea < rhsArea }
+            let lhsClamped = clampedBubbleCenter(
+                lhs.element.1,
+                bubbleSize: bubbleSize,
+                safeFrame: safeFrame
+            )
+            let rhsClamped = clampedBubbleCenter(
+                rhs.element.1,
+                bubbleSize: bubbleSize,
+                safeFrame: safeFrame
+            )
+            let lhsDistance = hypot(
+                lhsClamped.x - lhs.element.1.x,
+                lhsClamped.y - lhs.element.1.y
+            )
+            let rhsDistance = hypot(
+                rhsClamped.x - rhs.element.1.x,
+                rhsClamped.y - rhs.element.1.y
+            )
+            if lhsDistance != rhsDistance {
+                return lhsDistance > rhsDistance
+            }
+            return lhs.offset > rhs.offset
+        }?.element ?? candidates[0]
+        return (
+            clampedBubbleCenter(
+                selected.1,
+                bubbleSize: bubbleSize,
+                safeFrame: safeFrame
+            ),
+            selected.0
+        )
+    }
 
-        return CGPoint(
+    private static func clampedBubbleCenter(
+        _ center: CGPoint,
+        bubbleSize: CGSize,
+        safeFrame: CGRect
+    ) -> CGPoint {
+        CGPoint(
             x: clamp(
-                unclampedX,
-                lower: screenFrame.minX + bubbleSize.width / 2 + 8,
-                upper: screenFrame.maxX - bubbleSize.width / 2 - 8
+                center.x,
+                lower: safeFrame.minX + bubbleSize.width / 2,
+                upper: safeFrame.maxX - bubbleSize.width / 2
             ),
             y: clamp(
-                unclampedY,
-                lower: screenFrame.minY + bubbleSize.height / 2 + 8,
-                upper: screenFrame.maxY - bubbleSize.height / 2 - 8
+                center.y,
+                lower: safeFrame.minY + bubbleSize.height / 2,
+                upper: safeFrame.maxY - bubbleSize.height / 2
             )
         )
     }
@@ -1590,18 +1866,46 @@ enum OverlayGeometry {
         contents: [OverlayBubbleContent],
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil
     ) -> CGRect {
+        bubblePanelLayout(
+            displayWidthPt: displayWidthPt,
+            petScreenCenter: petScreenCenter,
+            visibleFrame: visibleFrame,
+            contents: contents,
+            petVisualEnvelope: petVisualEnvelope,
+            previousDirection: nil
+        ).frame
+    }
+
+    static func bubblePanelLayout(
+        displayWidthPt: CGFloat,
+        petScreenCenter: CGPoint,
+        visibleFrame: CGRect,
+        contents: [OverlayBubbleContent],
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
+        previousDirection: OverlayBubbleAnchorDirection?
+    ) -> OverlayBubblePanelLayout {
         let bubbleSize = resolvedBubbleStackSize(in: visibleFrame.size, contents: contents)
-        guard bubbleSize.width > 0, bubbleSize.height > 0 else { return .zero }
-        return rect(
-            center: bubbleScreenCenter(
-                bubbleSize: bubbleSize,
-                displayWidthPt: displayWidthPt,
-                petScreenCenter: petScreenCenter,
-                screenFrame: visibleFrame,
-                petVisualEnvelope: petVisualEnvelope
-            ),
-            size: bubbleSize
-        ).integral
+        guard bubbleSize.width > 0, bubbleSize.height > 0 else {
+            return OverlayBubblePanelLayout(
+                frame: .zero,
+                direction: previousDirection ?? .above
+            )
+        }
+        let placement = bubblePlacement(
+            bubbleSize: bubbleSize,
+            displayWidthPt: displayWidthPt,
+            petScreenCenter: petScreenCenter,
+            screenFrame: visibleFrame,
+            petVisualEnvelope: petVisualEnvelope,
+            previousDirection: previousDirection
+        )
+        return OverlayBubblePanelLayout(
+            frame: rect(
+                center: placement.center,
+                size: bubbleSize
+            ).integral,
+            direction: placement.direction
+        )
     }
 
     static func panelScreenFrame(
@@ -1703,12 +2007,14 @@ enum OverlayGeometry {
         includeBubble: Bool,
         bubbleContent: OverlayBubbleContent = .measurementPlaceholder,
         mousePassthroughEnabled: Bool = true,
-        petFrameHitTest: OverlayPetFrameHitTest? = nil
+        petFrameHitTest: OverlayPetFrameHitTest? = nil,
+        overlayVisible: Bool = true,
+        primaryButtonDown: Bool = false,
+        activeInteractionID: UUID? = nil,
+        maskState: OverlayPointerMaskState? = nil
     ) -> Bool {
-        guard CGRect(origin: .zero, size: containerSize).contains(point) else {
-            return false
-        }
-        guard mousePassthroughEnabled else { return true }
+        guard overlayVisible else { return false }
+        if !mousePassthroughEnabled { return true }
 
         let rects = interactiveRects(
             in: containerSize,
@@ -1721,28 +2027,38 @@ enum OverlayGeometry {
             includeBubble: includeBubble,
             bubbleContent: bubbleContent
         )
-        guard let petDragRect = rects.first else { return false }
-
-        // Resize, menu, and bubble surfaces keep their geometric hit regions.
-        // Only the pet body is narrowed to the currently presented frame.
-        if rects.dropFirst().contains(where: { $0.contains(point) }) {
-            return true
-        }
-        guard petDragRect.contains(point) else {
-            return false
-        }
-        guard let petFrameHitTest else {
-            // Frame masks are published asynchronously and are intentionally
-            // cleared during renderer/state transitions. Keep the visible pet
-            // draggable until the next mask can refine transparent pixels.
-            return true
-        }
-        return petFrameContainsOpaquePixel(
-            atTopLeftPoint: point,
-            displayWidthPt: displayWidthPt,
-            petCenter: petCenter,
-            frameHitTest: petFrameHitTest
-        )
+        let pointerInsidePanel = CGRect(
+            origin: .zero,
+            size: containerSize
+        ).contains(point)
+        let petDragRect = rects.first ?? .zero
+        let auxiliaryHit = pointerInsidePanel
+            && rects.dropFirst().contains(where: { $0.contains(point) })
+        let geometricPetHit = pointerInsidePanel && petDragRect.contains(point)
+        let resolvedMaskState = maskState
+            ?? (petFrameHitTest == nil ? .missing : .valid)
+        let opaque = resolvedMaskState == .valid
+            && geometricPetHit
+            && petFrameHitTest.map {
+                petFrameContainsOpaquePixel(
+                    atTopLeftPoint: point,
+                    displayWidthPt: displayWidthPt,
+                    petCenter: petCenter,
+                    frameHitTest: $0
+                )
+            } == true
+        return OverlayPointerOwnershipPolicy.resolve(
+            OverlayPointerOwnershipInput(
+                overlayVisible: overlayVisible,
+                primaryButtonDown: primaryButtonDown,
+                activeInteractionID: activeInteractionID,
+                maskState: resolvedMaskState,
+                validMaskPixelIsOpaque: opaque,
+                pointerInBubble: includeBubble && auxiliaryHit,
+                pointerInMenu: clickMenuEnabled && auxiliaryHit,
+                pointerInGeometricPetRegion: geometricPetHit
+            )
+        ).isOwnedByOverlay
     }
 
     private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
@@ -1817,6 +2133,36 @@ enum OverlayGeometry {
         guard lower <= upper else { return (lower + upper) / 2 }
         return min(max(value, lower), upper)
     }
+
+    /// Quantizes both hard bounds inward before clamping a canonical center.
+    /// This ordering prevents a rounded edge coordinate from escaping the
+    /// visible screen after an otherwise correct geometric clamp.
+    private static func inwardCanonicalClamp(
+        _ value: CGFloat,
+        lower: CGFloat,
+        upper: CGFloat
+    ) -> CGFloat {
+        guard let canonicalLower = OverlayPlacementCanonicalization
+            .inwardLowerBound(Double(lower)),
+            let canonicalUpper = OverlayPlacementCanonicalization
+                .inwardUpperBound(Double(upper)),
+            let canonicalValue = OverlayPlacementCanonicalization.coordinate(
+                Double(value)
+            ) else {
+            return clamp(value, lower: lower, upper: upper)
+        }
+        guard canonicalLower <= canonicalUpper else {
+            let midpoint = (lower + upper) / 2
+            return CGFloat(
+                OverlayPlacementCanonicalization.coordinate(Double(midpoint))
+                    ?? Double(midpoint)
+            )
+        }
+        return CGFloat(min(
+            max(canonicalValue, canonicalLower),
+            canonicalUpper
+        ))
+    }
 }
 
 enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
@@ -1827,10 +2173,10 @@ enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
 
     init(eventType: AgentEventKind?) {
         self = switch eventType {
-        case .waiting, .review: .needsInput
+        case .waiting: .needsInput
         case .failed: .failed
         case .done: .ready
-        case .start, .tool, nil: .running
+        case .start, .thinking, .plan, .tool, nil: .running
         }
     }
 
@@ -1912,7 +2258,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
     var navigationNotice: OverlaySessionNavigationNotice?
 
     var needsUserAttention: Bool {
-        eventType == .waiting || eventType == .review || eventType == .failed
+        eventType == .waiting || eventType == .failed
     }
 
     var navigationCapability: NavigationCapability {
@@ -1984,6 +2330,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
             statusText,
             primaryDetailText,
             secondaryDetailText,
+            accessibilityFallbackDetailText,
             actionLabel,
         ]
         .compactMap(Self.compactMessage)
@@ -1998,10 +2345,41 @@ struct OverlaySessionContent: Equatable, Identifiable {
             Self.compactMessage(activityText),
         ].compactMap { $0 }
     }
+    /// Preserves a complete VoiceOver state-to-action reading order when
+    /// PetCore intentionally omits displayable session copy. This text is
+    /// localized product guidance, never raw connector event detail, and is
+    /// not inserted into the visual bubble.
+    private var accessibilityFallbackDetailText: String? {
+        guard detailCandidates.isEmpty else { return nil }
+        let key: APCLocalizationKey? = switch eventType {
+        case .start:
+            .overlayDetailRunning
+        case .thinking:
+            .overlayActivityThinking
+        case .plan:
+            .overlayActivityPlan
+        case .tool:
+            .overlayActivityTool
+        case .waiting:
+            .overlayDetailNeedsInput
+        case .done:
+            .overlayDetailCompleted
+        case .failed:
+            .overlayDetailBlocked
+        case nil:
+            nil
+        }
+        guard let key else { return nil }
+        return Self.compactMessage(Self.nonredundantDetail(
+            APCLocalization.text(key),
+            title: sessionTitle,
+            status: statusText
+        ))
+    }
     var dismissesAfterActivation: Bool {
         switch eventType {
-        case .review, .done: true
-        case .start, .tool, .waiting, .failed, nil: false
+        case .done: true
+        case .start, .thinking, .plan, .tool, .waiting, .failed, nil: false
         }
     }
 
@@ -2077,7 +2455,10 @@ struct OverlaySessionContent: Equatable, Identifiable {
         sessionID = resolvedSessionID
         eventType = event.eventType
         acknowledgementID = state.acknowledgementID
-        statusText = Self.displayStatus(for: event.eventType)
+        statusText = Self.displayStatus(
+            for: state.overlayDisplay?.summaryKind
+                ?? Self.summaryKind(for: event.eventType)
+        )
         let proposedTitle = Self.sessionTitle(for: state)
         sessionTitle = Self.normalizedText(proposedTitle) == Self.normalizedText(statusText)
             ? Self.genericSessionTitle(for: state)
@@ -2108,7 +2489,7 @@ struct OverlaySessionContent: Equatable, Identifiable {
         eventType = event.eventType
         acknowledgementID = nil
         sessionTitle = APCLocalization.format(.overlaySessionTitleFormat, event.source.shortTitle)
-        statusText = Self.displayStatus(for: event.eventType)
+        statusText = Self.displayStatus(for: Self.summaryKind(for: event.eventType))
         navigation = event.sessionNavigation
         navigationNotice = nil
         activityText = ""
@@ -2142,9 +2523,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
             fallbackEventID: state.event.id
         )
         switch state.event.eventType {
-        case .waiting, .review, .failed:
+        case .waiting, .failed:
             return "attention:\(stableID):\(state.event.id)"
-        case .start, .tool, .done:
+        case .start, .thinking, .plan, .tool, .done:
             return "activation:\(stableID):\(state.sessionActivatedAt ?? "initial")"
         }
     }
@@ -2256,10 +2637,20 @@ struct OverlaySessionContent: Equatable, Identifiable {
         return occupied.contains(normalizedText(proposed)) ? "" : proposed
     }
 
-    static func displayStatus(for eventType: AgentEventKind) -> String {
-        APCLocalizedPresentation.lifecycleTitle(
-            ProductLifecycleState(eventKind: eventType)
-        )
+    static func displayStatus(for summaryKind: AgentOverlaySummaryKind) -> String {
+        APCLocalizedPresentation.overlayEventTitle(summaryKind)
+    }
+
+    static func summaryKind(for eventType: AgentEventKind) -> AgentOverlaySummaryKind {
+        switch eventType {
+        case .start: .start
+        case .thinking: .thinking
+        case .plan: .plan
+        case .tool: .tool
+        case .waiting: .needsInput
+        case .done: .done
+        case .failed: .failed
+        }
     }
 
 }

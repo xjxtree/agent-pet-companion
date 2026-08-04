@@ -473,9 +473,9 @@ fn rpc_rejects_wrong_typed_and_out_of_range_named_params() {
         },
         {
             "jsonrpc": "2.0",
-            "id": "renderer-retired-high-quality",
+            "id": "renderer-unsupported-ultra-quality",
             "method": "renderer.budget",
-            "params": { "quality": "high", "frame_count": 8 }
+            "params": { "quality": "ultra", "frame_count": 8 }
         },
         {
             "jsonrpc": "2.0",

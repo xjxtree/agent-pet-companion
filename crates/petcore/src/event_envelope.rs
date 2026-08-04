@@ -493,7 +493,7 @@ fn validate_payload_fields(payload: Option<&Map<String, Value>>) -> Result<()> {
     validate_optional_enum(
         payload,
         "interaction_kind",
-        &["approval_required", "input_required", "review_required"],
+        &["approval_required", "input_required"],
     )?;
     validate_optional_enum(
         payload,
@@ -631,12 +631,7 @@ fn strict_payload(
     let interaction_kind = payload
         .and_then(|payload| payload.get("interaction_kind"))
         .and_then(Value::as_str)
-        .filter(|value| {
-            matches!(
-                *value,
-                "approval_required" | "input_required" | "review_required"
-            )
-        })
+        .filter(|value| matches!(*value, "approval_required" | "input_required"))
         .map(|value| Value::String(value.to_string()))
         .unwrap_or(Value::Null);
     let project_label =
@@ -753,9 +748,10 @@ pub(crate) fn validated_warp_focus_url(value: &str) -> Option<String> {
 fn normalized_source_event(value: &str) -> &'static str {
     match value {
         "start" => "start",
+        "thinking" => "thinking",
+        "plan" => "plan",
         "tool" => "tool",
         "waiting" => "waiting",
-        "review" => "review",
         "done" => "done",
         "failed" => "failed",
         "SessionStart" => "SessionStart",
@@ -817,6 +813,7 @@ fn normalized_source_event(value: &str) -> &'static str {
         "question.v2.replied" => "question.v2.replied",
         "question.v2.rejected" => "question.v2.rejected",
         "session.next.prompt.admitted" => "session.next.prompt.admitted",
+        "session.next.reasoning.ended" => "session.next.reasoning.ended",
         "session.next.step.ended" => "session.next.step.ended",
         "session.next.step.failed" => "session.next.step.failed",
         "message.user" => "message.user",

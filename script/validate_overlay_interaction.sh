@@ -53,7 +53,8 @@ for suite in \
   OverlayPlacementAuthorityTests \
   AppStoreOverlaySnapshotTests \
   OverlayGeometryTests \
-  OverlayDisplayWidthTests; do
+  OverlayDisplayWidthTests \
+  OverlayInteractionTelemetryTests; do
   swift test \
     --package-path "$MACOS_DIR" \
     --filter "$suite" \
@@ -106,6 +107,7 @@ payload = {
         "AppStoreOverlaySnapshotTests",
         "OverlayGeometryTests",
         "OverlayDisplayWidthTests",
+        "OverlayInteractionTelemetryTests",
     ],
     "ok": True,
 }

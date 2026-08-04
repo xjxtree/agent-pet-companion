@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 pub const INTERACTION_ATTESTATION_SCHEMA_VERSION: &str = "apc.overlay-interaction-attestation.v1";
 pub const INTERACTION_CONTRACT_DIGEST: &str = env!("APC_INTERACTION_CONTRACT_DIGEST");
 pub const INTERACTION_ATTESTATION_FILENAME: &str = "interaction-attestation.json";
-pub const REQUIRED_INTERACTION_SUITES: [&str; 4] = [
+pub const REQUIRED_INTERACTION_SUITES: [&str; 5] = [
     "OverlayPlacementAuthorityTests",
     "AppStoreOverlaySnapshotTests",
     "OverlayGeometryTests",
     "OverlayDisplayWidthTests",
+    "OverlayInteractionTelemetryTests",
 ];
 const MAX_INTERACTION_ATTESTATION_BYTES: u64 = 16 * 1024;
 
@@ -107,16 +108,20 @@ fn current_interaction_attestation_path() -> Result<Option<PathBuf>> {
         }
     }
 
-    let executable = std::env::current_exe()?;
-    let Some(bin_dir) = executable.parent() else {
-        return Ok(None);
-    };
-    if bin_dir.file_name().and_then(|name| name.to_str()) != Some("bin") {
-        return Ok(None);
+    Ok(interaction_attestation_path_for_executable(
+        &std::env::current_exe()?,
+    ))
+}
+
+fn interaction_attestation_path_for_executable(executable: &Path) -> Option<PathBuf> {
+    let executable_dir = executable.parent()?;
+    if executable_dir.file_name().and_then(|name| name.to_str()) == Some("bin") {
+        executable_dir
+            .parent()
+            .map(|resources| resources.join(INTERACTION_ATTESTATION_FILENAME))
+    } else {
+        Some(executable_dir.join(INTERACTION_ATTESTATION_FILENAME))
     }
-    Ok(bin_dir
-        .parent()
-        .map(|resources| resources.join(INTERACTION_ATTESTATION_FILENAME)))
 }
 
 #[cfg(test)]
@@ -186,5 +191,25 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn app_bundle_and_managed_runtime_layouts_resolve_their_bound_attestation() {
+        assert_eq!(
+            interaction_attestation_path_for_executable(Path::new(
+                "/Applications/AgentPetCompanion.app/Contents/Resources/bin/petcore-cli"
+            )),
+            Some(PathBuf::from(
+                "/Applications/AgentPetCompanion.app/Contents/Resources/interaction-attestation.json"
+            ))
+        );
+        assert_eq!(
+            interaction_attestation_path_for_executable(Path::new(
+                "/Library/Application Support/AgentPetCompanion/runtime/versions/build-a/petcore-cli"
+            )),
+            Some(PathBuf::from(
+                "/Library/Application Support/AgentPetCompanion/runtime/versions/build-a/interaction-attestation.json"
+            ))
+        );
     }
 }

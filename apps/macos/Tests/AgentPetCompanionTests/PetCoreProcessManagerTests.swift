@@ -466,8 +466,8 @@ struct PetCoreProcessManagerTests {
     func runtimeManifestRejectsInconsistentPetpackReadWriteCompatibility() throws {
         let missingWrite = runtimeManifest(
             buildID: "build-a",
-            petpackReadVersions: ["apc.petpack.v1"],
-            petpackWriteVersion: "apc.petpack.v2"
+            petpackReadVersions: ["apc.petpack.v2"],
+            petpackWriteVersion: "apc.petpack.v3"
         )
         #expect(throws: RuntimeManifestError.self) {
             try missingWrite.validateForApp()
@@ -476,8 +476,8 @@ struct PetCoreProcessManagerTests {
         let legacyMismatch = runtimeManifest(
             buildID: "build-a",
             petpackSchemaVersion: "apc.petpack.v2",
-            petpackReadVersions: ["apc.petpack.v1"],
-            petpackWriteVersion: "apc.petpack.v1"
+            petpackReadVersions: ["apc.petpack.v2"],
+            petpackWriteVersion: "apc.petpack.v2"
         )
         #expect(throws: RuntimeManifestError.self) {
             try legacyMismatch.validateForApp()
@@ -485,7 +485,7 @@ struct PetCoreProcessManagerTests {
 
         let legacyReadCompatibility = runtimeManifest(
             buildID: "build-a",
-            petpackReadVersions: ["apc.petpack.v2", "apc.petpack.v1"]
+            petpackReadVersions: ["apc.petpack.v3", "apc.petpack.v2"]
         )
         #expect(throws: RuntimeManifestError.self) {
             try legacyReadCompatibility.validateForApp()
@@ -640,7 +640,7 @@ struct PetCoreProcessManagerTests {
     }
 
     @Test
-    func stagedV2CandidateSelectsPublishedV1CurrentAndLKGForRollback() async throws {
+    func stagedV3CandidateSelectsPublishedV1CurrentAndLKGForRollback() async throws {
         let fileManager = FileManager.default
         let home = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -670,9 +670,12 @@ struct PetCoreProcessManagerTests {
             at: URL(fileURLWithPath: "/usr/bin/true"),
             to: sourceCLI
         )
-        let strictV2 = runtimeManifest(buildID: "build-new")
+        let strictV3 = runtimeManifest(buildID: "build-new")
         let sourceManifest = source.appendingPathComponent("runtime-manifest.json")
-        try JSONEncoder().encode(strictV2).write(to: sourceManifest)
+        try JSONEncoder().encode(strictV3).write(to: sourceManifest)
+        let sourceAttestation = source.appendingPathComponent("interaction-attestation.json")
+        let sourceAttestationData = Data("build-bound-attestation".utf8)
+        try sourceAttestationData.write(to: sourceAttestation)
 
         let store = PetCoreRuntimeStore(homeURL: home)
         let fromCurrent = try await store.prepareCandidate(
@@ -680,8 +683,13 @@ struct PetCoreProcessManagerTests {
             sourceCLIURL: sourceCLI,
             sourceManifestURL: sourceManifest
         )
-        #expect(fromCurrent.manifestValidationProfile == .strictV2)
+        #expect(fromCurrent.manifestValidationProfile == .strictV3)
         #expect(fromCurrent.previous?.buildID == publishedV1.buildID)
+        #expect(
+            try Data(contentsOf: home.appendingPathComponent(
+                "runtime/versions/build-new/interaction-attestation.json"
+            )) == sourceAttestationData
+        )
 
         let rollback = try await store.resolve(
             try #require(fromCurrent.previous)
@@ -714,7 +722,7 @@ struct PetCoreProcessManagerTests {
         ))
 
         try writeRuntimePointer(
-            .init(buildID: strictV2.buildID),
+            .init(buildID: strictV3.buildID),
             to: runtimeRoot.appendingPathComponent("current.json")
         )
         try writeRuntimePointer(
@@ -1838,9 +1846,9 @@ struct PetCoreProcessManagerTests {
         buildID: String,
         releaseChannel: String = "develop",
         codexContract: String = "codex-hooks.v1",
-        petpackSchemaVersion: String = "apc.petpack.v2",
-        petpackReadVersions: [String] = ["apc.petpack.v2"],
-        petpackWriteVersion: String = "apc.petpack.v2"
+        petpackSchemaVersion: String = "apc.petpack.v3",
+        petpackReadVersions: [String] = ["apc.petpack.v3"],
+        petpackWriteVersion: String = "apc.petpack.v3"
     ) -> RuntimeReleaseManifest {
         RuntimeReleaseManifest(
             schemaVersion: RuntimeReleaseManifest.schemaVersion,
@@ -1927,6 +1935,9 @@ struct PetCoreProcessManagerTests {
         )
         try JSONEncoder().encode(manifest).write(
             to: directory.appendingPathComponent("runtime-manifest.json")
+        )
+        try Data("test-attestation".utf8).write(
+            to: directory.appendingPathComponent("interaction-attestation.json")
         )
     }
 

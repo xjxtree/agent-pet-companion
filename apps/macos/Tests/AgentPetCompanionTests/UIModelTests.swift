@@ -481,8 +481,8 @@ struct UIModelTests {
         #expect(imported.validationStatus == .verified)
         #expect(imported.validationTitle == "资源校验通过")
         #expect(imported.validationDetail.contains("PetCore 已验证"))
-        #expect(imported.stateSpecification == "7 个固定状态 · 显式逐帧时序与播放方式")
-        #expect(imported.timingSpecification == "32 帧 · 7 个状态 · 逐帧创作时序")
+        #expect(imported.stateSpecification == "9 个创作动作 · 显式逐帧时序与播放方式")
+        #expect(imported.timingSpecification == "42 帧 · 9 个动作 · 逐帧创作时序")
 
         var verifiedPet = pet
         verifiedPet.origin = .verifiedSkillSource
@@ -496,8 +496,8 @@ struct UIModelTests {
         #expect(verified.validationStatus == .verified)
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
-        #expect(verified.stateSpecification == "7 个固定状态 · 显式逐帧时序与播放方式")
-        #expect(verified.timingSpecification == "32 帧 · 7 个状态 · 逐帧创作时序")
+        #expect(verified.stateSpecification == "9 个创作动作 · 显式逐帧时序与播放方式")
+        #expect(verified.timingSpecification == "42 帧 · 9 个动作 · 逐帧创作时序")
     }
 
     @MainActor
@@ -618,7 +618,7 @@ struct UIModelTests {
             "已恢复气泡消息内容。",
             "正在验证活动摘要同步",
         ].joined(separator: "\n"))
-        #expect(session.statusText == APCLocalizedPresentation.lifecycleTitle(.tool))
+        #expect(session.statusText == APCLocalizedPresentation.overlayEventTitle(.thinking))
         #expect(content.agentName == "Codex")
         #expect(session.sessionTitle == "保持会话消息持续显示")
         #expect(session.sessionID == "ses-projected-session-1")
@@ -855,7 +855,7 @@ struct UIModelTests {
     }
 
     @Test
-    func startAnimationUsesCanonicalUserActivationAcrossEveryAgent() throws {
+    func thinkingAnimationUsesCanonicalUserActivationAcrossEveryAgent() throws {
         let scenarios: [(AgentSource, String, String, String?)] = [
             (.codex, "app_server_activity", "app_server_activity", "user"),
             (.claudeCode, "SessionStart", "UserPromptSubmit", "user"),
@@ -870,7 +870,7 @@ struct UIModelTests {
                 source: source,
                 eventID: "progress-1-\(source.rawValue)",
                 sessionID: sessionID,
-                eventType: .start,
+                eventType: .thinking,
                 turnID: "turn-1",
                 sourceEvent: progressionEvent,
                 sessionActivatedAt: "2026-07-17T00:00:00Z"
@@ -879,7 +879,7 @@ struct UIModelTests {
                 source: source,
                 eventID: "progress-2-\(source.rawValue)",
                 sessionID: sessionID,
-                eventType: .start,
+                eventType: .thinking,
                 turnID: "turn-2",
                 sourceEvent: progressionEvent,
                 sessionActivatedAt: "2026-07-17T00:00:00Z"
@@ -888,7 +888,7 @@ struct UIModelTests {
                 source: source,
                 eventID: "user-2-\(source.rawValue)",
                 sessionID: sessionID,
-                eventType: .start,
+                eventType: .thinking,
                 turnID: "turn-3",
                 sourceEvent: activationEvent,
                 messageRole: activationRole,
@@ -1228,7 +1228,7 @@ struct UIModelTests {
     }
 
     @Test
-    func sessionGroupToneUsesFailureAttentionReadyRunningPriority() {
+    func sessionGroupToneUsesFailureInputReadyRunningPriority() {
         func session(_ id: String, _ eventType: AgentEventKind) -> OverlaySessionContent {
             OverlaySessionContent(
                 id: id,
@@ -1245,7 +1245,6 @@ struct UIModelTests {
         let ready = session("ready", .done)
         let failed = session("failed", .failed)
         let needsInput = session("needs-input", .waiting)
-        let review = session("review", .review)
 
         #expect(OverlaySessionGroupTone.aggregate([running]) == .running)
         #expect(OverlaySessionGroupTone.aggregate([running, ready]) == .ready)
@@ -1253,7 +1252,6 @@ struct UIModelTests {
             OverlaySessionGroupTone.aggregate([running, ready, needsInput])
                 == .needsInput
         )
-        #expect(OverlaySessionGroupTone(eventType: review.eventType) == .needsInput)
         #expect(OverlaySessionGroupTone.aggregate([running, ready, failed]) == .failed)
         #expect(
             OverlaySessionGroupTone.aggregate([running, ready, failed, needsInput])
@@ -1262,7 +1260,7 @@ struct UIModelTests {
     }
 
     @Test
-    func overlaySessionStatusCopyMatchesEveryAuthoredPetAction() {
+    func overlaySessionStatusCopyPassesThroughEveryFilteredEvent() {
         func status(_ eventType: AgentEventKind) -> String {
             OverlaySessionContent(event: AgentEvent(
                 id: "status-\(eventType.rawValue)",
@@ -1277,18 +1275,18 @@ struct UIModelTests {
         for eventType in AgentEventKind.allCases {
             #expect(
                 status(eventType)
-                    == APCLocalizedPresentation.lifecycleTitle(
-                        ProductLifecycleState(eventKind: eventType)
-                    )
+                    == APCLocalizedPresentation.eventTitle(eventType)
             )
         }
         #expect(status(.start) != status(.tool))
-        #expect(status(.waiting) != status(.review))
+        #expect(status(.start) != status(.thinking))
+        #expect(status(.thinking) != status(.plan))
+        #expect(status(.waiting) != status(.done))
         #expect(status(.done) != status(.failed))
     }
 
     @Test
-    func onlyReviewAndDoneDismissAfterActivation() {
+    func onlyDoneDismissesAfterActivation() {
         func session(_ eventType: AgentEventKind) -> OverlaySessionContent {
             OverlaySessionContent(
                 id: eventType.rawValue,
@@ -1305,7 +1303,6 @@ struct UIModelTests {
         #expect(!session(.start).dismissesAfterActivation)
         #expect(!session(.tool).dismissesAfterActivation)
         #expect(!session(.waiting).dismissesAfterActivation)
-        #expect(session(.review).dismissesAfterActivation)
         #expect(session(.done).dismissesAfterActivation)
         #expect(!session(.failed).dismissesAfterActivation)
     }
@@ -1334,16 +1331,6 @@ struct UIModelTests {
             statusText: "待确认",
             navigation: AgentSessionNavigation(sessionOpen: false)
         )
-        let review = OverlaySessionContent(
-            id: "session-codex-review",
-            source: .codex,
-            sessionID: "review",
-            eventType: .review,
-            sessionTitle: "Review",
-            messageText: "Ready for review",
-            statusText: "待审阅",
-            navigation: AgentSessionNavigation(sessionOpen: false)
-        )
         let done = OverlaySessionContent(
             id: "session-codex-done",
             source: .codex,
@@ -1357,23 +1344,21 @@ struct UIModelTests {
 
         store.activateOverlaySession(failed)
         store.activateOverlaySession(waiting)
-        store.activateOverlaySession(review)
         store.activateOverlaySession(done)
 
         #expect(store.overlayDismissedBubbleEventIDs.isEmpty)
-        #expect(!OverlaySessionPrimaryClickPolicy.shouldActivate(review))
         #expect(!OverlaySessionPrimaryClickPolicy.shouldActivate(done))
     }
 
     @Test
     func dismissedAttentionStateFallsBackToTheNextVisiblePoseOrIdle() throws {
-        let review = try animationState(
+        let completed = try animationState(
             source: .codex,
-            eventID: "review-old",
-            sessionID: "review-session",
-            eventType: .review,
-            turnID: "turn-review",
-            sourceEvent: "PostToolUse",
+            eventID: "done-old",
+            sessionID: "done-session",
+            eventType: .done,
+            turnID: "turn-done",
+            sourceEvent: "Stop",
             sessionActivatedAt: "2026-07-17T00:00:00Z"
         )
         let running = try animationState(
@@ -1385,16 +1370,16 @@ struct UIModelTests {
             sourceEvent: "tool_execution_start",
             sessionActivatedAt: "2026-07-17T00:01:00Z"
         )
-        let dismissedReviewID = OverlaySessionContent.stableID(
-            source: review.source,
-            sessionID: review.sessionID,
-            fallbackEventID: review.event.id
+        let dismissedCompletedID = OverlaySessionContent.stableID(
+            source: completed.source,
+            sessionID: completed.sessionID,
+            fallbackEventID: completed.event.id
         )
 
         #expect(OverlayPresentedAgentState.resolve(
-            canonicalState: review,
-            activeSessions: [review, running],
-            dismissedSessionIDs: [dismissedReviewID]
+            canonicalState: completed,
+            activeSessions: [completed, running],
+            dismissedSessionIDs: [dismissedCompletedID]
         ) == running)
 
         for eventType in [AgentEventKind.waiting, .failed] {
@@ -1422,32 +1407,32 @@ struct UIModelTests {
 
     @Test
     func aNewAttentionEventReopensItsLocallyDismissedSession() throws {
-        let oldReview = try animationState(
+        let oldWaiting = try animationState(
             source: .codex,
-            eventID: "review-old",
-            sessionID: "review-session",
-            eventType: .review,
+            eventID: "waiting-old",
+            sessionID: "waiting-session",
+            eventType: .waiting,
             turnID: "turn-old",
-            sourceEvent: "PostToolUse",
+            sourceEvent: "PermissionRequest",
             sessionActivatedAt: "2026-07-17T00:00:00Z"
         )
-        let newReview = try animationState(
+        let newWaiting = try animationState(
             source: .codex,
-            eventID: "review-new",
-            sessionID: "review-session",
-            eventType: .review,
+            eventID: "waiting-new",
+            sessionID: "waiting-session",
+            eventType: .waiting,
             turnID: "turn-new",
-            sourceEvent: "PostToolUse",
+            sourceEvent: "PermissionRequest",
             sessionActivatedAt: "2026-07-17T00:01:00Z"
         )
         let dismissalID = OverlaySessionContent.stableID(
-            source: oldReview.source,
-            sessionID: oldReview.sessionID,
-            fallbackEventID: oldReview.event.id
+            source: oldWaiting.source,
+            sessionID: oldWaiting.sessionID,
+            fallbackEventID: oldWaiting.event.id
         )
         let reopened = OverlayPresentedAgentState.newlyActivatedDismissalIDs(
-            activeSessions: [newReview],
-            knownReopenIDs: [OverlaySessionContent.reopenID(for: oldReview)]
+            activeSessions: [newWaiting],
+            knownReopenIDs: [OverlaySessionContent.reopenID(for: oldWaiting)]
         )
         var dismissedIDs: Set<String> = [dismissalID]
         dismissedIDs.subtract(reopened)
@@ -1455,10 +1440,10 @@ struct UIModelTests {
         #expect(reopened == [dismissalID])
         #expect(dismissedIDs.isEmpty)
         #expect(OverlayPresentedAgentState.resolve(
-            canonicalState: newReview,
-            activeSessions: [newReview],
+            canonicalState: newWaiting,
+            activeSessions: [newWaiting],
             dismissedSessionIDs: dismissedIDs
-        ) == newReview)
+        ) == newWaiting)
     }
 
     @MainActor
@@ -1514,7 +1499,7 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func pointerMonitorCommitsAndClearsALostDragMouseUp() {
+    func pointerMonitorCommitsAndClearsALostDragMouseUp() async throws {
         let store = makeStore()
         let interactionID = UUID()
         store.beginOverlayPetDrag(interactionID: interactionID)
@@ -1523,12 +1508,15 @@ struct UIModelTests {
         #expect(store.overlayPetDragInProgress)
 
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        for _ in 0 ..< 100 where store.overlayPetDragInProgress {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         #expect(!store.overlayPetDragInProgress)
     }
 
     @MainActor
     @Test
-    func lostPointerReleaseCommitsPresentedDragAndPendingDisplayWidth() throws {
+    func lostPointerReleaseCommitsPresentedDragAndPendingDisplayWidth() async throws {
         let visibleFrame = try #require(NSScreen.main?.visibleFrame)
         let store = makeStore()
         let interactionID = UUID()
@@ -1551,6 +1539,9 @@ struct UIModelTests {
         store.previewOverlayDisplayWidthPt(160)
 
         store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        for _ in 0 ..< 100 where store.overlayPetDragInProgress {
+            try await Task.sleep(for: .milliseconds(5))
+        }
 
         #expect(!store.overlayPetDragInProgress)
         #expect(store.overlayDisplayWidthPt == 160)
@@ -2228,29 +2219,32 @@ struct UIModelTests {
         )
         let projectedStateEntryID: String
         switch eventType {
-        case .tool, .waiting, .review, .failed:
+        case .tool, .waiting, .failed:
             projectedStateEntryID = eventType.rawValue
-        case .start, .done:
+        case .start:
+            projectedStateEntryID = "idle"
+        case .thinking, .plan, .done:
             let marker = sessionActivatedAt
                 ?? (eventType == .done ? turnID : nil)
                 ?? "initial"
             projectedStateEntryID = [
-                eventType.rawValue,
+                eventType.petState,
                 source.rawValue,
                 sessionID,
                 marker
             ].joined(separator: ":")
         }
         let summaryKind: AgentOverlaySummaryKind = switch eventType {
-        case .start: .running
+        case .start: .start
+        case .thinking: .thinking
+        case .plan: .plan
         case .tool: .tool
         case .waiting: .needsInput
-        case .review: .review
         case .done: .done
         case .failed: .failed
         }
         return ActiveAgentState(
-            state: eventType.rawValue,
+            state: eventType.petState,
             officialStatus: "running",
             source: source,
             sessionID: sessionID,

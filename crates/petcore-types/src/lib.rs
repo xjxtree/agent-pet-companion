@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v2";
+pub const PETPACK_SCHEMA_VERSION: &str = "apc.petpack.v3";
 pub const ONBOARDING_PROGRESS_SCHEMA_VERSION: &str = "apc.onboarding-progress.v1";
 pub const MIN_FRAME_DURATION_MS: u32 = 50;
 pub const MAX_FRAME_DURATION_MS: u32 = 2_000;
@@ -13,26 +13,45 @@ pub const MIN_OVERLAY_DISPLAY_WIDTH_PT: f64 = 80.0;
 pub const MAX_OVERLAY_DISPLAY_WIDTH_PT: f64 = 224.0;
 pub const DEFAULT_OVERLAY_DISPLAY_WIDTH_PT: f64 = 112.0;
 pub const OVERLAY_DISPLAY_WIDTH_STEP_PT: f64 = 1.0;
+pub const OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT: f64 = 256.0;
+pub const OVERLAY_PLACEMENT_QUANTUM_PT: f64 = 1.0 / OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT;
+pub const MAX_OVERLAY_COORDINATE_MAGNITUDE: f64 = f64::MAX / OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT;
 pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
 pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
 pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
 pub const DEFAULT_BUBBLE_TRANSPARENCY: f64 = 0.55;
 pub const MIN_BUBBLE_TRANSPARENCY: f64 = 0.0;
 pub const MAX_BUBBLE_TRANSPARENCY: f64 = 1.0;
-pub const REQUIRED_STATES: [PetStateName; 7] = [
+pub const REQUIRED_SEMANTIC_STATES: [PetStateName; 6] = [
     PetStateName::Idle,
-    PetStateName::Start,
+    PetStateName::Thinking,
     PetStateName::Tool,
     PetStateName::Waiting,
-    PetStateName::Review,
     PetStateName::Done,
     PetStateName::Failed,
+];
+pub const REQUIRED_INTERACTION_STATES: [PetStateName; 3] = [
+    PetStateName::Acknowledge,
+    PetStateName::DragLeft,
+    PetStateName::DragRight,
+];
+pub const REQUIRED_STATES: [PetStateName; 9] = [
+    PetStateName::Idle,
+    PetStateName::Thinking,
+    PetStateName::Tool,
+    PetStateName::Waiting,
+    PetStateName::Done,
+    PetStateName::Failed,
+    PetStateName::Acknowledge,
+    PetStateName::DragLeft,
+    PetStateName::DragRight,
 ];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QualityLevel {
     Low,
     Standard,
+    High,
 }
 
 impl QualityLevel {
@@ -46,13 +65,22 @@ impl QualityLevel {
                 width: 384,
                 height: 416,
             },
+            Self::High => RenderSize {
+                width: 576,
+                height: 624,
+            },
         }
+    }
+
+    pub fn is_studio_supported(self) -> bool {
+        matches!(self, Self::Low | Self::Standard)
     }
 
     pub fn zh_label(self) -> &'static str {
         match self {
             Self::Low => "标清",
             Self::Standard => "标准",
+            Self::High => "高清",
         }
     }
 }
@@ -94,36 +122,46 @@ pub enum SessionGroupDisplay {
 #[serde(rename_all = "snake_case")]
 pub enum PetStateName {
     Idle,
-    Start,
+    Thinking,
     Tool,
     Waiting,
-    Review,
     Done,
     Failed,
+    Acknowledge,
+    DragLeft,
+    DragRight,
 }
 
 impl PetStateName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Start => "start",
+            Self::Thinking => "thinking",
             Self::Tool => "tool",
             Self::Waiting => "waiting",
-            Self::Review => "review",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::Acknowledge => "acknowledge",
+            Self::DragLeft => "drag_left",
+            Self::DragRight => "drag_right",
         }
+    }
+
+    pub fn is_interaction(self) -> bool {
+        matches!(self, Self::Acknowledge | Self::DragLeft | Self::DragRight)
     }
 
     pub fn zh_event_label(self) -> &'static str {
         match self {
             Self::Idle => "空闲",
-            Self::Start => "开始处理",
+            Self::Thinking => "思考",
             Self::Tool => "执行工具",
             Self::Waiting => "等待确认",
-            Self::Review => "待查看",
             Self::Done => "完成",
             Self::Failed => "失败",
+            Self::Acknowledge => "轻回应",
+            Self::DragLeft => "向左拖动",
+            Self::DragRight => "向右拖动",
         }
     }
 }
@@ -152,27 +190,47 @@ impl AgentSource {
 #[serde(rename_all = "snake_case")]
 pub enum AgentEventType {
     Start,
+    Thinking,
+    Plan,
     Tool,
     Waiting,
-    Review,
     Done,
     Failed,
 }
 
 impl AgentEventType {
-    pub fn pet_state(self) -> PetStateName {
+    /// Sparse event -> authored pet-action mapping.
+    ///
+    /// `start` is a useful one-shot session event, but it is not evidence that
+    /// the Agent is thinking and therefore does not trigger an authored pet
+    /// action. `thinking` and `plan` share the explicitly named Thinking action.
+    pub fn pet_reaction(self) -> Option<PetStateName> {
         match self {
-            Self::Start => PetStateName::Start,
-            Self::Tool => PetStateName::Tool,
-            Self::Waiting => PetStateName::Waiting,
-            Self::Review => PetStateName::Review,
-            Self::Done => PetStateName::Done,
-            Self::Failed => PetStateName::Failed,
+            Self::Start => None,
+            Self::Thinking | Self::Plan => Some(PetStateName::Thinking),
+            Self::Tool => Some(PetStateName::Tool),
+            Self::Waiting => Some(PetStateName::Waiting),
+            Self::Done => Some(PetStateName::Done),
+            Self::Failed => Some(PetStateName::Failed),
         }
     }
 
+    /// Renderer-facing compatibility projection. Events without a pet
+    /// reaction render the ordinary idle state.
+    pub fn pet_state(self) -> PetStateName {
+        self.pet_reaction().unwrap_or(PetStateName::Idle)
+    }
+
     pub fn zh_label(self) -> &'static str {
-        self.pet_state().zh_event_label()
+        match self {
+            Self::Start => "开始处理",
+            Self::Thinking => "思考",
+            Self::Plan => "规划",
+            Self::Tool => "执行工具",
+            Self::Waiting => "等待确认",
+            Self::Done => "完成",
+            Self::Failed => "失败",
+        }
     }
 }
 
@@ -214,9 +272,10 @@ impl PetManifest {
 #[serde(rename_all = "snake_case")]
 pub enum PlaybackMode {
     Loop,
-    OnceHold,
     Periodic,
     BurstThenSettle,
+    BurstThenIdle,
+    OnceThenReturn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,13 +354,6 @@ impl PetTimingContract {
                     );
                 }
             }
-            PlaybackMode::OnceHold => {
-                validate_settle_frame(&self.playback, frame_count)?;
-                if self.playback.entry_repeat_count.is_some() || self.playback.cooldown_ms.is_some()
-                {
-                    return Err("once_hold playback allows only settle_frame_index".to_string());
-                }
-            }
             PlaybackMode::Periodic => {
                 let [minimum, maximum] = self
                     .playback
@@ -335,6 +387,31 @@ impl PetTimingContract {
                     );
                 }
             }
+            PlaybackMode::BurstThenIdle => {
+                if !matches!(self.playback.entry_repeat_count, Some(1..=8)) {
+                    return Err(
+                        "burst_then_idle playback requires entry_repeat_count between 1 and 8"
+                            .to_string(),
+                    );
+                }
+                if self.playback.settle_frame_index.is_some() || self.playback.cooldown_ms.is_some()
+                {
+                    return Err(
+                        "burst_then_idle playback allows only entry_repeat_count".to_string()
+                    );
+                }
+            }
+            PlaybackMode::OnceThenReturn => {
+                if self.playback.entry_repeat_count.is_some()
+                    || self.playback.settle_frame_index.is_some()
+                    || self.playback.cooldown_ms.is_some()
+                {
+                    return Err(
+                        "once_then_return playback must not declare entry_repeat_count, settle_frame_index, or cooldown_ms"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         let mut warnings = Vec::new();
@@ -349,7 +426,10 @@ impl PetTimingContract {
             ));
         }
         let effective_fps = frame_count as f64 * 1_000.0 / f64::from(total_duration_ms);
-        if !(4.0..=12.0).contains(&effective_fps) {
+        // A periodic action deliberately includes a long authored rest frame before
+        // its separate cooldown. Treating that calm hold as an animation-rate
+        // defect would make the low-distraction V3 idle baseline warn by design.
+        if self.playback.mode != PlaybackMode::Periodic && !(4.0..=12.0).contains(&effective_fps) {
             warnings.push(format!(
                 "average effective frame rate {effective_fps:.2} FPS is outside the recommended 4–12 FPS range"
             ));
@@ -378,6 +458,39 @@ impl From<&PetState> for PetTimingContract {
     }
 }
 
+impl PetState {
+    pub fn validate(&self) -> Result<Vec<String>, String> {
+        let warnings = PetTimingContract::from(self).validate()?;
+        let expected_mode = match self.name {
+            PetStateName::Idle => PlaybackMode::Periodic,
+            PetStateName::Thinking | PetStateName::Tool | PetStateName::Done => {
+                PlaybackMode::BurstThenIdle
+            }
+            PetStateName::Waiting | PetStateName::Failed => PlaybackMode::BurstThenSettle,
+            PetStateName::Acknowledge => PlaybackMode::OnceThenReturn,
+            PetStateName::DragLeft | PetStateName::DragRight => PlaybackMode::Loop,
+        };
+        if self.playback.mode != expected_mode {
+            return Err(format!(
+                "state {} requires {} playback",
+                self.name.as_str(),
+                playback_mode_name(expected_mode)
+            ));
+        }
+        Ok(warnings)
+    }
+}
+
+pub fn playback_mode_name(mode: PlaybackMode) -> &'static str {
+    match mode {
+        PlaybackMode::Loop => "loop",
+        PlaybackMode::Periodic => "periodic",
+        PlaybackMode::BurstThenSettle => "burst_then_settle",
+        PlaybackMode::BurstThenIdle => "burst_then_idle",
+        PlaybackMode::OnceThenReturn => "once_then_return",
+    }
+}
+
 pub fn default_pet_states() -> Vec<PetState> {
     REQUIRED_STATES.into_iter().map(default_pet_state).collect()
 }
@@ -385,30 +498,44 @@ pub fn default_pet_states() -> Vec<PetState> {
 pub fn default_pet_state(name: PetStateName) -> PetState {
     let (frame_durations_ms, playback, reduced_motion_frame_index) = match name {
         PetStateName::Idle => (
-            vec![180, 160, 180, 380],
+            vec![300, 260, 300, 640],
             PlaybackContract {
                 mode: PlaybackMode::Periodic,
                 entry_repeat_count: None,
                 settle_frame_index: None,
-                cooldown_ms: Some([4_000, 8_000]),
+                cooldown_ms: Some([2_500, 5_000]),
             },
             2,
         ),
-        PetStateName::Start => (vec![120, 140, 160, 180], once_hold(3), 2),
-        PetStateName::Tool => (
-            vec![150, 150, 170, 330],
+        PetStateName::Thinking => (vec![120, 140, 160, 180], burst_then_idle(3), 2),
+        PetStateName::Tool => (vec![150, 150, 170, 330], burst_then_idle(3), 2),
+        PetStateName::Waiting => (
+            vec![150, 150, 150, 150, 170, 230],
+            burst_then_settle(2, 5),
+            4,
+        ),
+        PetStateName::Done => (vec![120, 140, 160, 230], burst_then_idle(3), 2),
+        PetStateName::Failed => (vec![150, 170, 190, 290], burst_then_settle(3, 3), 2),
+        PetStateName::Acknowledge => (
+            vec![180, 140, 180, 300],
             PlaybackContract {
-                mode: PlaybackMode::BurstThenSettle,
-                entry_repeat_count: Some(1),
-                settle_frame_index: Some(3),
+                mode: PlaybackMode::OnceThenReturn,
+                entry_repeat_count: None,
+                settle_frame_index: None,
+                cooldown_ms: None,
+            },
+            1,
+        ),
+        PetStateName::DragLeft | PetStateName::DragRight => (
+            vec![100, 90, 100, 110, 100, 200],
+            PlaybackContract {
+                mode: PlaybackMode::Loop,
+                entry_repeat_count: None,
+                settle_frame_index: None,
                 cooldown_ms: None,
             },
             2,
         ),
-        PetStateName::Waiting => (vec![150, 150, 150, 150, 170, 230], once_hold(5), 4),
-        PetStateName::Review => (vec![140, 140, 150, 150, 180, 240], once_hold(5), 4),
-        PetStateName::Done => (vec![120, 140, 160, 230], once_hold(3), 2),
-        PetStateName::Failed => (vec![150, 170, 190, 290], once_hold(3), 2),
     };
     PetState {
         name,
@@ -419,10 +546,19 @@ pub fn default_pet_state(name: PetStateName) -> PetState {
     }
 }
 
-fn once_hold(settle_frame_index: usize) -> PlaybackContract {
+fn burst_then_idle(entry_repeat_count: u32) -> PlaybackContract {
     PlaybackContract {
-        mode: PlaybackMode::OnceHold,
-        entry_repeat_count: None,
+        mode: PlaybackMode::BurstThenIdle,
+        entry_repeat_count: Some(entry_repeat_count),
+        settle_frame_index: None,
+        cooldown_ms: None,
+    }
+}
+
+fn burst_then_settle(entry_repeat_count: u32, settle_frame_index: usize) -> PlaybackContract {
+    PlaybackContract {
+        mode: PlaybackMode::BurstThenSettle,
+        entry_repeat_count: Some(entry_repeat_count),
         settle_frame_index: Some(settle_frame_index),
         cooldown_ms: None,
     }
@@ -462,7 +598,7 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             session_group_display: Option<SessionGroupDisplay>,
             session_message_timeout_minutes: Option<u16>,
             sources: Option<BTreeMap<AgentSource, bool>>,
-            events: Option<BTreeMap<AgentEventType, bool>>,
+            events: Option<BTreeMap<String, bool>>,
         }
 
         let raw = RawBehaviorSettings::deserialize(deserializer)?;
@@ -476,6 +612,11 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
         let mut events = defaults.events.clone();
         if let Some(raw_events) = raw.events {
             for (event, enabled) in raw_events {
+                let Ok(event) =
+                    serde_json::from_value::<AgentEventType>(serde_json::Value::String(event))
+                else {
+                    continue;
+                };
                 events.insert(event, enabled);
             }
         }
@@ -522,9 +663,10 @@ impl Default for BehaviorSettings {
         let mut events = BTreeMap::new();
         for event in [
             AgentEventType::Start,
+            AgentEventType::Thinking,
+            AgentEventType::Plan,
             AgentEventType::Tool,
             AgentEventType::Waiting,
-            AgentEventType::Review,
             AgentEventType::Done,
             AgentEventType::Failed,
         ] {
@@ -598,7 +740,7 @@ impl Default for OnboardingProgress {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayPlacement {
     pub x: f64,
@@ -627,9 +769,8 @@ impl Default for OverlayPlacement {
 
 impl OverlayPlacement {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.x.is_finite() || !self.y.is_finite() {
-            return Err("x and y must be finite numbers".to_string());
-        }
+        canonical_overlay_coordinate(self.x)?;
+        canonical_overlay_coordinate(self.y)?;
         if !(MIN_OVERLAY_DISPLAY_WIDTH_PT..=MAX_OVERLAY_DISPLAY_WIDTH_PT)
             .contains(&self.display_width_pt)
         {
@@ -642,6 +783,35 @@ impl OverlayPlacement {
         }
         Ok(())
     }
+
+    pub fn canonicalized(&self) -> Result<Self, String> {
+        self.validate()?;
+        Ok(Self {
+            x: canonical_overlay_coordinate(self.x)?,
+            y: canonical_overlay_coordinate(self.y)?,
+            display_width_pt: self.display_width_pt,
+            display_id: self.display_id.clone(),
+        })
+    }
+
+    pub fn semantically_eq(&self, other: &Self) -> bool {
+        match (self.canonicalized(), other.canonicalized()) {
+            (Ok(lhs), Ok(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+}
+
+pub fn canonical_overlay_coordinate(value: f64) -> Result<f64, String> {
+    if !value.is_finite() || value.abs() > MAX_OVERLAY_COORDINATE_MAGNITUDE {
+        return Err("x and y must be finite canonicalizable numbers".to_string());
+    }
+    let canonical = (value * OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT).round()
+        / OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT;
+    if !canonical.is_finite() {
+        return Err("x and y must be finite canonicalizable numbers".to_string());
+    }
+    Ok(if canonical == 0.0 { 0.0 } else { canonical })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1060,8 +1230,73 @@ pub struct AgentConnectionStatus {
 mod tests {
     use super::*;
 
+    fn overlay_placement_fixture() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/overlay-placement-canonicalization-v1.json");
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
     #[test]
-    fn quality_levels_have_the_fixed_v2_render_sizes() {
+    fn overlay_placement_shared_fixture_is_canonical_and_round_trips() {
+        let fixture = overlay_placement_fixture();
+        assert_eq!(
+            fixture["schema_version"],
+            "apc.overlay-placement-canonicalization.v1"
+        );
+        for case in fixture["cases"].as_array().unwrap() {
+            let input: OverlayPlacement = serde_json::from_value(case["input"].clone()).unwrap();
+            let expected: OverlayPlacement =
+                serde_json::from_value(case["expected"].clone()).unwrap();
+            let canonical = input.canonicalized().unwrap();
+            assert_eq!(canonical, expected, "fixture case {}", case["id"]);
+            assert_eq!(
+                canonical.canonicalized().unwrap(),
+                canonical,
+                "fixture case {} must be idempotent",
+                case["id"]
+            );
+            let decoded: OverlayPlacement =
+                serde_json::from_str(&serde_json::to_string(&canonical).unwrap()).unwrap();
+            assert_eq!(decoded.canonicalized().unwrap(), canonical);
+            if canonical.x == 0.0 {
+                assert!(!canonical.x.is_sign_negative());
+            }
+            if canonical.y == 0.0 {
+                assert!(!canonical.y.is_sign_negative());
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_placement_coordinate_canonicalization_is_monotonic_and_idempotent() {
+        let values = [
+            -1_000_000.001953125,
+            -10.001953125,
+            -0.001953125,
+            -0.0,
+            0.001953125,
+            10.001953125,
+            1_000_000.001953125,
+        ];
+        let canonical: Vec<f64> = values
+            .into_iter()
+            .map(|value| canonical_overlay_coordinate(value).unwrap())
+            .collect();
+        assert!(canonical.windows(2).all(|pair| pair[0] <= pair[1]));
+        for value in canonical {
+            assert_eq!(canonical_overlay_coordinate(value).unwrap(), value);
+            assert_eq!(
+                value * OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT,
+                (value * OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT).round()
+            );
+        }
+        for invalid in [f64::NAN, f64::NEG_INFINITY, f64::INFINITY, f64::MAX] {
+            assert!(canonical_overlay_coordinate(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn quality_levels_have_the_fixed_v3_render_sizes() {
         assert_eq!(
             QualityLevel::Low.render_size(),
             RenderSize {
@@ -1076,14 +1311,38 @@ mod tests {
                 height: 416
             }
         );
+        assert_eq!(
+            QualityLevel::High.render_size(),
+            RenderSize {
+                width: 576,
+                height: 624
+            }
+        );
+        assert!(QualityLevel::Low.is_studio_supported());
+        assert!(QualityLevel::Standard.is_studio_supported());
+        assert!(!QualityLevel::High.is_studio_supported());
     }
 
     #[test]
-    fn removed_high_quality_tier_is_rejected_without_an_alias() {
-        let error = serde_json::from_value::<QualityLevel>(serde_json::json!("high"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("unknown variant `high`"), "{error}");
+    fn behavior_settings_drop_removed_event_keys_and_fill_the_current_contract() {
+        let behavior: BehaviorSettings = serde_json::from_value(serde_json::json!({
+            "events": {
+                "start": false,
+                "tool": false,
+                "waiting": true,
+                "review": true,
+                "done": true,
+                "failed": true
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(behavior.events.len(), 7);
+        assert_eq!(behavior.events.get(&AgentEventType::Start), Some(&false));
+        assert_eq!(behavior.events.get(&AgentEventType::Thinking), Some(&true));
+        assert_eq!(behavior.events.get(&AgentEventType::Plan), Some(&true));
+        assert_eq!(behavior.events.get(&AgentEventType::Tool), Some(&false));
+        assert!(!serde_json::to_string(&behavior).unwrap().contains("review"));
     }
 
     #[test]
@@ -1102,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn default_v2_state_timings_satisfy_the_hard_contract() {
+    fn default_v3_action_timings_satisfy_the_hard_contract() {
         let states = default_pet_states();
         assert_eq!(states.len(), REQUIRED_STATES.len());
         assert_eq!(
@@ -1110,12 +1369,18 @@ mod tests {
                 .iter()
                 .map(|state| state.frame_durations_ms.len())
                 .sum::<usize>(),
-            32
+            42
         );
         for state in &states {
+            let warnings = state.validate().unwrap_or_else(|error| {
+                panic!(
+                    "{} action contract must be valid: {error}",
+                    state.name.as_str()
+                )
+            });
             assert!(
-                PetTimingContract::from(state).validate().is_ok(),
-                "{} timing must be valid",
+                warnings.is_empty(),
+                "{} default action must not warn: {warnings:?}",
                 state.name.as_str()
             );
         }
@@ -1144,18 +1409,12 @@ mod tests {
     }
 
     #[test]
-    fn all_four_v2_playback_modes_have_valid_typed_contracts() {
+    fn all_five_v3_playback_modes_have_valid_typed_contracts() {
         let cases = [
             PlaybackContract {
                 mode: PlaybackMode::Loop,
                 entry_repeat_count: None,
                 settle_frame_index: None,
-                cooldown_ms: None,
-            },
-            PlaybackContract {
-                mode: PlaybackMode::OnceHold,
-                entry_repeat_count: None,
-                settle_frame_index: Some(1),
                 cooldown_ms: None,
             },
             PlaybackContract {
@@ -1168,6 +1427,18 @@ mod tests {
                 mode: PlaybackMode::BurstThenSettle,
                 entry_repeat_count: Some(2),
                 settle_frame_index: Some(1),
+                cooldown_ms: None,
+            },
+            PlaybackContract {
+                mode: PlaybackMode::BurstThenIdle,
+                entry_repeat_count: Some(3),
+                settle_frame_index: None,
+                cooldown_ms: None,
+            },
+            PlaybackContract {
+                mode: PlaybackMode::OnceThenReturn,
+                entry_repeat_count: None,
+                settle_frame_index: None,
                 cooldown_ms: None,
             },
         ];
@@ -1214,6 +1485,24 @@ mod tests {
             .validate()
             .unwrap_err();
         assert!(error.contains("must not exceed 86400000"), "{error}");
+    }
+
+    #[test]
+    fn atomic_agent_events_have_a_sparse_pet_reaction_mapping() {
+        assert_eq!(AgentEventType::Start.pet_reaction(), None);
+        assert_eq!(AgentEventType::Start.pet_state(), PetStateName::Idle);
+        assert_eq!(
+            AgentEventType::Thinking.pet_reaction(),
+            Some(PetStateName::Thinking)
+        );
+        assert_eq!(
+            AgentEventType::Plan.pet_reaction(),
+            Some(PetStateName::Thinking)
+        );
+        assert_ne!(
+            AgentEventType::Thinking.zh_label(),
+            AgentEventType::Plan.zh_label()
+        );
     }
 
     #[test]

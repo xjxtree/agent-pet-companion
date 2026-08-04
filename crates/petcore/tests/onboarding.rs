@@ -78,9 +78,10 @@ fn diagnostic_environment() -> Value {
             },
             "events": {
                 "start": true,
+                "thinking": true,
+                "plan": true,
                 "tool": true,
                 "waiting": true,
-                "review": true,
                 "done": true,
                 "failed": true
             }
@@ -421,12 +422,14 @@ fn demo_transition_diagnostics_record_only_the_safe_rpc_name_and_export_no_demo_
 
     for forbidden in [
         "\"demo\"",
-        "\"thinking\"",
+        "\"demo_phase\"",
+        "onboarding.demo.thinking",
         "\"working\"",
         "\"needs_attention\"",
         "onboarding-local-demo",
         "pet_xingwutuanzi",
         "pet_bytebudcodex",
+        "pet_pinklace",
         "demo-session",
         "\"pet_id\"",
         "\"session_id\"",

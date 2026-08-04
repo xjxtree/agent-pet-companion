@@ -55,7 +55,7 @@ struct OnboardingViewTests {
         )
         #expect(
             APCLocalization.text(.onboardingPetsUnavailableDetail, locale: "zh-Hans")
-                == "恢复 App 随附的两只桌宠，然后选择一只继续。"
+                == "恢复 App 随附的三只桌宠，然后选择一只继续。"
         )
         #expect(ControlCenterShellPolicy.supportedMinimumWindowWidth == 760)
         #expect(ControlCenterShellPolicy.supportedMinimumWindowHeight == 520)
@@ -102,6 +102,9 @@ struct OnboardingViewTests {
             "PetLibraryPreviewPolicy.canRender("
         ))
         #expect(viewSource.contains("assetWarning: assetWarning"))
+        #expect(viewSource.contains("@State private var contentState = PetPreviewContentState()"))
+        #expect(viewSource.contains("onFrameContentChanged: onRendererContentChanged"))
+        #expect(!viewSource.contains("rendererHasContent"))
     }
 
     @Test

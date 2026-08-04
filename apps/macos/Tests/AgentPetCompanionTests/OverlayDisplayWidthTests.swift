@@ -100,7 +100,7 @@ struct OverlayDisplayWidthTests {
     }
 
     @Test
-    func resizingAtEveryScreenEdgeAppliesOnlyTheMinimumRequiredTranslation() {
+    func resizingAtEveryScreenEdgeAppliesOnlyTheMinimumRequiredTranslation() throws {
         let movementFrame = CGRect(x: 100, y: -80, width: 1_440, height: 900)
 
         func allowedCenters(for width: CGFloat) -> CGRect {
@@ -149,21 +149,42 @@ struct OverlayDisplayWidthTests {
                     visibleFrame: movementFrame,
                     clickMenuEnabled: false
                 )
-                let minimumTranslation = CGPoint(
-                    x: min(
-                        proposedBounds.maxX,
-                        max(proposedBounds.minX, bottomAnchored.x)
-                    ),
-                    y: min(
-                        proposedBounds.maxY,
-                        max(proposedBounds.minY, bottomAnchored.y)
+                let inwardMinX = CGFloat(try #require(
+                    OverlayPlacementCanonicalization.inwardLowerBound(
+                        Double(proposedBounds.minX)
                     )
+                ))
+                let inwardMaxX = CGFloat(try #require(
+                    OverlayPlacementCanonicalization.inwardUpperBound(
+                        Double(proposedBounds.maxX)
+                    )
+                ))
+                let inwardMinY = CGFloat(try #require(
+                    OverlayPlacementCanonicalization.inwardLowerBound(
+                        Double(proposedBounds.minY)
+                    )
+                ))
+                let inwardMaxY = CGFloat(try #require(
+                    OverlayPlacementCanonicalization.inwardUpperBound(
+                        Double(proposedBounds.maxY)
+                    )
+                ))
+                let minimumTranslation = CGPoint(
+                    x: min(inwardMaxX, max(
+                        inwardMinX,
+                        OverlayPlacementCanonicalization.cgFloatCoordinate(
+                            bottomAnchored.x
+                        )
+                    )),
+                    y: min(inwardMaxY, max(
+                        inwardMinY,
+                        OverlayPlacementCanonicalization.cgFloatCoordinate(
+                            bottomAnchored.y
+                        )
+                    ))
                 )
 
-                #expect(hypot(
-                    presented.x - minimumTranslation.x,
-                    presented.y - minimumTranslation.y
-                ) < 0.001)
+                #expect(presented == minimumTranslation)
             }
         }
     }

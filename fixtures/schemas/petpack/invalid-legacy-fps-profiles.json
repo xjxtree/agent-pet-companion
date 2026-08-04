@@ -9,10 +9,9 @@
   "default_fps_profile": "standard",
   "states": [
     { "name": "idle", "frames_dir": "assets/frames/idle", "loop": true },
-    { "name": "start", "frames_dir": "assets/frames/start", "loop": false },
+    { "name": "thinking", "frames_dir": "assets/frames/thinking", "loop": false },
     { "name": "tool", "frames_dir": "assets/frames/tool", "loop": true },
     { "name": "waiting", "frames_dir": "assets/frames/waiting", "loop": true },
-    { "name": "review", "frames_dir": "assets/frames/review", "loop": true },
     { "name": "done", "frames_dir": "assets/frames/done", "loop": false },
     { "name": "failed", "frames_dir": "assets/frames/failed", "loop": true }
   ],

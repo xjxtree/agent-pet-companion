@@ -3,7 +3,7 @@ import Testing
 
 @Suite("Per-frame animation timeline")
 struct FrameTimelineTests {
-    @Test("periodic cooldown accepts the V2 boundary and rejects values outside it")
+    @Test("periodic cooldown accepts the V3 boundary and rejects values outside it")
     func periodicCooldownBounds() {
         func timing(_ cooldownMS: [Int]) -> PetStateTiming {
             PetStateTiming(
@@ -52,11 +52,15 @@ struct FrameTimelineTests {
         #expect(!timeline.hasCompleted(elapsedMS: 10_000))
     }
 
-    @Test("once-hold completes once and holds its declared settle frame")
-    func onceHoldPlayback() {
+    @Test("single-pass burst-then-settle holds its declared settle frame")
+    func singlePassBurstThenSettlePlayback() {
         let timeline = FrameTimeline(
             durationsMS: [100, 250, 50],
-            playback: PlaybackContract(mode: .onceHold, settleFrameIndex: 1),
+            playback: PlaybackContract(
+                mode: .burstThenSettle,
+                entryRepeatCount: 1,
+                settleFrameIndex: 1
+            ),
             reducedMotionFrameIndex: 2
         )
 

@@ -35,6 +35,27 @@ enum PetLibraryDensityPolicy {
     }
 }
 
+enum PetLibraryPreviewActionPolicy {
+    static let defaultAction = PetAnimationAction.idle
+    static let orderedActions = PetAnimationAction.allCases
+
+    static func accessibilityLabel(
+        petName: String,
+        action: PetAnimationAction,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.format(
+            .libraryAnimationAccessibilityFormat,
+            locale: localeIdentifier,
+            petName,
+            APCLocalizedPresentation.animationActionTitle(
+                action,
+                locale: localeIdentifier
+            )
+        )
+    }
+}
+
 enum PetLibraryHistoryBounds {
     static let maximumRevisions = 16
     static let maximumJobs = 16
@@ -63,9 +84,9 @@ struct PetLibraryCapabilities: Equatable {
 
     init(pet: PetSummary) {
         isBundled = pet.isBundled
-        canModify = !isBundled
+        canModify = !isBundled && pet.quality.isStudioSupported
         canDelete = !isBundled
-        canCustomizeAsCopy = isBundled
+        canCustomizeAsCopy = isBundled && pet.quality.isStudioSupported
     }
 }
 
@@ -173,17 +194,43 @@ struct PetLibraryImportProgress: Equatable {
 }
 
 struct PetLibraryImportFailure: Equatable {
-    private let fileName: String?
+    private enum Reason: Equatable {
+        case invalidPackage
+        case serviceFailure
+    }
 
-    static let invalidSelection = Self(fileName: nil)
+    private let fileName: String?
+    private let reason: Reason
+
+    static let invalidSelection = Self(fileName: nil, reason: .invalidPackage)
 
     static func file(at url: URL) -> Self {
-        Self(fileName: url.lastPathComponent)
+        Self(fileName: url.lastPathComponent, reason: .invalidPackage)
+    }
+
+    static func requestFailure(at url: URL, error: Error) -> Self {
+        let reason: Reason
+        if let clientError = error as? PetCoreClientError,
+           case let .rpcErrorResponse(code, _) = clientError,
+           code == -32000 || code == -32602
+        {
+            reason = .invalidPackage
+        } else {
+            reason = .serviceFailure
+        }
+        return Self(fileName: url.lastPathComponent, reason: reason)
     }
 
     func localizedDetail(localeIdentifier: String) -> String {
         guard let fileName, !fileName.isEmpty else {
             return APCLocalization.text(.libraryImportValidPetpack, locale: localeIdentifier)
+        }
+        if reason == .serviceFailure {
+            return APCLocalization.format(
+                .libraryImportServiceFailedFileFormat,
+                locale: localeIdentifier,
+                fileName
+            )
         }
         return APCLocalization.format(
             .libraryImportFailedFileFormat,
@@ -721,7 +768,7 @@ struct PetLibraryPresentation: Equatable {
     /// package contract. Keeping the package format separate from the
     /// immutable revision ID prevents the Inspector from conflating the two.
     var packageVersionSummary: String {
-        "apc.petpack.v2"
+        "apc.petpack.v3"
     }
 
     var revisionIDSummary: String {
@@ -797,9 +844,7 @@ struct PetLibraryPresentation: Equatable {
         Self.stateNames.joined(separator: " · ")
     }
 
-    private static let stateNames = [
-        "idle", "start", "tool", "waiting", "review", "done", "failed",
-    ]
+    private static let stateNames = ["idle", "thinking", "tool", "waiting", "done", "failed"]
 
     func currentStateTitle(activeEvent: AgentEvent?) -> String? {
         guard pet.active else { return nil }

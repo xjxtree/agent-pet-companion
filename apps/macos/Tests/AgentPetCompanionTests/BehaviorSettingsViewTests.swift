@@ -24,7 +24,7 @@ struct BehaviorSettingsViewTests {
         #expect(BehaviorSettingsCatalog.sources == [.codex, .claudeCode, .pi, .opencode])
         #expect(
             BehaviorSettingsCatalog.events
-                == [.start, .tool, .waiting, .review, .done, .failed]
+                == [.start, .thinking, .plan, .tool, .waiting, .done, .failed]
         )
     }
 
@@ -51,8 +51,8 @@ struct BehaviorSettingsViewTests {
             .allActivity,
         ])
         #expect(standard.allSatisfy { $0.isSelectable })
-        #expect(standard[0].detail.contains("Needs You"))
-        #expect(standard[0].detail.contains("Needs Attention"))
+        #expect(standard[0].detail.contains("Waiting for You"))
+        #expect(standard[0].detail.contains("Failed"))
         #expect(!standard[0].detail.contains("Thinking"))
         #expect(standard[1].detail.contains("Thinking"))
         #expect(!standard[1].detail.contains("Using Tools"))

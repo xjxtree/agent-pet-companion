@@ -10,10 +10,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-07-29-activity-v8";
-pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-07-31-activity-v8";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-activity-v10";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-activity-v12";
+pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9";
+pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v11";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v13";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -116,14 +116,14 @@ fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEven
     // App Server thread/list + thread/read events set this to true only after
     // the task is confirmed as a durable desktop thread.
     contract.session_open = None;
-    contract.affects_activity = event != "SessionStart";
+    contract.affects_activity = !matches!(
+        event,
+        "SessionStart" | "PreCompact" | "PostCompact" | "SubagentStop"
+    );
     contract.turn_id = bounded_string_at(input, &[&["turn_id"]], MAX_IDENTITY_BYTES);
     contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
     contract.project_label = project_label(input);
     contract.activity_kind = match event {
-        "UserPromptSubmit" | "PostToolUse" | "PostCompact" | "SubagentStop" => {
-            Some("thinking".to_string())
-        }
         "PreToolUse" => Some(activity_kind_for_tool(contract.tool_name.as_deref())),
         "PreCompact" => Some("compaction".to_string()),
         "SubagentStart" => Some("subagent".to_string()),
@@ -169,12 +169,12 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
         // A failed tool call is fed back to Claude and the agent can recover.
         // Only StopFailure proves that the turn itself is blocked.
         "PostToolUseFailure" => (AgentEventType::Tool, "tool_failure", true),
-        "PostToolBatch" => (AgentEventType::Start, "completed", true),
-        "PermissionDenied" => (AgentEventType::Tool, "auto_denied", true),
+        "PostToolBatch" => (AgentEventType::Tool, "completed", true),
+        "PermissionDenied" => (AgentEventType::Start, "auto_denied", true),
         "PreCompact" => (AgentEventType::Start, "started", true),
         "PostCompact" => (AgentEventType::Start, "completed", true),
         "SubagentStart" | "TaskCreated" => (AgentEventType::Tool, "started", true),
-        "SubagentStop" | "TaskCompleted" => (AgentEventType::Start, "completed", true),
+        "SubagentStop" | "TaskCompleted" => (AgentEventType::Tool, "completed", true),
         "Stop" if stop_has_background_work => (AgentEventType::Start, "background_active", true),
         "Stop" => (AgentEventType::Done, "completed", false),
         "StopFailure" => (AgentEventType::Failed, "api_failure", false),
@@ -199,7 +199,7 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
                 matches!(kind, "elicitation_complete" | "elicitation_response")
             }) =>
         {
-            (AgentEventType::Tool, "permission_replied", true)
+            (AgentEventType::Start, "permission_replied", true)
         }
         "Notification" if notification_type.as_deref() == Some("agent_completed") => {
             (AgentEventType::Done, "agent_completed", false)
@@ -208,7 +208,7 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
             (AgentEventType::Start, "observed", false)
         }
         "Elicitation" => (AgentEventType::Waiting, "input_requested", true),
-        "ElicitationResult" => (AgentEventType::Tool, "permission_replied", true),
+        "ElicitationResult" => (AgentEventType::Start, "permission_replied", true),
         "SessionEnd" => (AgentEventType::Done, "session_closed", false),
         _ => return Ok(None),
     };
@@ -234,6 +234,8 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
             | "ConfigChange"
             | "CwdChanged"
             | "WorktreeRemove"
+            | "PreCompact"
+            | "PostCompact"
     ) || (event == "Notification"
         && notification_type.as_deref() == Some("auth_success")));
     contract.project_label = project_label(input);
@@ -242,16 +244,6 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
     // resumable with `claude --resume <session-id>`.
     contract.session_open = Some(true);
     contract.activity_kind = match event {
-        "UserPromptSubmit" | "PostToolUse" | "PostToolUseFailure" | "PostToolBatch"
-        | "PermissionDenied" | "PostCompact" | "SubagentStop" | "TaskCompleted"
-        | "ElicitationResult" => Some("thinking".to_string()),
-        "Notification"
-            if notification_type.as_deref().is_some_and(|kind| {
-                matches!(kind, "elicitation_complete" | "elicitation_response")
-            }) =>
-        {
-            Some("thinking".to_string())
-        }
         "PreToolUse" => Some(activity_kind_for_tool(contract.tool_name.as_deref())),
         "PreCompact" => Some("compaction".to_string()),
         "SubagentStart" | "TaskCreated" => Some("subagent".to_string()),
@@ -335,12 +327,20 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
     );
     contract.turn_id = bounded_string_at(input, &[&["turn_id"], &["turnId"]], MAX_IDENTITY_BYTES);
     contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
-    contract.affects_activity = !matches!(event, "connector.probe" | "session_info_changed");
+    contract.affects_activity = !matches!(
+        event,
+        "connector.probe"
+            | "session_info_changed"
+            | "agent_start"
+            | "turn_start"
+            | "turn_end"
+            | "message_end"
+            | "session_before_compact"
+            | "session_compact"
+    );
     contract.session_title = session_title(input);
     contract.session_open = Some(event != "session_shutdown");
     contract.activity_kind = match event {
-        "input" | "before_agent_start" | "agent_start" | "turn_start" | "turn_end"
-        | "tool_execution_end" | "session_compact" => Some("thinking".to_string()),
         "tool_call" | "tool_execution_start" => {
             Some(activity_kind_for_tool(contract.tool_name.as_deref()))
         }
@@ -458,7 +458,7 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
                 }
                 _ => "permission_replied".to_string(),
             };
-            (AgentEventType::Tool, outcome, true)
+            (AgentEventType::Start, outcome, true)
         }
         "question.asked" | "question.v2.asked" => {
             (AgentEventType::Waiting, "input_requested".to_string(), true)
@@ -466,7 +466,11 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         "question.replied"
         | "question.rejected"
         | "question.v2.replied"
-        | "question.v2.rejected" => (AgentEventType::Tool, "permission_replied".to_string(), true),
+        | "question.v2.rejected" => (
+            AgentEventType::Start,
+            "permission_replied".to_string(),
+            true,
+        ),
         "session.next.prompt.admitted" => {
             (AgentEventType::Start, "prompt_admitted".to_string(), true)
         }
@@ -498,7 +502,8 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         "command.execute.after" => (AgentEventType::Tool, "completed".to_string(), true),
         "session.compaction.started" => (AgentEventType::Start, "started".to_string(), true),
         "session.compaction.ended" => (AgentEventType::Start, "completed".to_string(), true),
-        "session.plan.updated" => (AgentEventType::Start, "observed".to_string(), true),
+        "session.next.reasoning.ended" => (AgentEventType::Thinking, "observed".to_string(), true),
+        "session.plan.updated" => (AgentEventType::Plan, "observed".to_string(), true),
         "connector.probe" => (AgentEventType::Start, "observed".to_string(), false),
         // OpenCode publishes a generated session title after the first prompt.
         // Persist the bounded title without changing the pet lifecycle.
@@ -523,25 +528,24 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
     });
 
     let activity_kind = match event {
-        "session.next.step.ended" if kind == AgentEventType::Start => Some("thinking".to_string()),
-        "session.status"
-        | "session.next.prompt.admitted"
-        | "message.user"
-        | "tool.execute.after"
-        | "permission.replied"
-        | "permission.v2.replied"
-        | "question.replied"
-        | "question.rejected"
-        | "question.v2.replied"
-        | "question.v2.rejected" => Some("thinking".to_string()),
         "tool.execute.before" | "command.execute.before" => {
             Some(activity_kind_for_tool(tool_name.as_deref()))
         }
         "session.compaction.started" | "session.compaction.ended" => Some("compaction".to_string()),
+        "session.next.reasoning.ended" => Some("thinking".to_string()),
         "session.plan.updated" => Some("plan".to_string()),
         _ => None,
     };
 
+    let affects_activity = !(matches!(
+        event,
+        "connector.probe"
+            | "session.created"
+            | "session.updated"
+            | "message.assistant"
+            | "session.compaction.started"
+            | "session.compaction.ended"
+    ) || (event == "session.next.step.ended" && outcome == "continued"));
     let mut contract = ContractEvent {
         source,
         external_event_id: None,
@@ -563,10 +567,7 @@ fn parse_opencode(source: AgentSource, input: &Value) -> Result<Option<ContractE
         // remain activity-affecting so it supersedes older work in that same
         // session; canonical projection suppresses close-only sessions that
         // never had a user activation.
-        affects_activity: !matches!(
-            event,
-            "connector.probe" | "session.created" | "session.updated"
-        ),
+        affects_activity,
         session_active,
         turn_id: bounded_string_at(input, &[&["turn_id"], &["turnID"]], MAX_IDENTITY_BYTES),
         message_role,

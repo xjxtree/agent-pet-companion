@@ -212,7 +212,7 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
         .frame_durations_ms = vec![200, 220, 240, 260];
     current_head_states
         .iter_mut()
-        .find(|state| state.name == PetStateName::Start)
+        .find(|state| state.name == PetStateName::Thinking)
         .unwrap()
         .frame_durations_ms = vec![100, 120, 140, 160];
     let current_head_form = GenerationForm {
@@ -632,8 +632,8 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
         .unwrap();
     assert_eq!(terminal["revision_id"], committed_revision);
     assert_eq!(terminal["validation_summary"]["ok"], true);
-    assert_eq!(terminal["validation_summary"]["state_count"], 7);
-    assert_eq!(terminal["validation_summary"]["frame_count"], 32);
+    assert_eq!(terminal["validation_summary"]["state_count"], 9);
+    assert_eq!(terminal["validation_summary"]["frame_count"], 42);
 
     let history = handle_request(
         &state,
@@ -774,7 +774,7 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
         .unwrap();
     assert_eq!(terminal["revision_id"], committed_revision);
     assert_eq!(terminal["validation_summary"]["ok"], true);
-    assert_eq!(terminal["validation_summary"]["state_count"], 7);
+    assert_eq!(terminal["validation_summary"]["state_count"], 9);
 
     let history = handle_request(
         &state,
@@ -832,7 +832,7 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
             json!({
                 "pet_id": manifest.id,
                 "baseline_revision_id": original_revision,
-                "instruction": "从最初导入版本出发，让 review 状态更醒目"
+                "instruction": "从最初导入版本出发，让 thinking 状态更醒目"
             }),
         ),
     )

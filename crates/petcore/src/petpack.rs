@@ -8,8 +8,8 @@ use image::{
     imageops, AnimationDecoder, ImageBuffer, ImageEncoder, Rgba, RgbaImage,
 };
 use petcore_types::{
-    GenerationForm, PetManifest, PetOrigin, PetState, PetStateName, PetSummary, PetTimingContract,
-    PlaybackMode, QualityLevel, RenderSize, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    GenerationForm, PetManifest, PetOrigin, PetState, PetStateName, PetSummary, PlaybackMode,
+    QualityLevel, RenderSize, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,7 +30,7 @@ const MAX_PETPACK_ENTRIES: usize = 5_000;
 const MAX_PETPACK_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PETPACK_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_FRAMES_PER_STATE: usize = 40;
-const MAX_TOTAL_FRAMES: usize = MAX_FRAMES_PER_STATE * 7;
+const MAX_TOTAL_FRAMES: usize = MAX_FRAMES_PER_STATE * REQUIRED_STATES.len();
 const MAX_DECODED_STATE_BYTES: u64 = 420 * 1024 * 1024;
 const MAX_FRAME_PIXELS: u64 = 16_777_216;
 const MAX_ANIMATED_PREVIEW_FRAMES: usize = 120;
@@ -103,16 +103,21 @@ struct BundledPetDescriptor {
 // This is intentionally a closed, content-pinned inventory. The private RPC
 // accepts a directory only so the App can point at its SwiftPM resource
 // bundle; callers cannot turn an arbitrary petpack into a trusted bundled pet.
-const BUNDLED_PET_DESCRIPTORS: [BundledPetDescriptor; 2] = [
+const BUNDLED_PET_DESCRIPTORS: [BundledPetDescriptor; 3] = [
     BundledPetDescriptor {
         file_name: "pet_xingwutuanzi.petpack",
         pet_id: "pet_xingwutuanzi",
-        sha256: "4d039243b3d8f02ea87489a0b8d7261e5ff5e49df04aa9b3beda7712d93cfab2",
+        sha256: "6717a975c4c28bcf0467a08f7fdb4c704d87a941e4b1b0ebd7c96ea977e50c66",
     },
     BundledPetDescriptor {
         file_name: "pet_bytebudcodex.petpack",
         pet_id: "pet_bytebudcodex",
-        sha256: "22fc193a89f5c4d653fcd315c6a878f8e6269ed51db1e709a9beaae60405e4f4",
+        sha256: "b6e032b0e36f8d8c0a54aecb29cdf24eb7505b93555bd12e54b444e8b26cc7c4",
+    },
+    BundledPetDescriptor {
+        file_name: "pet_pinklace.petpack",
+        pet_id: "pet_pinklace",
+        sha256: "11399e045c6b5b3b2252c3d5adc3a85a3f449fd3d7a37bbcc4d36d6eeb5a9b88",
     },
 ];
 
@@ -221,7 +226,7 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
         ));
     }
 
-    let manifest = parse_v2_manifest(&fs::read(&manifest_path)?)?;
+    let manifest = parse_current_manifest(&fs::read(&manifest_path)?)?;
     validate_manifest(&manifest)?;
     validate_no_codex_compat_package_markers(dir)?;
 
@@ -242,7 +247,7 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
                 PetCoreError::Validation(format!("manifest missing state {}", state.as_str()))
             })?;
         timing_warnings.extend(
-            PetTimingContract::from(state_entry)
+            state_entry
                 .validate()
                 .map_err(PetCoreError::Validation)?
                 .into_iter()
@@ -458,15 +463,15 @@ pub fn validate_petpack_dir(dir: &Path) -> Result<PetpackValidation> {
     })
 }
 
-fn parse_v2_manifest(bytes: &[u8]) -> Result<PetManifest> {
+fn parse_current_manifest(bytes: &[u8]) -> Result<PetManifest> {
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     let version = value
         .get("schema_version")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("<missing>");
     if version != PETPACK_SCHEMA_VERSION {
-        let detail = if version == "apc.petpack.v1" {
-            "petpack V1 is no longer supported; recreate this pet with the V2 maker"
+        let detail = if matches!(version, "apc.petpack.v1" | "apc.petpack.v2") {
+            "petpack V1/V2 is no longer supported; recreate this pet with the V3 maker"
         } else {
             "unsupported petpack schema"
         };
@@ -479,8 +484,11 @@ fn parse_v2_manifest(bytes: &[u8]) -> Result<PetManifest> {
 
 pub fn validate_manifest(manifest: &PetManifest) -> Result<()> {
     if manifest.schema_version != PETPACK_SCHEMA_VERSION {
-        let detail = if manifest.schema_version == "apc.petpack.v1" {
-            "petpack V1 is no longer supported; recreate this pet with the V2 maker"
+        let detail = if matches!(
+            manifest.schema_version.as_str(),
+            "apc.petpack.v1" | "apc.petpack.v2"
+        ) {
+            "petpack V1/V2 is no longer supported; recreate this pet with the V3 maker"
         } else {
             "unsupported petpack schema"
         };
@@ -560,14 +568,12 @@ pub fn validate_manifest(manifest: &PetManifest) -> Result<()> {
                 expected_frames_dir
             )));
         }
-        PetTimingContract::from(state)
-            .validate()
-            .map_err(|message| {
-                PetCoreError::Validation(format!(
-                    "state {} timing is invalid: {message}",
-                    state.name.as_str()
-                ))
-            })?;
+        state.validate().map_err(|message| {
+            PetCoreError::Validation(format!(
+                "state {} timing is invalid: {message}",
+                state.name.as_str()
+            ))
+        })?;
     }
 
     Ok(())
@@ -1625,7 +1631,7 @@ fn apply_ai_timing(manifest: &mut PetManifest, ai_brief: Option<&serde_json::Val
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
             PetCoreError::Validation(
-                "timing_changed requires a V2 timing entry for every state".to_string(),
+                "timing_changed requires a V3 timing entry for every action".to_string(),
             )
         })?;
     for manifest_state in &mut manifest.states {
@@ -1672,14 +1678,12 @@ fn apply_ai_timing(manifest: &mut PetManifest, ai_brief: Option<&serde_json::Val
                     ))
                 })?,
         };
-        PetTimingContract::from(&candidate)
-            .validate()
-            .map_err(|message| {
-                PetCoreError::Validation(format!(
-                    "state {} timing is invalid: {message}",
-                    manifest_state.name.as_str()
-                ))
-            })?;
+        candidate.validate().map_err(|message| {
+            PetCoreError::Validation(format!(
+                "state {} timing is invalid: {message}",
+                manifest_state.name.as_str()
+            ))
+        })?;
         *manifest_state = candidate;
     }
     Ok(())
@@ -1734,11 +1738,11 @@ fn write_generated_petpack_dir_with_identity(
         identity
     } else if has_ai_brief {
         (
-            "codex-app-server-brief-petpack-v2",
+            "codex-app-server-brief-petpack-v3",
             "codex_app_server_brief",
         )
     } else {
-        ("local-form-driven-petpack-v2", "local_form")
+        ("local-form-driven-petpack-v3", "local_form")
     };
     fs::write(
         dir.join("brief.json"),
@@ -3868,7 +3872,7 @@ fn draw_generated_frame(
     let pulse_alpha = (118.0 + 42.0 * breath.abs()).round() as u8;
     let drift = (breath * (body_w as f32 / 10.0).max(1.0)).round() as i32;
     match state {
-        PetStateName::Start | PetStateName::Tool | PetStateName::Review => fill_ellipse(
+        PetStateName::Thinking | PetStateName::Tool | PetStateName::Acknowledge => fill_ellipse(
             &mut image,
             center_x + body_w / 2 + drift,
             center_y - body_h / 5 + bob,
@@ -3920,7 +3924,7 @@ fn draw_generated_frame(
                 pulse_alpha,
             ]),
         ),
-        PetStateName::Idle => {}
+        PetStateName::Idle | PetStateName::DragLeft | PetStateName::DragRight => {}
     }
     image
 }
@@ -4001,12 +4005,15 @@ fn draw_reference_frame(
     let breath = (phase * std::f32::consts::TAU).sin();
     let bob = (breath * (size.height as f32 / 110.0).max(1.0)).round() as i64;
     let sway = match state {
-        PetStateName::Tool | PetStateName::Review => {
-            (breath * (size.width as f32 / 180.0).max(1.0)).round() as i64
-        }
+        PetStateName::Tool => (breath * (size.width as f32 / 180.0).max(1.0)).round() as i64,
         PetStateName::Failed => -(i64::from(size.width) / 140).max(1),
-        PetStateName::Start => (i64::from(size.width) / 160).max(1),
-        PetStateName::Idle | PetStateName::Waiting | PetStateName::Done => 0,
+        PetStateName::Thinking => (i64::from(size.width) / 160).max(1),
+        PetStateName::DragLeft => -(i64::from(size.width) / 100).max(1),
+        PetStateName::DragRight => (i64::from(size.width) / 100).max(1),
+        PetStateName::Idle
+        | PetStateName::Waiting
+        | PetStateName::Done
+        | PetStateName::Acknowledge => 0,
     };
     imageops::overlay(&mut image, source, sway, bob);
 
@@ -4016,7 +4023,7 @@ fn draw_reference_frame(
     let center_x = size.width as i32 / 2;
     let center_y = size.height as i32 / 2;
     match state {
-        PetStateName::Start | PetStateName::Tool | PetStateName::Review => fill_ellipse(
+        PetStateName::Thinking | PetStateName::Tool | PetStateName::Acknowledge => fill_ellipse(
             &mut image,
             center_x + (size.width as i32 / 4),
             center_y - (size.height as i32 / 5),
@@ -4048,7 +4055,7 @@ fn draw_reference_frame(
             glow_size / 3,
             Rgba([accent.0[0], accent.0[1], accent.0[2], pulse_alpha]),
         ),
-        PetStateName::Idle => {}
+        PetStateName::Idle | PetStateName::DragLeft | PetStateName::DragRight => {}
     }
     image
 }
@@ -4296,7 +4303,7 @@ fn ai_motion_for_state(
 fn motion_for_state(state: PetStateName, form: &GenerationForm) -> &'static str {
     match state {
         PetStateName::Idle => "轻微呼吸与衣摆摆动",
-        PetStateName::Start => "抬头进入工作状态",
+        PetStateName::Thinking => "抬头并进入思考状态",
         PetStateName::Tool => {
             if contains_any(&form.description, &["发光", "光"]) {
                 "衣摆和工具光效增强"
@@ -4305,21 +4312,24 @@ fn motion_for_state(state: PetStateName, form: &GenerationForm) -> &'static str 
             }
         }
         PetStateName::Waiting => "停顿并向上提醒确认",
-        PetStateName::Review => "侧身展示待查看状态",
         PetStateName::Done => "轻微点头并显示完成光效",
         PetStateName::Failed => "低头并显示失败提示色带",
+        PetStateName::Acknowledge => "短促抬手回应后回到原状态",
+        PetStateName::DragLeft => "向左拖动时身体轻微顺势倾斜",
+        PetStateName::DragRight => "向右拖动时身体轻微顺势倾斜",
     }
 }
 
 fn state_color(state: PetStateName) -> Rgba<u8> {
     match state {
         PetStateName::Idle => Rgba([96, 169, 232, 255]),
-        PetStateName::Start => Rgba([129, 81, 247, 255]),
+        PetStateName::Thinking => Rgba([129, 81, 247, 255]),
         PetStateName::Tool => Rgba([60, 189, 214, 255]),
         PetStateName::Waiting => Rgba([240, 176, 64, 255]),
-        PetStateName::Review => Rgba([116, 113, 255, 255]),
         PetStateName::Done => Rgba([64, 196, 129, 255]),
         PetStateName::Failed => Rgba([232, 90, 110, 255]),
+        PetStateName::Acknowledge => Rgba([241, 142, 92, 255]),
+        PetStateName::DragLeft | PetStateName::DragRight => Rgba([91, 157, 224, 255]),
     }
 }
 
@@ -4639,10 +4649,10 @@ mod asset_contract_tests {
     }
 
     #[test]
-    fn generated_pet_preserves_custom_v2_authored_timing() {
+    fn generated_pet_preserves_custom_v3_authored_timing() {
         let temp = tempfile::tempdir().unwrap();
         let form = GenerationForm {
-            description: "V2 timing contract fixture".to_string(),
+            description: "V3 timing contract fixture".to_string(),
             style: "storybook".to_string(),
             quality: QualityLevel::Standard,
             reference_images: Vec::new(),
@@ -4653,13 +4663,13 @@ mod asset_contract_tests {
             .find(|state| state.name == PetStateName::Idle)
             .unwrap()
             .frame_durations_ms = vec![180, 160, 180, 220, 260];
-        let start = states
+        let thinking = states
             .iter_mut()
-            .find(|state| state.name == PetStateName::Start)
+            .find(|state| state.name == PetStateName::Thinking)
             .unwrap();
-        start.frame_durations_ms = vec![100, 110, 120, 130, 140];
-        start.playback.settle_frame_index = Some(4);
-        start.reduced_motion_frame_index = 3;
+        thinking.frame_durations_ms = vec![100, 110, 120, 130, 140];
+        thinking.playback.entry_repeat_count = Some(2);
+        thinking.reduced_motion_frame_index = 3;
         let ai_brief = serde_json::json!({
             "timing_changed": true,
             "states": states
@@ -4697,13 +4707,13 @@ mod asset_contract_tests {
             manifest
                 .states
                 .iter()
-                .find(|state| state.name == PetStateName::Start)
+                .find(|state| state.name == PetStateName::Thinking)
                 .unwrap()
                 .frame_durations_ms,
             [100, 110, 120, 130, 140]
         );
         assert_eq!(validation.state_frame_counts[&PetStateName::Idle], 5);
-        assert_eq!(validation.state_frame_counts[&PetStateName::Start], 5);
+        assert_eq!(validation.state_frame_counts[&PetStateName::Thinking], 5);
         assert_eq!(artifact["states"], serde_json::json!(manifest.states));
         assert_eq!(
             artifact["frame_count"],
@@ -4730,11 +4740,11 @@ mod asset_contract_tests {
         let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
 
         assert!(
-            error.contains("petpack V1 is no longer supported"),
+            error.contains("petpack V1/V2 is no longer supported"),
             "{error}"
         );
         assert!(
-            error.contains("recreate this pet with the V2 maker"),
+            error.contains("recreate this pet with the V3 maker"),
             "{error}"
         );
     }
@@ -4755,6 +4765,12 @@ mod asset_contract_tests {
             .find(|state| state.name == PetStateName::Idle)
             .unwrap();
         idle.frame_durations_ms = vec![500; 3];
+        let thinking = manifest
+            .states
+            .iter_mut()
+            .find(|state| state.name == PetStateName::Thinking)
+            .unwrap();
+        thinking.frame_durations_ms = vec![500; 4];
         fs::remove_file(temp.path().join("assets/frames/idle/0003.png")).unwrap();
         rewrite_timing_metadata(temp.path(), &manifest);
 
@@ -4770,7 +4786,7 @@ mod asset_contract_tests {
         assert!(validation
             .timing_warnings
             .iter()
-            .any(|warning| warning.contains("state idle")
+            .any(|warning| warning.contains("state thinking")
                 && warning.contains("effective frame rate")));
     }
 
@@ -5133,7 +5149,7 @@ mod asset_contract_tests {
             state_timing.frame_durations_ms = state_timing
                 .frame_durations_ms
                 .iter()
-                .flat_map(|duration| [duration / 2, duration - duration / 2])
+                .flat_map(|duration| [*duration, *duration])
                 .collect();
             let state_dir = temp.path().join("assets/frames").join(state.as_str());
             let mut originals = fs::read_dir(&state_dir)
@@ -5166,20 +5182,15 @@ mod asset_contract_tests {
     fn skill_full_source_rejects_duplicate_loop_boundary_frames() {
         let temp = tempfile::tempdir().unwrap();
         let mut manifest = write_strict_sample(temp.path());
-        let idle = manifest
+        let drag_left = manifest
             .states
             .iter_mut()
-            .find(|state| state.name == PetStateName::Idle)
+            .find(|state| state.name == PetStateName::DragLeft)
             .unwrap();
-        idle.playback = petcore_types::PlaybackContract {
-            mode: PlaybackMode::Loop,
-            entry_repeat_count: None,
-            settle_frame_index: None,
-            cooldown_ms: None,
-        };
+        assert_eq!(drag_left.playback.mode, PlaybackMode::Loop);
         rewrite_timing_metadata(temp.path(), &manifest);
-        let idle_dir = temp.path().join("assets/frames/idle");
-        let mut paths = fs::read_dir(&idle_dir)
+        let drag_left_dir = temp.path().join("assets/frames/drag_left");
+        let mut paths = fs::read_dir(&drag_left_dir)
             .unwrap()
             .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())

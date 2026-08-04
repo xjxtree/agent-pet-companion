@@ -1022,6 +1022,7 @@ private struct PetLibraryHero: View {
     let onRequestDelete: () -> Void
 
     @State private var technicalInformationIsExpanded = false
+    @State private var selectedPreviewAction = PetLibraryPreviewActionPolicy.defaultAction
 
     private var presentation: PetLibraryPresentation {
         PetLibraryPresentation(pet: pet, assetWarning: assetWarning)
@@ -1083,19 +1084,24 @@ private struct PetLibraryHero: View {
                             scope: "pet-library",
                             instance: "featured"
                         ),
-                        accessibilityLabel: APCLocalization.format(
-                            .libraryAnimationAccessibilityFormat,
-                            pet.name
+                        accessibilityLabel: PetLibraryPreviewActionPolicy.accessibilityLabel(
+                            petName: pet.name,
+                            action: selectedPreviewAction
                         ),
                         minimumHeight: 280
                     ) {
-                        PetLibraryAnimationPreview(pet: pet)
+                        PetLibraryAnimationPreview(
+                            pet: pet,
+                            action: selectedPreviewAction
+                        )
                             .frame(
                                 maxWidth: .infinity,
                                 minHeight: 280,
                                 maxHeight: 360
                             )
                     }
+
+                    previewActionPicker
                 }
 
                 secondaryActions
@@ -1115,6 +1121,28 @@ private struct PetLibraryHero: View {
             }
         }
         .accessibilityIdentifier("pet-library.hero")
+    }
+
+    private var previewActionPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(APCLocalization.text(.libraryAnimationActionPicker))
+                .font(.callout.weight(.medium))
+
+            Picker(
+                APCLocalization.text(.libraryAnimationActionPicker),
+                selection: $selectedPreviewAction
+            ) {
+                ForEach(PetLibraryPreviewActionPolicy.orderedActions, id: \.self) { action in
+                    Text(APCLocalizedPresentation.animationActionTitle(action))
+                        .tag(action)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel(APCLocalization.text(.libraryAnimationActionPicker))
+            .accessibilityIdentifier("pet-library.hero.action-picker")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var secondaryActions: some View {

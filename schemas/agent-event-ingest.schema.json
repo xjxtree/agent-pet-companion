@@ -10,7 +10,7 @@
     "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
     "project_path": { "type": ["string", "null"] },
     "session_id": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
-    "event_type": { "enum": ["start", "tool", "waiting", "review", "done", "failed"] },
+    "event_type": { "enum": ["start", "thinking", "plan", "tool", "waiting", "done", "failed"] },
     "title": { "type": ["string", "null"], "deprecated": true },
     "detail": { "type": ["string", "null"], "deprecated": true },
     "payload": { "$ref": "#/$defs/strictEnvelopeInput" },
@@ -42,7 +42,7 @@
         "activity_content": { "type": ["string", "null"], "maxLength": 1024, "x-maxUtf8Bytes": 1024 },
         "interaction_kind": {
           "type": ["string", "null"],
-          "enum": ["approval_required", "input_required", "review_required", null]
+          "enum": ["approval_required", "input_required", null]
         },
         "project_label": { "type": ["string", "null"], "maxLength": 128, "x-maxUtf8Bytes": 128 },
         "session_title": { "type": ["string", "null"], "maxLength": 160, "x-maxUtf8Bytes": 160 },

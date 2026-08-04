@@ -18,7 +18,9 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
 
 enum BehaviorSettingsCatalog {
     static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
-    static let events: [AgentEventKind] = [.start, .tool, .waiting, .review, .done, .failed]
+    static let events: [AgentEventKind] = [
+        .start, .thinking, .plan, .tool, .waiting, .done, .failed,
+    ]
     static let interfaceLanguages: [InterfaceLanguage] = [
         .system,
         .english,
@@ -350,6 +352,14 @@ struct BehaviorSettingsView: View {
                             }
                         }
                         .padding(.vertical, 2)
+
+                        Text(APCLocalization.text(.configEventReactionMapping))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier(
+                                "configuration.messages.event-reaction-mapping"
+                            )
 
                         Divider()
 
@@ -1156,9 +1166,10 @@ private struct MessagePreviewRow: View {
     private var eventDetail: String {
         switch event {
         case .start: APCLocalization.text(.configEventStartDetail)
+        case .thinking: APCLocalization.text(.configEventThinkingDetail)
+        case .plan: APCLocalization.text(.configEventPlanDetail)
         case .tool: APCLocalization.text(.configEventToolDetail)
         case .waiting: APCLocalization.text(.configEventWaitingDetail)
-        case .review: APCLocalization.text(.configEventReviewDetail)
         case .done: APCLocalization.text(.configEventDoneDetail)
         case .failed: APCLocalization.text(.configEventFailedDetail)
         }
@@ -1166,10 +1177,10 @@ private struct MessagePreviewRow: View {
 
     private var eventColor: Color {
         switch event {
-        case .review, .done: APCDesign.success
+        case .done: APCDesign.success
         case .waiting: APCDesign.warning
         case .failed: APCDesign.destructive
-        case .start, .tool: APCDesign.accent
+        case .start, .thinking, .plan, .tool: APCDesign.accent
         }
     }
 }

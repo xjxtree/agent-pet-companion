@@ -33,60 +33,110 @@ RESULT_SCHEMA = "apc.pet-maker-result.v1"
 SOURCE_SCHEMA = "apc.pet-source.v1"
 SOURCE_EVENT_SCHEMA = "apc.pet-source-event.v1"
 VALIDATION_SCHEMA = "apc.pet-validation.v1"
-PETPACK_SCHEMA = "apc.petpack.v2"
+PETPACK_SCHEMA = "apc.petpack.v3"
 MOTION_QA_SCHEMA = "apc.pet-motion-qa.v1"
 MOTION_REVIEW_SCHEMA = "apc.pet-motion-review.v1"
 MOTION_LOCK_SCHEMA = "apc.pet-motion-lock.v1"
-STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")
-PLAYBACK_MODES = frozenset({"loop", "once_hold", "periodic", "burst_then_settle"})
+FINDER_VISIBILITY_SETTLE_SECONDS = 2.0
+FINDER_VISIBILITY_POLL_SECONDS = 0.05
+STATES = (
+    "idle",
+    "thinking",
+    "tool",
+    "waiting",
+    "done",
+    "failed",
+    "acknowledge",
+    "drag_left",
+    "drag_right",
+)
+PLAYBACK_MODES = frozenset(
+    {
+        "loop",
+        "periodic",
+        "burst_then_settle",
+        "burst_then_idle",
+        "once_then_return",
+    }
+)
+EXPECTED_PLAYBACK_MODES = {
+    "idle": "periodic",
+    "thinking": "burst_then_idle",
+    "tool": "burst_then_idle",
+    "waiting": "burst_then_settle",
+    "done": "burst_then_idle",
+    "failed": "burst_then_settle",
+    "acknowledge": "once_then_return",
+    "drag_left": "loop",
+    "drag_right": "loop",
+}
 QUALITY_RENDER_SIZES = {
     "low": {"width": 192, "height": 208},
     "standard": {"width": 384, "height": 416},
+    "high": {"width": 576, "height": 624},
 }
 PRODUCTION_INTERACTION_EVIDENCE = (
     "OverlayPlacementAuthorityTests",
     "AppStoreOverlaySnapshotTests",
     "OverlayGeometryTests",
     "OverlayDisplayWidthTests",
+    "OverlayInteractionTelemetryTests",
 )
 DEFAULT_STATE_TIMINGS = {
     "idle": {
-        "frame_durations_ms": [180, 160, 180, 380],
-        "playback": {"mode": "periodic", "cooldown_ms": [4000, 8000]},
+        "frame_durations_ms": [300, 260, 300, 640],
+        "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
-    "start": {
+    "thinking": {
         "frame_durations_ms": [120, 140, 160, 180],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "tool": {
         "frame_durations_ms": [150, 150, 170, 330],
         "playback": {
-            "mode": "burst_then_settle",
-            "entry_repeat_count": 1,
-            "settle_frame_index": 3,
+            "mode": "burst_then_idle",
+            "entry_repeat_count": 3,
         },
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
         "frame_durations_ms": [150, 150, 150, 150, 170, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
-        "reduced_motion_frame_index": 4,
-    },
-    "review": {
-        "frame_durations_ms": [140, 140, 150, 150, 180, 240],
-        "playback": {"mode": "once_hold", "settle_frame_index": 5},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 2,
+            "settle_frame_index": 5,
+        },
         "reduced_motion_frame_index": 4,
     },
     "done": {
         "frame_durations_ms": [120, 140, 160, 230],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {"mode": "burst_then_idle", "entry_repeat_count": 3},
         "reduced_motion_frame_index": 2,
     },
     "failed": {
         "frame_durations_ms": [150, 170, 190, 290],
-        "playback": {"mode": "once_hold", "settle_frame_index": 3},
+        "playback": {
+            "mode": "burst_then_settle",
+            "entry_repeat_count": 3,
+            "settle_frame_index": 3,
+        },
+        "reduced_motion_frame_index": 2,
+    },
+    "acknowledge": {
+        "frame_durations_ms": [180, 140, 180, 300],
+        "playback": {"mode": "once_then_return"},
+        "reduced_motion_frame_index": 1,
+    },
+    "drag_left": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
+        "reduced_motion_frame_index": 2,
+    },
+    "drag_right": {
+        "frame_durations_ms": [100, 90, 100, 110, 100, 200],
+        "playback": {"mode": "loop"},
         "reduced_motion_frame_index": 2,
     },
 }
@@ -104,6 +154,11 @@ COPY_CHUNK_BYTES = 1024 * 1024
 CLI_TIMEOUT_SECONDS = 300
 MOTION_PREVIEW_SIZE = (192, 208)
 MOTION_KEYFRAME_COUNT = 5
+PRESENCE_PREVIEW_MIN_MS = 8_000
+PRESENCE_PREVIEW_TARGET_MS = 10_000
+PRESENCE_PREVIEW_MAX_MS = 12_000
+MIN_SEMANTIC_ACTIVE_MS = 1_000
+MAX_SEMANTIC_ACTIVE_MS = 3_200
 MAX_MOTION_REVIEW_NOTE_CHARACTERS = 500
 MIN_MOTION_REVIEW_NOTE_CHARACTERS = 12
 PILLOW_REQUIRED_COMMANDS = frozenset(
@@ -291,6 +346,21 @@ def clear_macos_finder_hidden_flag(path: Path) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def stabilize_macos_finder_visibility(path: Path) -> None:
+    """Keep the final inode visible through Finder's delayed metadata pass."""
+
+    if sys.platform != "darwin":
+        return
+    deadline = time.monotonic() + FINDER_VISIBILITY_SETTLE_SECONDS
+    while True:
+        clear_macos_finder_hidden_flag(path)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(FINDER_VISIBILITY_POLL_SECONDS, remaining))
+    clear_macos_finder_hidden_flag(path)
 
 
 def canonical_premultiplied_rgba(image: Any) -> bytes:
@@ -945,7 +1015,7 @@ def manifest_state_paths(manifest: dict[str, Any]) -> dict[str, str]:
         if name in STATES and frames_dir == f"assets/frames/{name}":
             result[name] = frames_dir
     if set(result) != set(STATES):
-        raise MakerError("invalid_manifest", "manifest.json must contain all seven fixed states")
+        raise MakerError("invalid_manifest", "manifest.json must contain all nine fixed actions")
     return result
 
 
@@ -955,7 +1025,7 @@ def manifest_timing_contract(manifest: dict[str, Any]) -> dict[str, Any]:
     if expected_size is None:
         raise MakerError(
             "invalid_manifest",
-            "manifest.quality must be low or standard",
+            "manifest.quality must be low, standard, or high",
         )
     if manifest.get("render_size") != expected_size:
         raise MakerError(
@@ -965,7 +1035,7 @@ def manifest_timing_contract(manifest: dict[str, Any]) -> dict[str, Any]:
 
     entries = manifest.get("states")
     if not isinstance(entries, list) or len(entries) != len(STATES):
-        raise MakerError("invalid_manifest", "manifest.json must contain exactly seven states")
+        raise MakerError("invalid_manifest", "manifest.json must contain exactly nine actions")
     state_timings: dict[str, dict[str, Any]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
@@ -992,17 +1062,24 @@ def manifest_timing_contract(manifest: dict[str, Any]) -> dict[str, Any]:
         if mode not in PLAYBACK_MODES:
             raise MakerError(
                 "invalid_manifest",
-                f"State {state} playback.mode must be loop, once_hold, periodic, or burst_then_settle",
+                f"Action {state} playback.mode is not a supported V3 mode",
+            )
+        expected_mode = EXPECTED_PLAYBACK_MODES[state]
+        if mode != expected_mode:
+            raise MakerError(
+                "invalid_manifest",
+                f"Action {state} playback.mode must be {expected_mode}",
             )
         allowed_playback_keys = {
             "loop": {"mode"},
-            "once_hold": {"mode", "settle_frame_index"},
             "periodic": {"mode", "cooldown_ms"},
             "burst_then_settle": {
                 "mode",
                 "entry_repeat_count",
                 "settle_frame_index",
             },
+            "burst_then_idle": {"mode", "entry_repeat_count"},
+            "once_then_return": {"mode"},
         }[mode]
         if set(playback) != allowed_playback_keys:
             raise MakerError(
@@ -1059,7 +1136,7 @@ def manifest_timing_contract(manifest: dict[str, Any]) -> dict[str, Any]:
             "reduced_motion_frame_index": reduced_index,
         }
     if set(state_timings) != set(STATES):
-        raise MakerError("invalid_manifest", "manifest.json must contain all seven fixed states")
+        raise MakerError("invalid_manifest", "manifest.json must contain all nine fixed actions")
 
     frame_counts = {
         state: len(state_timings[state]["frame_durations_ms"]) for state in STATES
@@ -1268,7 +1345,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             if manifest.get("schema_version") != PETPACK_SCHEMA:
                 raise MakerError(
                     "invalid_manifest",
-                    "Only apc.petpack.v2 packages can be modified; V1 packages must be recreated",
+                    "Only apc.petpack.v3 packages can be modified; V1/V2 packages must be recreated",
                 )
             state_files, state_counts = collect_state_files(staging, manifest)
             timing = manifest_timing_contract(manifest)
@@ -2060,6 +2137,129 @@ def save_motion_preview(
         temporary_path.unlink(missing_ok=True)
 
 
+def build_presence_preview(
+    source_dir: Path,
+    manifest: dict[str, Any],
+    timing: dict[str, Any],
+    output_dir: Path,
+) -> dict[str, Any]:
+    frame_cache: dict[str, list[Any]] = {}
+
+    def state_frames(state: str) -> list[Any]:
+        if state not in frame_cache:
+            frame_cache[state] = [
+                normalized_motion_frame(path)
+                for path in ordered_state_frame_paths(source_dir, manifest, state)
+            ]
+        return frame_cache[state]
+
+    def active_duration_ms(state: str) -> int:
+        state_timing = timing["state_timings"][state]
+        authored = sum(state_timing["frame_durations_ms"])
+        playback = state_timing["playback"]
+        return authored * int(playback.get("entry_repeat_count", 1))
+
+    for state in ("thinking", "tool", "waiting", "done", "failed"):
+        active_ms = active_duration_ms(state)
+        if not MIN_SEMANTIC_ACTIVE_MS <= active_ms <= MAX_SEMANTIC_ACTIVE_MS:
+            raise MakerError(
+                "invalid_presence_timing",
+                f"Action {state} stays active for {active_ms} ms; the 8–12 second "
+                f"presence preview requires {MIN_SEMANTIC_ACTIVE_MS}–"
+                f"{MAX_SEMANTIC_ACTIVE_MS} ms so it neither freezes in under a "
+                "second nor loops mechanically for the whole review",
+            )
+
+    preview_frames: list[Any] = []
+    preview_durations: list[int] = []
+    sequence: list[dict[str, Any]] = []
+
+    def append_action(state: str, repeats: int) -> None:
+        frames = state_frames(state)
+        durations = timing["state_timings"][state]["frame_durations_ms"]
+        for _ in range(repeats):
+            preview_frames.extend(frames)
+            preview_durations.extend(durations)
+        sequence.append(
+            {
+                "kind": "action",
+                "state": state,
+                "repeat_count": repeats,
+                "duration_ms": sum(durations) * repeats,
+            }
+        )
+
+    idle_timing = timing["state_timings"]["idle"]
+    idle_frames = state_frames("idle")
+    idle_representative = idle_frames[idle_timing["reduced_motion_frame_index"]]
+
+    def append_idle_rest(duration_ms: int) -> None:
+        preview_frames.append(idle_representative)
+        preview_durations.append(duration_ms)
+        sequence.append(
+            {
+                "kind": "idle_rest",
+                "state": "idle",
+                "duration_ms": duration_ms,
+            }
+        )
+
+    append_action("idle", 1)
+    append_action(
+        "thinking",
+        int(timing["state_timings"]["thinking"]["playback"]["entry_repeat_count"]),
+    )
+    append_idle_rest(700)
+    append_action(
+        "tool",
+        int(timing["state_timings"]["tool"]["playback"]["entry_repeat_count"]),
+    )
+    append_idle_rest(700)
+    append_action(
+        "done",
+        int(timing["state_timings"]["done"]["playback"]["entry_repeat_count"]),
+    )
+
+    pre_settle_duration = sum(preview_durations)
+    if pre_settle_duration > PRESENCE_PREVIEW_MAX_MS - 500:
+        raise MakerError(
+            "invalid_presence_timing",
+            "The authored idle, thinking, tool, and done sequence cannot fit inside "
+            "the 8–12 second presence preview without retiming frames",
+        )
+    final_rest_ms = max(500, PRESENCE_PREVIEW_TARGET_MS - pre_settle_duration)
+    if pre_settle_duration + final_rest_ms > PRESENCE_PREVIEW_MAX_MS:
+        raise MakerError(
+            "invalid_presence_timing",
+            "The presence preview exceeds 12 seconds after its required idle settle",
+        )
+    append_idle_rest(final_rest_ms)
+    duration_ms = sum(preview_durations)
+    if not PRESENCE_PREVIEW_MIN_MS <= duration_ms <= PRESENCE_PREVIEW_MAX_MS:
+        raise MakerError(
+            "invalid_presence_timing",
+            f"Presence preview duration is {duration_ms} ms; expected 8000–12000 ms",
+        )
+
+    path = output_dir / "previews" / "presence-preview.webp"
+    save_motion_preview(path, preview_frames, preview_durations)
+    all_state_digests = {
+        state: state_motion_digest(source_dir, manifest, state) for state in STATES
+    }
+    return {
+        "path": str(path.relative_to(output_dir)),
+        "duration_ms": duration_ms,
+        "minimum_duration_ms": PRESENCE_PREVIEW_MIN_MS,
+        "maximum_duration_ms": PRESENCE_PREVIEW_MAX_MS,
+        "late_motion_boundary_ms": pre_settle_duration,
+        "rest_phase_count": sum(
+            1 for segment in sequence if segment["kind"] == "idle_rest"
+        ),
+        "frame_set_digest": motion_frame_set_digest(all_state_digests),
+        "sequence": sequence,
+    }
+
+
 def save_motion_keyframes(
     path: Path, rows: list[tuple[str, list[Any], list[int]]]
 ) -> None:
@@ -2157,9 +2357,10 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v2; V1 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
         )
     timing = manifest_timing_contract(manifest)
+    combined_run = not bool(args.state)
     selected = sorted(set(args.state or []), key=STATES.index)
     if selected:
         current_files, state_counts = collect_selected_state_files(
@@ -2203,7 +2404,7 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
         state_timing = timing["state_timings"][state]
         playback = state_timing["playback"]
         loops = playback["mode"] in {"loop", "periodic"} or (
-            playback["mode"] == "burst_then_settle"
+            playback["mode"] in {"burst_then_settle", "burst_then_idle"}
             and playback["entry_repeat_count"] > 1
         )
         metrics, warnings = motion_metrics(frames, loops)
@@ -2255,6 +2456,11 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
 
     keyframes_path = output_dir / "keyframes.png"
     save_motion_keyframes(keyframes_path, keyframe_rows)
+    presence_preview = (
+        build_presence_preview(source_dir, manifest, timing, output_dir)
+        if combined_run
+        else None
+    )
     report = {
         "schema_version": MOTION_QA_SCHEMA,
         "generated_at": utc_now(),
@@ -2278,6 +2484,8 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
             "baseline, or seam metrics are not failures by themselves."
         ),
     }
+    if presence_preview is not None:
+        report["presence_preview"] = presence_preview
     report_path = output_dir / "report.json"
     write_json_atomic(report_path, report)
     return {
@@ -2288,6 +2496,11 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
         "workspace": str(workspace) if workspace else None,
         "report_path": str(report_path),
         "keyframes_path": str(keyframes_path),
+        "presence_preview_path": (
+            str(output_dir / presence_preview["path"])
+            if presence_preview is not None
+            else None
+        ),
         "audited_states": selected,
         "warning_count": len(all_warnings),
     }
@@ -2340,7 +2553,7 @@ def motion_lock(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v2; V1 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
         )
     timing = manifest_timing_contract(manifest)
     frame_paths = ordered_state_frame_paths(source_dir, manifest, args.state)
@@ -2804,7 +3017,7 @@ def validate_text_metadata(
         raise MakerError("invalid_metadata", "brief.quality must match manifest.quality")
     brief_states = brief.get("states")
     if not isinstance(brief_states, list) or len(brief_states) != len(STATES):
-        raise MakerError("invalid_metadata", "brief.states must contain all seven fixed states")
+        raise MakerError("invalid_metadata", "brief.states must contain all nine fixed actions")
     named_states: list[str] = []
     timing = manifest_timing_contract(manifest)
     for entry in brief_states:
@@ -2897,18 +3110,16 @@ def build_petpack_atomically(
     """Build and validate beside the destination, then publish in one rename.
 
     In particular, `--replace` must never remove the known-good package before
-    PetCore has both produced and validated its replacement. The temporary file
-    lives in the destination directory so `os.replace` is an atomic same-volume
-    handoff.
+    PetCore has both produced and validated its replacement. A normally named
+    staged file lives inside a private temporary directory beside the
+    destination, so publication remains an atomic same-volume handoff without
+    exposing a dot-prefixed file inode that Finder can mark hidden later.
     """
 
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output.name}.", suffix=".building", dir=output.parent
-    )
-    os.close(descriptor)
-    staged_output = Path(temporary_name)
-    staged_output.unlink()
-    try:
+    with tempfile.TemporaryDirectory(
+        prefix=".apc-petpack-publish-", dir=output.parent
+    ) as temporary_dir:
+        staged_output = Path(temporary_dir) / "package.petpack"
         run_cli(
             cli,
             ["petpack", "build", "--input", str(source_dir), "--output", str(staged_output)],
@@ -2938,10 +3149,8 @@ def build_petpack_atomically(
                     "Output appeared while the package was being built; no file was replaced",
                 ) from error
             staged_output.unlink()
-        clear_macos_finder_hidden_flag(output)
-        return validation
-    finally:
-        staged_output.unlink(missing_ok=True)
+    stabilize_macos_finder_visibility(output)
+    return validation
 
 
 def finalize(args: argparse.Namespace) -> dict[str, Any]:
@@ -2982,7 +3191,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v2; V1 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
         )
     current_files, state_counts = collect_state_files(source_dir, manifest)
     timing = manifest_timing_contract(manifest)
@@ -3034,7 +3243,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         if verified_states != list(STATES):
             raise MakerError(
                 "production_validation_failed",
-                "PetCore visual production verification must audit all seven states for create",
+                "PetCore visual production verification must audit all nine actions for create",
             )
         changed_states = []
     motion_quality = {

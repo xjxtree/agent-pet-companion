@@ -6,7 +6,7 @@ import Testing
 @Suite
 struct PetStudioTests {
     @Test
-    func briefKeepsTheSixSupportedStylesAndTwoRenderContracts() throws {
+    func briefKeepsTwoStudioChoicesWhileTheRuntimeDecodesThreeRenderTiers() throws {
         #expect(StylePreset.allCases == [
             .realistic,
             .semiRealistic,
@@ -18,13 +18,13 @@ struct PetStudioTests {
         #expect(QualityLevel.allCases.map(\.renderSize) == [
             RenderSize(width: 192, height: 208),
             RenderSize(width: 384, height: 416),
+            RenderSize(width: 576, height: 624),
         ])
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(
-                QualityLevel.self,
-                from: Data(#""high""#.utf8)
-            )
-        }
+        #expect(QualityLevel.studioCases == [.low, .standard])
+        #expect(try JSONDecoder().decode(
+            QualityLevel.self,
+            from: Data(#""high""#.utf8)
+        ) == .high)
     }
 
     @Test
@@ -34,11 +34,11 @@ struct PetStudioTests {
         #expect(PetStudioPresentation.timingSummary(
             states,
             localeIdentifier: "en"
-        ) == "32 frames across 7 states · authored per-frame timing")
+        ) == "42 frames across 9 actions · authored per-frame timing")
         #expect(PetStudioPresentation.timingSummary(
             states,
             localeIdentifier: "zh-Hans"
-        ) == "32 帧 · 7 个状态 · 逐帧创作时序")
+        ) == "42 帧 · 9 个动作 · 逐帧创作时序")
     }
 
     @Test

@@ -857,16 +857,22 @@ private struct OnboardingPetAnimationPreview: View {
     let assetWarning: PetAssetWarning?
     let lifecycle: ProductLifecycleState
 
-    @State private var rendererHasContent = false
+    @State private var contentState = PetPreviewContentState()
 
     var body: some View {
+        let identity = PetPreviewRenderIdentity(
+            pet: pet,
+            stateName: lifecycle.rawValue,
+            assetWarning: assetWarning
+        )
         ZStack {
-            PetCoverImage(
+            PetActionFallbackImage(
                 pet: pet,
+                stateName: lifecycle.rawValue,
                 assetWarning: assetWarning,
                 fallbackScale: 0.44
             )
-                .opacity(rendererHasContent ? 0 : 1)
+                .opacity(contentState.hasPresentedContent(for: identity) ? 0 : 1)
             if PetLibraryPreviewPolicy.canRender(
                 assetWarning: assetWarning
             ) {
@@ -874,19 +880,13 @@ private struct OnboardingPetAnimationPreview: View {
                     pet: pet,
                     stateName: lifecycle.rawValue
                 ) { hasContent in
-                    rendererHasContent = hasContent
+                    contentState.receive(hasContent: hasContent, for: identity)
                 }
-                .id("\(pet.id):\(lifecycle.rawValue)")
+                .id(identity)
             }
         }
         .clipped()
         .allowsHitTesting(false)
-        .onChange(of: lifecycle) {
-            rendererHasContent = false
-        }
-        .onChange(of: assetWarning?.fingerprint) {
-            rendererHasContent = false
-        }
     }
 }
 
@@ -915,9 +915,8 @@ private struct OnboardingPetMetalView: NSViewRepresentable {
             stateEntryID: "onboarding-local-demo:\(pet.id):\(stateName)",
             active: true,
             reduceMotion: reduceMotion,
-            onVisualEnvelopeChanged: { envelope in
-                onRendererContentChanged(envelope != nil)
-            }
+            onVisualEnvelopeChanged: { _ in },
+            onFrameContentChanged: onRendererContentChanged
         )
     }
 

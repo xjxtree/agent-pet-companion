@@ -61,6 +61,9 @@ public enum AIPetMakerDefaults {
 public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable {
     case low
     case standard
+    case high
+
+    public static let studioCases: [Self] = [.low, .standard]
 
     public var id: String { rawValue }
 
@@ -68,6 +71,7 @@ public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable 
         switch self {
         case .low: "标清"
         case .standard: "标准"
+        case .high: "高清"
         }
     }
 
@@ -85,8 +89,11 @@ public enum QualityLevel: String, CaseIterable, Identifiable, Codable, Sendable 
         switch self {
         case .low: RenderSize(width: 192, height: 208)
         case .standard: RenderSize(width: 384, height: 416)
+        case .high: RenderSize(width: 576, height: 624)
         }
     }
+
+    public var isStudioSupported: Bool { Self.studioCases.contains(self) }
 }
 
 public struct RenderSize: Codable, Hashable, Sendable {
@@ -99,29 +106,51 @@ public struct RenderSize: Codable, Hashable, Sendable {
     }
 }
 
+/// Closed preview/runtime action vocabulary for one V3 pet package.
+///
+/// The first six cases are Agent-driven semantic states. The final three are
+/// local-only overlay interactions and never become Agent session state.
+public enum PetAnimationAction: String, CaseIterable, Codable, Hashable, Sendable {
+    case idle
+    case thinking
+    case tool
+    case waiting
+    case done
+    case failed
+    case acknowledge
+    case dragLeft = "drag_left"
+    case dragRight = "drag_right"
+}
+
 public enum PetAnimationContract {
-    public static let orderedStateNames = [
+    public static let orderedSemanticStateNames = [
         "idle",
-        "start",
+        "thinking",
         "tool",
         "waiting",
-        "review",
         "done",
         "failed",
     ]
+    public static let orderedInteractionStateNames = [
+        "acknowledge",
+        "drag_left",
+        "drag_right",
+    ]
+    public static let orderedStateNames =
+        orderedSemanticStateNames + orderedInteractionStateNames
     public static let defaultStates: [PetStateTiming] = [
         .init(
             name: "idle",
             framesDir: "assets/frames/idle",
-            frameDurationsMS: [180, 160, 180, 380],
-            playback: .init(mode: .periodic, cooldownMS: [4_000, 8_000]),
+            frameDurationsMS: [300, 260, 300, 640],
+            playback: .init(mode: .periodic, cooldownMS: [2_500, 5_000]),
             reducedMotionFrameIndex: 2
         ),
         .init(
-            name: "start",
-            framesDir: "assets/frames/start",
+            name: "thinking",
+            framesDir: "assets/frames/thinking",
             frameDurationsMS: [120, 140, 160, 180],
-            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            playback: .init(mode: .burstThenIdle, entryRepeatCount: 3),
             reducedMotionFrameIndex: 2
         ),
         .init(
@@ -129,9 +158,8 @@ public enum PetAnimationContract {
             framesDir: "assets/frames/tool",
             frameDurationsMS: [150, 150, 170, 330],
             playback: .init(
-                mode: .burstThenSettle,
-                entryRepeatCount: 1,
-                settleFrameIndex: 3
+                mode: .burstThenIdle,
+                entryRepeatCount: 3
             ),
             reducedMotionFrameIndex: 2
         ),
@@ -139,28 +167,50 @@ public enum PetAnimationContract {
             name: "waiting",
             framesDir: "assets/frames/waiting",
             frameDurationsMS: [150, 150, 150, 150, 170, 230],
-            playback: .init(mode: .onceHold, settleFrameIndex: 5),
-            reducedMotionFrameIndex: 4
-        ),
-        .init(
-            name: "review",
-            framesDir: "assets/frames/review",
-            frameDurationsMS: [140, 140, 150, 150, 180, 240],
-            playback: .init(mode: .onceHold, settleFrameIndex: 5),
+            playback: .init(
+                mode: .burstThenSettle,
+                entryRepeatCount: 2,
+                settleFrameIndex: 5
+            ),
             reducedMotionFrameIndex: 4
         ),
         .init(
             name: "done",
             framesDir: "assets/frames/done",
             frameDurationsMS: [120, 140, 160, 230],
-            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            playback: .init(mode: .burstThenIdle, entryRepeatCount: 3),
             reducedMotionFrameIndex: 2
         ),
         .init(
             name: "failed",
             framesDir: "assets/frames/failed",
             frameDurationsMS: [150, 170, 190, 290],
-            playback: .init(mode: .onceHold, settleFrameIndex: 3),
+            playback: .init(
+                mode: .burstThenSettle,
+                entryRepeatCount: 3,
+                settleFrameIndex: 3
+            ),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "acknowledge",
+            framesDir: "assets/frames/acknowledge",
+            frameDurationsMS: [180, 140, 180, 300],
+            playback: .init(mode: .onceThenReturn),
+            reducedMotionFrameIndex: 1
+        ),
+        .init(
+            name: "drag_left",
+            framesDir: "assets/frames/drag_left",
+            frameDurationsMS: [100, 90, 100, 110, 100, 200],
+            playback: .init(mode: .loop),
+            reducedMotionFrameIndex: 2
+        ),
+        .init(
+            name: "drag_right",
+            framesDir: "assets/frames/drag_right",
+            frameDurationsMS: [100, 90, 100, 110, 100, 200],
+            playback: .init(mode: .loop),
             reducedMotionFrameIndex: 2
         ),
     ]
@@ -174,9 +224,10 @@ public enum PetAnimationContract {
 
 public enum PetPlaybackMode: String, Codable, Hashable, Sendable {
     case loop
-    case onceHold = "once_hold"
     case periodic
     case burstThenSettle = "burst_then_settle"
+    case burstThenIdle = "burst_then_idle"
+    case onceThenReturn = "once_then_return"
 }
 
 public struct PlaybackContract: Codable, Hashable, Sendable {
@@ -242,17 +293,14 @@ public struct PetStateTiming: Codable, Hashable, Sendable {
               frameDurationsMS.reduce(0, +) <= 5_000,
               frameDurationsMS.indices.contains(reducedMotionFrameIndex)
         else { return false }
+        let modeContractValid: Bool
         switch playback.mode {
         case .loop:
-            return playback.entryRepeatCount == nil
+            modeContractValid = playback.entryRepeatCount == nil
                 && playback.settleFrameIndex == nil
                 && playback.cooldownMS == nil
-        case .onceHold:
-            return playback.entryRepeatCount == nil
-                && playback.cooldownMS == nil
-                && playback.settleFrameIndex.map(frameDurationsMS.indices.contains) == true
         case .periodic:
-            return playback.entryRepeatCount == nil
+            modeContractValid = playback.entryRepeatCount == nil
                 && playback.settleFrameIndex == nil
                 && playback.cooldownMS?.count == 2
                 && playback.cooldownMS.map { $0[0] <= $0[1] } == true
@@ -262,10 +310,28 @@ public struct PetStateTiming: Codable, Hashable, Sendable {
                     }
                 } == true
         case .burstThenSettle:
-            return playback.cooldownMS == nil
+            modeContractValid = playback.cooldownMS == nil
                 && playback.entryRepeatCount.map { (1...8).contains($0) } == true
                 && playback.settleFrameIndex.map(frameDurationsMS.indices.contains) == true
+        case .burstThenIdle:
+            modeContractValid = playback.cooldownMS == nil
+                && playback.settleFrameIndex == nil
+                && playback.entryRepeatCount.map { (1...8).contains($0) } == true
+        case .onceThenReturn:
+            modeContractValid = playback.entryRepeatCount == nil
+                && playback.settleFrameIndex == nil
+                && playback.cooldownMS == nil
         }
+        guard modeContractValid else { return false }
+        let expectedMode: PetPlaybackMode? = switch name {
+        case "idle": .periodic
+        case "thinking", "tool", "done": .burstThenIdle
+        case "waiting", "failed": .burstThenSettle
+        case "acknowledge": .onceThenReturn
+        case "drag_left", "drag_right": .loop
+        default: nil
+        }
+        return playback.mode == expectedMode
     }
 }
 
@@ -298,9 +364,10 @@ public enum AgentSource: String, CaseIterable, Identifiable, Codable, Sendable {
 
 public enum AgentEventKind: String, CaseIterable, Identifiable, Codable, Sendable {
     case start
+    case thinking
+    case plan
     case tool
     case waiting
-    case review
     case done
     case failed
 
@@ -309,15 +376,27 @@ public enum AgentEventKind: String, CaseIterable, Identifiable, Codable, Sendabl
     public var title: String {
         switch self {
         case .start: "开始处理"
+        case .thinking: "思考"
+        case .plan: "规划"
         case .tool: "执行工具"
         case .waiting: "等待确认"
-        case .review: "待查看"
         case .done: "完成"
         case .failed: "失败"
         }
     }
 
-    public var petState: String { rawValue }
+    /// Renderer-facing mapping to V3 package actions. `start` is a visible
+    /// session event with no pet response; Thinking and Plan share the
+    /// explicitly named `thinking` action.
+    public var petState: String {
+        switch self {
+        case .start: "idle"
+        case .thinking, .plan: "thinking"
+        case .tool, .waiting, .done, .failed: rawValue
+        }
+    }
+
+    public var triggersPetReaction: Bool { self != .start }
 }
 
 public enum AppearanceTheme: String, CaseIterable, Identifiable, Codable, Sendable {
@@ -715,7 +794,7 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
             throw DecodingError.dataCorruptedError(
                 forKey: .states,
                 in: container,
-                debugDescription: "states must contain the seven valid V2 timing contracts"
+                debugDescription: "states must contain the nine valid V3 timing contracts"
             )
         }
         active = try container.decode(Bool.self, forKey: .active)
@@ -737,13 +816,14 @@ public struct PetSummary: Codable, Identifiable, Hashable, Sendable {
             && provenance == "apc.bundled-pets.v1"
     }
 
-    /// Stable logical identities reserved for the two companions shipped with
+    /// Stable logical identities reserved for the three companions shipped with
     /// the App. An existing same-ID pet remains user-owned and is never granted
     /// bundled permissions, but it is still a valid first-run choice after an
     /// upgrade because inventory seeding deliberately preserves it.
     public static let includedCompanionIDs = [
         "pet_xingwutuanzi",
-        "pet_bytebudcodex"
+        "pet_bytebudcodex",
+        "pet_pinklace"
     ]
 
     public var isIncludedCompanionCandidate: Bool {
@@ -833,6 +913,91 @@ public enum PetOrigin: String, Codable, Hashable, Sendable {
     case verifiedSkillSource = "verified_skill_source"
 }
 
+/// The single cross-process equality and normalization contract for overlay
+/// placement. A 1/256 pt grid is exactly representable by IEEE-754 binary
+/// floating point, so canonical coordinates survive Swift/JSON/Rust round
+/// trips without an epsilon comparison.
+public enum OverlayPlacementCanonicalization {
+    public static let gridUnitsPerPoint = 256.0
+    public static let quantumPt = 1.0 / gridUnitsPerPoint
+    public static let maximumCoordinateMagnitude =
+        Double.greatestFiniteMagnitude / gridUnitsPerPoint
+
+    public static func coordinate(_ value: Double) -> Double? {
+        guard value.isFinite,
+              abs(value) <= maximumCoordinateMagnitude else {
+            return nil
+        }
+        let canonical = (value * gridUnitsPerPoint)
+            .rounded(.toNearestOrAwayFromZero) / gridUnitsPerPoint
+        guard canonical.isFinite else { return nil }
+        return canonical == 0 ? 0 : canonical
+    }
+
+    /// Canonicalizes a Core Graphics coordinate while preserving an invalid
+    /// input for the caller's existing validation path.
+    public static func cgFloatCoordinate(_ value: CGFloat) -> CGFloat {
+        guard let canonical = coordinate(Double(value)) else { return value }
+        return CGFloat(canonical)
+    }
+
+    public static func placement(
+        _ placement: OverlayPlacement
+    ) -> OverlayPlacement? {
+        guard let x = coordinate(placement.x),
+              let y = coordinate(placement.y),
+              placement.displayWidthPt.isFinite,
+              (OverlayPlacement.minimumDisplayWidthPt
+                ... OverlayPlacement.maximumDisplayWidthPt)
+                .contains(placement.displayWidthPt),
+              !placement.displayId.trimmingCharacters(
+                  in: .whitespacesAndNewlines
+              ).isEmpty else {
+            return nil
+        }
+        var canonical = placement
+        canonical.x = x
+        canonical.y = y
+        return canonical
+    }
+
+    public static func areEquivalent(
+        _ lhs: OverlayPlacement,
+        _ rhs: OverlayPlacement
+    ) -> Bool {
+        guard let lhs = placement(lhs),
+              let rhs = placement(rhs) else {
+            return false
+        }
+        return lhs.x == rhs.x
+            && lhs.y == rhs.y
+            && lhs.displayWidthPt == rhs.displayWidthPt
+            && lhs.displayId == rhs.displayId
+    }
+
+    public static func inwardLowerBound(_ value: Double) -> Double? {
+        guard value.isFinite,
+              abs(value) <= maximumCoordinateMagnitude else {
+            return nil
+        }
+        let canonical = (value * gridUnitsPerPoint)
+            .rounded(.up)
+            / gridUnitsPerPoint
+        return canonical == 0 ? 0 : canonical
+    }
+
+    public static func inwardUpperBound(_ value: Double) -> Double? {
+        guard value.isFinite,
+              abs(value) <= maximumCoordinateMagnitude else {
+            return nil
+        }
+        let canonical = (value * gridUnitsPerPoint)
+            .rounded(.down)
+            / gridUnitsPerPoint
+        return canonical == 0 ? 0 : canonical
+    }
+}
+
 public struct OverlayPlacement: Codable, Hashable, Sendable {
     public static let minimumDisplayWidthPt = 80.0
     public static let maximumDisplayWidthPt = 224.0
@@ -849,8 +1014,8 @@ public struct OverlayPlacement: Codable, Hashable, Sendable {
         displayWidthPt: Double = defaultDisplayWidthPt,
         displayId: String = "main"
     ) {
-        self.x = x
-        self.y = y
+        self.x = OverlayPlacementCanonicalization.coordinate(x) ?? x
+        self.y = OverlayPlacementCanonicalization.coordinate(y) ?? y
         self.displayWidthPt = Self.clampedDisplayWidth(displayWidthPt)
         self.displayId = displayId
     }
@@ -891,18 +1056,36 @@ public struct OverlayPlacement: Codable, Hashable, Sendable {
                 )
             )
         }
-        x = decodedX
-        y = decodedY
+        guard let canonicalX = OverlayPlacementCanonicalization.coordinate(decodedX),
+              let canonicalY = OverlayPlacementCanonicalization.coordinate(decodedY) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Overlay placement coordinates cannot be canonicalized"
+                )
+            )
+        }
+        x = canonicalX
+        y = canonicalY
         displayWidthPt = decodedDisplayWidthPt
         displayId = decodedDisplayId
     }
 
     public func encode(to encoder: Encoder) throws {
+        guard let canonical = OverlayPlacementCanonicalization.placement(self) else {
+            throw EncodingError.invalidValue(
+                self,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "Overlay placement values are outside the closed contract"
+                )
+            )
+        }
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(x, forKey: .x)
-        try container.encode(y, forKey: .y)
-        try container.encode(displayWidthPt, forKey: .displayWidthPt)
-        try container.encode(displayId, forKey: .displayId)
+        try container.encode(canonical.x, forKey: .x)
+        try container.encode(canonical.y, forKey: .y)
+        try container.encode(canonical.displayWidthPt, forKey: .displayWidthPt)
+        try container.encode(canonical.displayId, forKey: .displayId)
     }
 
     private static func clampedDisplayWidth(_ value: Double) -> Double {
@@ -1044,7 +1227,7 @@ public struct AgentSessionNavigation: Codable, Hashable, Sendable {
 }
 
 public enum AgentOverlaySummaryKind: String, Codable, Hashable, Sendable {
-    case running
+    case start
     case thinking
     case plan
     case command
@@ -1057,9 +1240,31 @@ public enum AgentOverlaySummaryKind: String, Codable, Hashable, Sendable {
     case image
     case compaction
     case needsInput = "needs_input"
-    case review
     case done
     case failed
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        // Accept the pre-atomic-event projection during a managed runtime
+        // handoff, but never emit it from the current App.
+        if rawValue == "running" {
+            self = .start
+            return
+        }
+        guard let value = Self(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported Agent overlay summary kind"
+            )
+        }
+        self = value
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public struct AgentOverlayDisplay: Codable, Hashable, Sendable {

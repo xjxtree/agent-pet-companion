@@ -20,7 +20,7 @@ struct PetLibraryHistoryTests {
               "cover_path": "/owned/current-cover.png",
               "validation_summary": {
                 "ok": true,
-                "state_count": 7,
+                "state_count": 9,
                 "frame_count": 120,
                 "warning_count": 0
               }

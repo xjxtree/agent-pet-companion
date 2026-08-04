@@ -326,7 +326,7 @@ for current_contract in \
   'overlay.group.agent-codex' \
   'overlay.session.session-codex-' \
   'VoiceOver order is not Agent → session → status → message → action' \
-  '"等你处理", "Needs You"' \
+  '"等待你操作", "Waiting for You"' \
   'RUN_ID="$RUN_ID"' \
   'bubble.frame.width >= 108' \
   'bubble.frame.height >= 70'; do
@@ -415,7 +415,7 @@ done
 EVENT_STORM_VALIDATOR="$ROOT_DIR/script/validate_event_storm.sh"
 for event_storm_contract in \
   'sources=(codex claude_code pi opencode)' \
-  'events=(start tool waiting review done failed)' \
+  'events=(start thinking plan tool waiting done failed)' \
   'len(data["events"]) <= 8' \
   'len(data["active_agent_sessions"]) <= 8' \
   'active_agent_sessions_omitted_count' \
@@ -432,7 +432,7 @@ for renderer_contract in \
   'metrics["cpu_average_percent"] >= 1.0' \
   'renderer budget --quality low --frame-count 2' \
   'renderer budget --quality standard --frame-count 8' \
-  'retired high quality was accepted' \
+  'renderer budget --quality high --frame-count 8' \
   'observed_draws_per_second'; do
   if ! rg -Fq "$renderer_contract" "$RENDERER_VALIDATOR"; then
     record_failure "renderer validator is missing contract mapping: $renderer_contract"
@@ -458,6 +458,7 @@ for current_contract in \
   'AppStoreOverlaySnapshotTests' \
   'OverlayGeometryTests' \
   'OverlayDisplayWidthTests' \
+  'OverlayInteractionTelemetryTests' \
   'Computer Use'; do
   if ! rg -Fq "$current_contract" "$OVERLAY_INTERACTION_VALIDATOR"; then
     record_failure "overlay interaction validator is missing current deterministic contract: $current_contract"

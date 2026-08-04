@@ -9,7 +9,10 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/AgentPetCompanion"
 PETCORE_BINARY="$APP_BUNDLE/Contents/Resources/bin/petcore"
 PETCORE_CLI="$APP_BUNDLE/Contents/Resources/bin/petcore-cli"
 TARGET_DISPLAY_WIDTH_PT="${APC_OVERLAY_PERSISTENCE_DISPLAY_WIDTH_PT:-176}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-overlay-display-width-persistence.XXXXXX")"
+# Keep APC_HOME short enough for macOS' sockaddr_un path limit. The runtime
+# socket lives below `$TMP_DIR/home/run`, so a descriptive mktemp prefix here
+# can otherwise turn an isolated-host check into a false startup deferral.
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-owp.XXXXXX")"
 apc_use_isolated_home "$TMP_DIR"
 OWNED_PROTOCOL="$APC_HOME/run/validation-owned-runtime.json"
 APP_LOG="$TMP_DIR/app.log"

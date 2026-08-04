@@ -178,18 +178,42 @@ with expanded/collapsed accessibility state. The complete rounded header area
 toggles the section; controls inside expanded content remain independently
 interactive.
 
+Every connector preserves its allowlisted `source_event` for local audit, then
+maps only stable user-meaningful boundaries into the shared atomic session-event
+vocabulary. The mapping is intentionally not one event per host callback:
+
+| Atomic event | Required evidence and rejected inference | Bubble badge | Pet reaction |
+|---|---|---|---|
+| `start` | Explicit request admission or execution-epoch start. Generic timestamp movement and completion tails do not become thinking. | Started / 已开始 | none; render `idle` |
+| `thinking` | Explicit current Codex reasoning or a stable OpenCode reasoning-completed boundary. Token/reasoning deltas and a submitted prompt are ignored as thinking evidence. | Thinking / 正在思考 | package `thinking` |
+| `plan` | Explicit Codex plan/review-mode item or stable OpenCode plan update. | Planning / 正在规划 | package `thinking` |
+| `tool` | Tool/command/sub-Agent start or completion. Recoverable tool failure and a tool result remain tool activity. | Using Tools or a closed command/file/search/network subtype | package `tool` |
+| `waiting` | The Agent is blocked on an approval, answer, or decision. | Waiting for You / 等待你操作 | package `waiting` |
+| `done` | A supported successful settled/idle/stop boundary with the required prior activation. | Completed / 已完成 | package `done` |
+| `failed` | A terminal task/session failure. A recoverable tool failure is not sufficient. | Failed / 执行失败 | package `failed` |
+
+The package keeps six Agent-driven semantic actions because `start` has no pet
+reaction and `thinking` plus `plan` share the package `thinking` action. V3 adds
+three local-only actions—`acknowledge`, `drag_left`, and `drag_right`—for nine
+authored actions total. Local interaction never emits an Agent event or changes
+the semantic state. Event labels remain distinct, and a Thinking↔Planning
+transition in the same activation keeps one animation identity so it does not
+replay the action.
+
 The desktop bubble keeps the same Agent → session boundary but exposes only the
 bounded daily return path: one attention-prioritized/latest row while
 collapsed, and every concrete session already present in the bounded PetCore
 snapshot while expanded. The whole session row is the navigation target; a
 chevron is visual hover/focus affordance rather than repeated action copy. The
-row badge names the exact fixed lifecycle action presented by the pet. The same
-localized lifecycle label is used by Pet Configuration response events,
-attention summaries/previews, menu-bar recent activity, and Pet Library current
-state after mapping the connector-neutral event through `ProductLifecycleState`.
+pet body is not a navigation target: its primary click toggles the bubble once,
+and subsequent releases in the same double-click sequence do nothing. The
+trailing-aligned row badge names the filtered session event; for `tool`, it may
+use a closed stable semantic subtype supplied by PetCore. Pet Configuration
+session-event filters, attention summaries/previews, menu-bar recent activity,
+Pet Library current state, and desktop bubbles use the same event-label
+authority. Pet animation independently uses the sparse reaction mapping above.
 Connector protocol names and canonical persisted titles do not provide
-surface-specific UI wording. Explanatory copy may clarify that `waiting`
-includes approval or user input without renaming the state. Its two
+surface-specific UI wording. Its two
 detail lines are reserved for a bounded current-turn Agent message,
 host-exposed reasoning, commands, tool input/output, errors, or another
 normalized semantic activity detail. When a concrete activity detail exists, the Agent message and activity
@@ -199,7 +223,7 @@ App Server persistence temporarily omits new hidden activity, PetCore preserves
 the newest concrete host-exposed reasoning or tool detail instead of replacing
 it with an empty inferred category. Once a later `thread/read` exposes a
 current concrete item for the same turn, that item supersedes the older
-running hook detail; waiting, review, and terminal hooks remain authoritative.
+running hook detail; waiting and terminal hooks remain authoritative.
 App Server status events still receive a direct per-thread display read because
 the cached recent-task list may not revise while live reasoning changes.
 That bounded, read-only hydration does not share the mutation/admission gate
@@ -211,10 +235,17 @@ the App retains a one-second active-session timeout only as a fallback.
 
 After these connector-specific inputs enter the shared source/session
 projection, completion consumption is connector-neutral. Opening a completed
-or review-ready row sends its opaque projected `acknowledgement_id` to PetCore;
+row sends its opaque projected `acknowledgement_id` to PetCore;
 PetCore persists and reapplies the same filter for Codex, Claude Code, Pi, and
 OpenCode across App or service relaunch. A later normalized activity event
 produces a new identity and reopens that session normally.
+
+The normalized `session_active = true` field is a host observation attached to
+one event, not a durable heartbeat. For ordinary start/thinking/plan/tool/done
+work, PetCore caps that hint at the configured session-message window; a missing
+Stop, settled, or idle callback therefore cannot keep an old action on the pet
+indefinitely. `waiting` and `failed` remain persistent attention states because
+they require a newer session event rather than silent timeout to resolve.
 
 Concrete activity availability follows the host API rather than the generic pet
 state:
@@ -223,16 +254,23 @@ state:
 |---|---|
 | Codex | Persisted App Server reasoning summaries and tool/command/file activity, plus managed-hook tool input/output when the host invokes those hooks. A separately spawned App Server may lag activity still hidden inside the live desktop turn. |
 | Claude Code | Concise tool descriptions, commands or semantic result/error text, plus permission/input requests, sub-Agent/task and compaction details exposed by hooks. Claude's structured tool-response envelope and internal status flags never become bubble copy. Claude hooks do not expose private model reasoning, so prompt-only thinking has no concrete second-line text. |
-| Pi Coding Agent | Tool start/end input/output and provider-visible reasoning content carried by stable message/settled events. High-frequency update deltas are observation-only and do not become bubble text. |
-| OpenCode | Stable reasoning, command/tool input/output, plan, compaction, error, and session-step details exposed by the managed plugin. |
+| Pi Coding Agent | Tool start/end input/output and the bounded Agent reply exposed by stable message/settled events. The audited API does not expose a timely explicit reasoning or plan boundary, so the connector does not infer either one. |
+| OpenCode | Stable reasoning-completed and plan-update boundaries, command/tool input/output, compaction, error, and session-step details exposed by the managed plugin. High-frequency reasoning/tool/compaction deltas are dropped. |
 
 Terminal rows prioritize the final Agent message. A short prompt-only task or a
 task that never invokes a tool legitimately has no concrete activity line.
-For the Codex App Server fallback, a successful unarchived `thread/list` round
-also closes any previously observed task that has disappeared from that list,
-which covers stop-then-archive without waiting for the activity lease. A failed
-list round preserves the prior projection, and a listed task is not closed when
-only its bounded `thread/read` detail refresh fails.
+For the Codex App Server fallback, only a successful, complete unarchived
+`thread/list` round (one with no continuation page) closes a previously
+observed task that has disappeared, which covers stop-then-archive without
+waiting for the activity lease. Raw list membership is independent from the
+recent-message age window: a listed task can age out of bounded `thread/read`
+hydration and remain an openable Codex destination, and renewed list evidence
+repairs any stale synthetic closure for that task. A failed or paginated list
+round preserves closure ambiguity, and a listed task is not closed when only
+its bounded detail refresh fails. Once the complete list proves closure, the
+resulting `done` record remains in bounded audit history but is excluded from
+the active pet and bubble projections immediately; the App never presents an
+archived task as an unavailable completed row.
 
 ## Security and privacy boundary
 
@@ -246,7 +284,7 @@ only its bounded `thread/read` detail refresh fails.
 - Connector files must be attributable to Agent Pet Companion, updated atomically, and removed without changing unrelated user configuration or projects.
 - UDS and loopback ingress are local-only. Loopback access requires the App-managed capability token.
 
-The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can create or modify a `.petpack` in another image-capable Agent host. That workflow remains outside the in-app AI Pet Maker. Import and activation require explicit user actions, and the package still crosses the standard PetCore validator.
+The provider-neutral [agent-pet-maker Skill](../../skills/agent-pet-maker/) can create or modify a `.petpack` in another image-capable Agent host, including exact-runtime `high` 576×624 output when that host can provide complete 12:13 source crops of at least 576×624. The returned sheet or cells do not need to equal the runtime dimensions; the shared pipeline may downscale each larger crop once. That workflow remains outside the in-app AI Pet Maker, whose Codex image path supports only `low` and `standard`. Import and activation require explicit user actions, and the package still crosses the standard PetCore validator and runtime action review.
 
 ### Codex plugin and Skill convergence
 
@@ -264,11 +302,16 @@ write and installed/enabled flags do not prove convergence when Codex still
 loads an older versioned cache. A stale or unverifiable active cache remains a
 typed repairable condition and cannot project `connected`.
 
-The repair ownership check also recognizes the one exact App-managed retired V1
-Studio Skill signature so an App upgrade can replace it with the current V2
-Skill. This is an upgrade-only ownership rule: it does not make V1 packages
-valid at runtime, and a customized or merely similar Skill remains a managed
-path conflict and is preserved.
+The repair ownership check recognizes only the current Studio Skill or an exact
+SHA-256 in the structured, App-owned retired-Skill history. That history covers
+the retired V1 Skill and the plugin v0.4.5 Skill, remains append-only across
+official releases, and never includes the current Skill. When a release changes
+the Studio Skill, both the GitHub workflow and the official local release
+builder require the previous release's exact Skill digest to be present before
+packaging can begin; a new history digest that is not that previous shipped
+Skill is rejected. This is an upgrade-only ownership rule: it does not make old
+packages valid at runtime, and a customized or merely similar Skill remains a
+managed path conflict and is preserved.
 
 In-app Maker work uses the internal Studio Skill; portable user-invoked work
 uses the Maker Skill. They ship together but remain separate behavioral
@@ -285,5 +328,8 @@ new work begins only with the newly verified capability.
 6. Add simulated contract tests and keep real-host validation behind the explicit gate in [Validation profiles](../development/validation.md).
 7. When the Codex plugin or either bundled Skill changes, increase
    `plugins/codex/.codex-plugin/plugin.json` and run
-   `validate_codex_plugin_version.py` against the intended base.
+   `validate_codex_plugin_version.py` against the intended release base. If the
+   Studio Skill changed, append that base Skill's exact digest to the shared
+   retired-Skill history; the validator rejects omission, removal, or unrelated
+   ownership digests.
 8. Update the runtime manifest, this document, public feature list, and root changelog if the supported user surface changes.

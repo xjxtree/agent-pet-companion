@@ -277,9 +277,9 @@ struct PetMakerResultView: View {
         guard let resultPet else {
             return APCLocalization.text(.libraryMissingPreview)
         }
-        return APCLocalization.format(
-            .libraryAnimationAccessibilityFormat,
-            resultPet.name
+        return PetLibraryPreviewActionPolicy.accessibilityLabel(
+            petName: resultPet.name,
+            action: PetLibraryPreviewActionPolicy.defaultAction
         )
     }
 

@@ -60,7 +60,7 @@ enum PetCoreRuntimeContract {
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
         expectedManifest: RuntimeReleaseManifest? = requiredManifest,
-        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV3,
         manifestRequirement: RuntimeManifestRequirement? = nil,
         expectedConnectorEnvironment: [String: String]? = nil
     ) -> Bool {
@@ -102,7 +102,7 @@ enum PetCoreRuntimeContract {
         _ result: Any,
         expectedBuildID: String? = requiredBuildID,
         expectedManifest: RuntimeReleaseManifest? = requiredManifest,
-        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV2,
+        manifestValidationProfile: RuntimeManifestValidationProfile = .strictV3,
         manifestRequirement: RuntimeManifestRequirement? = nil,
         expectedConnectorEnvironment: [String: String]? = nil
     ) -> String? {

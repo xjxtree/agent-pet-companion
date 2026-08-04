@@ -11,7 +11,8 @@ AgentPetCompanion/
 ├── agent-pet.sqlite
 ├── run/                       instance locks, socket, runtime identity, HTTP token/port
 ├── runtime/
-│   ├── versions/<build-id>/   petcore, petcore-cli, runtime-manifest.json
+│   ├── versions/<build-id>/   petcore, petcore-cli, runtime-manifest.json,
+│   │                          interaction-attestation.json
 │   ├── rollback-checkpoint/   private crash-consistent SQLite rollback authority
 │   ├── current -> versions/<build-id>
 │   ├── current.json
@@ -61,18 +62,18 @@ erDiagram
 
 | Table | Key data and invariant |
 |---|---|
-| `pets` | Manifest ID primary key; display metadata; one of the two exact render sizes; serialized V2 state timing/playback contracts; owned package/cover paths; origin/generator/provenance; active flag; creation time. PetCore transactions maintain a single active pet, and the first pet becomes active. |
-| `retired_pet_records` | Additive, rollback-compatible quarantine for every row originating in a structurally pre-V2 `pets` table and for any later row that does not match one exact V2 quality/render pair (`low` 192×208 or `standard` 384×416). This includes the legacy `standard` 192×208 name collision as well as retired `high`/`ultra`/`original` values. PetCore removes those rows from the live projection before typed decoding, retains their original metadata and active flag with the fixed `unsupported_quality` reason, preserves a structurally V1 row's exact `native_fps` and `state_durations_json` in dedicated legacy fields, and leaves owned package/rendered assets untouched. The next valid V2 pet becomes active when quarantine leaves no active live pet. |
+| `pets` | Manifest ID primary key; display metadata; one of the three exact render sizes; serialized V3 nine-action timing/playback contracts; owned package/cover paths; origin/generator/provenance; active flag; creation time. PetCore transactions maintain a single active pet, and the first pet becomes active. |
+| `retired_pet_records` | Additive, rollback-compatible quarantine for every structurally pre-V3 row, any later row that does not match one exact V3 quality/render pair (`low` 192×208, `standard` 384×416, or `high` 576×624), and any stored package whose action list no longer satisfies the closed nine-action contract. Quality/render removals use `unsupported_quality`; action-list removals use `unsupported_state_contract`. PetCore removes these rows from the live projection before typed decoding, retains their original metadata and active flag, preserves a structurally V1 row's exact `native_fps` and `state_durations_json` in dedicated legacy fields, and leaves owned package/rendered assets untouched. No V1/V2 state is aliased to a V3 action. The next valid V3 pet becomes active when quarantine leaves no active live pet. |
 | `generation_jobs` | Form, status, private job directory, App Server session, result pet, retry lineage, owner instance, heartbeat, timestamps. PetCore admission permits at most one active job (`pending`, `running`, or `waiting_for_user`). |
 | `generation_messages` | Per-job ordered conversation/progress records. `(job_id, sequence)` is unique; the job foreign key cascades. Terminal message kinds and job terminal states cannot be reversed. |
 | `generation_message_migrations` | Marks a legacy job message stream as imported into SQLite so migration is idempotent. |
-| `agent_events` | Internal sequence, external event ID, source, normalized session identity, fixed event type/title, typed size-bounded payload, timestamp. `(source, session_key, external_event_id)` deduplicates ingest. |
-| `agent_event_daily_counts` | Day/source/type aggregate for events removed by retention. It contains counts, not event content. |
+| `agent_events` | Internal sequence, external event ID, source, normalized session identity, fixed event type/title, typed size-bounded payload, timestamp. `(source, session_key, external_event_id)` deduplicates ingest. Initialization removes rows outside the current seven-event allowlist before any typed projection; removed `review` rows are discarded rather than relabeled. |
+| `agent_event_daily_counts` | Day/source/type aggregate for events removed by retention. It contains counts, not event content. Initialization removes aggregate rows for event types outside the current allowlist. |
 | `suppressed_agent_sessions` | Source/session keys that must not appear in activity projections, with a bounded retention timestamp and reason. |
 | `agent_session_aliases` | PetCore-owned, content-free sequence for a retained source/session key. It supplies stable anonymous-session fallback identity, is removed when the session has no retained event, and is never reused. |
 | `privacy_migrations` | Recoverable phase marker for privacy scrubs and secure vacuum; it is migration state, not product history. |
 | `pet_asset_validation` | Cached package/frame fingerprint and valid/error result used by ordinary snapshots. It has no foreign key; pet deletion explicitly removes it. Explicit `pet.assets.repair` bypasses this cache and rewrites it only after the forced archive/cover/frame validation result is known. |
-| `settings` | JSON value by key, update time, and per-setting revision. Durable keys include behavior, onboarding progress, overlay placement and its closed explicit intent projection, bounded opaque Agent-session acknowledgement identities, and connector status data. Connector status may retain bounded App-owned `managed_components` evidence—kind, name, ownership, expected/active version, status, and content-match boolean—but never a path or digest. Behavior defaults the interface language and appearance to Follow System and keeps every supported Agent source enabled; the App derives the three exact attention presets or `Custom` from the event map. Serialized behavior and onboarding writes use an expected revision; conflicts restore the authoritative PetCore projection instead of creating an App-local durable copy. |
+| `settings` | JSON value by key, update time, and per-setting revision. Durable keys include behavior, onboarding progress, overlay placement and its closed explicit intent projection, bounded opaque Agent-session acknowledgement identities, and connector status data. Connector status may retain bounded App-owned `managed_components` evidence—kind, name, ownership, expected/active version, status, and content-match boolean—but never a path or digest. Behavior defaults the interface language and appearance to Follow System and keeps every supported Agent source enabled; initialization rewrites its event map to the current seven keys, drops removed keys such as `review`, and fills newly required keys from current defaults without inventing historical events. The App derives the three exact attention presets or `Custom` from that map. Serialized behavior and onboarding writes use an expected revision; conflicts restore the authoritative PetCore projection instead of creating an App-local durable copy. |
 | `product_convergence_receipt` | Singleton `apc.product-convergence-receipt.v1` receipt for the exact App/runtime build after all managed connectors complete. It stores a server timestamp, bounded source counts, the complete typed-report digest, and optional verified Codex Skills/content digests. It is independent of generic settings and diagnostic history. |
 | `state_revision` | Singleton monotonic revision. Triggers increment it when persisted state changes so snapshots and long-polls never combine two revisions. |
 
@@ -86,7 +87,7 @@ Completing onboarding and enabling `behavior.enabled` share one database transac
 
 Included-companion choice is an ordered stable-ID presentation rule, not a
 stored origin mutation. If upgrade seeding preserves an existing pet with one
-of the two included manifest IDs, onboarding may select it through the normal
+of the three included manifest IDs, onboarding may select it through the normal
 activation operation, while bundled read-only authority still requires the
 PetCore-assigned origin, generator, and provenance markers.
 
@@ -97,8 +98,14 @@ closed 80–224 range, defaults to 112, and determines height from the fixed
 the overlay has no resize state or resize surface. During upgrade, the one exact
 legacy `{x, y, scale, display_id}` record is rewritten once to preserve its
 center/display while replacing the retired multiplier with the 112 pt default.
-The ordinary V2 decoder remains closed: malformed, out-of-range, or extended
-legacy shapes are not accepted as current placement data.
+The ordinary placement decoder remains closed: malformed, out-of-range, or extended
+legacy shapes are not accepted as current placement data. Finite x/y values
+canonicalize to an exactly representable 1/256 pt grid with negative zero
+normalized to positive zero; `display_width_pt` keeps its existing compatible
+range and is not assigned a new storage quantum. An older off-grid value is
+projected canonically but does not cause a startup migration write or revision
+change. Screen clamping quantizes the lower bound upward and upper bound
+downward before accepting a canonical center.
 
 `settings.overlay_placement_intent` is the independent closed projection
 `external_reposition` or `reset`. PetCore writes it in the same immediate
@@ -120,7 +127,13 @@ and overflowing values are rejected.
 Each unconditional external `reposition` or `reset` increments it. An ordinary
 App update must supply that exact value as `expected_revision`; a mismatch
 returns the current placement, revision, and intent without writing either row.
-This prevents a late acknowledgement from clearing a newer explicit intent.
+This check always happens before idempotence comparison, so an equal stale
+request cannot bypass CAS. With a matching revision, equal canonical placement
+and equal intent return the current projection with `changed = false` and do
+not update either settings row, its timestamp, the placement revision, or the
+global state revision. Equal placement with a different intent remains a real
+transactional write. This prevents a late acknowledgement from clearing a
+newer explicit intent without creating snapshot churn for safe replays.
 
 `OverlayPlacementAuthority` owns the App's presented placement. Its
 `localRevision`, latest applied setting revision, and optional pending commit
@@ -130,7 +143,12 @@ center from that pair, hard-clamps it, and commits the final presented center
 once. A pending local commit blocks snapshots; an old acknowledgement cannot
 confirm a newer commit; a failed save preserves the presented center; only an
 explicit external `reposition` or `reset` intent may reposition after
-bootstrap. These App-side ordering fields are not a second persisted model.
+bootstrap. The private App journal records only the latest opaque interaction
+identity, local revision, canonical placement, and base placement revision.
+Its single worker performs at most five attempts for that generation, counts
+conflict rebases in the same budget, and retains exhausted work until a closed
+recovery trigger. These App-side ordering fields are not a second persisted
+model.
 
 ## Pet identity and immutable revisions
 
@@ -158,13 +176,16 @@ pets/<pet-id>/
 Commit order is: prepare and sync staging files, acquire the exclusive mutation
 lock, recheck identity policy, rename the immutable revision, atomically replace
 `active.json`, then update SQLite. A failed database commit restores the previous
-pointer and removes only the candidate revision. Late generation cancellation
+pointer and removes only the candidate revision. The pet-revision commit alone
+retries bounded transient SQLite busy/locked results so concurrent Agent event
+writes cannot turn a valid import into a package-validation failure; other
+database errors still fail immediately and use the same rollback. Late generation cancellation
 reverts only if SQLite still points at that exact revision. App-owned generation
 and bundled seeding may retain one exclusive lock across their already-serialized
 workflow; the lock-free preparation rule above applies to ordinary external
 imports.
 
-`pet.list` and `state.snapshot` expose all seven validated V2 `PetState`
+`pet.list` and `state.snapshot` expose all six validated V2 `PetState`
 objects: fixed state identity and frame directory, `frame_durations_ms`,
 playback mode and mode-specific fields, and
 `reduced_motion_frame_index`. The App therefore renders the package contract
@@ -184,7 +205,7 @@ Bundled identity requires a fixed manifest ID plus PetCore-assigned origin/gener
 
 Each owned active revision keeps the package, canonical cover, and a sibling
 runtime-frame directory with a closed completion marker and direct PNG files
-for `idle`, `start`, `tool`, `waiting`, `review`, `done`, and `failed`.
+for `idle`, `thinking`, `tool`, `waiting`, `done`, and `failed`.
 Ordinary snapshot validation may reuse the matching
 `pet_asset_validation` fingerprint. Explicit repair instead revalidates the
 immutable archive, stages both cover and frame directory, atomically replaces
@@ -203,19 +224,33 @@ private Maker state and is preserved through active-session projection,
 restart recovery, and create-retry paths; it never enters the bounded
 `pet.history` projection. For an edit, the validated baseline manifest is the
 timing authority until the producer deliberately changes and fully reauthors a
-state. Job status is one of `pending`, `running`, `waiting_for_user`, `failed`,
+state. This two-tier form is intentionally narrower than the portable package
+contract: imported packages may use `high` 576×624, but the Codex-backed Studio
+rejects that quality before generation. Job status is one of `pending`, `running`, `waiting_for_user`, `failed`,
 `completed`, or `canceled`. SQLite is the message authority; any job-local
 JSONL message file is a compatibility artifact.
 
 `generation-jobs/<job-id>/` is private working state containing the normalized
-form, copied references, App Server session data, generated source,
+form, copied references, App Server session data, opaque flat-background source
+rows at their actual returned dimensions, crop jobs, optional sure-foreground
+masks, source-resolution transparent masters,
+multi-background transparency reports/previews, generated package source,
 incremental/final motion-QA previews and review, and an optional validated edit
-baseline. Strict generation requires the final QA report and per-state review
-to cover exactly all created states or the decoded states changed from the
-pinned baseline. Each report includes one actual-duration `authored_timing`
-preview per audited state and a `timing_digest` for the complete manifest
-states; report hashes, decoded frame digests, and timing digests make evidence
-stale after either a frame or timing edit. The public
+baseline. Only the selected-tier runtime PNGs enter `petpack-source`; unchanged
+edit frames remain byte-identical. The shared transparency script rejects
+model-native Alpha and owns spatial matting, boundary-only RGB reconstruction,
+the sole optional premultiplied-Alpha downscale, and structural/chroma QA. The
+selected tier is an exact runtime target rather than a requirement that the
+model return those dimensions; every source crop must be 12:13 and at least as
+large as that target. Those parameters are not persisted as Agent-selectable
+generation state.
+Strict generation requires passing transparency evidence plus the final motion
+QA report and per-state review to cover exactly all created states or the
+decoded states changed from the pinned baseline. Each motion report includes
+one actual-duration `authored_timing` preview per audited state and a
+`timing_digest` for the complete manifest states; report hashes, decoded frame
+digests, and timing digests make evidence stale after either a frame or timing
+edit. The public
 `apc.pet-visual-production-verification.v1` result is recomputed rather than
 stored as package identity: Maker finalization, Studio, and strict PetCore
 import call the same verifier for changed-state derivation,
@@ -250,7 +285,7 @@ Primary sources: [generation service](../../crates/petcore/src/generation.rs), [
 
 ## Agent event model
 
-Supported sources are `codex`, `claude_code`, `pi`, and `opencode`. Persisted event types are `start`, `tool`, `waiting`, `review`, `done`, and `failed`; they map to the corresponding pet state, with `idle` as the default state. The persisted event `title` remains a closed canonical vocabulary for normalization, schema validation, and audit records; it is not localized UI copy. Swift maps `AgentEventKind` to `ProductLifecycleState`, and one lifecycle-title authority supplies every user-visible status label in Pet Configuration, attention summaries/previews, the menu bar, Pet Library, and desktop bubbles.
+Supported sources are `codex`, `claude_code`, `pi`, and `opencode`. Persisted atomic event types are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and `failed`. The persisted event `title` remains a closed canonical vocabulary for normalization, schema validation, and audit records; it is not localized UI copy. Swift gives these session events their own localized badge/filter labels, while the separate `ProductLifecycleState` mapping selects an authored pet action: `start → idle`, `thinking | plan → thinking`, and every other event to its namesake state.
 
 The `apc.agent-event.v1` envelope contains allowlisted, bounded fields needed for identity, ordering, activity, navigation, and session display. Explicit bounded session titles, first/latest user and latest assistant messages, plus host-exposed reasoning, commands, tool input/output, errors, and semantically selected scalar activity details are retained for the local bubble. Every activity source is normalized into one bounded `activity_content` string; arbitrary host objects and arrays are never serialized as display copy, JSON-encoded structured strings re-enter the same bounded normalizer, and credential-shaped containers or non-command header/environment dumps are discarded before semantic selection. The projected title is the latest explicit session title, or the bounded first user message until one arrives; later user messages update context without silently renaming the session. Complete transcript archives, credential stores, auth headers, and full process environments remain outside the model. External title/detail strings are accepted only for compatibility and are not substituted for the explicit display fields.
 
@@ -258,9 +293,9 @@ Agent-event string ceilings are UTF-8 byte limits, not Unicode character counts.
 
 The desktop App consumes a separate type-allowlisted projection serialized by PetCore. In `state.snapshot`, `events`, `recent_events`, and every active row's embedded `event` expose opaque domain-separated hashes for event/session identity, fixed state metadata, and timestamps. `active_agent_state` and `active_agent_sessions` additionally carry the hydrated, bounded `session_title`, `session_user_message`, current-turn `session_message`, and `session_activity` display fields, plus a closed `summary_kind`, an opaque animation identity, an opaque `acknowledgement_id`, and allowlisted session navigation. PetCore resolves `session_title` from the newest explicit title event or, while none exists, the first persisted user message; `session_user_message` remains the latest user context. The bounded `session_activity.content` may contain normalized reasoning, commands, tool input/output, errors, or another semantically selected scalar detail; when it is absent for a tool event, the App may derive a localized detail only from the closed tool category. PetCore filters an assistant message that predates the latest user activation so a new turn cannot redisplay an old reply. Swift consumes only the hydrated `session_activity` projection and never reparses an embedded host payload as display copy. Arbitrary host envelopes and separate unbounded structured fields are not duplicated into the App projection. A Codex or Claude Code session may expose its original identity only as the separate `routable_session_id`, and only when the source-specific App surface is valid and the identity is a canonical 36-character UUID.
 
-Navigation records one closed session surface: `chatgpt_app`, `claude_app`, `opencode_app`, `cli_terminal`, or `unknown`, and publishes the required closed `capability`: `exact_session`, `agent_host`, or `unavailable`. Exact-session requires either a validated Warp URL on the CLI surface or a canonical UUID on the matching ChatGPT/Codex App or Claude App surface. OpenCode App has no audited existing-session route and therefore exposes host activation only. Agent-host requires a source-matching App target or a known terminal target; Pi has no App surface. Source/surface mismatches, malformed IDs or URLs, unknown terminal hosts, explicitly closed sessions, and ambiguous historical rows fail closed rather than being guessed from content, project data, or display order. A later event may supply accurate surface metadata without rewriting retained audit records. When the same Agent has two or more sessions with neither title nor user context, PetCore adds `anonymous_session_alias` from the durable `agent_session_aliases` sequence. The alias is independent of activity/display order and contains no raw session ID or project data; the App converts it to localized human-facing labels rather than displaying the token. The explicit bounded `events.recent` audit RPC remains the separate stored-event interface. The closed summary vocabulary is `running`, `thinking`, `plan`, `command`, `file`, `file_change`, `tool`, `subagent`, `search`, `network`, `image`, `compaction`, `needs_input`, `review`, `done`, and `failed`.
+Navigation records one closed session surface: `chatgpt_app`, `claude_app`, `opencode_app`, `cli_terminal`, or `unknown`, and publishes the required closed `capability`: `exact_session`, `agent_host`, or `unavailable`. Exact-session requires either a validated Warp URL on the CLI surface or a canonical UUID on the matching ChatGPT/Codex App or Claude App surface. OpenCode App has no audited existing-session route and therefore exposes host activation only. Agent-host requires a source-matching App target or a known terminal target; Pi has no App surface. Source/surface mismatches, malformed IDs or URLs, unknown terminal hosts, and ambiguous historical rows fail closed rather than being guessed from content, project data, or display order. The App consumes navigation only from a concrete bubble session-row action; pet-body clicks change bubble disclosure only and never select a navigation candidate. An explicitly closed `done` session is not a navigation candidate at all: PetCore retains it for bounded audit history but omits it from active and bubble projections. A later event may supply accurate surface metadata without rewriting retained audit records. When the same Agent has two or more sessions with neither title nor user context, PetCore adds `anonymous_session_alias` from the durable `agent_session_aliases` sequence. The alias is independent of activity/display order and contains no raw session ID or project data; the App converts it to localized human-facing labels rather than displaying the token. The explicit bounded `events.recent` audit RPC remains the separate stored-event interface. The closed summary vocabulary is `start`, `thinking`, `plan`, `command`, `file`, `file_change`, `tool`, `subagent`, `search`, `network`, `image`, `compaction`, `needs_input`, `done`, and `failed`; the decoder accepts legacy `running` only during managed handoff and emits `start` thereafter.
 
-Ingest returns inserted, duplicate, or suppressed. Activity is derived rather than stored. The canonical pet state uses bounded activity leases for ordinary `start`, `tool`, and `done` activity (30 seconds for ordinary activity and 5 seconds for terminal activity, with explicit active-session/provider exceptions). `waiting`, `review`, and `failed` are persistent attention states with no advertised expiry; they remain canonical and visible until a newer event advances that session. Independently, the PetCore projection contains at most eight concrete session rows and publishes an `active_agent_sessions_omitted_count` when additional sessions exist. A collapsed Agent group exposes one attention-prioritized/latest row; expanding it exposes every concrete session for that Agent already present in the bounded snapshot. Any sessions beyond the PetCore projection remain represented by the separate global omitted summary rather than an additional App-only row limit. The App keeps the six non-idle fixed states distinct in every visible row so its badge and row background match the authored pet action. The two detail lines show the distinct bounded current activity detail and current-turn Agent message when present; they do not insert a duplicate generic lifecycle sentence. A collapsed multi-session group retains an aggregate status tint with `failed` above `waiting`/`review`, those attention states above `done`, and `done` above active running work. The ordinary `behavior.session_message_timeout_minutes` window (15 minutes by default) applies only to start, tool, and done events. These protocol arbitration, suppression, and priority rules are rebuilt by PetCore after restart. A completed or review-ready row calls `agent.session.acknowledge` with its opaque event-derived identity only after the declared exact-session or host-level target opens successfully. A rejected exact deep link may activate the same App as a recovery aid, but this degraded outcome keeps the row and exposes a localized retryable error instead of acknowledging it. PetCore stores a bounded acknowledgement set in the existing versioned settings model and excludes matching rows before canonical-state arbitration, ordering, and the eight-row projection limit; relaunch therefore cannot revive consumed work. A later event for the same Agent session has a different identity and becomes visible normally. Group disclosure, manual row hiding, closing the whole bubble, and transient navigation errors remain App-only presentation state. Retained diagnostic history for acknowledged, ordinary, or superseded events does not imply a visible session.
+Ingest returns inserted, duplicate, or suppressed. Activity is derived rather than stored. The canonical projection uses bounded activity leases for ordinary `start`, `thinking`, `plan`, `tool`, and `done` events: 30 seconds for ordinary activity and 5 seconds for terminal activity. A host `session_active = true` hint or a Codex App Server activity row extends an ordinary lease only through `behavior.session_message_timeout_minutes`; neither is an indefinite heartbeat. `waiting` and `failed` are persistent attention events with no advertised expiry; they remain canonical and visible until a newer event advances that session. Only stable explicit source boundaries become `thinking` or `plan`: generic start/timestamp churn, prompt admission, tool completion, compaction tails, and token/reasoning deltas cannot infer them. Independently, the PetCore projection contains at most eight concrete session rows and publishes an `active_agent_sessions_omitted_count` when additional sessions exist. A collapsed Agent group exposes one attention-prioritized/latest row; expanding it exposes every concrete session for that Agent already present in the bounded snapshot. Any sessions beyond the PetCore projection remain represented by the separate global omitted summary rather than an additional App-only row limit. The App keeps all seven event labels distinct in visible rows even when two events share one pet action. The two detail lines show the distinct bounded current activity detail and current-turn Agent message when present; they do not insert a duplicate generic lifecycle sentence. A collapsed multi-session group retains an aggregate status tint with `failed` above `waiting`, that attention state above `done`, and `done` above active running work. The ordinary session-message window (15 minutes by default) applies only to start, thinking, plan, tool, and done events. These protocol arbitration, suppression, and priority rules are rebuilt by PetCore after restart. A completed row calls `agent.session.acknowledge` with its opaque event-derived identity only after the declared exact-session or host-level target opens successfully. A rejected exact deep link may activate the same App as a recovery aid, but this degraded outcome keeps the row and exposes a localized retryable error instead of acknowledging it. PetCore stores a bounded acknowledgement set in the existing versioned settings model and excludes matching rows before canonical-state arbitration, ordering, and the eight-row projection limit; relaunch therefore cannot revive consumed work or reveal an expired older ordinary state. A later event for the same Agent session has a different identity and becomes visible normally. Group disclosure, manual row hiding, closing the whole bubble, and transient navigation errors remain App-only presentation state. Retained diagnostic history for acknowledged, ordinary, or superseded events does not imply a visible session.
 
 Primary sources: [event envelope](../../crates/petcore/src/event_envelope.rs), [state projection](../../crates/petcore/src/agent_state.rs), [persisted event schema](../../schemas/agent-event.schema.json), and [Swift UI projection](../../apps/macos/Sources/AgentPetCompanionCore/AppModels.swift).
 
@@ -274,7 +309,7 @@ Primary sources: [event envelope](../../crates/petcore/src/event_envelope.rs), [
 | Product convergence receipt | `apc.product-convergence-receipt.v1` | [database](../../crates/petcore/src/db.rs) and [RPC server](../../crates/petcore/src/rpc.rs) |
 | Onboarding progress | `apc.onboarding-progress.v1` | [Rust type](../../crates/petcore-types/src/lib.rs) and [Swift mirror](../../apps/macos/Sources/AgentPetCompanionCore/OnboardingModels.swift) |
 | Persisted Agent event | `apc.agent-event.v1` | [event envelope](../../crates/petcore/src/event_envelope.rs) and [schema](../../schemas/agent-event.schema.json) |
-| Portable pet | `apc.petpack.v2` | [shared manifest type](../../crates/petcore-types/src/lib.rs), [schema](../../schemas/petpack.schema.json), and [format specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V2.md) |
+| Portable pet | `apc.petpack.v3` | [shared manifest type](../../crates/petcore-types/src/lib.rs), [schema](../../schemas/petpack.schema.json), and [format specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) |
 | Active pet pointer | `apc.pet-active-revision.v1` | [pet revision](../../crates/petcore/src/pet_revision.rs) |
 | Diagnostic record/export | `apc.diagnostic-log.v1`, `apc.diagnostics-bundle.v1` | [PetCore diagnostics](../../crates/petcore/src/diagnostics.rs) and [App diagnostics](../../apps/macos/Sources/AgentPetCompanion/App/Diagnostics.swift) |
 
@@ -286,7 +321,7 @@ Do not change a version string without an explicit compatibility or migration de
 - Suppressed sessions retain at most 10,000 entries and 30 days.
 - Anonymous-session aliases exist only while their session has a retained event; their sequence values are never reused.
 - `events.recent` returns at most 200 records; snapshots expose smaller bounded projections.
-- `.petpack` validation bounds archive size, entry count, individual entry size, expanded size, frame count, decoded pixels, and path types. The [format specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V2.md) owns exact package limits.
+- `.petpack` validation bounds archive size, entry count, individual entry size, expanded size, frame count, decoded pixels, and path types. The [format specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) owns exact package limits.
 - Diagnostic log and export bounds are defined in [Runtime and IPC](runtime-and-ipc.md).
 
 ## Change checklist

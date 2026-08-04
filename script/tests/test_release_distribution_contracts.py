@@ -400,10 +400,22 @@ class CodexPluginVersionTests(unittest.TestCase):
             "plugins/codex/hooks",
             "skills/agent-pet-maker",
             "skills/agent-pet-studio",
+            "crates/petcore/resources",
+            "crates/petcore/tests/fixtures",
         ):
             (self.root / relative).mkdir(parents=True)
         self.manifest = self.root / "plugins/codex/.codex-plugin/plugin.json"
+        self.history = (
+            self.root
+            / "crates/petcore/resources/codex-studio-skill-history.json"
+        )
+        self.retired_v1 = (
+            self.root
+            / "crates/petcore/tests/fixtures/retired-agent-pet-studio-v1.md"
+        )
         self.write_manifest("1.2.3")
+        self.write_history(["0" * 64])
+        self.retired_v1.write_text("retired v1\n", encoding="utf-8")
         (self.root / "plugins/codex/hooks/hooks.json.tpl").write_text(
             "{}\n", encoding="utf-8"
         )
@@ -454,6 +466,18 @@ class CodexPluginVersionTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_history(self, digests: list[str]) -> None:
+        self.history.parent.mkdir(parents=True, exist_ok=True)
+        self.history.write_text(
+            json.dumps(
+                {
+                    "schema_version": "apc.codex-studio-skill-history.v1",
+                    "retired_sha256": digests,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_bundle_change_requires_strict_version_increase(self) -> None:
         (self.root / "skills/agent-pet-maker/SKILL.md").write_text(
             "changed\n", encoding="utf-8"
@@ -464,17 +488,82 @@ class CodexPluginVersionTests(unittest.TestCase):
         self.write_manifest("1.2.4")
         self.assertEqual(
             plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.4", True),
+            ("1.2.3", "1.2.4", True, False),
         )
 
     def test_unchanged_bundle_passes_and_version_decrease_fails(self) -> None:
         self.assertEqual(
             plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.3", False),
+            ("1.2.3", "1.2.3", False, False),
         )
         self.write_manifest("1.2.2")
         with self.assertRaises(ValueError):
             plugin_version.validate("HEAD")
+
+    def test_studio_change_requires_and_accepts_the_previous_shipped_digest(self) -> None:
+        previous_digest = hashlib.sha256(b"studio\n").hexdigest()
+        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
+            "changed studio\n", encoding="utf-8"
+        )
+        self.write_manifest("1.2.4")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            f"previous shipped Skill SHA-256 {previous_digest}",
+        ):
+            plugin_version.validate("HEAD")
+
+        self.write_history(sorted(["0" * 64, previous_digest]))
+        self.assertEqual(
+            plugin_version.validate("HEAD"),
+            ("1.2.3", "1.2.4", True, True),
+        )
+
+    def test_studio_history_is_append_only_and_cannot_expand_without_a_change(self) -> None:
+        self.write_history(["1" * 64])
+        with self.assertRaisesRegex(ValueError, "history is append-only"):
+            plugin_version.validate("HEAD")
+
+        self.write_history(sorted(["0" * 64, "1" * 64]))
+        with self.assertRaisesRegex(ValueError, "not the previous shipped Skill"):
+            plugin_version.validate("HEAD")
+
+    def test_studio_history_rejects_unsorted_or_noncanonical_digests(self) -> None:
+        self.write_history(["f" * 64, "a" * 64])
+        with self.assertRaisesRegex(ValueError, "sorted and unique"):
+            plugin_version.validate("HEAD")
+
+        self.write_history(["A" * 64])
+        with self.assertRaisesRegex(ValueError, "invalid SHA-256"):
+            plugin_version.validate("HEAD")
+
+    def test_studio_history_bootstrap_rejects_unrelated_digests(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.root), "rm", "-q", str(self.history)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "pre-history"],
+            check=True,
+        )
+        previous_digest = hashlib.sha256(b"studio\n").hexdigest()
+        retired_v1_digest = hashlib.sha256(b"retired v1\n").hexdigest()
+        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
+            "changed studio\n", encoding="utf-8"
+        )
+        self.write_manifest("1.2.4")
+        self.write_history(
+            sorted([retired_v1_digest, previous_digest, "1" * 64])
+        )
+
+        with self.assertRaisesRegex(ValueError, "must contain exactly"):
+            plugin_version.validate("HEAD")
+
+        self.write_history(sorted([retired_v1_digest, previous_digest]))
+        self.assertEqual(
+            plugin_version.validate("HEAD"),
+            ("1.2.3", "1.2.4", True, True),
+        )
 
 
 class ValidationOrderTests(unittest.TestCase):
@@ -526,7 +615,17 @@ class ValidationOrderTests(unittest.TestCase):
         bundled_gate = source[seed:connector_repair]
 
         self.assertIn(
-            'REQUIRED_STATES = ("idle", "start", "tool", "waiting", "review", "done", "failed")',
+            'REQUIRED_STATES = (\n'
+            '    "idle",\n'
+            '    "thinking",\n'
+            '    "tool",\n'
+            '    "waiting",\n'
+            '    "done",\n'
+            '    "failed",\n'
+            '    "acknowledge",\n'
+            '    "drag_left",\n'
+            '    "drag_right",\n'
+            ')',
             bundled_gate,
         )
         self.assertIn('RUNTIME_ASSET_SCHEMA = "apc.runtime-assets.v3"', bundled_gate)
@@ -696,6 +795,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("--prerelease", self.publish)
 
     def test_official_build_and_exact_three_file_candidate_are_explicit(self) -> None:
+        release_builder = (ROOT / "script/build_release.sh").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("Prepare pinned Python validation environment", self.build)
         self.assertIn("Pillow==11.3.0", self.build)
         self.assertIn('Image.__version__ != "11.3.0"', self.build)
@@ -709,6 +811,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn(
             "run: ./script/build_release.sh --github-release --arch all",
             self.build,
+        )
+        self.assertIn(
+            '"$ROOT_DIR/script/validate_codex_plugin_version.py" \\\n'
+            '  --base-ref "$PREVIOUS_RELEASE_TAG"',
+            release_builder,
         )
         stage_index = self.build.index(
             "- name: Stage exact three-file release candidate"
@@ -761,6 +868,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "AppStoreOverlaySnapshotTests",
             "OverlayGeometryTests",
             "OverlayDisplayWidthTests",
+            "OverlayInteractionTelemetryTests",
         ):
             with self.subTest(suite=suite):
                 self.assertIn(suite, self.overlay_interaction)

@@ -4,14 +4,160 @@
   "provenance": "skill-full-source",
   "visual_source": "image-generation",
   "states": [
-    { "name": "idle", "frames_dir": "assets/frames/idle", "frame_durations_ms": [180, 160, 180, 380], "playback": { "mode": "periodic", "cooldown_ms": [4000, 8000] }, "reduced_motion_frame_index": 2 },
-    { "name": "start", "frames_dir": "assets/frames/start", "frame_durations_ms": [120, 140, 160, 180], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
-    { "name": "tool", "frames_dir": "assets/frames/tool", "frame_durations_ms": [150, 150, 170, 330], "playback": { "mode": "burst_then_settle", "entry_repeat_count": 1, "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
-    { "name": "waiting", "frames_dir": "assets/frames/waiting", "frame_durations_ms": [150, 150, 150, 150, 170, 230], "playback": { "mode": "once_hold", "settle_frame_index": 5 }, "reduced_motion_frame_index": 4 },
-    { "name": "review", "frames_dir": "assets/frames/review", "frame_durations_ms": [140, 140, 150, 150, 180, 240], "playback": { "mode": "once_hold", "settle_frame_index": 5 }, "reduced_motion_frame_index": 4 },
-    { "name": "done", "frames_dir": "assets/frames/done", "frame_durations_ms": [120, 140, 160, 230], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 },
-    { "name": "failed", "frames_dir": "assets/frames/failed", "frame_durations_ms": [150, 170, 190, 290], "playback": { "mode": "once_hold", "settle_frame_index": 3 }, "reduced_motion_frame_index": 2 }
+    {
+      "name": "idle",
+      "frames_dir": "assets/frames/idle",
+      "frame_durations_ms": [
+        300,
+        260,
+        300,
+        640
+      ],
+      "playback": {
+        "mode": "periodic",
+        "cooldown_ms": [
+          2500,
+          5000
+        ]
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "thinking",
+      "frames_dir": "assets/frames/thinking",
+      "frame_durations_ms": [
+        120,
+        140,
+        160,
+        180
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "tool",
+      "frames_dir": "assets/frames/tool",
+      "frame_durations_ms": [
+        150,
+        150,
+        170,
+        330
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "waiting",
+      "frames_dir": "assets/frames/waiting",
+      "frame_durations_ms": [
+        150,
+        150,
+        150,
+        150,
+        170,
+        230
+      ],
+      "playback": {
+        "mode": "burst_then_settle",
+        "entry_repeat_count": 2,
+        "settle_frame_index": 5
+      },
+      "reduced_motion_frame_index": 4
+    },
+    {
+      "name": "done",
+      "frames_dir": "assets/frames/done",
+      "frame_durations_ms": [
+        120,
+        140,
+        160,
+        230
+      ],
+      "playback": {
+        "mode": "burst_then_idle",
+        "entry_repeat_count": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "failed",
+      "frames_dir": "assets/frames/failed",
+      "frame_durations_ms": [
+        150,
+        170,
+        190,
+        290
+      ],
+      "playback": {
+        "mode": "burst_then_settle",
+        "entry_repeat_count": 3,
+        "settle_frame_index": 3
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "acknowledge",
+      "frames_dir": "assets/frames/acknowledge",
+      "frame_durations_ms": [
+        180,
+        140,
+        180,
+        300
+      ],
+      "playback": {
+        "mode": "once_then_return"
+      },
+      "reduced_motion_frame_index": 1
+    },
+    {
+      "name": "drag_left",
+      "frames_dir": "assets/frames/drag_left",
+      "frame_durations_ms": [
+        100,
+        90,
+        100,
+        110,
+        100,
+        200
+      ],
+      "playback": {
+        "mode": "loop"
+      },
+      "reduced_motion_frame_index": 2
+    },
+    {
+      "name": "drag_right",
+      "frames_dir": "assets/frames/drag_right",
+      "frame_durations_ms": [
+        100,
+        90,
+        100,
+        110,
+        100,
+        200
+      ],
+      "playback": {
+        "mode": "loop"
+      },
+      "reduced_motion_frame_index": 2
+    }
   ],
-  "state_frame_counts": { "idle": 4, "start": 1, "tool": 4, "waiting": 6, "review": 6, "done": 4, "failed": 4 },
+  "state_frame_counts": {
+    "idle": 4,
+    "thinking": 1,
+    "tool": 4,
+    "waiting": 6,
+    "done": 4,
+    "failed": 4,
+    "acknowledge": 4,
+    "drag_left": 6,
+    "drag_right": 6
+  },
   "preview_only": false
 }

@@ -97,7 +97,7 @@ struct OnboardingModelsTests {
             .done,
         ])
         #expect(OnboardingDemoPhase.allCases.map(\.lifecycleState) == [
-            .start,
+            .thinking,
             .tool,
             .waiting,
             .done,
@@ -119,16 +119,21 @@ struct OnboardingModelsTests {
             id: "pet_bytebudcodex",
             name: "Preserved Bytebud"
         )
+        let preservedPinklace = pet(
+            id: "pet_pinklace",
+            name: "Preserved Pinklace"
+        )
         let custom = pet(id: "pet_custom", name: "Custom")
 
         let noSelection = presentation(
             stage: .choosePet,
-            pets: [custom, preservedUpgradePet, bundled],
+            pets: [custom, preservedPinklace, preservedUpgradePet, bundled],
             selectedPetID: custom.id
         )
         #expect(noSelection.pets.map(\.id) == [
             bundled.id,
             preservedUpgradePet.id,
+            preservedPinklace.id,
         ])
         #expect(noSelection.selectedPetID == nil)
         #expect(noSelection.primaryAction == nil)
@@ -137,14 +142,14 @@ struct OnboardingModelsTests {
 
         let selected = presentation(
             stage: .choosePet,
-            pets: [custom, preservedUpgradePet, bundled],
+            pets: [custom, preservedPinklace, preservedUpgradePet, bundled],
             selectedPetID: preservedUpgradePet.id
         )
         #expect(selected.primaryAction == .confirmPet)
 
         let unavailable = presentation(
             stage: .choosePet,
-            pets: [preservedUpgradePet, bundled],
+            pets: [preservedPinklace, preservedUpgradePet, bundled],
             selectedPetID: preservedUpgradePet.id,
             unavailablePetIDs: [preservedUpgradePet.id]
         )
