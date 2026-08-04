@@ -72,7 +72,7 @@ mkdir -p \
   "$BUILD_ROOT/target/debug" \
   "$BUILD_ROOT/target/aarch64-apple-darwin/debug" \
   "$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__" \
-  "$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__" \
+  "$BUILD_ROOT/skills/agent-pet-studio" \
   "$FAKE_SWIFT_BIN"
 cp "$ROOT_DIR/script/build_and_run.sh" "$BUILD_ROOT/script/build_and_run.sh"
 cp "$ROOT_DIR/script/validation_helpers.sh" "$BUILD_ROOT/script/validation_helpers.sh"
@@ -99,7 +99,6 @@ printf '%s\n' '[package]' 'version = "0.1.0"' \
   >"$BUILD_ROOT/crates/petcore/Cargo.toml"
 : >"$BUILD_ROOT/logo/macos/AgentPetCompanionTransparent.icns"
 printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__/sentinel.pyc"
-printf '%s\n' 'cache sentinel' >"$BUILD_ROOT/skills/agent-pet-studio/scripts/__pycache__/sentinel.pyc"
 
 BUILD_TMP="$TMP_DIR/build-tmp"
 BUILD_ENV_LOG="$TMP_DIR/build-env.log"
@@ -146,7 +145,7 @@ for script_name in \
   validate_test_isolation.sh validate_app_lifecycle_contract.sh validate_schema_fixtures.sh \
   validate_build_scripts_safety.sh validate_source_syntax.sh validate_swift_tests.sh build_app_bundle.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
-  validate_portable_pet_maker.sh validate_pet_studio_helper.sh validate_petpack_spec_schemas.sh \
+  validate_portable_pet_maker.sh validate_pet_skills.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
   validate_overlay_non_mouse.sh validate_overlay_interaction.sh \
   prepare_interaction_attestation.sh \

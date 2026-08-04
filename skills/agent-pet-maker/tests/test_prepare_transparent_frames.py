@@ -466,10 +466,6 @@ class SharedSkillContractTests(unittest.TestCase):
             normalized = " ".join(content.split())
             self.assertIn("transparent-frame-production.md", normalized)
             self.assertIn("prepare_transparent_frames.py", normalized)
-            self.assertIn("model-native transparency", normalized)
-            self.assertIn("dimensions exactly", normalized)
-            self.assertIn("stable equal-size", normalized)
-            self.assertIn("exact-tier runtime", normalized)
 
     def test_shared_reference_forbids_agent_specific_pixel_processing(self) -> None:
         contract = (ROOT / "references" / "transparent-frame-production.md").read_text(
@@ -477,14 +473,13 @@ class SharedSkillContractTests(unittest.TestCase):
         )
         normalized = " ".join(contract.split())
         for required in (
-            "Do not ask the image model for native transparency",
-            "supersedes its general-purpose `remove_chroma_key.py` helper",
-            "Do not tune matte thresholds",
-            "linear-light premultiplied Alpha",
-            "decoded source crop may be larger for any of the three tiers",
+            "Do not request model-native transparency",
+            "Do not tune its thresholds",
+            "linear-light premultiplied-Alpha",
+            "at least the runtime target",
             "source_capacity_missing",
             "checkerboard, white, gray, black",
-            "one final-size pixel",
+            "--edge-contract 1",
             '"ok": true',
         ):
             self.assertIn(required, normalized)

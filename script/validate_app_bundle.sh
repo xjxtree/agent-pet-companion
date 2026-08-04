@@ -479,8 +479,13 @@ grep -q 'APC_PETCORE_CLI' "$BUNDLED_SKILL" || {
   echo 'app bundle validation failed: bundled Studio skill omits the PetCore CLI contract' >&2
   exit 1
 }
-grep -q 'Do not read agent auth' "$BUNDLED_SKILL" || {
-  echo 'app bundle validation failed: bundled Studio skill omits the agent-auth guardrail' >&2
+grep -q 'security.md' "$BUNDLED_SKILL" || {
+  echo 'app bundle validation failed: bundled Studio skill omits the shared security contract' >&2
+  exit 1
+}
+grep -q 'Do not read authentication files' \
+  "$BUNDLED_PORTABLE_SKILL/references/security.md" || {
+  echo 'app bundle validation failed: bundled security contract omits the agent-auth guardrail' >&2
   exit 1
 }
 grep -q '^name: agent-pet-maker$' "$BUNDLED_PORTABLE_SKILL/SKILL.md" || {

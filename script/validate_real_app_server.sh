@@ -322,7 +322,7 @@ assert len(first_frames) >= 4
 PY
 fi
 SOURCE_VALIDATION="$("$ROOT_DIR/target/debug/petcore-cli" petpack validate "$SOURCE_DIR")"
-assert_json "$SOURCE_VALIDATION" 'data["ok"] is True and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42' \
+assert_json "$SOURCE_VALIDATION" 'data["ok"] is True and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 50' \
   || fail "built petpack-source validation failed"
 
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot)"

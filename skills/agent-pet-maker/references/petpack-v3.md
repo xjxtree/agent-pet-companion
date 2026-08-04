@@ -1,13 +1,12 @@
-# Agent Pet Companion `.petpack` V3
+# Agent Pet Companion `.petpack` V3 contract
 
 ## Contents
 
 1. Package tree
-2. Manifest and quality
-3. State timing and defaults
-4. Visual and frame rules
-5. Producer metadata
-6. Revision and result contracts
+2. Render tiers
+3. Actions, timing, and playback
+4. Visual and metadata requirements
+5. Revisions and results
 
 ## Package tree
 
@@ -26,243 +25,108 @@ source/skill_session.jsonl
 build/validation.json
 ```
 
-The helper owns `build/validation.json`. Keep helper QA evidence and output
-sidecars outside `petpack-source`.
+The package schema is `apc.petpack.v3`. Use an ID matching
+`^pet_[a-z0-9]+$`, list every fixed action exactly once, and use its exact
+`assets/frames/<action>` directory. Keep workspace QA, raw sources, transparent
+masters, and result sidecars outside this tree.
 
-## Manifest and quality
+## Render tiers
 
-`manifest.json` is closed and declares `apc.petpack.v3`. PetCore does not read
-V1 or V2 packages; recreate them through the V3 Maker instead of migrating,
-aliasing, sampling, or retiming their frames.
+Use one tier for every runtime PNG:
 
-Use one render tier for every PNG:
-
-| Quality | Exact render size | Use |
+| Quality | Exact runtime size | Producer note |
 | --- | ---: | --- |
-| `low` | 192×208 | pixel/minimal characters and low-resource devices |
-| `standard` | 384×416 | default for most characters |
-| `high` | 576×624 | externally produced high-resolution artwork |
+| `low` | 192×208 | Smallest supported tier |
+| `standard` | 384×416 | Creation default |
+| `high` | 576×624 | Requires a source-capable external workflow |
 
-All three tiers are 12:13. Every width is a multiple of 192, so sprite-sheet
-edges remain multiples of 16. Unsupported quality names such as `ultra` and
-`original` fail closed; do not alias or map them onto a supported tier. The
-App runtime can import and play all three tiers, while its Codex-backed Studio
-form intentionally offers only `low` and `standard`.
+Every tier is 12:13. The manifest size is the exact decoded PNG size, not a
+promise about image-model output. Follow the shared visual and transparency
+contracts for source-crop capacity and the sole allowed downscale.
 
-Example manifest:
+## Actions, timing, and playback
 
-```json
-{
-  "schema_version": "apc.petpack.v3",
-  "id": "pet_starlightfox",
-  "name": "Starlight Fox",
-  "style": "soft luminous storybook creature",
-  "quality": "standard",
-  "render_size": { "width": 384, "height": 416 },
-  "states": [
-    {
-      "name": "idle",
-      "frames_dir": "assets/frames/idle",
-      "frame_durations_ms": [300, 260, 300, 640],
-      "playback": { "mode": "periodic", "cooldown_ms": [2500, 5000] },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "thinking",
-      "frames_dir": "assets/frames/thinking",
-      "frame_durations_ms": [120, 140, 160, 180],
-      "playback": { "mode": "burst_then_idle", "entry_repeat_count": 3 },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "tool",
-      "frames_dir": "assets/frames/tool",
-      "frame_durations_ms": [150, 150, 170, 330],
-      "playback": {
-        "mode": "burst_then_idle",
-        "entry_repeat_count": 3
-      },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "waiting",
-      "frames_dir": "assets/frames/waiting",
-      "frame_durations_ms": [150, 150, 150, 150, 170, 230],
-      "playback": { "mode": "burst_then_settle", "entry_repeat_count": 2, "settle_frame_index": 5 },
-      "reduced_motion_frame_index": 4
-    },
-    {
-      "name": "done",
-      "frames_dir": "assets/frames/done",
-      "frame_durations_ms": [120, 140, 160, 230],
-      "playback": { "mode": "burst_then_idle", "entry_repeat_count": 3 },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "failed",
-      "frames_dir": "assets/frames/failed",
-      "frame_durations_ms": [150, 170, 190, 290],
-      "playback": { "mode": "burst_then_settle", "entry_repeat_count": 3, "settle_frame_index": 3 },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "acknowledge",
-      "frames_dir": "assets/frames/acknowledge",
-      "frame_durations_ms": [180, 140, 180, 300],
-      "playback": { "mode": "once_then_return" },
-      "reduced_motion_frame_index": 1
-    },
-    {
-      "name": "drag_left",
-      "frames_dir": "assets/frames/drag_left",
-      "frame_durations_ms": [100, 90, 100, 110, 100, 200],
-      "playback": { "mode": "loop" },
-      "reduced_motion_frame_index": 2
-    },
-    {
-      "name": "drag_right",
-      "frames_dir": "assets/frames/drag_right",
-      "frame_durations_ms": [100, 90, 100, 110, 100, 200],
-      "playback": { "mode": "loop" },
-      "reduced_motion_frame_index": 2
-    }
-  ],
-  "created_at": "2026-07-16T00:00:00Z"
-}
-```
+For future creation, use these 50 authored frames unless the user requests
+another structurally valid complete timing:
 
-Use an ID matching `^pet_[a-z0-9]+$`. Use every fixed action exactly once and
-its exact `assets/frames/<action>` directory.
+| Action | Frame durations (ms) | Playback | Reduced-motion frame |
+| --- | --- | --- | ---: |
+| `idle` | 260, 220, 240, 260, 380, 640 | `periodic`, cooldown 2500–5000 | 2 |
+| `thinking` | 120, 140, 160, 180 | `burst_then_idle`, repeat 3 | 2 |
+| `tool` | 150, 150, 170, 330 | `burst_then_idle`, repeat 3 | 2 |
+| `waiting` | 100, 100, 110, 110, 120, 130, 160, 230 | `burst_then_settle`, repeat 3, settle 7 | 4 |
+| `done` | 120, 140, 160, 230 | `burst_then_idle`, repeat 3 | 2 |
+| `failed` | 80, 80, 90, 100, 110, 120, 190, 290 | `burst_then_settle`, repeat 3, settle 7 | 2 |
+| `acknowledge` | 180, 140, 180, 300 | `once_then_return` | 1 |
+| `drag_left` | 100, 90, 100, 110, 100, 200 | `loop` | 2 |
+| `drag_right` | 100, 90, 100, 110, 100, 200 | `loop` | 2 |
 
-## State timing and defaults
+These are creation defaults, not extra validity rules. Preserve the timing of
+an existing valid V3 package unless the user explicitly requests a timing
+edit. Both eight-frame settle defaults intentionally stop on their final frame,
+index 7.
 
-The array length is the exact authored PNG count. Each duration is 50–2000ms;
-each action has 2–40 frames; a package has at most 360 frames. These structural
-limits do not turn the 4–8 frame creative budget into a hard gate.
+Each action contains 2–40 frames. Each duration is 50–2000 ms, an action totals
+at most 5000 ms, and a package contains at most 360 frames. The timing-array
+length is the exact PNG count. The common creative target is 4–8 distinct
+frames and no more than 1500 ms for a non-periodic authored pass; the 2000 ms
+default idle is the deliberate periodic exception.
 
-The default is 42 frames:
+Use only the fields allowed by the action's fixed mode:
 
-| State | Durations (ms) | Total | Playback |
-| --- | --- | ---: | --- |
-| `idle` | 300, 260, 300, 640 | 1500 | `periodic`, cooldown 2500–5000 |
-| `thinking` | 120, 140, 160, 180 | 600 | `burst_then_idle`, repeat 3 |
-| `tool` | 150, 150, 170, 330 | 800 | `burst_then_idle`, repeat 3 |
-| `waiting` | 150, 150, 150, 150, 170, 230 | 1000 | `burst_then_settle`, repeat 2, settle 5 |
-| `done` | 120, 140, 160, 230 | 650 | `burst_then_idle`, repeat 3 |
-| `failed` | 150, 170, 190, 290 | 800 | `burst_then_settle`, repeat 3, settle 3 |
-| `acknowledge` | 180, 140, 180, 300 | 800 | `once_then_return` |
-| `drag_left` | 100, 90, 100, 110, 100, 200 | 700 | `loop` |
-| `drag_right` | 100, 90, 100, 110, 100, 200 | 700 | `loop` |
+- `idle`: `periodic` plus ordered `cooldown_ms: [minimum, maximum]` in
+  0…86,400,000 ms.
+- `thinking`, `tool`, `done`: `burst_then_idle` plus
+  `entry_repeat_count` in 1…8.
+- `waiting`, `failed`: `burst_then_settle` plus `entry_repeat_count` in 1…8
+  and an in-range `settle_frame_index`.
+- `acknowledge`: `once_then_return` with no additional playback fields.
+- `drag_left`, `drag_right`: `loop` with no additional playback fields.
 
-The action set is closed. Removed package state names such as `start` and
-`review` are rejected rather than mapped to a current action; recreate that
-source with all nine current actions. V3 deliberately has no gaze-direction
-rows, hover reaction, or autonomous-motion action.
+Choose `reduced_motion_frame_index` as an independently readable pose. The
+runtime plays authored durations directly; producers do not sample, retime,
+duplicate, interpolate, or catch up frames.
 
-End with a longer hold when it improves settle. For every mode, use only its
-fields:
+## Visual and metadata requirements
 
-- `loop`: `mode` only.
-- `periodic`: add ordered `[minimum, maximum]` `cooldown_ms`; each value is an
-  integer in `0...86_400_000` milliseconds.
-- `burst_then_settle`: add `entry_repeat_count` 1–8 and an in-range
-  `settle_frame_index`.
-- `burst_then_idle`: add `entry_repeat_count` 1–8. After the final pass the
-  renderer presents the package idle action while the semantic state remains.
-- `once_then_return`: `mode` only. After completion the renderer returns to the
-  underlying semantic presentation.
+- Name frames in zero-padded ASCII natural order, such as `0000.png`.
+- Keep at least one transparent pixel on every edge and preserve identity,
+  anatomy, costume, palette, and prop relationships.
+- Author genuine adjacent poses with a readable action and deliberate loop,
+  settle, or return. Do not create filler with duplicates, crossfades, morphs,
+  optical flow, transformed copies, or procedural interpolation.
+- Provide a decodable cover and animated WebP preview for the same pet.
 
-The pairing is fixed: idle/periodic; thinking, tool, done/burst_then_idle;
-waiting, failed/burst_then_settle; acknowledge/once_then_return; and both drag
-actions/loop.
+For portable Maker or Studio external full-source output, write the current
+closed metadata schemas. PetCore-owned materializers supply their own validated
+producer identity:
 
-Choose `reduced_motion_frame_index` as an independently readable still for the
-state. Do not default it to frame 0 or select a transitional in-between.
+- `source/source.json`: `apc.pet-source.v1`, actual generator and runner,
+  `provenance: skill-full-source`, permitted `visual_source`,
+  `preview_only: false`, all nine timing objects, derived frame counts,
+  and package-relative references. Portable Maker finalization records
+  `skill_helper: agent-pet-maker`; Studio follows its host-owned producer
+  identity contract.
+- `brief.json`: one concise motion entry per action with matching timing and
+  reduced-motion data.
+- `source/skill_session.jsonl`: bounded `apc.pet-source-event.v1` lifecycle
+  facts only.
+- `build/validation.json`: `apc.pet-validation.v1`; keep `ok:false` until every
+  required visual and PetCore gate succeeds.
 
-Timing is authored content. The runtime uses the arrays directly and never
-resamples, retimes, subsamples, catches up missed frames, or restarts an
-unchanged semantic state.
+Use `user-reference-derived` only when supplied references materially influence
+the result. Record only package-relative reference paths.
 
-## Visual and frame rules
+## Revisions and results
 
-- Treat the manifest tier as the exact runtime PNG target, not a model-output
-  instruction. Require every generated source crop to be 12:13 and at least as
-  large as that target. Crop without resampling, then use the shared
-  transparent-frame pipeline for an exact-size copy or its sole direct
-  downscale to the runtime tier.
-- Keep transparent surroundings and at least one transparent pixel on every
-  edge.
-- Preserve identity, anatomy, palette, costume, and prop relationships.
-- Keep one state's source crop geometry stable and preserve intentional
-  translation and baseline; never independently fit each pose to its subject
-  bounds. Make each adjacent pose genuine; reject duplicates, crossfades, morphs,
-  optical flow, transformed copies, or procedural filler.
-- Use non-uniform spacing and a readable anticipation–action–settle arc where
-  appropriate.
-- Keep resident/high-frequency `idle`, `tool`, and `waiting` motion restrained
-  around a stable root. Allow short full-body reactions for `thinking`, `done`,
-  and `failed` within the crop budget.
-- Make loop boundaries deliberate. Make hold/settle indices readable.
-- Name frames with zero-padded ASCII natural order, such as `0000.png`.
-- Provide a useful `cover.png` and animated WebP preview.
+Preserve manifest ID and `created_at`. Keep every unrequested state and timing
+byte-identical. Treat a timing edit as a complete authored-state replacement.
 
-## Producer metadata
+The shared `production-verify` result is usable only when `build_ok`,
+`package_ok`, `interaction_ok`, `runtime_ok`, and `visual_ok` are all exactly
+`true`. The helper owns the required build-bound interaction evidence and
+rejects missing, partial, duplicate, unknown, or stale evidence.
 
-`source/source.json` is closed. Use the current safe-producer schema. Record
-`schema_version: apc.pet-source.v1`, the actual `generator` and `runner`,
-`provenance: skill-full-source`, manifest identity/style/quality,
-`visual_source`, `preview_only: false`, the nine complete manifest action
-objects under `states`, array-length-derived `state_frame_counts`,
-package-relative `reference_files`, and `skill_helper: agent-pet-maker`.
-
-For a reference-derived result, use `user-reference-derived`, set
-`reference_visual_influence: true`, and list package-relative files below
-`source/references/`.
-
-Each `brief.json` state has `name` or `state`, `motion`, and the matching
-`frame_durations_ms`, `playback`, and `reduced_motion_frame_index`. Optional
-`runtime` contains the complete nine actions, `state_frame_counts`, and
-`render_size`.
-
-Write only the bounded user brief to `source/prompt.md`. Lifecycle events use
-the current safe event schema. A `states.rendered` event records
-`state_timings` and `state_frame_counts`; never include conversations,
-identifiers, commands, tool inputs/outputs, environment values, credentials,
-absolute paths, or URLs.
-
-## Revision and result contracts
-
-For modification, preserve manifest ID and `created_at`. Change only requested
-state directories. A changed timing contract changes that whole authored state;
-regenerate it rather than adapting old frames.
-
-`production-verify` reports:
-
-```json
-{
-  "build_ok": true,
-  "package_ok": true,
-  "interaction_ok": true,
-  "interaction_evidence": [
-    "OverlayPlacementAuthorityTests",
-    "AppStoreOverlaySnapshotTests",
-    "OverlayGeometryTests",
-    "OverlayDisplayWidthTests",
-    "OverlayInteractionTelemetryTests"
-  ],
-  "runtime_ok": true,
-  "visual_ok": true,
-  "usable": true
-}
-```
-
-`usable` is exactly the conjunction of the five component gates. Every gate
-must be present and exactly `true`; a missing or non-boolean gate fails closed
-and prevents finalization. A true `interaction_ok` also requires the complete,
-non-empty, closed `interaction_evidence` list above; unknown, duplicate, or
-partial evidence prevents finalization.
-
-The completed result sidecar includes the V3 manifest summary with all action
-contracts, the package hash and path, changed states, PetCore validation,
-Motion QA/review evidence, and result path. The archive is a new immutable
-revision; the helper never edits an installed revision in place.
+The completed sidecar records the manifest summary, package path and hash,
+changed states, validation, Motion QA/review evidence, and production-gate
+status. The archive is a new immutable revision.

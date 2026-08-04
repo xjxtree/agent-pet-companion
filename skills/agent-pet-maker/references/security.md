@@ -24,11 +24,12 @@
 
 ## Library mutation
 
-- Package creation/finalization is non-mutating. Run `install` only after explicit user authorization.
-- The helper imports only through the live PetCore daemon and never uses the CLI's `--offline` mutation mode.
-- Activation is a separate explicit `--activate` choice. Installation or activation does not imply that global behavior is enabled or the overlay is visible.
-- Refuse an existing manifest ID by default. The only override is `--allow-existing-id-revision` for an intentional same-ID revision.
-- Treat `partial_success` as a possible mutation: read its verification fields before deciding whether a retry is safe.
+- Portable Maker creation/finalization is non-mutating. Run its `install` command only after explicit user authorization.
+- Studio never invokes Maker installation; PetCore owns the commit authorized by the in-App Studio job.
+- The Maker helper imports only through the live PetCore daemon and never uses the CLI's `--offline` mutation mode.
+- Maker activation is a separate explicit `--activate` choice. Installation or activation does not imply that global behavior is enabled or the overlay is visible.
+- Maker refuses an existing manifest ID by default. The only override is `--allow-existing-id-revision` for an intentional same-ID revision.
+- Treat Maker `partial_success` as a possible mutation: read its verification fields before deciding whether a retry is safe.
 
 ## Truthful provenance
 

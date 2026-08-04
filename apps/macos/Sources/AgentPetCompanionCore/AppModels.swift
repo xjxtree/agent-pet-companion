@@ -142,7 +142,7 @@ public enum PetAnimationContract {
         .init(
             name: "idle",
             framesDir: "assets/frames/idle",
-            frameDurationsMS: [300, 260, 300, 640],
+            frameDurationsMS: [260, 220, 240, 260, 380, 640],
             playback: .init(mode: .periodic, cooldownMS: [2_500, 5_000]),
             reducedMotionFrameIndex: 2
         ),
@@ -166,11 +166,11 @@ public enum PetAnimationContract {
         .init(
             name: "waiting",
             framesDir: "assets/frames/waiting",
-            frameDurationsMS: [150, 150, 150, 150, 170, 230],
+            frameDurationsMS: [100, 100, 110, 110, 120, 130, 160, 230],
             playback: .init(
                 mode: .burstThenSettle,
-                entryRepeatCount: 2,
-                settleFrameIndex: 5
+                entryRepeatCount: 3,
+                settleFrameIndex: 7
             ),
             reducedMotionFrameIndex: 4
         ),
@@ -184,11 +184,11 @@ public enum PetAnimationContract {
         .init(
             name: "failed",
             framesDir: "assets/frames/failed",
-            frameDurationsMS: [150, 170, 190, 290],
+            frameDurationsMS: [80, 80, 90, 100, 110, 120, 190, 290],
             playback: .init(
                 mode: .burstThenSettle,
                 entryRepeatCount: 3,
-                settleFrameIndex: 3
+                settleFrameIndex: 7
             ),
             reducedMotionFrameIndex: 2
         ),

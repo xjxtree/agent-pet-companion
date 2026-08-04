@@ -145,19 +145,23 @@ is not semantic, but writers use this order for deterministic output and review.
 
 | Action | `frames_dir` | Default `frame_durations_ms` | Required playback | Reduced-motion index |
 |---|---|---|---|---:|
-| `idle` | `assets/frames/idle` | `[300, 260, 300, 640]` | `periodic`, cooldown `[2500, 5000]` | 2 |
+| `idle` | `assets/frames/idle` | `[260, 220, 240, 260, 380, 640]` | `periodic`, cooldown `[2500, 5000]` | 2 |
 | `thinking` | `assets/frames/thinking` | `[120, 140, 160, 180]` | `burst_then_idle`, repeat 3 | 2 |
 | `tool` | `assets/frames/tool` | `[150, 150, 170, 330]` | `burst_then_idle`, repeat 3 | 2 |
-| `waiting` | `assets/frames/waiting` | `[150, 150, 150, 150, 170, 230]` | `burst_then_settle`, repeat 2, settle 5 | 4 |
+| `waiting` | `assets/frames/waiting` | `[100, 100, 110, 110, 120, 130, 160, 230]` | `burst_then_settle`, repeat 3, settle 7 | 4 |
 | `done` | `assets/frames/done` | `[120, 140, 160, 230]` | `burst_then_idle`, repeat 3 | 2 |
-| `failed` | `assets/frames/failed` | `[150, 170, 190, 290]` | `burst_then_settle`, repeat 3, settle 3 | 2 |
+| `failed` | `assets/frames/failed` | `[80, 80, 90, 100, 110, 120, 190, 290]` | `burst_then_settle`, repeat 3, settle 7 | 2 |
 | `acknowledge` | `assets/frames/acknowledge` | `[180, 140, 180, 300]` | `once_then_return` | 1 |
 | `drag_left` | `assets/frames/drag_left` | `[100, 90, 100, 110, 100, 200]` | `loop` | 2 |
 | `drag_right` | `assets/frames/drag_right` | `[100, 90, 100, 110, 100, 200]` | `loop` | 2 |
 
-These defaults are a production starting point, not a reason to make every pet
-move identically. A producer may author another valid rhythm and playback
-contract when it better expresses the character.
+These 50-frame defaults are a production starting point for future creation,
+not a reason to make every pet move identically or an additional conformance
+gate. A producer may author another valid rhythm and mode-specific playback
+value when it better expresses the character. Existing packages that satisfy
+V3 remain valid and are not migrated, rewritten, or rejected merely because
+their authored timing differs from this table. An edit preserves the validated
+baseline timing unless the user explicitly requests a timing change.
 
 Package actions are not all Agent session events. The normalized Agent
 event `start` has no pet reaction and renders `idle`; Agent events `thinking`
@@ -233,9 +237,11 @@ to idle after its authored active duration; acknowledge is skipped; a drag uses
 the declared representative left/right pose only while dragging.
 
 The following common production targets are warnings, not package validity
-limits: 4–8 authored frames, at most about 1,500 ms, and an average effective
-rate of 4–12 frames per second. A valid action outside those ranges remains
-importable when its structural contract is sound.
+limits: 4–8 authored frames, at most about 1,500 ms for a non-periodic action,
+and an average effective rate of 4–12 frames per second. A periodic idle may
+deliberately use a longer calm authored hold, including the 2,000 ms creation
+default, before its separate cooldown. A valid action outside those ranges
+remains importable when its structural contract is sound.
 
 `animated_preview.webp` is a non-authoritative display asset. Its codec timing
 must not be used to infer runtime timing.

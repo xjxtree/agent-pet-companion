@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -98,7 +99,7 @@ manifest = {
 }
 
 if args[:2] == ["petpack", "validate"]:
-    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 42, "warnings": []}))
+    print(json.dumps({"ok": True, "manifest": manifest, "frame_count": 50, "warnings": []}))
 elif args[:2] == ["pet", "list"]:
     print(json.dumps(state["pets"]))
 elif args[:2] == ["petpack", "import"]:
@@ -152,33 +153,92 @@ class SkillDirectionContractTests(unittest.TestCase):
                 ROOT / "SKILL.md",
                 ROOT / "references" / "create-modify.md",
                 ROOT / "references" / "visual-production-and-native-resolution.md",
+                ROOT / "references" / "dreamina-high-production.md",
             )
         ).split())
         for required in (
             "`high` 576×624",
             "ChatGPT/Codex built-in `imagegen`",
-            "do not attempt `high`",
-            "sufficiently large user artwork",
-            "do not need to equal the target dimensions exactly",
-            "exact-tier runtime frames after any downscale",
+            "approximate 1K–2K",
+            "Dreamina 5.0 Pro",
+            "another source-capable provider",
+            "actual dimensions",
+            "exact-tier runtime",
         ):
             self.assertIn(required, combined)
+
+    def test_shared_image_contract_contains_the_dreamina_high_workflow(self) -> None:
+        contract = "\n".join(
+            (
+                (
+                    ROOT
+                    / "references"
+                    / "visual-production-and-native-resolution.md"
+                ).read_text(encoding="utf-8"),
+                (ROOT / "references" / "dreamina-high-production.md").read_text(
+                    encoding="utf-8"
+                ),
+            )
+        )
+        for required in (
+            "--model_version=5.0Pro",
+            "--resolution_type=4k",
+            "--ratio=3:4",
+            "--generate_num=1",
+            "--poll=60",
+            "6240×1536",
+            "5760×1536",
+            "3840×1536",
+            "4096×1536",
+            "slot_width = canvas_width / frame_count",
+            "slot_center_x = (frame_index + 0.5) * slot_width",
+            "Image 1 defines the exact character identity",
+            "Image 2 is a script-generated frameless equal-scale pose guide",
+            "CRITICAL SCALE LOCK",
+            "contact -> settle -> passing -> advance",
+            "gen_status=querying",
+            "dreamina query_result --submit_id=<submit_id>",
+        ):
+            self.assertIn(required, contract)
+
+        rows = re.findall(
+            r"\| (\d+) \| (\d+)×1536 \| (\d+) \| (\d+)×(\d+) \|",
+            contract,
+        )
+        self.assertEqual(len(rows), 4)
+        for frame_count, canvas_width, slot_width, crop_width, crop_height in rows:
+            frame_count = int(frame_count)
+            canvas_width = int(canvas_width)
+            slot_width = int(slot_width)
+            crop_width = int(crop_width)
+            crop_height = int(crop_height)
+            with self.subTest(frame_count=frame_count):
+                self.assertEqual(canvas_width // frame_count, slot_width)
+                self.assertEqual(canvas_width % frame_count, 0)
+                self.assertLessEqual(crop_width, slot_width)
+                self.assertLessEqual(crop_height, 1536)
+                self.assertEqual(crop_width * 13, crop_height * 12)
+                self.assertGreaterEqual(crop_width, 576)
+                self.assertGreaterEqual(crop_height, 624)
+                self.assertLessEqual(canvas_width, 6240)
+                self.assertLessEqual(canvas_width * 1536, 16_777_216)
 
     def test_portable_skill_requires_runtime_readable_motion_without_fixed_layers(
         self,
     ) -> None:
-        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        direction = (ROOT / "references" / "create-modify.md").read_text(
-            encoding="utf-8"
+        combined = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                ROOT / "references" / "create-modify.md",
+                ROOT / "references" / "visual-production-and-native-resolution.md",
+            )
         )
-        combined = skill + "\n" + direction
 
         for required in (
-            "deliberate whole-character or",
-            "non-uniform frame holds",
-            "runtime size",
-            "whole-character reactions",
-            "one state per batch",
+            "Intentional translation",
+            "deliberate spacing",
+            "Runtime-size",
+            "one action per call",
             "192×208",
             "reduced-motion",
             "Record the reason",
@@ -448,10 +508,6 @@ class MetadataContractTests(unittest.TestCase):
             )
             self.assertIn(
                 Path("/Applications/AgentPetCompanion.app/Contents/Resources/bin/petcore-cli"),
-                candidates,
-            )
-            self.assertIn(
-                Path("/Applications/Agent Pet Companion.app/Contents/Resources/bin/petcore-cli"),
                 candidates,
             )
 
@@ -882,12 +938,29 @@ class MetadataContractTests(unittest.TestCase):
 
 
 class TimingContractTests(unittest.TestCase):
+    def test_skill_treats_new_defaults_as_overrideable_and_non_migrating(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        reference = (ROOT / "references" / "petpack-v3.md").read_text(
+            encoding="utf-8"
+        )
+        compact_reference = " ".join(reference.split())
+        self.assertIn("creation defaults in `petpack-v3.md`", skill)
+        self.assertIn("another valid complete timing", skill)
+        self.assertIn(
+            "These are creation defaults, not extra validity rules",
+            compact_reference,
+        )
+        self.assertIn(
+            "Preserve the timing of an existing valid V3 package",
+            compact_reference,
+        )
+
     def test_default_authored_timing_matches_the_shared_nine_action_contract(self) -> None:
         self.assertEqual(
             workspace_helper.DEFAULT_STATE_TIMINGS,
             {
                 "idle": {
-                    "frame_durations_ms": [300, 260, 300, 640],
+                    "frame_durations_ms": [260, 220, 240, 260, 380, 640],
                     "playback": {
                         "mode": "periodic",
                         "cooldown_ms": [2500, 5000],
@@ -911,11 +984,11 @@ class TimingContractTests(unittest.TestCase):
                     "reduced_motion_frame_index": 2,
                 },
                 "waiting": {
-                    "frame_durations_ms": [150, 150, 150, 150, 170, 230],
+                    "frame_durations_ms": [100, 100, 110, 110, 120, 130, 160, 230],
                     "playback": {
                         "mode": "burst_then_settle",
-                        "entry_repeat_count": 2,
-                        "settle_frame_index": 5,
+                        "entry_repeat_count": 3,
+                        "settle_frame_index": 7,
                     },
                     "reduced_motion_frame_index": 4,
                 },
@@ -928,11 +1001,11 @@ class TimingContractTests(unittest.TestCase):
                     "reduced_motion_frame_index": 2,
                 },
                 "failed": {
-                    "frame_durations_ms": [150, 170, 190, 290],
+                    "frame_durations_ms": [80, 80, 90, 100, 110, 120, 190, 290],
                     "playback": {
                         "mode": "burst_then_settle",
                         "entry_repeat_count": 3,
-                        "settle_frame_index": 3,
+                        "settle_frame_index": 7,
                     },
                     "reduced_motion_frame_index": 2,
                 },
@@ -954,9 +1027,9 @@ class TimingContractTests(unittest.TestCase):
             },
         )
 
-    def test_default_authored_timing_contains_42_frames_without_sampling(self) -> None:
+    def test_default_authored_timing_contains_50_frames_without_sampling(self) -> None:
         timing = workspace_helper.manifest_timing_contract(default_manifest())
-        self.assertEqual(sum(timing["state_frame_counts"].values()), 42)
+        self.assertEqual(sum(timing["state_frame_counts"].values()), 50)
         self.assertEqual(
             {entry["playback"]["mode"] for entry in timing["states"]},
             {
@@ -967,6 +1040,40 @@ class TimingContractTests(unittest.TestCase):
                 "once_then_return",
             },
         )
+
+    def test_prior_valid_v3_default_remains_accepted_without_migration(self) -> None:
+        manifest = default_manifest()
+        states = {state["name"]: state for state in manifest["states"]}
+        states["idle"].update(
+            frame_durations_ms=[300, 260, 300, 640],
+            playback={"mode": "periodic", "cooldown_ms": [2500, 5000]},
+            reduced_motion_frame_index=2,
+        )
+        states["waiting"].update(
+            frame_durations_ms=[150, 150, 150, 150, 170, 230],
+            playback={
+                "mode": "burst_then_settle",
+                "entry_repeat_count": 2,
+                "settle_frame_index": 5,
+            },
+            reduced_motion_frame_index=4,
+        )
+        states["failed"].update(
+            frame_durations_ms=[150, 170, 190, 290],
+            playback={
+                "mode": "burst_then_settle",
+                "entry_repeat_count": 3,
+                "settle_frame_index": 3,
+            },
+            reduced_motion_frame_index=2,
+        )
+
+        timing = workspace_helper.manifest_timing_contract(manifest)
+
+        self.assertEqual(sum(timing["state_frame_counts"].values()), 42)
+        self.assertEqual(timing["state_frame_counts"]["idle"], 4)
+        self.assertEqual(timing["state_frame_counts"]["waiting"], 6)
+        self.assertEqual(timing["state_frame_counts"]["failed"], 4)
         self.assertTrue(
             any(
                 len(set(entry["frame_durations_ms"])) > 1
@@ -1302,12 +1409,12 @@ class MotionQualityTests(unittest.TestCase):
                     )
                 )
 
-    def test_motion_qa_rejects_v1_instead_of_migrating_it(self) -> None:
+    def test_motion_qa_rejects_an_unsupported_schema(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
             workspace, source = self.make_workspace(Path(temporary))
             manifest_path = source / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["schema_version"] = "apc.petpack.v1"
+            manifest["schema_version"] = "apc.petpack.invalid"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             with self.assertRaises(workspace_helper.MakerError) as raised:
@@ -1320,7 +1427,10 @@ class MotionQualityTests(unittest.TestCase):
                     )
                 )
             self.assertEqual(raised.exception.code, "invalid_manifest")
-            self.assertIn("must be recreated", raised.exception.message)
+            self.assertEqual(
+                raised.exception.message,
+                "manifest.schema_version must be apc.petpack.v3",
+            )
 
     def test_motion_qa_rejects_synthetic_crossfade_filler(self) -> None:
         from PIL import Image, ImageDraw
@@ -1782,7 +1892,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     build_destinations.append(staged)
                     staged.write_bytes(b"partial-new-package")
                     raise workspace_helper.MakerError("build_failed", "simulated failure")
-                return {"ok": True, "frame_count": 42, "warnings": []}
+                return {"ok": True, "frame_count": 50, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1813,7 +1923,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                     raise workspace_helper.MakerError(
                         "validation_failed", "simulated staged validation failure"
                     )
-                return {"ok": True, "frame_count": 42, "warnings": []}
+                return {"ok": True, "frame_count": 50, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1849,7 +1959,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                                 encoding="utf-8"
                             )
                         )
-                        self.assertEqual(validation["frame_count"], 42)
+                        self.assertEqual(validation["frame_count"], 50)
                         self.assertEqual(
                             validation["states"],
                             default_state_entries(),
@@ -1862,7 +1972,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                         self.assertEqual(candidate.read_bytes(), b"validated-new-package")
                         self.assertEqual(output.read_bytes(), b"known-good-old-package")
                         calls.append(("validate-staged", candidate))
-                return {"ok": True, "frame_count": 42, "warnings": []}
+                return {"ok": True, "frame_count": 50, "warnings": []}
 
             patches = self.finalize_patches()
             with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1899,7 +2009,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                         candidate.write_bytes(b"validated-new-package")
                     elif arguments[:2] == ["petpack", "validate"]:
                         self.assertEqual(candidate.read_bytes(), b"validated-new-package")
-                    return {"ok": True, "frame_count": 42, "warnings": []}
+                    return {"ok": True, "frame_count": 50, "warnings": []}
 
                 with mock.patch.object(
                     workspace_helper, "run_cli", side_effect=successful_cli
@@ -1927,7 +2037,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                         staged = Path(arguments[-1])
                         staged.write_bytes(b"validated-new-package")
                         os.chflags(staged, stat.UF_HIDDEN)
-                    return {"ok": True, "frame_count": 42, "warnings": []}
+                    return {"ok": True, "frame_count": 50, "warnings": []}
 
                 patches = self.finalize_patches()
                 with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch.object(
@@ -1953,7 +2063,7 @@ class FinalizeSafetyTests(unittest.TestCase):
                 candidate = Path(arguments[-1])
                 if arguments[:2] == ["petpack", "build"]:
                     candidate.write_bytes(b"validated-new-package")
-                return {"ok": True, "frame_count": 42, "warnings": []}
+                return {"ok": True, "frame_count": 50, "warnings": []}
 
             def apply_delayed_hidden_flag() -> None:
                 while not output.exists():

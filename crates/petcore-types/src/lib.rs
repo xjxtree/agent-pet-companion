@@ -420,7 +420,10 @@ impl PetTimingContract {
                 "authored frame count {frame_count} is outside the recommended 4–8 range"
             ));
         }
-        if total_duration_ms > 1_500 {
+        // A periodic idle may deliberately spend longer in a calm authored
+        // hold before its separate cooldown. Keep the ordinary duration
+        // warning for every non-periodic action.
+        if self.playback.mode != PlaybackMode::Periodic && total_duration_ms > 1_500 {
             warnings.push(format!(
                 "authored duration {total_duration_ms} ms exceeds the recommended 1500 ms"
             ));
@@ -498,7 +501,7 @@ pub fn default_pet_states() -> Vec<PetState> {
 pub fn default_pet_state(name: PetStateName) -> PetState {
     let (frame_durations_ms, playback, reduced_motion_frame_index) = match name {
         PetStateName::Idle => (
-            vec![300, 260, 300, 640],
+            vec![260, 220, 240, 260, 380, 640],
             PlaybackContract {
                 mode: PlaybackMode::Periodic,
                 entry_repeat_count: None,
@@ -510,12 +513,16 @@ pub fn default_pet_state(name: PetStateName) -> PetState {
         PetStateName::Thinking => (vec![120, 140, 160, 180], burst_then_idle(3), 2),
         PetStateName::Tool => (vec![150, 150, 170, 330], burst_then_idle(3), 2),
         PetStateName::Waiting => (
-            vec![150, 150, 150, 150, 170, 230],
-            burst_then_settle(2, 5),
+            vec![100, 100, 110, 110, 120, 130, 160, 230],
+            burst_then_settle(3, 7),
             4,
         ),
         PetStateName::Done => (vec![120, 140, 160, 230], burst_then_idle(3), 2),
-        PetStateName::Failed => (vec![150, 170, 190, 290], burst_then_settle(3, 3), 2),
+        PetStateName::Failed => (
+            vec![80, 80, 90, 100, 110, 120, 190, 290],
+            burst_then_settle(3, 7),
+            2,
+        ),
         PetStateName::Acknowledge => (
             vec![180, 140, 180, 300],
             PlaybackContract {
@@ -1369,7 +1376,7 @@ mod tests {
                 .iter()
                 .map(|state| state.frame_durations_ms.len())
                 .sum::<usize>(),
-            42
+            50
         );
         for state in &states {
             let warnings = state.validate().unwrap_or_else(|error| {
@@ -1383,6 +1390,46 @@ mod tests {
                 "{} default action must not warn: {warnings:?}",
                 state.name.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn prior_default_v3_action_timings_remain_valid() {
+        let mut states = default_pet_states();
+        let idle = states
+            .iter_mut()
+            .find(|state| state.name == PetStateName::Idle)
+            .unwrap();
+        idle.frame_durations_ms = vec![300, 260, 300, 640];
+
+        let waiting = states
+            .iter_mut()
+            .find(|state| state.name == PetStateName::Waiting)
+            .unwrap();
+        waiting.frame_durations_ms = vec![150, 150, 150, 150, 170, 230];
+        waiting.playback = burst_then_settle(2, 5);
+
+        let failed = states
+            .iter_mut()
+            .find(|state| state.name == PetStateName::Failed)
+            .unwrap();
+        failed.frame_durations_ms = vec![150, 170, 190, 290];
+        failed.playback = burst_then_settle(3, 3);
+
+        assert_eq!(
+            states
+                .iter()
+                .map(|state| state.frame_durations_ms.len())
+                .sum::<usize>(),
+            42
+        );
+        for state in &states {
+            state.validate().unwrap_or_else(|error| {
+                panic!(
+                    "prior V3 action {} must remain valid: {error}",
+                    state.name.as_str()
+                )
+            });
         }
     }
 

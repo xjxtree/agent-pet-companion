@@ -633,7 +633,7 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
     assert_eq!(terminal["revision_id"], committed_revision);
     assert_eq!(terminal["validation_summary"]["ok"], true);
     assert_eq!(terminal["validation_summary"]["state_count"], 9);
-    assert_eq!(terminal["validation_summary"]["frame_count"], 42);
+    assert_eq!(terminal["validation_summary"]["frame_count"], 50);
 
     let history = handle_request(
         &state,

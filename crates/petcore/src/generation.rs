@@ -5000,20 +5000,20 @@ mod tests {
             "keyframes": "keyframes.png",
             "presence_preview": {
                 "path": "previews/presence-preview.webp",
-                "duration_ms": 10_000,
+                "duration_ms": 10_050,
                 "minimum_duration_ms": 8_000,
                 "maximum_duration_ms": 12_000,
-                "late_motion_boundary_ms": 9_050,
+                "late_motion_boundary_ms": 9_550,
                 "rest_phase_count": 3,
                 "frame_set_digest": frame_set_digest,
                 "sequence": [
-                    {"kind": "action", "state": "idle", "repeat_count": 1, "duration_ms": 1_500},
+                    {"kind": "action", "state": "idle", "repeat_count": 1, "duration_ms": 2_000},
                     {"kind": "action", "state": "thinking", "repeat_count": 3, "duration_ms": 1_800},
                     {"kind": "idle_rest", "state": "idle", "duration_ms": 700},
                     {"kind": "action", "state": "tool", "repeat_count": 3, "duration_ms": 2_400},
                     {"kind": "idle_rest", "state": "idle", "duration_ms": 700},
                     {"kind": "action", "state": "done", "repeat_count": 3, "duration_ms": 1_950},
-                    {"kind": "idle_rest", "state": "idle", "duration_ms": 950}
+                    {"kind": "idle_rest", "state": "idle", "duration_ms": 500}
                 ]
             },
             "states": report_states

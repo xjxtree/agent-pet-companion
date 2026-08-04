@@ -304,14 +304,15 @@ typed repairable condition and cannot project `connected`.
 
 The repair ownership check recognizes only the current Studio Skill or an exact
 SHA-256 in the structured, App-owned retired-Skill history. That history covers
-the retired V1 Skill and the plugin v0.4.5 Skill, remains append-only across
-official releases, and never includes the current Skill. When a release changes
-the Studio Skill, both the GitHub workflow and the official local release
-builder require the previous release's exact Skill digest to be present before
-packaging can begin; a new history digest that is not that previous shipped
-Skill is rejected. This is an upgrade-only ownership rule: it does not make old
-packages valid at runtime, and a customized or merely similar Skill remains a
-managed path conflict and is preserved.
+the retired V1 Skill plus the previously shipped plugin v0.4.5 and v0.5.0
+Studio Skills, remains append-only across official releases, and never includes
+the current Skill. When a release changes the Studio Skill, both the GitHub
+workflow and the official local release builder require the previous release's
+exact Skill digest to be present before packaging can begin; a new history
+digest that is not that previous shipped Skill is rejected. This is an
+upgrade-only ownership rule: it does not make old packages valid at runtime,
+and a customized or merely similar Skill remains a managed path conflict and is
+preserved.
 
 In-app Maker work uses the internal Studio Skill; portable user-invoked work
 uses the Maker Skill. They ship together but remain separate behavioral

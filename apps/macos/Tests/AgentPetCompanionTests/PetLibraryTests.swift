@@ -79,14 +79,14 @@ struct PetLibraryTests {
         #expect(bundled.revisionCountSummary == "2 个")
         #expect(bundled.revisionSummary.contains("App 内置只读基线"))
         #expect(bundled.stateSummary == "idle · thinking · tool · waiting · done · failed")
-        #expect(bundled.timingSummary == "42 帧 · 9 个动作 · 逐帧创作时序")
-        #expect(bundled.durationSummary.contains("idle：1,500 毫秒"))
-        #expect(bundled.durationSummary.contains("waiting：1,000 毫秒"))
+        #expect(bundled.timingSummary == "50 帧 · 9 个动作 · 逐帧创作时序")
+        #expect(bundled.durationSummary.contains("idle：2,000 毫秒"))
+        #expect(bundled.durationSummary.contains("waiting：1,060 毫秒"))
         #expect(bundled.heroSummary == "半写实 · App 内置")
         #expect(bundled.provenanceSummary.contains("verified_skill_source"))
         #expect(bundled.provenanceSummary.contains("apc.bundled-pets.v1"))
-        #expect(bundled.frameCountSummary.contains("idle：4 帧"))
-        #expect(bundled.frameCountSummary.contains("waiting：6 帧"))
+        #expect(bundled.frameCountSummary.contains("idle：6 帧"))
+        #expect(bundled.frameCountSummary.contains("waiting：8 帧"))
         #expect(Set(bundled.technicalInformation.map(\.field))
             == Set(PetLibraryTechnicalItem.Field.allCases))
         #expect(bundled.technicalInformation.first?.field == .stableID)
@@ -142,7 +142,7 @@ struct PetLibraryTests {
             assetWarning: nil,
             localeIdentifier: "zh-Hans"
         )
-        #expect(customTiming.timingSummary == "42 帧 · 9 个动作 · 逐帧创作时序")
+        #expect(customTiming.timingSummary == "48 帧 · 9 个动作 · 逐帧创作时序")
         #expect(customTiming.durationSummary.contains("idle：1,000 毫秒"))
     }
 
@@ -766,8 +766,8 @@ struct PetLibraryTests {
         let values = [
             (".petpack 版本", "apc.petpack.v3"),
             ("九动作", "idle · thinking · tool · waiting · done · failed · acknowledge · drag_left · drag_right"),
-            ("动画时序", "42 帧 · 9 个动作 · 逐帧创作时序"),
-            ("动作时长", "idle：1500 毫秒 · thinking：600 毫秒 · waiting：1000 毫秒"),
+            ("动画时序", "50 帧 · 9 个动作 · 逐帧创作时序"),
+            ("动作时长", "idle：2000 毫秒 · thinking：600 毫秒 · waiting：1060 毫秒"),
             ("Revision ID", "rev_00000000000000000000000000000003"),
         ]
 

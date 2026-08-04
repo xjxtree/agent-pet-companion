@@ -89,7 +89,7 @@ try:
 except (OSError, json.JSONDecodeError):
     sys.exit(1)
 
-durations = [150, 150, 150, 150, 170, 230]
+durations = [100, 100, 110, 110, 120, 130, 160, 230]
 legacy = {
     "fps_profile",
     "native_fps",
@@ -105,8 +105,8 @@ ok = (
     and data.get("frame_durations_ms") == durations
     and data.get("total_duration_ms") == sum(durations)
     and data.get("playback_mode") == "burst_then_settle"
-    and data.get("entry_repeat_count") == 2
-    and data.get("settle_frame_index") == 5
+    and data.get("entry_repeat_count") == 3
+    and data.get("settle_frame_index") == 7
     and data.get("reduced_motion_frame_index") == 4
     and data.get("source_frame_count") == len(durations)
     and data.get("frame_count") == len(durations)

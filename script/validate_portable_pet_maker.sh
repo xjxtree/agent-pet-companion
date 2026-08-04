@@ -139,7 +139,7 @@ state_colors = {
 }
 state_timings = {
     "idle": {
-        "frame_durations_ms": [300, 260, 300, 640],
+        "frame_durations_ms": [260, 220, 240, 260, 380, 640],
         "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
@@ -157,11 +157,11 @@ state_timings = {
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
-        "frame_durations_ms": [150, 150, 150, 150, 170, 230],
+        "frame_durations_ms": [100, 100, 110, 110, 120, 130, 160, 230],
         "playback": {
             "mode": "burst_then_settle",
-            "entry_repeat_count": 2,
-            "settle_frame_index": 5,
+            "entry_repeat_count": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 4,
     },
@@ -171,11 +171,11 @@ state_timings = {
         "reduced_motion_frame_index": 2,
     },
     "failed": {
-        "frame_durations_ms": [150, 170, 190, 290],
+        "frame_durations_ms": [80, 80, 90, 100, 110, 120, 190, 290],
         "playback": {
             "mode": "burst_then_settle",
             "entry_repeat_count": 3,
-            "settle_frame_index": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 2,
     },
@@ -212,7 +212,7 @@ def render_frame(state: str, index: int) -> Image.Image:
     draw = ImageDraw.Draw(image)
     color = state_colors[state]
     progress = index / max(1, state_frame_counts[state] - 1)
-    if state in {"start", "done"}:
+    if state == "done":
         dx = round(progress * 6)
         dy = round(progress * 4)
     else:
@@ -379,7 +379,7 @@ CREATE_MOTION_LOCK="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-lock \
   --moving-mask "$TMP_DIR/moving-mask.png" \
   --output-dir "$TMP_DIR/locked-idle" \
   --feather-px 0)"
-assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 4'
+assert_json "$CREATE_MOTION_LOCK" 'data["status"] == "completed" and data["capability"] == "motion-lock" and data["state"] == "idle" and data["frame_count"] == 6'
 
 CREATE_MOTION_QA="$("$PET_MAKER_PYTHON" -B "$HELPER" motion-qa \
   --workspace "$CREATE_WORKSPACE")"
@@ -404,10 +404,10 @@ CREATE_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
   --output "$CREATE_OUTPUT" \
   --result "$CREATE_RESULT" \
   --cli "$CLI")"
-assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 42 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 9'
+assert_json "$CREATE_FINALIZE" 'data["status"] == "completed" and data["operation"] == "create" and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["validation"]["ok"] is True and data["validation"]["frame_count"] == 50 and data["changed_states"] == [] and data["motion_quality"]["human_reviewed"] is True and len(data["motion_quality"]["audited_states"]) == 9'
 
 CREATE_VALIDATION="$("$CLI" petpack validate "$CREATE_OUTPUT")"
-assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42 and data["warnings"] == []'
+assert_json "$CREATE_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 50 and data["warnings"] == []'
 
 MODIFY_WORKSPACE="$TMP_DIR/modify-workspace"
 MODIFY_OUTPUT="$TMP_DIR/portable-fixture-revised.petpack"
@@ -578,7 +578,7 @@ MODIFY_FINALIZE="$("$PET_MAKER_PYTHON" -B "$HELPER" finalize \
 assert_json "$MODIFY_FINALIZE" 'data["status"] == "completed" and data["operation"] == "modify" and data["manifest"]["id"] == "pet_portablefixture" and data["base"]["pet_id"] == "pet_portablefixture" and data["changed_states"] == ["tool"] and data["validation"]["ok"] is True and data["motion_quality"]["human_reviewed"] is True and data["motion_quality"]["audited_states"] == ["tool"]'
 
 MODIFY_VALIDATION="$("$CLI" petpack validate "$MODIFY_OUTPUT")"
-assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 42 and data["warnings"] == []'
+assert_json "$MODIFY_VALIDATION" 'data["ok"] is True and data["manifest"]["id"] == "pet_portablefixture" and len(data["manifest"]["states"]) == 9 and data["frame_count"] == 50 and data["warnings"] == []'
 
 "$PET_MAKER_PYTHON" -B - "$CREATE_OUTPUT" "$MODIFY_OUTPUT" <<'PY'
 import hashlib

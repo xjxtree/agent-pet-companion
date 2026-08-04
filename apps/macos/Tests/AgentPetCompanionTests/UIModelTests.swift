@@ -111,7 +111,7 @@ struct UIModelTests {
         #expect(try #require(presentation.row(.eventChannel)).status == "在线")
         #expect(
             try #require(presentation.row(.desktopPet)).detail
-                == "4 帧 · Bytebud 字节芽 · periodic"
+                == "6 帧 · Bytebud 字节芽 · periodic"
         )
         #expect(ServiceDiagnosticsPresentation.toolbar(
             runtimeInfo: runtime,
@@ -482,7 +482,7 @@ struct UIModelTests {
         #expect(imported.validationTitle == "资源校验通过")
         #expect(imported.validationDetail.contains("PetCore 已验证"))
         #expect(imported.stateSpecification == "9 个创作动作 · 显式逐帧时序与播放方式")
-        #expect(imported.timingSpecification == "42 帧 · 9 个动作 · 逐帧创作时序")
+        #expect(imported.timingSpecification == "50 帧 · 9 个动作 · 逐帧创作时序")
 
         var verifiedPet = pet
         verifiedPet.origin = .verifiedSkillSource
@@ -497,7 +497,7 @@ struct UIModelTests {
         #expect(verified.validationTitle == "资源校验通过")
         #expect(verified.validationDetail.contains("PetCore 已验证"))
         #expect(verified.stateSpecification == "9 个创作动作 · 显式逐帧时序与播放方式")
-        #expect(verified.timingSpecification == "42 帧 · 9 个动作 · 逐帧创作时序")
+        #expect(verified.timingSpecification == "50 帧 · 9 个动作 · 逐帧创作时序")
     }
 
     @MainActor

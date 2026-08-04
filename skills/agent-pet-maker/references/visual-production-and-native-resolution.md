@@ -2,151 +2,172 @@
 
 ## Contents
 
-1. Source-capacity and one-resize gate
-2. Transparent derivation gate
-3. One-state batch protocol
-4. Motion quality
-5. Incremental and final verification
+1. Source-capacity gate
+2. Provider routing
+3. Production base and action batches
+4. Deterministic pose guides
+5. Reference and prompt contract
+6. Failure routing
+7. Runtime-size acceptance
 
-## Source-capacity and one-resize gate
+## Source-capacity gate
 
-`manifest.render_size` is the exact decoded runtime PNG target, not a pixel-size
-instruction that an image model must obey. The untouched generated image may
-have any dimensions. Every selected frame must instead provide one crop in
-decoded source pixels that is exactly 12:13 and at least as large as its target:
+Treat `manifest.render_size` as the exact runtime PNG target, not an image-model
+output instruction. For every frame, recover a complete decoded source crop
+that is exactly 12:13 and at least the selected target:
 
-| Tier | Exact runtime PNG | Minimum 12:13 source crop |
+| Tier | Runtime PNG | Minimum source crop |
 | --- | ---: | ---: |
 | `low` | 192×208 | 192×208 |
 | `standard` | 384×416 | 384×416 |
 | `high` | 576×624 | 576×624 |
 
-Do not reject a useful image merely because its overall dimensions differ from
-the requested tier, and do not trust a prompt such as “output 384×416” as
-resolution evidence. Prompts and optional layout guides control frame count,
-order, spacing, safe margins, identity, and action; deterministic cropping and
-the shared script control exact output pixels.
+After every image call:
 
-All tiers follow the same rule: exact-size crops are copied, larger crops are
-downscaled once, and smaller crops fail. Package conformance and producer
-capability remain separate. `high` is a valid App/runtime tier, but the
-ChatGPT/Codex built-in `imagegen` path is qualified only through `standard` and
-must not be repeatedly tried for `high`. Another provider or user-supplied
-source may create `high` when every untouched decoded frame has a 12:13 crop of
-at least 576×624. Splitting a state across multiple batches cannot replace
-missing source pixels. If capacity is unknown, run the diagnostic-grid and
-representative action probes before production instead of silently enlarging a
-smaller result.
-
-After each generation/editing call:
-
-1. Persist the untouched decoded image outside `petpack-source`.
-2. Record its real dimensions and one explicit source-pixel rectangle for every
-   intended frame; never resize the whole sheet to make a grid fit.
-3. Require every rectangle to be exactly 12:13 and at least the target size
-   after margins and gutters. For one state, use stable equal-size crop windows
-   and preserve the authored baseline and translation; never tight-crop and
-   independently recenter each pose by its subject bounding box.
-4. Reject overlapping, undersized, blurry pre-enlarged, padded-small-crop, or
+1. Save the untouched decoded image outside `petpack-source` and record its
+   actual dimensions.
+2. Verify exact frame count/order, distinct poses, full-body completeness,
+   identity, anatomy, props, camera, scale, spacing, background, and action.
+3. Record one stable equal-size source-pixel rectangle per cell. Preserve the
+   action's baseline and intended translation; never fit or recenter poses
+   independently by their subject bounds.
+4. Reject overlapping, clipped, undersized, padded, blurry pre-enlarged, or
    already-resampled cells.
-5. Inspect the full source at 100% for exact frame count and order, distinct
-   authored poses, grid leakage, clipping, anatomy, identity, props, stable
-   camera/scale, flat-background compliance, and action continuity.
-6. Extract each opaque cell by crop-only operations, then use the shared
-   transparent-frame script for the sole permitted size normalization.
-7. Decode the derived PNGs, verify source-resolution master and exact runtime
-   dimensions, inspect the runtime-size action, and run Motion QA before any
-   later state is accepted.
+5. Crop only, then use the shared transparency script for an exact copy or one
+   direct linear-light premultiplied-Alpha downscale.
+6. Inspect the exact-tier runtime sequence and run Motion QA.
 
-Trimming a larger source cell is valid. One direct downscale from the
-source-resolution transparent master to the runtime tier is valid only through
-the shared script for `low`, `standard`, and `high` alike.
-Upscaling, super-resolution, stretching, cascaded resizing, resizing before
-matting, or placing a smaller crop on a target-size canvas is invalid. Final PNG
-dimensions alone do not prove sufficient source resolution.
+Never upscale, stretch, use super-resolution, resize before matting, cascade
+resizes, or place a small crop on a target-size canvas. Additional batches do
+not create missing source pixels.
 
-## Transparent derivation gate
+## Provider routing
 
-Read and follow
-[transparent-frame-production.md](transparent-frame-production.md). Newly
-generated artwork is fully opaque; do not ask an image model for transparent
-output. The shared script owns matte thresholds, spatial background selection,
-edge RGB reconstruction, the sole optional downscale, and multi-background QA.
-Only reports whose root and every frame say `"ok": true` may proceed to Motion
-QA. Keep the untouched source and source-resolution transparent master outside
-the package; package only exact-tier runtime PNGs.
+Choose the tier first, then a provider whose real decoded pixels can satisfy it:
 
-## One-state batch protocol
+| Image path | Qualified tiers | Rule |
+| --- | --- | --- |
+| ChatGPT/Codex built-in `imagegen` | `low`, `standard` | Its approximate 1K–2K decoded output envelope is not qualified for `high`. |
+| Dreamina 5.0 Pro | `low`, `standard`, `high` | For `high`, follow `dreamina-high-production.md` and verify the returned pixels. |
+| Another provider or user artwork | Any tier proven by its pixels | Apply the same capacity, transparency, motion, and final gates. |
 
-Generate one complete action per image batch. The normal V3 action has 4–8 cells,
-which fits the measured capacity at the provider-qualified selected tier. Keep:
+Do not repeatedly attempt built-in `imagegen` for `high`, combine separate
+outputs, or silently downgrade. If no qualified source is available, stop
+before a paid call or ask the user to select a lower tier.
 
-- one canonical production base;
-- one action card;
-- identical cell geometry and transparent safe area;
-- distinct ordered authored poses;
-- enough decoded source pixels per cell;
-- no visual instructions or annotations inside accepted cells.
+## Production base and action batches
 
-Multiple batches are an exceptional continuity fallback within an already
-qualified tier. Record the non-capacity reason, carry accepted
-boundary poses into the next batch, and inspect the join. Never use extra
-batches to overcome undersized source cells or claim another tier. Never expand
-a smaller storyboard through duplicate poses, crossfade, morph, optical flow,
+First create one complete full-body base. Lock the stated maturity or adult
+identity, face, hair or defining features, body proportions, clothing,
+materials, palette, lighting, camera distance, scale, crop, and persistent
+props. Use this production base as reference image 1 for every later
+image-to-image action.
+
+Generate one action per call and normally keep all 4–8 ordered poses in one
+batch. Use one action card that states the intent, exact frame count, left-to-
+right beat order, playback outcome, safe margins, and flat-background rules.
+Immediately inspect the result before another call.
+
+Use text control for a simple action. Walking, jumping, turning, and other
+complex limb/depth sequences require a deterministic frameless equal-scale pose
+guide as reference image 2. If the same defect appears twice, change the guide
+or redesign the action instead of extending the same prompt.
+
+An exceptional multi-batch action is allowed only for a non-capacity continuity
+constraint. Carry the base and one or two accepted boundary poses into the next
+batch, keep cell geometry unchanged, and inspect both sides of the join. Never
+fill a sequence with duplicate poses, crossfade, morph, optical flow,
 procedural interpolation, or transformed copies.
 
-## Motion quality
+## Deterministic pose guides
 
-Every action must:
+Create every complex-action guide with a deterministic script, never an image
+model. The script must:
 
-- communicate its fixed semantic intent at 192×208 without zoom;
-- preserve recognizable identity, anatomy, costume, palette, and prop
-  attachment;
-- use deliberate spacing and per-frame holds;
-- keep all visible pixels away from the canvas edge;
-- avoid accidental wobble, popping, recentering, disappearance, or crop jumps;
-- end at a readable settle/return appropriate to its playback mode;
-- select a reduced-motion frame that reads independently and is not an
-  in-between.
+1. Create a pure `#FF00FF` canvas at the target action-sheet dimensions.
+2. Divide it into invisible equal-width slots:
 
-Apply these checks to the exact-tier runtime PNGs after the optional downscale,
-not only to the larger source or transparent master. Downscaling does not waive
-action readability, distinct-pose, identity, anatomy, prop, crop, or playback
-quality requirements.
+   ```text
+   slot_width = canvas_width / frame_count
+   slot_center_x = (frame_index + 0.5) * slot_width
+   ```
 
-Whole-character translation, rotation, squash/stretch, recoil, or scale change
-is valid when deliberate and continuous. Motion amplitude metrics are evidence,
-not automatic failures. Resident/high-frequency actions normally keep the root
-stable and move local features; low-frequency semantic reactions may use a
-short prepared whole-body action.
+3. Draw every pose from one skeleton definition, joint-length set, head size,
+   and `global_scale`.
+4. Put one complete pose in each slot and keep horizontal occupancy at or below
+   80–85% of the slot.
+5. Keep one foot baseline for ordinary actions. For a jump, change joint
+   coordinates and whole-pose `y_offset`; never scale one frame.
+6. Emit no border, cell, grid, divider, number, text, label, shadow, or action
+   effect. Light and dark gray may describe limb depth only.
 
-For `loop` and `periodic`, inspect the final-to-first boundary. For a repeated
-`burst_then_settle`, inspect the repeated boundary and final settle. For
-`once_then_return`, inspect the completion-to-underlying-action handoff rather
-than forcing a loop.
+The guide controls pose count, joints, sequence, spacing, and depth. It is not
+production artwork and no guide pixel may survive in a pet frame.
 
-## Incremental and final verification
+## Reference and prompt contract
 
-After each state:
+Upload the character base first and the pose guide second. When both are used,
+include this responsibility block verbatim:
 
-```bash
-python3 <maker-skill-dir>/scripts/petpack_workspace.py motion-qa \
-  --workspace /absolute/workspace \
-  --state <state>
+```text
+Image 1 defines the exact character identity, face, hair, clothing,
+body proportions and materials.
+
+Image 2 is a script-generated frameless equal-scale pose guide. It
+defines only pose count, joint positions, sequence, spacing and depth.
+
+Replace every guide figure completely with the character from Image 1.
+Do not preserve any mannequin, skeleton, guide color, frame, grid,
+label or background artifact.
+
+Keep the same camera distance, head size, shoulder width, body scale
+and clothing design in every pose.
 ```
 
-Repair objective clipping or synthetic interpolation before any later image
-call. Inspect the `authored_timing` preview at actual per-frame durations.
+Every action prompt must also require:
 
-After all actions, rerun without `--state`, inspect `keyframes.png`, all nine
-authored-timing previews, and the generated 8–12 second presence preview, then
-bind `motion-review`. The presence preview uses authored durations, contains at
-least three calm idle rests, remains bound to all nine actions, and rejects a
-semantic action that freezes in under one second or loops mechanically for the
-whole review. Never retime frames for this preview. Any frame or manifest timing
-edit requires fresh evidence.
+- the exact frame count and left-to-right order;
+- one complete same-scale character in each invisible slot;
+- the same identity, face, outfit, proportions, materials, and camera in every
+  pose;
+- no touching, overlap, or cropped hair, appendages, hands, feet, or heels;
+- a perfectly uniform textureless solid background with no floor, shadow,
+  reflection, text, border, or floating effect;
+- `CRITICAL SCALE LOCK` for jumps or other scale-sensitive motion;
+- `contact -> settle -> passing -> advance` with alternating limbs for a walk;
+- correctly connected feet and heels in every relevant pose.
 
-Before finalization, the existing `production-verify` path must report all
-component gates and derive `usable` only when build, package, interaction,
-runtime, and visual checks are all true. Finalization calls the same gate; do
-not create a parallel visual QA path.
+Choose the output chroma background by the transparency contract. The guide's
+magenta canvas is structural input, not an instruction to copy its color.
+
+## Failure routing
+
+- Corner marks: move subjects away from all four corners and preserve exterior
+  blank space.
+- Gradient or paneled background: strengthen `perfectly uniform, textureless
+  solid background`.
+- Copied guide figures: require complete replacement and forbid retained guide
+  pixels.
+- Scale drift: lock camera distance, head size, shoulder width, and full-body
+  scale.
+- Jump shadows: forbid floor, cast, contact, and oval shadows explicitly.
+- Repeated walk poses: revise scripted joint coordinates instead of stacking
+  prompt variants.
+
+## Runtime-size acceptance
+
+Review the exact-tier runtime PNGs, not only the source sheet or transparent
+master. Every action must retain identity, anatomy, costume, palette, prop
+attachment, readable intent, distinct poses, deliberate spacing, safe crop,
+and the mode-appropriate loop, settle, or return. Choose a reduced-motion pose
+that reads independently.
+
+Intentional translation, rotation, recoil, bounce, squash/stretch, or scale
+change is valid when continuous and coherent. Motion magnitude is review
+evidence, not an automatic aesthetic failure. Clipping and synthetic
+interpolation are hard failures.
+
+Run state Motion QA immediately after acceptance. After all actions, inspect
+all authored-timing previews, `keyframes.png`, and the 8–12 second presence
+preview, then bind `motion-review`. Never retime authored frames to pass the
+preview. Any frame or timing edit requires fresh evidence.

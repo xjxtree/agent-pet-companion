@@ -56,6 +56,10 @@ const AGENT_PET_MAKER_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "references/dreamina-high-production.md",
+        include_str!("../../../skills/agent-pet-maker/references/dreamina-high-production.md"),
+    ),
+    (
         "references/transparent-frame-production.md",
         include_str!("../../../skills/agent-pet-maker/references/transparent-frame-production.md"),
     ),

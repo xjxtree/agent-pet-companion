@@ -116,7 +116,7 @@ run_step "fast/core" "native Swift Phase A/T-B4 interaction attestation bound to
   "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
   --output "$APC_INTERACTION_ATTESTATION_PATH"
 run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
-run_step "fast/core" "in-app Pet Studio timing source helper" "$ROOT_DIR/script/validate_pet_studio_helper.sh"
+run_step "fast/core" "pet-making Skill structure and shared contracts" "$ROOT_DIR/script/validate_pet_skills.sh"
 run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
 run_step "fast/core" "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
 run_step "fast/core" "strict Rust linting" cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --all-targets --all-features --locked -- -D warnings

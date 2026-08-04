@@ -3660,15 +3660,17 @@ fn pet_studio_turn_prompt(form: &GenerationForm) -> String {
     format!(
         r#"Use agent-pet-studio to create or modify one Agent Pet Companion pet. Output mode: {mode}.
 
-The portable contract is `apc.petpack.v3`. Author exactly the six semantic actions and three local interaction actions in the default timing below. Do not emit gaze rows, hover reactions, autonomous movement, aliases, or legacy package-wide rate/global-duration fields. Every action uses `frame_durations_ms`, `playback`, and `reduced_motion_frame_index`; every PNG count must equal its timing-array length. Preserve baseline authored timing unless the user explicitly requests a timing edit, and re-render every affected action.
+The portable contract is `apc.petpack.v3`. Author exactly the six semantic actions and three local interaction actions. For a new pet, use the default timing below unless the user's description explicitly requests another complete valid V3 timing. For an edit, preserve the validated baseline authored timing unless the user explicitly requests a timing edit; an existing valid V3 package never has to adopt the current creation defaults. Do not emit gaze rows, hover reactions, autonomous movement, aliases, or legacy package-wide rate/global-duration fields. Every action uses `frame_durations_ms`, `playback`, and `reduced_motion_frame_index`; every PNG count must equal its timing-array length, and every affected action must be re-rendered.
 
 Default authored timing:
 {timing_json}
 
-For brief output return compact JSON with name, visual_brief, palette, timing_changed, states, render_notes, and petpack_source. Each states entry contains name, motion, frame_durations_ms, playback, and reduced_motion_frame_index. Keep timing_changed false unless an explicit edit changes the complete timing contract.
+For brief output return compact JSON with name, visual_brief, palette, timing_changed, states, render_notes, and petpack_source. Each states entry contains name, motion, frame_durations_ms, playback, and reduced_motion_frame_index. Keep timing_changed false when using the creation default or preserving an edit baseline; set it true only when an explicit user request changes the complete timing contract.
 
 For external_full_source, author distinct frames, run incremental and combined motion QA/review plus production-verify, inspect the combined 8–12 second all-action-bound presence preview, reject premature static or mechanical looping without retiming, validate with `$APC_PETCORE_CLI petpack validate petpack-source`, then return:
 {{"petpack_source":"petpack-source","mode":"external_full_source","timing_changed":false,"authored_timing":{timing_json}}}
+
+That literal external result applies when the creation defaults are used. For an explicit valid user timing request, return timing_changed=true and the actual complete manifest authored_timing instead.
 
 If required identity is missing, return:
 {{"needs_input":true,"question":"one concise Studio follow-up question"}}
@@ -4110,6 +4112,16 @@ mod timing_normalization_tests {
                     .unwrap(),
             })
             .unwrap()
+    }
+
+    #[test]
+    fn initial_turn_prompt_allows_explicit_timing_without_migrating_a_v3_baseline() {
+        let prompt = pet_studio_turn_prompt(&submitted_form());
+
+        assert!(prompt.contains("unless the user's description explicitly requests"));
+        assert!(prompt.contains("another complete valid V3 timing"));
+        assert!(prompt.contains("existing valid V3 package never has to adopt"));
+        assert!(prompt.contains("actual complete manifest authored_timing"));
     }
 
     #[test]

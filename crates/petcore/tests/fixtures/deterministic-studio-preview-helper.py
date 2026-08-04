@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Write a validated Agent Pet Companion petpack-source for App Server turns.
+"""Write a deterministic preview source for PetCore rejection tests.
 
-This helper is intentionally self-contained so the Codex App Server can invoke a
-small, auditable command instead of hand-authoring every petpack file.
+This fixture is self-contained because the test environment cannot assume
+Pillow. It is not an Agent Pet Studio producer or a distributable Skill tool.
 """
 
 import base64
@@ -14,11 +14,10 @@ import re
 import shutil
 import struct
 import subprocess
-import sys
 import time
 import zlib
 
-HELPER_ID = "agent-pet-studio-preview-helper-v7"
+HELPER_ID = "petcore-deterministic-preview-fixture-v1"
 FORM_PATH = Path("apc_skill_form.json")
 OUTPUT_DIR = Path("petpack-source")
 STATES = [
@@ -34,7 +33,7 @@ STATES = [
 ]
 DEFAULT_STATE_TIMINGS = {
     "idle": {
-        "frame_durations_ms": [300, 260, 300, 640],
+        "frame_durations_ms": [260, 220, 240, 260, 380, 640],
         "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
@@ -52,11 +51,11 @@ DEFAULT_STATE_TIMINGS = {
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
-        "frame_durations_ms": [150, 150, 150, 150, 170, 230],
+        "frame_durations_ms": [100, 100, 110, 110, 120, 130, 160, 230],
         "playback": {
             "mode": "burst_then_settle",
-            "entry_repeat_count": 2,
-            "settle_frame_index": 5,
+            "entry_repeat_count": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 4,
     },
@@ -66,11 +65,11 @@ DEFAULT_STATE_TIMINGS = {
         "reduced_motion_frame_index": 2,
     },
     "failed": {
-        "frame_durations_ms": [150, 170, 190, 290],
+        "frame_durations_ms": [80, 80, 90, 100, 110, 120, 190, 290],
         "playback": {
             "mode": "burst_then_settle",
             "entry_repeat_count": 3,
-            "settle_frame_index": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 2,
     },
@@ -125,12 +124,7 @@ def safe_pet_id(description):
     return f"pet_{suffix}{millis}"
 
 
-def timing_from_form(form):
-    legacy_fields = {"native_fps", "state_durations_ms"} & set(form)
-    if legacy_fields:
-        raise SystemExit(
-            "legacy timing fields are unsupported; use the fixed V3 authored timing contract"
-        )
+def timing_from_form(_form):
     state_timings = {
         state: json.loads(json.dumps(DEFAULT_STATE_TIMINGS[state])) for state in STATES
     }
@@ -233,7 +227,7 @@ def build_source(form):
     state_timings, state_frame_counts = timing_from_form(form)
     created_at = now_rfc3339()
     pet_id = safe_pet_id(form.get("description", "skillpet"))
-    name = "Skill Studio Pet"
+    name = "Deterministic Preview Fixture"
     style = str(form.get("style") or "不指定")
     manifest = {
         "schema_version": "apc.petpack.v3",
@@ -264,7 +258,7 @@ def build_source(form):
             "states": [
                 {
                     "name": state,
-                    "motion": f"{state} validation motion from App Server Skill helper",
+                    "motion": f"{state} deterministic preview fixture motion",
                     **state_timings[state],
                 }
                 for state in STATES
@@ -275,7 +269,7 @@ def build_source(form):
                 "render_size": {"width": width, "height": height},
             },
             "generation": {
-                "generator": "agent-pet-studio-preview-helper",
+                "generator": "petcore-deterministic-preview",
                 "provenance": "deterministic_preview",
                 "skill_helper": HELPER_ID,
                 "preview_only": True,
@@ -315,7 +309,7 @@ def build_source(form):
     packaged_form["reference_images"] = reference_files
     write_text(
         source_dir / "prompt.md",
-        "# Agent Pet Studio Prompt\n\n"
+        "# Deterministic Preview Fixture\n\n"
         + json.dumps(packaged_form, ensure_ascii=False, indent=2)
         + "\n",
     )
@@ -323,7 +317,7 @@ def build_source(form):
         source_dir / "source.json",
         {
             "schema_version": "apc.pet-source.v1",
-            "generator": "agent-pet-studio-preview-helper",
+            "generator": "petcore-deterministic-preview",
             "provenance": "deterministic_preview",
             "skill_helper": HELPER_ID,
             "runner": "codex-app-server",

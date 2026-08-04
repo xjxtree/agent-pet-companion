@@ -34,11 +34,11 @@ struct PetStudioTests {
         #expect(PetStudioPresentation.timingSummary(
             states,
             localeIdentifier: "en"
-        ) == "42 frames across 9 actions · authored per-frame timing")
+        ) == "50 frames across 9 actions · authored per-frame timing")
         #expect(PetStudioPresentation.timingSummary(
             states,
             localeIdentifier: "zh-Hans"
-        ) == "42 帧 · 9 个动作 · 逐帧创作时序")
+        ) == "50 帧 · 9 个动作 · 逐帧创作时序")
     }
 
     @Test

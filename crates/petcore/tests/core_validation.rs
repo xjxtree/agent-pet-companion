@@ -3424,7 +3424,7 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
 }
 
 #[test]
-fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_helper() {
+fn generation_external_full_source_rejects_injected_deterministic_preview() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
@@ -3456,7 +3456,7 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
     .unwrap();
     let job_id = start["job_id"].as_str().unwrap();
     let job_dir = state.paths.jobs_dir.join(job_id);
-    let helper_path = job_dir.join("apc_write_skill_source.py");
+    let helper_path = job_dir.join("injected_preview_fixture.py");
     let form_path = job_dir.join("apc_skill_form.json");
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -3469,15 +3469,15 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
     }
     assert!(
         !helper_path.exists(),
-        "external full-source mode must not stage a deterministic preview helper"
+        "external full-source mode must not stage a deterministic preview fixture"
     );
     std::fs::write(
         &helper_path,
-        include_str!("../../../skills/agent-pet-studio/scripts/write_petpack_source.py"),
+        include_str!("fixtures/deterministic-studio-preview-helper.py"),
     )
     .unwrap();
     let helper_output = Command::new("python3")
-        .arg("apc_write_skill_source.py")
+        .arg("injected_preview_fixture.py")
         .current_dir(&job_dir)
         .output()
         .unwrap();
@@ -3489,7 +3489,7 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
     );
     std::fs::write(&wait_file, "ok").unwrap();
 
-    // The injected helper writes the complete fixed-timing preview frames. Rejection still decodes the
+    // The injected fixture writes complete fixed-timing preview frames. Rejection still decodes the
     // full source contract, which can take longer while CI runs other image-heavy
     // generation tests in parallel.
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -3528,9 +3528,12 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
         .join("source.json");
     let source: serde_json::Value =
         serde_json::from_slice(&std::fs::read(source_path).unwrap()).unwrap();
-    assert_eq!(source["generator"], "agent-pet-studio-preview-helper");
+    assert_eq!(source["generator"], "petcore-deterministic-preview");
     assert_eq!(source["provenance"], "deterministic_preview");
-    assert_eq!(source["skill_helper"], "agent-pet-studio-preview-helper-v7");
+    assert_eq!(
+        source["skill_helper"],
+        "petcore-deterministic-preview-fixture-v1"
+    );
     assert_eq!(source["preview_only"], true);
     assert_eq!(source["states"][0]["name"], "idle");
     assert_eq!(
@@ -3538,10 +3541,12 @@ fn generation_external_full_source_does_not_stage_and_rejects_injected_preview_h
             .as_array()
             .unwrap()
             .len(),
-        4
+        6
     );
-    assert_eq!(source["state_frame_counts"]["idle"], 4);
+    assert_eq!(source["state_frame_counts"]["idle"], 6);
     assert_eq!(source["state_frame_counts"]["thinking"], 4);
+    assert_eq!(source["state_frame_counts"]["waiting"], 8);
+    assert_eq!(source["state_frame_counts"]["failed"], 8);
     assert!(source.get("materialized_by").is_none());
 
     let snapshot = handle_request(
@@ -4450,10 +4455,10 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(source["states"][0]["name"], "idle");
     assert_eq!(
         source["states"][0]["frame_durations_ms"],
-        json!([300, 260, 300, 640])
+        json!([260, 220, 240, 260, 380, 640])
     );
     assert_eq!(source["states"][0]["playback"]["mode"], "periodic");
-    assert_eq!(source["state_frame_counts"]["idle"], 4);
+    assert_eq!(source["state_frame_counts"]["idle"], 6);
     assert_eq!(
         source["form"]["reference_images"][0],
         "source/references/reference-00.png"
@@ -4863,7 +4868,8 @@ fn repair_generates_real_pi_and_opencode_connectors() {
     let codex_skill_content = std::fs::read_to_string(&codex_skill).unwrap();
     assert!(codex_plugin.is_file());
     assert!(codex_skill_content.contains(".petpack V3 assets"));
-    assert!(codex_skill_content.contains("authored per-frame timing"));
+    assert!(codex_skill_content.contains("future-creation timing defaults"));
+    assert!(codex_skill_content.contains("petpack-v3.md"));
     assert!(codex_skill_content.contains("APC_PETCORE_CLI"));
     let maker_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/agent-pet-maker");
     for relative_path in [
@@ -4871,6 +4877,7 @@ fn repair_generates_real_pi_and_opencode_connectors() {
         "references/petpack-v3.md",
         "references/create-modify.md",
         "references/visual-production-and-native-resolution.md",
+        "references/dreamina-high-production.md",
         "references/transparent-frame-production.md",
         "references/security.md",
         "scripts/petpack_workspace.py",

@@ -84,7 +84,7 @@ PRODUCTION_INTERACTION_EVIDENCE = (
 )
 DEFAULT_STATE_TIMINGS = {
     "idle": {
-        "frame_durations_ms": [300, 260, 300, 640],
+        "frame_durations_ms": [260, 220, 240, 260, 380, 640],
         "playback": {"mode": "periodic", "cooldown_ms": [2500, 5000]},
         "reduced_motion_frame_index": 2,
     },
@@ -102,11 +102,11 @@ DEFAULT_STATE_TIMINGS = {
         "reduced_motion_frame_index": 2,
     },
     "waiting": {
-        "frame_durations_ms": [150, 150, 150, 150, 170, 230],
+        "frame_durations_ms": [100, 100, 110, 110, 120, 130, 160, 230],
         "playback": {
             "mode": "burst_then_settle",
-            "entry_repeat_count": 2,
-            "settle_frame_index": 5,
+            "entry_repeat_count": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 4,
     },
@@ -116,11 +116,11 @@ DEFAULT_STATE_TIMINGS = {
         "reduced_motion_frame_index": 2,
     },
     "failed": {
-        "frame_durations_ms": [150, 170, 190, 290],
+        "frame_durations_ms": [80, 80, 90, 100, 110, 120, 190, 290],
         "playback": {
             "mode": "burst_then_settle",
             "entry_repeat_count": 3,
-            "settle_frame_index": 3,
+            "settle_frame_index": 7,
         },
         "reduced_motion_frame_index": 2,
     },
@@ -478,18 +478,15 @@ def installed_cli_candidates() -> list[Path]:
         ):
             candidates.append(resources_dir / "bin" / "petcore-cli")
 
-    # AgentPetCompanion.app is the actual bundle name. Keep the historical
-    # spaced spelling as a compatibility fallback for older local builds.
     for applications_root in (Path("/Applications"), home / "Applications"):
-        for application_name in ("AgentPetCompanion.app", "Agent Pet Companion.app"):
-            candidates.append(
-                applications_root
-                / application_name
-                / "Contents"
-                / "Resources"
-                / "bin"
-                / "petcore-cli"
-            )
+        candidates.append(
+            applications_root
+            / "AgentPetCompanion.app"
+            / "Contents"
+            / "Resources"
+            / "bin"
+            / "petcore-cli"
+        )
     return candidates
 
 
@@ -1345,7 +1342,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             if manifest.get("schema_version") != PETPACK_SCHEMA:
                 raise MakerError(
                     "invalid_manifest",
-                    "Only apc.petpack.v3 packages can be modified; V1/V2 packages must be recreated",
+                    "Only apc.petpack.v3 packages can be modified",
                 )
             state_files, state_counts = collect_state_files(staging, manifest)
             timing = manifest_timing_contract(manifest)
@@ -2357,7 +2354,7 @@ def motion_qa(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3",
         )
     timing = manifest_timing_contract(manifest)
     combined_run = not bool(args.state)
@@ -2553,7 +2550,7 @@ def motion_lock(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3",
         )
     timing = manifest_timing_contract(manifest)
     frame_paths = ordered_state_frame_paths(source_dir, manifest, args.state)
@@ -3191,7 +3188,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     if manifest.get("schema_version") != PETPACK_SCHEMA:
         raise MakerError(
             "invalid_manifest",
-            "manifest.schema_version must be apc.petpack.v3; V1/V2 packages must be recreated",
+            "manifest.schema_version must be apc.petpack.v3",
         )
     current_files, state_counts = collect_state_files(source_dir, manifest)
     timing = manifest_timing_contract(manifest)
