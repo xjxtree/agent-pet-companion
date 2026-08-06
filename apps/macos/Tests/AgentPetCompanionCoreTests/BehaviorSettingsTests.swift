@@ -29,8 +29,8 @@ struct BehaviorSettingsTests {
         next.autoHide = true
         next.interfaceLanguage = .simplifiedChinese
         next.appearanceTheme = .dark
-        next.bubbleTransparency = 0.75
         next.sessionMessageTimeoutMinutes = 30
+        next.groupSessionsByAgent = false
         next.sessionGroupDisplay = .expanded
         next.sources[.codex] = false
         next.events[.tool] = false
@@ -45,8 +45,8 @@ struct BehaviorSettingsTests {
         #expect(object["auto_hide"] as? Bool == true)
         #expect(object["interface_language"] as? String == "simplified_chinese")
         #expect(object["appearance_theme"] as? String == "dark")
-        #expect(object["bubble_transparency"] as? Double == 0.75)
         #expect(object["session_message_timeout_minutes"] as? Int == 30)
+        #expect(object["group_sessions_by_agent"] as? Bool == false)
         #expect(object["session_group_display"] as? String == "expanded")
         let sources = try #require(object["sources"] as? [String: Any])
         let events = try #require(object["events"] as? [String: Any])
@@ -59,30 +59,29 @@ struct BehaviorSettingsTests {
     }
 
     @Test
-    func bubbleTransparencyDefaultsAndClampsLegacyValues() throws {
-        let legacy = try JSONDecoder().decode(
+    func bubbleTransparencyIsNotPartOfTheBehaviorContract() throws {
+        let decoded = try JSONDecoder().decode(
             BehaviorSettings.self,
-            from: Data(#"{"enabled":true}"#.utf8)
+            from: Data(#"{"bubble_transparency":0.55}"#.utf8)
         )
-        let tooTransparent = try JSONDecoder().decode(
-            BehaviorSettings.self,
-            from: Data(#"{"bubble_transparency":4}"#.utf8)
+        let encoded = try JSONEncoder().encode(decoded)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
 
-        #expect(legacy.bubbleTransparency == BehaviorSettings.defaultBubbleTransparency)
-        #expect(legacy.interfaceLanguage == .system)
-        #expect(legacy.appearanceTheme == .system)
-        #expect(legacy.sessionGroupDisplay == .stacked)
-        #expect(tooTransparent.bubbleTransparency == 1)
-        #expect(BehaviorSettings.clampedBubbleTransparency(-2) == 0)
+        #expect(decoded.interfaceLanguage == .system)
+        #expect(decoded.appearanceTheme == .system)
+        #expect(decoded.groupSessionsByAgent)
+        #expect(decoded.sessionGroupDisplay == .stacked)
+        #expect(object["bubble_transparency"] == nil)
     }
 
     @Test
-    func languageAppearanceAndSessionGroupingRoundTripWithoutChangingTransparency() throws {
+    func languageAppearanceAndSessionGroupingRoundTrip() throws {
         let behavior = BehaviorSettings(
             interfaceLanguage: .english,
             appearanceTheme: .light,
-            bubbleTransparency: 0.35,
+            groupSessionsByAgent: false,
             sessionGroupDisplay: .expanded
         )
         let data = try JSONEncoder().encode(behavior)
@@ -90,22 +89,26 @@ struct BehaviorSettingsTests {
 
         #expect(decoded.interfaceLanguage == .english)
         #expect(decoded.appearanceTheme == .light)
-        #expect(decoded.bubbleTransparency == 0.35)
+        #expect(!decoded.groupSessionsByAgent)
         #expect(decoded.sessionGroupDisplay == .expanded)
         #expect(SessionGroupDisplay.allCases.map(\.title) == ["堆叠", "展开"])
     }
 
     @Test
     func sessionGroupingPatchDecodesAndEncodesItsJSONKey() throws {
-        let data = Data(#"{"session_group_display":"expanded"}"#.utf8)
+        let data = Data(
+            #"{"group_sessions_by_agent":false,"session_group_display":"expanded"}"#.utf8
+        )
         let patch = try JSONDecoder().decode(BehaviorSettingsPatch.self, from: data)
 
+        #expect(patch.groupSessionsByAgent == false)
         #expect(patch.sessionGroupDisplay == .expanded)
         #expect(!patch.isEmpty)
 
         let encoded = try JSONEncoder().encode(patch)
         let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        #expect(object.count == 1)
+        #expect(object.count == 2)
+        #expect(object["group_sessions_by_agent"] as? Bool == false)
         #expect(object["session_group_display"] as? String == "expanded")
     }
 

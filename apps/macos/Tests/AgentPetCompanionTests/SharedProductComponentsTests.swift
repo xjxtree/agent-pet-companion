@@ -211,7 +211,11 @@ struct SharedProductComponentsTests {
         #expect(!sharedSource.contains("case .start, .tool: .blue"))
         let adaptiveDetailLineLimit = """
         Text(session.primaryDetailText)
-                            .font(.caption.weight(.semibold))
+                            .font(OverlayBubbleTypography.font(
+                                .caption1,
+                                weight: .semibold,
+                                scale: fontScale
+                            ))
                             .foregroundStyle(Color.primary)
                             .lineLimit(session.secondaryDetailText == nil
                                 ? OverlayGeometry.bubbleDetailLineLimit
@@ -219,7 +223,7 @@ struct SharedProductComponentsTests {
         """
         #expect(sharedSource.contains(adaptiveDetailLineLimit))
         #expect(sharedSource.contains(
-            "openLabel: session.actionLabel"
+            "openLabel: primaryActionLabel ?? session.actionLabel"
         ))
     }
 

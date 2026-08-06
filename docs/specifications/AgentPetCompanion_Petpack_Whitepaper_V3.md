@@ -118,20 +118,36 @@ prove output pixels. Within one state, source crop windows keep stable geometry
 and preserve authored translation and baseline rather than independently
 fitting each pose to its subject bounds.
 
+After transparent exact-tier frames exist, Motion QA reports each frame's
+Alpha-weighted body anchor and visible baseline. The producer compares that
+path with the action card and deterministic pose guide: intentional travel and
+authored easing remain untouched. When whole-subject registration is the only
+defect, a QA-digest-bound correction may translate complete transparent frames
+by integer pixels to a locked, equal-spacing, or explicit guide-derived path.
+It performs no scaling, rotation, resampling, Alpha filtering, or pose
+deformation; any lost Alpha or transparent-padding violation rejects the
+correction. Corrected frames require fresh Motion QA and visual review.
+
+For model-generated multi-frame rows, Maker and Studio use one canonical
+character base plus a deterministic pose guide and a separate deterministic
+size-reference image. Both structural references come from one recorded slot,
+centered crop, safe-box, baseline, and global-scale geometry; prompted
+equal-size figures are guidance, not acceptance evidence. These workspace-only
+guides never enter the portable package.
+
 The shared Maker/Studio transparency pipeline retains that source-resolution
 transparent master and may perform one direct linear-light
 premultiplied-Alpha downscale to the runtime tier for `low`, `standard`, or
 `high`. Upscaling, super-resolution, stretching, resizing before matting,
 independent per-pose fitting, cascaded or post-process resizing, or padding a
 smaller crop into the target canvas is invalid. Package support does not claim
-that every producer can create every tier. The measured ChatGPT/Codex built-in
-`imagegen` path does not preserve a 12:13 crop of at least 576×624 for each cell
-in an eight-cell state sheet, so the App's Codex-backed Studio and that image
-tool are limited to `low` and `standard`. Another producer may author `high`
-only when its untouched decoded source proves sufficient pixels for every cell;
-splitting a state across multiple batches is not a substitute for missing
-source capacity. Qualification evidence and rerun conditions are documented in
-[Validation Profiles](../development/validation.md).
+that every producer can create every tier. The App's Codex-backed Studio and
+the built-in ChatGPT/Codex image path are qualified only for `low` and
+`standard`. Another producer may author `high` only when its untouched decoded
+source proves sufficient pixels for every cell; splitting a state across
+multiple batches is not a substitute for missing source capacity.
+[Validation Profiles](../development/validation.md) defines which validation
+layer covers this boundary.
 
 Display size is a separate App preference and never changes package identity or
 authored pixels. The App exposes an 80–224 pt logical-width slider; it does not
@@ -286,7 +302,10 @@ must not be used to infer runtime timing.
 - The image model does not need to return exact target dimensions. The producer
   records actual decoded dimensions, verifies exact frame count/order and
   complete action poses, and extracts stable equal-size 12:13 source windows
-  without independently recentering subjects.
+  without independently recentering subjects. The only registration exception
+  is a reviewed post-transparency integer whole-frame translation bound to
+  fresh Motion QA; it may correct model drift but never change subject scale,
+  pose, or an intentional trajectory.
 - Each state is normally produced in one image batch. An exceptional
   multi-batch row within a supported tier carries accepted boundary poses and
   the canonical base into the next batch and receives explicit join review. A
@@ -473,7 +492,7 @@ externally and become usable after ordinary validation and import.
 
 ## 11. Security budgets
 
-These limits are unchanged from the preceding format:
+Current limits:
 
 | Resource | Maximum |
 |---|---:|
@@ -511,21 +530,3 @@ table together.
 Run the schema fixtures, relevant PetCore tests, portable Skill tests, and
 packaged-App acceptance for a change that touches this contract. Results belong
 in CI or matching release evidence, not in this specification.
-
-## 13. Producer checklist
-
-- [ ] Archive identity, layout, metadata, and manifest exactly match V3.
-- [ ] ID is stable and is not derived from the display name.
-- [ ] Quality and exact canvas are low 192×208, standard 384×416, or high 576×624.
-- [ ] All nine fixed actions declare valid per-frame durations, the required action-specific playback mode, and a representative reduced-motion frame.
-- [ ] No gaze directions, hover reaction, or autonomous-motion action is present.
-- [ ] Every state has exactly one PNG per duration entry; frames and previews decode within the unchanged budgets.
-- [ ] One canonical identity, readable state intent, coherent trajectory and crop, deliberate spacing, and prop continuity are explicit for every generated state.
-- [ ] Every actual-duration `authored_timing` preview, the keyframe sheet, and the 8–12 second combined presence preview were inspected; no semantic action freezes in under one second or loops mechanically, and all timing/frame digests and per-state reviews are current.
-- [ ] No state was fabricated through sampling, retiming, duplicates, interpolation, or an undersized source crop.
-- [ ] Every newly generated or regenerated frame has a passing shared transparency report, an inspected five-background preview, a retained source-resolution transparent master, zero changed opaque-interior RGB pixels, and at most one direct runtime downscale.
-- [ ] The exact-tier runtime animation after any downscale passes the same identity, distinct-pose, action, anatomy, prop, crop, continuity, reduced-motion, and loop/settle review as an exact-size source.
-- [ ] Metadata passes all schemas, cross-file consistency, privacy checks, and reference bounds.
-- [ ] No credentials, local paths, runtime identifiers, transcripts, commands, tool data, hidden reasoning, or executable content are present.
-- [ ] Build, validate, import, activate, render all states, export, and reimport succeed in an isolated home.
-- [ ] Creation or modification does not mutate the user's library without explicit import, and activation remains a separate explicit choice.

@@ -1,43 +1,31 @@
 # Project Documentation / 项目文档
 
-`README.md` and `README.zh-CN.md` are the human-facing product entrypoints. This directory contains durable current-state knowledge for maintainers and AI agents: architecture, data contracts, integration boundaries, validation semantics, specifications, and release operations.
-
-`README.md` 与 `README.zh-CN.md` 面向普通用户；本目录保存供维护者与 AI Agent 使用的当前架构、数据契约、集成边界、验证语义、格式规范和发布操作。
+`README.md` and `README.zh-CN.md` are the product entrypoints. This directory contains the durable technical contracts used by maintainers and Agents. / 根目录 README 面向用户；本目录只保存维护者与 Agent 需要长期维护的技术契约。
 
 ## Source order / 信息优先级
 
-When sources disagree, use this order:
+1. Current user request / 当前用户要求
+2. Implementation, typed schemas, manifests, and tests / 实现、类型化 schema、manifest 与测试
+3. The owning document below / 下表中负责该主题的文档
+4. Public README / 面向用户的 README
 
-1. the current user request;
-2. implementation, typed schemas, runtime manifests, and tests in the changed area;
-3. the durable current-state document that owns the contract;
-4. the public README for user-facing behavior.
+When prose disagrees with code, investigate the implementation and update the single owning document. / 文档与实现冲突时，应核对实现并更新唯一负责该主题的文档。
 
-发现冲突时，以当前用户要求为最高优先级，其次是相关代码、类型化 schema、runtime manifest 与测试，随后是负责当前契约的长期文档，最后才是面向用户的 README。修复冲突时同步更新唯一的长期入口，不要新增“当前状态”副本。
+## Documents / 文档
 
-## Navigation / 导航
+| Document / 文档 | Owns / 负责内容 |
+|---|---|
+| [System architecture](architecture/overview.md) | Components, ownership, product boundaries, and main flows / 组件、所有权、产品边界与主流程 |
+| [Runtime and IPC](architecture/runtime-and-ipc.md) | Processes, startup, replacement, transport, updates, and diagnostics / 进程、启动、替换、通信、更新与诊断 |
+| [Data model](architecture/data-model.md) | Storage, typed projections, identity, revisions, retention, and versioned contracts / 存储、类型化投影、身份、revision、保留与版本契约 |
+| [Agent connectors](integrations/agent-connectors.md) | Host adapters, event mapping, routing, managed operations, and privacy / Agent 适配、事件映射、路由、受管操作与隐私 |
+| [`.petpack` V3](specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) | Portable package format and producer conformance / 可移植宠物包格式与制作合规要求 |
+| [Validation profiles](development/validation.md) | What each validation layer proves / 各验证层能够证明什么 |
+| [macOS release](release/macos-release.md) | Official GitHub Release procedure and installation contract / 正式 GitHub Release 流程与安装合同 |
+| [CHANGELOG](../CHANGELOG.md) | Versioned user-visible changes / 按版本记录的用户可见变化 |
 
-| Area / 目录 | Document / 文档 | Purpose / 用途 |
-|---|---|---|
-| Architecture | [System overview](architecture/overview.md) | Components, ownership, main flows, and repository map / 组件、所有权、主流程与仓库结构 |
-| Architecture | [Runtime and IPC](architecture/runtime-and-ipc.md) | Processes, startup/update lifecycle, transports, RPC, and diagnostics / 进程、启动与更新、传输、RPC 和诊断 |
-| Architecture | [Data model](architecture/data-model.md) | SQLite, file-backed revisions, typed contracts, retention, and invariants / SQLite、文件 revision、类型契约、保留与不变量 |
-| Integrations | [Agent connectors](integrations/agent-connectors.md) | Codex, Claude Code, Pi, and OpenCode event boundaries / 四类 Agent 的连接与事件边界 |
-| Specifications | [`.petpack` V3](specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) | Portable nine-action pet package, authored timing, interactions, and producer contract / 九动作可移植宠物包、制作时序、交互与生产者契约 |
-| Development | [Validation profiles](development/validation.md) | What each gate proves and when it may run / 各门禁的证明范围与运行条件 |
-| Release | [macOS GitHub Release procedure](release/macos-release.md) | Ad-hoc-signed thin arm64/x86_64 archives, latest stable API validation, manual replacement, downloaded-asset revalidation, post-replacement convergence, and first-open consent / ad-hoc 签名的 arm64/x86_64 thin 归档、latest stable API 校验、手动替换、下载后复验、替换后收敛与首次打开授权 |
-| Repository root | [CHANGELOG](../CHANGELOG.md) | One versioned user-visible change record per GitHub Release / 每个 GitHub Release 对应的版本变更记录 |
+## Maintenance / 维护
 
-## Maintenance rules / 维护规则
-
-- Keep one durable document per topic and link to source instead of copying large code or schema blocks.
-- Documents describe current behavior and invariants. Do not retain completed design proposals, task plans, roadmaps, rolling status, dated audits, screenshots used as evidence, implementation diaries, duplicate pending-work lists, or test logs.
-- Put task execution state in issues, commits, pull requests, and CI. Put commit/build evidence in CI artifacts and the matching GitHub Release notes.
-- Record every user-visible change under `[Unreleased]` in the root [CHANGELOG](../CHANGELOG.md); each published release converts it into one version section.
-- Never commit exported diagnostics, user data, credentials, generated release output, build caches, or temporary pet assets as documentation.
-
-- 每个主题只保留一份长期文档，优先链接源码，不复制大段实现或 schema。
-- 文档只描述当前行为与不变量；不保留已实施的设计提案、任务规划、路线图、滚动状态、按日期审计、证据截图、实现过程、重复待办或测试日志。
-- 任务执行状态进入 issue、commit、PR 与 CI；某次提交或构建的证据进入 CI artifact 与对应 GitHub Release notes。
-- 所有用户可见变化先写入根目录 [CHANGELOG](../CHANGELOG.md) 的 `[Unreleased]`，发布时转换为唯一版本段。
-- 不得将导出的诊断包、用户数据、凭据、生成的发布产物、构建缓存或临时宠物素材作为文档提交。
+- Keep one durable document per topic; link to code or schemas instead of copying them. / 每个主题只保留一份长期文档，优先链接源码或 schema。
+- Describe current behavior and invariants only. Plans, audits, progress logs, screenshots, and command output belong in issues, commits, PRs, CI, or Release notes. / 只描述当前行为与不变量；计划、审计、进度、截图和命令输出进入 issue、commit、PR、CI 或 Release notes。
+- Put user-visible changes in `[Unreleased]`; do not commit diagnostics, user data, credentials, build output, or temporary assets as documentation. / 用户可见变化写入 `[Unreleased]`；不要把诊断、用户数据、凭据、构建产物或临时素材作为文档提交。

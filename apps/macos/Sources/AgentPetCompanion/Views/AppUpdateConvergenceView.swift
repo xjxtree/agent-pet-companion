@@ -150,12 +150,12 @@ struct AppUpdateConvergenceBanner: View {
             Spacer(minLength: 10)
             if let secondaryAction {
                 Button(secondaryAction.0, action: secondaryAction.1)
-                    .buttonStyle(.bordered)
+                    .apcClearGlassButtonStyle()
                     .controlSize(.small)
             }
             if let primaryAction {
                 Button(primaryAction.0, action: primaryAction.1)
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                     .controlSize(.small)
             }
             if let dismiss {

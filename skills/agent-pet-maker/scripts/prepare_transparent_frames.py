@@ -34,7 +34,7 @@ from PIL import (
 
 JOBS_SCHEMA = "apc.transparent-frame-jobs.v1"
 REPORT_SCHEMA = "apc.transparent-frame-report.v1"
-PIPELINE_ID = "apc-spatial-chroma-matte-v1"
+PIPELINE_ID = "apc-spatial-chroma-matte-v2"
 TARGET_TIERS = {
     (192, 208): "low",
     (384, 416): "standard",
@@ -791,7 +791,10 @@ def validate_transparent_frame(
     if transparent_rgb:
         errors.append("fully transparent pixels contain non-zero RGB")
     if visible_key:
-        errors.append("visible pixels still match the chroma key; use another key or a foreground mask")
+        warnings.append(
+            "visible pixels close to the chroma key are diagnostic only; "
+            "inspect all five preview backgrounds for actual contamination"
+        )
     if edge_fringe:
         errors.append("visible silhouette-edge pixels retain chroma contamination")
     if holes:
@@ -1095,6 +1098,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "soft_matte": True,
             "edge_rgb_scope": "alpha_boundary_with_chroma_evidence",
             "alpha_preserved_during_edge_rgb_reconstruction": True,
+            "visible_key_pixels": "diagnostic_only_requires_preview_review",
             "resize": "linear_light_premultiplied_lanczos_once_or_exact_copy",
             "edge_contract_final_px": args.edge_contract,
             "edge_feather_final_px": args.edge_feather,

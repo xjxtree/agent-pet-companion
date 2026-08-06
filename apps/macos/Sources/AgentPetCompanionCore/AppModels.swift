@@ -437,18 +437,41 @@ public enum SessionGroupDisplay: String, CaseIterable, Identifiable, Codable, Se
     }
 }
 
-public struct BehaviorSettings: Codable, Equatable, Sendable {
-    public static let defaultBubbleTransparency = 0.55
+/// Bubble text size as a closed set of tiers rather than a free slider. One
+/// multiplier scales every bubble text role, so the authored size relationships
+/// between title, detail, and badge copy stay exactly as designed.
+public enum BubbleFontScale: String, CaseIterable, Identifiable, Codable, Sendable {
+    case standard
+    case large
 
+    public var id: String { rawValue }
+
+    public var multiplier: Double {
+        switch self {
+        case .standard: 1
+        case .large: 1.25
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .standard: "标准"
+        case .large: "更大"
+        }
+    }
+}
+
+public struct BehaviorSettings: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var statusBubble: Bool
     public var interfaceLanguage: InterfaceLanguage
     public var appearanceTheme: AppearanceTheme
-    public var bubbleTransparency: Double
+    public var bubbleFontScale: BubbleFontScale
     public var clickMenu: Bool
     public var mousePassthrough: Bool
     public var autoHide: Bool
     public var sessionMessageTimeoutMinutes: Int
+    public var groupSessionsByAgent: Bool
     public var sessionGroupDisplay: SessionGroupDisplay
     public var sources: [AgentSource: Bool]
     public var events: [AgentEventKind: Bool]
@@ -458,11 +481,12 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         statusBubble: Bool = true,
         interfaceLanguage: InterfaceLanguage = .system,
         appearanceTheme: AppearanceTheme = .system,
-        bubbleTransparency: Double = BehaviorSettings.defaultBubbleTransparency,
+        bubbleFontScale: BubbleFontScale = .standard,
         clickMenu: Bool = true,
         mousePassthrough: Bool = true,
         autoHide: Bool = false,
         sessionMessageTimeoutMinutes: Int = 15,
+        groupSessionsByAgent: Bool = true,
         sessionGroupDisplay: SessionGroupDisplay = .stacked,
         sources: [AgentSource: Bool] = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { ($0, true) }),
         events: [AgentEventKind: Bool] = Dictionary(uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, true) })
@@ -471,11 +495,12 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         self.statusBubble = statusBubble
         self.interfaceLanguage = interfaceLanguage
         self.appearanceTheme = appearanceTheme
-        self.bubbleTransparency = Self.clampedBubbleTransparency(bubbleTransparency)
+        self.bubbleFontScale = bubbleFontScale
         self.clickMenu = clickMenu
         self.mousePassthrough = mousePassthrough
         self.autoHide = autoHide
         self.sessionMessageTimeoutMinutes = sessionMessageTimeoutMinutes
+        self.groupSessionsByAgent = groupSessionsByAgent
         self.sessionGroupDisplay = sessionGroupDisplay
         self.sources = sources
         self.events = events
@@ -486,11 +511,12 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         case statusBubble = "status_bubble"
         case interfaceLanguage = "interface_language"
         case appearanceTheme = "appearance_theme"
-        case bubbleTransparency = "bubble_transparency"
+        case bubbleFontScale = "bubble_font_scale"
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
         case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
+        case groupSessionsByAgent = "group_sessions_by_agent"
         case sessionGroupDisplay = "session_group_display"
         case sources
         case events
@@ -507,10 +533,10 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         ) ?? defaults.interfaceLanguage
         appearanceTheme = try container.decodeIfPresent(AppearanceTheme.self, forKey: .appearanceTheme)
             ?? defaults.appearanceTheme
-        bubbleTransparency = Self.clampedBubbleTransparency(
-            try container.decodeIfPresent(Double.self, forKey: .bubbleTransparency)
-                ?? defaults.bubbleTransparency
-        )
+        bubbleFontScale = try container.decodeIfPresent(
+            BubbleFontScale.self,
+            forKey: .bubbleFontScale
+        ) ?? defaults.bubbleFontScale
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu) ?? defaults.clickMenu
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough) ?? defaults.mousePassthrough
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide) ?? defaults.autoHide
@@ -518,6 +544,10 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
             Int.self,
             forKey: .sessionMessageTimeoutMinutes
         ) ?? defaults.sessionMessageTimeoutMinutes
+        groupSessionsByAgent = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .groupSessionsByAgent
+        ) ?? defaults.groupSessionsByAgent
         sessionGroupDisplay = try container.decodeIfPresent(
             SessionGroupDisplay.self,
             forKey: .sessionGroupDisplay
@@ -539,11 +569,12 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         try container.encode(statusBubble, forKey: .statusBubble)
         try container.encode(interfaceLanguage, forKey: .interfaceLanguage)
         try container.encode(appearanceTheme, forKey: .appearanceTheme)
-        try container.encode(bubbleTransparency, forKey: .bubbleTransparency)
+        try container.encode(bubbleFontScale, forKey: .bubbleFontScale)
         try container.encode(clickMenu, forKey: .clickMenu)
         try container.encode(mousePassthrough, forKey: .mousePassthrough)
         try container.encode(autoHide, forKey: .autoHide)
         try container.encode(sessionMessageTimeoutMinutes, forKey: .sessionMessageTimeoutMinutes)
+        try container.encode(groupSessionsByAgent, forKey: .groupSessionsByAgent)
         try container.encode(sessionGroupDisplay, forKey: .sessionGroupDisplay)
         try container.encode(
             Dictionary(uniqueKeysWithValues: sources.map { ($0.key.rawValue, $0.value) }),
@@ -559,9 +590,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         enabled && statusBubble && !dismissed && (!autoHide || hasActiveEvent)
     }
 
-    public static func clampedBubbleTransparency(_ value: Double) -> Double {
-        min(max(value.isFinite ? value : defaultBubbleTransparency, 0), 1)
-    }
 }
 
 public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
@@ -569,11 +597,12 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var statusBubble: Bool?
     public var interfaceLanguage: InterfaceLanguage?
     public var appearanceTheme: AppearanceTheme?
-    public var bubbleTransparency: Double?
+    public var bubbleFontScale: BubbleFontScale?
     public var clickMenu: Bool?
     public var mousePassthrough: Bool?
     public var autoHide: Bool?
     public var sessionMessageTimeoutMinutes: Int?
+    public var groupSessionsByAgent: Bool?
     public var sessionGroupDisplay: SessionGroupDisplay?
     public var sources: [AgentSource: Bool]?
     public var events: [AgentEventKind: Bool]?
@@ -585,9 +614,9 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             ? nil
             : next.interfaceLanguage
         appearanceTheme = previous.appearanceTheme == next.appearanceTheme ? nil : next.appearanceTheme
-        bubbleTransparency = previous.bubbleTransparency == next.bubbleTransparency
+        bubbleFontScale = previous.bubbleFontScale == next.bubbleFontScale
             ? nil
-            : next.bubbleTransparency
+            : next.bubbleFontScale
         clickMenu = previous.clickMenu == next.clickMenu ? nil : next.clickMenu
         mousePassthrough = previous.mousePassthrough == next.mousePassthrough
             ? nil
@@ -596,6 +625,9 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         sessionMessageTimeoutMinutes = previous.sessionMessageTimeoutMinutes == next.sessionMessageTimeoutMinutes
             ? nil
             : next.sessionMessageTimeoutMinutes
+        groupSessionsByAgent = previous.groupSessionsByAgent == next.groupSessionsByAgent
+            ? nil
+            : next.groupSessionsByAgent
         sessionGroupDisplay = previous.sessionGroupDisplay == next.sessionGroupDisplay
             ? nil
             : next.sessionGroupDisplay
@@ -610,11 +642,12 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             && statusBubble == nil
             && interfaceLanguage == nil
             && appearanceTheme == nil
-            && bubbleTransparency == nil
+            && bubbleFontScale == nil
             && clickMenu == nil
             && mousePassthrough == nil
             && autoHide == nil
             && sessionMessageTimeoutMinutes == nil
+            && groupSessionsByAgent == nil
             && sessionGroupDisplay == nil
             && sources?.isEmpty != false
             && events?.isEmpty != false
@@ -625,11 +658,12 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         case statusBubble = "status_bubble"
         case interfaceLanguage = "interface_language"
         case appearanceTheme = "appearance_theme"
-        case bubbleTransparency = "bubble_transparency"
+        case bubbleFontScale = "bubble_font_scale"
         case clickMenu = "click_menu"
         case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
         case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
+        case groupSessionsByAgent = "group_sessions_by_agent"
         case sessionGroupDisplay = "session_group_display"
         case sources
         case events
@@ -644,13 +678,20 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             forKey: .interfaceLanguage
         )
         appearanceTheme = try container.decodeIfPresent(AppearanceTheme.self, forKey: .appearanceTheme)
-        bubbleTransparency = try container.decodeIfPresent(Double.self, forKey: .bubbleTransparency)
+        bubbleFontScale = try container.decodeIfPresent(
+            BubbleFontScale.self,
+            forKey: .bubbleFontScale
+        )
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
         mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough)
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide)
         sessionMessageTimeoutMinutes = try container.decodeIfPresent(
             Int.self,
             forKey: .sessionMessageTimeoutMinutes
+        )
+        groupSessionsByAgent = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .groupSessionsByAgent
         )
         sessionGroupDisplay = try container.decodeIfPresent(
             SessionGroupDisplay.self,
@@ -676,7 +717,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         try container.encodeIfPresent(statusBubble, forKey: .statusBubble)
         try container.encodeIfPresent(interfaceLanguage, forKey: .interfaceLanguage)
         try container.encodeIfPresent(appearanceTheme, forKey: .appearanceTheme)
-        try container.encodeIfPresent(bubbleTransparency, forKey: .bubbleTransparency)
+        try container.encodeIfPresent(bubbleFontScale, forKey: .bubbleFontScale)
         try container.encodeIfPresent(clickMenu, forKey: .clickMenu)
         try container.encodeIfPresent(mousePassthrough, forKey: .mousePassthrough)
         try container.encodeIfPresent(autoHide, forKey: .autoHide)
@@ -684,6 +725,7 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             sessionMessageTimeoutMinutes,
             forKey: .sessionMessageTimeoutMinutes
         )
+        try container.encodeIfPresent(groupSessionsByAgent, forKey: .groupSessionsByAgent)
         try container.encodeIfPresent(sessionGroupDisplay, forKey: .sessionGroupDisplay)
         if let sources {
             try container.encode(

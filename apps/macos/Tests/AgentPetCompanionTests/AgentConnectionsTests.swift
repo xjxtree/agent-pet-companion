@@ -704,7 +704,34 @@ struct AgentConnectionsTests {
         #expect(
             AgentConnectionsPresentation.success(
                 for: .codex,
-                in: .succeeded(bulk)
+                in: .succeeded(bulk),
+                status: currentStatus(items: [])
+            ) == nil
+        )
+    }
+
+    @Test
+    func unresolvedRepairNeverShowsAContradictorySuccessNotice() {
+        let operation = AgentConnectionOperation(
+            kind: .repair,
+            sources: [.claudeCode]
+        )
+        let unresolved = currentStatus(
+            source: .claudeCode,
+            items: [
+                item(
+                    .needsFix,
+                    code: .managedConnector,
+                    recovery: .confirmManagedRepair
+                ),
+            ]
+        )
+
+        #expect(
+            AgentConnectionsPresentation.success(
+                for: .claudeCode,
+                in: .succeeded(operation),
+                status: unresolved
             ) == nil
         )
     }

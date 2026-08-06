@@ -130,15 +130,10 @@ enum AgentSessionDeepLink {
         switch source {
         case .codex:
             return URL(string: "codex://threads/\(canonical)")
-        case .claudeCode:
-            var components = URLComponents()
-            components.scheme = "claude"
-            components.host = "resume"
-            components.queryItems = [
-                URLQueryItem(name: "session", value: canonical)
-            ]
-            return components.url
-        case .pi, .opencode:
+        // Claude Desktop's `claude://resume` imports a CLI transcript as a new
+        // Desktop session rather than locating the existing one, so there is no
+        // truthful exact-session link to build for Claude Code.
+        case .claudeCode, .pi, .opencode:
             return nil
         }
     }
@@ -254,16 +249,6 @@ enum AgentSessionRouter {
                // Only PetCore's dedicated, strictly validated routing field
                // may cross back into a Codex task URL. Never reinterpret the
                // generic projected session identity as a routable raw ID.
-               sessionID: navigation.routableSessionID
-           )
-        {
-            return .url(deepLink)
-        }
-        if source == .claudeCode,
-           navigation.surface == "claude_app",
-           navigation.sessionOpen == true,
-           let deepLink = AgentSessionDeepLink.url(
-               source: source,
                sessionID: navigation.routableSessionID
            )
         {
@@ -668,6 +653,11 @@ final class AppStore: ObservableObject {
     private var overlaySessionProjectionIdentities:
         [String: OverlaySessionProjectionIdentity] = [:]
     @Published private(set) var overlayAgentGroupExpansionOverrides: [AgentSource: Bool] = [:]
+    /// Oldest-to-newest stable slots for the non-grouped tray. Status churn
+    /// within one activation epoch never mutates this order.
+    private var overlayStandaloneSessionOrder: [String] = []
+    private var overlayStandaloneSessionActivationIDs: [String: String] = [:]
+    @Published private(set) var overlayStandaloneStackExpansionOverride: Bool?
     @Published var overlayPointerNearPet = false
     @Published var overlayPetDragInProgress = false
     @Published var petOperationIDs: Set<String> = []
@@ -712,14 +702,17 @@ final class AppStore: ObservableObject {
     private var overlayDisplayWidthCommitTask: Task<Void, Never>?
     private var overlayDisplayWidthCommitDeadline: TimeInterval?
     private var overlayPetDragPresentationCenter: CGPoint?
+    private var overlayBubbleProjectionCache: (
+        inputs: OverlayBubbleProjectionInputs,
+        contents: [OverlayBubbleContent]
+    )?
     private var overlayDragInteractionID: UUID?
     private var overlayLostMouseUpFallbackTask: Task<Void, Never>?
     private var pendingDisplayWidthPt: CGFloat?
     private var stateRevision = ""
     private(set) var behaviorRevision = "0"
     private var authoritativeBehavior = BehaviorSettings()
-    private var overlayKnownReopenIDs: Set<String> = []
-    private var overlayAwaitingVisibilityRestore = false
+    private var overlayLastReopenIDBySession: [String: String] = [:]
     private var behaviorMutationTask: Task<Void, Never>?
     private var behaviorMutationSequence: UInt64 = 0
     private var pendingBehaviorMutationCount = 0
@@ -1023,19 +1016,74 @@ final class AppStore: ObservableObject {
             .map(\.event)
     }
 
-    var overlayAvailableBubbleContents: [OverlayBubbleContent] {
-        guard overlayVisibility.statusBubbleVisible else { return [] }
-        var contents = OverlayBubbleProjection.contents(
-            states: activeAgentSessions,
+    /// Everything the bubble projection reads. Comparing this is far cheaper
+    /// than rebuilding the projection, which localizes and normalizes text for
+    /// every session.
+    private struct OverlayBubbleProjectionInputs: Equatable {
+        let statusBubbleVisible: Bool
+        let sessions: [ActiveAgentState]
+        let omittedCount: Int
+        let dismissedSessionIDs: Set<String>
+        let groupExpansionOverrides: [AgentSource: Bool]
+        let groupSessionsByAgent: Bool
+        let standaloneSessionOrder: [String]
+        let standaloneStackExpanded: Bool
+        let sessionGroupDisplay: SessionGroupDisplay
+        let navigationNotices: [String: OverlaySessionNavigationNoticeRecord]
+        let projectionIdentities: [String: OverlaySessionProjectionIdentity]
+    }
+
+    private var currentOverlayBubbleProjectionInputs: OverlayBubbleProjectionInputs {
+        OverlayBubbleProjectionInputs(
+            statusBubbleVisible: overlayVisibility.statusBubbleVisible,
+            sessions: activeAgentSessions,
             omittedCount: activeAgentSessionsOmittedCount,
             dismissedSessionIDs: overlayDismissedBubbleEventIDs,
-            isExpanded: { overlayAgentGroupIsExpanded($0) }
+            groupExpansionOverrides: overlayAgentGroupExpansionOverrides,
+            groupSessionsByAgent: behavior.groupSessionsByAgent,
+            standaloneSessionOrder: overlayStandaloneSessionOrder,
+            standaloneStackExpanded: overlayStandaloneStackIsExpanded,
+            sessionGroupDisplay: behavior.sessionGroupDisplay,
+            navigationNotices: overlaySessionNavigationNotices,
+            projectionIdentities: overlaySessionProjectionIdentities
+        )
+    }
+
+    /// Memoizes the projection so the several reads that happen inside a single
+    /// SwiftUI pass — bubble contents, availability, session count, keyboard
+    /// focus — share one build instead of repeating it. Purely derived state,
+    /// so nothing is published when the cache is refreshed.
+    var overlayAvailableBubbleContents: [OverlayBubbleContent] {
+        let inputs = currentOverlayBubbleProjectionInputs
+        if let cached = overlayBubbleProjectionCache, cached.inputs == inputs {
+            return cached.contents
+        }
+        let contents = buildOverlayAvailableBubbleContents(inputs)
+        overlayBubbleProjectionCache = (inputs, contents)
+        return contents
+    }
+
+    private func buildOverlayAvailableBubbleContents(
+        _ inputs: OverlayBubbleProjectionInputs
+    ) -> [OverlayBubbleContent] {
+        guard inputs.statusBubbleVisible else { return [] }
+        var contents = OverlayBubbleProjection.contents(
+            states: inputs.sessions,
+            omittedCount: inputs.omittedCount,
+            dismissedSessionIDs: inputs.dismissedSessionIDs,
+            groupSessionsByAgent: inputs.groupSessionsByAgent,
+            standaloneSessionOrder: inputs.standaloneSessionOrder,
+            standaloneStackExpanded: inputs.standaloneStackExpanded,
+            isExpanded: { source in
+                inputs.groupExpansionOverrides[source]
+                    ?? (inputs.sessionGroupDisplay == .expanded)
+            }
         )
         for contentIndex in contents.indices {
             for sessionIndex in contents[contentIndex].sessions.indices {
                 let session = contents[contentIndex].sessions[sessionIndex]
-                guard let record = overlaySessionNavigationNotices[session.id],
-                      record.identity == overlaySessionProjectionIdentities[session.id]
+                guard let record = inputs.navigationNotices[session.id],
+                      record.identity == inputs.projectionIdentities[session.id]
                 else { continue }
                 contents[contentIndex].sessions[sessionIndex].navigationNotice = record.notice
             }
@@ -1080,6 +1128,11 @@ final class AppStore: ObservableObject {
 
     func overlayAgentGroupIsExpanded(_ source: AgentSource) -> Bool {
         overlayAgentGroupExpansionOverrides[source]
+            ?? (behavior.sessionGroupDisplay == .expanded)
+    }
+
+    var overlayStandaloneStackIsExpanded: Bool {
+        overlayStandaloneStackExpansionOverride
             ?? (behavior.sessionGroupDisplay == .expanded)
     }
 
@@ -2435,13 +2488,18 @@ final class AppStore: ObservableObject {
             reconcileActiveGeneration(activeGeneration)
         }
         let previousSessionGroupDisplay = behavior.sessionGroupDisplay
+        let previousGroupSessionsByAgent = behavior.groupSessionsByAgent
+        let previousBubbleFontScale = behavior.bubbleFontScale
         let previousAppearanceTheme = behavior.appearanceTheme
         let previousInterfaceLanguage = behavior.interfaceLanguage
         let behaviorChanged = behavior != snapshot.behavior
         if behaviorChanged {
             behavior = snapshot.behavior
-            if behavior.sessionGroupDisplay != previousSessionGroupDisplay {
+            if behavior.sessionGroupDisplay != previousSessionGroupDisplay
+                || behavior.groupSessionsByAgent != previousGroupSessionsByAgent
+            {
                 overlayAgentGroupExpansionOverrides.removeAll()
+                overlayStandaloneStackExpansionOverride = nil
             }
         }
         behaviorRevision = snapshot.behaviorRevision ?? behaviorRevision
@@ -2494,6 +2552,7 @@ final class AppStore: ObservableObject {
             activeAgentSessions,
             nextActiveAgentSessions
         )
+        reconcileOverlayStandaloneSessionOrder(with: nextActiveAgentSessions)
         if activeSessionsChanged {
             activeAgentSessions = nextActiveAgentSessions
         }
@@ -2540,36 +2599,37 @@ final class AppStore: ObservableObject {
         if !eventsHaveSamePresentation(events, snapshot.events) {
             events = snapshot.events
         }
-        let restoringOverlayVisibility = overlayAwaitingVisibilityRestore
-        let nextDismissalIDs = Set(nextActiveAgentSessions.map {
-            OverlaySessionContent.stableID(
-                source: $0.source,
-                sessionID: $0.sessionID ?? $0.event.sessionID,
-                anonymousSessionAlias: $0.anonymousSessionAlias,
-                fallbackEventID: $0.event.id
-            )
-        })
-        let nextReopenIDs = Set(nextActiveAgentSessions.map(OverlaySessionContent.reopenID(for:)))
+        let nextReopenIDBySession = Dictionary(
+            nextActiveAgentSessions.map { state in
+                (
+                    OverlaySessionContent.stableID(
+                        source: state.source,
+                        sessionID: state.sessionID ?? state.event.sessionID,
+                        anonymousSessionAlias: state.anonymousSessionAlias,
+                        fallbackEventID: state.event.id
+                    ),
+                    OverlaySessionContent.reopenID(for: state)
+                )
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let newlyActivatedDismissalIDs = OverlayPresentedAgentState.newlyActivatedDismissalIDs(
             activeSessions: nextActiveAgentSessions,
-            knownReopenIDs: overlayKnownReopenIDs
+            lastReopenIDBySession: overlayLastReopenIDBySession
         )
         let hasNewOverlayActivation = !newlyActivatedDismissalIDs.isEmpty
-        if !snapshot.behavior.enabled {
-            overlayAwaitingVisibilityRestore = true
-            overlayKnownReopenIDs.formUnion(nextReopenIDs)
-        } else if restoringOverlayVisibility, nextReopenIDs.isEmpty {
-            // PetCore can publish enabled=true before active session arbitration catches up.
-            // Preserve manual dismissal state until the restored session set arrives.
-        } else {
+        if snapshot.behavior.enabled {
             var nextDismissedBubbleEventIDs = overlayDismissedBubbleEventIDs
-            nextDismissedBubbleEventIDs.formIntersection(nextDismissalIDs)
             nextDismissedBubbleEventIDs.subtract(newlyActivatedDismissalIDs)
             if overlayDismissedBubbleEventIDs != nextDismissedBubbleEventIDs {
                 overlayDismissedBubbleEventIDs = nextDismissedBubbleEventIDs
             }
-            overlayKnownReopenIDs = nextReopenIDs
-            overlayAwaitingVisibilityRestore = false
+        }
+        // A projected-session gap is not evidence of new work. Preserve each
+        // session's last activation identity until that same session returns
+        // with a genuinely different one.
+        overlayLastReopenIDBySession.merge(nextReopenIDBySession) {
+            _, latest in latest
         }
         if hasNewOverlayActivation, overlayBubbleDismissed {
             overlayBubbleDismissed = false
@@ -2594,7 +2654,9 @@ final class AppStore: ObservableObject {
             )
         if overlayBubbleLayoutChanged
             || overlayVisibilityChanged
+            || behavior.groupSessionsByAgent != previousGroupSessionsByAgent
             || behavior.sessionGroupDisplay != previousSessionGroupDisplay
+            || behavior.bubbleFontScale != previousBubbleFontScale
         {
             overlayController.updateLayout()
         }
@@ -3456,24 +3518,6 @@ final class AppStore: ObservableObject {
         )
     }
 
-    func previewBubbleTransparency(_ value: Double) {
-        var next = behavior
-        next.bubbleTransparency = BehaviorSettings.clampedBubbleTransparency(value)
-        behavior = next
-    }
-
-    func commitBubbleTransparency(from previousValue: Double) {
-        var previous = behavior
-        previous.bubbleTransparency = BehaviorSettings.clampedBubbleTransparency(previousValue)
-        let patch = BehaviorSettingsPatch(from: previous, to: behavior)
-        guard !patch.isEmpty else { return }
-        behaviorMutationSequence &+= 1
-        enqueueBehaviorPatch(
-            patch,
-            mutationSequence: behaviorMutationSequence
-        )
-    }
-
     func waitForBehaviorPersistence() async {
         _ = await behaviorMutationTask?.value
     }
@@ -3541,10 +3585,9 @@ final class AppStore: ObservableObject {
                 statusText = "设置保存失败：\(error.localizedDescription)"
                 do {
                     try await refreshSnapshot()
-                } catch {
-                    if mutationSequence == behaviorMutationSequence {
-                        applyBehaviorProjection(authoritativeBehavior)
-                    }
+                } catch {}
+                if mutationSequence == behaviorMutationSequence {
+                    applyBehaviorProjection(authoritativeBehavior)
                 }
                 return
             }
@@ -3554,8 +3597,11 @@ final class AppStore: ObservableObject {
     private func applyBehaviorProjection(_ next: BehaviorSettings) {
         let appearanceChanged = behavior.appearanceTheme != next.appearanceTheme
         let languageChanged = behavior.interfaceLanguage != next.interfaceLanguage
-        let sessionGroupDisplayChanged = behavior.sessionGroupDisplay
-            != next.sessionGroupDisplay
+        let groupSessionsByAgentChanged = behavior.groupSessionsByAgent != next.groupSessionsByAgent
+        let sessionGroupDisplayChanged = behavior.sessionGroupDisplay != next.sessionGroupDisplay
+        // A different text tier changes measured bubble heights, so the panel
+        // has to be resized rather than left holding stale geometry.
+        let bubbleFontScaleChanged = behavior.bubbleFontScale != next.bubbleFontScale
         behavior = next
         if appearanceChanged {
             applyCurrentAppearance()
@@ -3563,8 +3609,11 @@ final class AppStore: ObservableObject {
         if languageChanged {
             applyCurrentLanguage()
         }
-        if sessionGroupDisplayChanged {
+        if groupSessionsByAgentChanged || sessionGroupDisplayChanged {
             overlayAgentGroupExpansionOverrides.removeAll()
+            overlayStandaloneStackExpansionOverride = nil
+        }
+        if groupSessionsByAgentChanged || sessionGroupDisplayChanged || bubbleFontScaleChanged {
             overlayController.updateLayout()
         }
         syncOverlayVisibilityForBehavior()
@@ -4998,8 +5047,72 @@ final class AppStore: ObservableObject {
     }
 
     func toggleOverlayAgentGroup(_ source: AgentSource) {
+        guard behavior.groupSessionsByAgent else { return }
         overlayAgentGroupExpansionOverrides[source] = !overlayAgentGroupIsExpanded(source)
         overlayController.updateLayout(animateBubble: true)
+    }
+
+    func toggleOverlayStandaloneStack() {
+        guard !behavior.groupSessionsByAgent,
+              overlayAvailableBubbleContents.reduce(0, {
+                  $0 + $1.representedSessionCount
+              }) > 1
+        else { return }
+        overlayStandaloneStackExpansionOverride = !overlayStandaloneStackIsExpanded
+        overlayController.updateLayout(animateBubble: true)
+    }
+
+    private func reconcileOverlayStandaloneSessionOrder(
+        with states: [ActiveAgentState]
+    ) {
+        struct Entry {
+            let id: String
+            let activationID: String
+        }
+
+        let entries = states.map { state in
+            let id = OverlaySessionContent.stableID(
+                source: state.source,
+                sessionID: state.sessionID ?? state.event.sessionID,
+                anonymousSessionAlias: state.anonymousSessionAlias,
+                fallbackEventID: state.event.id
+            )
+            // sessionActivatedAt is an epoch boundary, unlike the event ID or
+            // event timestamp, which can change on every thinking/tool update.
+            return Entry(
+                id: id,
+                activationID: state.sessionActivatedAt.map { "activation:\($0)" }
+                    ?? "legacy"
+            )
+        }
+
+        let promotions = entries.filter { entry in
+            overlayStandaloneSessionActivationIDs[entry.id] != entry.activationID
+                || !overlayStandaloneSessionOrder.contains(entry.id)
+        }
+        let promotedIDs = Set(promotions.map(\.id))
+        if !promotedIDs.isEmpty {
+            overlayStandaloneSessionOrder.removeAll { promotedIDs.contains($0) }
+            // PetCore gives us attention/latest-first. Append in reverse so
+            // the newest promotion becomes the final card nearest the pet.
+            for entry in promotions.reversed() {
+                overlayStandaloneSessionOrder.append(entry.id)
+                overlayStandaloneSessionActivationIDs[entry.id] = entry.activationID
+            }
+        }
+
+        // A missing projected row may be a bounded/transient omission, not a
+        // closed session. Retain a small history so it can recover its slot.
+        let maximumRememberedSessions = 64
+        if overlayStandaloneSessionOrder.count > maximumRememberedSessions {
+            let removed = overlayStandaloneSessionOrder.dropLast(maximumRememberedSessions)
+            overlayStandaloneSessionOrder = Array(
+                overlayStandaloneSessionOrder.suffix(maximumRememberedSessions)
+            )
+            for id in removed {
+                overlayStandaloneSessionActivationIDs[id] = nil
+            }
+        }
     }
 
     func dismissOverlayBubble(eventID: String) {

@@ -194,6 +194,9 @@ class SkillDirectionContractTests(unittest.TestCase):
             "slot_center_x = (frame_index + 0.5) * slot_width",
             "Image 1 defines the exact character identity",
             "Image 2 is a script-generated frameless equal-scale pose guide",
+            "Image 3 is a separate script-generated frameless size reference",
+            "safe subject box",
+            "size-reference.png",
             "CRITICAL SCALE LOCK",
             "contact -> settle -> passing -> advance",
             "gen_status=querying",
@@ -244,6 +247,27 @@ class SkillDirectionContractTests(unittest.TestCase):
             "Record the reason",
         ):
             self.assertIn(required, combined)
+
+    def test_both_skills_try_registration_only_alignment_before_regeneration(
+        self,
+    ) -> None:
+        maker = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        studio = (ROOT.parent / "agent-pet-studio" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for skill in (maker, studio):
+            self.assertIn("body-anchor", skill)
+            self.assertIn("baseline", skill)
+            self.assertIn("do not regenerate", skill)
+            self.assertIn("motion-align", skill)
+            self.assertIn("integer", skill)
+
+        workflow = (ROOT / "references" / "create-modify.md").read_text(
+            encoding="utf-8"
+        )
+        for mode in ("`preserve`", "`lock`", "`linear`", "`targets`"):
+            self.assertIn(mode, workflow)
+        self.assertIn("source_motion_digest", workflow)
 
     def test_portable_skill_does_not_absorb_scenario_specific_workarounds(self) -> None:
         combined = "\n".join(
@@ -1712,6 +1736,157 @@ class MotionQualityTests(unittest.TestCase):
             workspace_helper.reject_objective_motion_integrity_failures("thinking", metrics)
             self.assertLess(metrics["maximum_bbox_width_step"], 0.12)
             self.assertLess(metrics["maximum_bbox_height_step"], 0.12)
+
+    def test_motion_align_regularizes_authored_travel_and_locks_the_baseline(self) -> None:
+        from PIL import Image, ImageDraw
+
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            _, source = self.make_workspace(Path(temporary))
+            state_dir = source / "assets" / "frames" / "thinking"
+            left_edges = [48, 61, 52, 70, 60, 74, 68, 80, 77, 84]
+            bottoms = [178, 183, 176, 181, 179, 185, 177, 182, 180, 184]
+            for path in state_dir.glob("*.png"):
+                path.unlink()
+            for index, (left, bottom) in enumerate(zip(left_edges, bottoms)):
+                frame = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+                ImageDraw.Draw(frame).ellipse(
+                    (left, bottom - 144, left + 88, bottom),
+                    fill=(40 + index, 100, 160, 255),
+                )
+                frame.save(state_dir / f"frame-{index:03d}.png")
+
+            qa_dir = Path(temporary) / "thinking-qa"
+            qa_result = workspace_helper.motion_qa(
+                workspace_helper.argparse.Namespace(
+                    workspace=None,
+                    source=str(source),
+                    output_dir=str(qa_dir),
+                    state=["thinking"],
+                )
+            )
+            qa_report = json.loads(
+                Path(qa_result["report_path"]).read_text(encoding="utf-8")
+            )
+            registration = qa_report["states"]["thinking"]["metrics"][
+                "registration"
+            ]
+            self.assertEqual(len(registration), 10)
+            self.assertIn("body_anchor_x", registration[0])
+            self.assertIn("baseline_y", registration[0])
+
+            plan = {
+                "schema_version": workspace_helper.MOTION_ALIGNMENT_PLAN_SCHEMA,
+                "state": "thinking",
+                "source_motion_digest": qa_report["states"]["thinking"][
+                    "motion_digest"
+                ],
+                "motion_intent": (
+                    "The whole pet travels right with equal frame spacing."
+                ),
+                "correction_reason": (
+                    "The generated body anchor jitters and the foot baseline drifts."
+                ),
+                "body_anchor_x": {"mode": "linear"},
+                "baseline_y": {"mode": "lock", "reference_frame": 0},
+            }
+            plan_path = Path(temporary) / "thinking-alignment-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            output_dir = Path(temporary) / "aligned-thinking"
+
+            result = workspace_helper.motion_align(
+                workspace_helper.argparse.Namespace(
+                    source=str(source),
+                    state="thinking",
+                    plan=str(plan_path),
+                    output_dir=str(output_dir),
+                    report=None,
+                )
+            )
+
+            report = json.loads(
+                Path(result["report_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["schema_version"], workspace_helper.MOTION_ALIGNMENT_SCHEMA
+            )
+            self.assertGreater(report["before"]["maximum_baseline_y_step"], 0)
+            self.assertEqual(report["after"]["maximum_baseline_y_step"], 0)
+            output_registration = report["after"]["frames"]
+            anchor_pixels = [
+                round(frame["body_anchor_x"] * 192) for frame in output_registration
+            ]
+            self.assertEqual(
+                [current - previous for previous, current in zip(anchor_pixels, anchor_pixels[1:])],
+                [4] * 9,
+            )
+            self.assertTrue(report["review_required"])
+
+            with Image.open(state_dir / "frame-001.png") as original, Image.open(
+                output_dir / "frame-001.png"
+            ) as aligned:
+                self.assertNotEqual(original.tobytes(), aligned.tobytes())
+
+    def test_motion_align_rejects_a_stale_motion_qa_binding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            _, source = self.make_workspace(Path(temporary))
+            plan = {
+                "schema_version": workspace_helper.MOTION_ALIGNMENT_PLAN_SCHEMA,
+                "state": "thinking",
+                "source_motion_digest": "0" * 64,
+                "motion_intent": "The pet remains fixed in place for this action.",
+                "correction_reason": "The generated body anchor drifts between frames.",
+                "body_anchor_x": {"mode": "lock", "reference_frame": 0},
+                "baseline_y": {"mode": "lock", "reference_frame": 0},
+            }
+            plan_path = Path(temporary) / "stale-alignment-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_align(
+                    workspace_helper.argparse.Namespace(
+                        source=str(source),
+                        state="thinking",
+                        plan=str(plan_path),
+                        output_dir=str(Path(temporary) / "aligned-thinking"),
+                        report=None,
+                    )
+                )
+
+            self.assertEqual(raised.exception.code, "stale_motion_alignment")
+
+    def test_motion_align_rejects_a_target_that_would_clip_alpha(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:
+            _, source = self.make_workspace(Path(temporary))
+            digest = workspace_helper.state_motion_digest(
+                source,
+                json.loads((source / "manifest.json").read_text(encoding="utf-8")),
+                "thinking",
+            )
+            plan = {
+                "schema_version": workspace_helper.MOTION_ALIGNMENT_PLAN_SCHEMA,
+                "state": "thinking",
+                "source_motion_digest": digest,
+                "motion_intent": "The pet remains inside the padded runtime canvas.",
+                "correction_reason": "The requested target would move the pet off canvas.",
+                "body_anchor_x": {"mode": "targets", "normalized": [0.99] * 10},
+                "baseline_y": {"mode": "preserve"},
+            }
+            plan_path = Path(temporary) / "clipped-alignment-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            with self.assertRaises(workspace_helper.MakerError) as raised:
+                workspace_helper.motion_align(
+                    workspace_helper.argparse.Namespace(
+                        source=str(source),
+                        state="thinking",
+                        plan=str(plan_path),
+                        output_dir=str(Path(temporary) / "aligned-thinking"),
+                        report=None,
+                    )
+                )
+
+            self.assertEqual(raised.exception.code, "unsafe_motion_alignment")
+            self.assertIn("Alpha pixels", raised.exception.message)
 
     def test_motion_review_requires_a_note_for_every_audited_state(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-pet-maker-motion-") as temporary:

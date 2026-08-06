@@ -40,6 +40,10 @@ const UDS_CONNECTIONS_RESPONSE_DEADLINE: Duration = Duration::from_secs(180);
 const UDS_DIAGNOSTICS_RESPONSE_DEADLINE: Duration = Duration::from_secs(120);
 const UDS_MAX_FRAME_BYTES: usize = 256 * 1024;
 const UDS_MAX_CONCURRENT_CLIENTS: usize = 32;
+// Only bounds how often an idle accept loop re-checks the shutdown flag. An
+// arriving connection wakes the poll immediately, so this never contributes to
+// request latency.
+const UDS_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn serve(paths: AppPaths, ready_file: Option<&Path>) -> Result<()> {
     // Acquire the process-wide instance lock before opening the shared log.
@@ -177,7 +181,13 @@ fn serve_with_diagnostics(
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(20));
+                // Block on the listener itself instead of sleeping a fixed
+                // slice. A fixed sleep added its full duration to the latency
+                // of every request that arrived just after the loop went idle,
+                // which put a hard floor under each round trip. Polling wakes
+                // as soon as a client connects while still returning often
+                // enough to observe a shutdown request.
+                wait_for_incoming_connection(&listener, UDS_ACCEPT_POLL_INTERVAL);
             }
             Err(error) => {
                 let error = PetCoreError::Io(error);
@@ -336,6 +346,20 @@ fn read_unix_frame(
             return Err(UnixFrameReadError::TooLarge);
         }
     }
+}
+
+/// Waits until the listener has a connection ready or `timeout` elapses.
+///
+/// Returns on the first readable signal so an accepting thread never adds its
+/// own latency to a waiting client. Errors are intentionally swallowed: the
+/// caller re-enters `accept`, which surfaces any real listener failure.
+fn wait_for_incoming_connection(listener: &UnixListener, timeout: Duration) {
+    let mut descriptor = rustix::event::PollFd::new(listener, rustix::event::PollFlags::IN);
+    let Ok(timeout) = rustix::event::Timespec::try_from(timeout) else {
+        thread::sleep(Duration::from_millis(20));
+        return;
+    };
+    let _ = rustix::event::poll(std::slice::from_mut(&mut descriptor), Some(&timeout));
 }
 
 fn wait_for_unix_readable(

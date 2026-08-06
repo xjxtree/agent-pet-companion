@@ -23,9 +23,12 @@ dreamina text2image \
   --poll=60
 ```
 
-Generate each action with image-to-image at 4K and height 1536. Pass the
-production base first and, for a complex action, the deterministic pose guide
-second. Do not combine `--ratio` with custom width and height.
+Generate each action with image-to-image at 4K and height 1536. Dreamina 5.0
+Pro does not reliably keep multiple figures equal-sized from text alone, so
+every action row must pass the production base first, its deterministic pose
+guide second, and its separate deterministic size-reference image third. Both
+guides come from the same geometry record and exact request dimensions. Do not
+combine `--ratio` with custom width and height.
 
 | Frames | Request size | Invisible slot width | Largest centered 12:13 crop per slot |
 | ---: | ---: | ---: | ---: |
@@ -40,7 +43,7 @@ crop before accepting it.
 
 ```bash
 dreamina image2image \
-  --images /absolute/character-base.png,/absolute/pose-guide.png \
+  --images /absolute/character-base.png,/absolute/pose-guide.png,/absolute/size-reference.png \
   --prompt="<one action, ordered poses, shared reference-responsibility block>" \
   --model_version=5.0Pro \
   --resolution_type=4k \
@@ -50,7 +53,9 @@ dreamina image2image \
   --poll=60
 ```
 
-For a simple action, omit the pose-guide path but keep the base as image 1.
+Use both structural references even for a simple action; a near-static pose
+guide is still the deterministic frame-count and registration authority, while
+the separate size reference locks pixel scale and safe crop occupancy.
 Substitute the table width for the authored frame count. Do not approximate an
 unsupported count by adding or removing generated figures.
 
@@ -77,9 +82,14 @@ transparency work.
 - Require a perfectly uniform textureless solid background; reject gradients
   and paneled output.
 - Require complete replacement of every pose-guide figure and reject any guide
-  pixel, mannequin, grid, label, or separator.
+  or size-reference pixel, mannequin, calibration silhouette, grid, label, or
+  separator.
 - Lock camera distance, head size, shoulder width, full-body scale, outfit, and
   materials across all poses.
+- Compare every returned figure with the recorded size-reference measurements
+  and verify it remains inside the shared safe subject box before proving the
+  table's centered 12:13 crop. A prompted canvas or apparently equal row is not
+  acceptance evidence.
 - For jumps, apply `CRITICAL SCALE LOCK` and forbid floor, contact, cast, and
   oval shadows.
 - For walk cycles, change scripted joint coordinates when poses repeat; do not

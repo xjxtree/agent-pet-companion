@@ -45,9 +45,8 @@ if [[ -n "$ATTESTATION_OUT" || -n "$BUILD_ID" ]]; then
   mkdir -p "$(dirname "$ATTESTATION_OUT")"
 fi
 
-# Real pointer, Space, focus-loss, and multi-display acceptance is performed
-# with Computer Use. This script deliberately contains no synthesized input or
-# app-launch automation; it locks the same interaction invariants with
+# Real pointer, Space, focus-loss, and multi-display acceptance remains a
+# separate live-UI step. This script locks the same interaction invariants with
 # deterministic tests that are safe to run unattended.
 for suite in \
   OverlayPlacementAuthorityTests \
@@ -131,4 +130,4 @@ finally:
 PY
 fi
 
-echo "Overlay interaction contract validation ok; live pointer acceptance remains a Computer Use gate"
+echo "Overlay interaction contract validation ok; live pointer acceptance remains a separate UI verification step"

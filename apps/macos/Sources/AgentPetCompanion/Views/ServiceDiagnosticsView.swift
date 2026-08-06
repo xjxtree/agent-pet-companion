@@ -663,7 +663,7 @@ struct ServiceDiagnosticsView: View {
                 } label: {
                     diagnosticExportButtonLabel
                 }
-                .buttonStyle(.borderedProminent)
+                .apcClearGlassButtonStyle(prominent: true)
                 .disabled(store.diagnosticsExportState.primaryAction == nil)
                 .accessibilityIdentifier("diagnostics.export")
 

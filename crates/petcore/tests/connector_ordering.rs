@@ -43,6 +43,9 @@ fn metadata_only_connector_events_never_drive_the_pet_state() {
         session_activated_at: None,
         session_first_seen_at: None,
         latest_terminal_navigation_payload: None,
+        completion_epoch_event_ids: Vec::new(),
+        preferred_app_navigation_payload: None,
+        tool_activity_run_marker: None,
     }];
     let now = time::OffsetDateTime::parse(
         "2026-07-17T10:00:01Z",

@@ -241,17 +241,23 @@ private final class SocketRequestOperation: @unchecked Sendable {
     private func readResponse(_ descriptor: Int32) throws -> Data {
         var response = Data()
         var buffer = [UInt8](repeating: 0, count: 4_096)
+        // Only the bytes that arrived in this read can contain the first
+        // newline. Rescanning the whole accumulated buffer after every chunk
+        // made framing quadratic in the response size, which is measurable on
+        // the large snapshot and history payloads.
+        var scanned = response.startIndex
         while true {
             _ = try waitForSocket(descriptor, events: Int16(POLLIN))
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count > 0 {
                 response.append(buffer, count: count)
-                if let newline = response.firstIndex(of: 0x0A) {
+                if let newline = response[scanned...].firstIndex(of: 0x0A) {
                     guard newline <= maximumFrameBytes else {
                         throw PetCoreTransportError.responseTooLarge
                     }
                     return Data(response[..<newline])
                 }
+                scanned = response.endIndex
                 guard response.count <= maximumFrameBytes else {
                     throw PetCoreTransportError.responseTooLarge
                 }

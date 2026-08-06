@@ -271,6 +271,8 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case interfaceLanguageSimplifiedChinese = "interface_language.simplified_chinese"
     case sessionGroupStacked = "session_group.stacked"
     case sessionGroupExpanded = "session_group.expanded"
+    case bubbleFontScaleStandard = "bubble_font_scale.standard"
+    case bubbleFontScaleLarge = "bubble_font_scale.large"
     case checkStatusOK = "check_status.ok"
     case checkStatusNeedsFix = "check_status.needs_fix"
     case checkStatusMissing = "check_status.missing"
@@ -449,12 +451,12 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case configThemePicker = "config.theme_picker"
     case configThemeAccessibility = "config.theme_accessibility"
     case configThemeDetail = "config.theme_detail"
-    case configBubbleTransparency = "config.bubble_transparency"
-    case configGlassMore = "config.glass_more"
-    case configTransparentMore = "config.transparent_more"
-    case configTransparencyDetail = "config.transparency_detail"
+    case configBubbleFontScale = "config.bubble_font_scale"
+    case configBubbleFontScaleDetail = "config.bubble_font_scale.detail"
     case configTimeout = "config.timeout"
     case configTimeoutDetail = "config.timeout_detail"
+    case configGroupSessionsByAgent = "config.group_sessions_by_agent"
+    case configGroupSessionsByAgentDetail = "config.group_sessions_by_agent.detail"
     case configGroupDisplay = "config.group_display"
     case configGroupDisplayDetail = "config.group_display.detail"
     case configSubnavigationAccessibility = "config.subnavigation.accessibility"
@@ -973,6 +975,54 @@ private final class APCLocalizationPreference: @unchecked Sendable {
     }
 }
 
+/// Caches each `<locale>.lproj/Localizable.strings` table after its first read.
+///
+/// The tables are immutable bundle resources, so one parse per locale candidate
+/// is authoritative for the process lifetime. Without this cache every single
+/// `APCLocalization.text` call re-read a 64 KB property list, re-parsed ~900
+/// entries, and bridged the whole `NSDictionary` to Swift just to look up one
+/// key, which put a multi-millisecond disk-and-parse cost inside SwiftUI body
+/// evaluation. A missing or unparsable file caches as "absent" so a broken
+/// candidate does not retry the read on every lookup either.
+private final class APCLocalizationStringsCache: @unchecked Sendable {
+    static let shared = APCLocalizationStringsCache()
+
+    private let lock = NSLock()
+    private var tables: [String: [String: String]?] = [:]
+
+    /// Returns the parsed table for `locale`, loading it once on first use.
+    /// `nil` means the locale has no usable `Localizable.strings` resource.
+    func table(for locale: String) -> [String: String]? {
+        lock.lock()
+        if let cached = tables[locale] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let loaded = Self.load(locale: locale)
+
+        lock.lock()
+        tables[locale] = loaded
+        lock.unlock()
+        return loaded
+    }
+
+    private static func load(locale: String) -> [String: String]? {
+        let url = APCResourceBundle.resourceURL("\(locale).lproj/Localizable.strings")
+        guard let data = try? Data(contentsOf: url),
+              let values = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: String]
+        else {
+            return nil
+        }
+        return values
+    }
+}
+
 enum APCLocalization {
     static let requiredV1Keys = APCLocalizationKey.allCases
     private static let preference = APCLocalizationPreference()
@@ -1065,15 +1115,7 @@ enum APCLocalization {
         locale identifier: String
     ) -> String? {
         for locale in localeCandidates(for: identifier) {
-            let url = APCResourceBundle.resourceURL(
-                "\(locale).lproj/Localizable.strings"
-            )
-            guard let data = try? Data(contentsOf: url),
-                  let values = try? PropertyListSerialization.propertyList(
-                      from: data,
-                      options: [],
-                      format: nil
-                  ) as? [String: String],
+            guard let values = APCLocalizationStringsCache.shared.table(for: locale),
                   let value = values[key.rawValue],
                   value != key.rawValue else {
                 continue
@@ -1479,6 +1521,16 @@ enum APCLocalizedPresentation {
     ) -> String {
         APCLocalization.text(
             display == .stacked ? .sessionGroupStacked : .sessionGroupExpanded,
+            locale: locale
+        )
+    }
+
+    static func bubbleFontScaleTitle(
+        _ scale: BubbleFontScale,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> String {
+        APCLocalization.text(
+            scale == .standard ? .bubbleFontScaleStandard : .bubbleFontScaleLarge,
             locale: locale
         )
     }

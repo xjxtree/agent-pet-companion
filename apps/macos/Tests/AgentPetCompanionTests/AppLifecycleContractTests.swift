@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import AgentPetCompanion
 
@@ -268,6 +269,23 @@ struct AppLifecycleContractTests {
             #"MenuBarExtra\s*\{[\s\S]*?Button\s*\(\s*APCLocalization\.text\(\.appActionOpenControlCenter\)\s*\)\s*\{\s*store\.presentMainWindow\(\)"#,
             in: appSource
         ))
+        #expect(appSource.contains(".menuBarExtraStyle(.menu)"))
+        let menuBarExtraStart = try #require(appSource.range(of: "MenuBarExtra {"))
+        let menuBarExtraEnd = try #require(
+            appSource.range(
+                of: ".menuBarExtraStyle(.menu)",
+                range: menuBarExtraStart.lowerBound..<appSource.endIndex
+            )
+        )
+        let menuBarExtraDeclaration = appSource[
+            menuBarExtraStart.lowerBound..<menuBarExtraEnd.upperBound
+        ]
+        #expect(!menuBarExtraDeclaration.contains(".apcInterfaceLanguage(store)"))
+        #expect(
+            menuBarExtraDeclaration.components(
+                separatedBy: ".fixedSize(horizontal: true, vertical: false)"
+            ).count - 1 == 2
+        )
         #expect(LifecycleSource.matches(
             #"\.contextMenu\s*\{[\s\S]*?store\.presentMainWindow\(\)[\s\S]*?Label\s*\(\s*APCLocalization\.text\(\.appActionOpenControlCenter\)"#,
             in: overlaySource
@@ -289,6 +307,51 @@ struct AppLifecycleContractTests {
             APCLocalization.text(.appActionOpenControlCenter, locale: "zh-Hans")
                 == "打开控制中心"
         )
+    }
+
+    @Test
+    func menuBarStatusMarkStaysBelowTheStatusImageMaximum() throws {
+        let appSource = try LifecycleSource.read(
+            "Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift"
+        )
+        let brandSource = try LifecycleSource.read(
+            "Sources/AgentPetCompanion/App/BrandAssets.swift"
+        )
+
+        #expect(appSource.contains("private static let statusItemBox: CGFloat = 18"))
+        #expect(brandSource.contains("static let statusItemMarkPointSize: CGFloat = 24"))
+        #expect(brandSource.contains("static let statusItemMarkImage: NSImage"))
+        #expect(brandSource.contains("image.size = NSSize("))
+        #expect(appSource.contains("Image(nsImage: APCBrandAssets.statusItemMarkImage)"))
+        #expect(appSource.contains("width: APCBrandAssets.statusItemMarkPointSize"))
+        #expect(!appSource.contains("APCBrandMark(size: 18)"))
+    }
+
+    @MainActor
+    @Test
+    func menuBarStatusImageHasCompactIntrinsicPointSize() {
+        #expect(
+            APCBrandAssets.statusItemMarkImage.size
+                == NSSize(width: 24, height: 24)
+        )
+    }
+
+    @MainActor
+    @Test
+    func menuBarContentKeepsACompactIntrinsicWidth() {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            )
+        )
+        let hostingView = NSHostingView(rootView: AppStatusMenuContent(store: store))
+
+        hostingView.layoutSubtreeIfNeeded()
+
+        #expect(hostingView.fittingSize.width < 360)
     }
 
     @Test

@@ -324,6 +324,214 @@ fn acknowledged_completed_sessions_stay_hidden_across_restart_until_new_activity
 }
 
 #[test]
+fn acknowledged_claude_completion_stays_hidden_after_repeated_session_end_tail() {
+    let (temp, state) = ready();
+    let session_id = "claude-repeated-session-end";
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-user-activation",
+        session_id,
+        "start",
+        &timestamp(6),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "outcome": "started",
+            "affects_activity": true,
+            "session_active": true,
+            "session_open": true,
+            "session_surface": "claude_app",
+            "message_role": "user",
+            "message_content": "bounded test prompt"
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-stop",
+        session_id,
+        "done",
+        &timestamp(5),
+        json!({
+            "source_event": "Stop",
+            "outcome": "completed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "claude_app"
+        }),
+    );
+
+    let completed = snapshot(&state);
+    let acknowledgement_id = completed["active_agent_sessions"][0]["acknowledgement_id"]
+        .as_str()
+        .expect("Claude completion acknowledgement identity")
+        .to_string();
+    handle_request(
+        &state,
+        request(
+            "agent.session.acknowledge",
+            json!({ "acknowledgement_id": acknowledgement_id }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(snapshot(&state)["active_agent_sessions"], json!([]));
+
+    // Claude Desktop can publish another process-level SessionEnd for the
+    // same durable conversation without any new user activation. It is a tail
+    // of the acknowledged turn, not a new completed task.
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-late-session-end",
+        session_id,
+        "done",
+        &timestamp(4),
+        json!({
+            "source_event": "SessionEnd",
+            "outcome": "session_closed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "cli_terminal"
+        }),
+    );
+    assert_eq!(
+        snapshot(&state)["active_agent_sessions"],
+        json!([]),
+        "a repeated SessionEnd without a new activation must not reopen an acknowledged turn"
+    );
+
+    drop(state);
+    let restarted = CoreState::new(AppPaths::new(temp.path().join("home")));
+    restarted.ensure_ready().unwrap();
+    assert_eq!(
+        snapshot(&restarted)["active_agent_sessions"],
+        json!([]),
+        "the repeated terminal tail must stay acknowledged across PetCore restart"
+    );
+
+    ingest_source_payload(
+        &restarted,
+        "claude_code",
+        "claude-next-user-activation",
+        session_id,
+        "start",
+        &timestamp(3),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "outcome": "started",
+            "affects_activity": true,
+            "session_active": true,
+            "session_open": true,
+            "session_surface": "cli_terminal",
+            "terminal_app": "terminal",
+            "message_role": "user",
+            "message_content": "bounded next-turn prompt"
+        }),
+    );
+    ingest_source_payload(
+        &restarted,
+        "claude_code",
+        "claude-next-stop",
+        session_id,
+        "done",
+        &timestamp(2),
+        json!({
+            "source_event": "Stop",
+            "outcome": "completed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "cli_terminal",
+            "terminal_app": "terminal"
+        }),
+    );
+    let next_turn = snapshot(&restarted);
+    assert_eq!(
+        next_turn["active_agent_sessions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        next_turn["active_agent_sessions"][0]["overlay_display"]["navigation"]["surface"],
+        "cli_terminal",
+        "a real next activation must reopen and may truthfully change host surface"
+    );
+}
+
+#[test]
+fn claude_terminal_tail_cannot_downgrade_an_app_session_to_cli() {
+    let (_temp, state) = ready();
+    let session_id = "claude-app-surface-tail";
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-app-user-activation",
+        session_id,
+        "start",
+        &timestamp(6),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "outcome": "started",
+            "affects_activity": true,
+            "session_active": true,
+            "session_open": true,
+            "session_surface": "claude_app",
+            "message_role": "user",
+            "message_content": "bounded test prompt"
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-app-stop",
+        session_id,
+        "done",
+        &timestamp(5),
+        json!({
+            "source_event": "Stop",
+            "outcome": "completed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "claude_app"
+        }),
+    );
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "claude-tail-without-desktop-marker",
+        session_id,
+        "done",
+        &timestamp(4),
+        json!({
+            "source_event": "SessionEnd",
+            "outcome": "session_closed",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "session_surface": "cli_terminal"
+        }),
+    );
+
+    let current = snapshot(&state);
+    let session = current["active_agent_sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["session_id"] == projected_session_id(session_id))
+        .expect("Claude App completion should remain visible");
+    assert_eq!(
+        session["overlay_display"]["navigation"]["surface"], "claude_app",
+        "a passive terminal tail must retain the trusted App origin of the current activation"
+    );
+    assert_eq!(
+        session["overlay_display"]["navigation"]["capability"],
+        "agent_host"
+    );
+}
+
+#[test]
 fn acknowledging_current_completion_does_not_reveal_an_expired_active_tool() {
     let (_temp, state) = ready();
     ingest_source_payload(
@@ -1241,6 +1449,109 @@ fn start_is_display_only_while_thinking_and_plan_share_one_pet_reaction() {
 }
 
 #[test]
+fn tool_entry_identity_follows_the_current_tool_activity_run() {
+    let (_temp, state) = ready();
+    let session_id = "tool-activity-run";
+    let projected = projected_session_id(session_id);
+
+    let entry_id = |state: &CoreState| -> String {
+        let snapshot = snapshot(state);
+        let session = snapshot["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["session_id"] == projected)
+            .unwrap()
+            .clone();
+        assert_eq!(session["state"], "tool");
+        session["overlay_display"]["state_entry_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let tool_event = |id: &str, seconds_ago: i64, activity_kind: Value| {
+        ingest_source_payload(
+            &state,
+            "claude_code",
+            id,
+            session_id,
+            "tool",
+            &timestamp(seconds_ago),
+            json!({
+                "source_event": "PreToolUse",
+                "activity_kind": activity_kind,
+                "session_active": true,
+                "affects_activity": true,
+                "diagnostic": false
+            }),
+        );
+    };
+
+    tool_event("run-command-start", 20, json!("command"));
+    let command_run = entry_id(&state);
+
+    // The tool-after event of the same call is published without a subtype and
+    // must continue the run instead of opening a new one.
+    tool_event("run-command-after", 19, Value::Null);
+    assert_eq!(
+        entry_id(&state),
+        command_run,
+        "unlabeled tool traffic restarted the pet animation"
+    );
+
+    tool_event("run-command-again", 18, json!("command"));
+    assert_eq!(
+        entry_id(&state),
+        command_run,
+        "another call of the same activity restarted the pet animation"
+    );
+
+    tool_event("run-file", 17, json!("file"));
+    let file_run = entry_id(&state);
+    assert_ne!(
+        file_run, command_run,
+        "a different tool activity reused the previous animation identity"
+    );
+
+    // Returning to a previously seen activity is a genuinely new run, so its
+    // identity must not collide with the earlier one.
+    tool_event("run-command-return", 16, json!("command"));
+    let returned_run = entry_id(&state);
+    assert_ne!(
+        returned_run, command_run,
+        "a new run of an earlier activity reused its first identity"
+    );
+    assert_ne!(returned_run, file_run);
+
+    // A non-tool event ends the run, so the tool work that follows it is new
+    // even when the host reports the same activity subtype.
+    ingest_source_payload(
+        &state,
+        "claude_code",
+        "run-next-turn",
+        session_id,
+        "start",
+        &timestamp(15),
+        json!({
+            "source_event": "UserPromptSubmit",
+            "message_role": "user",
+            "message_content": "继续",
+            "session_active": true,
+            "affects_activity": true,
+            "diagnostic": false
+        }),
+    );
+    tool_event("run-command-next-turn", 14, json!("command"));
+    let next_turn_run = entry_id(&state);
+    assert_ne!(
+        next_turn_run, returned_run,
+        "tool work after an interrupting event reused the previous run identity"
+    );
+    assert_ne!(next_turn_run, command_run);
+    assert_ne!(next_turn_run, file_run);
+}
+
+#[test]
 fn waiting_and_failed_sessions_ignore_the_ordinary_display_timeout() {
     let (_temp, state) = ready();
     for (id, event_type, session_active) in [
@@ -1282,7 +1593,7 @@ fn waiting_and_failed_sessions_ignore_the_ordinary_display_timeout() {
     assert_eq!(current["active_agent_state"]["lease_seconds"], Value::Null);
     assert_eq!(current["active_agent_state"]["expires_at"], Value::Null);
     assert_eq!(current["behavior"]["session_message_timeout_minutes"], 15);
-    assert_eq!(current["behavior"]["bubble_transparency"], 0.55);
+    assert!(current["behavior"].get("bubble_transparency").is_none());
     assert_eq!(current["behavior"]["appearance_theme"], "system");
 }
 
@@ -1568,9 +1879,11 @@ fn overlay_projection_exposes_only_strict_audited_app_uuids_for_session_routing(
             session["overlay_display"]["navigation"]["routable_session_id"].as_str()
         })
         .collect::<Vec<_>>();
-    assert_eq!(routable.len(), 2);
-    assert!(routable.contains(&codex_uuid));
-    assert!(routable.contains(&claude_uuid));
+    // Codex is the only source with a host deep link that returns to an
+    // existing App session. Claude Desktop's canonical UUID identifies the CLI
+    // transcript, not the Desktop session, so it is never published as routable.
+    assert_eq!(routable, vec![codex_uuid]);
+    assert!(!routable.contains(&claude_uuid));
     let capability_for = |source: &str, raw_session_id: &str| {
         sessions
             .iter()
@@ -1587,7 +1900,7 @@ fn overlay_projection_exposes_only_strict_audited_app_uuids_for_session_routing(
         capability_for("codex", "019f5b0f_88ff_7413_8953_29de4ed0951c"),
         "agent_host"
     );
-    assert_eq!(capability_for("claude_code", claude_uuid), "exact_session");
+    assert_eq!(capability_for("claude_code", claude_uuid), "agent_host");
     assert_eq!(capability_for("claude_code", codex_uuid), "unavailable");
     assert_eq!(
         capability_for("opencode", "ses_052d7fe89ffeVWsrMygGA3AKvL"),
@@ -3439,18 +3752,43 @@ fn session_message_timeout_patch_is_typed_and_bounded() {
 }
 
 #[test]
-fn bubble_transparency_patch_is_typed_and_bounded() {
+fn removed_bubble_transparency_patch_is_rejected() {
     let (_temp, state) = ready();
     let initial = snapshot(&state);
     let revision = initial["behavior_revision"].as_str().unwrap();
-    let updated = patch(&state, revision, json!({ "bubble_transparency": 0.8 })).unwrap();
-    assert_eq!(updated["behavior"]["bubble_transparency"], 0.8);
-
-    let next_revision = updated["revision"].as_str().unwrap();
-    let error = patch(&state, next_revision, json!({ "bubble_transparency": 1.1 })).unwrap_err();
+    let error = patch(&state, revision, json!({ "bubble_transparency": 0.8 })).unwrap_err();
     assert!(error
         .to_string()
-        .contains("bubble_transparency must be between 0 and 1"));
+        .contains("unknown field `bubble_transparency`"));
+}
+
+#[test]
+fn bubble_font_scale_patch_is_typed_and_persisted() {
+    let (_temp, state) = ready();
+    let initial = snapshot(&state);
+    assert_eq!(initial["behavior"]["bubble_font_scale"], "standard");
+
+    let revision = initial["behavior_revision"].as_str().unwrap();
+    let updated = patch(&state, revision, json!({ "bubble_font_scale": "large" })).unwrap();
+    assert_eq!(updated["behavior"]["bubble_font_scale"], "large");
+    assert_eq!(snapshot(&state)["behavior"]["bubble_font_scale"], "large");
+
+    let next_revision = updated["revision"].as_str().unwrap();
+    let error = patch(
+        &state,
+        next_revision,
+        json!({ "bubble_font_scale": "largest" }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("unknown variant"));
+
+    let error = patch(
+        &state,
+        next_revision,
+        json!({ "bubble_font_size": "large" }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("unknown field"));
 }
 
 #[test]
@@ -3460,7 +3798,6 @@ fn appearance_theme_patch_is_typed_and_persisted() {
     let revision = initial["behavior_revision"].as_str().unwrap();
     let updated = patch(&state, revision, json!({ "appearance_theme": "dark" })).unwrap();
     assert_eq!(updated["behavior"]["appearance_theme"], "dark");
-    assert_eq!(updated["behavior"]["bubble_transparency"], 0.55);
 
     let next_revision = updated["revision"].as_str().unwrap();
     let error = patch(
@@ -3505,16 +3842,25 @@ fn interface_language_patch_is_typed_and_persisted() {
 fn session_group_display_patch_is_typed_and_persisted() {
     let (_temp, state) = ready();
     let initial = snapshot(&state);
+    assert_eq!(initial["behavior"]["group_sessions_by_agent"], true);
     assert_eq!(initial["behavior"]["session_group_display"], "stacked");
 
     let revision = initial["behavior_revision"].as_str().unwrap();
     let updated = patch(
         &state,
         revision,
-        json!({ "session_group_display": "expanded" }),
+        json!({
+            "group_sessions_by_agent": false,
+            "session_group_display": "expanded"
+        }),
     )
     .unwrap();
+    assert_eq!(updated["behavior"]["group_sessions_by_agent"], false);
     assert_eq!(updated["behavior"]["session_group_display"], "expanded");
+    assert_eq!(
+        snapshot(&state)["behavior"]["group_sessions_by_agent"],
+        false
+    );
     assert_eq!(
         snapshot(&state)["behavior"]["session_group_display"],
         "expanded"

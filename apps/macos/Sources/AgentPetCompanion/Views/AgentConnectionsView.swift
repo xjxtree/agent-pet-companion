@@ -753,6 +753,21 @@ enum AgentConnectionsPresentation {
         return operation
     }
 
+    static func success(
+        for source: AgentSource,
+        in operationState: AgentConnectionOperationState,
+        status: AgentConnectionStatus?
+    ) -> AgentConnectionOperation? {
+        guard let operation = success(for: source, in: operationState) else {
+            return nil
+        }
+        if operation.kind == .repair,
+           status?.blockingItems.isEmpty != true {
+            return nil
+        }
+        return operation
+    }
+
     static func operationSuccessDetail(
         _ operation: AgentConnectionOperation,
         locale: String = APCLocalization.interfaceLocaleIdentifier
@@ -872,7 +887,7 @@ struct AgentConnectionsView: View {
                 systemImage: "wand.and.stars"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .controlSize(.regular)
         .disabled(!store.canStartConnectionOperation)
         .accessibilityHint(APCLocalization.text(
@@ -892,7 +907,7 @@ struct AgentConnectionsView: View {
                 systemImage: "checkmark.circle"
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .controlSize(.regular)
         .disabled(!store.canStartConnectionOperation)
         .accessibilityHint(APCLocalization.text(
@@ -1099,7 +1114,8 @@ private struct AgentConnectionSection: View {
 
             if let success = AgentConnectionsPresentation.success(
                 for: source,
-                in: store.connectionOperationState
+                in: store.connectionOperationState,
+                status: status
             ) {
                 operationSuccessNotice(success)
             }
@@ -1354,7 +1370,7 @@ private struct AgentConnectionSection: View {
                             ?? "arrow.right.circle"
                     )
                 }
-                .buttonStyle(.bordered)
+                .apcClearGlassButtonStyle()
                 .disabled(!featuredAction.isEnabled)
                 .accessibilityLabel(featuredAction.accessibilityLabel)
                 .accessibilityHint(featuredAction.accessibilityHint ?? "")

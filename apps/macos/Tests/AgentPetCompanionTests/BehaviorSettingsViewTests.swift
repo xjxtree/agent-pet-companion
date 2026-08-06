@@ -37,6 +37,55 @@ struct BehaviorSettingsViewTests {
         ])
         #expect(BehaviorSettingsCatalog.appearanceThemes == [.system, .light, .dark])
         #expect(BehaviorSettingsCatalog.groupDisplays == [.stacked, .expanded])
+        #expect(BehaviorSettingsCatalog.bubbleFontScales == [.standard, .large])
+    }
+
+    @Test
+    func bubbleFontScaleOffersExactlyTwoTiersWithStandardAsTheCurrentSize() {
+        #expect(BubbleFontScale.allCases == [.standard, .large])
+        #expect(BehaviorSettings().bubbleFontScale == .standard)
+        #expect(BubbleFontScale.standard.multiplier == 1)
+        #expect(BubbleFontScale.large.multiplier > 1)
+        #expect(
+            APCLocalizedPresentation.bubbleFontScaleTitle(.standard, locale: "en") == "Standard"
+        )
+        #expect(
+            APCLocalizedPresentation.bubbleFontScaleTitle(.large, locale: "zh-Hans") == "更大"
+        )
+    }
+
+    @Test
+    func bubbleFontScalePersistsThroughBehaviorEncodingAndPatchDiff() throws {
+        var large = BehaviorSettings()
+        large.bubbleFontScale = .large
+        let encoded = try JSONEncoder().encode(large)
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        #expect(json["bubble_font_scale"] as? String == "large")
+        #expect(
+            try JSONDecoder().decode(BehaviorSettings.self, from: encoded).bubbleFontScale
+                == .large
+        )
+
+        // A stored payload written before this setting existed keeps rendering
+        // at the standard tier instead of failing to decode.
+        let legacy = try JSONDecoder().decode(
+            BehaviorSettings.self,
+            from: Data(#"{"enabled":true}"#.utf8)
+        )
+        #expect(legacy.bubbleFontScale == .standard)
+
+        let patch = BehaviorSettingsPatch(from: BehaviorSettings(), to: large)
+        #expect(patch.bubbleFontScale == .large)
+        #expect(!patch.isEmpty)
+        #expect(BehaviorSettingsPatch(from: large, to: large).bubbleFontScale == nil)
+        let patchJSON = try #require(
+            try JSONSerialization.jsonObject(
+                with: try JSONEncoder().encode(patch)
+            ) as? [String: Any]
+        )
+        #expect(patchJSON["bubble_font_scale"] as? String == "large")
     }
 
     @Test
@@ -153,48 +202,11 @@ struct BehaviorSettingsViewTests {
         #expect(!source.contains("configuration.preview.resize-handle"))
         #expect(source.contains("Text(APCLocalization.text(.configSizeFooter))"))
         #expect(source.contains("\"configuration.appearance.language\""))
-    }
-
-    @MainActor
-    @Test
-    func transparencyDragPreviewsLocallyAndCommitsExactlyOneRPC() async throws {
-        let probe = BehaviorRequestProbe()
-        let persisted = BehaviorSettings(bubbleTransparency: 0.8)
-        let persistedObject = try JSONSerialization.jsonObject(
-            with: JSONEncoder().encode(persisted)
-        )
-        let store = AppStore(
-            bootstrapHooks: AppStoreBootstrapHooks(
-                ensureRunning: { .alreadyHealthy },
-                recover: { .alreadyHealthy },
-                refreshSnapshot: { _ in },
-                onReady: { _ in }
-            ),
-            petCoreRequestOverride: { method, params, _ in
-                probe.requests.append((method, params))
-                return [
-                    "behavior": persistedObject,
-                    "revision": "1",
-                ]
-            }
-        )
-        let original = store.behavior.bubbleTransparency
-
-        store.previewBubbleTransparency(0.6)
-        store.previewBubbleTransparency(0.7)
-        store.previewBubbleTransparency(0.8)
-
-        #expect(probe.requests.isEmpty)
-        #expect(store.behavior.bubbleTransparency == 0.8)
-
-        store.commitBubbleTransparency(from: original)
-        await store.waitForBehaviorPersistence()
-
-        #expect(probe.requests.count == 1)
-        #expect(probe.requests.first?.method == "behavior.patch")
-        let parameters = probe.requests.first?.params as? [String: Any]
-        let changes = parameters?["changes"] as? [String: Any]
-        #expect(changes?["bubble_transparency"] as? Double == 0.8)
+        #expect(source.contains("\"configuration.messages.group-by-agent\""))
+        #expect(source.contains("behaviorBinding(\\.groupSessionsByAgent)"))
+        #expect(!source.contains("bubbleTransparencySetting"))
+        #expect(!source.contains("configuration.appearance.bubble-transparency"))
+        #expect(!source.contains("bubbleTransparencyDraft"))
     }
 
     @MainActor
@@ -359,6 +371,28 @@ struct BehaviorSettingsViewTests {
             .appendingPathComponent("Sources/AgentPetCompanion/Views", isDirectory: true)
     }
 
+    private static func snapshotPayload(
+        behavior: BehaviorSettings,
+        revision: String
+    ) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(behavior)
+        let behaviorObject = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        return [
+            "revision": "state-\(revision)",
+            "overlay_placement_revision": "0",
+            "behavior": behaviorObject,
+            "behavior_revision": revision,
+            "pets": [],
+            "active_agent_sessions": [],
+            "active_agent_sessions_omitted_count": 0,
+            "events": [],
+            "recent_events": [],
+            "connections": [],
+        ]
+    }
+
     private func connectionStatus(
         items: [ConnectionCheckItem]
     ) -> AgentConnectionStatus {
@@ -399,11 +433,6 @@ struct BehaviorSettingsViewTests {
             recoveryAction: recovery
         )
     }
-}
-
-@MainActor
-private final class BehaviorRequestProbe {
-    var requests: [(method: String, params: Any)] = []
 }
 
 @MainActor

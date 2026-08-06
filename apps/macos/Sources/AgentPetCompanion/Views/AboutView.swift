@@ -34,7 +34,7 @@ struct AboutView: View {
                 Link(APCLocalization.text(.aboutPrivacy), destination: privacyURL)
                 Link(APCLocalization.text(.aboutLicense), destination: licenseURL)
             }
-            .buttonStyle(.bordered)
+            .apcClearGlassButtonStyle()
 
             if showsUpdateControls {
                 AppUpdateAboutSection(

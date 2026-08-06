@@ -11,12 +11,12 @@ use crate::event_envelope::{
 use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
-    BehaviorSettings, GenerationForm, GenerationJobStatus, GenerationMessageRecord,
-    InterfaceLanguage, OnboardingProgress, OnboardingStage, OverlayPlacement,
-    OverlayPlacementIntent, PetOrigin, PetState, PetSummary, QualityLevel, RenderSize,
-    SessionGroupDisplay, DEFAULT_OVERLAY_DISPLAY_WIDTH_PT, MAX_BUBBLE_TRANSPARENCY,
-    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_BUBBLE_TRANSPARENCY,
-    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
+    BehaviorSettings, BubbleFontScale, GenerationForm, GenerationJobStatus,
+    GenerationMessageRecord, InterfaceLanguage, OnboardingProgress, OnboardingStage,
+    OverlayPlacement, OverlayPlacementIntent, PetOrigin, PetState, PetSummary, QualityLevel,
+    RenderSize, SessionGroupDisplay, DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
+    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
+    ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
@@ -178,10 +178,11 @@ pub struct BehaviorSettingsPatch {
     pub status_bubble: Option<bool>,
     pub interface_language: Option<InterfaceLanguage>,
     pub appearance_theme: Option<AppearanceTheme>,
-    pub bubble_transparency: Option<f64>,
+    pub bubble_font_scale: Option<BubbleFontScale>,
     pub click_menu: Option<bool>,
     pub mouse_passthrough: Option<bool>,
     pub auto_hide: Option<bool>,
+    pub group_sessions_by_agent: Option<bool>,
     pub session_group_display: Option<SessionGroupDisplay>,
     pub session_message_timeout_minutes: Option<u16>,
     pub sources: Option<BTreeMap<AgentSource, bool>>,
@@ -194,10 +195,11 @@ impl BehaviorSettingsPatch {
             && self.status_bubble.is_none()
             && self.interface_language.is_none()
             && self.appearance_theme.is_none()
-            && self.bubble_transparency.is_none()
+            && self.bubble_font_scale.is_none()
             && self.click_menu.is_none()
             && self.mouse_passthrough.is_none()
             && self.auto_hide.is_none()
+            && self.group_sessions_by_agent.is_none()
             && self.session_group_display.is_none()
             && self.session_message_timeout_minutes.is_none()
             && self.sources.as_ref().is_none_or(BTreeMap::is_empty)
@@ -217,8 +219,8 @@ impl BehaviorSettingsPatch {
         if let Some(value) = self.appearance_theme {
             behavior.appearance_theme = value;
         }
-        if let Some(value) = self.bubble_transparency {
-            behavior.bubble_transparency = value;
+        if let Some(value) = self.bubble_font_scale {
+            behavior.bubble_font_scale = value;
         }
         if let Some(value) = self.click_menu {
             behavior.click_menu = value;
@@ -228,6 +230,9 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.auto_hide {
             behavior.auto_hide = value;
+        }
+        if let Some(value) = self.group_sessions_by_agent {
+            behavior.group_sessions_by_agent = value;
         }
         if let Some(value) = self.session_group_display {
             behavior.session_group_display = value;
@@ -1810,14 +1815,6 @@ impl Database {
                 "invalid params: session_message_timeout_minutes must be between {MIN_SESSION_MESSAGE_TIMEOUT_MINUTES} and {MAX_SESSION_MESSAGE_TIMEOUT_MINUTES}"
             )));
         }
-        if changes.bubble_transparency.is_some_and(|value| {
-            !value.is_finite()
-                || !(MIN_BUBBLE_TRANSPARENCY..=MAX_BUBBLE_TRANSPARENCY).contains(&value)
-        }) {
-            return Err(PetCoreError::InvalidRequest(format!(
-                "invalid params: bubble_transparency must be between {MIN_BUBBLE_TRANSPARENCY} and {MAX_BUBBLE_TRANSPARENCY}"
-            )));
-        }
         let mut connection = self.open()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (mut behavior, actual_revision) = read_behavior_row(&transaction)?;
@@ -2041,6 +2038,21 @@ impl Database {
     pub fn state_revision(&self) -> Result<u64> {
         let connection = self.open()?;
         state_revision_in_connection(&connection)
+    }
+
+    /// Opens a connection a caller can hold across repeated reads.
+    ///
+    /// Every other accessor opens and closes its own connection, which is the
+    /// right default for one-shot RPCs but wasteful for a loop that re-reads
+    /// the same row many times. The database runs in WAL mode and these reads
+    /// take no explicit transaction, so a held connection never blocks writers.
+    pub(crate) fn open_reusable_read_connection(&self) -> Result<Connection> {
+        self.open()
+    }
+
+    /// Reads the state revision through a caller-owned connection.
+    pub(crate) fn state_revision_using(&self, connection: &Connection) -> Result<u64> {
+        state_revision_in_connection(connection)
     }
 
     fn read_projection_at_revision<T, F>(
@@ -3042,6 +3054,9 @@ impl Database {
                 session_activated_at: None,
                 session_first_seen_at: None,
                 latest_terminal_navigation_payload: None,
+                completion_epoch_event_ids: Vec::new(),
+                preferred_app_navigation_payload: None,
+                tool_activity_run_marker: None,
                 event: AgentEvent {
                     id: row.get(1)?,
                     source: enum_from_name(&source).map_err(to_sql_error)?,
@@ -3271,10 +3286,51 @@ impl Database {
                      ) AS activity_epoch
               FROM eligible
             ),
+            tool_activity AS (
+              SELECT row_id, source, session_key, event_type, created_at,
+                     json_extract(payload_json, '$.activity_kind') AS activity_kind,
+                     LAG(event_type) OVER (
+                       PARTITION BY source, session_key
+                       ORDER BY created_at ASC, row_id ASC
+                     ) AS previous_event_type
+              FROM eligible
+            ),
+            labelled_tool_activity AS (
+              SELECT row_id, activity_kind,
+                     LAG(activity_kind) OVER (
+                       PARTITION BY source, session_key
+                       ORDER BY created_at ASC, row_id ASC
+                     ) AS previous_activity_kind
+              FROM tool_activity
+              WHERE event_type = 'tool' AND activity_kind IS NOT NULL
+            ),
+            tool_runs AS (
+              SELECT activity.row_id,
+                     SUM(CASE
+                       WHEN activity.event_type != 'tool' THEN 0
+                       -- The first tool event after any interruption opens a
+                       -- run, and so does a tool event that reports a different
+                       -- closed activity subtype than the one before it. Tool
+                       -- events published without a subtype (the tool-after
+                       -- edge of a call) continue the run they arrive in.
+                       WHEN activity.previous_event_type IS NOT 'tool' THEN 1
+                       WHEN labelled.activity_kind IS NOT NULL
+                        AND labelled.previous_activity_kind
+                              IS NOT labelled.activity_kind THEN 1
+                       ELSE 0
+                     END) OVER (
+                       PARTITION BY activity.source, activity.session_key
+                       ORDER BY activity.created_at ASC, activity.row_id ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                     ) AS tool_run_ordinal
+              FROM tool_activity AS activity
+              LEFT JOIN labelled_tool_activity AS labelled
+                ON labelled.row_id = activity.row_id
+            ),
             ranked AS (
               SELECT row_id, external_event_id, source, project_path, session_id,
                      session_key, event_type, title, detail, payload_json, created_at,
-                     session_activated_at, session_first_seen_at,
+                     session_activated_at, session_first_seen_at, activity_epoch,
                      ROW_NUMBER() OVER (
                        PARTITION BY source, session_key
                        ORDER BY activity_epoch DESC,
@@ -3314,11 +3370,46 @@ impl Database {
                      ORDER BY navigation.created_at DESC, navigation.row_id DESC
                      LIMIT 1
                    ) AS latest_terminal_navigation_payload,
-                   aliases.alias_sequence
+                   aliases.alias_sequence,
+                   -- Identity of the tool activity run the selected event
+                   -- belongs to. The ordinal advances once per run inside its
+                   -- session, so continued traffic for the same activity keeps
+                   -- one identity while every later run is distinct from the
+                   -- runs before it.
+                   CASE WHEN selected.event_type = 'tool'
+                     THEN printf('run-%d', runs.tool_run_ordinal)
+                   END AS tool_activity_run_marker,
+                   COALESCE((
+                     SELECT json_group_array(completion.external_event_id)
+                     FROM sequenced AS completion
+                     WHERE completion.source = selected.source
+                       AND completion.session_key = selected.session_key
+                       AND completion.activity_epoch = selected.activity_epoch
+                       AND completion.event_type = 'done'
+                   ), '[]') AS completion_epoch_event_ids,
+                   (
+                     SELECT navigation.payload_json
+                     FROM sequenced AS navigation
+                     WHERE navigation.source = selected.source
+                       AND navigation.session_key = selected.session_key
+                       AND navigation.activity_epoch = selected.activity_epoch
+                       AND json_extract(
+                             navigation.payload_json,
+                             '$.session_surface'
+                           ) = CASE selected.source
+                                 WHEN 'codex' THEN 'chatgpt_app'
+                                 WHEN 'claude_code' THEN 'claude_app'
+                                 WHEN 'opencode' THEN 'opencode_app'
+                               END
+                     ORDER BY navigation.created_at DESC, navigation.row_id DESC
+                     LIMIT 1
+                   ) AS preferred_app_navigation_payload
             FROM ranked AS selected
             LEFT JOIN agent_session_aliases AS aliases
               ON aliases.source = selected.source
              AND aliases.session_key = selected.session_key
+            LEFT JOIN tool_runs AS runs
+              ON runs.row_id = selected.row_id
             WHERE selected.session_rank = 1
             ORDER BY selected.created_at DESC, selected.row_id DESC
             LIMIT ?1
@@ -3353,6 +3444,13 @@ impl Database {
                     session_first_seen_at: row.get(11)?,
                     latest_terminal_navigation_payload: row
                         .get::<_, Option<String>>(12)?
+                        .map(|payload| serde_json::from_str(&payload).map_err(to_sql_error))
+                        .transpose()?,
+                    tool_activity_run_marker: row.get(14)?,
+                    completion_epoch_event_ids: serde_json::from_str(&row.get::<_, String>(15)?)
+                        .map_err(to_sql_error)?,
+                    preferred_app_navigation_payload: row
+                        .get::<_, Option<String>>(16)?
                         .map(|payload| serde_json::from_str(&payload).map_err(to_sql_error))
                         .transpose()?,
                     event: AgentEvent {
@@ -4613,6 +4711,9 @@ fn sequenced_session_event_from_row_at(
         session_activated_at: None,
         session_first_seen_at: None,
         latest_terminal_navigation_payload: None,
+        completion_epoch_event_ids: Vec::new(),
+        preferred_app_navigation_payload: None,
+        tool_activity_run_marker: None,
         event: agent_event_from_row(row, offset + 1)?,
     })
 }

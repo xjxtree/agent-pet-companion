@@ -742,11 +742,11 @@ struct AppDiagnosticEnvironment: Codable, Equatable, Sendable {
         let enabled: Bool
         let statusBubble: Bool
         let appearanceTheme: String
-        let bubbleTransparency: Double
         let clickMenu: Bool
         let mousePassthrough: Bool
         let autoHide: Bool
         let sessionMessageTimeoutMinutes: Int
+        let groupSessionsByAgent: Bool
         let sessionGroupDisplay: String
         let sources: [String: Bool]
         let events: [String: Bool]
@@ -800,11 +800,11 @@ struct AppDiagnosticEnvironment: Codable, Equatable, Sendable {
                 enabled: behavior.enabled,
                 statusBubble: behavior.statusBubble,
                 appearanceTheme: behavior.appearanceTheme.rawValue,
-                bubbleTransparency: behavior.bubbleTransparency,
                 clickMenu: behavior.clickMenu,
                 mousePassthrough: behavior.mousePassthrough,
                 autoHide: behavior.autoHide,
                 sessionMessageTimeoutMinutes: behavior.sessionMessageTimeoutMinutes,
+                groupSessionsByAgent: behavior.groupSessionsByAgent,
                 sessionGroupDisplay: behavior.sessionGroupDisplay.rawValue,
                 sources: Dictionary(uniqueKeysWithValues: behavior.sources.map { ($0.key.rawValue, $0.value) }),
                 events: Dictionary(uniqueKeysWithValues: behavior.events.map { ($0.key.rawValue, $0.value) })

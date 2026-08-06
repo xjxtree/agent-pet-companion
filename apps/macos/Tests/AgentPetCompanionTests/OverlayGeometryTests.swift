@@ -597,9 +597,28 @@ struct OverlayGeometryTests {
                                 sessionCount: sessionCount,
                                 language: language
                             )],
-                            previousDirection: nil
+                            previousAnchor: nil
                         )
-                        #expect(visibleFrame.contains(layout.frame))
+                        // Horizontal placement is the part that adapts to an
+                        // edge, so the bubble is always within the horizontal
+                        // span. Vertically it keeps its authored distance from
+                        // the pet, so it is fully on screen exactly when one
+                        // side of the pet has room for it.
+                        #expect(layout.frame.minX >= visibleFrame.minX)
+                        #expect(layout.frame.maxX <= visibleFrame.maxX)
+                        let offsets = OverlayGeometry.petVisualVerticalOffsets(
+                            displayWidthPt: petWidth,
+                            envelope: nil
+                        )
+                        let safeFrame = visibleFrame.insetBy(dx: 8, dy: 8)
+                        let roomAbove = safeFrame.maxY
+                            - (center.y + offsets.top + OverlayGeometry.bubbleGap)
+                        let roomBelow = (center.y + offsets.bottom
+                            - OverlayGeometry.bubbleGap) - safeFrame.minY
+                        if max(roomAbove, roomBelow) >= layout.frame.height {
+                            #expect(layout.frame.minY >= visibleFrame.minY)
+                            #expect(layout.frame.maxY <= visibleFrame.maxY)
+                        }
                         #expect(layout.frame.width >= 304)
                         #expect(layout.frame.width <= 360)
                     }
@@ -618,19 +637,27 @@ struct OverlayGeometryTests {
                 displayWidthPt: 112,
                 petScreenCenter: CGPoint(x: 600, y: 400),
                 screenFrame: visibleFrame,
-                previousDirection: direction
+                previousAnchor: OverlayBubbleAnchor(
+                    direction: direction,
+                    alignsLeft: false
+                )
             )
-            #expect(stable.direction == direction)
+            #expect(stable.anchor.direction == direction)
         }
 
+        // A pet pinned under the top edge has no room above it, so the bubble
+        // moves to the other side of the pet rather than closing the gap.
         let moved = OverlayGeometry.bubblePlacement(
             bubbleSize: bubbleSize,
             displayWidthPt: 112,
-            petScreenCenter: CGPoint(x: 1_130, y: 400),
+            petScreenCenter: CGPoint(x: 600, y: 760),
             screenFrame: visibleFrame,
-            previousDirection: .right
+            previousAnchor: OverlayBubbleAnchor(
+                direction: .above,
+                alignsLeft: false
+            )
         )
-        #expect(moved.direction != .right)
+        #expect(moved.anchor.direction == .below)
         #expect(visibleFrame.contains(OverlayGeometry.rect(
             center: moved.center,
             size: bubbleSize
@@ -1131,6 +1158,165 @@ struct OverlayGeometryTests {
         ))
     }
 
+    @Test
+    func globalEventLocationsSurviveEveryScreenArrangement() {
+        let arrangements = [
+            CGRect(x: 0, y: 0, width: 1_920, height: 1_080),
+            CGRect(x: 0, y: 0, width: 1_440, height: 900),
+            CGRect(x: 0, y: 0, width: 3_456, height: 2_234),
+        ]
+        for zeroOrigin in arrangements {
+            for sample in 0 ... 8 {
+                let progress = CGFloat(sample) / 8
+                let global = CGPoint(
+                    x: zeroOrigin.width * progress,
+                    y: zeroOrigin.height * progress
+                )
+                let screenPoint = OverlayPointerCoordinateSpace.screenPoint(
+                    forGlobalEventLocation: global,
+                    zeroOriginScreenFrame: zeroOrigin
+                )
+                #expect(screenPoint.x == global.x)
+                #expect(screenPoint.y == zeroOrigin.height - global.y)
+            }
+        }
+    }
+
+    /// The defect this pins: the drag translates its own host window on every
+    /// display tick, so a pointer sample read through that window's frame is
+    /// short by however far the window moved since the sample was created. Fast
+    /// drags queue several samples per frame and the error accumulates as the
+    /// grab point sliding across the pet.
+    @Test(arguments: [1.0, 9.0, 47.0])
+    func fastDragHoldsTheGrabOffsetWhileTheHostWindowMovesEverySample(
+        pointsPerSample: CGFloat
+    ) {
+        let zeroOrigin = CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+        let startGlobal = CGPoint(x: 300, y: 700)
+        let startPointer = OverlayPointerCoordinateSpace.screenPoint(
+            forGlobalEventLocation: startGlobal,
+            zeroOriginScreenFrame: zeroOrigin
+        )
+        // The pointer grabs the pet off-center, which is what makes a drift
+        // visible to the user at all.
+        let startAnchor = CGPoint(
+            x: startPointer.x - 23,
+            y: startPointer.y + 17
+        )
+        let grabOffset = CGPoint(
+            x: startAnchor.x - startPointer.x,
+            y: startAnchor.y - startPointer.y
+        )
+        var session = OverlayDragSession(
+            startPointerScreen: startPointer,
+            startAnchorScreen: startAnchor,
+            startDisplayID: "zero-origin"
+        )
+        var hostWindowFrame = OverlayGeometry.rect(
+            center: startAnchor,
+            size: CGSize(width: 704, height: 640)
+        )
+
+        for sample in 1 ... 500 {
+            let global = CGPoint(
+                x: startGlobal.x + CGFloat(sample) * pointsPerSample,
+                y: startGlobal.y - CGFloat(sample) * pointsPerSample * 0.5
+            )
+            let pointer = OverlayPointerCoordinateSpace.screenPoint(
+                forGlobalEventLocation: global,
+                zeroOriginScreenFrame: zeroOrigin
+            )
+            session.updatePointer(pointer)
+            let presented = session.proposedAnchorScreen
+            #expect(presented.x - pointer.x == grabOffset.x)
+            #expect(presented.y - pointer.y == grabOffset.y)
+            // Production moves this window to follow each presented center, so
+            // the next sample is created against a frame that has already
+            // shifted underneath the pointer.
+            hostWindowFrame = OverlayGeometry.rect(
+                center: presented,
+                size: hostWindowFrame.size
+            )
+        }
+
+        #expect(hostWindowFrame.midX == session.proposedAnchorScreen.x)
+    }
+
+    @Test
+    func bubbleKeepsItsAttachedEdgeWhileADragCrossesTheScreenMidline() {
+        let visibleFrame = CGRect(x: 0, y: 0, width: 1_920, height: 1_055)
+        let bubbleSize = CGSize(width: 344, height: 120)
+        var anchor: OverlayBubbleAnchor?
+        var previousCenterX: CGFloat?
+        var largestStep: CGFloat = 0
+
+        // Sweep a drag straight through the midline. Deciding the attached edge
+        // from the midline alone would jump the bubble by its own width minus
+        // the pet's the moment the pet crosses it.
+        for sample in 0 ... 400 {
+            let petCenter = CGPoint(
+                x: 660 + CGFloat(sample) * 1.5,
+                y: 520
+            )
+            let placement = OverlayGeometry.bubblePlacement(
+                bubbleSize: bubbleSize,
+                displayWidthPt: 112,
+                petScreenCenter: petCenter,
+                screenFrame: visibleFrame,
+                previousAnchor: anchor
+            )
+            anchor = placement.anchor
+            if let previousCenterX {
+                largestStep = max(
+                    largestStep,
+                    abs(placement.center.x - previousCenterX)
+                )
+            }
+            previousCenterX = placement.center.x
+            #expect(visibleFrame.contains(OverlayGeometry.rect(
+                center: placement.center,
+                size: bubbleSize
+            )))
+        }
+
+        // The bubble may only travel as far as the pet did between samples.
+        #expect(largestStep <= 1.5 + 0.001)
+    }
+
+    @MainActor
+    @Test
+    func sustainedDeliveryKeepsTheTickSourceArmedForTheWholeGesture() throws {
+        let factory = FakeOverlayDisplayTickFactory()
+        let driver = OverlayDisplayLinkCoalescer<Int> { _, onTick in
+            factory.makeSource(onTick: onTick)
+        }
+        let cadence = OverlayDisplayRefreshCadence(
+            displayID: "display",
+            framesPerSecond: 120
+        )
+        var delivered: [Int] = []
+
+        driver.beginSustainedDelivery()
+        for sample in 1 ... 4 {
+            driver.submit(
+                sample,
+                targetDisplayID: cadence.displayID,
+                screen: nil,
+                fallbackCadence: cadence,
+                deliver: { delivered.append($0) }
+            )
+            let source = try #require(factory.sources.last)
+            source.fire()
+            // Re-arming a paused link per sample can miss the next vsync, so
+            // the source stays live until the gesture finishes.
+            #expect(!source.isPaused)
+        }
+        #expect(delivered == [1, 2, 3, 4])
+
+        driver.endSustainedDelivery()
+        #expect(try #require(factory.sources.last).isPaused)
+    }
+
     @Test(arguments: [
         (500, 50.0),
         (500, 60.0),
@@ -1330,7 +1516,7 @@ struct OverlayGeometryTests {
 
     @MainActor
     @Test(arguments: [500, 1_000])
-    func displayLinkDeliveriesMoveOnlyTheParentPanelAtMostOncePerTick(
+    func displayLinkDeliveriesMoveTheCompositionAtMostOncePerTick(
         sampleCount: Int
     ) throws {
         let tickCount = 60
@@ -1345,8 +1531,13 @@ struct OverlayGeometryTests {
         let initialFrame = CGRect(x: 300, y: 200, width: 704, height: 640)
         let startCenter = CGPoint(x: 600, y: 400)
         var parentFrame = initialFrame
-        var previousCenter = startCenter
+        let anchor = OverlayDirectManipulationAnchor(
+            panelFrame: initialFrame,
+            petScreenCenter: startCenter
+        )
         var frameSetOperations: [OverlayInteractionWindowRole] = []
+        var bubbleAnchor: OverlayBubbleAnchor?
+        var presentedFrames: [OverlayInteractionWindowMove] = []
 
         for tick in 0 ..< tickCount {
             let lower = tick * sampleCount / tickCount
@@ -1362,16 +1553,32 @@ struct OverlayGeometryTests {
                     screen: nil,
                     fallbackCadence: cadence
                 ) { center in
-                    let moves = OverlayDirectManipulationMovePlan.moves(
+                    let plan = OverlayDirectManipulationMovePlan.plan(
+                        anchor: anchor,
                         parentFrame: parentFrame,
-                        previousPetCenter: previousCenter,
-                        presentedPetCenter: center
+                        presentedPetCenter: center,
+                        auxiliary: OverlayDirectManipulationAuxiliaryInput(
+                            displayWidthPt: 112,
+                            visibleFrame: CGRect(
+                                x: 0,
+                                y: 0,
+                                width: 1_920,
+                                height: 1_055
+                            ),
+                            petVisualEnvelope: nil,
+                            bubbleSize: CGSize(width: 344, height: 120),
+                            previousBubbleAnchor: bubbleAnchor,
+                            menuVisible: true
+                        )
                     )
-                    for move in moves {
+                    for move in plan.moves {
                         frameSetOperations.append(move.role)
-                        parentFrame = move.frame
+                        if move.role == .parentPetPanel {
+                            parentFrame = move.frame
+                        }
                     }
-                    previousCenter = center
+                    bubbleAnchor = plan.bubbleAnchor
+                    presentedFrames = plan.moves
                 }
             }
             try #require(factory.sources.last).fire()
@@ -1385,11 +1592,31 @@ struct OverlayGeometryTests {
             dx: finalCenter.x - startCenter.x,
             dy: finalCenter.y - startCenter.y
         )
-        #expect(frameSetOperations.count <= tickCount)
-        #expect(frameSetOperations.allSatisfy { $0 == .parentPetPanel })
-        #expect(!frameSetOperations.contains(.bubbleChildPanel))
-        #expect(!frameSetOperations.contains(.menuChildPanel))
+        // Every sample still collapses to at most one presentation per tick,
+        // and one presentation now carries the whole composition instead of
+        // deferring the auxiliary panels to a post-release correction.
+        let parentMoves = frameSetOperations.filter { $0 == .parentPetPanel }
+        #expect(parentMoves.count <= tickCount)
+        #expect(frameSetOperations.contains(.bubbleChildPanel))
+        #expect(frameSetOperations.contains(.menuChildPanel))
         #expect(parentFrame == expectedFrame)
+
+        // The bubble tracks the final pet center within the same delivery, so
+        // no auxiliary reconciliation is left over for the release.
+        let bubbleFrame = try #require(
+            presentedFrames.first { $0.role == .bubbleChildPanel }?.frame
+        )
+        let expectedBubbleCenter = OverlayGeometry.bubblePlacement(
+            bubbleSize: CGSize(width: 344, height: 120),
+            displayWidthPt: 112,
+            petScreenCenter: finalCenter,
+            screenFrame: CGRect(x: 0, y: 0, width: 1_920, height: 1_055),
+            previousAnchor: bubbleAnchor
+        ).center
+        #expect(hypot(
+            bubbleFrame.midX - expectedBubbleCenter.x,
+            bubbleFrame.midY - expectedBubbleCenter.y
+        ) <= 0.001)
     }
 
     @Test

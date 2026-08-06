@@ -151,6 +151,143 @@ struct AppStoreOverlaySnapshotTests {
 
     @MainActor
     @Test
+    func ungroupedSessionCardsKeepStableSlotsUntilANewActivationEpoch() throws {
+        let store = makeStore()
+        let behavior = BehaviorSettings(
+            groupSessionsByAgent: false,
+            sessionGroupDisplay: .expanded
+        )
+        let older = makeState(
+            source: .claudeCode,
+            session: "older-claude",
+            event: .tool,
+            activatedSecond: 1
+        )
+        let newer = makeState(
+            source: .codex,
+            session: "newer-codex",
+            event: .thinking,
+            activatedSecond: 2
+        )
+
+        func apply(_ revision: String, _ states: [ActiveAgentState]) throws {
+            try store.applyStateSnapshot([
+                "revision": revision,
+                "overlay_placement_revision": "0",
+                "behavior": try jsonObject(behavior),
+                "behavior_revision": "1",
+                "pets": [],
+                "active_agent_sessions": try jsonArray(states),
+                "active_agent_sessions_omitted_count": 0,
+                "overlay_visibility": try jsonObject(OverlayVisibility(
+                    petVisible: true,
+                    statusBubbleVisible: true
+                )),
+                "events": [],
+                "recent_events": [],
+                "connections": [],
+            ])
+        }
+
+        try apply("ungrouped-1", [newer, older])
+        var contents = store.overlayAvailableBubbleContents
+        #expect(contents.allSatisfy { $0.isStandaloneSessionCard })
+        #expect(contents.allSatisfy { $0.sessions.count == 1 })
+        #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
+            "older-claude",
+            "newer-codex",
+        ])
+
+        // A later tool/thinking edge changes content but stays in the same
+        // activation epoch, so it must not cause visual list hopping.
+        var olderChurn = older
+        olderChurn.event.id = "event-older-claude-thinking"
+        olderChurn.event.eventType = .thinking
+        olderChurn.event.createdAt = "2026-07-22T00:00:03Z"
+        olderChurn.overlayDisplay = AgentOverlayDisplay(summaryKind: .thinking)
+        try apply("ungrouped-2", [olderChurn, newer])
+        contents = store.overlayAvailableBubbleContents
+        #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
+            "older-claude",
+            "newer-codex",
+        ])
+
+        // A real new user/task epoch promotes the session exactly once.
+        var reactivated = olderChurn
+        reactivated.sessionActivatedAt = "2026-07-22T00:00:04Z"
+        reactivated.event.id = "event-older-claude-reactivated"
+        reactivated.event.createdAt = "2026-07-22T00:00:04Z"
+        try apply("ungrouped-3", [reactivated, newer])
+        contents = store.overlayAvailableBubbleContents
+        #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
+            "newer-codex",
+            "older-claude",
+        ])
+    }
+
+    @MainActor
+    @Test
+    func ungroupedTrayUsesStableAttentionPartitionsAndAGlobalStack() throws {
+        let store = makeStore()
+        let states = [
+            makeState(source: .codex, session: "running-new", event: .tool, activatedSecond: 5),
+            makeState(source: .claudeCode, session: "needs-input", event: .waiting, activatedSecond: 1),
+            makeState(source: .pi, session: "ready", event: .done, activatedSecond: 4),
+            makeState(source: .codex, session: "running-old", event: .thinking, activatedSecond: 2),
+            makeState(source: .claudeCode, session: "blocked", event: .failed, activatedSecond: 3),
+        ]
+
+        func apply(_ revision: String, display: SessionGroupDisplay) throws {
+            try store.applyStateSnapshot([
+                "revision": revision,
+                "overlay_placement_revision": "0",
+                "behavior": try jsonObject(BehaviorSettings(
+                    groupSessionsByAgent: false,
+                    sessionGroupDisplay: display
+                )),
+                "behavior_revision": "1",
+                "pets": [],
+                "active_agent_sessions": try jsonArray(states),
+                "active_agent_sessions_omitted_count": 0,
+                "overlay_visibility": try jsonObject(OverlayVisibility(
+                    petVisible: true,
+                    statusBubbleVisible: true
+                )),
+                "events": [],
+                "recent_events": [],
+                "connections": [],
+            ])
+        }
+
+        try apply("ungrouped-partitions-expanded", display: .expanded)
+        #expect(store.overlayAvailableBubbleContents.compactMap {
+            $0.sessions.first?.sessionID
+        } == [
+            "running-old",
+            "running-new",
+            "ready",
+            "blocked",
+            "needs-input",
+        ])
+
+        try apply("ungrouped-partitions-stacked", display: .stacked)
+        var contents = store.overlayAvailableBubbleContents
+        #expect(contents.count == 1)
+        #expect(contents.first?.sessions.first?.sessionID == "needs-input")
+        #expect(contents.first?.representedSessionCount == 5)
+        #expect(contents.first?.isStacked == true)
+
+        store.toggleOverlayStandaloneStack()
+        contents = store.overlayAvailableBubbleContents
+        #expect(contents.count == 5)
+        #expect(contents.allSatisfy { $0.isStandaloneSessionCard })
+        #expect(contents.allSatisfy { !$0.isStacked })
+        #expect(contents.last?.disclosureSessionCount == 5)
+        #expect(store.overlayBubbleSessionCount == 5)
+    }
+
+    @MainActor
+    @Test
     func activatingACompletedSessionPersistsItsAcknowledgement() async throws {
         let acknowledgementID = "ack-" + String(repeating: "a", count: 64)
         var acknowledgedParams: [String: Any]?
@@ -218,6 +355,129 @@ struct AppStoreOverlaySnapshotTests {
 
         #expect(acknowledgedParams?["acknowledgement_id"] as? String == acknowledgementID)
         #expect(store.overlayAvailableBubbleContents.isEmpty)
+    }
+
+    @MainActor
+    @Test
+    func acknowledgedCompletionDoesNotReappearAfterTransientProjectionGapWithoutNewActivity() async throws {
+        let acknowledgementID = "ack-" + String(repeating: "9", count: 64)
+        var acknowledgementCount = 0
+        let store = AppStore(
+            bootstrapHooks: testBootstrapHooks(),
+            agentSessionRouteOpener: { _ in .openedAgentHost },
+            applicationAppearanceApplier: { _ in },
+            petCoreRequestOverride: { method, _, _ in
+                guard method == "agent.session.acknowledge" else {
+                    throw PetCoreClientError.rpcError("Unexpected test RPC: \(method)")
+                }
+                acknowledgementCount += 1
+                return [
+                    "ok": true,
+                    "acknowledged": true,
+                    "changed": true,
+                    "acknowledgement_id": acknowledgementID,
+                ]
+            }
+        )
+        var completedState = try jsonObject(makeState(
+            source: .claudeCode,
+            session: "claude-acknowledged-session",
+            event: .done,
+            activatedSecond: 1
+        ))
+        completedState["acknowledgement_id"] = acknowledgementID
+        completedState["overlay_display"] = try jsonObject(AgentOverlayDisplay(
+            summaryKind: .done,
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "claude_app"
+            )
+        ))
+        let unrelatedState = try jsonObject(makeState(
+            source: .codex,
+            session: "unrelated-active-session",
+            event: .tool,
+            activatedSecond: 3
+        ))
+
+        func applySnapshot(revision: String, sessions: [[String: Any]]) throws {
+            try store.applyStateSnapshot([
+                "revision": revision,
+                "overlay_placement_revision": "0",
+                "behavior": try jsonObject(BehaviorSettings(
+                    sessionGroupDisplay: .expanded
+                )),
+                "behavior_revision": "1",
+                "pets": [],
+                "active_agent_sessions": sessions,
+                "active_agent_sessions_omitted_count": 0,
+                "overlay_visibility": try jsonObject(OverlayVisibility(
+                    petVisible: true,
+                    statusBubbleVisible: true
+                )),
+                "events": [],
+                "recent_events": [],
+                "connections": [],
+            ])
+        }
+
+        try applySnapshot(
+            revision: "claude-completed-1",
+            sessions: [unrelatedState, completedState]
+        )
+        let completedSession = try #require(
+            store.overlayAvailableBubbleContents
+                .flatMap(\.sessions)
+                .first { $0.source == .claudeCode }
+        )
+        store.activateOverlaySession(completedSession)
+        for _ in 0 ..< 1_000 where acknowledgementCount == 0 {
+            await Task.yield()
+        }
+        #expect(acknowledgementCount == 1)
+        #expect(!store.overlayAvailableBubbleContents.flatMap(\.sessions).contains {
+            $0.id == completedSession.id
+        })
+
+        try applySnapshot(revision: "claude-gap-2", sessions: [unrelatedState])
+        #expect(!store.overlayAvailableBubbleContents.flatMap(\.sessions).contains {
+            $0.id == completedSession.id
+        })
+
+        try applySnapshot(
+            revision: "claude-stale-repeat-3",
+            sessions: [unrelatedState, completedState]
+        )
+        #expect(
+            !store.overlayAvailableBubbleContents.flatMap(\.sessions).contains {
+                $0.id == completedSession.id
+            },
+            "The same acknowledged completion must not reopen without a new activation"
+        )
+
+        var reactivatedState = try jsonObject(makeState(
+            source: .claudeCode,
+            session: "claude-acknowledged-session",
+            event: .start,
+            activatedSecond: 2
+        ))
+        reactivatedState["acknowledgement_id"] = "ack-" + String(repeating: "8", count: 64)
+        reactivatedState["overlay_display"] = try jsonObject(AgentOverlayDisplay(
+            summaryKind: .start,
+            navigation: AgentSessionNavigation(
+                capability: .agentHost,
+                sessionOpen: true,
+                surface: "claude_app"
+            )
+        ))
+        try applySnapshot(
+            revision: "claude-reactivated-4",
+            sessions: [unrelatedState, reactivatedState]
+        )
+        #expect(store.overlayAvailableBubbleContents.flatMap(\.sessions).contains {
+            $0.source == .claudeCode && $0.eventType == .start
+        })
     }
 
     @MainActor

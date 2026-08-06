@@ -19,9 +19,6 @@ pub const MAX_OVERLAY_COORDINATE_MAGNITUDE: f64 = f64::MAX / OVERLAY_PLACEMENT_G
 pub const DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 15;
 pub const MIN_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1;
 pub const MAX_SESSION_MESSAGE_TIMEOUT_MINUTES: u16 = 1_440;
-pub const DEFAULT_BUBBLE_TRANSPARENCY: f64 = 0.55;
-pub const MIN_BUBBLE_TRANSPARENCY: f64 = 0.0;
-pub const MAX_BUBBLE_TRANSPARENCY: f64 = 1.0;
 pub const REQUIRED_SEMANTIC_STATES: [PetStateName; 6] = [
     PetStateName::Idle,
     PetStateName::Thinking,
@@ -116,6 +113,16 @@ pub enum SessionGroupDisplay {
     #[default]
     Stacked,
     Expanded,
+}
+
+/// Bubble text size tier. The App owns the exact per-role point sizes; PetCore
+/// only stores which closed tier the user selected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BubbleFontScale {
+    #[default]
+    Standard,
+    Large,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -577,10 +584,11 @@ pub struct BehaviorSettings {
     pub status_bubble: bool,
     pub interface_language: InterfaceLanguage,
     pub appearance_theme: AppearanceTheme,
-    pub bubble_transparency: f64,
+    pub bubble_font_scale: BubbleFontScale,
     pub click_menu: bool,
     pub mouse_passthrough: bool,
     pub auto_hide: bool,
+    pub group_sessions_by_agent: bool,
     pub session_group_display: SessionGroupDisplay,
     pub session_message_timeout_minutes: u16,
     pub sources: BTreeMap<AgentSource, bool>,
@@ -598,10 +606,11 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             status_bubble: Option<bool>,
             interface_language: Option<InterfaceLanguage>,
             appearance_theme: Option<AppearanceTheme>,
-            bubble_transparency: Option<f64>,
+            bubble_font_scale: Option<BubbleFontScale>,
             click_menu: Option<bool>,
             mouse_passthrough: Option<bool>,
             auto_hide: Option<bool>,
+            group_sessions_by_agent: Option<bool>,
             session_group_display: Option<SessionGroupDisplay>,
             session_message_timeout_minutes: Option<u16>,
             sources: Option<BTreeMap<AgentSource, bool>>,
@@ -635,14 +644,13 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
                 .interface_language
                 .unwrap_or(defaults.interface_language),
             appearance_theme: raw.appearance_theme.unwrap_or(defaults.appearance_theme),
-            bubble_transparency: raw
-                .bubble_transparency
-                .filter(|value| value.is_finite())
-                .map(|value| value.clamp(MIN_BUBBLE_TRANSPARENCY, MAX_BUBBLE_TRANSPARENCY))
-                .unwrap_or(defaults.bubble_transparency),
+            bubble_font_scale: raw.bubble_font_scale.unwrap_or(defaults.bubble_font_scale),
             click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
             mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
             auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
+            group_sessions_by_agent: raw
+                .group_sessions_by_agent
+                .unwrap_or(defaults.group_sessions_by_agent),
             session_group_display: raw
                 .session_group_display
                 .unwrap_or(defaults.session_group_display),
@@ -685,10 +693,11 @@ impl Default for BehaviorSettings {
             status_bubble: true,
             interface_language: InterfaceLanguage::System,
             appearance_theme: AppearanceTheme::System,
-            bubble_transparency: DEFAULT_BUBBLE_TRANSPARENCY,
+            bubble_font_scale: BubbleFontScale::Standard,
             click_menu: true,
             mouse_passthrough: true,
             auto_hide: false,
+            group_sessions_by_agent: true,
             session_group_display: SessionGroupDisplay::Stacked,
             session_message_timeout_minutes: DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES,
             sources,

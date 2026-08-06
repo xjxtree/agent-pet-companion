@@ -373,36 +373,50 @@ public enum AgentPetCompanionUIValidationContract {
             sessions: sessions,
             isExpanded: false
         )
-        let size = OverlayGeometry.resolvedBubbleSize(
-            in: CGSize(width: 1512, height: 934),
-            content: content
-        )
-        let bubbleRect = CGRect(origin: .zero, size: size)
-        let closeRect = OverlayGeometry.bubbleCloseHitRect(in: bubbleRect)
-        let groupRect = OverlayGeometry.bubbleGroupToggleHitRect(
-            in: bubbleRect,
-            content: content
-        )
-        let sessionRects = OverlayGeometry.bubbleSessionRects(in: bubbleRect, content: content)
-        try require(sessionRects.count == 1, "bubble session hit regions did not match session rows")
-        try require(!groupRect.isEmpty, "multi-session bubble omitted its group control hit region")
-        try require(
-            !sessionRects.contains(where: { $0.intersects(closeRect) }),
-            "bubble session and close hit regions overlap"
-        )
-        try require(!groupRect.intersects(closeRect), "bubble group and close hit regions overlap")
-        try require(
-            !sessionRects.contains(where: { $0.intersects(groupRect) }),
-            "bubble session and group hit regions overlap"
-        )
-        try require(
-            closeRect.contains(CGPoint(x: bubbleRect.maxX - 12, y: 12)),
-            "bubble close hit region missed its visible control"
-        )
-        try require(
-            sessionRects[0].contains(CGPoint(x: sessionRects[0].midX, y: sessionRects[0].midY)),
-            "bubble session hit region missed its visible row"
-        )
+        // Every selectable text tier must keep the same routing contract: a
+        // larger tier grows rows and header controls, so its hit regions are
+        // re-measured rather than inherited from the standard tier.
+        for fontScale in BubbleFontScale.allCases {
+            let size = OverlayGeometry.resolvedBubbleSize(
+                in: CGSize(width: 1512, height: 934),
+                content: content,
+                fontScale: fontScale
+            )
+            let bubbleRect = CGRect(origin: .zero, size: size)
+            let closeRect = OverlayGeometry.bubbleCloseHitRect(
+                in: bubbleRect,
+                fontScale: fontScale
+            )
+            let groupRect = OverlayGeometry.bubbleGroupToggleHitRect(
+                in: bubbleRect,
+                content: content,
+                fontScale: fontScale
+            )
+            let sessionRects = OverlayGeometry.bubbleSessionRects(
+                in: bubbleRect,
+                content: content,
+                fontScale: fontScale
+            )
+            try require(sessionRects.count == 1, "bubble session hit regions did not match session rows")
+            try require(!groupRect.isEmpty, "multi-session bubble omitted its group control hit region")
+            try require(
+                !sessionRects.contains(where: { $0.intersects(closeRect) }),
+                "bubble session and close hit regions overlap"
+            )
+            try require(!groupRect.intersects(closeRect), "bubble group and close hit regions overlap")
+            try require(
+                !sessionRects.contains(where: { $0.intersects(groupRect) }),
+                "bubble session and group hit regions overlap"
+            )
+            try require(
+                closeRect.contains(CGPoint(x: bubbleRect.maxX - 12, y: 12)),
+                "bubble close hit region missed its visible control"
+            )
+            try require(
+                sessionRects[0].contains(CGPoint(x: sessionRects[0].midX, y: sessionRects[0].midY)),
+                "bubble session hit region missed its visible row"
+            )
+        }
 
         try require(
             AgentSessionDeepLink.url(source: .codex, sessionID: "019f5b0f-88ff-7413-8953-29de4ed0951c")?.absoluteString

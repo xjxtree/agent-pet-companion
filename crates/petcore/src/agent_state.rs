@@ -26,6 +26,21 @@ pub struct SequencedAgentEvent {
     pub session_activated_at: Option<String>,
     pub session_first_seen_at: Option<String>,
     pub latest_terminal_navigation_payload: Option<serde_json::Value>,
+    /// External identities of every successful terminal edge in the selected
+    /// activity epoch. Claude Desktop may emit more than one process-level
+    /// `SessionEnd` for one durable conversation; acknowledging any one of
+    /// those tails consumes the whole completed epoch without consuming the
+    /// next real activation.
+    pub completion_epoch_event_ids: Vec<String>,
+    /// A source-matching App origin observed in the selected activity epoch.
+    /// Tail hooks do not always inherit the desktop marker, so this trusted
+    /// origin wins over a later marker-free CLI fallback for the same epoch.
+    pub preferred_app_navigation_payload: Option<serde_json::Value>,
+    /// Identity of the tool activity run this event belongs to. One run is the
+    /// uninterrupted stretch of tool events carrying the same closed activity
+    /// subtype, so the renderer can replay a bounded burst for genuinely new
+    /// tool work without restarting on continued traffic for the same activity.
+    pub tool_activity_run_marker: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -231,8 +246,7 @@ pub fn select_active_agent_state_with_acknowledgements(
         .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
-            !acknowledged_session_activations
-                .contains(&session_acknowledgement_id(&candidate.candidate.event))
+            !candidate_is_acknowledged(candidate.candidate, acknowledged_session_activations)
         })
         .filter(|candidate| {
             let event = &candidate.candidate.event;
@@ -291,8 +305,7 @@ pub fn select_display_agent_states_with_acknowledgements(
         .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
-            !acknowledged_session_activations
-                .contains(&session_acknowledgement_id(&candidate.candidate.event))
+            !candidate_is_acknowledged(candidate.candidate, acknowledged_session_activations)
         })
         .filter(|candidate| {
             let event = &candidate.candidate.event;
@@ -558,9 +571,24 @@ fn active_state_from_candidate(
             }
         }
     }
+    if let Some(navigation) = candidate
+        .candidate
+        .preferred_app_navigation_payload
+        .as_ref()
+    {
+        // Origin and liveness are separate facts. A later terminal edge still
+        // owns `session_open`, but it cannot downgrade an App-origin activity
+        // epoch merely because that hook invocation lost the desktop marker.
+        for key in ["session_surface", "terminal_app", "session_open_url"] {
+            if let Some(value) = navigation.get(key) {
+                projected_event.payload_json[key] = value.clone();
+            }
+        }
+    }
     let overlay_display = overlay_session_display(
         &projected_event,
         candidate.candidate.session_activated_at.as_deref(),
+        candidate.candidate.tool_activity_run_marker.as_deref(),
     );
     ActiveAgentState {
         state: event.event_type.pet_state(),
@@ -589,41 +617,57 @@ fn active_state_from_candidate(
 fn overlay_session_display(
     event: &AgentEvent,
     session_activated_at: Option<&str>,
+    tool_activity_run_marker: Option<&str>,
 ) -> OverlaySessionDisplay {
     OverlaySessionDisplay {
         summary_kind: overlay_summary_kind(event),
         navigation: overlay_navigation(event),
-        state_entry_id: overlay_state_entry_id(event, session_activated_at),
+        state_entry_id: overlay_state_entry_id(
+            event,
+            session_activated_at,
+            tool_activity_run_marker,
+        ),
     }
 }
 
-fn overlay_state_entry_id(event: &AgentEvent, session_activated_at: Option<&str>) -> String {
+fn overlay_state_entry_id(
+    event: &AgentEvent,
+    session_activated_at: Option<&str>,
+    tool_activity_run_marker: Option<&str>,
+) -> String {
     let Some(reaction) = event.event_type.pet_reaction() else {
         return "idle".to_string();
     };
-    if matches!(
-        reaction,
-        PetStateName::Tool | PetStateName::Waiting | PetStateName::Failed
-    ) {
+    // Waiting and Failed latch one attention state until the session advances,
+    // so repeated host traffic keeps a single stable identity.
+    if matches!(reaction, PetStateName::Waiting | PetStateName::Failed) {
         return enum_name(reaction);
     }
 
-    let marker = session_activated_at
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            (reaction == PetStateName::Done)
-                .then(|| {
-                    event
-                        .payload_json
-                        .get("turn_id")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                })
-                .flatten()
-        })
-        .unwrap_or("initial");
+    let marker = match reaction {
+        // One tool activity run is the animation unit. Continued traffic for
+        // the same closed activity subtype keeps its identity, while a
+        // genuinely different activity opens a new run.
+        PetStateName::Tool => tool_activity_run_marker
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        _ => session_activated_at
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                (reaction == PetStateName::Done)
+                    .then(|| {
+                        event
+                            .payload_json
+                            .get("turn_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+                    .flatten()
+            }),
+    }
+    .unwrap_or("initial");
     let mut digest = Sha256::new();
     // Thinking and plan deliberately share the same authored action and the
     // same per-activation identity, so changing the badge from Thinking to
@@ -652,17 +696,43 @@ fn opaque_session_id(value: &str) -> String {
 }
 
 pub fn session_acknowledgement_id(event: &AgentEvent) -> String {
+    session_acknowledgement_id_for_event_id(event.source, event.session_id.as_deref(), &event.id)
+}
+
+fn session_acknowledgement_id_for_event_id(
+    source: AgentSource,
+    session_id: Option<&str>,
+    event_id: &str,
+) -> String {
     let mut digest = Sha256::new();
     digest.update(b"agent-pet-companion/session-acknowledgement/v1\0");
     for component in [
-        enum_name(event.source),
-        normalized_session_key(event.session_id.as_deref()),
-        event.id.clone(),
+        enum_name(source),
+        normalized_session_key(session_id),
+        event_id.to_string(),
     ] {
         digest.update(component.as_bytes());
         digest.update([0]);
     }
     format!("ack-{}", hex::encode(digest.finalize()))
+}
+
+fn candidate_is_acknowledged(
+    candidate: &SequencedAgentEvent,
+    acknowledged_session_activations: &BTreeSet<String>,
+) -> bool {
+    let event = &candidate.event;
+    if acknowledged_session_activations.contains(&session_acknowledgement_id(event)) {
+        return true;
+    }
+    event.event_type == AgentEventType::Done
+        && candidate.completion_epoch_event_ids.iter().any(|event_id| {
+            acknowledged_session_activations.contains(&session_acknowledgement_id_for_event_id(
+                event.source,
+                event.session_id.as_deref(),
+                event_id,
+            ))
+        })
 }
 
 pub fn is_valid_session_acknowledgement_id(value: &str) -> bool {
@@ -839,8 +909,14 @@ fn source_app_surface(source: AgentSource) -> Option<&'static str> {
     }
 }
 
+/// Only Codex publishes a routable App session identity. Claude Desktop owns
+/// its session identity separately from the CLI transcript UUID that hooks
+/// report, and its `claude://resume` deep link imports that transcript as a new
+/// Desktop session instead of locating the existing one. Publishing the CLI
+/// UUID as routable would therefore promise an exact-session return that the
+/// host cannot honor, so Claude Code resolves to host activation like OpenCode.
 fn routable_app_session_id(event: &AgentEvent) -> Option<String> {
-    if !matches!(event.source, AgentSource::Codex | AgentSource::ClaudeCode) {
+    if !matches!(event.source, AgentSource::Codex) {
         return None;
     }
     let candidate = event.session_id.as_deref()?.trim();
@@ -854,15 +930,17 @@ fn routable_app_session_id(event: &AgentEvent) -> Option<String> {
         .then_some(canonical)
 }
 
-fn event_activity(event: &AgentEvent) -> Option<SessionActivity> {
-    let kind = event
+fn event_activity_kind(event: &AgentEvent) -> Option<&str> {
+    event
         .payload_json
         .get("activity_kind")
-        .and_then(serde_json::Value::as_str)?
-        .trim();
-    if kind.is_empty() {
-        return None;
-    }
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+}
+
+fn event_activity(event: &AgentEvent) -> Option<SessionActivity> {
+    let kind = event_activity_kind(event)?;
     let content = event
         .payload_json
         .get("activity_content")
@@ -1103,6 +1181,9 @@ mod tests {
 
     #[test]
     fn navigation_capability_distinguishes_desktop_agent_hosts_from_cli() {
+        // A canonical UUID is still only the CLI transcript identity. Claude
+        // Desktop cannot route to an existing session by it, so the projection
+        // resolves to host activation rather than promising exact return.
         let claude = overlay_navigation(&navigation_event(
             AgentSource::ClaudeCode,
             "657555f8-108e-44af-96ac-a306b50451bd",
@@ -1111,11 +1192,8 @@ mod tests {
                 "session_surface": "claude_app"
             }),
         ));
-        assert_eq!(claude.capability, OverlayNavigationCapability::ExactSession);
-        assert_eq!(
-            claude.routable_session_id.as_deref(),
-            Some("657555f8-108e-44af-96ac-a306b50451bd")
-        );
+        assert_eq!(claude.capability, OverlayNavigationCapability::AgentHost);
+        assert_eq!(claude.routable_session_id, None);
 
         let claude_host = overlay_navigation(&navigation_event(
             AgentSource::ClaudeCode,
@@ -1179,7 +1257,7 @@ mod tests {
             session_message: None,
             session_user_message: None,
             session_activity: None,
-            overlay_display: overlay_session_display(&event, None),
+            overlay_display: overlay_session_display(&event, None, None),
         };
 
         let mut single = vec![state(1)];

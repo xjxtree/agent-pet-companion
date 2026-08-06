@@ -259,7 +259,7 @@ struct OnboardingView: View {
                 systemImage: "arrow.clockwise"
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .disabled(
             store.includedCompanionRestoreState == .restoring
                 || store.onboardingAvailability != .ready
@@ -276,7 +276,7 @@ struct OnboardingView: View {
                 systemImage: "stethoscope"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .accessibilityIdentifier("onboarding.pets.diagnostics")
     }
 
@@ -410,7 +410,7 @@ struct OnboardingView: View {
                                 systemImage: "wand.and.stars"
                             )
                         }
-                        .buttonStyle(.bordered)
+                        .apcClearGlassButtonStyle()
                         .disabled(
                             !store.canStartConnectionOperation
                                 || store.onboardingMutationInFlight
@@ -519,7 +519,7 @@ struct OnboardingView: View {
                     }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
-                    .background(.regularMaterial, in: Capsule())
+                    .apcClearGlass(in: Capsule())
                     .padding(18)
                 }
                 .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 360)
@@ -617,7 +617,7 @@ struct OnboardingView: View {
                         Text(primaryActionTitle(primary))
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .apcClearGlassButtonStyle(prominent: true)
                 .disabled(store.onboardingMutationInFlight)
                 .accessibilityLabel(primaryActionTitle(primary))
                 .accessibilityIdentifier(

@@ -1048,6 +1048,94 @@ struct UIModelTests {
     }
 
     @Test
+    func bubbleTextTiersKeepTheAuthoredSizeRatiosAndStandardStaysCurrentSize() {
+        let styles: [NSFont.TextStyle] = [.callout, .caption1, .caption2]
+        for style in styles {
+            #expect(
+                OverlayBubbleTypography.pointSize(style, scale: .standard)
+                    == NSFont.preferredFont(forTextStyle: style).pointSize
+            )
+        }
+
+        // One multiplier for every role, so the size relationships between
+        // title, detail, and badge copy survive the larger tier unchanged.
+        let standard = styles.map { OverlayBubbleTypography.pointSize($0, scale: .standard) }
+        let large = styles.map { OverlayBubbleTypography.pointSize($0, scale: .large) }
+        let ratios = zip(large, standard).map { $0 / $1 }
+        #expect(ratios.allSatisfy { abs($0 - CGFloat(BubbleFontScale.large.multiplier)) < 0.0001 })
+        #expect(zip(large, standard).allSatisfy { $0 > $1 })
+    }
+
+    @Test
+    func largerBubbleTextTierGrowsMeasuredRowsAndKeepsHitRegionsAligned() {
+        let content = OverlayBubbleContent(
+            id: "agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: (0 ..< 2).map { index in
+                OverlaySessionContent(
+                    id: "session-\(index)",
+                    source: .codex,
+                    sessionID: "session-\(index)",
+                    eventType: .tool,
+                    sessionTitle: "Session \(index)",
+                    messageText: "正在运行",
+                    statusText: "正在使用工具"
+                )
+            },
+            isExpanded: true
+        )
+        let container = CGSize(width: 1512, height: 934)
+        let standardSize = OverlayGeometry.resolvedBubbleSize(
+            in: container,
+            content: content,
+            fontScale: .standard
+        )
+        let largeSize = OverlayGeometry.resolvedBubbleSize(
+            in: container,
+            content: content,
+            fontScale: .large
+        )
+
+        // The tier changes type size, not the bubble's layout width.
+        #expect(largeSize.width == standardSize.width)
+        #expect(largeSize.height > standardSize.height)
+        #expect(
+            OverlayGeometry.bubbleGroupHeaderHeight(fontScale: .large)
+                > OverlayGeometry.bubbleGroupHeaderHeight(fontScale: .standard)
+        )
+
+        let bubble = CGRect(origin: .zero, size: largeSize)
+        let close = OverlayGeometry.bubbleCloseHitRect(in: bubble, fontScale: .large)
+        let groupToggle = OverlayGeometry.bubbleGroupToggleHitRect(
+            in: bubble,
+            content: content,
+            fontScale: .large
+        )
+        let sessionRects = OverlayGeometry.bubbleSessionRects(
+            in: bubble,
+            content: content,
+            fontScale: .large
+        )
+
+        #expect(sessionRects.count == 2)
+        #expect(!close.intersects(groupToggle))
+        #expect(sessionRects.allSatisfy { !$0.intersects(close) })
+        #expect(sessionRects.allSatisfy { !$0.intersects(groupToggle) })
+        #expect(sessionRects.allSatisfy { bubble.contains($0) })
+        // A row measured at the standard tier would leave the last large-tier
+        // row hanging outside the panel the bubble was sized for.
+        #expect(
+            sessionRects[1].maxY
+                > OverlayGeometry.bubbleSessionRects(
+                    in: bubble,
+                    content: content,
+                    fontScale: .standard
+                )[1].maxY
+        )
+    }
+
+    @Test
     func bubbleSessionGroupAndCloseHitRegionsNeverOverlap() {
         let sessions = (0 ..< 3).map { index in
             OverlaySessionContent(
@@ -1083,6 +1171,39 @@ struct UIModelTests {
         #expect(!close.intersects(groupToggle))
         #expect(sessionRects.allSatisfy { !$0.intersects(close) })
         #expect(sessionRects.allSatisfy { !$0.intersects(groupToggle) })
+    }
+
+    @Test
+    func standaloneSessionCardUsesTheFullCompactSurfaceBelowItsPadding() throws {
+        let session = OverlaySessionContent(
+            id: "standalone-session",
+            source: .claudeCode,
+            sessionID: "standalone-session",
+            eventType: .tool,
+            sessionTitle: "Compact session",
+            messageText: "Agent reply",
+            statusText: "Using Tools"
+        )
+        let content = OverlayBubbleContent(
+            id: "session-card-standalone-session",
+            source: .claudeCode,
+            agentName: "Claude Code",
+            sessions: [session],
+            isStandaloneSessionCard: true
+        )
+        let size = OverlayGeometry.resolvedBubbleSize(
+            in: CGSize(width: 1512, height: 934),
+            content: content
+        )
+        let bubble = CGRect(origin: .zero, size: size)
+        let row = try #require(
+            OverlayGeometry.bubbleSessionRects(in: bubble, content: content).first
+        )
+
+        #expect(row.minY == OverlayGeometry.bubbleVerticalPadding)
+        #expect(row.maxY <= bubble.maxY)
+        #expect(!content.hasMultipleSessions)
+        #expect(content.visibleSessions == [session])
     }
 
     @Test
@@ -1228,7 +1349,7 @@ struct UIModelTests {
     }
 
     @Test
-    func sessionGroupToneUsesFailureInputReadyRunningPriority() {
+    func sessionGroupToneUsesInputFailureReadyRunningPriority() {
         func session(_ id: String, _ eventType: AgentEventKind) -> OverlaySessionContent {
             OverlaySessionContent(
                 id: id,
@@ -1255,7 +1376,7 @@ struct UIModelTests {
         #expect(OverlaySessionGroupTone.aggregate([running, ready, failed]) == .failed)
         #expect(
             OverlaySessionGroupTone.aggregate([running, ready, failed, needsInput])
-                == .failed
+                == .needsInput
         )
     }
 
@@ -1351,6 +1472,38 @@ struct UIModelTests {
     }
 
     @Test
+    func bubbleControlsCommitOnReleaseOverTheSamePressedControl() {
+        let origin = CGPoint(x: 100, y: 100)
+        let press = OverlayBubblePressGesture(identity: "session:a", origin: origin)
+
+        // The press alone commits nothing; the matching release does.
+        #expect(!press.didDrag)
+        #expect(press.shouldPerform(releaseIdentity: "session:a", clickCount: 1))
+
+        // Releasing over a different control, or over no control at all, is a
+        // cancelled gesture rather than an activation of whatever is now there.
+        #expect(!press.shouldPerform(releaseIdentity: "session:b", clickCount: 1))
+        #expect(!press.shouldPerform(releaseIdentity: nil, clickCount: 1))
+
+        // A second release of a double-click must not repeat the action.
+        #expect(!press.shouldPerform(releaseIdentity: "session:a", clickCount: 2))
+
+        var withinSlop = press
+        withinSlop.updateDrag(to: CGPoint(x: origin.x + 3, y: origin.y))
+        #expect(!withinSlop.didDrag)
+        #expect(withinSlop.shouldPerform(releaseIdentity: "session:a", clickCount: 1))
+
+        // Crossing the shared drag threshold cancels the click and stays
+        // cancelled even if the pointer returns to where it started.
+        var dragged = press
+        dragged.updateDrag(to: CGPoint(x: origin.x + 12, y: origin.y + 12))
+        #expect(dragged.didDrag)
+        dragged.updateDrag(to: origin)
+        #expect(dragged.didDrag)
+        #expect(!dragged.shouldPerform(releaseIdentity: "session:a", clickCount: 1))
+    }
+
+    @Test
     func dismissedAttentionStateFallsBackToTheNextVisiblePoseOrIdle() throws {
         let completed = try animationState(
             source: .codex,
@@ -1432,7 +1585,9 @@ struct UIModelTests {
         )
         let reopened = OverlayPresentedAgentState.newlyActivatedDismissalIDs(
             activeSessions: [newWaiting],
-            knownReopenIDs: [OverlaySessionContent.reopenID(for: oldWaiting)]
+            lastReopenIDBySession: [
+                dismissalID: OverlaySessionContent.reopenID(for: oldWaiting)
+            ]
         )
         var dismissedIDs: Set<String> = [dismissalID]
         dismissedIDs.subtract(reopened)
@@ -1883,21 +2038,35 @@ struct UIModelTests {
             )))
         )
 
+        // `claude://resume` imports the CLI transcript as a new Desktop session
+        // instead of returning to the existing one, so Claude Code never
+        // produces a URL route. A projection that still claims exact session
+        // fails closed rather than opening a duplicate.
         let claudeSessionID = "657555f8-108e-44af-96ac-a306b50451bd"
+        let staleClaudeExactSession = AgentSessionNavigation(
+            capability: .exactSession,
+            sessionOpen: true,
+            surface: "claude_app",
+            routableSessionID: claudeSessionID
+        )
         #expect(
             AgentSessionRouter.route(
                 source: .claudeCode,
                 sessionID: "ses-opaque-claude",
-                navigation: AgentSessionNavigation(
-                    capability: .exactSession,
-                    sessionOpen: true,
-                    surface: "claude_app",
-                    routableSessionID: claudeSessionID
-                )
-            ) == .url(try #require(URL(
-                string: "claude://resume?session=\(claudeSessionID)"
-            )))
+                navigation: staleClaudeExactSession
+            ) == nil
         )
+        #expect(
+            AgentSessionRouter.validatedCapability(
+                source: .claudeCode,
+                sessionID: "ses-opaque-claude",
+                navigation: staleClaudeExactSession
+            ) == .unavailable
+        )
+        #expect(AgentSessionDeepLink.url(
+            source: .claudeCode,
+            sessionID: claudeSessionID
+        ) == nil)
 
         #expect(
             AgentSessionRouter.route(
@@ -2119,55 +2288,6 @@ struct UIModelTests {
                 #expect(color.alphaComponent > 0)
             }
         }
-    }
-
-    @Test
-    func transparentBubbleGlassUsesTheRegularNativeBaselineAndHonorsAccessibility() {
-        #expect(APCBubbleGlassStyle.backdropOpacity == 0)
-        #expect(APCBubbleGlassStyle.borderOpacity == 0)
-        #expect(
-            APCBubbleGlassStyle.opticalOpacity(for: 0)
-                > APCBubbleGlassStyle.opticalOpacity(for: 1)
-        )
-        #expect(
-            abs(
-                APCBubbleGlassStyle.opticalOpacity(for: 1)
-                    - APCBubbleGlassStyle.minimumOpticalOpacity
-            ) < 0.000_1
-        )
-        #expect(APCBubbleGlassStyle.opticalOpacity(for: 0.55) > 0.50)
-        #expect(
-            APCBubbleGlassStyle.resolvedBackdropOpacity(
-                reduceTransparency: false,
-                increasedContrast: false
-            ) == APCBubbleGlassStyle.backdropOpacity
-        )
-        #expect(
-            APCBubbleGlassStyle.resolvedBackdropOpacity(
-                reduceTransparency: false,
-                increasedContrast: true
-            ) > APCBubbleGlassStyle.backdropOpacity
-        )
-        #expect(
-            APCBubbleGlassStyle.resolvedBackdropOpacity(
-                reduceTransparency: true,
-                increasedContrast: false
-            ) >= 0.80
-        )
-        #expect(
-            APCBubbleGlassStyle.resolvedBorderOpacity(
-                reduceTransparency: false,
-                increasedContrast: false,
-                supportsLiquidGlass: true
-            ) == 0
-        )
-        #expect(
-            APCBubbleGlassStyle.resolvedBorderOpacity(
-                reduceTransparency: false,
-                increasedContrast: false,
-                supportsLiquidGlass: false
-            ) > 0
-        )
     }
 
     private func makePet(id: String, active: Bool) -> PetSummary {

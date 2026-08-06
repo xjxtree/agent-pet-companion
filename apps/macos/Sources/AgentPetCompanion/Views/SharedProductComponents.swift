@@ -548,12 +548,35 @@ extension AgentTaskVerificationState {
 /// destinations cannot drift into separate visual and assistive behaviors.
 struct SessionBubbleRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.overlayBubbleFontScale) private var fontScale
 
     var session: OverlaySessionContent
     var action: () -> Void
     var dismissAction: (() -> Void)?
+    var agentIndicatorSource: AgentSource?
+    var agentIndicatorTitle: String?
+    var reservedTrailingAccessoryWidth: CGFloat
+    var primaryActionLabel: String?
     @State private var hovered = false
     @FocusState private var focused: Bool
+
+    init(
+        session: OverlaySessionContent,
+        action: @escaping () -> Void,
+        dismissAction: (() -> Void)? = nil,
+        agentIndicatorSource: AgentSource? = nil,
+        agentIndicatorTitle: String? = nil,
+        reservedTrailingAccessoryWidth: CGFloat = 0,
+        primaryActionLabel: String? = nil
+    ) {
+        self.session = session
+        self.action = action
+        self.dismissAction = dismissAction
+        self.agentIndicatorSource = agentIndicatorSource
+        self.agentIndicatorTitle = agentIndicatorTitle
+        self.reservedTrailingAccessoryWidth = reservedTrailingAccessoryWidth
+        self.primaryActionLabel = primaryActionLabel
+    }
 
     var body: some View {
         Button(action: action) {
@@ -566,7 +589,7 @@ struct SessionBubbleRow: View {
         .accessibilityIdentifier("overlay.session.\(session.id)")
         .accessibilityLabel(session.accessibilityLabel)
         .modifier(SessionBubbleAccessibilityActions(
-            openLabel: session.actionLabel,
+            openLabel: primaryActionLabel ?? session.actionLabel,
             closeLabel: dismissAction == nil
                 ? nil
                 : APCLocalization.text(.overlayDismissSession),
@@ -577,17 +600,77 @@ struct SessionBubbleRow: View {
     }
 
     private var rowContent: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if let agentIndicatorSource {
+                AgentIconView(
+                    source: agentIndicatorSource,
+                    size: OverlayBubbleTypography.scaledControlMetric(
+                        18,
+                        scale: fontScale
+                    )
+                )
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+            }
+
+            sessionTextContent
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
+        .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
+        .padding(.trailing, reservedTrailingAccessoryWidth)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill((statusColor ?? .clear).opacity(0.12))
+
+                if hovered || focused {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                }
+            }
+        )
+    }
+
+    private var sessionTextContent: some View {
         VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(session.sessionTitle)
-                    .font(.callout.weight(.semibold))
+                    .font(OverlayBubbleTypography.font(
+                        .callout,
+                        weight: .semibold,
+                        scale: fontScale
+                    ))
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
+                if let agentIndicatorTitle {
+                    Text(agentIndicatorTitle)
+                        .font(OverlayBubbleTypography.font(
+                            .caption2,
+                            weight: .semibold,
+                            scale: fontScale
+                        ))
+                        .foregroundStyle(Color.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                }
+
                 if let surfaceLabel = session.surfaceLabel {
                     Text(surfaceLabel)
-                        .font(.caption2.weight(.medium))
+                        .font(OverlayBubbleTypography.font(
+                            .caption2,
+                            weight: .medium,
+                            scale: fontScale
+                        ))
                         .foregroundStyle(Color.secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -603,7 +686,11 @@ struct SessionBubbleRow: View {
 
                 if !session.statusText.isEmpty {
                     Text(session.statusText)
-                        .font(.caption2.weight(.semibold))
+                        .font(OverlayBubbleTypography.font(
+                            .caption2,
+                            weight: .semibold,
+                            scale: fontScale
+                        ))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -626,9 +713,16 @@ struct SessionBubbleRow: View {
                 Image(systemName: session.canOpen
                     ? "arrow.up.forward"
                     : "exclamationmark.circle")
-                    .font(.caption2.weight(.bold))
+                    .font(OverlayBubbleTypography.font(
+                        .caption2,
+                        weight: .bold,
+                        scale: fontScale
+                    ))
                     .foregroundStyle(session.canOpen ? Color.primary : Color.secondary)
-                    .frame(width: 9)
+                    .frame(width: OverlayBubbleTypography.scaledControlMetric(
+                        9,
+                        scale: fontScale
+                    ))
                     .opacity(hovered || focused ? 1 : 0)
                     .animation(
                         reduceMotion
@@ -641,7 +735,11 @@ struct SessionBubbleRow: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(session.primaryDetailText)
-                    .font(.caption.weight(.semibold))
+                    .font(OverlayBubbleTypography.font(
+                        .caption1,
+                        weight: .semibold,
+                        scale: fontScale
+                    ))
                     .foregroundStyle(Color.primary)
                     .lineLimit(session.secondaryDetailText == nil
                         ? OverlayGeometry.bubbleDetailLineLimit
@@ -650,7 +748,11 @@ struct SessionBubbleRow: View {
 
                 if let secondaryDetailText = session.secondaryDetailText {
                     Text(secondaryDetailText)
-                        .font(.caption.weight(.medium))
+                        .font(OverlayBubbleTypography.font(
+                            .caption1,
+                            weight: .medium,
+                            scale: fontScale
+                        ))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -660,23 +762,12 @@ struct SessionBubbleRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
-        .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill((statusColor ?? .clear).opacity(0.12))
-
-                if hovered || focused {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                }
-            }
-        )
     }
 
     private var helpText: String {
+        if let primaryActionLabel {
+            return primaryActionLabel
+        }
         guard session.canOpen else {
             return APCLocalization.text(.overlayHelpUnavailable)
         }
@@ -1023,7 +1114,7 @@ private struct ProductPrimaryActionButton<Action: Hashable>: View {
                 systemImage: presentation.systemImage
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .controlSize(.regular)
         .disabled(!presentation.isEnabled)
         .accessibilityLabel(presentation.accessibilityLabel)
@@ -1046,7 +1137,7 @@ private struct ProductSecondaryActionButton<Action: Hashable>: View {
                 systemImage: presentation.systemImage
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .controlSize(.regular)
         .disabled(!presentation.isEnabled)
         .accessibilityLabel(presentation.accessibilityLabel)

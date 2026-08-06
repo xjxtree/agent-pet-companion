@@ -523,6 +523,9 @@ struct PetFramePipelineTests {
         let idle = try #require(PetAnimationContract.defaultStates.first {
             $0.name == "idle"
         })
+        let cooldownMS = try #require(idle.playback.cooldownMS)
+        try #require(cooldownMS.count == 2)
+        let sampledCooldownMS = cooldownMS[0] + (cooldownMS[1] - cooldownMS[0]) / 2
         let pipeline = makePipeline(
             probe: FrameDecoderProbe(),
             frameCount: idle.frameDurationsMS.count,
@@ -542,23 +545,121 @@ struct PetFramePipelineTests {
         handoff.begin(generation: generation, stateID: "idle", enteredAt: 0)
         #expect(handoff.publish(prepared, generation: generation))
 
+        // One periodic cycle wakes once per authored frame and once when the
+        // cooldown hold ends. Deriving the schedule from the authored contract
+        // keeps this a statement about playback behavior instead of a snapshot
+        // of whichever idle timing the default pet currently ships.
+        let authoredIntervalsMS = idle.frameDurationsMS + [sampledCooldownMS]
+        var expectedBoundaryDraws = 0
+        var referenceMS = 0.0
+        reference: while true {
+            for intervalMS in authoredIntervalsMS {
+                referenceMS += Double(intervalMS)
+                guard referenceMS <= 60_000 else { break reference }
+                expectedBoundaryDraws += 1
+            }
+        }
+
         var virtualTime = 0.0
         var scheduledBoundaryDraws = 0
+        var unauthoredDelaysMS: [Double] = []
         while scheduledBoundaryDraws < 1_000 {
             let delay = try #require(handoff.nextBoundaryDelay(
                 after: virtualTime,
                 reducedMotion: false
             ))
+            // Each wake re-anchors on the next authored boundary and only adds
+            // the sub-millisecond guard against an early duplicate draw, so an
+            // unauthored intermediate draw shows up as a mismatched delay.
+            let expectedMS = Double(
+                authoredIntervalsMS[scheduledBoundaryDraws % authoredIntervalsMS.count]
+            )
+            if abs(delay * 1_000 - expectedMS) > 1 {
+                unauthoredDelaysMS.append(delay * 1_000)
+            }
             virtualTime += delay
             guard virtualTime <= 60 else { break }
             scheduledBoundaryDraws += 1
         }
 
-        // The initial presentation plus 59 authored/cycle-boundary wakes is
-        // far below a continuously running 60 Hz display link (3,600 draws).
-        #expect(scheduledBoundaryDraws == 59)
-        #expect(1 + scheduledBoundaryDraws == 60)
+        #expect(unauthoredDelaysMS.isEmpty)
+        #expect(scheduledBoundaryDraws == expectedBoundaryDraws)
+        // The initial presentation plus the authored boundary wakes stays two
+        // orders of magnitude below a continuously running 60 Hz display link
+        // (3,600 draws in the same window).
+        #expect(1 + scheduledBoundaryDraws < 360)
         #expect(handoff.nextBoundaryDelay(after: 60, reducedMotion: true) == nil)
+    }
+
+    @Test
+    func shippedToolActionDrawsEveryAuthoredPassOfItsEntryBurst() async throws {
+        let tool = try #require(PetAnimationContract.defaultStates.first {
+            $0.name == "tool"
+        })
+        try #require(tool.playback.mode == .burstThenIdle)
+        let repeats = try #require(tool.playback.entryRepeatCount)
+        let pipeline = makePipeline(
+            probe: FrameDecoderProbe(),
+            frameCount: tool.frameDurationsMS.count
+        )
+        let prepared = try await pipeline.prepare(request(
+            quality: .standard,
+            stateName: tool.name,
+            frameDurationsMS: tool.frameDurationsMS,
+            playback: tool.playback,
+            reducedMotionFrameIndex: tool.reducedMotionFrameIndex
+        ))
+        let handoff = PetFrameRenderHandoff()
+        let generation = UUID()
+        handoff.begin(generation: generation, stateID: "tool", enteredAt: 0)
+        #expect(handoff.publish(prepared, generation: generation))
+
+        func presentedFrameIndex(at virtualTime: TimeInterval) -> Int? {
+            let identity = handoff.lookup(
+                at: virtualTime,
+                reducedMotion: false
+            ).frame?.hitTestIdentity
+            return tool.frameDurationsMS.indices.first {
+                prepared.readyFrame(at: $0)?.hitTestIdentity == identity
+            }
+        }
+
+        // Walk the schedule the renderer actually asks for and record every
+        // frame it presents, so this measures drawn playback rather than the
+        // timeline arithmetic behind it.
+        var presented: [Int] = []
+        var virtualTime = 0.0
+        while presented.count < 100 {
+            let index = try #require(presentedFrameIndex(at: virtualTime))
+            if presented.last != index {
+                presented.append(index)
+            }
+            guard let delay = handoff.nextBoundaryDelay(
+                after: virtualTime,
+                reducedMotion: false
+            ) else { break }
+            virtualTime += delay
+        }
+
+        let onePass = Array(tool.frameDurationsMS.indices)
+        #expect(presented == (0..<repeats).flatMap { _ in onePass })
+        let burstDurationMS = tool.frameDurationsMS.reduce(0, +) * repeats
+        #expect(abs(virtualTime * 1_000 - Double(burstDurationMS)) < 1)
+
+        // The burst ends on its own instead of freezing mid-animation, which is
+        // where the overlay hands the pet back to idle for the rest of the lease.
+        #expect(!handoff.lookup(
+            at: Double(burstDurationMS) / 1_000 - 0.001,
+            reducedMotion: false
+        ).shouldPauseAfterDraw)
+        let settled = handoff.lookup(at: Double(burstDurationMS) / 1_000, reducedMotion: false)
+        #expect(settled.shouldPauseAfterDraw)
+        #expect(settled.frame?.hitTestIdentity
+            == prepared.readyFrame(at: tool.frameDurationsMS.count - 1)?.hitTestIdentity)
+        #expect(handoff.nextBoundaryDelay(
+            after: Double(burstDurationMS) / 1_000,
+            reducedMotion: false
+        ) == nil)
     }
 
     @Test

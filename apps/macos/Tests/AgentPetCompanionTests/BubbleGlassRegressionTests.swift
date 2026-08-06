@@ -26,8 +26,10 @@ struct BubbleGlassRegressionTests {
             bubbleSource[countStart.lowerBound..<toneStart.lowerBound]
         )
 
-        #expect(bubbleSource.components(separatedBy: ".apcTransparentBubbleGlass").count - 1 == 1)
-        #expect(!bubbleSource.contains(".apcFloatingControlGlass"))
+        #expect(bubbleSource.components(separatedBy: ".apcNativeBubbleGlass").count - 1 == 1)
+        #expect(!bubbleSource.contains("glassTransparency"))
+        #expect(!bubbleSource.contains("bubbleTransparency"))
+        #expect(!bubbleSource.contains(".apcClearGlass"))
         #expect(countButtonSource.contains("Capsule()"))
         #expect(bubbleSource.contains(
             ".fill((content.statusTone.color ?? .clear).opacity(0.12))"
@@ -35,157 +37,152 @@ struct BubbleGlassRegressionTests {
         #expect(countButtonSource.contains(".fill((tone.color ?? .clear).opacity(0.34))"))
         #expect(countButtonSource.contains(".stroke((tone.color ?? .clear).opacity(0.65)"))
         #expect(bubbleSource.contains("case .running: nil"))
+        // A GlassEffectContainer manages SwiftUI glassEffect descendants, which
+        // the AppKit bubble surface is not, and in a transparent
+        // NSPanel it can elevate the optical layer above foreground content.
+        // Match the call form so the prose explaining this stays allowed.
+        #expect(!source.contains("GlassEffectContainer("))
+        #expect(!source.contains("APCGlassGroup("))
     }
 
     @Test
-    func adjustableRegularSurfaceKeepsAVisibleNativeLensWithoutSolidBackdrop() {
-        #expect(APCBubbleGlassStyle.backdropOpacity == 0)
-        #expect(APCBubbleGlassStyle.borderOpacity == 0)
-        #expect(APCBubbleGlassStyle.minimumOpticalOpacity >= 0.30)
-        #expect(APCBubbleGlassStyle.maximumOpticalOpacity <= 1)
-        #expect(
-            APCBubbleGlassStyle.opticalOpacity(for: 0)
-                > APCBubbleGlassStyle.opticalOpacity(for: 1)
+    func bubbleUsesTheUntintedFullStrengthRegularLens() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let macOSRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = macOSRoot.appendingPathComponent(
+            "Sources/AgentPetCompanion/Views/DesignSystem.swift"
         )
-        #expect(
-            APCBubbleGlassStyle.resolvedBackdropOpacity(
-                reduceTransparency: false,
-                increasedContrast: false
-            ) == 0
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        // The system owns the adaptive material. Product settings neither fade
+        // the optical layer nor place a custom veil over its backdrop.
+        #expect(source.contains("glassView.style = .regular"))
+        #expect(source.contains("glassView.alphaValue = 1"))
+        #expect(source.contains("glassView.tintColor = nil"))
+        #expect(!source.contains("veilColor"))
+        #expect(!source.contains("veilOpacity"))
+        #expect(!source.contains("bubbleTransparency"))
+
+        // Geometry updates cannot trail an AppKit animation transaction.
+        #expect(source.contains("CATransaction.setDisableActions(true)"))
+
+        // Glass and foreground stay ordered siblings. Installing the hosting
+        // view as NSGlassEffectView.contentView can leave only the optical
+        // layer visible inside a transparent NSPanel.
+        #expect(source.contains("addSubview(glassView)"))
+        #expect(source.contains("addSubview(foregroundView)"))
+        #expect(!source.contains("glassView.contentView"))
+
+        // Floating overlay controls stay on the plain SwiftUI clear path.
+        let controlFunctionStart = try #require(source.range(of: "func apcClearGlass"))
+        let controlFunctionEnd = try #require(
+            source.range(of: "\n    }", range: controlFunctionStart.upperBound..<source.endIndex)
         )
-        #expect(
-            APCBubbleGlassStyle.resolvedBorderOpacity(
-                reduceTransparency: false,
-                increasedContrast: false,
-                supportsLiquidGlass: true
-            ) == 0
-        )
-        #expect(APCBubbleGlassStyle.legacyBackdropOpacity > 0)
-        #expect(
-            APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: 0)
-                > APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: 1)
-        )
+        #expect(String(
+            source[controlFunctionStart.lowerBound..<controlFunctionEnd.upperBound]
+        ).contains("variant: .clear"))
     }
 
     @Test
-    func regularSurfaceNeverAttenuatesItsForeground() {
-        #expect(APCBubbleForegroundStyle.contentOpacity == 1)
-        #expect(APCBubbleForegroundStyle.secondaryContentOpacity == 1)
-        #expect(!APCBubbleForegroundStyle.usesBlur)
-        #expect(!APCBubbleForegroundStyle.usesHalo)
+    func opticalRimIsAThinReflectionCueRatherThanAnotherMaterialLayer() throws {
+        #expect(APCBubbleGlassStyle.opticalRimWidth > 0)
+        #expect(APCBubbleGlassStyle.opticalRimWidth < 1)
+        #expect(
+            APCBubbleGlassStyle.opticalRimHighlightOpacity
+                > APCBubbleGlassStyle.opticalRimMidpointOpacity
+        )
+        #expect(
+            APCBubbleGlassStyle.opticalRimHighlightOpacity
+                > APCBubbleGlassStyle.opticalRimDepthOpacity
+        )
+
+        let testFile = URL(fileURLWithPath: #filePath)
+        let macOSRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let designSource = try String(
+            contentsOf: macOSRoot.appendingPathComponent(
+                "Sources/AgentPetCompanion/Views/DesignSystem.swift"
+            ),
+            encoding: .utf8
+        )
+        let geometrySource = try String(
+            contentsOf: macOSRoot.appendingPathComponent(
+                "Sources/AgentPetCompanion/Overlay/OverlayGeometry.swift"
+            ),
+            encoding: .utf8
+        )
+        let settingsSource = try String(
+            contentsOf: macOSRoot.appendingPathComponent(
+                "Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(designSource.contains(".strokeBorder("))
+        #expect(designSource.contains("LinearGradient("))
+        #expect(designSource.contains("private var bubbleOpticalRim"))
+        #expect(geometrySource.contains("static let bubbleCornerRadius: CGFloat = 20"))
+        #expect(settingsSource.contains(
+            "cornerRadius: OverlayGeometry.bubbleCornerRadius"
+        ))
     }
-
-    @Test
-    func appearanceThemesMapToNativeSchemesWithoutChangingGlassStrength() {
-        #expect(APCApplicationAppearance.appearanceName(for: .system) == nil)
-        #expect(APCApplicationAppearance.appearanceName(for: .dark) == .darkAqua)
-        #expect(APCApplicationAppearance.appearanceName(for: .light) == .aqua)
-        #expect(APCApplicationAppearance.colorScheme(for: .system) == nil)
-        #expect(APCApplicationAppearance.colorScheme(for: .dark) == .dark)
-        #expect(APCApplicationAppearance.colorScheme(for: .light) == .light)
-
-        let transparency = 0.35
-        let expectedStrength = APCBubbleGlassStyle.opticalOpacity(for: transparency)
-        for _ in AppearanceTheme.allCases {
-            #expect(APCBubbleGlassStyle.opticalOpacity(for: transparency) == expectedStrength)
-        }
-    }
-
-#if compiler(>=6.2)
-    @Test @MainActor
-    @available(macOS 26.0, *)
-    func nativeAdjustableRegularGlassKeepsForegroundAboveOpticalSibling() {
-        let contentView = APCNativeBubbleGlassConfiguration.makeHostingView(
-            rootView: ZStack {
-                Color.clear
-                Text("Codex")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture {}
-        )
-        #expect(contentView.sizingOptions == [.intrinsicContentSize])
-        #expect(contentView.fittingSize.width > 0)
-        #expect(contentView.fittingSize.height > 0)
-
-        let surfaceView = APCNativeBubbleGlassConfiguration.makeView(
-            contentView: contentView,
-            cornerRadius: 21
-        )
-
-        #expect(surfaceView.glassView.style == .regular)
-        #expect(surfaceView.glassView.tintColor == nil)
-        #expect(surfaceView.glassView.cornerRadius == 21)
-        #expect(
-            abs(
-                Double(surfaceView.glassView.alphaValue)
-                    - APCBubbleGlassStyle.opticalOpacity(
-                        for: BehaviorSettings.defaultBubbleTransparency
-                    )
-            ) < 0.000_1
-        )
-        APCNativeBubbleGlassConfiguration.configureAppearance(
-            surfaceView.glassView,
-            cornerRadius: 21,
-            transparency: 1
-        )
-        #expect(surfaceView.glassView.style == .regular)
-        #expect(
-            abs(
-                Double(surfaceView.glassView.alphaValue)
-                    - APCBubbleGlassStyle.minimumOpticalOpacity
-            ) < 0.000_1
-        )
-        APCNativeBubbleGlassConfiguration.configureAppearance(
-            surfaceView.glassView,
-            cornerRadius: 21,
-            transparency: 0
-        )
-        #expect(surfaceView.glassView.style == .regular)
-        #expect(
-            abs(
-                Double(surfaceView.glassView.alphaValue)
-                    - APCBubbleGlassStyle.maximumOpticalOpacity
-            ) < 0.000_1
-        )
-        #expect(surfaceView.foregroundView === contentView)
-        #expect(surfaceView.glassView.contentView == nil)
-        #expect(surfaceView.subviews.first === surfaceView.glassView)
-        #expect(surfaceView.subviews.last === contentView)
-
-        surfaceView.frame = NSRect(x: 0, y: 0, width: 360, height: 190)
-        surfaceView.layoutSubtreeIfNeeded()
-        #expect(surfaceView.glassView.frame == surfaceView.bounds)
-        #expect(contentView.frame == surfaceView.bounds)
-        #expect(surfaceView.glassView.hitTest(NSPoint(x: 350, y: 180)) == nil)
-        let farEdgeHit = surfaceView.hitTest(NSPoint(x: 350, y: 180))
-        #expect(
-            farEdgeHit === contentView
-                || farEdgeHit?.isDescendant(of: contentView) == true
-        )
-
-        let proposedSize = APCNativeBubbleGlassConfiguration.resolvedSize(
-            proposal: ProposedViewSize(width: nil, height: 210),
-            fittingSize: contentView.fittingSize
-        )
-        #expect(proposedSize.width == contentView.fittingSize.width)
-        #expect(proposedSize.height == 210)
-    }
-#endif
 
     @Test
     func accessibilityFallbacksRemainDarkerThanLegacyMaterial() {
+        // The normal legacy path relies on system material plus its light
+        // structural border. Accessibility modes must add progressively more
+        // opaque backing and stronger separation instead of inheriting that
+        // translucent baseline.
         #expect(
             APCBubbleGlassStyle.increasedContrastBackdropOpacity
-                > APCBubbleGlassStyle.legacyBackdropOpacity
+                > APCBubbleGlassStyle.backdropOpacity
         )
         #expect(
             APCBubbleGlassStyle.reducedTransparencyBackdropOpacity
                 > APCBubbleGlassStyle.increasedContrastBackdropOpacity
         )
         #expect(
-            APCBubbleGlassStyle.reducedTransparencyBorderOpacity
+            APCBubbleGlassStyle.increasedContrastBorderOpacity
                 > APCBubbleGlassStyle.legacyBorderOpacity
         )
+        #expect(
+            APCBubbleGlassStyle.reducedTransparencyBorderOpacity
+                > APCBubbleGlassStyle.increasedContrastBorderOpacity
+        )
+
+        #expect(
+            APCBubbleGlassStyle.resolvedBackdropOpacity(
+                reduceTransparency: false,
+                increasedContrast: true
+            ) == APCBubbleGlassStyle.increasedContrastBackdropOpacity
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBackdropOpacity(
+                reduceTransparency: true,
+                increasedContrast: false
+            ) == APCBubbleGlassStyle.reducedTransparencyBackdropOpacity
+        )
+        #expect(
+            APCBubbleGlassStyle.resolvedBorderOpacity(
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ) == APCBubbleGlassStyle.reducedTransparencyBorderOpacity
+        )
+    }
+
+    @Test
+    func appearanceThemesMapToNativeSchemes() {
+        #expect(APCApplicationAppearance.appearanceName(for: .system) == nil)
+        #expect(APCApplicationAppearance.appearanceName(for: .dark) == .darkAqua)
+        #expect(APCApplicationAppearance.appearanceName(for: .light) == .aqua)
+        #expect(APCApplicationAppearance.colorScheme(for: .system) == nil)
+        #expect(APCApplicationAppearance.colorScheme(for: .dark) == .dark)
+        #expect(APCApplicationAppearance.colorScheme(for: .light) == .light)
     }
 }

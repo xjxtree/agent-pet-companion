@@ -28,6 +28,7 @@ enum BehaviorSettingsCatalog {
     ]
     static let appearanceThemes: [AppearanceTheme] = [.system, .light, .dark]
     static let groupDisplays: [SessionGroupDisplay] = [.stacked, .expanded]
+    static let bubbleFontScales: [BubbleFontScale] = [.standard, .large]
 
     static func title(for theme: AppearanceTheme) -> String {
         APCLocalizedPresentation.appearanceTitle(theme)
@@ -99,7 +100,6 @@ struct BehaviorSettingsView: View {
     @Environment(\.controlCenterShellMode) private var shellMode
     @SceneStorage("apc.configuration.selected-subpage")
     private var selectedSectionRawValue = BehaviorSettingsSection.appearance.rawValue
-    @State private var bubbleTransparencyBeforeEditing: Double?
     @State private var displayWidthDraft =
         OverlayPlacement.defaultDisplayWidthPt
     @State private var displayWidthEditing = false
@@ -235,6 +235,7 @@ struct BehaviorSettingsView: View {
                 interfaceLanguageSetting
                 appearanceThemeSetting
                 petDisplayWidthSetting
+                bubbleFontScaleSetting
             } header: {
                 Text(APCLocalization.text(.configDisplayAppearance))
             }
@@ -250,10 +251,6 @@ struct BehaviorSettingsView: View {
                     isExpanded: $appearanceAdvancedExpanded
                 ) {
                     VStack(alignment: .leading, spacing: 12) {
-                        bubbleTransparencySetting
-
-                        Divider()
-
                         SettingToggle(
                             title: APCLocalization.text(.configAutoHide),
                             detail: APCLocalization.text(.configAutoHideDetail),
@@ -321,6 +318,10 @@ struct BehaviorSettingsView: View {
             }
 
             Section {
+                sessionGroupingSetting
+            }
+
+            Section {
                 AdvancedDetailsDisclosure(
                     identity: ProductComponentIdentity(
                         scope: "configuration",
@@ -364,7 +365,9 @@ struct BehaviorSettingsView: View {
                         Divider()
 
                         sessionTimeoutSetting
-                        sessionGroupDisplaySetting
+                        if store.behavior.groupSessionsByAgent {
+                            sessionGroupDisplaySetting
+                        }
 
                         Text(APCLocalization.text(.configPersistenceNote))
                             .font(.caption)
@@ -603,68 +606,35 @@ struct BehaviorSettingsView: View {
         store.previewOverlayDisplayWidthPt(CGFloat(next))
     }
 
-    private var bubbleTransparencySetting: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(APCLocalization.text(.configBubbleTransparency))
-                    .font(.headline)
-                Spacer()
-                Text(APCLocalization.format(
-                    .commonPercentFormat,
-                    Int((store.behavior.bubbleTransparency * 100).rounded())
-                ))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+    private var bubbleFontScaleSetting: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(APCLocalization.text(.configBubbleFontScale))
+                .font(.headline)
 
-            Slider(
-                value: Binding(
-                    get: { store.behavior.bubbleTransparency },
-                    set: { value in
-                        if bubbleTransparencyBeforeEditing == nil {
-                            bubbleTransparencyBeforeEditing = store.behavior.bubbleTransparency
-                        }
-                        store.previewBubbleTransparency(value)
-                    }
-                ),
-                in: 0 ... 1,
-                step: 0.05,
-                onEditingChanged: { editing in
-                    if editing {
-                        bubbleTransparencyBeforeEditing = bubbleTransparencyBeforeEditing
-                            ?? store.behavior.bubbleTransparency
-                    } else if let previousValue = bubbleTransparencyBeforeEditing {
-                        store.commitBubbleTransparency(from: previousValue)
-                        bubbleTransparencyBeforeEditing = nil
-                    }
+            Picker(
+                APCLocalization.text(.configBubbleFontScale),
+                selection: behaviorBinding(\.bubbleFontScale)
+            ) {
+                ForEach(BehaviorSettingsCatalog.bubbleFontScales) { scale in
+                    Text(APCLocalizedPresentation.bubbleFontScaleTitle(scale)).tag(scale)
                 }
-            )
-            .accessibilityLabel(APCLocalization.text(.configBubbleTransparency))
-            .accessibilityValue(APCLocalization.format(
-                .commonPercentFormat,
-                Int((store.behavior.bubbleTransparency * 100).rounded())
-            ))
-            .help(APCLocalization.text(.configTransparencyDetail))
-            .accessibilityHint(APCLocalization.text(.configTransparencyDetail))
-            .accessibilityIdentifier("configuration.appearance.bubble-transparency")
-
-            HStack {
-                Text(APCLocalization.text(.configGlassMore))
-                Spacer()
-                Text(APCLocalization.text(.configTransparentMore))
             }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel(APCLocalization.text(.configBubbleFontScale))
+            .accessibilityValue(
+                APCLocalizedPresentation.bubbleFontScaleTitle(store.behavior.bubbleFontScale)
+            )
+            .help(APCLocalization.text(.configBubbleFontScaleDetail))
+            .accessibilityHint(APCLocalization.text(.configBubbleFontScaleDetail))
+            .accessibilityIdentifier("configuration.appearance.bubble-font-scale")
 
+            Text(APCLocalization.text(.configBubbleFontScaleDetail))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
-        .onDisappear {
-            if let previousValue = bubbleTransparencyBeforeEditing {
-                store.commitBubbleTransparency(from: previousValue)
-                bubbleTransparencyBeforeEditing = nil
-            }
-        }
     }
 
     private var sessionTimeoutSetting: some View {
@@ -693,6 +663,23 @@ struct BehaviorSettingsView: View {
         .help(APCLocalization.text(.configTimeoutDetail))
         .accessibilityHint(APCLocalization.text(.configTimeoutDetail))
         .accessibilityIdentifier("configuration.messages.timeout")
+        .padding(.vertical, 4)
+    }
+
+    private var sessionGroupingSetting: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Toggle(
+                APCLocalization.text(.configGroupSessionsByAgent),
+                isOn: behaviorBinding(\.groupSessionsByAgent)
+            )
+            .font(.headline)
+            .accessibilityIdentifier("configuration.messages.group-by-agent")
+
+            Text(APCLocalization.text(.configGroupSessionsByAgentDetail))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         .padding(.vertical, 4)
     }
 
@@ -905,7 +892,7 @@ private struct BehaviorAppearancePreview: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(.regularMaterial, in: Capsule())
+                            .apcClearGlass(in: Capsule())
                     }
                 }
                 .padding(18)
@@ -988,25 +975,36 @@ private struct BehaviorAppearancePreview: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text("Codex")
-                        .font(.caption.weight(.semibold))
+                        .font(OverlayBubbleTypography.font(
+                            .caption1,
+                            weight: .semibold,
+                            scale: behavior.bubbleFontScale
+                        ))
                     Spacer(minLength: 4)
                     Text(APCLocalizedPresentation.eventTitle(.tool))
-                        .font(.caption2.weight(.semibold))
+                        .font(OverlayBubbleTypography.font(
+                            .caption2,
+                            weight: .semibold,
+                            scale: behavior.bubbleFontScale
+                        ))
                         .foregroundStyle(APCDesign.accent)
                 }
                 Text(APCLocalization.text(
                     behavior.autoHide ? .configBubbleAutoShow : .configBubbleWorking
                 ))
-                    .font(.caption2)
+                    .font(OverlayBubbleTypography.font(
+                        .caption2,
+                        weight: .regular,
+                        scale: behavior.bubbleFontScale
+                    ))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
         }
         .padding(11)
         .frame(maxWidth: 230)
-        .apcTransparentBubbleGlass(
-            cornerRadius: 14,
-            transparency: behavior.bubbleTransparency
+        .apcNativeBubbleGlass(
+            cornerRadius: OverlayGeometry.bubbleCornerRadius
         )
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("configuration.preview.status-bubble")
@@ -1083,7 +1081,9 @@ private struct BehaviorMessagePreview: View {
     }
 
     private var visibleEvents: [AgentEventKind] {
-        let limit = behavior.sessionGroupDisplay == .stacked ? 1 : 3
+        let limit = behavior.groupSessionsByAgent && behavior.sessionGroupDisplay == .stacked
+            ? 1
+            : 3
         return Array(enabledEvents.prefix(limit))
     }
 

@@ -3091,10 +3091,17 @@ fn wait_for_state_change(state: &CoreState, params: &Value) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let behavior = state.database.behavior()?;
     let starting_display_epoch = state.codex_display_epoch.load(Ordering::Acquire);
+    // One connection for the whole wait. Opening a fresh SQLite connection on
+    // every tick dominated this loop's cost: a 30 second idle wait re-opened
+    // the database ~250 times purely to re-read a single revision row.
+    let revision_connection = state.database.open_reusable_read_connection()?;
 
     loop {
         state.refresh_codex_activity(&behavior);
-        let current_revision = state.database.state_revision()?.to_string();
+        let current_revision = state
+            .database
+            .state_revision_using(&revision_connection)?
+            .to_string();
         let current_display_epoch = state.codex_display_epoch.load(Ordering::Acquire);
         if current_revision != after_revision || current_display_epoch != starting_display_epoch {
             return state_snapshot(state, true);
@@ -4459,6 +4466,9 @@ done
             session_activated_at: None,
             session_first_seen_at: None,
             latest_terminal_navigation_payload: None,
+            completion_epoch_event_ids: Vec::new(),
+            preferred_app_navigation_payload: None,
+            tool_activity_run_marker: None,
         }
     }
 

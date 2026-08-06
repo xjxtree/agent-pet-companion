@@ -329,7 +329,7 @@ struct AppManualInstallationGuideView: View {
                 Button(APCLocalization.text(.appActionQuit)) {
                     NSApplication.shared.terminate(nil)
                 }
-                .buttonStyle(.bordered)
+                .apcClearGlassButtonStyle()
                 .accessibilityIdentifier("app-update.restart-failed-quit")
             }
             VStack(alignment: .leading, spacing: 10) {
@@ -341,7 +341,7 @@ struct AppManualInstallationGuideView: View {
                 Button(APCLocalization.text(.appActionQuit)) {
                     NSApplication.shared.terminate(nil)
                 }
-                .buttonStyle(.bordered)
+                .apcClearGlassButtonStyle()
                 .accessibilityIdentifier("app-update.restart-failed-quit")
             }
         }
@@ -368,7 +368,7 @@ struct AppManualInstallationGuideView: View {
                     : "folder"
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .accessibilityIdentifier("app-update.reveal-candidate")
     }
 
@@ -381,7 +381,7 @@ struct AppManualInstallationGuideView: View {
                 systemImage: "square.grid.2x2"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .accessibilityIdentifier("app-update.open-applications")
     }
 

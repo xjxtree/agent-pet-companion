@@ -1524,11 +1524,11 @@ struct AppEnvironmentBehavior {
     enabled: bool,
     status_bubble: bool,
     appearance_theme: AppearanceTheme,
-    bubble_transparency: f64,
     click_menu: bool,
     mouse_passthrough: bool,
     auto_hide: bool,
     session_message_timeout_minutes: u16,
+    group_sessions_by_agent: bool,
     session_group_display: SessionGroupDisplay,
     sources: AppEnvironmentSources,
     events: AppEnvironmentEvents,
@@ -1708,10 +1708,7 @@ fn validate_app_environment(environment: &AppEnvironmentSnapshot) -> Result<()> 
             "app_environment screen values are invalid",
         ));
     }
-    if !environment.behavior.bubble_transparency.is_finite()
-        || !(0.0..=1.0).contains(&environment.behavior.bubble_transparency)
-        || !(1..=1_440).contains(&environment.behavior.session_message_timeout_minutes)
-    {
+    if !(1..=1_440).contains(&environment.behavior.session_message_timeout_minutes) {
         return Err(invalid_app_environment(
             "app_environment behavior values are invalid",
         ));
@@ -2041,11 +2038,11 @@ mod tests {
                 "enabled": true,
                 "status_bubble": true,
                 "appearance_theme": "system",
-                "bubble_transparency": 0.55,
                 "click_menu": true,
                 "mouse_passthrough": false,
                 "auto_hide": true,
                 "session_message_timeout_minutes": 15,
+                "group_sessions_by_agent": true,
                 "session_group_display": "stacked",
                 "sources": {
                     "codex": true,

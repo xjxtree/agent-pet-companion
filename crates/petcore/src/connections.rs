@@ -5461,7 +5461,12 @@ fn check_claude_settings(connector_cli: &Path, install_root: &Path) -> Connectio
         && read_regular_json_config(&settings_path)
             .zip(expected)
             .is_some_and(|(settings, expected)| {
-                claude_settings_match_owned_fragment(&settings, &expected)
+                claude_settings_match_owned_fragment(
+                    &settings,
+                    &expected,
+                    connector_cli,
+                    install_root,
+                )
             });
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
@@ -5500,7 +5505,12 @@ fn check_claude_settings(connector_cli: &Path, install_root: &Path) -> Connectio
     )
 }
 
-fn claude_settings_match_owned_fragment(settings: &Value, expected_fragment: &Value) -> bool {
+fn claude_settings_match_owned_fragment(
+    settings: &Value,
+    expected_fragment: &Value,
+    connector_cli: &Path,
+    install_root: &Path,
+) -> bool {
     let Some(actual_hooks) = settings.get("hooks").and_then(Value::as_object) else {
         return false;
     };
@@ -5514,7 +5524,7 @@ fn claude_settings_match_owned_fragment(settings: &Value, expected_fragment: &Va
         };
         let owned_groups = actual_groups
             .iter()
-            .filter(|group| value_contains_apparent_claude_connector(group))
+            .filter(|group| value_contains_owned_claude_hook(group, connector_cli, install_root))
             .collect::<Vec<_>>();
         match expected_hooks.get(event).and_then(Value::as_array) {
             Some(expected_groups) => {
@@ -5539,7 +5549,9 @@ fn claude_settings_match_owned_fragment(settings: &Value, expected_fragment: &Va
             .is_some_and(|groups| {
                 groups
                     .iter()
-                    .filter(|group| value_contains_apparent_claude_connector(group))
+                    .filter(|group| {
+                        value_contains_owned_claude_hook(group, connector_cli, install_root)
+                    })
                     .count()
                     == 1
             })
@@ -8106,6 +8118,57 @@ mod tests {
     }
 
     #[test]
+    fn claude_repair_ignores_preserved_foreign_helper_when_owned_fragment_is_exact() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let config_root = temp.path().join("claude-config");
+        let install_root = temp.path().join("app-home/connectors/claude-code");
+        let cli = temp.path().join("app-home/runtime/current/petcore-cli");
+        let _claude_config = EnvVarGuard::set("CLAUDE_CONFIG_DIR", &config_root);
+        std::fs::create_dir_all(config_root.as_path()).unwrap();
+        std::fs::create_dir_all(install_root.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let fragment = rendered_claude_settings_fragment(&cli, &install_root).unwrap();
+        let mut settings = json!({ "hooks": fragment["hooks"] });
+        let foreign_helper = temp
+            .path()
+            .join("expired-test-home/connectors/claude-code/agent-pet-companion-hook.sh");
+        let foreign_command = format!("'{}' >/dev/null 2>&1 || true", foreign_helper.display());
+        settings["hooks"]["SessionStart"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                0,
+                json!({
+                    "hooks": [{
+                        "type": "command",
+                        "command": foreign_command,
+                        "async": false,
+                        "timeout": 2
+                    }]
+                }),
+            );
+        let settings_path = claude_settings_path();
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        repair_claude(&install_root, &cli).unwrap();
+
+        let repaired: Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        assert!(repaired.to_string().contains(&foreign_command));
+        assert_eq!(
+            check_claude_settings(&cli, &install_root).status,
+            CheckStatus::Ok
+        );
+    }
+
+    #[test]
     fn claude_event_helper_requires_exact_current_cli_contract_and_executable_mode() {
         let temp = tempfile::tempdir().unwrap();
         let helper = temp.path().join("agent-pet-companion-hook.sh");
@@ -9472,7 +9535,10 @@ mod tests {
         assert!(!repaired_text.contains("agent hook --source claude_code"));
         assert!(!repaired_text.contains("AgentPetCompanion.app/Contents/Resources/bin/petcore-cli"));
         assert!(super::claude_settings_match_owned_fragment(
-            &repaired, &fragment
+            &repaired,
+            &fragment,
+            &cli,
+            &install_root,
         ));
         assert_eq!(
             super::installed_static_connector_release_version(

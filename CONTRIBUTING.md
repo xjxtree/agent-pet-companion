@@ -1,50 +1,24 @@
-# Contributing to Agent Pet Companion / 参与贡献
+# Contributing / 参与贡献
 
-Thanks for helping improve Agent Pet Companion. The project is a local-first macOS V1; keep changes aligned with the current product surface, implementation contracts, and tests.
-
-感谢你参与 Agent Pet Companion。项目当前聚焦本地优先的 macOS V1；提交改动应与当前产品入口、实现契约和测试保持一致。
+Agent Pet Companion is a local-first native macOS project. Keep changes focused on the current product surface and synchronize behavior, typed contracts, tests, and the owning document. / 本项目是本地优先的 macOS 原生应用。改动应聚焦当前产品范围，并同步行为、类型契约、测试与负责该主题的文档。
 
 ## Prerequisites / 开发环境
 
-- macOS 14 or newer / macOS 14 或更高版本
+- macOS 14+
 - Apple Command Line Tools with Swift 6 and a macOS SDK; full Xcode is optional / 包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools；完整 Xcode 可选
-- Rust 1.96.0 with `rustfmt` and `clippy` (pinned by `rust-toolchain.toml`)
-- Python 3 for validation helpers
+- Rust toolchain pinned by `rust-toolchain.toml`, including `rustfmt` and `clippy`
+- Python 3; release visual validation also uses the pinned Pillow dependency / Python 3；发布视觉校验还会使用固定版本的 Pillow
 
-The primary V1 performance target is Apple silicon. Official distribution uses
-the explicit, fail-closed `build_release.sh --github-release --arch all` path
-to produce two ad-hoc-signed thin archives and a two-entry checksum file. It
-requires native validation on both architectures and exact downloaded-asset
-revalidation, but no Apple signing or notarization credentials. Missing native
-runners means incomplete, never passed. See the
-[release procedure](docs/release/macos-release.md) and
-[validation profiles](docs/development/validation.md).
+## Workflow / 开发流程
 
-V1 的主要性能目标是 Apple Silicon。正式分发显式使用 fail-closed 的
-`build_release.sh --github-release --arch all`，生成两个采用 ad-hoc 签名的 thin
-归档与一份两行校验和文件；发布前必须完成双原生架构验收和实际下载资产复验，但不
-需要 Apple 签名或公证凭据。缺少原生 runner 只能记为 incomplete，不能记为通过。
-具体见[发布流程](docs/release/macos-release.md)与[验证层级](docs/development/validation.md)。
+1. Read [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and the owning document listed in [docs/README.md](docs/README.md). / 先阅读 `AGENTS.md`，再检查相关实现、schema、manifest、测试和负责该主题的文档。
+2. Use a focused branch (`xjx-` prefix for Codex work) and preserve unrelated worktree changes. / 使用聚焦分支；Codex 分支使用 `xjx-` 前缀，并保留工作区中无关改动。
+3. Add the smallest useful regression test and update the owning contract when behavior changes. / 行为变化时补充最小有效回归测试，并更新对应契约。
+4. Record user-visible changes under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). / 用户可见变化写入 `CHANGELOG.md` 的 `[Unreleased]`。
 
-## Before changing behavior / 修改行为前
+## Validation / 验证
 
-Start with [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and current-state owning document in the area being changed. The repository does not use a rolling status document; verification claims must come from a fresh run for the exact commit or artifact.
-
-修改前先阅读 [AGENTS.md](AGENTS.md)，随后检查相关实现、schema、manifest、测试和负责当前事实的文档。仓库不维护滚动状态文档；验收结论必须来自对当前 commit 或产物的实际运行。
-
-Do not add cloud accounts, public galleries, sharing/community features, Petdex import, Codex built-in pet export, Windows UI, or a mission-control platform unless the project scope is explicitly changed.
-
-除非项目范围被明确调整，否则不要加入云账号、公共素材库、分享/社区、Petdex 导入、Codex 内置宠物导出、Windows UI 或完整 Agent 任务控制台。
-
-## Development workflow / 开发流程
-
-Create a focused task branch. When working through Codex in this repository, use the `xjx-` prefix. Add the smallest useful regression test for behavior changes.
-
-为任务创建聚焦的分支；通过 Codex 开发时使用 `xjx-` 前缀。行为变更应补充最小有效回归测试。
-
-The default validation gate is deliberately host-safe: it uses isolated temporary homes and does not launch the GUI, modify LaunchAgents, invoke real agents, or read credentials.
-
-默认验证门禁必须对宿主安全：使用隔离临时目录，不启动 GUI、不修改 LaunchAgent、不调用真实 Agent，也不读取凭据。
+The default gate is isolated and does not launch the GUI, modify user LaunchAgents, invoke real Agents, or read credentials:
 
 ```bash
 APC_VALIDATE_HOST_UI=0 \
@@ -53,41 +27,12 @@ APC_VALIDATE_REAL_APP_SERVER=0 \
 ./script/test_all.sh
 ```
 
-Real UI, real connector, and real App Server checks are separate opt-in gates. Use only the documented environment flags and never inspect auth, token, cookie, API key, or secret files.
+Run the smallest relevant check first, then the broader gate appropriate to the change. Real UI, connector, App Server, performance, and release checks are environment-dependent; report an unrun gate as skipped, never passed. [Validation profiles](docs/development/validation.md) define proof boundaries, and [macOS release](docs/release/macos-release.md) owns official distribution steps. / 先运行最小相关检查，再运行与改动相称的完整门禁。真实 UI、连接器、App Server、性能和发布检查依赖环境；未运行只能标记为 skipped。证明边界与正式发布步骤分别见对应文档。
 
-真实 UI、真实 connector 与真实 App Server 检查均为独立 opt-in 门禁。只能使用文档规定的环境变量，并且不得检查 auth、token、cookie、API Key 或其他密钥文件。
-
-See [Validation profiles](docs/development/validation.md) for the proof boundary of each gate. A skipped environment-dependent gate must be reported as skipped, never as passed.
-
-各门禁的证明边界见[验证层级](docs/development/validation.md)。因环境缺失而跳过的门禁必须明确报告为 skipped，不能写成 passed。
-
-For live macOS UI verification, use Computer Use first and prefer Accessibility reads and element-based actions that do not take over the user's pointer, keyboard, or active focus. Do not default to `open -n`, AppleScript/System Events, CGEvent synthesis, `cliclick`, `pyautogui`, or equivalent direct input automation. If Computer Use cannot cover a required interaction and the fallback can interrupt the user, obtain explicit approval immediately before using it.
-
-真实 macOS UI 验证必须优先使用 Computer Use，并优先采用 Accessibility 状态读取和元素级操作，避免接管用户的鼠标、键盘或当前输入焦点。不得默认使用 `open -n`、AppleScript/System Events、CGEvent、`cliclick`、`pyautogui` 等直接输入自动化；若 Computer Use 无法覆盖且替代方法可能打断用户，必须在执行前取得明确授权。
-
-## Documentation and changelog / 文档与变更记录
-
-- Keep the public READMEs human-facing. Put durable implementation knowledge in the owning `docs/` subdirectory and link to source rather than copying it.
-- Do not retain completed design proposals, task plans, rolling status, dated audits, implementation diaries, validation logs, or pending-work documents. Use issues, commits, pull requests, CI, and GitHub Release notes for transient work.
-- Add every user-visible change to `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md). A GitHub Release is not complete until its tag and version section match one-to-one.
-- Update schemas, runtime manifests, fixtures, Swift/Rust mirrors, tests, and the owning document together when a contract changes.
-
-- README 面向普通用户；长期实现信息进入对应 `docs/` 子目录，并通过链接指向源码。
-- 不保留已实施的设计提案、任务规划、滚动状态、按日期审计、实现过程、验证日志或待办文档；临时工作状态使用 issue、commit、PR、CI 与 GitHub Release notes。
-- 所有用户可见变化写入 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]`；GitHub Release、tag 与版本段必须一一对应。
-- 契约变化时同步 schema、runtime manifest、fixtures、Swift/Rust 镜像、测试与对应文档。
+Computer Use is recommended for live macOS UI work when available and useful, but the executing Agent may choose another suitable method. Launch verification builds through `script/build_and_run.sh`, scope host-affecting checks to the intended App or an owned validation runtime, and state what was directly observed. / Computer Use 在可用且适合任务时建议使用；执行 Agent 也可选择其他合适方法。验证构建通过 `script/build_and_run.sh` 启动，影响宿主的检查应限定在目标 App 或自有验证实例，并说明哪些行为经过直接观察。
 
 ## Pull requests / 合并请求
 
-Include:
+Include: what changed, tests run, skipped environment gates, and any migration, privacy, performance, or accessibility impact. Add comparable before/after captures for visible UI changes. / 请说明改动、已运行测试、跳过的环境门禁，以及迁移、隐私、性能或无障碍影响；可见 UI 改动附同条件前后对比。
 
-- what changed and which V1 requirement it satisfies;
-- tests run and any environment-gated checks not run;
-- migration, privacy, performance, or accessibility impact;
-- before/after captures for visible UI changes at the same viewport and state.
-
-请说明：改动内容及对应 V1 需求、已运行的测试及未运行的环境门禁、迁移/隐私/性能/无障碍影响；可见 UI 改动还需提供同一视口和状态下的前后对比。
-
-Do not commit `target/`, `.build/`, `DerivedData/`, `.env` files, generated jobs, `.petpack` files, Python caches, credentials, or temporary pet assets.
-
-不要提交 `target/`、`.build/`、`DerivedData/`、`.env`、生成任务、`.petpack`、Python cache、凭据或临时宠物素材。
+Do not commit build caches or output, `.env` files, credentials, generated jobs, exported diagnostics, `.petpack` files, or temporary pet assets. Plans, progress logs, audits, and command output belong in issues, commits, PRs, CI, or Release notes rather than durable documentation. / 不要提交构建缓存或产物、`.env`、凭据、生成任务、导出诊断、`.petpack` 或临时宠物素材。计划、进度、审计和命令输出不进入长期文档。

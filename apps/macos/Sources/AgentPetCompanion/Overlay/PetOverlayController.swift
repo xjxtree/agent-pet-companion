@@ -42,6 +42,36 @@ enum OverlaySessionPrimaryClickPolicy {
     }
 }
 
+/// Pairs a press on a bubble control with its release. Opening a session or
+/// dismissing a bubble is not undoable from the overlay, so a press alone — or
+/// the start of a pointer movement — must not commit it. Keeping the rule out
+/// of AppKit lets it be verified without a live overlay.
+struct OverlayBubblePressGesture: Equatable {
+    /// Identifies the pressed control rather than its content, so a projection
+    /// refresh between press and release does not cancel a legitimate click.
+    let identity: String
+    let origin: CGPoint
+    private(set) var didDrag: Bool
+
+    init(identity: String, origin: CGPoint, didDrag: Bool = false) {
+        self.identity = identity
+        self.origin = origin
+        self.didDrag = didDrag
+    }
+
+    mutating func updateDrag(to point: CGPoint) {
+        guard !didDrag else { return }
+        didDrag = OverlayPetPointerGesture.exceedsDragThreshold(from: origin, to: point)
+    }
+
+    func shouldPerform(releaseIdentity: String?, clickCount: Int) -> Bool {
+        OverlayPetPointerGesture.shouldPerformPrimaryClick(
+            clickCount: clickCount,
+            didDrag: didDrag
+        ) && releaseIdentity == identity
+    }
+}
+
 /// Repairs the concrete AppKit child-window relationship used by the overlay
 /// composition. AppKit may detach a child after it is ordered out, so callers
 /// invoke this immediately before every auxiliary show operation.
@@ -87,7 +117,13 @@ final class PetOverlayController {
     private var presentedPetScreenCenter: CGPoint?
     private var directManipulationSnapshot:
         OverlayAuxiliaryRelativeFrameSnapshot?
-    private var bubbleAnchorDirection: OverlayBubbleAnchorDirection?
+    private var directManipulationAnchor: OverlayDirectManipulationAnchor?
+    /// The bubble stack size measured when the gesture began. Re-measuring
+    /// session text per display tick is the expensive half of a bubble layout;
+    /// only the anchor has to change while the pet moves.
+    private var directManipulationBubbleSize: CGSize?
+    private var dragViewCache: WindowDragRegion.DragView?
+    private var bubbleAnchor: OverlayBubbleAnchor?
 
     func endPetDragInteraction(_ interactionID: UUID?) {
         interactionPresentation.endDrag(interactionID: interactionID)
@@ -223,6 +259,7 @@ final class PetOverlayController {
             }
         } else {
             directManipulationSnapshot = nil
+            directManipulationAnchor = nil
             bubbleAnimationGeneration &+= 1
             controlPanelFadeOutTask?.cancel()
             controlPanelFadeOutTask = nil
@@ -306,20 +343,52 @@ final class PetOverlayController {
     /// pet center and remeasuring every session row for each pointer event
     /// makes the whole ObservableObject and Metal-backed view hierarchy work
     /// much harder than a window translation requires.
+    ///
+    /// The auxiliary panels are re-anchored on the same tick as the pet. They
+    /// are child windows, so the parent translation already carries them; what
+    /// this adds is the placement decision — a bubble that would leave the
+    /// screen re-anchors while the pointer is still moving instead of holding
+    /// an illegal position and correcting once on release. Sizes stay frozen
+    /// for the gesture, so no text is re-measured per tick.
     func presentPetDrag(at petScreenCenter: CGPoint, visibleFrame: CGRect) {
         guard let store, let panel else { return }
         beginDirectManipulationIfNeeded()
         let displayWidthPt = presentedDisplayWidthPt(for: store)
-        let previousCenter = presentedPetScreenCenter
-            ?? store.overlayPetScreenCenter
-        let moves = OverlayDirectManipulationMovePlan.moves(
+        guard let anchor = directManipulationAnchor else { return }
+        // A bubble that appears mid-gesture still belongs to the composition,
+        // so it is measured once here instead of waiting for the release.
+        if directManipulationBubbleSize == nil, bubblePanel?.isVisible == true {
+            directManipulationBubbleSize = bubblePanel?.frame.size
+        }
+        let plan = OverlayDirectManipulationMovePlan.plan(
+            anchor: anchor,
             parentFrame: panel.frame,
-            previousPetCenter: previousCenter,
-            presentedPetCenter: petScreenCenter
+            presentedPetCenter: petScreenCenter,
+            auxiliary: OverlayDirectManipulationAuxiliaryInput(
+                displayWidthPt: displayWidthPt,
+                visibleFrame: visibleFrame,
+                petVisualEnvelope: store.overlayPetVisualEnvelope,
+                bubbleSize: directManipulationBubbleSize,
+                previousBubbleAnchor: bubbleAnchor,
+                menuVisible: menuPanel?.isVisible == true
+            )
         )
-        for move in moves {
-            precondition(move.role == .parentPetPanel)
-            moveWindowDuringInteraction(panel, to: move.frame)
+        for move in plan.moves {
+            switch move.role {
+            case .parentPetPanel:
+                moveWindowDuringInteraction(panel, to: move.frame)
+            case .bubbleChildPanel:
+                if let bubblePanel, bubblePanel.isVisible {
+                    moveWindowDuringInteraction(bubblePanel, to: move.frame)
+                }
+            case .menuChildPanel:
+                if let menuPanel, menuPanel.isVisible {
+                    moveWindowDuringInteraction(menuPanel, to: move.frame)
+                }
+            }
+        }
+        if let anchor = plan.bubbleAnchor {
+            bubbleAnchor = anchor
         }
         presentedPetScreenCenter = petScreenCenter
         syncInteractionViews(
@@ -395,6 +464,18 @@ final class PetOverlayController {
             bubbleFrame: bubblePanel?.isVisible == true ? bubblePanel?.frame : nil,
             menuFrame: menuPanel?.isVisible == true ? menuPanel?.frame : nil
         )
+        // The pet's offset inside its panel is fixed for the gesture, so every
+        // presented frame can be derived from the pointer-anchored center alone.
+        directManipulationAnchor = OverlayDirectManipulationAnchor(
+            panelFrame: panel.frame,
+            petScreenCenter: presentedPetScreenCenter
+                ?? store?.overlayPresentedPetScreenCenter
+                ?? store?.overlayPetScreenCenter
+                ?? CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+        )
+        directManipulationBubbleSize = bubblePanel?.isVisible == true
+            ? bubblePanel?.frame.size
+            : nil
     }
 
     func refreshPointerDrivenControlVisibility() {
@@ -418,6 +499,8 @@ final class PetOverlayController {
             beginDirectManipulationIfNeeded()
         } else {
             directManipulationSnapshot = nil
+            directManipulationAnchor = nil
+            directManipulationBubbleSize = nil
         }
         let screen = currentScreen(for: store)
         let visibleFrame = screen?.visibleFrame ?? fallbackVisibleFrame
@@ -439,7 +522,12 @@ final class PetOverlayController {
         {
             store.recordOverlayPanelFrame(targetFrame, visibleFrame: visibleFrame)
         }
-        if panel.frame != targetFrame {
+        // A gesture has exactly one presentation owner. `presentPetDrag` holds
+        // the panel at the pointer-anchored position with a frozen size, so an
+        // unrelated layout pass must not re-round it underneath the gesture:
+        // that would shift the pet inside its own panel and drag the attached
+        // bubble along with it.
+        if layoutMode == .resting, panel.frame != targetFrame {
             panel.setFrame(targetFrame, display: true, animate: false)
         }
         presentedPetScreenCenter = petScreenCenter
@@ -504,16 +592,26 @@ final class PetOverlayController {
         )
     }
 
+    /// Runs on every presented drag frame, so the drag view is resolved once
+    /// and reused. Walking the hosted SwiftUI view tree per tick is avoidable
+    /// work in the one code path that must not miss a frame.
     private func syncInteractionViews(
         petScreenCenter: CGPoint,
         displayWidthPt: CGFloat
     ) {
-        if let dragView = panel?.contentView.flatMap({
-            firstDescendant(of: WindowDragRegion.DragView.self, in: $0)
-        }) {
-            dragView.petScreenCenter = petScreenCenter
-            dragView.displayWidthPt = displayWidthPt
+        guard let dragView = resolvedDragView() else { return }
+        dragView.petScreenCenter = petScreenCenter
+        dragView.displayWidthPt = displayWidthPt
+    }
+
+    private func resolvedDragView() -> WindowDragRegion.DragView? {
+        if let dragViewCache, dragViewCache.window === panel {
+            return dragViewCache
         }
+        dragViewCache = panel?.contentView.flatMap {
+            firstDescendant(of: WindowDragRegion.DragView.self, in: $0)
+        }
+        return dragViewCache
     }
 
     private func configureControlPanel(_ panel: NSPanel, contentView: NSView) {
@@ -645,10 +743,11 @@ final class PetOverlayController {
             visibleFrame: visibleFrame,
             contents: bubbleContents,
             petVisualEnvelope: store.overlayPetVisualEnvelope,
-            previousDirection: bubbleAnchorDirection
+            previousAnchor: bubbleAnchor,
+            fontScale: store.behavior.bubbleFontScale
         )
         let targetFrame = bubbleLayout.frame
-        bubbleAnchorDirection = bubbleLayout.direction
+        bubbleAnchor = bubbleLayout.anchor
         guard panel?.isVisible == true else {
             bubbleAnimationGeneration &+= 1
             bubblePanel.alphaValue = 1
@@ -951,10 +1050,33 @@ final class PetOverlayController {
 }
 
 final class BubbleOverlayPanel: NSPanel {
+    fileprivate enum BubbleClickTarget {
+        case groupToggle(source: AgentSource)
+        case standaloneStackToggle
+        case session(OverlaySessionContent)
+        case dismiss(eventIDs: [String])
+
+        /// Identifies the control rather than its current content, so press and
+        /// release can be matched across a projection refresh.
+        var identity: String {
+            switch self {
+            case let .groupToggle(source):
+                "group:\(source.rawValue)"
+            case .standaloneStackToggle:
+                "standalone-stack"
+            case let .session(session):
+                "session:\(session.id)"
+            case let .dismiss(eventIDs):
+                "dismiss:\(eventIDs.joined(separator: ","))"
+            }
+        }
+    }
+
     weak var overlayStore: AppStore?
     var onKeyboardNavigationChanged: ((Bool) -> Void)?
     private let pointerMonitor = OverlayPointerEventMonitor()
     private var clickMenuTarget: BubbleClickMenuTarget?
+    private var pendingBubbleClick: OverlayBubblePressGesture?
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
@@ -977,6 +1099,7 @@ final class BubbleOverlayPanel: NSPanel {
 
     func stopPointerTracking() {
         pointerMonitor.stop()
+        pendingBubbleClick = nil
         setIgnoresMouseEventsIfNeeded(false)
     }
 
@@ -1011,6 +1134,7 @@ final class BubbleOverlayPanel: NSPanel {
 
     override func resignKey() {
         super.resignKey()
+        pendingBubbleClick = nil
         onKeyboardNavigationChanged?(false)
         refreshPointerPassthrough()
     }
@@ -1019,16 +1143,28 @@ final class BubbleOverlayPanel: NSPanel {
         switch event.type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             guard shouldHandleMouse(localPoint: event.locationInWindow) else {
+                pendingBubbleClick = nil
                 setIgnoresMouseEventsIfNeeded(true)
                 return
             }
             setIgnoresMouseEventsIfNeeded(false)
-            if event.type == .leftMouseDown, handleActionClick(at: event.locationInWindow) {
-                return
+            if event.type == .leftMouseDown {
+                if beginBubbleClick(at: event.locationInWindow) {
+                    return
+                }
+            } else {
+                pendingBubbleClick = nil
             }
             if event.type == .rightMouseDown, handleContextMenu(with: event) {
                 return
             }
+        case .leftMouseDragged where pendingBubbleClick != nil:
+            updateBubbleClickDrag(to: event.locationInWindow)
+            return
+        case .leftMouseUp where pendingBubbleClick != nil:
+            finishBubbleClick(at: event.locationInWindow, clickCount: event.clickCount)
+            refreshPointerPassthrough()
+            return
         default:
             break
         }
@@ -1064,32 +1200,93 @@ final class BubbleOverlayPanel: NSPanel {
         }
     }
 
-    private func handleActionClick(at location: NSPoint) -> Bool {
-        guard let overlayStore else { return false }
-        guard let (content, rect, topLeftPoint) = bubbleHit(at: location) else { return false }
+    private func clickTarget(at location: NSPoint) -> BubbleClickTarget? {
+        guard let (content, rect, topLeftPoint) = bubbleHit(at: location) else { return nil }
 
-        if OverlayGeometry.bubbleGroupToggleHitRect(in: rect, content: content)
-            .contains(topLeftPoint),
-           let source = content.source
+        if content.canDismiss,
+           OverlayGeometry.bubbleCloseHitRect(
+               in: rect,
+               fontScale: bubbleFontScale
+           ).contains(topLeftPoint)
         {
-            overlayStore.toggleOverlayAgentGroup(source)
-            return true
+            return .dismiss(eventIDs: content.dismissalIDs)
+        }
+
+        if OverlayGeometry.bubbleGroupToggleHitRect(
+            in: rect,
+            content: content,
+            fontScale: bubbleFontScale
+        )
+        .contains(topLeftPoint)
+        {
+            if content.isStandaloneSessionCard {
+                return .standaloneStackToggle
+            }
+            if let source = content.source {
+                return .groupToggle(source: source)
+            }
         }
 
         if let session = sessionHit(in: content, bubbleRect: rect, point: topLeftPoint),
            OverlaySessionPrimaryClickPolicy.shouldActivate(session) {
+            if content.isStandaloneSessionCard, content.isStacked {
+                return .standaloneStackToggle
+            }
+            return .session(session)
+        }
+
+        return nil
+    }
+
+    private func performClickTarget(_ target: BubbleClickTarget) {
+        guard let overlayStore else { return }
+        switch target {
+        case let .groupToggle(source):
+            overlayStore.toggleOverlayAgentGroup(source)
+        case .standaloneStackToggle:
+            overlayStore.toggleOverlayStandaloneStack()
+        case let .session(session):
             overlayStore.activateOverlaySession(session)
-            return true
+        case let .dismiss(eventIDs):
+            overlayStore.dismissOverlayBubble(eventIDs: eventIDs)
         }
+    }
 
-        if content.canDismiss,
-           OverlayGeometry.bubbleCloseHitRect(in: rect).contains(topLeftPoint)
-        {
-            overlayStore.dismissOverlayBubble(eventIDs: content.dismissalIDs)
-            return true
+    /// Arms a bubble control on press without acting on it. The action belongs
+    /// to the release so a press, or the start of a pointer movement, cannot
+    /// navigate away from the desktop by itself.
+    private func beginBubbleClick(at location: NSPoint) -> Bool {
+        guard let target = clickTarget(at: location) else {
+            pendingBubbleClick = nil
+            return false
         }
+        pendingBubbleClick = OverlayBubblePressGesture(
+            identity: target.identity,
+            origin: location
+        )
+        return true
+    }
 
-        return false
+    private func updateBubbleClickDrag(to location: NSPoint) {
+        pendingBubbleClick?.updateDrag(to: location)
+    }
+
+    /// Commits the armed control only when the release lands on the same
+    /// control that was pressed. The target is re-resolved at release time so a
+    /// projection refresh between press and release acts on current content,
+    /// while the stable identity still guards against acting on a control the
+    /// pointer has since left.
+    private func finishBubbleClick(at location: NSPoint, clickCount: Int) {
+        guard let pending = pendingBubbleClick else { return }
+        pendingBubbleClick = nil
+        let target = clickTarget(at: location)
+        guard pending.shouldPerform(
+            releaseIdentity: target?.identity,
+            clickCount: clickCount
+        ), let target else {
+            return
+        }
+        performClickTarget(target)
     }
 
     private func handleContextMenu(with event: NSEvent) -> Bool {
@@ -1156,10 +1353,21 @@ final class BubbleOverlayPanel: NSPanel {
     ) -> OverlaySessionContent? {
         zip(
             content.visibleSessions,
-            OverlayGeometry.bubbleSessionRects(in: bubbleRect, content: content)
+            OverlayGeometry.bubbleSessionRects(
+                in: bubbleRect,
+                content: content,
+                fontScale: bubbleFontScale
+            )
         )
         .first(where: { pair in pair.1.contains(point) })?
         .0
+    }
+
+    /// Hit regions must be measured with the same text tier the bubble renders
+    /// with, otherwise a larger tier moves the visible controls away from the
+    /// rects this panel routes clicks to.
+    private var bubbleFontScale: BubbleFontScale {
+        overlayStore?.behavior.bubbleFontScale ?? .standard
     }
 
     private func bubbleHit(at location: NSPoint) -> (
@@ -1188,7 +1396,8 @@ final class BubbleOverlayPanel: NSPanel {
             inPanelSize: frame.size,
             visibleFrameSize: visibleFrame.size,
             contents: contents,
-            alignLeft: alignLeft
+            alignLeft: alignLeft,
+            fontScale: bubbleFontScale
         )
     }
 
@@ -1590,7 +1799,8 @@ private final class PassthroughBubbleHostingView<Content: View>: NSHostingView<C
             inPanelSize: size,
             visibleFrameSize: visibleFrame.size,
             contents: contents,
-            alignLeft: alignLeft
+            alignLeft: alignLeft,
+            fontScale: store.behavior.bubbleFontScale
         )
         .contains { rect in
             roundedRectContains(topLeftPoint, in: rect, radius: OverlayGeometry.bubbleCornerRadius)

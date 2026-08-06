@@ -30,7 +30,10 @@ struct ControlCenterContentDensityTests {
         #expect(connections.contains("\"connections.primary.check-all\""))
         #expect(connections.contains("store.repairConnections(sources)"))
         #expect(connections.contains("\"connections.secondary.setup-all\""))
-        #expect(occurrences(of: ".buttonStyle(.borderedProminent)", in: connections) == 1)
+        #expect(occurrences(
+            of: ".apcClearGlassButtonStyle(prominent: true)",
+            in: connections
+        ) == 1)
         #expect(connections.contains("@State private var expandedSource"))
         #expect(connections.contains("isExpanded: expandedSource == source"))
         #expect(connections.contains("\"connections.agent-toggle."))
@@ -51,6 +54,9 @@ struct ControlCenterContentDensityTests {
         #expect(!connections.contains("ConnectionActionBar"))
         #expect(!connections.contains("ConnectionEnvironmentInspector"))
         #expect(!connections.contains("connections.inspector"))
+
+        #expect(designSystem.contains(".buttonStyle(.glass(.clear))"))
+        #expect(designSystem.contains(".glass(.clear.tint(APCDesign.accent))"))
 
         #expect(!diagnostics.contains("ToolbarItem(placement: .secondaryAction)"))
         #expect(!diagnostics.contains("Text(APCLocalization.text(.diagnosticsPageTitle))"))

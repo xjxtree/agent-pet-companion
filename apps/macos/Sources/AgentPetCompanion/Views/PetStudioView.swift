@@ -758,7 +758,7 @@ struct GenerationSessionView: View {
             } label: {
                 Image(systemName: "arrow.up")
             }
-            .buttonStyle(.borderedProminent)
+            .apcClearGlassButtonStyle(prominent: true)
             .disabled(!canSendReply)
             .accessibilityLabel(APCLocalization.text(.studioReplySend))
             .accessibilityIdentifier("maker.session.send")

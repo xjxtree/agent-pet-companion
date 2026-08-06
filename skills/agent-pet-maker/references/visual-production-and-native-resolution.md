@@ -5,7 +5,7 @@
 1. Source-capacity gate
 2. Provider routing
 3. Production base and action batches
-4. Deterministic pose guides
+4. Deterministic pose and size guides
 5. Reference and prompt contract
 6. Failure routing
 7. Runtime-size acceptance
@@ -68,10 +68,16 @@ batch. Use one action card that states the intent, exact frame count, left-to-
 right beat order, playback outcome, safe margins, and flat-background rules.
 Immediately inspect the result before another call.
 
-Use text control for a simple action. Walking, jumping, turning, and other
-complex limb/depth sequences require a deterministic frameless equal-scale pose
-guide as reference image 2. If the same defect appears twice, change the guide
-or redesign the action instead of extending the same prompt.
+Every multi-frame action uses two script-generated structural references: a
+frameless pose guide as reference image 2 and a separate frameless size-
+reference image as reference image 3. They must come from one geometry record
+and have identical canvas dimensions, slot centers, centered 12:13 crop
+windows, baseline, and `global_scale`. Text-only requests for equal-sized
+figures are not scale evidence. If the active provider cannot accept the
+character base and both structural references in one request, choose a
+compatible provider or a supported lower tier instead of dropping the size
+reference. If the same defect appears twice, change the guides or redesign the
+action instead of extending the same prompt.
 
 An exceptional multi-batch action is allowed only for a non-capacity continuity
 constraint. Carry the base and one or two accepted boundary poses into the next
@@ -79,10 +85,10 @@ batch, keep cell geometry unchanged, and inspect both sides of the join. Never
 fill a sequence with duplicate poses, crossfade, morph, optical flow,
 procedural interpolation, or transformed copies.
 
-## Deterministic pose guides
+## Deterministic pose and size guides
 
-Create every complex-action guide with a deterministic script, never an image
-model. The script must:
+Create both guide images with one deterministic script, never an image model.
+The script must:
 
 1. Create a pure `#FF00FF` canvas at the target action-sheet dimensions.
 2. Divide it into invisible equal-width slots:
@@ -92,22 +98,33 @@ model. The script must:
    slot_center_x = (frame_index + 0.5) * slot_width
    ```
 
-3. Draw every pose from one skeleton definition, joint-length set, head size,
-   and `global_scale`.
-4. Put one complete pose in each slot and keep horizontal occupancy at or below
-   80–85% of the slot.
-5. Keep one foot baseline for ordinary actions. For a jump, change joint
+3. Compute one largest centered 12:13 crop per slot, then one safe subject box
+   inset by at least 10% on every crop edge. Record the canvas, slot centers,
+   crop rectangles, safe boxes, baseline, head diameter, shoulder width,
+   subject height, and `global_scale` in a workspace sidecar.
+4. Draw the pose guide from one skeleton definition, joint-length set, head
+   size, and `global_scale`. Put one complete pose in each slot and keep it
+   inside the recorded safe subject box.
+5. Draw the separate size-reference image with one neutral-gray upright
+   calibration silhouette repeated at the exact recorded head diameter,
+   shoulder width, subject height, baseline, and `global_scale` in every slot.
+   It controls scale and occupancy only, never the action pose.
+6. Keep one foot baseline for ordinary actions. For a jump, change joint
    coordinates and whole-pose `y_offset`; never scale one frame.
-6. Emit no border, cell, grid, divider, number, text, label, shadow, or action
-   effect. Light and dark gray may describe limb depth only.
+7. Emit no border, cell, safe-box outline, grid, divider, number, text, label,
+   shadow, or action effect. Light and dark gray may describe limb depth only.
 
-The guide controls pose count, joints, sequence, spacing, and depth. It is not
-production artwork and no guide pixel may survive in a pet frame.
+The pose guide controls pose count, joints, sequence, spacing, and depth. The
+size-reference image independently controls full-body pixel scale and safe crop
+occupancy. Neither is production artwork, and no guide pixel may survive in a
+pet frame. Regenerate both from the same sidecar whenever canvas, frame count,
+crop geometry, baseline, or `global_scale` changes; never resize one guide to
+match the other.
 
 ## Reference and prompt contract
 
-Upload the character base first and the pose guide second. When both are used,
-include this responsibility block verbatim:
+Upload the character base first, the pose guide second, and the size-reference
+image third. Include this responsibility block verbatim:
 
 ```text
 Image 1 defines the exact character identity, face, hair, clothing,
@@ -116,9 +133,14 @@ body proportions and materials.
 Image 2 is a script-generated frameless equal-scale pose guide. It
 defines only pose count, joint positions, sequence, spacing and depth.
 
-Replace every guide figure completely with the character from Image 1.
-Do not preserve any mannequin, skeleton, guide color, frame, grid,
-label or background artifact.
+Image 3 is a separate script-generated frameless size reference. It
+defines only full-body pixel height, head size, shoulder width, baseline
+and safe crop occupancy. It does not define identity or action pose.
+
+Use Image 2 for joints and Image 3 for scale. Replace every guide figure
+completely with the character from Image 1. Do not preserve any
+mannequin, silhouette, skeleton, guide color, frame, grid, label or
+background artifact.
 
 Keep the same camera distance, head size, shoulder width, body scale
 and clothing design in every pose.
@@ -130,6 +152,8 @@ Every action prompt must also require:
 - one complete same-scale character in each invisible slot;
 - the same identity, face, outfit, proportions, materials, and camera in every
   pose;
+- the recorded full-body pixel height, head size, shoulder width, baseline, and
+  safe crop occupancy from the size-reference image;
 - no touching, overlap, or cropped hair, appendages, hands, feet, or heels;
 - a perfectly uniform textureless solid background with no floor, shadow,
   reflection, text, border, or floating effect;
@@ -148,8 +172,20 @@ magenta canvas is structural input, not an instruction to copy its color.
   solid background`.
 - Copied guide figures: require complete replacement and forbid retained guide
   pixels.
-- Scale drift: lock camera distance, head size, shoulder width, and full-body
-  scale.
+- Scale drift or oversized figures: do not fit cells independently. Regenerate
+  both structural guides from one geometry record, reduce `global_scale` once
+  for the whole action when needed, and lock camera distance, head size,
+  shoulder width, full-body pixel height, and safe crop occupancy.
+- Pose/size disagreement: repair the shared sidecar and regenerate both guides;
+  never resize or reposition one reference independently.
+- Whole-subject registration drift: compare Motion QA's per-frame body-anchor
+  and baseline path with the action card and deterministic pose guide. Preserve
+  intentional travel and easing. If registration is the only defect, first use
+  one QA-bound `motion-align` pass on the transparent exact-tier frames; choose
+  a locked, equal-spacing linear, or explicit guide-target path per axis. The
+  pass may translate whole frames by integer pixels only and must be inspected
+  and rerun through Motion QA. Regenerate when translation would clip Alpha or
+  conceal any identity, anatomy, pose, scale, prop, crop, or continuity defect.
 - Jump shadows: forbid floor, cast, contact, and oval shadows explicitly.
 - Repeated walk poses: revise scripted joint coordinates instead of stacking
   prompt variants.
@@ -164,8 +200,11 @@ that reads independently.
 
 Intentional translation, rotation, recoil, bounce, squash/stretch, or scale
 change is valid when continuous and coherent. Motion magnitude is review
-evidence, not an automatic aesthetic failure. Clipping and synthetic
-interpolation are hard failures.
+evidence, not an automatic aesthetic failure. Body-anchor or baseline motion
+is accepted only when it matches the action card and deterministic pose guide;
+uneven model drift may receive a reviewed integer-translation-only correction
+after transparency, without scaling or deforming the pose. Clipping and
+synthetic interpolation are hard failures.
 
 Run state Motion QA immediately after acceptance. After all actions, inspect
 all authored-timing previews, `keyframes.png`, and the 8–12 second presence

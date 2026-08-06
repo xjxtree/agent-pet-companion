@@ -23,9 +23,11 @@ model-native transparency. Use only:
 
 The script owns background connectivity, matte thresholds, Alpha-boundary RGB
 reconstruction, source-resolution master retention, exact sizing, and
-multi-background QA. Do not replace it with custom Pillow, OpenCV, ImageMagick,
-shell, background-removal, color-replacement, edge-cleaning, Alpha, or resizing
-code. Do not tune its thresholds.
+multi-background QA. `visible_key_pixels` is a diagnostic count, not a zero-
+tolerance gate: an isolated key-like subject pixel does not by itself make a
+frame invalid. Do not replace the script with custom Pillow, OpenCV,
+ImageMagick, shell, background-removal, color-replacement, edge-cleaning,
+Alpha, or resizing code. Do not tune its thresholds.
 
 ## Source contract
 
@@ -48,6 +50,16 @@ equal-size source-pixel crops, require each crop to be 12:13 and at least the
 runtime target, and crop without resampling. Reject non-uniform background,
 color cast, clipping, guide leakage, duplicate or missing poses, and undersized
 crops. Never enlarge, pad, stretch, sharpen, or apply super-resolution.
+
+After a frame passes this transparency gate, Motion QA may show that its whole
+subject anchor or baseline does not follow the action card. If registration is
+the only defect, `petpack_workspace.py motion-align` may create a separate
+candidate row using integer whole-frame translation. It must preserve decoded
+RGBA pixels, perform no resampling or Alpha filtering, reject any lost Alpha or
+transparent-padding violation, and remain outside `petpack-source` until the
+authored-timing sequence is inspected. Copy only approved outputs back, then
+rerun Motion QA and motion review. This exception does not permit per-pose
+scaling, body deformation, crop repair, or suppression of intentional motion.
 
 ## Job file and command
 
@@ -107,7 +119,9 @@ Treat a non-zero exit or any `"ok": false` frame as unusable.
 - `invalid_chroma_source`: regenerate on a flatter, contrasting opaque key.
 - `source_capacity_missing`: obtain a larger real source crop or ask the user
   to choose a lower tier; never upscale.
-- Meaningful key-colored subject detail: regenerate with another key.
+- Meaningful key-colored subject detail: inspect all five previews. Use another
+  key only when the detail is actually confused with the matte or produces
+  visible contamination; the diagnostic count alone is not a failure.
 - Enclosed background: prefer regeneration. If necessary, supply a visually
   inspected hard black/white sure-foreground mask; white must remain foreground
   and black remains matte-eligible. The mask may not trace or erode fine edges.
@@ -126,10 +140,13 @@ Accept a state only when:
 - the report root and every frame say `"ok": true`;
 - normalization is `exact_copy` or `single_downscale`, the master keeps source
   dimensions, and the runtime PNG matches the package tier;
-- opaque-interior RGB changes, visible key pixels, transparent RGB residue,
-  edge fringe, and visible canvas-edge contact are all zero;
+- opaque-interior RGB changes, transparent RGB residue, edge fringe, and
+  visible canvas-edge contact are all zero;
+- `visible_key_pixels` remains reported for both master and runtime output but
+  is review evidence only and never fails a frame by itself;
 - enclosed transparent components have been intentionally reviewed;
-- all five preview backgrounds are clean at 100%;
+- all five preview backgrounds are visually clean at 100%, including any pixels
+  counted by `visible_key_pixels`;
 - the exact-tier authored-timing animation passes identity, action, anatomy,
   prop, continuity, crop, settle/loop, and reduced-motion review.
 

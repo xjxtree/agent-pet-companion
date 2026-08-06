@@ -643,14 +643,14 @@ private struct PetHistorySheet: View {
                             instruction
                         )
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                     .disabled(!canStart)
                     .accessibilityIdentifier("pet-library.edit.confirm")
                 } else {
                     Button(APCLocalization.text(.libraryHistoryUseBaseline)) {
                         isEditing = true
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                     .disabled(
                         !presentation.canModify
                             || store.generationSession.isActive
@@ -1000,7 +1000,7 @@ private struct RevisionCoverImage: View {
 
     private var image: NSImage? {
         guard let path = revision?.coverPath else { return nil }
-        return NSImage(contentsOfFile: path)
+        return PetCoverImageCache.shared.image(atPath: path)
     }
 }
 
@@ -1213,7 +1213,7 @@ private struct PetLibraryHero: View {
 
             Spacer(minLength: 0)
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .accessibilityIdentifier("pet-library.hero.secondary-actions")
     }
 }
@@ -1418,7 +1418,7 @@ struct PetCoverImage: View {
         return PetLibraryPreviewPolicy.loadIfValidated(
             assetWarning: assetWarning
         ) {
-            NSImage(contentsOf: url)
+            PetCoverImageCache.shared.image(at: url)
         }
     }
 }

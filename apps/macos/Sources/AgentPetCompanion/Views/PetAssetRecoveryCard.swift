@@ -78,7 +78,7 @@ struct PetAssetRecoveryCard: View {
                 systemImage: "arrow.clockwise"
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .disabled(isRepairing)
         .accessibilityIdentifier("pet-asset-recovery.\(pet.id).repair")
     }
@@ -90,7 +90,7 @@ struct PetAssetRecoveryCard: View {
                 systemImage: "stethoscope"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .accessibilityIdentifier("pet-asset-recovery.\(pet.id).diagnostics")
     }
 }

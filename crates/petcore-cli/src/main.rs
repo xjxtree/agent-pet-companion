@@ -1,4 +1,7 @@
-use petcore::adapter_contracts::{parse_contract_event, ContractEvent};
+use petcore::adapter_contracts::{
+    apply_transcript_display, claude_transcript_display, claude_transcript_path,
+    parse_contract_event, ContractEvent,
+};
 use petcore::connections;
 use petcore::daemon;
 use petcore::daemon::instance_lock::InstanceGuard;
@@ -22,6 +25,12 @@ const OVERLAY_PLACEMENT_SET_RPC: &str = "overlay.placement.reposition";
 const OVERLAY_PLACEMENT_RESET_RPC: &str = "overlay.placement.reset";
 
 const MAX_HOOK_STDIN_BYTES: usize = 1024 * 1024;
+/// How much of a transcript tail one hook may read. Transcripts grow into the
+/// megabytes, and only the newest records carry current display text, so the
+/// adapter reads a fixed window instead of the file. The title and prompt
+/// records repeat throughout a transcript, so this window reaches them well
+/// before it reaches the cost of reading the whole file.
+const MAX_TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
 
 fn main() {
     if let Err(error) = run() {
@@ -228,6 +237,7 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
                 contract.contract_version.as_deref(),
                 reported_contract_version.as_deref(),
             );
+            recover_missing_display_fields(&mut contract, &payload);
             let request = normalized_contract_request(&contract)?;
             let result = daemon::request(&AppPaths::from_env()?, "agent.ingest", request)?;
             print_json(result)
@@ -1343,6 +1353,75 @@ fn path_string(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Recovers the bounded display fields a host left absent from its hook.
+/// Claude's desktop host never emits `UserPromptSubmit` or `Stop`, so a session
+/// there would otherwise carry no title and no message no matter how long it
+/// ran. Everything the host did supply is preserved; only gaps are filled, and
+/// only from the transcript the hook itself named.
+fn recover_missing_display_fields(contract: &mut ContractEvent, payload: &Value) {
+    if contract.source != AgentSource::ClaudeCode {
+        return;
+    }
+    if contract.session_title.is_some() && contract.message_content.is_some() {
+        return;
+    }
+    let Some(path) = claude_transcript_path(payload) else {
+        return;
+    };
+    let Some(tail) = read_transcript_tail(Path::new(&path)) else {
+        return;
+    };
+    let projection = claude_transcript_display(&tail, contract.session_id.as_deref());
+    if projection.is_empty() {
+        return;
+    }
+    apply_transcript_display(contract, &projection);
+}
+
+/// Reads a bounded tail of a host-named transcript. The path is untrusted hook
+/// input, so this accepts only a regular file the current user owns, never
+/// follows a symlink, and never allocates more than the fixed window. Any
+/// failure is silent: a missing or unreadable transcript simply leaves the
+/// display fields absent, exactly as before.
+fn read_transcript_tail(path: &Path) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    use std::os::unix::fs::MetadataExt;
+
+    if !path.is_absolute() {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.len() == 0
+    {
+        return None;
+    }
+    let descriptor = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .ok()?;
+    let opened = rustix::fs::fstat(&descriptor).ok()?;
+    if opened.st_uid != rustix::process::geteuid().as_raw() {
+        return None;
+    }
+    let mut file = fs::File::from(descriptor);
+    let length = metadata.len();
+    let offset = length.saturating_sub(MAX_TRANSCRIPT_TAIL_BYTES);
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset)).ok()?;
+    }
+    let mut buffer = Vec::new();
+    file.take(MAX_TRANSCRIPT_TAIL_BYTES)
+        .read_to_end(&mut buffer)
+        .ok()?;
+    // A tail can begin mid-character as well as mid-line; the projection
+    // already discards the incomplete leading record.
+    Some(String::from_utf8_lossy(&buffer).into_owned())
+}
+
 fn hook_payload_from_stdin(stdin: &str) -> serde_json::Value {
     let trimmed = stdin.trim();
     if trimmed.is_empty() {
@@ -1897,6 +1976,94 @@ mod tests {
             read_bounded_hook_input(std::io::Cursor::new(vec![b'a'; MAX_HOOK_STDIN_BYTES + 1]))
                 .unwrap();
         assert!(rejected.is_none());
+    }
+
+    #[test]
+    fn transcript_tail_is_bounded_and_recovers_display_fields_for_a_tool_hook() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        let session = "308b79e0-bbc0-491b-984a-950d6aa4bbab";
+
+        // Far more transcript than the window, so a correct read must take the
+        // newest records rather than the file.
+        let mut transcript = String::new();
+        for index in 0..40_000 {
+            transcript.push_str(&format!(
+                r#"{{"type":"assistant","sessionId":"{session}","message":{{"role":"assistant","content":[{{"type":"text","text":"turn {index}"}}]}}}}"#
+            ));
+            transcript.push('\n');
+        }
+        transcript.push_str(&format!(
+            r#"{{"type":"custom-title","customTitle":"Recovered title","sessionId":"{session}"}}"#
+        ));
+        transcript.push('\n');
+        transcript.push_str(&format!(
+            r#"{{"type":"assistant","sessionId":"{session}","message":{{"role":"assistant","content":[{{"type":"text","text":"newest agent text"}}]}}}}"#
+        ));
+        transcript.push('\n');
+        fs::write(&path, &transcript).unwrap();
+        assert!(transcript.len() as u64 > MAX_TRANSCRIPT_TAIL_BYTES);
+
+        let tail = read_transcript_tail(&path).expect("tail");
+        assert!(tail.len() as u64 <= MAX_TRANSCRIPT_TAIL_BYTES);
+
+        let mut contract = parse_contract_event(
+            AgentSource::ClaudeCode,
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": session,
+                "tool_name": "Read"
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        recover_missing_display_fields(
+            &mut contract,
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": session,
+                "transcript_path": path.to_str().unwrap()
+            }),
+        );
+        assert_eq!(contract.session_title.as_deref(), Some("Recovered title"));
+        assert_eq!(
+            contract.message_content.as_deref(),
+            Some("newest agent text")
+        );
+        assert_eq!(contract.message_role.as_deref(), Some("assistant"));
+    }
+
+    #[test]
+    fn transcript_recovery_ignores_other_sources_and_unusable_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let relative = std::path::PathBuf::from("session.jsonl");
+        assert_eq!(read_transcript_tail(&relative), None);
+        assert_eq!(read_transcript_tail(directory.path()), None);
+        assert_eq!(read_transcript_tail(&directory.path().join("absent")), None);
+
+        let empty = directory.path().join("empty.jsonl");
+        fs::write(&empty, "").unwrap();
+        assert_eq!(read_transcript_tail(&empty), None);
+
+        // A transcript path on a non-Claude event is never consulted.
+        let populated = directory.path().join("codex.jsonl");
+        fs::write(
+            &populated,
+            r#"{"type":"custom-title","customTitle":"Leaked title"}"#,
+        )
+        .unwrap();
+        let mut codex = parse_contract_event(
+            AgentSource::Codex,
+            &json!({"hook_event_name": "PreToolUse", "session_id": "codex-1"}),
+        )
+        .unwrap()
+        .unwrap();
+        recover_missing_display_fields(
+            &mut codex,
+            &json!({"transcript_path": populated.to_str().unwrap()}),
+        );
+        assert_eq!(codex.session_title, None);
+        assert_eq!(codex.message_content, None);
     }
 
     #[test]

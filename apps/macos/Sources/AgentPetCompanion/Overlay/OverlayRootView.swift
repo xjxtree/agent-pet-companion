@@ -240,9 +240,10 @@ struct BubbleOverlayRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // Keep each bubble independent. A GlassEffectContainer elevates
-            // descendant glass layers and can obscure foreground content in
-            // the overlay's transparent NSPanel.
+            // Keep each bubble independent. A GlassEffectContainer manages
+            // SwiftUI glassEffect descendants, which the AppKit
+            // bubble surface is not, and it can obscure foreground content in
+            // a transparent NSPanel.
             bubbleLayer(in: proxy)
         }
         .background(Color.clear)
@@ -261,11 +262,13 @@ struct BubbleOverlayRootView: View {
             petScreenCenter: store.overlayPresentedPetScreenCenter,
             screenFrame: store.overlayScreenVisibleFrame
         )
+        let fontScale = store.behavior.bubbleFontScale
         let bubbleRects = OverlayGeometry.bubbleRects(
             inPanelSize: proxy.size,
             visibleFrameSize: store.overlayScreenVisibleFrame.size,
             contents: contents,
-            alignLeft: alignLeft
+            alignLeft: alignLeft,
+            fontScale: fontScale
         )
 
         ZStack(alignment: .topLeading) {
@@ -275,13 +278,15 @@ struct BubbleOverlayRootView: View {
                     content: content,
                     hovered: controlPresentation.isVisible,
                     keyboardNavigationActive: controlPresentation.keyboardNavigationActive,
-                    glassTransparency: store.behavior.bubbleTransparency,
                     onClose: {
                         store.dismissOverlayBubble(eventIDs: content.dismissalIDs)
                     },
                     onToggleGroup: {
-                        guard let source = content.source else { return }
-                        store.toggleOverlayAgentGroup(source)
+                        if content.isStandaloneSessionCard {
+                            store.toggleOverlayStandaloneStack()
+                        } else if let source = content.source {
+                            store.toggleOverlayAgentGroup(source)
+                        }
                     },
                     onActivateSession: { session in
                         store.activateOverlaySession(session)
@@ -298,6 +303,7 @@ struct BubbleOverlayRootView: View {
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
+        .environment(\.overlayBubbleFontScale, fontScale)
         .animation(
             reduceMotion
                 ? .easeOut(duration: OverlayMotion.reducedMotionCrossfadeDuration)
@@ -310,11 +316,11 @@ struct BubbleOverlayRootView: View {
 
 private struct ConversationBubble: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.overlayBubbleFontScale) private var fontScale
 
     var content: OverlayBubbleContent
     var hovered: Bool
     var keyboardNavigationActive: Bool
-    var glassTransparency: Double
     var onClose: () -> Void
     var onToggleGroup: () -> Void
     var onActivateSession: (OverlaySessionContent) -> Void
@@ -370,6 +376,90 @@ private struct ConversationBubble: View {
     }
 
     private var bubbleSurface: some View {
+        Group {
+            if content.isStandaloneSessionCard, let session = content.sessions.first {
+                standaloneSessionSurface(session)
+            } else {
+                groupedSessionSurface
+            }
+        }
+        .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
+        .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
+        .apcNativeBubbleGlass(cornerRadius: OverlayGeometry.bubbleCornerRadius)
+        .contentShape(RoundedRectangle(
+            cornerRadius: OverlayGeometry.bubbleCornerRadius,
+            style: .continuous
+        ))
+        .modifier(ConversationBubbleAccessibilityActions(
+            model: accessibilityModel,
+            onClose: onClose,
+            onToggleGroup: onToggleGroup
+        ))
+    }
+
+    private func standaloneSessionSurface(_ session: OverlaySessionContent) -> some View {
+        let accessoryWidth = OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale)
+            + OverlayGeometry.bubbleHeaderGap
+            + (content.hasMultipleSessions
+                ? OverlayGeometry.bubbleGroupToggleWidth(fontScale: fontScale)
+                    + OverlayGeometry.bubbleHeaderGap
+                : 0)
+        return ZStack(alignment: .topTrailing) {
+            SessionBubbleRow(
+                session: session,
+                action: {
+                    if content.isStacked {
+                        onToggleGroup()
+                    } else {
+                        onActivateSession(session)
+                    }
+                },
+                dismissAction: nil,
+                agentIndicatorSource: content.source,
+                agentIndicatorTitle: content.agentName,
+                reservedTrailingAccessoryWidth: accessoryWidth,
+                primaryActionLabel: content.isStacked
+                    ? APCLocalization.format(
+                        .overlayExpandSessionsFormat,
+                        content.disclosureSessionCount
+                    )
+                    : nil
+            )
+
+            HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
+                if content.hasMultipleSessions {
+                    SessionCountButton(
+                        count: content.disclosureSessionCount,
+                        expanded: content.isExpanded,
+                        tone: content.statusTone,
+                        action: onToggleGroup
+                    )
+                }
+
+                if content.canDismiss {
+                    BubbleIconButton(
+                        systemImage: "xmark",
+                        accessibilityLabel: accessibilityModel.closeActionLabel
+                            ?? APCLocalization.text(.overlayCloseBubbleAccessibility),
+                        accessibilityHint: accessibilityModel.closeActionHint
+                            ?? APCLocalization.text(.overlayCloseBubbleHint),
+                        action: onClose
+                    )
+                    .opacity(hovered || keyboardNavigationActive ? 1 : 0.001)
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                        value: hovered || keyboardNavigationActive
+                    )
+                    .allowsHitTesting(hovered || keyboardNavigationActive)
+                    .accessibilityHidden(false)
+                }
+            }
+        }
+    }
+
+    private var groupedSessionSurface: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
                 AgentIconView(
@@ -378,7 +468,11 @@ private struct ConversationBubble: View {
                 )
 
                 Text(content.agentName)
-                    .font(.caption.weight(.semibold))
+                    .font(OverlayBubbleTypography.font(
+                        .caption1,
+                        weight: .semibold,
+                        scale: fontScale
+                    ))
                     .foregroundStyle(BubbleForegroundStyle.secondaryText)
                     .lineLimit(1)
                     .layoutPriority(2)
@@ -414,7 +508,7 @@ private struct ConversationBubble: View {
                     .accessibilityHidden(false)
                 }
             }
-            .frame(height: OverlayGeometry.bubbleGroupHeaderHeight)
+            .frame(height: OverlayGeometry.bubbleGroupHeaderHeight(fontScale: fontScale))
             .accessibilityElement(children: .contain)
             .accessibilitySortPriority(100)
 
@@ -423,7 +517,8 @@ private struct ConversationBubble: View {
 
             let rowHeights = OverlayGeometry.bubbleSessionRowHeights(
                 bubbleWidth: OverlayGeometry.bubbleWidth,
-                content: content
+                content: content,
+                fontScale: fontScale
             )
             ForEach(Array(content.visibleSessions.enumerated()), id: \.element.id) { index, session in
                 SessionBubbleRow(
@@ -446,20 +541,7 @@ private struct ConversationBubble: View {
                         .transition(.opacity)
                 }
             }
-
         }
-        .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
-        .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
-        .apcTransparentBubbleGlass(
-            cornerRadius: OverlayGeometry.bubbleCornerRadius,
-            transparency: glassTransparency
-        )
-        .contentShape(RoundedRectangle(cornerRadius: OverlayGeometry.bubbleCornerRadius, style: .continuous))
-        .modifier(ConversationBubbleAccessibilityActions(
-            model: accessibilityModel,
-            onClose: onClose,
-            onToggleGroup: onToggleGroup
-        ))
     }
 
     private var sessionTransition: AnyTransition {
@@ -470,6 +552,7 @@ private struct ConversationBubble: View {
 }
 private struct SessionCountButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.overlayBubbleFontScale) private var fontScale
 
     var count: Int
     var expanded: Bool
@@ -482,7 +565,11 @@ private struct SessionCountButton: View {
                 Text("\(count)")
                     .monospacedDigit()
                 Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
+                    .font(OverlayBubbleTypography.font(
+                        .caption2,
+                        weight: .bold,
+                        scale: fontScale
+                    ))
                     .rotationEffect(.degrees(expanded ? 180 : 0))
                     .animation(
                         reduceMotion
@@ -494,9 +581,16 @@ private struct SessionCountButton: View {
                         value: expanded
                     )
             }
-            .font(.caption2.weight(.semibold))
+            .font(OverlayBubbleTypography.font(
+                .caption2,
+                weight: .semibold,
+                scale: fontScale
+            ))
             .foregroundStyle(BubbleForegroundStyle.text)
-            .frame(minWidth: 28, minHeight: 17)
+            .frame(
+                minWidth: OverlayBubbleTypography.scaledControlMetric(28, scale: fontScale),
+                minHeight: OverlayBubbleTypography.scaledControlMetric(17, scale: fontScale)
+            )
             .padding(.horizontal, 5)
             .background(
                 Capsule()
@@ -509,7 +603,7 @@ private struct SessionCountButton: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(width: OverlayGeometry.bubbleGroupToggleWidth)
+        .frame(width: OverlayGeometry.bubbleGroupToggleWidth(fontScale: fontScale))
         .contentShape(Capsule())
         .accessibilityLabel(sessionToggleLabel)
         .help(sessionToggleLabel)
@@ -742,12 +836,15 @@ struct WindowDragRegion: NSViewRepresentable {
         private let presentationDriver =
             OverlayDisplayLinkCoalescer<PendingPresentation>()
         private var menuTarget: PetClickMenuTarget?
+        private var displayCatalog: OverlayDragDisplayCatalog?
+        private var cachedTargetScreen: (id: String, screen: NSScreen)?
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             wantsLayer = true
             layer?.backgroundColor = NSColor.clear.cgColor
             configureAccessibility()
+            observeScreenParameters()
         }
 
         required init?(coder: NSCoder) {
@@ -755,6 +852,23 @@ struct WindowDragRegion: NSViewRepresentable {
             wantsLayer = true
             layer?.backgroundColor = NSColor.clear.cgColor
             configureAccessibility()
+            observeScreenParameters()
+        }
+
+        /// Target-action registration unregisters itself when the view is
+        /// deallocated, so the cached desktop arrangement needs no teardown.
+        private func observeScreenParameters() {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(screenParametersDidChange),
+                name: NSApplication.didChangeScreenParametersNotification,
+                object: nil
+            )
+        }
+
+        @objc private func screenParametersDidChange() {
+            displayCatalog = nil
+            cachedTargetScreen = nil
         }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -811,9 +925,27 @@ struct WindowDragRegion: NSViewRepresentable {
             }
         }
 
+        /// Reads the pointer in absolute screen coordinates straight from the
+        /// event. `locationInWindow` is expressed against the window origin the
+        /// window server knew when the event was created, and this window is
+        /// translated on every display tick of a drag, so converting it through
+        /// the window's *current* frame subtracts a move the sample never saw.
+        /// Fast drags queue several such samples per frame, and the error
+        /// accumulates as the grab point sliding across the pet.
+        private func pointerScreenLocation(for event: NSEvent) -> CGPoint {
+            guard let location = event.cgEvent?.location,
+                  let zeroOriginScreen = NSScreen.screens.first else {
+                return NSEvent.mouseLocation
+            }
+            return OverlayPointerCoordinateSpace.screenPoint(
+                forGlobalEventLocation: location,
+                zeroOriginScreenFrame: zeroOriginScreen.frame
+            )
+        }
+
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
-            let pointer = window.convertPoint(toScreen: event.locationInWindow)
+            let pointer = pointerScreenLocation(for: event)
             let interactionID = UUID()
             dragSession = OverlayDragSession(
                 interactionID: interactionID,
@@ -827,15 +959,14 @@ struct WindowDragRegion: NSViewRepresentable {
                 menuVisible: menuVisible
             )
             window.ignoresMouseEvents = false
+            presentationDriver.beginSustainedDelivery()
             onDragActiveChanged(true, interactionID)
         }
 
         override func mouseDragged(with event: NSEvent) {
             guard let window else { return }
             updateDragPresentation(
-                pointer: window.convertPoint(
-                    toScreen: event.locationInWindow
-                ),
+                pointer: pointerScreenLocation(for: event),
                 window: window,
                 eventTimestamp: event.timestamp,
                 flushImmediately: false
@@ -848,11 +979,8 @@ struct WindowDragRegion: NSViewRepresentable {
                 interactionID: session.interactionID
             )
             if let window {
-                let releasePointer = window.convertPoint(
-                    toScreen: event.locationInWindow
-                )
                 updateDragPresentation(
-                    pointer: releasePointer,
+                    pointer: pointerScreenLocation(for: event),
                     window: window,
                     eventTimestamp: event.timestamp,
                     flushImmediately: true
@@ -918,16 +1046,18 @@ struct WindowDragRegion: NSViewRepresentable {
             }
 
             let proposedCenter = session.proposedAnchorScreen
-            let targetScreen = resolvedScreen(
+            let windowScreen = window.screen
+            let targetDisplay = resolvedDisplay(
                 forMouseLocation: pointer,
                 proposedPetCenter: proposedCenter,
-                fallbackWindow: window
+                fallbackWindow: window,
+                windowScreen: windowScreen
             )
-            let screenFrame = targetScreen?.frame
-                ?? window.screen?.frame
+            let screenFrame = targetDisplay?.frame
+                ?? windowScreen?.frame
                 ?? window.frame
-            let visibleFrame = targetScreen?.visibleFrame
-                ?? window.screen?.visibleFrame
+            let visibleFrame = targetDisplay?.visibleFrame
+                ?? windowScreen?.visibleFrame
                 ?? window.frame
             let movementFrame = OverlayGeometry.petMovementFrame(
                 screenFrame: screenFrame,
@@ -948,9 +1078,12 @@ struct WindowDragRegion: NSViewRepresentable {
                     proposedCenter.y
                 )
             )
-            let cadence = OverlayDisplayRefreshCadence.resolved(
-                for: targetScreen ?? window.screen
-            )
+            let catalog = displayCatalog(fallbackWindow: window)
+            let cadence = targetDisplay.map { catalog.cadence(for: $0.id) }
+                ?? catalog.fallbackCadence
+            let targetScreen = targetDisplay
+                .flatMap { screen(forDisplayID: $0.id) }
+                ?? windowScreen
             let updateHandlerCPUms = (
                 ProcessInfo.processInfo.systemUptime - handlerStartedAt
             ) * 1_000
@@ -965,7 +1098,7 @@ struct WindowDragRegion: NSViewRepresentable {
                     refreshIntervalMS: cadence.intervalSeconds * 1_000
                 ),
                 targetDisplayID: cadence.displayID,
-                screen: targetScreen ?? window.screen,
+                screen: targetScreen,
                 fallbackCadence: cadence
             ) { [weak self] presentation in
                 self?.present(presentation)
@@ -1037,28 +1170,78 @@ struct WindowDragRegion: NSViewRepresentable {
             setAccessibilityCustomActions([showMenuAction])
         }
 
+        /// Screens are enumerated once per gesture instead of once per pointer
+        /// sample. `NSScreen.screens`, each `deviceDescription` lookup, and the
+        /// CoreGraphics display-mode query all run inside the event handler,
+        /// and repeating them for every sample of a fast drag is main-thread
+        /// work the presentation has to wait behind.
+        private func displayCatalog(
+            fallbackWindow window: NSWindow
+        ) -> OverlayDragDisplayCatalog {
+            if let displayCatalog { return displayCatalog }
+            var displays: [OverlayDragDisplay] = []
+            var cadences: [String: OverlayDisplayRefreshCadence] = [:]
+            let screens = NSScreen.screens
+            displays.reserveCapacity(screens.count)
+            for screen in screens {
+                let id = displayID(for: screen)
+                displays.append(OverlayDragDisplay(
+                    id: id,
+                    frame: screen.frame,
+                    visibleFrame: screen.visibleFrame
+                ))
+                cadences[id] = OverlayDisplayRefreshCadence.resolved(for: screen)
+            }
+            let catalog = OverlayDragDisplayCatalog(
+                displays: displays,
+                cadences: cadences,
+                fallbackCadence: OverlayDisplayRefreshCadence.resolved(
+                    for: window.screen ?? NSScreen.main
+                )
+            )
+            displayCatalog = catalog
+            return catalog
+        }
+
+        private func screen(forDisplayID id: String) -> NSScreen? {
+            if let cachedTargetScreen, cachedTargetScreen.id == id {
+                return cachedTargetScreen.screen
+            }
+            guard let screen = NSScreen.screens.first(where: {
+                displayID(for: $0) == id
+            }) else { return nil }
+            cachedTargetScreen = (id, screen)
+            return screen
+        }
+
+        private func resolvedDisplay(
+            forMouseLocation mouseLocation: NSPoint,
+            proposedPetCenter: CGPoint,
+            fallbackWindow window: NSWindow,
+            windowScreen: NSScreen?
+        ) -> OverlayDragDisplay? {
+            OverlayDragScreenResolver.resolve(
+                pointer: mouseLocation,
+                proposedPetCenter: proposedPetCenter,
+                displays: displayCatalog(fallbackWindow: window).displays,
+                fallbackDisplayID: windowScreen.map { displayID(for: $0) }
+            )
+        }
+
         private func resolvedScreen(
             forMouseLocation mouseLocation: NSPoint,
             proposedPetCenter: CGPoint,
             fallbackWindow window: NSWindow
         ) -> NSScreen? {
-            let screens = NSScreen.screens
-            let displays = screens.map { screen in
-                OverlayDragDisplay(
-                    id: displayID(for: screen),
-                    frame: screen.frame,
-                    visibleFrame: screen.visibleFrame
-                )
-            }
-            guard let resolved = OverlayDragScreenResolver.resolve(
-                pointer: mouseLocation,
+            guard let resolved = resolvedDisplay(
+                forMouseLocation: mouseLocation,
                 proposedPetCenter: proposedPetCenter,
-                displays: displays,
-                fallbackDisplayID: window.screen.map { displayID(for: $0) }
+                fallbackWindow: window,
+                windowScreen: window.screen
             ) else {
                 return window.screen ?? NSScreen.main
             }
-            return screens.first { displayID(for: $0) == resolved.id }
+            return screen(forDisplayID: resolved.id)
                 ?? window.screen
                 ?? NSScreen.main
         }
@@ -1380,7 +1563,7 @@ private struct PetMenuButton: View {
                 Capsule()
                     .fill((tone.color ?? .clear).opacity(sessionCount > 0 ? 0.28 : 0.12))
             )
-            .apcFloatingControlGlass(in: Capsule(), interactive: true)
+            .apcClearGlass(in: Capsule(), interactive: true)
         }
         .buttonStyle(.plain)
         .frame(width: OverlayGeometry.menuHitSize.width, height: OverlayGeometry.menuHitSize.height)
@@ -1424,6 +1607,8 @@ private struct PetMenuButton: View {
 }
 
 private struct BubbleIconButton: View {
+    @Environment(\.overlayBubbleFontScale) private var fontScale
+
     var systemImage: String
     var accessibilityLabel: String
     var accessibilityHint: String
@@ -1432,11 +1617,15 @@ private struct BubbleIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
+                .font(OverlayBubbleTypography.font(
+                    .caption2,
+                    weight: .bold,
+                    scale: fontScale
+                ))
                 .foregroundStyle(BubbleForegroundStyle.secondaryText)
                 .frame(
-                    width: OverlayGeometry.bubbleHeaderButtonSize,
-                    height: OverlayGeometry.bubbleHeaderButtonSize
+                    width: OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale),
+                    height: OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale)
                 )
                 .background(
                     Circle()

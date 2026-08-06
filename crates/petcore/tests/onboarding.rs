@@ -64,11 +64,11 @@ fn diagnostic_environment() -> Value {
             "enabled": true,
             "status_bubble": true,
             "appearance_theme": "system",
-            "bubble_transparency": 0.5,
             "click_menu": true,
             "mouse_passthrough": false,
             "auto_hide": true,
             "session_message_timeout_minutes": 15,
+            "group_sessions_by_agent": true,
             "session_group_display": "stacked",
             "sources": {
                 "codex": true,

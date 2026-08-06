@@ -132,26 +132,15 @@ struct Surface<Content: View>: View {
     }
 }
 
-/// Groups nearby glass surfaces so macOS can render them as one native optical layer.
-/// On macOS 14–15 the same hierarchy falls back to native regular material.
-struct APCGlassGroup<Content: View>: View {
-    var spacing: CGFloat = 18
-    @ViewBuilder var content: Content
-
-    @ViewBuilder
-    var body: some View {
-#if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content
-            }
-        } else {
-            content
-        }
-#else
-        content
-#endif
-    }
+/// Selects which native Liquid Glass variant a surface asks for. `regular` is
+/// the adaptive system lens: it keeps the frost, edge refraction, and specular
+/// highlight that identify a glass boundary over an arbitrary desktop backdrop.
+/// `clear` is the media-backdrop variant and deliberately drops most of that
+/// optical treatment, so it is only appropriate where the surface sits on
+/// content the user is meant to read straight through.
+enum APCGlassVariant {
+    case regular
+    case clear
 }
 
 private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
@@ -159,6 +148,7 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let shape: S
+    let variant: APCGlassVariant
     let interactive: Bool
 
     @ViewBuilder
@@ -183,10 +173,7 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
     private func glass(_ content: Content) -> some View {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            content.glassEffect(
-                interactive ? .regular.interactive() : .regular,
-                in: shape
-            )
+            content.glassEffect(nativeGlass, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)
         }
@@ -194,6 +181,17 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
         content.background(.regularMaterial, in: shape)
 #endif
     }
+
+#if compiler(>=6.2)
+    @available(macOS 26.0, *)
+    private var nativeGlass: Glass {
+        let base: Glass = switch variant {
+        case .regular: .regular
+        case .clear: .clear
+        }
+        return interactive ? base.interactive() : base
+    }
+#endif
 
     private func accessibilityBorder(
         opacity: Double,
@@ -206,34 +204,28 @@ private struct APCLiquidGlassModifier<S: Shape>: ViewModifier {
 }
 
 enum APCBubbleGlassStyle {
-    /// Regular Liquid Glass is the default functional surface on macOS 26.
-    /// Keep the normal path free of supplemental fills, borders, and tint. The
-    /// native optical background is attenuated independently; the foreground
-    /// is never post-composited with reduced opacity.
+    /// Public Liquid Glass owns the actual backdrop sampling and refraction.
+    /// This very thin, inset rim only makes that optical boundary readable on
+    /// a busy desktop: a restrained highlight faces the notional light source
+    /// while the opposite edge receives a smaller depth cue. It adds no fill,
+    /// blur, shadow, or second glass layer.
+    static let opticalRimWidth: CGFloat = 0.8
+    static let opticalRimHighlightOpacity = 0.30
+    static let opticalRimMidpointOpacity = 0.055
+    static let opticalRimDepthOpacity = 0.14
+
+    /// The normal path carries no supplemental fill or structural border over
+    /// the native surface. Its optical rim is a sub-point directional stroke,
+    /// not another material. The foreground is never post-composited with
+    /// reduced opacity: transparency belongs to the glass, not to labels and
+    /// controls.
     static let backdropOpacity = 0.0
     static let borderOpacity = 0.0
-    /// User-facing transparency is the inverse of the native optical layer's
-    /// strength. Even the clearest endpoint keeps enough of the system lens to
-    /// preserve refraction and an identifiable glass boundary.
-    static let minimumOpticalOpacity = 0.30
-    static let maximumOpticalOpacity = 0.88
-    static let legacyBackdropOpacity = 0.18
     static let legacyBorderOpacity = 0.18
     static let increasedContrastBackdropOpacity = 0.42
     static let increasedContrastBorderOpacity = 0.52
     static let reducedTransparencyBackdropOpacity = 1.0
     static let reducedTransparencyBorderOpacity = 0.62
-
-    static func opticalOpacity(for transparency: Double) -> Double {
-        let clamped = BehaviorSettings.clampedBubbleTransparency(transparency)
-        return maximumOpticalOpacity
-            - ((maximumOpticalOpacity - minimumOpticalOpacity) * clamped)
-    }
-
-    static func resolvedLegacyBackdropOpacity(for transparency: Double) -> Double {
-        let clamped = BehaviorSettings.clampedBubbleTransparency(transparency)
-        return 0.34 - (0.24 * clamped)
-    }
 
     static func resolvedBackdropOpacity(
         reduceTransparency: Bool,
@@ -263,17 +255,6 @@ enum APCBubbleGlassStyle {
     }
 }
 
-enum APCBubbleForegroundStyle {
-    /// Foreground content is never attenuated to make the surface look clear.
-    /// Transparency belongs to the glass surface, not to labels or icons. Keep
-    /// the foreground free of blur and light/dark halos so glyph and control
-    /// edges remain native and pixel-sharp.
-    static let contentOpacity = 1.0
-    static let secondaryContentOpacity = 1.0
-    static let usesBlur = false
-    static let usesHalo = false
-}
-
 /// Owns the one AppKit capability gap in the bubble implementation. In a
 /// transparent `NSPanel`, embedding `NSHostingView` as
 /// `NSGlassEffectView.contentView` can leave only the optical layer visible.
@@ -293,7 +274,7 @@ final class APCNativeBubbleGlassView: NSView {
     let glassView: NSGlassEffectView = APCBubbleBackgroundGlassView()
     let foregroundView: NSView
 
-    init(foregroundView: NSView, cornerRadius: CGFloat, transparency: Double) {
+    init(foregroundView: NSView, cornerRadius: CGFloat) {
         self.foregroundView = foregroundView
         super.init(frame: .zero)
 
@@ -317,8 +298,7 @@ final class APCNativeBubbleGlassView: NSView {
 
         APCNativeBubbleGlassConfiguration.configureAppearance(
             glassView,
-            cornerRadius: cornerRadius,
-            transparency: transparency
+            cornerRadius: cornerRadius
         )
     }
 
@@ -355,25 +335,30 @@ enum APCNativeBubbleGlassConfiguration {
 
     static func makeView(
         contentView: NSView,
-        cornerRadius: CGFloat,
-        transparency: Double = BehaviorSettings.defaultBubbleTransparency
+        cornerRadius: CGFloat
     ) -> APCNativeBubbleGlassView {
         APCNativeBubbleGlassView(
             foregroundView: contentView,
-            cornerRadius: cornerRadius,
-            transparency: transparency
+            cornerRadius: cornerRadius
         )
     }
 
     static func configureAppearance(
         _ glassView: NSGlassEffectView,
-        cornerRadius: CGFloat,
-        transparency: Double
+        cornerRadius: CGFloat
     ) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
         glassView.style = .regular
-        glassView.tintColor = nil
         glassView.cornerRadius = cornerRadius
-        glassView.alphaValue = APCBubbleGlassStyle.opticalOpacity(for: transparency)
+        // Keep the public system material unmodified. Liquid Glass adapts its
+        // luminance, blur, and refraction to the live desktop backdrop; a
+        // supplemental tint would turn that adaptive material into another
+        // product-specific appearance setting.
+        glassView.alphaValue = 1
+        glassView.tintColor = nil
     }
 
     static func resolvedSize(
@@ -390,35 +375,32 @@ enum APCNativeBubbleGlassConfiguration {
 @available(macOS 26.0, *)
 private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
     let cornerRadius: CGFloat
-    let transparency: Double
     let content: Content
 
-    func makeNSView(context: Context) -> APCNativeBubbleGlassView {
+    func makeNSView(context _: Context) -> APCNativeBubbleGlassView {
         let hostingView = APCNativeBubbleGlassConfiguration.makeHostingView(
             rootView: content
         )
         return APCNativeBubbleGlassConfiguration.makeView(
             contentView: hostingView,
-            cornerRadius: cornerRadius,
-            transparency: transparency
+            cornerRadius: cornerRadius
         )
     }
 
-    func updateNSView(_ surfaceView: APCNativeBubbleGlassView, context: Context) {
+    func updateNSView(_ surfaceView: APCNativeBubbleGlassView, context _: Context) {
         guard let hostingView = surfaceView.foregroundView as? NSHostingView<Content> else { return }
 
         hostingView.rootView = content
         APCNativeBubbleGlassConfiguration.configureAppearance(
             surfaceView.glassView,
-            cornerRadius: cornerRadius,
-            transparency: transparency
+            cornerRadius: cornerRadius
         )
     }
 
     func sizeThatFits(
         _ proposal: ProposedViewSize,
         nsView: APCNativeBubbleGlassView,
-        context: Context
+        context _: Context
     ) -> CGSize? {
         APCNativeBubbleGlassConfiguration.resolvedSize(
             proposal: proposal,
@@ -428,17 +410,16 @@ private struct APCNativeBubbleGlassHost<Content: View>: NSViewRepresentable {
 }
 #endif
 
-/// `BubbleOverlayRootView` deliberately does not use a
-/// `GlassEffectContainer`: that container elevates descendant glass layers and
-/// can place the optical layer above foreground content in a transparent
-/// `NSPanel`.
-private struct APCTransparentBubbleGlassModifier: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+/// The bubble deliberately does not use a `GlassEffectContainer`: that container
+/// manages SwiftUI `glassEffect` descendants, which the AppKit
+/// surface below is not, and in a transparent `NSPanel` it can elevate the
+/// optical layer above foreground content.
+private struct APCBubbleGlassModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     let cornerRadius: CGFloat
-    let transparency: Double
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -446,10 +427,6 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
 
     private var backdropColor: Color {
         colorScheme == .dark ? .black : .white
-    }
-
-    private var reduceTransparency: Bool {
-        systemReduceTransparency
     }
 
     private var increasedContrast: Bool {
@@ -472,18 +449,20 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
             } else {
                 APCNativeBubbleGlassHost(
                     cornerRadius: cornerRadius,
-                    transparency: transparency,
                     content: content
-                    .background {
-                        if increasedContrast {
-                            shape.fill(backdropColor.opacity(backdropOpacity))
+                        .background {
+                            if increasedContrast {
+                                shape.fill(backdropColor.opacity(backdropOpacity))
+                            }
                         }
-                    }
-                    .overlay {
-                        if increasedContrast {
-                            bubbleBorder(supportsLiquidGlass: true)
+                        .overlay {
+                            bubbleOpticalRim
                         }
-                    }
+                        .overlay {
+                            if increasedContrast {
+                                bubbleBorder(supportsLiquidGlass: true)
+                            }
+                        }
                 )
             }
         } else {
@@ -498,7 +477,7 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
         _ content: Content,
         supportsLiquidGlass: Bool
     ) -> some View {
-        return content
+        content
             .background(backdropColor.opacity(backdropOpacity), in: shape)
             .overlay {
                 bubbleBorder(supportsLiquidGlass: supportsLiquidGlass)
@@ -506,17 +485,13 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
     }
 
     private func legacyFallback(_ content: Content) -> some View {
-        let supplementalOpacity = if reduceTransparency || increasedContrast {
-            backdropOpacity
-        } else {
-            APCBubbleGlassStyle.resolvedLegacyBackdropOpacity(for: transparency)
-        }
-
         return content
             .background {
                 ZStack {
                     shape.fill(.regularMaterial)
-                    shape.fill(backdropColor.opacity(supplementalOpacity))
+                    if reduceTransparency || increasedContrast {
+                        shape.fill(backdropColor.opacity(backdropOpacity))
+                    }
                 }
             }
             .overlay {
@@ -538,23 +513,84 @@ private struct APCTransparentBubbleGlassModifier: ViewModifier {
             )
             .allowsHitTesting(false)
     }
+
+    /// The refraction remains entirely system-rendered by
+    /// `NSGlassEffectView`. This inset gradient is only a directional
+    /// reflection cue, kept above the native lens and below interaction.
+    private var bubbleOpticalRim: some View {
+        shape
+            .strokeBorder(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(APCBubbleGlassStyle.opticalRimHighlightOpacity),
+                        .white.opacity(APCBubbleGlassStyle.opticalRimMidpointOpacity),
+                        .black.opacity(APCBubbleGlassStyle.opticalRimDepthOpacity),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: APCBubbleGlassStyle.opticalRimWidth
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct APCClearGlassButtonStyleModifier: ViewModifier {
+    let prominent: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+#if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            if prominent {
+                content.buttonStyle(.glass(.clear.tint(APCDesign.accent)))
+            } else {
+                content.buttonStyle(.glass(.clear))
+            }
+        } else {
+            legacyStyle(content)
+        }
+#else
+        legacyStyle(content)
+#endif
+    }
+
+    @ViewBuilder
+    private func legacyStyle(_ content: Content) -> some View {
+        if prominent {
+            content.buttonStyle(.borderedProminent)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+    }
 }
 
 extension View {
-    func apcFloatingControlGlass<S: Shape>(
+    func apcClearGlass<S: Shape>(
         in shape: S,
         interactive: Bool = false
     ) -> some View {
-        modifier(APCLiquidGlassModifier(shape: shape, interactive: interactive))
-    }
-
-    func apcTransparentBubbleGlass(cornerRadius: CGFloat, transparency: Double) -> some View {
-        modifier(APCTransparentBubbleGlassModifier(
-            cornerRadius: cornerRadius,
-            transparency: transparency
+        modifier(APCLiquidGlassModifier(
+            shape: shape,
+            variant: .clear,
+            interactive: interactive
         ))
     }
 
+    /// The desktop bubble floats over unpredictable wallpaper, editors, and
+    /// video, so it keeps the untinted adaptive Regular lens rather than the
+    /// Clear variant. Refraction and the specular rim separate the surface from
+    /// whatever happens to be behind it without a product-defined opacity.
+    func apcNativeBubbleGlass(cornerRadius: CGFloat) -> some View {
+        modifier(APCBubbleGlassModifier(
+            cornerRadius: cornerRadius
+        ))
+    }
+
+    func apcClearGlassButtonStyle(prominent: Bool = false) -> some View {
+        modifier(APCClearGlassButtonStyleModifier(prominent: prominent))
+    }
 }
 
 struct PageScroll<Content: View>: View {
@@ -671,7 +707,7 @@ struct PillButton: View {
         Button(action: action) {
             pillLabel
         }
-        .buttonStyle(.plain)
+        .apcClearGlassButtonStyle(prominent: selected)
         .accessibilityLabel(semanticLabel ?? title)
         .accessibilityValue(UIControlSemantics.selectionValue(isSelected: selected))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -689,22 +725,6 @@ struct PillButton: View {
         .foregroundStyle(selected ? APCDesign.accent : .primary)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
-        .background(
-            Capsule()
-                .fill(
-                    selected
-                        ? APCDesign.accentSoft
-                        : Color(nsColor: .controlBackgroundColor)
-                )
-        )
-        .overlay {
-            Capsule()
-                .stroke(
-                    selected ? APCDesign.accent.opacity(0.72) : APCDesign.stroke,
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        }
     }
 }
 
@@ -717,7 +737,7 @@ struct PrimaryActionButton: View {
         Button(action: action) {
             buttonLabel
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .controlSize(.regular)
     }
 
@@ -742,7 +762,7 @@ struct SecondaryActionButton: View {
         Button(action: action) {
             buttonLabel
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .controlSize(.regular)
     }
 

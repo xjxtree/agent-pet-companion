@@ -165,6 +165,11 @@ final class OverlayDisplayLinkCoalescer<Value> {
     private var fallbackCoalescer = OverlayDisplayRefreshCoalescer<Void>()
     private var fallbackTask: Task<Void, Never>?
     private var fallbackTaskDeadline: TimeInterval?
+    /// Keeps the tick source armed for a whole gesture. Pausing after every
+    /// delivery and re-arming on the next pointer sample can miss the upcoming
+    /// vsync, so a steady drag presents on an irregular cadence even though
+    /// every sample arrives on time.
+    private var sustainsTicks = false
 
     init(
         tickSourceFactory: @escaping TickSourceFactory = { screen, onTick in
@@ -178,6 +183,20 @@ final class OverlayDisplayLinkCoalescer<Value> {
     }
 
     var hasPending: Bool { pending != nil }
+
+    /// Holds the tick source unpaused until `endSustainedDelivery`, so an
+    /// active gesture presents on every display tick instead of re-arming a
+    /// paused link per pointer sample.
+    func beginSustainedDelivery() {
+        sustainsTicks = true
+        tickSource?.isPaused = false
+    }
+
+    func endSustainedDelivery() {
+        sustainsTicks = false
+        guard pending == nil else { return }
+        tickSource?.isPaused = true
+    }
 
     func submit(
         _ value: Value,
@@ -210,6 +229,7 @@ final class OverlayDisplayLinkCoalescer<Value> {
     func cancelPending() {
         pending = nil
         delivery = nil
+        sustainsTicks = false
         tickSource?.isPaused = true
         fallbackTask?.cancel()
         fallbackTask = nil
@@ -243,13 +263,13 @@ final class OverlayDisplayLinkCoalescer<Value> {
 
     private func deliverPending() {
         guard let pending else {
-            tickSource?.isPaused = true
+            tickSource?.isPaused = !sustainsTicks
             return
         }
         let delivery = delivery
         self.pending = nil
         self.delivery = nil
-        tickSource?.isPaused = true
+        tickSource?.isPaused = !sustainsTicks
         fallbackTask?.cancel()
         fallbackTask = nil
         fallbackTaskDeadline = nil
@@ -412,6 +432,10 @@ enum OverlayPetAnimationIdentity {
                 reaction: "done"
             )
         case .tool, .waiting, .failed:
+            // PetCore owns the projected identity, including the tool activity
+            // run that lets genuinely new tool work replay its entry burst. A
+            // single event carries no run history, so this compatibility
+            // fallback keeps one stable identity per reaction.
             return event.eventType.rawValue
         }
     }
@@ -752,6 +776,24 @@ enum OverlayPetPointerGesture {
     }
 }
 
+/// Converts a pointer sample out of CoreGraphics' global event space into the
+/// AppKit screen space the drag anchor uses. A drag translates the host window
+/// on every display tick, so a sample derived from the window's own coordinate
+/// system silently subtracts a move it never observed; taking the event's
+/// absolute location instead keeps the grab point fixed under the pointer no
+/// matter how far or how fast the composition has moved.
+enum OverlayPointerCoordinateSpace {
+    static func screenPoint(
+        forGlobalEventLocation location: CGPoint,
+        zeroOriginScreenFrame: CGRect
+    ) -> CGPoint {
+        CGPoint(
+            x: location.x,
+            y: zeroOriginScreenFrame.maxY - location.y
+        )
+    }
+}
+
 enum OverlayPointerGesturePhase: Equatable, Sendable {
     case idle
     case pressed
@@ -822,6 +864,36 @@ struct OverlayDragDisplay: Equatable, Sendable {
     let visibleFrame: CGRect
 }
 
+/// Display geometry and presentation cadence captured once per gesture rather
+/// than per pointer sample. Rebuilding the screen list and asking CoreGraphics
+/// for the selected display mode on every event costs a window-server round
+/// trip inside the pointer handler, which is exactly the per-event main-thread
+/// work that makes a fast drag stutter. The desktop arrangement only changes
+/// through a screen-parameter notification, so a gesture-scoped snapshot stays
+/// authoritative for the whole drag.
+struct OverlayDragDisplayCatalog: Equatable, Sendable {
+    let displays: [OverlayDragDisplay]
+    let fallbackCadence: OverlayDisplayRefreshCadence
+    private let cadences: [String: OverlayDisplayRefreshCadence]
+
+    init(
+        displays: [OverlayDragDisplay],
+        cadences: [String: OverlayDisplayRefreshCadence],
+        fallbackCadence: OverlayDisplayRefreshCadence
+    ) {
+        self.displays = displays
+        self.cadences = cadences
+        self.fallbackCadence = fallbackCadence
+    }
+
+    func cadence(for displayID: String?) -> OverlayDisplayRefreshCadence {
+        guard let displayID, let cadence = cadences[displayID] else {
+            return fallbackCadence
+        }
+        return cadence
+    }
+}
+
 /// Selects the drag display from injected geometry so crossing a display edge
 /// does not replace the absolute pointer anchor with window-relative deltas.
 enum OverlayDragScreenResolver {
@@ -875,16 +947,38 @@ enum OverlayCompositionLayoutMode: Equatable, Sendable {
     case directManipulation
 }
 
+/// The bubble attaches to the pet's top or bottom edge only. Placing it beside
+/// the pet would break the single vertical gap the composition is built on, so
+/// there is deliberately no left/right case to fall back to.
 enum OverlayBubbleAnchorDirection: String, CaseIterable, Equatable, Sendable {
     case above
     case below
-    case left
-    case right
+
+    var opposite: Self {
+        self == .above ? .below : .above
+    }
+}
+
+/// The complete bubble attachment decision. Both the side the bubble hangs
+/// from and the edge it aligns to are sticky: each is re-decided only when the
+/// current choice no longer fits the safe area. Deciding the horizontal edge
+/// from the raw screen midline instead would flip the bubble by its own width
+/// the moment a drag crosses the middle of the display.
+struct OverlayBubbleAnchor: Equatable, Sendable {
+    let direction: OverlayBubbleAnchorDirection
+    let alignsLeft: Bool
+
+    init(direction: OverlayBubbleAnchorDirection, alignsLeft: Bool) {
+        self.direction = direction
+        self.alignsLeft = alignsLeft
+    }
 }
 
 struct OverlayBubblePanelLayout: Equatable, Sendable {
     let frame: CGRect
-    let direction: OverlayBubbleAnchorDirection
+    let anchor: OverlayBubbleAnchor
+
+    var direction: OverlayBubbleAnchorDirection { anchor.direction }
 }
 
 struct OverlayAuxiliaryRelativeFrameSnapshot: Equatable, Sendable {
@@ -907,24 +1001,151 @@ struct OverlayAuxiliaryRelativeFrameSnapshot: Equatable, Sendable {
     }
 }
 
-/// The display-link delivery path translates only the parent pet panel. Child
-/// bubble/menu panels are reconciled by the lower-frequency committed layout,
-/// never by every pointer/display tick.
+/// The pet's position inside its own panel, captured once when a gesture
+/// begins. Every presented frame then derives the panel origin from the
+/// presented pet center alone, so the composition can never accumulate a
+/// per-frame error and no other window move can shift the grab point.
+struct OverlayDirectManipulationAnchor: Equatable, Sendable {
+    let panelOriginOffset: CGVector
+    let panelSize: CGSize
+
+    init(panelFrame: CGRect, petScreenCenter: CGPoint) {
+        panelOriginOffset = CGVector(
+            dx: panelFrame.minX - petScreenCenter.x,
+            dy: panelFrame.minY - petScreenCenter.y
+        )
+        panelSize = panelFrame.size
+    }
+
+    func panelFrame(forPetScreenCenter center: CGPoint) -> CGRect {
+        CGRect(
+            origin: CGPoint(
+                x: center.x + panelOriginOffset.dx,
+                y: center.y + panelOriginOffset.dy
+            ),
+            size: panelSize
+        )
+    }
+}
+
+/// Auxiliary geometry that stays fixed for a whole gesture. Bubble content is
+/// not re-measured while the pointer moves, so the drag path re-anchors the
+/// size captured when the gesture began and never re-runs text layout per
+/// display tick.
+struct OverlayDirectManipulationAuxiliaryInput: Equatable, Sendable {
+    let displayWidthPt: CGFloat
+    let visibleFrame: CGRect
+    let petVisualEnvelope: OverlayPetVisualEnvelope?
+    let bubbleSize: CGSize?
+    let previousBubbleAnchor: OverlayBubbleAnchor?
+    let menuVisible: Bool
+
+    init(
+        displayWidthPt: CGFloat,
+        visibleFrame: CGRect,
+        petVisualEnvelope: OverlayPetVisualEnvelope?,
+        bubbleSize: CGSize?,
+        previousBubbleAnchor: OverlayBubbleAnchor?,
+        menuVisible: Bool
+    ) {
+        self.displayWidthPt = displayWidthPt
+        self.visibleFrame = visibleFrame
+        self.petVisualEnvelope = petVisualEnvelope
+        self.bubbleSize = bubbleSize
+        self.previousBubbleAnchor = previousBubbleAnchor
+        self.menuVisible = menuVisible
+    }
+}
+
+struct OverlayDirectManipulationPlan: Equatable, Sendable {
+    let moves: [OverlayInteractionWindowMove]
+    let bubbleAnchor: OverlayBubbleAnchor?
+}
+
+/// The display-link delivery path moves the whole composition, not just the
+/// pet. Every frame in the plan is an absolute position derived from the
+/// presented pet center and the anchor captured when the gesture began, so a
+/// dropped, late, or externally disturbed frame cannot leave a residue that the
+/// next frame builds on. Auxiliary panels are AppKit child windows, so a parent
+/// translation already carries them; these moves additionally re-anchor them,
+/// which is what keeps a bubble attached to the pet while the pet crosses a
+/// screen edge instead of deferring one hard correction to the release. Frames
+/// stay unrounded during a gesture so a 1 px integral snap cannot shimmer
+/// against the smoothly translated parent.
 enum OverlayDirectManipulationMovePlan {
     static func moves(
+        anchor: OverlayDirectManipulationAnchor,
         parentFrame: CGRect,
-        previousPetCenter: CGPoint,
         presentedPetCenter: CGPoint
     ) -> [OverlayInteractionWindowMove] {
-        let targetFrame = parentFrame.offsetBy(
-            dx: presentedPetCenter.x - previousPetCenter.x,
-            dy: presentedPetCenter.y - previousPetCenter.y
+        plan(
+            anchor: anchor,
+            parentFrame: parentFrame,
+            presentedPetCenter: presentedPetCenter,
+            auxiliary: nil
+        ).moves
+    }
+
+    static func plan(
+        anchor: OverlayDirectManipulationAnchor,
+        parentFrame: CGRect,
+        presentedPetCenter: CGPoint,
+        auxiliary: OverlayDirectManipulationAuxiliaryInput?
+    ) -> OverlayDirectManipulationPlan {
+        var moves: [OverlayInteractionWindowMove] = []
+        let targetFrame = anchor.panelFrame(forPetScreenCenter: presentedPetCenter)
+        if targetFrame != parentFrame {
+            moves.append(OverlayInteractionWindowMove(
+                role: .parentPetPanel,
+                frame: targetFrame
+            ))
+        }
+
+        guard let auxiliary else {
+            return OverlayDirectManipulationPlan(moves: moves, bubbleAnchor: nil)
+        }
+
+        var bubbleAnchor: OverlayBubbleAnchor?
+        if let bubbleSize = auxiliary.bubbleSize,
+           bubbleSize.width > 0,
+           bubbleSize.height > 0
+        {
+            let placement = OverlayGeometry.bubblePlacement(
+                bubbleSize: bubbleSize,
+                displayWidthPt: auxiliary.displayWidthPt,
+                petScreenCenter: presentedPetCenter,
+                screenFrame: auxiliary.visibleFrame,
+                petVisualEnvelope: auxiliary.petVisualEnvelope,
+                previousAnchor: auxiliary.previousBubbleAnchor
+            )
+            bubbleAnchor = placement.anchor
+            moves.append(OverlayInteractionWindowMove(
+                role: .bubbleChildPanel,
+                frame: OverlayGeometry.rect(
+                    center: placement.center,
+                    size: bubbleSize
+                )
+            ))
+        }
+
+        if auxiliary.menuVisible {
+            moves.append(OverlayInteractionWindowMove(
+                role: .menuChildPanel,
+                frame: OverlayGeometry.rect(
+                    center: OverlayGeometry.menuScreenCenter(
+                        petScreenCenter: presentedPetCenter,
+                        displayWidthPt: auxiliary.displayWidthPt,
+                        petVisualEnvelope: auxiliary.petVisualEnvelope
+                    ),
+                    size: OverlayGeometry.menuHitSize
+                )
+            ))
+        }
+
+        return OverlayDirectManipulationPlan(
+            moves: moves,
+            bubbleAnchor: bubbleAnchor
         )
-        guard targetFrame != parentFrame else { return [] }
-        return [OverlayInteractionWindowMove(
-            role: .parentPetPanel,
-            frame: targetFrame
-        )]
     }
 }
 
@@ -966,18 +1187,20 @@ enum OverlayPresentedAgentState {
 
     static func newlyActivatedDismissalIDs(
         activeSessions: [ActiveAgentState],
-        knownReopenIDs: Set<String>
+        lastReopenIDBySession: [String: String]
     ) -> Set<String> {
         Set(activeSessions.compactMap { state -> String? in
-            guard !knownReopenIDs.contains(OverlaySessionContent.reopenID(for: state)) else {
-                return nil
-            }
-            return OverlaySessionContent.stableID(
+            let stableID = OverlaySessionContent.stableID(
                 source: state.source,
                 sessionID: state.sessionID ?? state.event.sessionID,
                 anonymousSessionAlias: state.anonymousSessionAlias,
                 fallbackEventID: state.event.id
             )
+            guard lastReopenIDBySession[stableID] != OverlaySessionContent.reopenID(for: state)
+            else {
+                return nil
+            }
+            return stableID
         })
     }
 
@@ -1013,26 +1236,42 @@ enum OverlayGeometry {
     static let bubbleGap: CGFloat = 3
     static let bubbleMinimumWidth: CGFloat = 304
     static let bubbleStackSpacing: CGFloat = 4
-    static let bubbleCornerRadius: CGFloat = 14
+    /// Keeps the multi-session surface visibly lens-like without turning the
+    /// variable-height product card into a copied activity-pill capsule.
+    static let bubbleCornerRadius: CGFloat = 20
     static let bubbleLeadingPadding: CGFloat = 8
     static let bubbleTrailingPadding: CGFloat = 8
     static let bubbleVerticalPadding: CGFloat = 7
-    static var bubbleGroupHeaderHeight: CGFloat {
+    static func bubbleGroupHeaderHeight(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
         max(
-            17,
-            ceil(lineHeight(for: NSFont.preferredFont(forTextStyle: .caption1))) + 2
+            OverlayBubbleTypography.scaledControlMetric(17, scale: fontScale),
+            ceil(lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .caption1,
+                scale: fontScale
+            ))) + 2
         )
     }
     static let bubbleGroupHeaderSpacing: CGFloat = 4
-    static let bubbleGroupToggleWidth: CGFloat = 44
+    static func bubbleGroupToggleWidth(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        OverlayBubbleTypography.scaledControlMetric(44, scale: fontScale)
+    }
     static let bubbleSessionHorizontalPadding: CGFloat = 8
     static let bubbleSessionVerticalPadding: CGFloat = 5
     static let bubbleSessionTitleSpacing: CGFloat = 2
     static let bubbleDetailLineLimit = 2
     static let bubbleSessionDividerHeight: CGFloat = 1
     static let bubbleHeaderAvatarWidth: CGFloat = 14
-    static var bubbleHeaderButtonSize: CGFloat {
-        max(15, bubbleGroupHeaderHeight - 2)
+    static func bubbleHeaderButtonSize(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        max(
+            OverlayBubbleTypography.scaledControlMetric(15, scale: fontScale),
+            bubbleGroupHeaderHeight(fontScale: fontScale) - 2
+        )
     }
     static let bubbleHeaderGap: CGFloat = 5
     static let bubbleCollapsedStackDepth: CGFloat = 8
@@ -1059,14 +1298,19 @@ enum OverlayGeometry {
 
     static func resolvedBubbleSize(
         in size: CGSize,
-        content: OverlayBubbleContent = .measurementPlaceholder
+        content: OverlayBubbleContent = .measurementPlaceholder,
+        fontScale: BubbleFontScale = .standard
     ) -> CGSize {
         let availableWidth = max(96, size.width - 32)
         let maximumWidth = min(bubbleAdaptiveMaximumWidth, availableWidth)
         let width = maximumWidth < bubbleAdaptiveMinimumWidth
             ? maximumWidth
             : min(bubbleWidth, maximumWidth)
-        let measuredHeight = measuredBubbleHeight(width: width, content: content)
+        let measuredHeight = measuredBubbleHeight(
+            width: width,
+            content: content,
+            fontScale: fontScale
+        )
         let availableHeight = max(44, size.height - 16)
         return CGSize(
             width: width,
@@ -1080,16 +1324,24 @@ enum OverlayGeometry {
 
     static func resolvedBubbleSizes(
         in size: CGSize,
-        contents: [OverlayBubbleContent]
+        contents: [OverlayBubbleContent],
+        fontScale: BubbleFontScale = .standard
     ) -> [CGSize] {
-        contents.map { resolvedBubbleSize(in: size, content: $0) }
+        contents.map {
+            resolvedBubbleSize(in: size, content: $0, fontScale: fontScale)
+        }
     }
 
     static func resolvedBubbleStackSize(
         in size: CGSize,
-        contents: [OverlayBubbleContent]
+        contents: [OverlayBubbleContent],
+        fontScale: BubbleFontScale = .standard
     ) -> CGSize {
-        let bubbleSizes = resolvedBubbleSizes(in: size, contents: contents)
+        let bubbleSizes = resolvedBubbleSizes(
+            in: size,
+            contents: contents,
+            fontScale: fontScale
+        )
         guard !bubbleSizes.isEmpty else { return .zero }
         let totalHeight = bubbleSizes.map(\.height).reduce(0, +)
             + CGFloat(max(0, bubbleSizes.count - 1)) * bubbleStackSpacing
@@ -1103,9 +1355,14 @@ enum OverlayGeometry {
         inPanelSize panelSize: CGSize,
         visibleFrameSize: CGSize,
         contents: [OverlayBubbleContent],
-        alignLeft: Bool
+        alignLeft: Bool,
+        fontScale: BubbleFontScale = .standard
     ) -> [CGRect] {
-        let bubbleSizes = resolvedBubbleSizes(in: visibleFrameSize, contents: contents)
+        let bubbleSizes = resolvedBubbleSizes(
+            in: visibleFrameSize,
+            contents: contents,
+            fontScale: fontScale
+        )
         var currentY: CGFloat = 0
         return bubbleSizes.map { size in
             defer { currentY += size.height + bubbleStackSpacing }
@@ -1118,12 +1375,15 @@ enum OverlayGeometry {
         }
     }
 
-    static func bubbleCloseHitRect(in bubbleRect: CGRect) -> CGRect {
+    static func bubbleCloseHitRect(
+        in bubbleRect: CGRect,
+        fontScale: BubbleFontScale = .standard
+    ) -> CGRect {
         let headerHitHeight = bubbleVerticalPadding
-            + bubbleGroupHeaderHeight
+            + bubbleGroupHeaderHeight(fontScale: fontScale)
             + bubbleGroupHeaderSpacing
         let headerTrailingControlWidth = bubbleTrailingPadding
-            + bubbleHeaderButtonSize
+            + bubbleHeaderButtonSize(fontScale: fontScale)
             + bubbleHeaderGap
         return CGRect(
             x: bubbleRect.maxX - headerTrailingControlWidth,
@@ -1135,26 +1395,35 @@ enum OverlayGeometry {
 
     static func bubbleGroupToggleHitRect(
         in bubbleRect: CGRect,
-        content: OverlayBubbleContent
+        content: OverlayBubbleContent,
+        fontScale: BubbleFontScale = .standard
     ) -> CGRect {
         guard content.hasMultipleSessions else { return .zero }
-        let closeRect = bubbleCloseHitRect(in: bubbleRect)
+        let closeRect = bubbleCloseHitRect(in: bubbleRect, fontScale: fontScale)
+        let toggleWidth = bubbleGroupToggleWidth(fontScale: fontScale)
         return CGRect(
-            x: closeRect.minX - bubbleGroupToggleWidth,
+            x: closeRect.minX - toggleWidth,
             y: bubbleRect.minY,
-            width: bubbleGroupToggleWidth,
+            width: toggleWidth,
             height: closeRect.height
         )
     }
 
     static func bubbleSessionRects(
         in bubbleRect: CGRect,
-        content: OverlayBubbleContent
+        content: OverlayBubbleContent,
+        fontScale: BubbleFontScale = .standard
     ) -> [CGRect] {
         let innerWidth = max(0, bubbleRect.width - bubbleLeadingPadding - bubbleTrailingPadding)
-        let rowHeights = bubbleSessionRowHeights(bubbleWidth: bubbleRect.width, content: content)
+        let rowHeights = bubbleSessionRowHeights(
+            bubbleWidth: bubbleRect.width,
+            content: content,
+            fontScale: fontScale
+        )
         var y = bubbleRect.minY + bubbleVerticalPadding
-            + bubbleGroupHeaderHeight + bubbleGroupHeaderSpacing
+        if !content.isStandaloneSessionCard {
+            y += bubbleGroupHeaderHeight(fontScale: fontScale) + bubbleGroupHeaderSpacing
+        }
         return rowHeights.map { height in
             defer { y += height + bubbleSessionDividerHeight }
             return CGRect(
@@ -1168,10 +1437,15 @@ enum OverlayGeometry {
 
     static func bubbleSessionRowHeights(
         bubbleWidth: CGFloat,
-        content: OverlayBubbleContent
+        content: OverlayBubbleContent,
+        fontScale: BubbleFontScale = .standard
     ) -> [CGFloat] {
         content.visibleSessions.map { session in
-            measuredSessionRowHeight(width: bubbleWidth, session: session)
+            measuredSessionRowHeight(
+                width: bubbleWidth,
+                session: session,
+                fontScale: fontScale
+            )
         }
     }
 
@@ -1301,7 +1575,7 @@ enum OverlayGeometry {
             petScreenCenter: petScreenCenter,
             screenFrame: screenFrame,
             petVisualEnvelope: petVisualEnvelope,
-            previousDirection: nil
+            previousAnchor: nil
         ).center
     }
 
@@ -1311,8 +1585,8 @@ enum OverlayGeometry {
         petScreenCenter: CGPoint,
         screenFrame: CGRect,
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
-        previousDirection: OverlayBubbleAnchorDirection?
-    ) -> (center: CGPoint, direction: OverlayBubbleAnchorDirection) {
+        previousAnchor: OverlayBubbleAnchor?
+    ) -> (center: CGPoint, anchor: OverlayBubbleAnchor) {
         let petSize = petVisibleSize(displayWidthPt: displayWidthPt)
         let verticalOffsets = petVisualVerticalOffsets(
             displayWidthPt: displayWidthPt,
@@ -1323,105 +1597,90 @@ enum OverlayGeometry {
         let petTop = petScreenCenter.y + verticalOffsets.top
         let petBottom = petScreenCenter.y + verticalOffsets.bottom
 
-        let alignLeft = screenFrame.isEmpty
+        func attachedX(alignsLeft: Bool) -> CGFloat {
+            alignsLeft
+                ? petLeft + bubbleSize.width / 2
+                : petRight - bubbleSize.width / 2
+        }
+        let midlineAlignsLeft = screenFrame.isEmpty
             ? false
             : petScreenCenter.x < screenFrame.midX
-        let attachedX = alignLeft
-            ? petLeft + bubbleSize.width / 2
-            : petRight - bubbleSize.width / 2
-        let candidates: [(OverlayBubbleAnchorDirection, CGPoint)] = [
-            (.above, CGPoint(
-                x: attachedX,
-                y: petTop + bubbleGap + bubbleSize.height / 2
-            )),
-            (.below, CGPoint(
-                x: attachedX,
-                y: petBottom - bubbleGap - bubbleSize.height / 2
-            )),
-            (.left, CGPoint(
-                x: petLeft - bubbleGap - bubbleSize.width / 2,
-                y: petScreenCenter.y
-            )),
-            (.right, CGPoint(
-                x: petRight + bubbleGap + bubbleSize.width / 2,
-                y: petScreenCenter.y
-            )),
-        ]
-        guard !screenFrame.isEmpty else {
-            return (candidates[0].1, candidates[0].0)
+        // The screen midline alone would swap the attached edge — a jump of a
+        // full bubble width minus a pet width — the instant a drag crosses the
+        // middle of the display. Keep the established edge while it still fits
+        // the safe area so the bubble only changes sides when it has to.
+        let safeFrame = screenFrame.isEmpty
+            ? screenFrame
+            : screenFrame.insetBy(dx: 8, dy: 8)
+        let alignLeft: Bool
+        if let previous = previousAnchor,
+           previous.alignsLeft != midlineAlignsLeft,
+           !screenFrame.isEmpty
+        {
+            let previousX = attachedX(alignsLeft: previous.alignsLeft)
+            let fits = previousX - bubbleSize.width / 2 >= safeFrame.minX
+                && previousX + bubbleSize.width / 2 <= safeFrame.maxX
+            alignLeft = fits ? previous.alignsLeft : midlineAlignsLeft
+        } else {
+            alignLeft = midlineAlignsLeft
         }
-        let safeFrame = screenFrame.insetBy(dx: 8, dy: 8)
-        func candidateRect(_ center: CGPoint) -> CGRect {
-            rect(center: center, size: bubbleSize)
-        }
-        if let previousDirection,
-           let previous = candidates.first(where: {
-               $0.0 == previousDirection
-                   && safeFrame.contains(candidateRect($0.1))
-           }) {
-            return (previous.1, previous.0)
-        }
-        let selected = candidates.enumerated().max { lhs, rhs in
-            let lhsRect = candidateRect(lhs.element.1)
-            let rhsRect = candidateRect(rhs.element.1)
-            let lhsIntersection = lhsRect.intersection(safeFrame)
-            let rhsIntersection = rhsRect.intersection(safeFrame)
-            let lhsArea = lhsIntersection.isNull
-                ? 0
-                : lhsIntersection.width * lhsIntersection.height
-            let rhsArea = rhsIntersection.isNull
-                ? 0
-                : rhsIntersection.width * rhsIntersection.height
-            if lhsArea != rhsArea { return lhsArea < rhsArea }
-            let lhsClamped = clampedBubbleCenter(
-                lhs.element.1,
-                bubbleSize: bubbleSize,
-                safeFrame: safeFrame
-            )
-            let rhsClamped = clampedBubbleCenter(
-                rhs.element.1,
-                bubbleSize: bubbleSize,
-                safeFrame: safeFrame
-            )
-            let lhsDistance = hypot(
-                lhsClamped.x - lhs.element.1.x,
-                lhsClamped.y - lhs.element.1.y
-            )
-            let rhsDistance = hypot(
-                rhsClamped.x - rhs.element.1.x,
-                rhsClamped.y - rhs.element.1.y
-            )
-            if lhsDistance != rhsDistance {
-                return lhsDistance > rhsDistance
-            }
-            return lhs.offset > rhs.offset
-        }?.element ?? candidates[0]
-        return (
-            clampedBubbleCenter(
-                selected.1,
-                bubbleSize: bubbleSize,
-                safeFrame: safeFrame
-            ),
-            selected.0
-        )
-    }
-
-    private static func clampedBubbleCenter(
-        _ center: CGPoint,
-        bubbleSize: CGSize,
-        safeFrame: CGRect
-    ) -> CGPoint {
-        CGPoint(
-            x: clamp(
-                center.x,
+        // Horizontal placement is the only part that adapts to a screen edge.
+        // The pet keeps its own position, so the bubble slides along the pet's
+        // top or bottom edge until it fits instead of being pushed away from it.
+        let attachedX = screenFrame.isEmpty
+            ? attachedX(alignsLeft: alignLeft)
+            : clamp(
+                attachedX(alignsLeft: alignLeft),
                 lower: safeFrame.minX + bubbleSize.width / 2,
                 upper: safeFrame.maxX - bubbleSize.width / 2
-            ),
-            y: clamp(
-                center.y,
-                lower: safeFrame.minY + bubbleSize.height / 2,
-                upper: safeFrame.maxY - bubbleSize.height / 2
             )
+
+        // The bubble hangs off the pet's top or bottom edge and nowhere else,
+        // always at the same authored gap. Vertical position is therefore never
+        // clamped: an edge flips the side instead of shortening the distance,
+        // so the pair keeps one rigid shape wherever the pet is dragged.
+        func center(for direction: OverlayBubbleAnchorDirection) -> CGPoint {
+            switch direction {
+            case .above:
+                CGPoint(x: attachedX, y: petTop + bubbleGap + bubbleSize.height / 2)
+            case .below:
+                CGPoint(x: attachedX, y: petBottom - bubbleGap - bubbleSize.height / 2)
+            }
+        }
+        func fits(_ direction: OverlayBubbleAnchorDirection) -> Bool {
+            guard !screenFrame.isEmpty else { return true }
+            let candidate = center(for: direction)
+            return candidate.y - bubbleSize.height / 2 >= safeFrame.minY
+                && candidate.y + bubbleSize.height / 2 <= safeFrame.maxY
+        }
+
+        /// How much of the bubble the safe area can show on one side. Used only
+        /// to break a tie when a session stack is taller than the room on both
+        /// sides; the gap itself is never traded away for visible area.
+        func visibleHeight(_ direction: OverlayBubbleAnchorDirection) -> CGFloat {
+            guard !screenFrame.isEmpty else { return bubbleSize.height }
+            let candidate = center(for: direction)
+            let overlap = min(candidate.y + bubbleSize.height / 2, safeFrame.maxY)
+                - max(candidate.y - bubbleSize.height / 2, safeFrame.minY)
+            return max(0, overlap)
+        }
+
+        let preferred = previousAnchor?.direction ?? .above
+        let direction: OverlayBubbleAnchorDirection = if fits(preferred) {
+            preferred
+        } else if fits(preferred.opposite) {
+            preferred.opposite
+        } else if visibleHeight(preferred.opposite) > visibleHeight(preferred) {
+            // A stack taller than the display fits on neither side. Show as much
+            // of it as possible at the authored distance instead of sliding it
+            // over the pet.
+            preferred.opposite
+        } else {
+            preferred
+        }
+        return (
+            center(for: direction),
+            OverlayBubbleAnchor(direction: direction, alignsLeft: alignLeft)
         )
     }
 
@@ -1848,14 +2107,16 @@ enum OverlayGeometry {
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
         content: OverlayBubbleContent = .measurementPlaceholder,
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
+        fontScale: BubbleFontScale = .standard
     ) -> CGRect {
         bubblePanelScreenFrame(
             displayWidthPt: displayWidthPt,
             petScreenCenter: petScreenCenter,
             visibleFrame: visibleFrame,
             contents: [content],
-            petVisualEnvelope: petVisualEnvelope
+            petVisualEnvelope: petVisualEnvelope,
+            fontScale: fontScale
         )
     }
 
@@ -1864,7 +2125,8 @@ enum OverlayGeometry {
         petScreenCenter: CGPoint,
         visibleFrame: CGRect,
         contents: [OverlayBubbleContent],
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
+        petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
+        fontScale: BubbleFontScale = .standard
     ) -> CGRect {
         bubblePanelLayout(
             displayWidthPt: displayWidthPt,
@@ -1872,7 +2134,8 @@ enum OverlayGeometry {
             visibleFrame: visibleFrame,
             contents: contents,
             petVisualEnvelope: petVisualEnvelope,
-            previousDirection: nil
+            previousAnchor: nil,
+            fontScale: fontScale
         ).frame
     }
 
@@ -1882,13 +2145,19 @@ enum OverlayGeometry {
         visibleFrame: CGRect,
         contents: [OverlayBubbleContent],
         petVisualEnvelope: OverlayPetVisualEnvelope? = nil,
-        previousDirection: OverlayBubbleAnchorDirection?
+        previousAnchor: OverlayBubbleAnchor?,
+        fontScale: BubbleFontScale = .standard
     ) -> OverlayBubblePanelLayout {
-        let bubbleSize = resolvedBubbleStackSize(in: visibleFrame.size, contents: contents)
+        let bubbleSize = resolvedBubbleStackSize(
+            in: visibleFrame.size,
+            contents: contents,
+            fontScale: fontScale
+        )
         guard bubbleSize.width > 0, bubbleSize.height > 0 else {
             return OverlayBubblePanelLayout(
                 frame: .zero,
-                direction: previousDirection ?? .above
+                anchor: previousAnchor
+                    ?? OverlayBubbleAnchor(direction: .above, alignsLeft: false)
             )
         }
         let placement = bubblePlacement(
@@ -1897,14 +2166,14 @@ enum OverlayGeometry {
             petScreenCenter: petScreenCenter,
             screenFrame: visibleFrame,
             petVisualEnvelope: petVisualEnvelope,
-            previousDirection: previousDirection
+            previousAnchor: previousAnchor
         )
         return OverlayBubblePanelLayout(
             frame: rect(
                 center: placement.center,
                 size: bubbleSize
             ).integral,
-            direction: placement.direction
+            anchor: placement.anchor
         )
     }
 
@@ -2061,12 +2330,27 @@ enum OverlayGeometry {
         ).isOwnedByOverlay
     }
 
-    private static func measuredBubbleHeight(width: CGFloat, content: OverlayBubbleContent) -> CGFloat {
-        let rowHeights = bubbleSessionRowHeights(bubbleWidth: width, content: content)
+    private static func measuredBubbleHeight(
+        width: CGFloat,
+        content: OverlayBubbleContent,
+        fontScale: BubbleFontScale
+    ) -> CGFloat {
+        let rowHeights = bubbleSessionRowHeights(
+            bubbleWidth: width,
+            content: content,
+            fontScale: fontScale
+        )
+        if content.isStandaloneSessionCard {
+            return ceil(
+                bubbleVerticalPadding * 2
+                    + (rowHeights.first ?? 0)
+                    + content.stackDecorationDepth
+            )
+        }
         let dividers = CGFloat(max(0, rowHeights.count - 1)) * bubbleSessionDividerHeight
         return ceil(
             bubbleVerticalPadding * 2
-                + bubbleGroupHeaderHeight
+                + bubbleGroupHeaderHeight(fontScale: fontScale)
                 + bubbleGroupHeaderSpacing
                 + rowHeights.reduce(0, +)
                 + dividers
@@ -2076,12 +2360,16 @@ enum OverlayGeometry {
 
     private static func measuredSessionRowHeight(
         width _: CGFloat,
-        session _: OverlaySessionContent
+        session _: OverlaySessionContent,
+        fontScale: BubbleFontScale
     ) -> CGFloat {
         let titleHeight = lineHeight(
-            for: NSFont.preferredFont(forTextStyle: .callout)
+            for: OverlayBubbleTypography.measurementFont(.callout, scale: fontScale)
         )
-        let detailFont = NSFont.preferredFont(forTextStyle: .caption1)
+        let detailFont = OverlayBubbleTypography.measurementFont(
+            .caption1,
+            scale: fontScale
+        )
         let detailLineHeight = lineHeight(for: detailFont)
         // Reserve the full two-line detail region. Tool activity often changes
         // between one and two lines; allowing that to resize an NSPanel on
@@ -2168,8 +2456,8 @@ enum OverlayGeometry {
 enum OverlaySessionGroupTone: Int, CaseIterable, Equatable {
     case running = 0
     case ready = 1
-    case needsInput = 2
-    case failed = 3
+    case failed = 2
+    case needsInput = 3
 
     init(eventType: AgentEventKind?) {
         self = switch eventType {
@@ -2193,6 +2481,9 @@ enum OverlayBubbleProjection {
         states: [ActiveAgentState],
         omittedCount: Int,
         dismissedSessionIDs: Set<String>,
+        groupSessionsByAgent: Bool = true,
+        standaloneSessionOrder: [String] = [],
+        standaloneStackExpanded: Bool = true,
         isExpanded: (AgentSource) -> Bool
     ) -> [OverlayBubbleContent] {
         let visibleStates = states.filter {
@@ -2203,6 +2494,79 @@ enum OverlayBubbleProjection {
                 fallbackEventID: $0.event.id
             ))
         }
+        if !groupSessionsByAgent {
+            let stateByID = Dictionary(
+                visibleStates.map { state in
+                    (
+                        OverlaySessionContent.stableID(
+                            source: state.source,
+                            sessionID: state.sessionID ?? state.event.sessionID,
+                            anonymousSessionAlias: state.anonymousSessionAlias,
+                            fallbackEventID: state.event.id
+                        ),
+                        state
+                    )
+                },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            var orderedStates = standaloneSessionOrder.compactMap { stateByID[$0] }
+            let orderedIDs = Set(orderedStates.map {
+                OverlaySessionContent.stableID(
+                    source: $0.source,
+                    sessionID: $0.sessionID ?? $0.event.sessionID,
+                    anonymousSessionAlias: $0.anonymousSessionAlias,
+                    fallbackEventID: $0.event.id
+                )
+            })
+            // Direct projection callers may not own App presentation state.
+            // Use PetCore's canonical attention/latest-first order as the
+            // fallback, reversed so the newest card occupies the pet end.
+            orderedStates.append(contentsOf: visibleStates.reversed().filter {
+                !orderedIDs.contains(OverlaySessionContent.stableID(
+                    source: $0.source,
+                    sessionID: $0.sessionID ?? $0.event.sessionID,
+                    anonymousSessionAlias: $0.anonymousSessionAlias,
+                    fallbackEventID: $0.event.id
+                ))
+            })
+            // The physical stack is authored from its far edge toward the
+            // pet. Higher-attention states therefore occupy the final slots,
+            // while stable presentation order remains intact inside a tone.
+            orderedStates = orderedStates.enumerated().sorted { left, right in
+                let leftTone = OverlaySessionGroupTone(eventType: left.element.event.eventType)
+                let rightTone = OverlaySessionGroupTone(eventType: right.element.event.eventType)
+                if leftTone != rightTone {
+                    return leftTone.rawValue < rightTone.rawValue
+                }
+                return left.offset < right.offset
+            }.map(\.element)
+
+            let representedSessionCount = orderedStates.count + omittedCount
+            if !standaloneStackExpanded,
+               representedSessionCount > 1,
+               let primaryState = orderedStates.last
+            {
+                return [OverlayBubbleContent(
+                    standaloneState: primaryState,
+                    stackSessionCount: representedSessionCount,
+                    isStackExpanded: false
+                )]
+            }
+            var cards = omittedCount > 0
+                ? [OverlayBubbleContent.omittedSummary(count: omittedCount)]
+                : []
+            cards.append(contentsOf: orderedStates.enumerated().map { index, state in
+                OverlayBubbleContent(
+                    standaloneState: state,
+                    stackSessionCount: index == orderedStates.count - 1
+                        ? representedSessionCount
+                        : 1,
+                    isStackExpanded: true
+                )
+            })
+            return cards
+        }
+
         var grouped = AgentSource.allCases.compactMap { source -> OverlayBubbleContent? in
             let sourceStates = visibleStates.filter { $0.source == source }
             return sourceStates.isEmpty ? nil : OverlayBubbleContent(
@@ -2607,15 +2971,25 @@ struct OverlaySessionContent: Equatable, Identifiable {
         return value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// Compiled once instead of per call. `replacingOccurrences(options:
+    /// .regularExpression)` builds a fresh `NSRegularExpression` every time,
+    /// and this normalization runs several times per session on every bubble
+    /// projection. The pattern and match options are unchanged, so the
+    /// resulting text is identical.
+    private static let redundancyNormalizationPattern = try? NSRegularExpression(
+        pattern: "[\\s\\p{P}]+"
+    )
+
     private static func normalizedText(_ value: String) -> String {
-        value
+        let folded = value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .replacingOccurrences(
-                of: "[\\s\\p{P}]+",
-                with: "",
-                options: .regularExpression
-            )
+        guard let pattern = redundancyNormalizationPattern else { return folded }
+        return pattern.stringByReplacingMatches(
+            in: folded,
+            range: NSRange(folded.startIndex..., in: folded),
+            withTemplate: ""
+        )
     }
 
     private static func nonredundantMessage(
@@ -2662,6 +3036,8 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     var sessions: [OverlaySessionContent]
     var isExpanded: Bool
     var omittedSessionCount: Int
+    var isStandaloneSessionCard: Bool
+    var standaloneStackSessionCount: Int
 
     var eventIDs: [String] { sessions.map(\.eventID) }
     var dismissalIDs: [String] { canDismiss ? sessions.map(\.id) : [] }
@@ -2686,11 +3062,19 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     }
     var sessionCount: Int { sessions.count }
     var representedSessionCount: Int {
-        omittedSessionCount > 0 ? omittedSessionCount : sessionCount
+        if isStandaloneSessionCard, !isExpanded {
+            return disclosureSessionCount
+        }
+        return omittedSessionCount > 0 ? omittedSessionCount : sessionCount
+    }
+    var disclosureSessionCount: Int {
+        isStandaloneSessionCard
+            ? max(sessionCount, standaloneStackSessionCount)
+            : sessionCount
     }
     var isOmittedSummary: Bool { omittedSessionCount > 0 }
     var canDismiss: Bool { !isOmittedSummary }
-    var hasMultipleSessions: Bool { sessions.count > 1 }
+    var hasMultipleSessions: Bool { disclosureSessionCount > 1 }
     var isStacked: Bool { hasMultipleSessions && !isExpanded }
     var stackDecorationDepth: CGFloat {
         isStacked ? OverlayGeometry.bubbleCollapsedStackDepth : 0
@@ -2707,7 +3091,9 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         agentName: "Agent Pet Companion",
         sessions: [.measurementPlaceholder],
         isExpanded: true,
-        omittedSessionCount: 0
+        omittedSessionCount: 0,
+        isStandaloneSessionCard: false,
+        standaloneStackSessionCount: 0
     )
 
     static func omittedSummary(count: Int) -> OverlayBubbleContent {
@@ -2717,7 +3103,9 @@ struct OverlayBubbleContent: Equatable, Identifiable {
             agentName: "Agent Pet Companion",
             sessions: [.omittedSummary(count: count)],
             isExpanded: true,
-            omittedSessionCount: count
+            omittedSessionCount: count,
+            isStandaloneSessionCard: false,
+            standaloneStackSessionCount: 0
         )
     }
 
@@ -2727,7 +3115,9 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         agentName: String,
         sessions: [OverlaySessionContent],
         isExpanded: Bool = true,
-        omittedSessionCount: Int = 0
+        omittedSessionCount: Int = 0,
+        isStandaloneSessionCard: Bool = false,
+        standaloneStackSessionCount: Int = 0
     ) {
         self.id = id
         self.source = source
@@ -2735,6 +3125,8 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         self.sessions = sessions
         self.isExpanded = isExpanded
         self.omittedSessionCount = omittedSessionCount
+        self.isStandaloneSessionCard = isStandaloneSessionCard
+        self.standaloneStackSessionCount = standaloneStackSessionCount
     }
 
     init(source: AgentSource, states: [ActiveAgentState], isExpanded: Bool = true) {
@@ -2750,10 +3142,29 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         }
         self.isExpanded = isExpanded
         omittedSessionCount = 0
+        isStandaloneSessionCard = false
+        standaloneStackSessionCount = 0
     }
 
     init(state: ActiveAgentState) {
         self.init(source: state.source, states: [state])
+    }
+
+    init(
+        standaloneState state: ActiveAgentState,
+        stackSessionCount: Int = 1,
+        isStackExpanded: Bool = true
+    ) {
+        let session = OverlaySessionContent(state: state)
+        self.init(
+            id: "session-card-\(session.id)",
+            source: state.source,
+            agentName: state.source.title,
+            sessions: [session],
+            isExpanded: isStackExpanded,
+            isStandaloneSessionCard: true,
+            standaloneStackSessionCount: stackSessionCount
+        )
     }
 
     init(event: AgentEvent?) {
@@ -2767,6 +3178,8 @@ struct OverlayBubbleContent: Equatable, Identifiable {
         sessions = [OverlaySessionContent(event: event)]
         isExpanded = true
         omittedSessionCount = 0
+        isStandaloneSessionCard = false
+        standaloneStackSessionCount = 0
     }
 
     private static func isMoreRecentlyActivated(
@@ -2819,7 +3232,7 @@ struct OverlayBubbleAccessibilityModel: Equatable {
                 content.isExpanded
                     ? .overlayCollapseSessionsFormat
                     : .overlayExpandSessionsFormat,
-                content.sessionCount,
+                content.disclosureSessionCount,
                 locale: locale
             )
             : nil

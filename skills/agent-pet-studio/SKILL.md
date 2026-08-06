@@ -72,13 +72,27 @@ All modes remain limited to `low` and `standard`.
   a newly authored complete frame sequence for the affected state.
 - In brief modes, return name, visual brief, palette, `timing_changed`, all nine
   state motion entries with complete V3 timing, render notes, and
-  `petpack_source`. Set `timing_changed` only for an explicit timing edit.
+  `petpack_source`. Render notes must require a deterministic pose guide and a
+  separate deterministic size-reference image with shared slot/crop geometry
+  for every multi-frame action, plus action-intent review of Motion QA's body-
+  anchor and baseline path and the registration-only `motion-align` recovery
+  rule. Set `timing_changed` only for an explicit timing edit.
 - In external full-source mode, lock one canonical identity and create actions
-  serially. Generate fully opaque flat-background source art; inspect actual
-  decoded dimensions and stable equal-size 12:13 crops; use
+  serially. Generate each multi-frame action from the character base plus a
+  deterministic pose guide and separate deterministic size-reference image;
+  all three references share one recorded slot, crop, baseline, and
+  `global_scale` geometry, and text-only equal-scale control is insufficient.
+  Generate fully opaque flat-background source art; inspect actual decoded
+  dimensions, subject scale, and stable equal-size 12:13 crops; use
   `../agent-pet-maker/scripts/prepare_transparent_frames.py` for every new or
   regenerated frame; and run incremental Motion QA before starting the next
-  state.
+  state. Compare the reported per-frame body-anchor and baseline path with the
+  action card and deterministic pose guide. Preserve intentional travel and
+  authored easing. When registration alone is wrong and identity, anatomy,
+  pose, scale, props, Alpha, and crop are otherwise accepted, do not regenerate
+  first: use the shared Maker `motion-align` command with a fresh QA-digest-
+  bound plan, inspect its integer-translation-only transparent output, copy
+  only approved frames back, and rerun Motion QA.
 - After all affected states pass, run combined `motion-qa`, inspect the
   authored-timing and presence previews, bind `motion-review`, and run
   `production-verify`. Keep `build/validation.json` at `ok:false` until the

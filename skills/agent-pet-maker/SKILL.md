@@ -69,9 +69,13 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    to change them. A timing change requires a newly authored complete sequence
    for that state.
 4. Lock one production base, then create one complete action per image call.
-   Verify the returned frame count, order, identity, anatomy, action, spacing,
-   crop capacity, and flat background before accepting it. Use a deterministic
-   pose guide for complex limb motion as required by the visual contract.
+   For every multi-frame action, create a deterministic pose guide and a
+   separate deterministic size-reference image from the same slot, crop, and
+   `global_scale` record. Pass the character base, pose guide, and size
+   reference in that order; `high` production may not rely on text-only equal-
+   scale control. Verify the returned frame count, order, identity, anatomy,
+   action, spacing, subject scale, crop capacity, and flat background before
+   accepting it.
 5. Crop stable equal-size 12:13 source windows without resampling. Run every
    new or regenerated crop through the shared transparency script; package only
    its exact-tier runtime PNGs. Accept a state only when the report and every
@@ -85,10 +89,17 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    ```
 
 6. Run `motion-qa --state <state>` immediately after each accepted state. After
-   all actions, run combined Motion QA, inspect every authored-timing preview,
-   the keyframe sheet, and the 8–12 second presence preview, then bind one
-   concrete `motion-review` note to every audited state. Repair objective
-   defects in the artwork; never retime frames to make QA pass.
+   every run, compare its per-frame body-anchor and baseline path with the
+   action card and deterministic pose guide. Preserve intentional travel and
+   authored easing. If the path is inconsistent but identity, anatomy, pose,
+   scale, props, Alpha, and crop are otherwise accepted, do not regenerate
+   first: author a QA-digest-bound `motion-align` plan, apply integer-only
+   whole-frame translation to the transparent PNGs, inspect the result, copy
+   only approved frames back, and rerun Motion QA. After all actions, run
+   combined Motion QA, inspect every authored-timing preview, the keyframe
+   sheet, and the 8–12 second presence preview, then bind one concrete
+   `motion-review` note to every audited state. Repair objective defects in the
+   artwork; never retime frames to make QA pass.
 7. Finalize through the helper. It derives changed states, runs the shared
    production gate, validates the source and staged archive, and publishes the
    result atomically.

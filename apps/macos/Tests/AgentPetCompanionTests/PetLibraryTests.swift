@@ -660,7 +660,7 @@ struct PetLibraryTests {
         #expect(source.contains(".pickerStyle(.segmented)"))
         #expect(source.contains("presentation.technicalInformation"))
         #expect(source.contains("PetLibrarySourceBadge("))
-        #expect(!source.contains("apcFloatingControlGlass"))
+        #expect(!source.contains("apcClearGlass(in:"))
 
         let heroStart = try #require(source.range(of: "private struct PetLibraryHero"))
         let heroEnd = try #require(source.range(

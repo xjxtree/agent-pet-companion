@@ -127,7 +127,7 @@ struct PetMakerResultView: View {
                             systemImage: "arrow.clockwise"
                         )
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                     .accessibilityIdentifier("maker.result.refresh")
 
                     Button {
@@ -138,7 +138,7 @@ struct PetMakerResultView: View {
                             systemImage: "stethoscope"
                         )
                     }
-                    .buttonStyle(.bordered)
+                    .apcClearGlassButtonStyle()
                     .accessibilityIdentifier("maker.result.diagnostics")
                 }
             }
@@ -181,7 +181,7 @@ struct PetMakerResultView: View {
                 systemImage: "wand.and.stars"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .disabled(!experience.secondaryActions.contains(.continueEditing))
         .accessibilityIdentifier("maker.result.continue-editing")
     }
@@ -196,7 +196,7 @@ struct PetMakerResultView: View {
                 systemImage: "square.and.arrow.up"
             )
         }
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .disabled(resultPet == nil)
         .accessibilityIdentifier("maker.result.export")
     }
@@ -214,7 +214,7 @@ struct PetMakerResultView: View {
             Button(action: continueEditing) {
                 Image(systemName: "arrow.right")
             }
-            .buttonStyle(.borderedProminent)
+            .apcClearGlassButtonStyle(prominent: true)
             .disabled(!canContinueEditing)
             .accessibilityLabel(
                 APCLocalizedPresentation.primaryActionTitle(

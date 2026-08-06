@@ -285,24 +285,55 @@ class TransparentFramePipelineTests(unittest.TestCase):
         with Image.open(master) as transparent:
             self.assertEqual(transparent.getpixel((96, 104)), RED)
 
-    def test_disconnected_key_colored_subject_detail_is_preserved_and_fails_safe(self) -> None:
+    def test_nineteen_key_like_subject_pixels_are_preserved_as_review_evidence(self) -> None:
         source = self.root / "key-conflict.png"
         image = Image.new("RGBA", (192, 208), GREEN)
         draw = ImageDraw.Draw(image)
         draw.rectangle((40, 30, 151, 179), fill=RED)
-        draw.rectangle((85, 90, 105, 110), fill=GREEN)
+        for x in range(19):
+            image.putpixel((86 + x, 100), GREEN)
         image.save(source)
         jobs, report_path, previews, master, _ = self.write_jobs(source)
+
+        completed, report = self.run_pipeline(jobs, report_path, previews)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+        assert report is not None
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            report["configuration"]["visible_key_pixels"],
+            "diagnostic_only_requires_preview_review",
+        )
+        self.assertEqual(report["frames"][0]["master"]["qa"]["visible_key_pixels"], 19)
+        self.assertIn(
+            "visible pixels close to the chroma key are diagnostic only; inspect all five preview backgrounds for actual contamination",
+            report["frames"][0]["warnings"],
+        )
+        with Image.open(master) as transparent:
+            self.assertEqual(transparent.getpixel((95, 100)), GREEN)
+
+    def test_visible_key_on_the_silhouette_edge_remains_a_hard_failure(self) -> None:
+        source = self.root / "edge-fringe.png"
+        image = Image.new("RGBA", (192, 208), GREEN)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((40, 30, 151, 179), fill=RED)
+        image.putpixel((42, 100), GREEN)
+        image.save(source)
+        jobs, report_path, previews, _, _ = self.write_jobs(source)
 
         completed, report = self.run_pipeline(jobs, report_path, previews)
 
         self.assertEqual(completed.returncode, 1)
         assert report is not None
         self.assertFalse(report["ok"])
-        self.assertGreater(report["frames"][0]["master"]["qa"]["visible_key_pixels"], 0)
-        with Image.open(master) as transparent:
-            self.assertEqual(transparent.getpixel((95, 100)), GREEN)
-        self.assertIn("use another key", " ".join(report["frames"][0]["errors"]))
+        self.assertGreater(
+            report["frames"][0]["master"]["qa"]["edge_chroma_fringe_pixels"],
+            0,
+        )
+        self.assertIn(
+            "visible silhouette-edge pixels retain chroma contamination",
+            report["frames"][0]["errors"],
+        )
 
     def test_edge_contraction_is_one_runtime_pixel_and_does_not_change_master(self) -> None:
         source = self.root / "source.png"
@@ -466,6 +497,8 @@ class SharedSkillContractTests(unittest.TestCase):
             normalized = " ".join(content.split())
             self.assertIn("transparent-frame-production.md", normalized)
             self.assertIn("prepare_transparent_frames.py", normalized)
+            self.assertIn("deterministic pose guide", normalized)
+            self.assertIn("deterministic size-reference image", normalized)
 
     def test_shared_reference_forbids_agent_specific_pixel_processing(self) -> None:
         contract = (ROOT / "references" / "transparent-frame-production.md").read_text(
@@ -481,6 +514,8 @@ class SharedSkillContractTests(unittest.TestCase):
             "checkerboard, white, gray, black",
             "--edge-contract 1",
             '"ok": true',
+            "visible_key_pixels",
+            "review evidence only",
         ):
             self.assertIn(required, normalized)
 

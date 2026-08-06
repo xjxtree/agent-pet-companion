@@ -37,6 +37,8 @@ PETPACK_SCHEMA = "apc.petpack.v3"
 MOTION_QA_SCHEMA = "apc.pet-motion-qa.v1"
 MOTION_REVIEW_SCHEMA = "apc.pet-motion-review.v1"
 MOTION_LOCK_SCHEMA = "apc.pet-motion-lock.v1"
+MOTION_ALIGNMENT_PLAN_SCHEMA = "apc.pet-motion-alignment-plan.v1"
+MOTION_ALIGNMENT_SCHEMA = "apc.pet-motion-alignment.v1"
 FINDER_VISIBILITY_SETTLE_SECONDS = 2.0
 FINDER_VISIBILITY_POLL_SECONDS = 0.05
 STATES = (
@@ -162,7 +164,15 @@ MAX_SEMANTIC_ACTIVE_MS = 3_200
 MAX_MOTION_REVIEW_NOTE_CHARACTERS = 500
 MIN_MOTION_REVIEW_NOTE_CHARACTERS = 12
 PILLOW_REQUIRED_COMMANDS = frozenset(
-    {"preflight", "prepare", "motion-qa", "motion-lock", "finalize", "install"}
+    {
+        "preflight",
+        "prepare",
+        "motion-qa",
+        "motion-align",
+        "motion-lock",
+        "finalize",
+        "install",
+    }
 )
 PILLOW_REEXEC_MARKER = "APC_PET_MAKER_PILLOW_REEXEC"
 PILLOW_PYTHON_OVERRIDE = "APC_PET_MAKER_PYTHON"
@@ -1921,6 +1931,14 @@ def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list
     baseline_step = maximum_adjacent_step(
         [signature["bbox_bottom"] for signature in signatures]
     )
+    registration = [
+        {
+            "frame": index,
+            "body_anchor_x": round(signature["centroid_x"], 6),
+            "baseline_y": round(signature["bbox_bottom"], 6),
+        }
+        for index, signature in enumerate(signatures)
+    ]
     edge_contact_frames = []
     for index, signature in enumerate(signatures):
         sides = [
@@ -1979,6 +1997,7 @@ def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list
         "maximum_bbox_height_step": round(bbox_height_step, 4),
         "maximum_centroid_step": round(max(centroid_steps, default=0.0), 4),
         "maximum_baseline_step": round(baseline_step, 4),
+        "registration": registration,
         "minimum_edge_margin": round(minimum_edge_margin, 6),
         "edge_contact_frame_count": len(edge_contact_frames),
         "edge_contact_frames": edge_contact_frames[:8],
@@ -2024,7 +2043,10 @@ def motion_metrics(frames: list[Any], loops: bool) -> tuple[dict[str, Any], list
     if max(centroid_steps, default=0.0) >= 0.035 or baseline_step >= 0.035:
         warn(
             "large_subject_displacement",
-            "The pet position or baseline changes substantially. Intentional whole-character travel is allowed; inspect spacing, easing, weight, crop safety, and accidental jitter or auto-recentering.",
+            "The pet position or baseline changes substantially. Compare the per-frame "
+            "body-anchor and baseline path with the action card and deterministic pose "
+            "guide. Intentional whole-character travel is allowed; inspect spacing, "
+            "easing, weight, crop safety, and accidental model drift.",
             {
                 "centroid_step": round(max(centroid_steps, default=0.0), 4),
                 "baseline_step": round(baseline_step, 4),
@@ -2701,6 +2723,413 @@ def motion_lock(args: argparse.Namespace) -> dict[str, Any]:
         "report_path": str(report_path),
         "frame_count": len(frame_paths),
         "moving_region_ratio": round(moving_ratio, 6),
+    }
+
+
+def parse_motion_alignment_axis(
+    value: Any,
+    label: str,
+    frame_count: int,
+    measured: list[float],
+) -> tuple[dict[str, Any], list[float]]:
+    if not isinstance(value, dict):
+        raise MakerError(
+            "invalid_input",
+            f"Motion alignment plan {label} must be an object",
+        )
+    mode = value.get("mode")
+    if mode not in {"preserve", "lock", "linear", "targets"}:
+        raise MakerError(
+            "invalid_input",
+            f"Motion alignment plan {label}.mode must be preserve, lock, linear, or targets",
+        )
+
+    allowed_keys = {
+        "preserve": {"mode"},
+        "linear": {"mode"},
+        "lock": {"mode", "reference_frame"},
+        "targets": {"mode", "normalized"},
+    }[mode]
+    unknown = sorted(set(value) - allowed_keys)
+    if unknown:
+        raise MakerError(
+            "invalid_input",
+            f"Motion alignment plan {label} has unsupported fields: {', '.join(unknown)}",
+        )
+
+    if mode == "preserve":
+        return {"mode": mode}, list(measured)
+    if mode == "linear":
+        if frame_count == 1:
+            targets = list(measured)
+        else:
+            start, end = measured[0], measured[-1]
+            targets = [
+                start + (end - start) * index / (frame_count - 1)
+                for index in range(frame_count)
+            ]
+        return {"mode": mode}, targets
+    if mode == "lock":
+        reference_frame = value.get("reference_frame")
+        if (
+            type(reference_frame) is not int
+            or reference_frame < 0
+            or reference_frame >= frame_count
+        ):
+            raise MakerError(
+                "invalid_input",
+                f"Motion alignment plan {label}.reference_frame must be between 0 and "
+                f"{frame_count - 1}",
+            )
+        return {
+            "mode": mode,
+            "reference_frame": reference_frame,
+        }, [measured[reference_frame]] * frame_count
+
+    normalized = value.get("normalized")
+    if (
+        not isinstance(normalized, list)
+        or len(normalized) != frame_count
+        or any(
+            isinstance(target, bool)
+            or not isinstance(target, (int, float))
+            or not math.isfinite(target)
+            or target < 0
+            or target > 1
+            for target in normalized
+        )
+    ):
+        raise MakerError(
+            "invalid_input",
+            f"Motion alignment plan {label}.normalized must contain exactly "
+            f"{frame_count} finite values between 0 and 1",
+        )
+    targets = [float(target) for target in normalized]
+    return {"mode": mode, "normalized": targets}, targets
+
+
+def motion_registration_summary(frames: list[Any]) -> dict[str, Any]:
+    signatures = [motion_frame_signature(frame) for frame in frames]
+    body_anchor_x = [signature["centroid_x"] for signature in signatures]
+    baseline_y = [signature["bbox_bottom"] for signature in signatures]
+    return {
+        "maximum_body_anchor_x_step": round(
+            maximum_adjacent_step(body_anchor_x), 6
+        ),
+        "maximum_baseline_y_step": round(maximum_adjacent_step(baseline_y), 6),
+        "frames": [
+            {
+                "frame": index,
+                "body_anchor_x": round(anchor, 6),
+                "baseline_y": round(baseline, 6),
+            }
+            for index, (anchor, baseline) in enumerate(
+                zip(body_anchor_x, baseline_y)
+            )
+        ],
+    }
+
+
+def motion_align(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except (ImportError, OSError) as error:
+        raise MakerError(
+            "capability_missing",
+            "Python Pillow is required to align transparent pet frames",
+            bounded(str(error)),
+        ) from error
+
+    source_dir = Path(args.source).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    plan_path = Path(args.plan).expanduser().resolve()
+    report_path = (
+        Path(args.report).expanduser().resolve()
+        if args.report
+        else output_dir.with_name(f"{output_dir.name}.motion-alignment.json")
+    )
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise MakerError(
+            "invalid_input",
+            "Motion alignment source must be a safe petpack-source directory",
+        )
+    ensure_outside(output_dir, source_dir, "Motion alignment output")
+    ensure_outside(plan_path, source_dir, "Motion alignment plan")
+    ensure_outside(report_path, source_dir, "Motion alignment report")
+    if output_dir.is_symlink() or plan_path.is_symlink() or report_path.is_symlink():
+        raise MakerError(
+            "unsafe_output",
+            "Motion alignment paths must not be symbolic links",
+        )
+    if output_dir.exists():
+        if not output_dir.is_dir() or any(output_dir.iterdir()):
+            raise MakerError(
+                "output_exists",
+                "Motion alignment output directory must be absent or empty",
+            )
+    if not plan_path.is_file():
+        raise MakerError(
+            "invalid_input",
+            "Motion alignment requires a safe JSON plan outside petpack-source",
+        )
+
+    manifest = read_json(source_dir / "manifest.json", "manifest.json")
+    if manifest.get("schema_version") != PETPACK_SCHEMA:
+        raise MakerError(
+            "invalid_manifest",
+            "manifest.schema_version must be apc.petpack.v3",
+        )
+    timing = manifest_timing_contract(manifest)
+    frame_paths = ordered_state_frame_paths(source_dir, manifest, args.state)
+    expected_count = timing["state_frame_counts"][args.state]
+    if len(frame_paths) != expected_count:
+        raise MakerError(
+            "invalid_assets",
+            f"State {args.state} has {len(frame_paths)} PNG frames; "
+            f"expected exactly {expected_count}",
+        )
+
+    plan = read_json(plan_path, "motion alignment plan")
+    allowed_plan_keys = {
+        "schema_version",
+        "state",
+        "source_motion_digest",
+        "motion_intent",
+        "correction_reason",
+        "body_anchor_x",
+        "baseline_y",
+    }
+    unknown_plan_keys = sorted(set(plan) - allowed_plan_keys)
+    if unknown_plan_keys:
+        raise MakerError(
+            "invalid_input",
+            "Motion alignment plan has unsupported fields: "
+            + ", ".join(unknown_plan_keys),
+        )
+    if plan.get("schema_version") != MOTION_ALIGNMENT_PLAN_SCHEMA:
+        raise MakerError(
+            "invalid_input",
+            f"Motion alignment plan schema_version must be {MOTION_ALIGNMENT_PLAN_SCHEMA}",
+        )
+    if plan.get("state") != args.state:
+        raise MakerError(
+            "invalid_input",
+            "Motion alignment plan state must match --state",
+        )
+    for field in ("motion_intent", "correction_reason"):
+        value = plan.get(field)
+        if (
+            not isinstance(value, str)
+            or not MIN_MOTION_REVIEW_NOTE_CHARACTERS
+            <= len(value.strip())
+            <= MAX_MOTION_REVIEW_NOTE_CHARACTERS
+        ):
+            raise MakerError(
+                "invalid_input",
+                f"Motion alignment plan {field} must be "
+                f"{MIN_MOTION_REVIEW_NOTE_CHARACTERS}-"
+                f"{MAX_MOTION_REVIEW_NOTE_CHARACTERS} characters",
+            )
+
+    source_motion_digest = state_motion_digest(source_dir, manifest, args.state)
+    if plan.get("source_motion_digest") != source_motion_digest:
+        raise MakerError(
+            "stale_motion_alignment",
+            "Motion alignment plan is not bound to the current decoded state frames; "
+            "rerun Motion QA and author a fresh plan",
+        )
+
+    render_size = manifest.get("render_size")
+    width = render_size.get("width") if isinstance(render_size, dict) else None
+    height = render_size.get("height") if isinstance(render_size, dict) else None
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        raise MakerError(
+            "invalid_manifest",
+            "manifest.render_size must contain positive integer width and height",
+        )
+    expected_size = (width, height)
+
+    frames: list[Any] = []
+    try:
+        for frame_path in frame_paths:
+            with Image.open(frame_path) as decoded_frame:
+                if decoded_frame.format != "PNG":
+                    raise MakerError(
+                        "invalid_assets",
+                        f"Frame {frame_path.name} is not a PNG",
+                    )
+                frame = decoded_frame.convert("RGBA")
+            if frame.size != expected_size:
+                raise MakerError(
+                    "invalid_assets",
+                    f"Frame {frame_path.name} does not match manifest.render_size",
+                )
+            frames.append(frame)
+    except MakerError:
+        raise
+    except (OSError, ValueError, UnidentifiedImageError) as error:
+        raise MakerError(
+            "invalid_assets",
+            "Motion alignment inputs could not be decoded",
+            bounded(str(error)),
+        ) from error
+
+    signatures = [motion_frame_signature(frame) for frame in frames]
+    measured_anchor = [signature["centroid_x"] for signature in signatures]
+    measured_baseline = [signature["bbox_bottom"] for signature in signatures]
+    anchor_contract, target_anchor = parse_motion_alignment_axis(
+        plan.get("body_anchor_x"),
+        "body_anchor_x",
+        len(frames),
+        measured_anchor,
+    )
+    baseline_contract, target_baseline = parse_motion_alignment_axis(
+        plan.get("baseline_y"),
+        "baseline_y",
+        len(frames),
+        measured_baseline,
+    )
+    if anchor_contract["mode"] == baseline_contract["mode"] == "preserve":
+        raise MakerError(
+            "invalid_input",
+            "Motion alignment plan must correct body_anchor_x, baseline_y, or both",
+        )
+
+    translations: list[tuple[int, int]] = []
+    for index, frame in enumerate(frames):
+        translate_x = int(round((target_anchor[index] - measured_anchor[index]) * width))
+        translate_y = int(
+            round((target_baseline[index] - measured_baseline[index]) * height)
+        )
+        alpha = frame.getchannel("A")
+        alpha_box = alpha.getbbox()
+        visible_box = alpha.point(
+            lambda value: 255 if value >= VISIBLE_ALPHA_THRESHOLD else 0
+        ).getbbox()
+        if alpha_box is None or visible_box is None:
+            raise MakerError(
+                "invalid_assets",
+                f"Frame {frame_paths[index].name} has no visible subject",
+            )
+        left, top, right, bottom = alpha_box
+        if (
+            left + translate_x < 0
+            or top + translate_y < 0
+            or right + translate_x > width
+            or bottom + translate_y > height
+        ):
+            raise MakerError(
+                "unsafe_motion_alignment",
+                f"Frame {frame_paths[index].name} translation would discard Alpha pixels; "
+                "regenerate or recompose instead",
+            )
+        left, top, right, bottom = visible_box
+        if (
+            left + translate_x < 1
+            or top + translate_y < 1
+            or right + translate_x > width - 1
+            or bottom + translate_y > height - 1
+        ):
+            raise MakerError(
+                "unsafe_motion_alignment",
+                f"Frame {frame_paths[index].name} translation would remove the required "
+                "transparent padding; regenerate or recompose instead",
+            )
+        translations.append((translate_x, translate_y))
+
+    aligned_frames: list[Any] = []
+    for frame, (translate_x, translate_y) in zip(frames, translations):
+        aligned = Image.new("RGBA", expected_size, (0, 0, 0, 0))
+        aligned.paste(frame, (translate_x, translate_y))
+        aligned_frames.append(aligned)
+
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    output_digests: dict[str, str] = {}
+    try:
+        for frame_path, aligned in zip(frame_paths, aligned_frames):
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{frame_path.stem}.",
+                suffix=".png",
+                dir=output_dir,
+            )
+            os.close(descriptor)
+            temporary_path = Path(temporary)
+            output_path = output_dir / frame_path.name
+            try:
+                aligned.save(temporary_path, format="PNG")
+                os.chmod(temporary_path, 0o600)
+                os.replace(temporary_path, output_path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+            output_digests[frame_path.name] = decoded_png_digest(output_path)
+    except (OSError, ValueError) as error:
+        raise MakerError(
+            "invalid_assets",
+            "Aligned transparent frames could not be written",
+            bounded(str(error)),
+        ) from error
+
+    output_digest = hashlib.sha256()
+    for name, digest in output_digests.items():
+        output_digest.update(name.encode("utf-8"))
+        output_digest.update(b"\0")
+        output_digest.update(digest.encode("ascii"))
+        output_digest.update(b"\0")
+
+    after_signatures = [motion_frame_signature(frame) for frame in aligned_frames]
+    report = {
+        "schema_version": MOTION_ALIGNMENT_SCHEMA,
+        "generated_at": utc_now(),
+        "state": args.state,
+        "frame_count": len(frame_paths),
+        "motion_intent": plan["motion_intent"].strip(),
+        "correction_reason": plan["correction_reason"].strip(),
+        "body_anchor_x": anchor_contract,
+        "baseline_y": baseline_contract,
+        "source_motion_digest": source_motion_digest,
+        "plan_sha256": sha256_file(plan_path),
+        "output_motion_digest": output_digest.hexdigest(),
+        "before": motion_registration_summary(frames),
+        "after": motion_registration_summary(aligned_frames),
+        "frames": [
+            {
+                "frame": index,
+                "path": frame_path.name,
+                "translation_px": {"x": translation[0], "y": translation[1]},
+                "target": {
+                    "body_anchor_x": round(target_anchor[index], 6),
+                    "baseline_y": round(target_baseline[index], 6),
+                },
+                "result": {
+                    "body_anchor_x": round(after_signatures[index]["centroid_x"], 6),
+                    "baseline_y": round(after_signatures[index]["bbox_bottom"], 6),
+                },
+            }
+            for index, (frame_path, translation) in enumerate(
+                zip(frame_paths, translations)
+            )
+        ],
+        "review_required": (
+            "This pass used integer whole-frame translation only: no scaling, rotation, "
+            "resampling, Alpha filtering, or pose deformation. Inspect the corrected "
+            "authored-timing sequence against the action card and pose guide, copy only "
+            "approved PNGs into petpack-source, then rerun Motion QA and motion review."
+        ),
+    }
+    write_json_atomic(report_path, report)
+    return {
+        "schema_version": HELPER_SCHEMA,
+        "ok": True,
+        "status": "completed",
+        "capability": "motion-align",
+        "state": args.state,
+        "output_dir": str(output_dir),
+        "report_path": str(report_path),
+        "frame_count": len(frame_paths),
+        "maximum_translation_px": {
+            "x": max((abs(translation[0]) for translation in translations), default=0),
+            "y": max((abs(translation[1]) for translation in translations), default=0),
+        },
     }
 
 
@@ -3695,6 +4124,16 @@ def build_parser() -> argparse.ArgumentParser:
     motion_lock_parser.add_argument("--reference-frame", type=int, default=0)
     motion_lock_parser.add_argument("--feather-px", type=int, default=4)
 
+    motion_align_parser = subparsers.add_parser(
+        "motion-align",
+        help="Correct unintended transparent-frame body-anchor or baseline drift",
+    )
+    motion_align_parser.add_argument("--source", required=True)
+    motion_align_parser.add_argument("--state", required=True, choices=STATES)
+    motion_align_parser.add_argument("--plan", required=True)
+    motion_align_parser.add_argument("--output-dir", required=True)
+    motion_align_parser.add_argument("--report")
+
     production_verify_parser = subparsers.add_parser(
         "production-verify",
         help="Run the shared visual-production final gate through PetCore",
@@ -3769,6 +4208,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = motion_qa(args)
         elif args.command == "motion-review":
             result = motion_review(args)
+        elif args.command == "motion-align":
+            result = motion_align(args)
         elif args.command == "motion-lock":
             result = motion_lock(args)
         elif args.command == "production-verify":

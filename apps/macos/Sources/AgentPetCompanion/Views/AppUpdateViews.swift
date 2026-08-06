@@ -25,7 +25,7 @@ struct AppUpdateAvailableBanner: View {
                 Button(APCLocalization.text(.appUpdateViewAction)) {
                     openUpdate()
                 }
-                .buttonStyle(.borderedProminent)
+                .apcClearGlassButtonStyle(prominent: true)
                 .controlSize(.small)
                 .accessibilityIdentifier("app-update.banner-open")
                 Button {
@@ -217,17 +217,17 @@ struct AppUpdateSheetView: View {
                     Button(APCLocalization.text(.appUpdateRetryDownloadAction)) {
                         beginDownload(release)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                     Link(
                         APCLocalization.text(.appUpdateOpenReleasePageAction),
                         destination: release.releasePageURL
                     )
-                    .buttonStyle(.bordered)
+                    .apcClearGlassButtonStyle()
                 } else {
                     Button(APCLocalization.text(.commonRetry)) {
                         updater.checkManually()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .apcClearGlassButtonStyle(prominent: true)
                 }
                 Button(APCLocalization.text(.commonClose)) {
                     updater.dismissSheet()
@@ -246,7 +246,7 @@ struct AppUpdateSheetView: View {
                 systemImage: "arrow.down.circle"
             )
         }
-        .buttonStyle(.borderedProminent)
+        .apcClearGlassButtonStyle(prominent: true)
         .keyboardShortcut(.defaultAction)
         .accessibilityIdentifier("app-update.download")
     }
@@ -256,7 +256,7 @@ struct AppUpdateSheetView: View {
             APCLocalization.text(.appUpdateReleaseNotesAction),
             destination: release.releasePageURL
         )
-        .buttonStyle(.bordered)
+        .apcClearGlassButtonStyle()
         .accessibilityIdentifier("app-update.release-notes")
     }
 

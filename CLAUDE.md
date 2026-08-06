@@ -2,8 +2,4 @@
 
 # Claude Code Notes
 
-Shared project rules live in `AGENTS.md`, included above via `@AGENTS.md`. Do not duplicate shared scope, architecture, safety, or workflow rules here.
-
-Use this context order: user request, `AGENTS.md`, implementation/schemas/manifests/tests in the touched area, the target product contract and ordered task when executing the approved refactor, then the owning current-state document indexed by `docs/README.md`.
-
-Claude Code connector changes belong in `plugins/claude-code/` and must follow the shared event contracts in the active implementation, schemas, and tests.
+Shared project rules are imported from `AGENTS.md`; do not duplicate them here. Claude Code connector changes belong in `plugins/claude-code/` and follow the active implementation, schemas, tests, and [connector contract](docs/integrations/agent-connectors.md).

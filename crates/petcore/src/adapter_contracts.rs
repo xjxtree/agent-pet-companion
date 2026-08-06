@@ -21,7 +21,10 @@ const MAX_IDENTITY_BYTES: usize = 256;
 /// tool input/output, provider-visible reasoning, and raw activity details are
 /// normalized into the bounded display-only `activity_content` field. Complete
 /// transcripts, credential stores, auth headers, and environment dumps remain
-/// outside the event contract.
+/// outside the event contract; where a host names its own transcript and
+/// delivers no message hook, only the same bounded display strings this struct
+/// already carries may be recovered from it — see
+/// [`claude_transcript_display`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContractEvent {
     pub source: AgentSource,
@@ -741,6 +744,205 @@ fn claude_session_title(value: &Value) -> Option<String> {
     )
 }
 
+/// The transcript file a Claude hook names for its own session. The path is
+/// part of the hook payload the host supplies deliberately; it is still
+/// untrusted input and the caller is responsible for validating and bounding
+/// what it reads.
+pub fn claude_transcript_path(value: &Value) -> Option<String> {
+    string_at(
+        value,
+        &[
+            &["transcript_path"],
+            &["transcriptPath"],
+            &["properties", "transcript_path"],
+        ],
+    )
+}
+
+/// The same closed, bounded display fields the hook contract already carries,
+/// recovered from the Agent's own transcript when its host does not deliver
+/// them through hooks.
+///
+/// Claude's desktop host emits session and tool lifecycle hooks but no
+/// `UserPromptSubmit` or `Stop`, and those are the only hooks carrying a
+/// message; its `session_title` likewise only rides `SessionStart`, which fires
+/// before a title exists. Such a session would otherwise stay anonymous and
+/// contextless no matter how long it runs. This recovers exactly the three
+/// display strings the projection needs — nothing else from the transcript
+/// crosses the adapter boundary, and every value passes the same sanitization
+/// and length bounds as a hook-supplied one.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TranscriptDisplayProjection {
+    pub session_title: Option<String>,
+    pub latest_user_message: Option<String>,
+    pub latest_agent_message: Option<String>,
+    /// Which of the two messages appeared later in the transcript. Transcript
+    /// records are append-ordered, so this is what makes a new user prompt
+    /// take over from the previous turn's Agent text and vice versa — without
+    /// it, one side would permanently shadow the other.
+    pub latest_message_role: Option<String>,
+}
+
+impl TranscriptDisplayProjection {
+    pub fn is_empty(&self) -> bool {
+        self.session_title.is_none()
+            && self.latest_user_message.is_none()
+            && self.latest_agent_message.is_none()
+    }
+}
+
+/// Projects one Claude transcript slice. `text` may begin mid-line because
+/// callers read a bounded tail rather than a whole transcript; unparsable lines
+/// are skipped rather than failing the projection. Records are newest-last, so
+/// the last match of each kind wins.
+pub fn claude_transcript_display(
+    text: &str,
+    session_id: Option<&str>,
+) -> TranscriptDisplayProjection {
+    let session_id = session_id.map(str::trim).filter(|value| !value.is_empty());
+    let mut projection = TranscriptDisplayProjection::default();
+
+    // Newest-first, so the first real conversation record is the current one
+    // and the scan can stop as soon as it and the title are found. Claude may
+    // append a `last-prompt` bookkeeping record after the Agent response; that
+    // record is only a bounded fallback when the tail contains no conversation
+    // record and must not make an older prompt look newer than the response.
+    // This runs inside a hook on every tool call, so parsing the whole window
+    // when the answer is in its last few records would be the dominant cost of
+    // the adapter.
+    for line in text.lines().rev() {
+        if projection.session_title.is_some() && projection.latest_message_role.is_some() {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if !record.is_object() {
+            continue;
+        }
+        // A transcript may interleave records from a resumed or forked
+        // conversation. Only the addressed session may contribute display text.
+        if let (Some(expected), Some(actual)) = (
+            session_id,
+            string_at(&record, &[&["sessionId"], &["session_id"]]),
+        ) {
+            if actual.trim() != expected {
+                continue;
+            }
+        }
+        // Subagent turns are not the session's own visible conversation.
+        if bool_at(&record, &[&["isSidechain"]]) {
+            continue;
+        }
+
+        match record.get("type").and_then(Value::as_str) {
+            Some("custom-title") if projection.session_title.is_none() => {
+                projection.session_title =
+                    bounded_string_at(&record, &[&["customTitle"]], MAX_SESSION_TITLE_BYTES);
+            }
+            Some("last-prompt")
+                if projection.latest_message_role.is_none()
+                    && projection.latest_user_message.is_none() =>
+            {
+                if let Some(prompt) = string_at(&record, &[&["lastPrompt"]])
+                    .and_then(|raw| normalize_claude_display_message(&raw))
+                {
+                    projection.latest_user_message = Some(prompt);
+                }
+            }
+            Some("user") if projection.latest_message_role.is_none() => {
+                // A `user` record carrying a tool result is transport, not a
+                // message the user wrote, and array content is a tool-result
+                // envelope rather than prompt text.
+                if record.get("toolUseResult").is_some() {
+                    continue;
+                }
+                if let Some(content) = string_at(&record, &[&["message", "content"]])
+                    .and_then(|raw| normalize_claude_display_message(&raw))
+                {
+                    projection.latest_user_message = Some(content);
+                    projection.latest_message_role = Some("user".to_string());
+                }
+            }
+            Some("assistant") if projection.latest_message_role.is_none() => {
+                if let Some(content) = claude_transcript_assistant_text(&record) {
+                    projection.latest_agent_message = Some(content);
+                    projection.latest_message_role = Some("assistant".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if projection.latest_message_role.is_none() && projection.latest_user_message.is_some() {
+        projection.latest_message_role = Some("user".to_string());
+    }
+
+    projection
+}
+
+/// Joins the visible text blocks of one assistant record. Tool calls and
+/// reasoning blocks are deliberately excluded: the bubble shows what the Agent
+/// said, and raw tool payloads already have their own bounded activity field.
+fn claude_transcript_assistant_text(record: &Value) -> Option<String> {
+    let content = record.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        return display_message(text);
+    }
+    let blocks = content.as_array()?;
+    let mut joined = String::new();
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        let Some(text) = block.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        if !joined.is_empty() {
+            joined.push('\n');
+        }
+        joined.push_str(text);
+        if joined.len() >= MAX_MESSAGE_BYTES {
+            break;
+        }
+    }
+    display_message(&joined)
+}
+
+/// Fills only the display fields the host left absent. A value the host did
+/// supply always wins, so recovering from a transcript can never override the
+/// hook contract.
+pub fn apply_transcript_display(
+    contract: &mut ContractEvent,
+    projection: &TranscriptDisplayProjection,
+) {
+    if contract.session_title.is_none() {
+        contract.session_title = projection.session_title.clone();
+    }
+    if contract.message_content.is_some() {
+        return;
+    }
+    // Report whichever side spoke most recently. A turn that is still calling
+    // tools has no Agent text yet, so the prompt that started it is the honest
+    // context; once the Agent has spoken, that text is the current-turn
+    // message, and the next prompt takes over again.
+    let (role, content) = match projection.latest_message_role.as_deref() {
+        Some("assistant") => ("assistant", projection.latest_agent_message.clone()),
+        Some("user") => ("user", projection.latest_user_message.clone()),
+        _ => return,
+    };
+    let Some(content) = content else { return };
+    contract.message_role = Some(role.to_string());
+    contract.message_content = Some(content);
+}
+
 fn string_at(value: &Value, paths: &[&[&str]]) -> Option<String> {
     paths.iter().find_map(|path| {
         let mut current = value;
@@ -1419,6 +1621,339 @@ fn nonempty_value_at(value: &Value, paths: &[&[&str]]) -> bool {
             Value::Null => false,
         }
     })
+}
+
+#[cfg(test)]
+mod claude_transcript_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The shapes observed in a real Claude transcript: bookkeeping records for
+    /// the title and latest prompt, plus conversation records whose assistant
+    /// content is a block array.
+    fn transcript(session: &str) -> Vec<String> {
+        vec![
+            json!({"type": "custom-title", "customTitle": "宠物拖动动画与气泡跟随优化", "sessionId": session})
+                .to_string(),
+            json!({
+                "type": "user",
+                "sessionId": session,
+                "isSidechain": false,
+                "message": {"role": "user", "content": "参考看下 ChatGPT 内置宠物"}
+            })
+            .to_string(),
+            json!({"type": "last-prompt", "lastPrompt": "参考看下 ChatGPT 内置宠物", "sessionId": session})
+                .to_string(),
+        ]
+    }
+
+    fn assistant_record(session: &str, text: &str) -> String {
+        json!({
+            "type": "assistant",
+            "sessionId": session,
+            "isSidechain": false,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "internal reasoning"},
+                    {"type": "text", "text": text},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x"}}
+                ]
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn recovers_title_and_prompt_when_the_host_sends_neither() {
+        let session = "308b79e0-bbc0-491b-984a-950d6aa4bbab";
+        let projection = claude_transcript_display(&transcript(session).join("\n"), Some(session));
+        assert_eq!(
+            projection.session_title.as_deref(),
+            Some("宠物拖动动画与气泡跟随优化")
+        );
+        assert_eq!(
+            projection.latest_user_message.as_deref(),
+            Some("参考看下 ChatGPT 内置宠物")
+        );
+        assert_eq!(projection.latest_message_role.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn trailing_last_prompt_is_bookkeeping_but_a_real_new_prompt_takes_over() {
+        let session = "session-a";
+        let mut lines = transcript(session);
+        lines.push(assistant_record(session, "Found the root cause."));
+        lines.push(
+            json!({"type": "last-prompt", "lastPrompt": "参考看下 ChatGPT 内置宠物", "sessionId": session})
+                .to_string(),
+        );
+        let after_agent = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert_eq!(
+            after_agent.latest_message_role.as_deref(),
+            Some("assistant")
+        );
+        assert_eq!(
+            after_agent.latest_agent_message.as_deref(),
+            Some("Found the root cause.")
+        );
+
+        lines.push(
+            json!({
+                "type": "user",
+                "sessionId": session,
+                "message": {"role": "user", "content": "继续修复"}
+            })
+            .to_string(),
+        );
+        lines.push(
+            json!({"type": "last-prompt", "lastPrompt": "继续修复", "sessionId": session})
+                .to_string(),
+        );
+        let after_prompt = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert_eq!(after_prompt.latest_message_role.as_deref(), Some("user"));
+        assert_eq!(
+            after_prompt.latest_user_message.as_deref(),
+            Some("继续修复")
+        );
+    }
+
+    #[test]
+    fn tool_transport_and_subagent_turns_never_become_display_messages() {
+        let session = "session-b";
+        let lines = [
+            json!({"type": "custom-title", "customTitle": "Real title", "sessionId": session})
+                .to_string(),
+            // A tool result is delivered as a `user` record.
+            json!({
+                "type": "user",
+                "sessionId": session,
+                "toolUseResult": {"stdout": "secret output"},
+                "message": {"role": "user", "content": "secret output"}
+            })
+            .to_string(),
+            // Array content is a tool-result envelope, not prompt text.
+            json!({
+                "type": "user",
+                "sessionId": session,
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "content": "more output"}]
+                }
+            })
+            .to_string(),
+            // A subagent turn is not the session's own conversation.
+            json!({
+                "type": "assistant",
+                "sessionId": session,
+                "isSidechain": true,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "subagent"}]}
+            })
+            .to_string(),
+        ];
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert_eq!(projection.session_title.as_deref(), Some("Real title"));
+        assert_eq!(projection.latest_message_role, None);
+        assert_eq!(projection.latest_user_message, None);
+        assert_eq!(projection.latest_agent_message, None);
+    }
+
+    #[test]
+    fn another_session_and_a_truncated_leading_record_contribute_nothing() {
+        let session = "session-c";
+        let mut lines = vec![
+            // A bounded tail can begin mid-record.
+            r#"e": "custom-title", "customTitle": "Truncated", "sessionId": "session-c"}"#
+                .to_string(),
+            json!({"type": "custom-title", "customTitle": "Other session", "sessionId": "other"})
+                .to_string(),
+            json!({"type": "last-prompt", "lastPrompt": "other prompt", "sessionId": "other"})
+                .to_string(),
+        ];
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert_eq!(projection, TranscriptDisplayProjection::default());
+        assert!(projection.is_empty());
+
+        // Without an addressed session the transcript still speaks for itself.
+        lines.push(assistant_record(session, "own text"));
+        let unscoped = claude_transcript_display(&lines.join("\n"), None);
+        assert_eq!(unscoped.latest_agent_message.as_deref(), Some("own text"));
+    }
+
+    #[test]
+    fn recovery_only_fills_fields_the_host_left_absent() {
+        let session = "session-d";
+        let mut lines = transcript(session);
+        lines.push(assistant_record(session, "recovered agent text"));
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+
+        let mut host_supplied = parse_contract_event(
+            AgentSource::ClaudeCode,
+            &json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": session,
+                "session_title": "Host title",
+                "prompt": "Host prompt"
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        apply_transcript_display(&mut host_supplied, &projection);
+        assert_eq!(host_supplied.session_title.as_deref(), Some("Host title"));
+        assert_eq!(
+            host_supplied.message_content.as_deref(),
+            Some("Host prompt")
+        );
+        assert_eq!(host_supplied.message_role.as_deref(), Some("user"));
+
+        // A tool hook carries neither, which is the desktop-host case.
+        let mut tool_hook = parse_contract_event(
+            AgentSource::ClaudeCode,
+            &json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": session,
+                "tool_name": "Read"
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(tool_hook.session_title, None);
+        assert_eq!(tool_hook.message_content, None);
+        apply_transcript_display(&mut tool_hook, &projection);
+        assert_eq!(
+            tool_hook.session_title.as_deref(),
+            Some("宠物拖动动画与气泡跟随优化")
+        );
+        assert_eq!(
+            tool_hook.message_content.as_deref(),
+            Some("recovered agent text")
+        );
+        assert_eq!(tool_hook.message_role.as_deref(), Some("assistant"));
+    }
+
+    #[test]
+    fn transcript_text_obeys_the_same_bounds_as_a_hook_supplied_field() {
+        let session = "session-e";
+        let long_title = "标".repeat(MAX_SESSION_TITLE_BYTES);
+        let long_text = "x".repeat(MAX_MESSAGE_BYTES * 4);
+        let lines = [
+            json!({"type": "custom-title", "customTitle": long_title, "sessionId": session})
+                .to_string(),
+            assistant_record(session, &long_text),
+        ];
+        let projection = claude_transcript_display(&lines.join("\n"), Some(session));
+        assert!(projection.session_title.expect("title").len() <= MAX_SESSION_TITLE_BYTES);
+        assert!(projection.latest_agent_message.expect("message").len() <= MAX_MESSAGE_BYTES);
+    }
+
+    /// Claude needed transcript recovery because its desktop host delivers no
+    /// message-carrying hook at all. Pi and OpenCode publish the title and both
+    /// message roles on their own events, so they need no such recovery — this
+    /// pins that difference so a future change cannot quietly remove the fields
+    /// that make their bubbles readable.
+    #[test]
+    fn pi_and_opencode_publish_title_and_both_message_roles_directly() {
+        let pi_title = parse_contract_event(
+            AgentSource::Pi,
+            &json!({
+                "type": "session_info_changed",
+                "session_id": "pi-1",
+                "session_title": "检查下代码工程质量"
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(
+            pi_title.session_title.as_deref(),
+            Some("检查下代码工程质量")
+        );
+
+        let pi_user = parse_contract_event(
+            AgentSource::Pi,
+            &json!({"type": "input", "session_id": "pi-1", "text": "检查下代码工程质量"}),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(pi_user.message_role.as_deref(), Some("user"));
+        assert_eq!(
+            pi_user.message_content.as_deref(),
+            Some("检查下代码工程质量")
+        );
+
+        let pi_agent = parse_contract_event(
+            AgentSource::Pi,
+            &json!({
+                "type": "message_end",
+                "session_id": "pi-1",
+                "message_content": "我来检查一下这个项目的代码工程质量。"
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(pi_agent.message_role.as_deref(), Some("assistant"));
+        assert_eq!(
+            pi_agent.message_content.as_deref(),
+            Some("我来检查一下这个项目的代码工程质量。")
+        );
+
+        let opencode_title = parse_contract_event(
+            AgentSource::Opencode,
+            &json!({
+                "type": "session.updated",
+                "properties": {"sessionID": "oc-1", "session_title": "Refactor the parser"}
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(
+            opencode_title.session_title.as_deref(),
+            Some("Refactor the parser")
+        );
+
+        for (event, role) in [("message.user", "user"), ("message.assistant", "assistant")] {
+            let contract = parse_contract_event(
+                AgentSource::Opencode,
+                &json!({
+                    "type": event,
+                    "properties": {"sessionID": "oc-1", "message_content": "bounded text"}
+                }),
+            )
+            .expect("parsed")
+            .expect("contract");
+            assert_eq!(contract.message_role.as_deref(), Some(role));
+            assert_eq!(contract.message_content.as_deref(), Some("bounded text"));
+        }
+    }
+
+    /// Transcript recovery is Claude-scoped on purpose: no other host names a
+    /// local transcript in its hook payload, so no other source may read one.
+    #[test]
+    fn transcript_recovery_never_applies_to_another_source() {
+        for source in [AgentSource::Codex, AgentSource::Pi, AgentSource::Opencode] {
+            let payload = json!({"transcript_path": "/tmp/anything.jsonl"});
+            // The extractor itself is source-agnostic; the adapter boundary is
+            // what scopes it, and every caller checks the source first.
+            assert!(claude_transcript_path(&payload).is_some());
+            assert_ne!(source, AgentSource::ClaudeCode);
+        }
+    }
+
+    #[test]
+    fn transcript_path_is_read_from_the_hook_payload() {
+        assert_eq!(
+            claude_transcript_path(&json!({"transcript_path": "/a/b.jsonl"})).as_deref(),
+            Some("/a/b.jsonl")
+        );
+        assert_eq!(
+            claude_transcript_path(&json!({"transcriptPath": "/a/b.jsonl"})).as_deref(),
+            Some("/a/b.jsonl")
+        );
+        assert_eq!(
+            claude_transcript_path(&json!({"transcript_path": ""})),
+            None
+        );
+        assert_eq!(claude_transcript_path(&json!({})), None);
+    }
 }
 
 #[cfg(test)]

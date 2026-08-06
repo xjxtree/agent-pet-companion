@@ -130,6 +130,8 @@
 "interface_language.simplified_chinese" = "简体中文";
 "session_group.stacked" = "堆叠";
 "session_group.expanded" = "展开";
+"bubble_font_scale.standard" = "标准";
+"bubble_font_scale.large" = "更大";
 "check_status.ok" = "正常";
 "check_status.needs_fix" = "需修复";
 "check_status.missing" = "未检测到";
@@ -308,12 +310,12 @@
 "config.theme_picker" = "外观";
 "config.theme_accessibility" = "外观主题";
 "config.theme_detail" = "同时应用于控制中心、状态气泡、操作按钮和右击菜单。";
-"config.bubble_transparency" = "气泡透明度";
-"config.glass_more" = "玻璃更明显";
-"config.transparent_more" = "更透明";
-"config.transparency_detail" = "只调整气泡的光学背景；文字与操作按钮保持清晰。";
+"config.bubble_font_scale" = "气泡字号";
+"config.bubble_font_scale.detail" = "设置桌面消息气泡的文字大小。标准保持当前字号，更大会按同一比例放大气泡内所有文字。";
 "config.timeout" = "普通消息收起时间";
 "config.timeout_detail" = "普通会话在没有新活动后自动收起";
+"config.group_sessions_by_agent" = "按 Agent 聚合会话";
+"config.group_sessions_by_agent.detail" = "打开时，每个 Agent 使用一张可展开的聚合卡；关闭时，每个会话独立成卡并进入一个全局折叠栈，按注意力状态与新轮次稳定排序。";
 "config.group_display" = "多会话默认显示";
 "config.group_display.detail" = "气泡中可以为本次临时切换，不会覆盖这里的全局偏好。";
 "config.subnavigation.accessibility" = "宠物配置子页面";

@@ -207,18 +207,17 @@ struct AgentPetCompanionApp: App {
         .windowResizability(.contentSize)
 
         MenuBarExtra {
-            Group {
-                if let request = AppLaunchMode.manualInstallationRequest {
-                    AppInstallationStatusMenuContent(store: store, request: request)
-                } else {
-                    AppStatusMenuContent(store: store)
-                }
+            if let request = AppLaunchMode.manualInstallationRequest {
+                AppInstallationStatusMenuContent(store: store, request: request)
+                    .fixedSize(horizontal: true, vertical: false)
+            } else {
+                AppStatusMenuContent(store: store)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .apcInterfaceLanguage(store)
         } label: {
             AppStatusItemLabel(store: store)
-                .apcInterfaceLanguage(store)
         }
+        .menuBarExtraStyle(.menu)
     }
 }
 
@@ -228,68 +227,66 @@ struct AppStatusMenuContent: View {
     @ObservedObject var store: AppStore
 
     var body: some View {
-        Group {
-            AppUpdateMenuSection(
-                updater: store.appUpdater,
-                presentUpdate: store.presentAvailableAppUpdate
+        AppUpdateMenuSection(
+            updater: store.appUpdater,
+            presentUpdate: store.presentAvailableAppUpdate
+        )
+        Text(APCLocalization.format(
+            .appMenuCurrentPet,
+            MenuBarSummary.short(
+                store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
             )
-            Text(APCLocalization.format(
-                .appMenuCurrentPet,
-                MenuBarSummary.short(
-                    store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
-                )
-            ))
-                .accessibilityIdentifier("menubar.summary.pet")
-            Text(APCLocalization.format(
-                .appMenuRecentAgent,
-                MenuBarSummary.short(MenuBarLocalizedSummary.recentEvent(store.recentEvents.first))
-            ))
-                .accessibilityIdentifier("menubar.summary.agent")
-            Divider()
-            Button(APCLocalization.text(.appActionOpenControlCenter)) {
-                store.presentMainWindow()
-            }
-            .keyboardShortcut("0", modifiers: [.command])
-            .accessibilityIdentifier("menubar.open-control-center")
-            Button(APCLocalization.text(
-                store.behavior.enabled ? .appActionHidePet : .appActionShowPet
-            )) {
-                store.toggleOverlay()
-            }
-            .keyboardShortcut("p", modifiers: [.command, .shift])
-            .accessibilityIdentifier("menubar.toggle-pet")
-            Button(APCLocalization.text(.appActionFocusPetSessions)) {
-                store.focusOverlayBubbleForKeyboardNavigation()
-            }
-            .keyboardShortcut("b", modifiers: [.command, .shift])
-            .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
-            .accessibilityIdentifier("menubar.focus-pet-sessions")
-            Divider()
-            Button(APCLocalization.text(.appActionCheckConnections)) {
-                store.selection = .connections
-                store.checkAllConnections()
-                store.presentMainWindow()
-            }
-            .disabled(!store.canStartConnectionOperation)
-            .accessibilityIdentifier("menubar.check-connections")
-            Button(APCLocalization.text(.appUpdateCheckAction)) {
-                store.checkForAppUpdatesManually()
-            }
-            .disabled(store.appUpdater.isChecking)
-            .accessibilityIdentifier("menubar.check-for-updates")
-            Divider()
-            Button(APCLocalization.text(.appActionQuit)) {
-                if AppSingleInstanceCoordinator.shared.claim == .primary {
-                    AppDiagnostics.shared.log(
-                        .notice,
-                        category: "lifecycle",
-                        event: "quit_requested"
-                    )
-                }
-                NSApplication.shared.terminate(nil)
-            }
-            .accessibilityIdentifier("menubar.quit")
+        ))
+            .accessibilityIdentifier("menubar.summary.pet")
+        Text(APCLocalization.format(
+            .appMenuRecentAgent,
+            MenuBarSummary.short(MenuBarLocalizedSummary.recentEvent(store.recentEvents.first))
+        ))
+            .accessibilityIdentifier("menubar.summary.agent")
+        Divider()
+        Button(APCLocalization.text(.appActionOpenControlCenter)) {
+            store.presentMainWindow()
         }
+        .keyboardShortcut("0", modifiers: [.command])
+        .accessibilityIdentifier("menubar.open-control-center")
+        Button(APCLocalization.text(
+            store.behavior.enabled ? .appActionHidePet : .appActionShowPet
+        )) {
+            store.toggleOverlay()
+        }
+        .keyboardShortcut("p", modifiers: [.command, .shift])
+        .accessibilityIdentifier("menubar.toggle-pet")
+        Button(APCLocalization.text(.appActionFocusPetSessions)) {
+            store.focusOverlayBubbleForKeyboardNavigation()
+        }
+        .keyboardShortcut("b", modifiers: [.command, .shift])
+        .disabled(!store.canFocusOverlayBubbleForKeyboardNavigation)
+        .accessibilityIdentifier("menubar.focus-pet-sessions")
+        Divider()
+        Button(APCLocalization.text(.appActionCheckConnections)) {
+            store.selection = .connections
+            store.checkAllConnections()
+            store.presentMainWindow()
+        }
+        .disabled(!store.canStartConnectionOperation)
+        .accessibilityIdentifier("menubar.check-connections")
+        Button(APCLocalization.text(.appUpdateCheckAction)) {
+            store.checkForAppUpdatesManually()
+        }
+        .disabled(store.appUpdater.isChecking)
+        .accessibilityIdentifier("menubar.check-for-updates")
+        Divider()
+        Button(APCLocalization.text(.appActionQuit)) {
+            if AppSingleInstanceCoordinator.shared.claim == .primary {
+                AppDiagnostics.shared.log(
+                    .notice,
+                    category: "lifecycle",
+                    event: "quit_requested"
+                )
+            }
+            NSApplication.shared.terminate(nil)
+        }
+        .accessibilityIdentifier("menubar.quit")
     }
 }
 
@@ -370,16 +367,33 @@ private enum MenuBarLocalizedSummary {
     }
 }
 
+/// `MenuBarExtra` presents this label at the status bar's own thickness, so the mark's
+/// point size alone does not decide how large it looks: a bare mark is scaled up until
+/// it fills the bar edge to edge, which makes the saturated brand art read far heavier
+/// than the monochrome system glyphs beside it. The label therefore reserves a compact
+/// box and insets the mark inside it, keeping both the artwork and status-item width
+/// restrained across external and built-in displays.
 private struct AppStatusItemLabel: View {
+    private static let statusItemBox: CGFloat = 18
+
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var store: AppStore
 
     var body: some View {
-        APCBrandMark(size: 18)
+        Image(nsImage: APCBrandAssets.statusItemMarkImage)
+            .renderingMode(.original)
+            .interpolation(.high)
+            .antialiased(true)
+            .frame(
+                width: APCBrandAssets.statusItemMarkPointSize,
+                height: APCBrandAssets.statusItemMarkPointSize
+            )
+            .accessibilityLabel(Text("Agent Pet Companion"))
             .overlay(alignment: .topTrailing) {
                 AppUpdateStatusDot(updater: store.appUpdater)
                     .offset(x: 2, y: -2)
             }
+            .frame(width: Self.statusItemBox, height: Self.statusItemBox)
             .onAppear {
                 store.setMainWindowPresenter {
                     openWindow(id: "main")

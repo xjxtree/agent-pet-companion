@@ -4772,6 +4772,8 @@ mod asset_contract_tests {
             .unwrap();
         thinking.frame_durations_ms = vec![500; 4];
         fs::remove_file(temp.path().join("assets/frames/idle/0003.png")).unwrap();
+        fs::remove_file(temp.path().join("assets/frames/idle/0004.png")).unwrap();
+        fs::remove_file(temp.path().join("assets/frames/idle/0005.png")).unwrap();
         rewrite_timing_metadata(temp.path(), &manifest);
 
         let validation = validate_petpack_dir(temp.path()).unwrap();
@@ -5089,12 +5091,12 @@ mod asset_contract_tests {
     fn skill_full_source_rejects_a_state_below_its_exact_timing_count() {
         let temp = tempfile::tempdir().unwrap();
         write_strict_sample(temp.path());
-        fs::remove_file(temp.path().join("assets/frames/idle/0003.png")).unwrap();
+        fs::remove_file(temp.path().join("assets/frames/idle/0005.png")).unwrap();
 
         let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
 
-        assert!(error.contains("state idle has 3 PNG frames"), "{error}");
-        assert!(error.contains("expected 4"), "{error}");
+        assert!(error.contains("state idle has 5 PNG frames"), "{error}");
+        assert!(error.contains("expected 6"), "{error}");
     }
 
     #[test]

@@ -39,7 +39,9 @@ python3 <skill-dir>/scripts/petpack_workspace.py prepare \
 Default to `standard` and the creation timing in `petpack-v3.md`. Honor an
 explicit supported tier or another complete valid V3 timing. Establish one
 canonical identity and action card, generate one action per batch, retain the
-untouched result, verify source capacity, crop without resampling, and derive
+untouched result, and create the action's deterministic pose guide plus
+separate deterministic size-reference image from one shared geometry record.
+Verify source capacity and subject scale, crop without resampling, and derive
 runtime PNGs through `prepare_transparent_frames.py`.
 
 An additional batch is allowed only for a non-capacity continuity problem in an
@@ -66,7 +68,8 @@ For each requested state change:
 
 1. Use the strongest accepted unchanged frame as an identity reference.
 2. Write the complete intended timing and action card.
-3. Regenerate or edit the complete sequence.
+3. Regenerate the action's pose guide and size-reference image from one shared
+   geometry record, then regenerate or edit the complete sequence.
 4. Run each new crop through the shared transparency script; never reprocess an
    unchanged frame.
 5. Match PNG count to the timing-array length.
@@ -128,6 +131,48 @@ For a localized edit, `motion-lock` may preserve explicitly non-moving pixels
 from one accepted frame. Use a black-locked/white-moving mask, inspect seams,
 copy only approved outputs back, and rerun Motion QA. Do not use it to freeze an
 intended whole-character action or conceal a defective sequence.
+
+If Motion QA reports subject displacement, compare its per-frame
+`metrics.registration` body anchor and baseline with the action card and
+deterministic pose guide before deciding that the movement is wrong. Preserve
+intentional travel, bounce, recoil, jump arcs, and authored easing. When the
+only defect is unintended whole-subject registration drift, try transparent-
+frame alignment before another image-generation call:
+
+```bash
+python3 <skill-dir>/scripts/petpack_workspace.py motion-align \
+  --source /absolute/workspace/petpack-source \
+  --state thinking \
+  --plan /absolute/workspace/thinking-motion-alignment-plan.json \
+  --output-dir /absolute/workspace/thinking-aligned
+```
+
+The closed plan is bound to the current state's `motion_digest` from Motion QA
+and records both the intended motion and why the observed path disagrees:
+
+```json
+{
+  "schema_version": "apc.pet-motion-alignment-plan.v1",
+  "state": "thinking",
+  "source_motion_digest": "<states.thinking.motion_digest>",
+  "motion_intent": "The pet travels right at equal frame spacing while its feet stay planted.",
+  "correction_reason": "The generated body anchor jitters and the foot baseline drifts.",
+  "body_anchor_x": {"mode": "linear"},
+  "baseline_y": {"mode": "lock", "reference_frame": 0}
+}
+```
+
+Each axis uses `preserve`, `lock`, `linear`, or `targets`. `linear` regularizes
+the measured first-to-last path to equal per-frame spacing; `targets` takes one
+normalized guide-derived coordinate per frame and preserves deliberate easing
+or a non-linear arc. The helper performs integer whole-frame translation only:
+no scale, rotation, resampling, Alpha filtering, or pose deformation. It
+rejects clipping, lost Alpha, missing transparent padding, stale QA bindings,
+and plans that preserve both axes. Inspect the complete authored-timing output
+against the pose guide; copy only approved PNGs into `petpack-source`, rerun
+Motion QA, and write fresh review evidence. Regenerate instead when correction
+would hide an identity, anatomy, pose, scale, prop, Alpha, crop, or continuity
+defect.
 
 ## Optional install
 

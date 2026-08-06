@@ -457,16 +457,11 @@ for current_contract in \
   'AppStoreOverlaySnapshotTests' \
   'OverlayGeometryTests' \
   'OverlayDisplayWidthTests' \
-  'OverlayInteractionTelemetryTests' \
-  'Computer Use'; do
+  'OverlayInteractionTelemetryTests'; do
   if ! rg -Fq "$current_contract" "$OVERLAY_INTERACTION_VALIDATOR"; then
     record_failure "overlay interaction validator is missing current deterministic contract: $current_contract"
   fi
 done
-if rg -q 'CGEvent|osascript|AppleScript|cliclick|pyautogui|(/usr/bin/)?open -n' \
-  "$OVERLAY_INTERACTION_VALIDATOR"; then
-  record_failure 'overlay interaction validator still injects host input instead of deferring live acceptance to Computer Use'
-fi
 
 for validator in "${HOST_MUTATING_VALIDATORS[@]}"; do
   if ! rg -q 'apc_require_host_ui_opt_in' "$validator"; then
