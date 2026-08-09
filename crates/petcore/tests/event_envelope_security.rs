@@ -7,10 +7,21 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-// Keep ordinary fixtures inside the retention window regardless of the host
-// clock. Tests that exercise pruning provide their own explicit timestamps.
-const RECEIVED_AT: &str = "2099-08-09T00:00:00Z";
+fn received_at() -> &'static str {
+    // Ordinary fixtures stay inside the retention window without embedding a
+    // calendar deadline. Pruning tests provide their own explicit timestamps.
+    static RECEIVED_AT: OnceLock<String> = OnceLock::new();
+    RECEIVED_AT
+        .get_or_init(|| {
+            OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .expect("format current fixture timestamp")
+        })
+        .as_str()
+}
 const FORBIDDEN_VALUES: &[&str] = &[
     "FORBIDDEN_PROMPT_VALUE_7f16",
     "FORBIDDEN_COMMAND_VALUE_b8c2",
@@ -79,7 +90,7 @@ fn external_display_and_metadata_aliases_never_reach_visible_records() {
                 "diagnostic": false
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -117,7 +128,7 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
                 "diagnostic": false
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -157,7 +168,7 @@ fn activity_ingress_never_recurses_through_credential_containers() {
                         "diagnostic": false
                     }
                 }),
-                RECEIVED_AT,
+                received_at(),
             )
             .unwrap();
             assert!(event.payload_json["activity_content"].is_null());
@@ -178,7 +189,7 @@ fn activity_ingress_never_recurses_through_credential_containers() {
                 "diagnostic": false
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
     assert_eq!(
@@ -209,7 +220,7 @@ fn session_display_fields_enforce_exact_utf8_byte_boundaries() {
                 "diagnostic": false
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
     assert_eq!(
@@ -251,7 +262,7 @@ fn session_display_fields_enforce_exact_utf8_byte_boundaries() {
                 "event_type": "start",
                 "payload": payload
             }),
-            RECEIVED_AT,
+            received_at(),
         )
         .unwrap_err();
         let error = error.to_string();
@@ -291,7 +302,7 @@ fn opencode_v2_activity_events_are_first_class_allowlisted_lifecycle_names() {
                     "diagnostic": false
                 }
             }),
-            RECEIVED_AT,
+            received_at(),
         )
         .unwrap();
 
@@ -314,7 +325,7 @@ fn opencode_prompt_admitted_outcome_survives_the_envelope_vocabularies() {
                 "diagnostic": false
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -339,9 +350,9 @@ fn payload_json_alias_is_normalized_through_the_same_closed_vocabularies() {
                 "outcome": "api_failure",
                 "diagnostic": false
             },
-            "created_at": RECEIVED_AT
+            "created_at": received_at()
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -372,7 +383,7 @@ fn diagnostic_events_always_normalize_to_non_activity_metadata() {
                 "event_type": "tool",
                 "payload": payload
             }),
-            RECEIVED_AT,
+            received_at(),
         )
         .unwrap();
 
@@ -397,7 +408,7 @@ fn session_navigation_accepts_only_allowlisted_warp_focus_urls() {
                 "session_open_url": "warppreview://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
     assert_eq!(event.payload_json["session_open"], true);
@@ -425,7 +436,7 @@ fn session_navigation_accepts_only_allowlisted_warp_focus_urls() {
                     "session_open_url": invalid_url
                 }
             }),
-            RECEIVED_AT,
+            received_at(),
         )
         .unwrap_err();
         assert!(
@@ -444,7 +455,7 @@ fn strict_ingest_rejects_unknown_top_level_and_envelope_fields() {
             "event_type": "start",
             "raw_prompt": "must not be ignored"
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap_err();
     assert!(top_level.to_string().contains("field is not supported"));
@@ -461,7 +472,7 @@ fn strict_ingest_rejects_unknown_top_level_and_envelope_fields() {
                 "raw_command": "must not be ignored"
             }
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap_err();
     assert!(nested
@@ -478,7 +489,7 @@ fn strict_ingest_rejects_ambiguous_payload_aliases_and_source_mismatch() {
             "payload": {},
             "payload_json": {}
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap_err();
     assert!(ambiguous.to_string().contains("only one of payload"));
@@ -489,7 +500,7 @@ fn strict_ingest_rejects_ambiguous_payload_aliases_and_source_mismatch() {
             "source": "codex",
             "event_type": "start"
         }),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap_err();
     assert!(mismatch.to_string().contains("source does not match"));
@@ -505,7 +516,7 @@ fn security_fixture() -> Value {
 fn raw_hook_payload_cannot_cross_the_strict_ingest_boundary() {
     let encoded = serde_json::to_string(&security_fixture()).unwrap();
     let error =
-        NormalizedAgentEvent::from_external(AgentSource::Codex, security_fixture(), RECEIVED_AT)
+        NormalizedAgentEvent::from_external(AgentSource::Codex, security_fixture(), received_at())
             .unwrap_err();
 
     assert!(error.to_string().contains("payload field is not supported"));
@@ -521,7 +532,7 @@ fn external_title_and_detail_are_discarded_even_when_multibyte() {
     value["title"] = Value::String("宠".repeat(100));
     value["detail"] = Value::String("🙂".repeat(200));
 
-    let event = NormalizedAgentEvent::from_external(AgentSource::Pi, value, RECEIVED_AT).unwrap();
+    let event = NormalizedAgentEvent::from_external(AgentSource::Pi, value, received_at()).unwrap();
 
     assert_eq!(event.title, AgentEventType::Tool.zh_label());
     assert_eq!(event.detail, None);
@@ -533,10 +544,10 @@ fn missing_external_id_is_stable_for_the_same_canonical_input() {
     value.as_object_mut().unwrap().remove("id");
 
     let first =
-        NormalizedAgentEvent::from_external(AgentSource::ClaudeCode, value.clone(), RECEIVED_AT)
+        NormalizedAgentEvent::from_external(AgentSource::ClaudeCode, value.clone(), received_at())
             .unwrap();
     let second =
-        NormalizedAgentEvent::from_external(AgentSource::ClaudeCode, value, RECEIVED_AT).unwrap();
+        NormalizedAgentEvent::from_external(AgentSource::ClaudeCode, value, received_at()).unwrap();
 
     assert_eq!(first.id, second.id);
     assert!(first.id.starts_with("evt_external_"));
@@ -548,9 +559,10 @@ fn same_external_id_from_two_sources_is_not_deduplicated() {
     let database = Database::new(temp.path().join("events.sqlite"));
     database.init().unwrap();
     let value = external_event("shared-id", Some("session"));
-    let codex = NormalizedAgentEvent::from_external(AgentSource::Codex, value.clone(), RECEIVED_AT)
-        .unwrap();
-    let pi = NormalizedAgentEvent::from_external(AgentSource::Pi, value, RECEIVED_AT).unwrap();
+    let codex =
+        NormalizedAgentEvent::from_external(AgentSource::Codex, value.clone(), received_at())
+            .unwrap();
+    let pi = NormalizedAgentEvent::from_external(AgentSource::Pi, value, received_at()).unwrap();
 
     assert_eq!(
         database.insert_event(&codex).unwrap(),
@@ -571,13 +583,13 @@ fn same_id_in_two_sessions_is_not_deduplicated() {
     let first = NormalizedAgentEvent::from_external(
         AgentSource::Codex,
         external_event("shared-id", Some("session-a")),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
     let second = NormalizedAgentEvent::from_external(
         AgentSource::Codex,
         external_event("shared-id", Some("session-b")),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -600,13 +612,13 @@ fn null_and_empty_sessions_share_a_stable_deduplication_namespace() {
     let missing = NormalizedAgentEvent::from_external(
         AgentSource::Opencode,
         external_event("same-no-session", None),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
     let empty = NormalizedAgentEvent::from_external(
         AgentSource::Opencode,
         external_event("same-no-session", Some("  ")),
-        RECEIVED_AT,
+        received_at(),
     )
     .unwrap();
 
@@ -640,7 +652,7 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
             "session_active": false,
             "diagnostic": false
         }),
-        created_at: RECEIVED_AT.to_string(),
+        created_at: received_at().to_string(),
     };
     assert_eq!(
         database.insert_event(&session_start).unwrap(),
@@ -662,7 +674,7 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
             "message_content": "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task\n\nGet an understanding of the user's intent",
             "diagnostic": false
         }),
-        created_at: RECEIVED_AT.to_string(),
+        created_at: received_at().to_string(),
     };
     assert_eq!(
         database.insert_event(&internal_prompt).unwrap(),
@@ -674,7 +686,7 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
         "internal-later-tool",
         AgentSource::Codex,
         Some(session_id),
-        RECEIVED_AT,
+        received_at(),
     );
     assert_eq!(
         database.insert_event(&later_tool).unwrap(),
@@ -702,7 +714,7 @@ fn child_session_marker_deletes_existing_projection_and_blocks_future_events() {
         "child-before-lineage",
         AgentSource::Opencode,
         Some(session_id),
-        RECEIVED_AT,
+        received_at(),
     );
     assert_eq!(
         database.insert_event(&ordinary).unwrap(),
@@ -722,7 +734,7 @@ fn child_session_marker_deletes_existing_projection_and_blocks_future_events() {
             "session_active": false,
             "diagnostic": false
         }),
-        created_at: RECEIVED_AT.to_string(),
+        created_at: received_at().to_string(),
     };
     assert_eq!(
         database.insert_event(&marker).unwrap(),
@@ -734,7 +746,7 @@ fn child_session_marker_deletes_existing_projection_and_blocks_future_events() {
         "child-after-lineage",
         AgentSource::Opencode,
         Some(session_id),
-        RECEIVED_AT,
+        received_at(),
     );
     assert_eq!(
         database.insert_event(&later).unwrap(),
@@ -765,7 +777,7 @@ fn title_only_app_server_activity_removes_an_existing_projected_session() {
             "message_content": "Done",
             "diagnostic": false
         }),
-        created_at: RECEIVED_AT.to_string(),
+        created_at: received_at().to_string(),
     };
     assert!(database
         .upsert_codex_activity_event(&ordinary_activity)
@@ -827,7 +839,7 @@ fn schema_upgrade_scrubs_historical_internal_codex_suggestion_sessions() {
                         "diagnostic": false
                     }))
                     .unwrap(),
-                    RECEIVED_AT
+                    received_at()
                 ],
             )
             .unwrap();
@@ -862,7 +874,7 @@ fn recent_events_clamps_limit() {
             &format!("event-{index:03}"),
             AgentSource::Codex,
             Some("session"),
-            RECEIVED_AT,
+            received_at(),
         );
         assert_eq!(
             database.insert_event(&event).unwrap(),
@@ -1067,7 +1079,7 @@ fn legacy_payload_migration_removes_plaintext_and_rebuilds_rows() {
             params![
                 "legacy-event",
                 r#"{"prompt":"FORBIDDEN_LEGACY_PLAINTEXT_63bb","command":"cat secret"}"#,
-                RECEIVED_AT,
+                received_at(),
             ],
         )
         .unwrap();

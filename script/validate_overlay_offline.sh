@@ -5,6 +5,40 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MACOS_DIR="$ROOT_DIR/apps/macos"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-overlay-offline.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
+INTERACTION_ATTESTATION=""
+
+usage() {
+  echo 'usage: validate_overlay_offline.sh [--interaction-attestation ABSOLUTE_PATH]'
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --interaction-attestation)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      INTERACTION_ATTESTATION="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$INTERACTION_ATTESTATION" ]]; then
+  [[ "$INTERACTION_ATTESTATION" == /* ]] || {
+    echo 'interaction attestation input must be an absolute path' >&2
+    exit 2
+  }
+  "$ROOT_DIR/script/validate_interaction_attestation.py" "$INTERACTION_ATTESTATION"
+  VERIFIED_INTERACTION_ATTESTATION="$TMP_DIR/interaction-attestation.json"
+  cp "$INTERACTION_ATTESTATION" "$VERIFIED_INTERACTION_ATTESTATION"
+  "$ROOT_DIR/script/validate_interaction_attestation.py" "$VERIFIED_INTERACTION_ATTESTATION"
+fi
 
 swift build \
   --package-path "$MACOS_DIR" \
@@ -18,14 +52,18 @@ APC_DISABLE_LAUNCH_AGENT=1 \
 APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
   "$BIN_DIR/AgentPetCompanion" --run-ui-validation
 
-for suite in \
-  OverlayPlacementAuthorityTests \
-  AppStoreOverlaySnapshotTests \
-  OverlayGeometryTests \
-  OverlayDisplayWidthTests \
-  OverlayInteractionTelemetryTests \
-  FrameTimelineTests \
-  PetFramePipelineTests; do
+SUITES=(FrameTimelineTests PetFramePipelineTests)
+if [[ -z "$INTERACTION_ATTESTATION" ]]; then
+  SUITES=(
+    OverlayPlacementAuthorityTests
+    AppStoreOverlaySnapshotTests
+    OverlayGeometryTests
+    OverlayDisplayWidthTests
+    OverlayInteractionTelemetryTests
+    "${SUITES[@]}"
+  )
+fi
+for suite in "${SUITES[@]}"; do
   swift test \
     --package-path "$MACOS_DIR" \
     --filter "$suite" \

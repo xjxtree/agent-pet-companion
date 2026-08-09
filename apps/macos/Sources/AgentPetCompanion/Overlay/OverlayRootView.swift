@@ -108,18 +108,18 @@ struct OverlayRootView: View {
                     onInteractionCompleted: { entryID in
                         interactionPresentation.complete(entryID: entryID)
                     },
-                    onVisualEnvelopeChanged: { [weak store] envelope, petID, stateEntryID in
+                    onVisualEnvelopeChanged: { [weak store] envelope, petID, semanticOwnerEntryID in
                         store?.updateOverlayPetVisualEnvelope(
                             envelope,
                             petID: petID,
-                            stateEntryID: stateEntryID
+                            semanticOwnerEntryID: semanticOwnerEntryID
                         )
                     },
-                    onFrameHitTestChanged: { [weak store] hitTest, petID, stateEntryID in
+                    onFrameHitTestChanged: { [weak store] hitTest, petID, semanticOwnerEntryID in
                         store?.updateOverlayPetFrameHitTest(
                             hitTest,
                             petID: petID,
-                            stateEntryID: stateEntryID
+                            semanticOwnerEntryID: semanticOwnerEntryID
                         )
                     },
                     onPrimaryClick: {
@@ -719,6 +719,29 @@ private typealias PetPlaybackCompletionHandler = @MainActor (
     String,
     PetPlaybackMode
 ) -> Void
+
+/// Separates the renderer's playback identity from the semantic event that
+/// owns overlay geometry. A burst-then-idle handoff must restart rendering as
+/// `settled-idle`, while its visible bounds and Alpha mask remain projections
+/// of the original Agent event.
+struct OverlayPetFrameProjectionIdentity: Equatable, Sendable {
+    var semanticOwnerEntryID: String
+    var renderEntryID: String
+
+    static func resolve(
+        semanticEntryID: String,
+        interactionEntryID: String? = nil,
+        presentsSettledIdle: Bool
+    ) -> Self {
+        Self(
+            semanticOwnerEntryID: semanticEntryID,
+            renderEntryID: interactionEntryID
+                ?? (presentsSettledIdle
+                    ? "\(semanticEntryID):settled-idle"
+                    : semanticEntryID)
+        )
+    }
+}
 
 private struct PetInteractionLayer: View {
     var pet: PetSummary?
@@ -1472,9 +1495,12 @@ private struct FloatingPetSprite: View {
             ?? (presentsSettledIdle ? "idle" : semanticStateName)
     }
 
-    private var presentedEntryID: String {
-        interaction?.entryID
-            ?? (presentsSettledIdle ? "\(stateEntryID):settled-idle" : stateEntryID)
+    private var frameProjectionIdentity: OverlayPetFrameProjectionIdentity {
+        .resolve(
+            semanticEntryID: stateEntryID,
+            interactionEntryID: interaction?.entryID,
+            presentsSettledIdle: presentsSettledIdle
+        )
     }
 
     var body: some View {
@@ -1483,7 +1509,8 @@ private struct FloatingPetSprite: View {
                 PetFrameLayerView(
                     pet: pet,
                     stateName: presentedStateName,
-                    stateEntryID: presentedEntryID,
+                    renderEntryID: frameProjectionIdentity.renderEntryID,
+                    semanticOwnerEntryID: frameProjectionIdentity.semanticOwnerEntryID,
                     active: active,
                     reduceMotion: reduceMotion,
                     onPlaybackCompleted: playbackCompleted,
@@ -1548,7 +1575,8 @@ private struct FloatingPetSprite: View {
 private struct PetFrameLayerView: NSViewRepresentable {
     var pet: PetSummary
     var stateName: String
-    var stateEntryID: String
+    var renderEntryID: String
+    var semanticOwnerEntryID: String
     var active: Bool
     var reduceMotion: Bool
     var onPlaybackCompleted: PetPlaybackCompletionHandler = { _, _ in }
@@ -1565,14 +1593,14 @@ private struct PetFrameLayerView: NSViewRepresentable {
 
     func updateNSView(_ view: MTKView, context: Context) {
         let petID = pet.id
-        let currentStateEntryID = stateEntryID
+        let currentSemanticOwnerEntryID = semanticOwnerEntryID
         let onVisualEnvelopeChanged = onVisualEnvelopeChanged
         let onFrameHitTestChanged = onFrameHitTestChanged
         context.coordinator.configure(
             view: view,
             pet: pet,
             stateName: stateName,
-            stateEntryID: stateEntryID,
+            stateEntryID: renderEntryID,
             active: active,
             reduceMotion: reduceMotion,
             onPlaybackCompleted: onPlaybackCompleted,
@@ -1580,14 +1608,14 @@ private struct PetFrameLayerView: NSViewRepresentable {
                 onVisualEnvelopeChanged?(
                     envelope,
                     petID,
-                    currentStateEntryID
+                    currentSemanticOwnerEntryID
                 )
             },
             onFrameHitTestChanged: { hitTest in
                 onFrameHitTestChanged?(
                     hitTest,
                     petID,
-                    currentStateEntryID
+                    currentSemanticOwnerEntryID
                 )
             }
         )

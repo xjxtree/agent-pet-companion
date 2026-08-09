@@ -369,12 +369,8 @@ private struct MakerConversationContent: View {
                             cancel: { cancelConfirmationPresented = true },
                             delete: { deleteConfirmationPresented = true }
                         )
-                        if detail.resultPetID != nil || detail.validationSummary != nil {
-                            Divider()
-                            MakerResultSummary(detail: detail)
-                        }
                         Divider()
-                        MakerSessionComposer(detail: detail)
+                        MakerSessionStatusPanel(detail: detail)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -586,66 +582,229 @@ private struct MakerConversationActions: View {
     }
 }
 
-private struct MakerResultSummary: View {
+private struct MakerSessionStatusPanel: View {
     @EnvironmentObject private var store: AppStore
     let detail: GenerationStudioHistoryDetail
+
+    private let previewSize = CGSize(width: 72, height: 78)
+
+    private var capabilities: GenerationSessionCapabilities {
+        detail.capabilities ?? .init()
+    }
 
     private var pet: PetSummary? {
         store.selectedGenerationHistoryResultPet
     }
 
+    private var summaryKind: MakerSessionSummaryKind {
+        MakerSessionPolicy.summaryKind(
+            status: detail.status,
+            recoverable: detail.recoverable,
+            cancellationPending: detail.cancellationPending
+        )
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
-            if let pet {
-                PetCoverImage(
-                    pet: pet,
-                    assetWarning: store.petAssetWarningIndex[pet.id],
-                    fallbackScale: 0.7
-                )
-                .frame(width: 84, height: 91)
-                .background(
-                    Color(nsColor: .controlBackgroundColor),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-            } else {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.title)
-                    .foregroundStyle(.green)
-                    .frame(width: 84, height: 84)
-            }
+        HStack(alignment: .top, spacing: 14) {
+            summaryVisual
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(pet?.name ?? APCLocalization.text(.studioSuccessGeneric))
+                Text(summaryTitle)
                     .font(.headline)
                     .textSelection(.enabled)
-                if let validation = detail.validationSummary {
-                    Label(
-                        APCLocalization.format(
-                            .studioSuccessValidationFormat,
-                            validation.stateCount,
-                            validation.frameCount,
-                            validation.warningCount
-                        ),
-                        systemImage: validation.ok ? "checkmark.seal" : "exclamationmark.triangle"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(validation.ok ? Color.secondary : Color.orange)
+
+                if summaryKind == .completed {
+                    completedContent
+                } else {
+                    Text(summaryDetail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if detail.capabilities?.canOpenResult == true {
-                    Button {
-                        Task { _ = await store.showSelectedGenerationHistoryResultPetInLibrary() }
-                    } label: {
-                        Label(APCLocalization.text(.studioHistoryViewPet), systemImage: "pawprint")
-                    }
-                    .buttonStyle(.borderless)
+
+                if capabilities.canReply || capabilities.canResume {
+                    inlineComposer
                 }
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .layoutPriority(1)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(Color.green.opacity(0.06))
-        .accessibilityIdentifier("maker.session-result-summary")
+        .background {
+            Color(nsColor: .controlBackgroundColor)
+                .overlay(toneColor.opacity(0.07))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("maker.session-status-panel")
+    }
+
+    @ViewBuilder
+    private var summaryVisual: some View {
+        if summaryKind == .completed, let pet {
+            PetCoverImage(
+                pet: pet,
+                assetWarning: store.petAssetWarningIndex[pet.id],
+                fallbackScale: 0.7
+            )
+            .frame(width: previewSize.width, height: previewSize.height)
+            .background(Color(nsColor: .textBackgroundColor), in: previewShape)
+            .clipShape(previewShape)
+            .overlay { previewShape.stroke(Color.secondary.opacity(0.16), lineWidth: 1) }
+        } else {
+            Image(systemName: summarySystemImage)
+                .font(.title2)
+                .foregroundStyle(toneColor)
+                .frame(width: previewSize.width, height: previewSize.height)
+                .background(toneColor.opacity(0.10), in: previewShape)
+                .overlay { previewShape.stroke(toneColor.opacity(0.24), lineWidth: 1) }
+        }
+    }
+
+    @ViewBuilder
+    private var completedContent: some View {
+        if pet != nil {
+            Text(APCLocalization.text(.studioSuccessGeneric))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        if let validation = detail.validationSummary {
+            Label(
+                APCLocalization.format(
+                    .studioSuccessValidationFormat,
+                    validation.stateCount,
+                    validation.frameCount,
+                    validation.warningCount
+                ),
+                systemImage: validation.ok ? "checkmark.seal" : "exclamationmark.triangle"
+            )
+            .font(.callout)
+            .foregroundStyle(validation.ok ? Color.secondary : Color.orange)
+        }
+
+        if detail.capabilities?.canOpenResult == true {
+            Button {
+                Task { _ = await store.showSelectedGenerationHistoryResultPetInLibrary() }
+            } label: {
+                Label(APCLocalization.text(.studioHistoryViewPet), systemImage: "pawprint")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private var inlineComposer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(
+                APCLocalization.text(
+                    capabilities.canReply
+                        ? .studioWorkspaceReplyPlaceholder
+                        : .studioWorkspaceResumePlaceholder
+                ),
+                text: $store.generationReplyText,
+                axis: .vertical
+            )
+            .lineLimit(1 ... 5)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityIdentifier("maker.session-composer")
+
+            Button {
+                if capabilities.canReply {
+                    store.sendSelectedGenerationHistoryReply()
+                } else {
+                    store.resumeSelectedGenerationHistory()
+                }
+            } label: {
+                Label(
+                    APCLocalization.text(
+                        capabilities.canReply
+                            ? .studioWorkspaceSend
+                            : .studioWorkspaceContinue
+                    ),
+                    systemImage: capabilities.canReply ? "arrow.up" : "arrow.clockwise"
+                )
+            }
+            .apcClearGlassButtonStyle(prominent: true)
+            .accessibilityIdentifier(
+                capabilities.canReply
+                    ? "maker.session.send"
+                    : "maker.session.continue"
+            )
+            .disabled(
+                capabilities.canReply
+                    ? store.generationReplyText
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                    : !store.canResumeSelectedGenerationHistory
+            )
+        }
+        .padding(.top, 2)
+    }
+
+    private var summaryTitle: String {
+        if summaryKind == .completed, let pet {
+            return pet.name
+        }
+        if let status = detail.status {
+            return MakerSessionPolicy.statusTitle(status, detail: detail)
+        }
+        return APCLocalization.text(.studioHistoryLoading)
+    }
+
+    private var summaryDetail: String {
+        let key: APCLocalizationKey = switch summaryKind {
+        case .pending, .running:
+            .studioWorkspaceRunningHint
+        case .waitingForUser:
+            .studioWorkspaceReplyHint
+        case .completed:
+            .studioSuccessGeneric
+        case .recoverableFailure:
+            .studioWorkspaceResumeHint
+        case .failed:
+            .studioWorkspaceNonResumableFailureHint
+        case .canceled:
+            .studioWorkspaceCanceledHint
+        case .cancellationPending:
+            .studioWorkspaceCancelCleanup
+        case .unknown:
+            .studioHistoryLoading
+        }
+        return APCLocalization.text(key)
+    }
+
+    private var summarySystemImage: String {
+        switch summaryKind {
+        case .pending: "clock.fill"
+        case .running: "sparkles"
+        case .waitingForUser: "questionmark.bubble.fill"
+        case .completed: "checkmark.seal.fill"
+        case .recoverableFailure: "arrow.clockwise.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        case .canceled: "xmark.circle.fill"
+        case .cancellationPending: "hourglass"
+        case .unknown: "questionmark.circle.fill"
+        }
+    }
+
+    private var toneColor: Color {
+        switch summaryKind {
+        case .pending, .running, .waitingForUser:
+            APCDesign.accent
+        case .completed:
+            APCDesign.success
+        case .recoverableFailure, .cancellationPending:
+            APCDesign.warning
+        case .failed:
+            APCDesign.destructive
+        case .canceled, .unknown:
+            APCDesign.textSecondary
+        }
+    }
+
+    private var previewShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
     }
 }
 
@@ -820,107 +979,39 @@ private struct MakerMessageRow: View {
     }
 }
 
-private struct MakerSessionComposer: View {
-    @EnvironmentObject private var store: AppStore
-    let detail: GenerationStudioHistoryDetail
-
-    private var capabilities: GenerationSessionCapabilities {
-        detail.capabilities ?? .init()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if capabilities.canReply || capabilities.canResume {
-                Text(
-                    APCLocalization.text(
-                        capabilities.canReply
-                            ? .studioWorkspaceReplyHint
-                            : .studioWorkspaceResumeHint
-                    )
-                )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField(
-                        APCLocalization.text(
-                            capabilities.canReply
-                                ? .studioWorkspaceReplyPlaceholder
-                                : .studioWorkspaceResumePlaceholder
-                        ),
-                        text: $store.generationReplyText,
-                        axis: .vertical
-                    )
-                    .lineLimit(1 ... 5)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("maker.session-composer")
-
-                    Button {
-                        if capabilities.canReply {
-                            store.sendSelectedGenerationHistoryReply()
-                        } else {
-                            store.resumeSelectedGenerationHistory()
-                        }
-                    } label: {
-                        Label(
-                            APCLocalization.text(
-                                capabilities.canReply
-                                    ? .studioWorkspaceSend
-                                    : .studioWorkspaceContinue
-                            ),
-                            systemImage: capabilities.canReply ? "arrow.up" : "arrow.clockwise"
-                        )
-                    }
-                    .apcClearGlassButtonStyle(prominent: true)
-                    .accessibilityIdentifier(
-                        capabilities.canReply
-                            ? "maker.session.send"
-                            : "maker.session.continue"
-                    )
-                    .disabled(
-                        capabilities.canReply
-                            && store.generationReplyText
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                                .isEmpty
-                    )
-                }
-            } else if detail.cancellationPending == true {
-                Label(
-                    APCLocalization.text(.studioWorkspaceCancelCleanup),
-                    systemImage: "hourglass"
-                )
-                    .foregroundStyle(.secondary)
-            } else if detail.status == .running || detail.status == .pending {
-                Label(
-                    APCLocalization.text(.studioWorkspaceRunningHint),
-                    systemImage: "sparkles"
-                )
-                    .foregroundStyle(.secondary)
-            } else if detail.status == .canceled {
-                Label(
-                    APCLocalization.text(.studioWorkspaceCanceledHint),
-                    systemImage: "xmark.circle"
-                )
-                    .foregroundStyle(.secondary)
-            } else if detail.status == .failed {
-                Label(
-                    APCLocalization.text(.studioWorkspaceNonResumableFailureHint),
-                    systemImage: "exclamationmark.triangle"
-                )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("maker.session.resume-unavailable")
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("maker.session-composer-region")
-    }
+enum MakerSessionSummaryKind: Equatable {
+    case pending
+    case running
+    case waitingForUser
+    case completed
+    case recoverableFailure
+    case failed
+    case canceled
+    case cancellationPending
+    case unknown
 }
 
 enum MakerSessionPolicy {
+    static func summaryKind(
+        status: GenerationJobHistoryStatus?,
+        recoverable: Bool?,
+        cancellationPending: Bool?
+    ) -> MakerSessionSummaryKind {
+        if cancellationPending == true {
+            return .cancellationPending
+        }
+        return switch status {
+        case .pending: .pending
+        case .running: .running
+        case .waitingForUser: .waitingForUser
+        case .completed: .completed
+        case .failed where recoverable == true: .recoverableFailure
+        case .failed: .failed
+        case .canceled: .canceled
+        case nil: .unknown
+        }
+    }
+
     static func isUnfinished(_ job: GenerationStudioHistoryRecord) -> Bool {
         if job.cancellationPending == true { return true }
         if let capabilities = job.capabilities {

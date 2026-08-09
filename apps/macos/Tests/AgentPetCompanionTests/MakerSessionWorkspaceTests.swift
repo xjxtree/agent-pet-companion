@@ -15,7 +15,7 @@ struct MakerSessionWorkspaceTests {
                 status: "waiting_for_user",
                 recoverable: false,
                 cancellationPending: false,
-                capabilities: #"{"can_reply":true,"can_resume":false,"can_cancel":true,"can_open_result":false,"can_open_session":true,"can_delete":false}"#
+                capabilities: #"{"can_reply":true,"can_resume":false,"can_cancel":true,"can_open_result":false,"can_open_session":false,"can_delete":false}"#
             )
         )
         let recoverable = try decoder.decode(
@@ -25,7 +25,7 @@ struct MakerSessionWorkspaceTests {
                 status: "failed",
                 recoverable: true,
                 cancellationPending: false,
-                capabilities: #"{"can_reply":false,"can_resume":true,"can_cancel":true,"can_open_result":false,"can_open_session":true,"can_delete":false}"#
+                capabilities: #"{"can_reply":false,"can_resume":true,"can_cancel":true,"can_open_result":false,"can_open_session":false,"can_delete":false}"#
             )
         )
         let cancelCleanup = try decoder.decode(
@@ -55,6 +55,55 @@ struct MakerSessionWorkspaceTests {
         #expect(!MakerSessionPolicy.isUnfinished(canceled))
         #expect(canceled.capabilities?.canResume == false)
         #expect(canceled.capabilities?.canOpenSession == false)
+    }
+
+    @Test
+    func everySessionStateMapsToOneUnifiedSummaryKind() {
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .pending,
+            recoverable: false,
+            cancellationPending: false
+        ) == .pending)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .running,
+            recoverable: false,
+            cancellationPending: false
+        ) == .running)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .waitingForUser,
+            recoverable: false,
+            cancellationPending: false
+        ) == .waitingForUser)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .completed,
+            recoverable: false,
+            cancellationPending: false
+        ) == .completed)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .failed,
+            recoverable: true,
+            cancellationPending: false
+        ) == .recoverableFailure)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .failed,
+            recoverable: false,
+            cancellationPending: false
+        ) == .failed)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .canceled,
+            recoverable: false,
+            cancellationPending: false
+        ) == .canceled)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: .running,
+            recoverable: false,
+            cancellationPending: true
+        ) == .cancellationPending)
+        #expect(MakerSessionPolicy.summaryKind(
+            status: nil,
+            recoverable: nil,
+            cancellationPending: nil
+        ) == .unknown)
     }
 
     @Test
@@ -108,7 +157,12 @@ struct MakerSessionWorkspaceTests {
         #expect(text.contains("maker.draft.discard"))
         #expect(text.contains("loadOlderGenerationHistoryMessages"))
         #expect(text.contains("hasUnseenMessages"))
-        #expect(text.contains("maker.session-result-summary"))
+        #expect(text.contains("MakerSessionStatusPanel(detail: detail)"))
+        #expect(text.contains("maker.session-status-panel"))
+        #expect(text.contains("MakerSessionSummaryKind"))
+        #expect(text.contains("Color(nsColor: .controlBackgroundColor)"))
+        #expect(text.contains(".clipShape(previewShape)"))
+        #expect(text.contains("private var inlineComposer: some View"))
         #expect(text.contains("copySelectedGenerationHistoryBriefToNewDraft"))
         #expect(!text.contains("safeAreaInset(edge: .top"))
         #expect(text.contains("safeAreaInset(edge: .bottom"))
@@ -119,9 +173,8 @@ struct MakerSessionWorkspaceTests {
         #expect(text.contains("MakerConversationActions("))
         #expect(text.contains(".menuStyle(.borderlessButton)"))
         #expect(text.contains("maker.session-timeline-scroll"))
-        #expect(text.contains("maker.session-composer-region"))
+        #expect(text.contains("maker.session-composer"))
         #expect(text.contains("maker.session.continue"))
-        #expect(text.contains("maker.session.resume-unavailable"))
         #expect(text.contains("studioWorkspaceNonResumableFailureHint"))
         #expect(!text.contains("GenerationHistorySheet("))
     }

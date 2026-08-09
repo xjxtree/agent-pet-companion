@@ -1189,6 +1189,20 @@ struct PetCoreProcessManagerTests {
         #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
             "safe": false,
             "active_generation": true,
+            "active_generation_status": "failed",
+            "connection_operation_active": false,
+            "runtime_replacement_safe": true
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": false,
+            "active_generation": true,
+            "active_generation_status": "failed",
+            "connection_operation_active": false,
+            "runtime_replacement_safe": false
+        ]) == .snapshotRequired)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(preflightValue: [
+            "safe": false,
+            "active_generation": true,
             "active_generation_status": "running",
             "connection_operation_active": false,
             "runtime_replacement_safe": false
@@ -1211,6 +1225,10 @@ struct PetCoreProcessManagerTests {
         ]) == .legacyConnectionStateNeedsProbe)
         #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
             "active_generation": ["job_id": "job-1", "status": "waiting_for_user"],
+            "connection_operation_active": false
+        ]) == .safe)
+        #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [
+            "active_generation": ["job_id": "job-1", "status": "failed"],
             "connection_operation_active": false
         ]) == .safe)
         #expect(PetCoreRuntimeReplacementSafetyPolicy.assess(snapshotValue: [

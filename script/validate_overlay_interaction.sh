@@ -5,9 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MACOS_DIR="$ROOT_DIR/apps/macos"
 ATTESTATION_OUT=""
 BUILD_ID=""
+PROOF_IN=""
 
 usage() {
-  echo 'usage: validate_overlay_interaction.sh [--attestation-out ABSOLUTE_PATH --build-id BUILD_ID]'
+  echo 'usage: validate_overlay_interaction.sh [--attestation-out ABSOLUTE_PATH --build-id BUILD_ID] [--proof-in ABSOLUTE_PATH]'
 }
 
 while (($# > 0)); do
@@ -20,6 +21,11 @@ while (($# > 0)); do
     --build-id)
       (($# >= 2)) || { usage >&2; exit 2; }
       BUILD_ID="$2"
+      shift 2
+      ;;
+    --proof-in)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      PROOF_IN="$2"
       shift 2
       ;;
     -h|--help)
@@ -44,22 +50,35 @@ if [[ -n "$ATTESTATION_OUT" || -n "$BUILD_ID" ]]; then
   }
   mkdir -p "$(dirname "$ATTESTATION_OUT")"
 fi
+if [[ -n "$PROOF_IN" ]]; then
+  [[ "$PROOF_IN" == /* ]] || {
+    echo 'interaction proof input must be an absolute path' >&2
+    exit 2
+  }
+  [[ -n "$ATTESTATION_OUT" && -n "$BUILD_ID" ]] || {
+    echo 'interaction proof reuse requires --attestation-out and --build-id' >&2
+    exit 2
+  }
+  "$ROOT_DIR/script/validate_interaction_attestation.py" "$PROOF_IN"
+fi
 
 # Real pointer, Space, focus-loss, and multi-display acceptance remains a
 # separate live-UI step. This script locks the same interaction invariants with
 # deterministic tests that are safe to run unattended.
-for suite in \
-  OverlayPlacementAuthorityTests \
-  AppStoreOverlaySnapshotTests \
-  OverlayGeometryTests \
-  OverlayDisplayWidthTests \
-  OverlayInteractionTelemetryTests; do
-  swift test \
-    --package-path "$MACOS_DIR" \
-    --filter "$suite" \
-    -Xswiftc -strict-concurrency=complete \
-    -Xswiftc -warnings-as-errors
-done
+if [[ -z "$PROOF_IN" ]]; then
+  for suite in \
+    OverlayPlacementAuthorityTests \
+    AppStoreOverlaySnapshotTests \
+    OverlayGeometryTests \
+    OverlayDisplayWidthTests \
+    OverlayInteractionTelemetryTests; do
+    swift test \
+      --package-path "$MACOS_DIR" \
+      --filter "$suite" \
+      -Xswiftc -strict-concurrency=complete \
+      -Xswiftc -warnings-as-errors
+  done
+fi
 
 if [[ -n "$ATTESTATION_OUT" ]]; then
   python3 -B - \

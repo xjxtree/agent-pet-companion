@@ -4,15 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-  echo 'usage: prepare_interaction_attestation.sh --output ABSOLUTE_PATH'
+  echo 'usage: prepare_interaction_attestation.sh --output ABSOLUTE_PATH [--proof-in ABSOLUTE_PATH]'
 }
 
 OUTPUT=""
+PROOF_IN=""
 while (($# > 0)); do
   case "$1" in
     --output)
       (($# >= 2)) || { usage >&2; exit 2; }
       OUTPUT="$2"
+      shift 2
+      ;;
+    --proof-in)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      PROOF_IN="$2"
       shift 2
       ;;
     -h|--help)
@@ -30,6 +36,10 @@ done
   echo 'interaction attestation output must be an absolute path' >&2
   exit 2
 }
+if [[ -n "$PROOF_IN" && "$PROOF_IN" != /* ]]; then
+  echo 'interaction proof input must be an absolute path' >&2
+  exit 2
+fi
 
 SOURCE_VERSION="$(
   awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/petcore/Cargo.toml"
@@ -61,17 +71,20 @@ print(value.get("build_id", ""), value.get("interaction_contract_digest", ""))
   exit 1
 }
 
-"$ROOT_DIR/script/validate_overlay_interaction.sh" \
-  --attestation-out "$OUTPUT" \
+INTERACTION_ARGS=(
+  --attestation-out "$OUTPUT"
   --build-id "$BUILD_ID"
+)
+if [[ -n "$PROOF_IN" ]]; then
+  INTERACTION_ARGS+=(--proof-in "$PROOF_IN")
+fi
+"$ROOT_DIR/script/validate_overlay_interaction.sh" "${INTERACTION_ARGS[@]}"
 
-ATTESTATION_DIGEST="$(python3 -B - "$OUTPUT" <<'PY'
-import json
-import pathlib
-import sys
-
-print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["interaction_contract_digest"])
-PY
+ATTESTATION_DIGEST="$(
+  "$ROOT_DIR/script/validate_interaction_attestation.py" \
+    "$OUTPUT" \
+    --expected-build-id "$BUILD_ID" \
+    --print-digest
 )"
 [[ "$ATTESTATION_DIGEST" == "$ACTUAL_DIGEST" ]] || {
   echo 'generated interaction attestation digest does not match compiled PetCore' >&2

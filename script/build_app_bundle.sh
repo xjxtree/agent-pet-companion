@@ -10,6 +10,7 @@ CONFIGURATION="debug"
 UNIVERSAL=0
 TARGET_ARCH=""
 OUTPUT_PATH=""
+INTERACTION_ATTESTATION_SOURCE=""
 SOURCE_VERSION="$(
   awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/petcore/Cargo.toml"
 )"
@@ -24,7 +25,7 @@ CARGO_RUSTC=""
 
 usage() {
   cat <<'EOF'
-usage: build_app_bundle.sh [--configuration debug|release] [--arch arm64|x86_64] [--universal] [--archive] [--unsigned] [--output PATH]
+usage: build_app_bundle.sh [--configuration debug|release] [--arch arm64|x86_64] [--universal] [--archive] [--unsigned] [--output PATH] [--interaction-attestation ABSOLUTE_PATH]
 
 Builds an ad-hoc signed development app bundle by default. --archive also
 creates and verifies a `-develop.zip` for informal handoff. --unsigned disables
@@ -68,6 +69,11 @@ while (($# > 0)); do
       OUTPUT_PATH="$2"
       shift 2
       ;;
+    --interaction-attestation)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      INTERACTION_ATTESTATION_SOURCE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -82,6 +88,10 @@ done
 
 if [[ "$CREATE_DEVELOP_ARCHIVE" == "1" && "$SIGN_DEVELOPMENT" != "1" ]]; then
   echo '--archive cannot be combined with --unsigned' >&2
+  exit 2
+fi
+if [[ -n "$INTERACTION_ATTESTATION_SOURCE" && "$INTERACTION_ATTESTATION_SOURCE" != /* ]]; then
+  echo 'interaction attestation input must be an absolute path' >&2
   exit 2
 fi
 if [[ "$UNIVERSAL" == "1" && -n "$TARGET_ARCH" ]]; then
@@ -425,9 +435,19 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES/bin" "$APP_RESOURCES/skills"
   echo "missing app icon source: $APP_ICON_SOURCE" >&2
   exit 1
 }
-"$ROOT_DIR/script/validate_overlay_interaction.sh" \
-  --attestation-out "$INTERACTION_ATTESTATION" \
-  --build-id "$BUILD_ID"
+if [[ -n "$INTERACTION_ATTESTATION_SOURCE" ]]; then
+  "$ROOT_DIR/script/validate_interaction_attestation.py" \
+    "$INTERACTION_ATTESTATION_SOURCE" \
+    --expected-build-id "$BUILD_ID"
+  cp "$INTERACTION_ATTESTATION_SOURCE" "$INTERACTION_ATTESTATION"
+  "$ROOT_DIR/script/validate_interaction_attestation.py" \
+    "$INTERACTION_ATTESTATION" \
+    --expected-build-id "$BUILD_ID"
+else
+  "$ROOT_DIR/script/validate_overlay_interaction.sh" \
+    --attestation-out "$INTERACTION_ATTESTATION" \
+    --build-id "$BUILD_ID"
+fi
 
 if [[ "$UNIVERSAL" == "1" ]]; then
   build_universal

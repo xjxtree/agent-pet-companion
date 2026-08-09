@@ -125,6 +125,12 @@ public struct GenerationSessionRestore: Equatable, Sendable {
             case .pending: .starting
             case .running: .running
             case .waitingForUser: .waitingForInput
+            case .failed:
+                if snapshot.recoverable {
+                    snapshot.failureCode == "owner_interrupted" ? .paused : .recoverableFailed
+                } else {
+                    .failed
+                }
             }
         }
         jobID = snapshot.jobID

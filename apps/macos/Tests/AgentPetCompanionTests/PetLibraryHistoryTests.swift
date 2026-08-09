@@ -202,6 +202,7 @@ struct PetLibraryHistoryTests {
         #expect(source.contains("ViewThatFits(in: .horizontal)"))
         #expect(source.contains("pet-library.history.layout.wide"))
         #expect(source.contains("pet-library.history.layout.compact"))
+        #expect(source.contains(".accessibilityElement(children: .contain)"))
         #expect(source.contains("minWidth: 520"))
         #expect(!source.contains(".frame(width: 780)"))
         #expect(source.contains("PetLibraryHistoryPresentation.localizedTimestamp(job.updatedAt)"))

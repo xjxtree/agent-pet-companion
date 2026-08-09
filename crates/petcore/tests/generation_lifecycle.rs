@@ -10,10 +10,51 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
-use std::sync::Mutex;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+const ISOLATED_ENV_TEST: &str = "APC_GENERATION_LIFECYCLE_ISOLATED_TEST";
+const ISOLATED_ENV_KEYS: &[&str] = &[
+    "CODEX_APP_SERVER_CMD",
+    "APC_FAKE_APP_SERVER_WAIT_FILE",
+    "APC_FAKE_APP_SERVER_ARCHIVE_FILE",
+    "APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE",
+    "APC_FAKE_APP_SERVER_JOB_CWD",
+];
+
+/// Runs environment-mutating scenarios in separate processes. Rust's test
+/// harness can execute the parents concurrently, while every child receives
+/// its own process environment and exact single-test filter.
+fn run_in_isolated_process(test_name: &str) -> bool {
+    if let Some(active_test) = std::env::var_os(ISOLATED_ENV_TEST) {
+        assert_eq!(
+            active_test, test_name,
+            "isolated test process selected the wrong test"
+        );
+        return false;
+    }
+
+    let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+    command
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(ISOLATED_ENV_TEST, test_name);
+    for key in ISOLATED_ENV_KEYS {
+        command.env_remove(key);
+    }
+    let output = command
+        .output()
+        .expect("launch isolated generation lifecycle test");
+    assert!(
+        output.status.success(),
+        "isolated generation lifecycle test {test_name} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
 
 struct EnvVarGuard {
     key: &'static str,
@@ -64,8 +105,18 @@ while IFS= read -r request; do
       fi
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
       ;;
+    *thread/unarchive*)
+      if [ -n "${{APC_FAKE_APP_SERVER_UNARCHIVE_FILE:-}}" ]; then
+        printf '%s' "$request" > "$APC_FAKE_APP_SERVER_UNARCHIVE_FILE"
+      fi
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+      ;;
     *thread/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[{{"id":"{thread_id}","cwd":"'"${{APC_FAKE_APP_SERVER_JOB_CWD:-/tmp}}"'","ephemeral":false,"archived":false}}]}}}}'
+      case "$request" in
+        *\"id\":2*) response_id=2 ;;
+        *) response_id=3 ;;
+      esac
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$response_id"',"result":{{"data":[{{"id":"{thread_id}","cwd":"'"${{APC_FAKE_APP_SERVER_JOB_CWD:-/tmp}}"'","ephemeral":false,"archived":false}}]}}}}'
       ;;
     *thread/start*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"thread":{{"id":"{thread_id}","sessionId":"{thread_id}","ephemeral":false,"status":{{"type":"idle"}},"cwd":"/tmp","turns":[]}},"model":"fake-model","modelProvider":"fake","cwd":"/tmp","approvalPolicy":"never","sandbox":{{"type":"workspaceWrite"}}}}}}'
@@ -126,7 +177,11 @@ fn generation_history_for_unknown_pet_has_a_stable_empty_shape() {
 
 #[test]
 fn pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process(
+        "pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation",
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     write_fake_app_server_script(&fake_app_server, "thread_edit_scalar_boundary");
@@ -191,7 +246,11 @@ fn pet_edit_instruction_uses_the_shared_scalar_limit_before_job_creation() {
 
 #[test]
 fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_current_head() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process(
+        "historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_current_head",
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "/usr/bin/false");
     let paths = AppPaths::new(temp.path().join("home"));
@@ -322,7 +381,9 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
 
 #[test]
 fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process("unowned_pet_edit_retry_pins_original_submitted_baseline") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "/usr/bin/false");
     let paths = AppPaths::new(temp.path().join("home"));
@@ -554,7 +615,7 @@ fn wait_for_terminal_message(state: &CoreState, job_id: &str, kind: &str) {
     // runner than it does on a developer machine. Keep this as a bounded wait,
     // but leave enough headroom that scheduler load is not reported as a
     // lifecycle failure.
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(180);
     loop {
         let messages = generation_messages(state, job_id);
         if messages
@@ -582,21 +643,35 @@ fn terminal_count(messages: &[Value], kind: &str) -> usize {
 
 #[test]
 fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process(
+        "generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete",
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-complete");
     let archive_file = temp.path().join("archive-request");
-    write_fake_app_server_script(&fake_app_server, "thread_lifecycle_cancel");
+    let unarchive_file = temp.path().join("unarchive-request");
+    let thread_id = "019f5b0f-88ff-7413-8953-29de4ed0951c";
+    write_fake_app_server_script(&fake_app_server, thread_id);
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
     let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
     let _archive_file =
         EnvVarGuard::set("APC_FAKE_APP_SERVER_ARCHIVE_FILE", archive_file.as_os_str());
+    let _unarchive_file = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_UNARCHIVE_FILE",
+        unarchive_file.as_os_str(),
+    );
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
 
     let job_id = start_generation(&state, "取消中的生命周期桌宠。");
+    let _job_cwd = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_JOB_CWD",
+        state.paths.jobs_dir.join(&job_id).as_os_str(),
+    );
     wait_for_message(&state, &job_id, "Pet Studio brief turn 已启动");
     let progress = generation_messages(&state, &job_id)
         .into_iter()
@@ -632,10 +707,20 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
         archive_request.contains("thread/archive"),
         "{archive_request}"
     );
+    assert!(archive_request.contains(thread_id), "{archive_request}");
+    let unarchive_request = std::fs::read_to_string(&unarchive_file).unwrap();
     assert!(
-        archive_request.contains("thread_lifecycle_cancel"),
-        "{archive_request}"
+        unarchive_request.contains("thread/unarchive"),
+        "{unarchive_request}"
     );
+    assert!(unarchive_request.contains(thread_id), "{unarchive_request}");
+    let detail = handle_request(
+        &state,
+        request("generation.history.detail", json!({ "job_id": job_id })),
+    )
+    .unwrap();
+    assert_eq!(detail["session"]["availability"], "available");
+    assert_eq!(detail["capabilities"]["can_open_session"], true);
 
     std::fs::write(&wait_file, "ok").unwrap();
     std::thread::sleep(Duration::from_millis(900));
@@ -649,7 +734,10 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
 
 #[test]
 fn generation_cancel_retries_a_temporary_exact_thread_archive_failure() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process("generation_cancel_retries_a_temporary_exact_thread_archive_failure")
+    {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-complete");
@@ -701,7 +789,11 @@ fn generation_cancel_retries_a_temporary_exact_thread_archive_failure() {
 
 #[test]
 fn generation_lifecycle_completed_job_rejects_reply_and_keeps_committed_pet() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process(
+        "generation_lifecycle_completed_job_rejects_reply_and_keeps_committed_pet",
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-complete");
@@ -773,7 +865,9 @@ fn generation_lifecycle_completed_job_rejects_reply_and_keeps_committed_pet() {
 
 #[test]
 fn imported_pet_can_start_codex_edit_as_same_id_revision() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process("imported_pet_can_start_codex_edit_as_same_id_revision") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     write_fake_app_server_script(&fake_app_server, "thread_imported_pet_edit");
@@ -1005,7 +1099,9 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
 
 #[test]
 fn pet_edit_rejects_commit_when_base_revision_changes() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    if run_in_isolated_process("pet_edit_rejects_commit_when_base_revision_changes") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-edit-complete");

@@ -302,6 +302,34 @@ struct SharedProductComponentsTests {
         #expect(source.contains("ProductSecondaryActionButton("))
     }
 
+    @Test
+    func advancedDetailsDisclosureMakesTheWholeHeaderInteractive() throws {
+        let source = try String(
+            contentsOf: sharedComponentsURL,
+            encoding: .utf8
+        )
+        let start = try #require(
+            source.range(of: "struct AdvancedDetailsDisclosure<Content: View>: View")
+        )
+        let end = try #require(
+            source.range(of: "struct EmptyStateAction<Action: Hashable>: View")
+        )
+        let disclosureSource = String(
+            source[start.lowerBound ..< end.lowerBound]
+        )
+
+        #expect(disclosureSource.contains("Button {"))
+        #expect(disclosureSource.contains("isExpanded.toggle()"))
+        #expect(disclosureSource.contains(
+            ".buttonStyle(.plain)\n"
+                + "                .frame(maxWidth: .infinity, alignment: .leading)\n"
+                + "                .contentShape(Rectangle())"
+        ))
+        #expect(disclosureSource.contains(".focused($isHeaderFocused)"))
+        #expect(disclosureSource.contains(".onHover { isHeaderHovered = $0 }"))
+        #expect(disclosureSource.contains(".accessibilityLabel(title)"))
+    }
+
     @MainActor
     @Test
     func productionSessionRowBuildsExactHostAndUnavailableAccessibilityStates() {

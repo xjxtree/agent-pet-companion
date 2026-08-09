@@ -1969,6 +1969,111 @@ struct AppStoreOverlaySnapshotTests {
 
     @MainActor
     @Test
+    func settledIdleUpdatesGeometryUnderItsSemanticOwnerAcrossStateChanges() throws {
+        let store = makeStore()
+        let pet = makeActivePet()
+        let thinking = makeState(
+            source: .codex,
+            session: "projection-session",
+            event: .thinking,
+            activatedSecond: 1
+        )
+        let thinkingEntryID = OverlayPetAnimationIdentity.stateEntryID(for: thinking)
+        let thinkingSettledIdle = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: thinkingEntryID,
+            presentsSettledIdle: true
+        )
+        var thinkingSnapshot = try placementSnapshot(
+            revision: 501,
+            placement: OverlayPlacement()
+        )
+        thinkingSnapshot["pets"] = try jsonArray([pet])
+        thinkingSnapshot["active_agent_state"] = try jsonObject(thinking)
+        thinkingSnapshot["active_agent_sessions"] = try jsonArray([thinking])
+        try store.applyStateSnapshot(thinkingSnapshot)
+
+        let thinkingEnvelope = OverlayPetVisualEnvelope(
+            canvasSize: CGSize(width: 384, height: 416),
+            visibleBounds: CGRect(x: 70, y: 38, width: 240, height: 340)
+        )
+        let thinkingHitTest = try frameHitTest(alpha: 255)
+        store.updateOverlayPetVisualEnvelope(
+            thinkingEnvelope,
+            petID: pet.id,
+            semanticOwnerEntryID: thinkingSettledIdle.semanticOwnerEntryID
+        )
+        store.updateOverlayPetFrameHitTest(
+            thinkingHitTest,
+            petID: pet.id,
+            semanticOwnerEntryID: thinkingSettledIdle.semanticOwnerEntryID
+        )
+
+        #expect(store.overlayPetVisualEnvelope == thinkingEnvelope)
+        #expect(store.overlayPetFrameHitTest == thinkingHitTest)
+        #expect(store.overlayPetPointerMaskState == .valid)
+
+        let done = makeState(
+            source: .codex,
+            session: "projection-session",
+            event: .done,
+            activatedSecond: 2
+        )
+        let doneEntryID = OverlayPetAnimationIdentity.stateEntryID(for: done)
+        let doneSettledIdle = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: doneEntryID,
+            presentsSettledIdle: true
+        )
+        var doneSnapshot = try placementSnapshot(
+            revision: 502,
+            placement: OverlayPlacement()
+        )
+        doneSnapshot["pets"] = try jsonArray([pet])
+        doneSnapshot["active_agent_state"] = try jsonObject(done)
+        doneSnapshot["active_agent_sessions"] = try jsonArray([done])
+        try store.applyStateSnapshot(doneSnapshot)
+
+        #expect(store.overlayPetPointerMaskState == .stale)
+
+        let lateThinkingEnvelope = OverlayPetVisualEnvelope(
+            canvasSize: CGSize(width: 384, height: 416),
+            visibleBounds: CGRect(x: 20, y: 15, width: 330, height: 390)
+        )
+        store.updateOverlayPetVisualEnvelope(
+            lateThinkingEnvelope,
+            petID: pet.id,
+            semanticOwnerEntryID: thinkingSettledIdle.semanticOwnerEntryID
+        )
+        store.updateOverlayPetFrameHitTest(
+            try frameHitTest(alpha: 96),
+            petID: pet.id,
+            semanticOwnerEntryID: thinkingSettledIdle.semanticOwnerEntryID
+        )
+        #expect(store.overlayPetVisualEnvelope == thinkingEnvelope)
+        #expect(store.overlayPetPointerMaskState == .stale)
+
+        let doneEnvelope = OverlayPetVisualEnvelope(
+            canvasSize: CGSize(width: 384, height: 416),
+            visibleBounds: CGRect(x: 92, y: 64, width: 198, height: 286)
+        )
+        let doneHitTest = try frameHitTest(alpha: 192)
+        store.updateOverlayPetVisualEnvelope(
+            doneEnvelope,
+            petID: pet.id,
+            semanticOwnerEntryID: doneSettledIdle.semanticOwnerEntryID
+        )
+        store.updateOverlayPetFrameHitTest(
+            doneHitTest,
+            petID: pet.id,
+            semanticOwnerEntryID: doneSettledIdle.semanticOwnerEntryID
+        )
+
+        #expect(store.overlayPetVisualEnvelope == doneEnvelope)
+        #expect(store.overlayPetFrameHitTest == doneHitTest)
+        #expect(store.overlayPetPointerMaskState == .valid)
+    }
+
+    @MainActor
+    @Test
     func placementRevisionMustBePresentCanonicalDecimalString() throws {
         let store = makeStore()
         var missing = try placementSnapshot(
@@ -2073,6 +2178,32 @@ struct AppStoreOverlaySnapshotTests {
             sessionUserMessage: nil,
             sessionActivity: nil,
             overlayDisplay: AgentOverlayDisplay(summaryKind: summary)
+        )
+    }
+
+    private func makeActivePet() -> PetSummary {
+        PetSummary(
+            id: "pet_projection_owner",
+            name: "Projection Owner",
+            style: "test",
+            quality: .standard,
+            renderSize: RenderSize(width: 384, height: 416),
+            petpackPath: "/tmp/pet_projection_owner.petpack",
+            coverPath: "/tmp/pet_projection_owner.webp",
+            active: true,
+            createdAt: "2026-07-22T00:00:00Z"
+        )
+    }
+
+    private func frameHitTest(alpha: UInt8) throws -> OverlayPetFrameHitTest {
+        let mask = try #require(OverlayPetAlphaMask(
+            pixelWidth: 2,
+            pixelHeight: 2,
+            alphaValuesTopToBottom: [alpha, alpha, alpha, alpha]
+        ))
+        return OverlayPetFrameHitTest(
+            canvasSize: CGSize(width: 2, height: 2),
+            alphaMask: mask
         )
     }
 

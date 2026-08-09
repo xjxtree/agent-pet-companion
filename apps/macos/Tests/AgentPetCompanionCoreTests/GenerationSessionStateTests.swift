@@ -245,6 +245,32 @@ struct GenerationSessionStateTests {
         #expect(restore.baselineRevisionID == "rev_11111111111111111111111111111111")
     }
 
+    @Test("daemon active_generation decodes a recoverable failed session")
+    func daemonRecoverableFailureSnapshotDecodes() throws {
+        let data = Data(#"""
+        {
+          "job_id":"job_recoverable",
+          "status":"failed",
+          "form":{"description":"Preserved pet","style":"半写实","quality":"standard","reference_images":[]},
+          "heartbeat_at":"2026-08-09T03:54:42Z",
+          "recoverable":true,
+          "failure_code":"generation_failed",
+          "pause_reason":"checkpoint paused",
+          "message_revision":"156",
+          "messages":[]
+        }
+        """#.utf8)
+
+        let snapshot = try JSONDecoder().decode(ActiveGenerationSnapshot.self, from: data)
+        let restore = GenerationSessionRestore(snapshot: snapshot)
+
+        #expect(snapshot.status == .failed)
+        #expect(restore.state == .recoverableFailed)
+        #expect(restore.recoverable)
+        #expect(restore.pauseReason == "checkpoint paused")
+        #expect(restore.messageRevision == "156")
+    }
+
     @Test("an edit session preserves its target across start, failure, and retry setup")
     func editSessionPreservesTargetIdentity() {
         var session = GenerationSession()

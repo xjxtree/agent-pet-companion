@@ -648,12 +648,22 @@ struct PetLibraryView: View {
 
     private func requestEdit(_ pet: PetSummary) {
         guard PetLibraryCapabilities(pet: pet).canModify else { return }
-        pendingPetSheet = PetLibrarySheetRequest(pet: pet, mode: .edit)
+        presentPetSheet(PetLibrarySheetRequest(pet: pet, mode: .edit))
     }
 
     private func requestHistory(_ pet: PetSummary) {
         guard PetLibraryCapabilities(pet: pet).canModify else { return }
-        pendingPetSheet = PetLibrarySheetRequest(pet: pet, mode: .history)
+        presentPetSheet(PetLibrarySheetRequest(pet: pet, mode: .history))
+    }
+
+    private func presentPetSheet(_ request: PetLibrarySheetRequest) {
+        // Let the originating AXPress finish before the button's window gains
+        // a modal sheet. Synchronous presentation can make AppKit report a
+        // failed accessibility action even though SwiftUI accepted the press.
+        Task { @MainActor in
+            await Task.yield()
+            pendingPetSheet = request
+        }
     }
 }
 
@@ -890,12 +900,14 @@ private struct PetHistorySheet: View {
                         detailColumn
                             .frame(minWidth: 330)
                     }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("pet-library.history.layout.wide")
 
                     VStack(alignment: .leading, spacing: 16) {
                         baselineColumn
                         detailColumn
                     }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("pet-library.history.layout.compact")
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -954,6 +966,7 @@ private struct PetHistorySheet: View {
             idealHeight: 600,
             maxHeight: 700
         )
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pet-library.history.sheet")
         .task(id: pet.id) {
             await loadHistory()
@@ -994,6 +1007,7 @@ private struct PetHistorySheet: View {
                 }
                 .padding(.top, 4)
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pet-library.edit.baseline")
 
             GroupBox(APCLocalization.text(.libraryHistoryRevisionsTitle)) {
@@ -1731,7 +1745,7 @@ private struct PetLibraryHero: View {
                 .accessibilityIdentifier("pet-library.hero.more")
             }
         }
-        .accessibilityIdentifier("pet-library.hero.secondary-actions")
+        .accessibilityElement(children: .contain)
     }
 
     private func workspaceActionButton(
@@ -1818,7 +1832,7 @@ private struct PetLibraryHero: View {
             Spacer(minLength: 0)
         }
         .apcClearGlassButtonStyle()
-        .accessibilityIdentifier("pet-library.hero.secondary-actions")
+        .accessibilityElement(children: .contain)
     }
 }
 

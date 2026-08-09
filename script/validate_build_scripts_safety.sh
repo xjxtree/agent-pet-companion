@@ -33,6 +33,8 @@ RELEASE_SCRIPTS=(
 WORKFLOW="$ROOT_DIR/.github/workflows/release.yml"
 TEST_ALL="$ROOT_DIR/script/test_all.sh"
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
+PRE_PUSH_VALIDATOR="$ROOT_DIR/script/validate_pre_push.sh"
+LOCALIZATION_VALIDATOR="$ROOT_DIR/script/validate_localizations.py"
 
 for obsolete_path in \
   "$ROOT_DIR/config/distribution/AgentPetCompanion.entitlements" \
@@ -91,6 +93,27 @@ rg -Fq 'interaction-contract-files.txt' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'petpack verify-production-interaction' \
   "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -Fq 'interaction-attestation.json' "$ROOT_DIR/script/build_app_bundle.sh"
+rg -Fq -- '--interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"' "$TEST_ALL"
+rg -Fq 'validate_interaction_attestation.py' "$ROOT_DIR/script/build_app_bundle.sh"
+rg -Fq 'validate_interaction_attestation.py' "$ROOT_DIR/script/validate_overlay_offline.sh"
+rg -Fq 'validate_localizations.py' "$TEST_ALL"
+rg -Fq 'validation_fingerprint.py' "$TEST_ALL"
+rg -Fq -- '--resume' "$TEST_ALL"
+rg -Fq 'test_all.sh" --resume' "$PRE_PUSH_VALIDATOR"
+if rg -Fq 'test_all.sh --resume' "$WORKFLOW"; then
+  echo 'GitHub Release must not consume local validation checkpoints' >&2
+  exit 1
+fi
+python3 - "$TEST_ALL" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+localization = source.index('"localization-parity"')
+rust_tests = source.index('"rust-tests"')
+if localization >= rust_tests:
+    raise SystemExit("localization parity must run before expensive Rust tests")
+PY
 rg -Fq 'Run host-safe source, Phase A/T-B4 interaction, and integration gates' \
   "$WORKFLOW"
 
@@ -291,6 +314,15 @@ PY
 "$ROOT_DIR/script/validate_codex_plugin_version.py" --help >/dev/null
 "$ROOT_DIR/script/verify_release_candidate_digests.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_github_release_artifacts.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_pre_push.sh" --help >/dev/null
+"$ROOT_DIR/script/test_all.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_overlay_offline.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_localizations.py" --help >/dev/null
+"$ROOT_DIR/script/validation_fingerprint.py" --help >/dev/null
+"$ROOT_DIR/script/validate_interaction_attestation.py" --help >/dev/null
+
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"
 
 if [[ "$STATIC_ONLY" == "0" ]]; then
   PYTHONDONTWRITEBYTECODE=1 \

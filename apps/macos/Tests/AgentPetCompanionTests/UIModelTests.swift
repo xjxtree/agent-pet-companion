@@ -2308,6 +2308,14 @@ struct UIModelTests {
                             "can_open": true,
                             "routable_session_id": threadID,
                         ],
+                        "capabilities": [
+                            "can_reply": false,
+                            "can_resume": false,
+                            "can_cancel": false,
+                            "can_open_result": false,
+                            "can_open_session": true,
+                            "can_delete": true,
+                        ],
                     ]
                 default:
                     throw PetCoreClientError.invalidResponse
@@ -2332,6 +2340,60 @@ struct UIModelTests {
         #expect(openedRoute == .url(try #require(URL(
             string: "codex://threads/\(threadID)"
         ))))
+
+        var activeRouteOpened = false
+        let activeStore = makeStore(
+            petCoreRequestOverride: { method, _, _ in
+                switch method {
+                case "generation.history.list":
+                    return historyList
+                case "generation.history.detail":
+                    return [
+                        "ok": true,
+                        "found": true,
+                        "job_id": "job_history",
+                        "status": "running",
+                        "operation": "create",
+                        "description": "A small fox",
+                        "style": "半写实",
+                        "quality": "standard",
+                        "reference_count": 0,
+                        "progress_messages": [],
+                        "message_count": 0,
+                        "messages_truncated": false,
+                        "session": [
+                            "availability": "available",
+                            "can_open": true,
+                            "routable_session_id": threadID,
+                        ],
+                        "capabilities": [
+                            "can_reply": false,
+                            "can_resume": false,
+                            "can_cancel": true,
+                            "can_open_result": false,
+                            "can_open_session": false,
+                            "can_delete": false,
+                        ],
+                    ]
+                default:
+                    throw PetCoreClientError.invalidResponse
+                }
+            },
+            agentSessionRouteOpener: { _ in
+                activeRouteOpened = true
+                return .openedExactSession
+            }
+        )
+        await activeStore.refreshGenerationHistory()
+        activeStore.selectGenerationHistoryJob("job_history")
+        await activeStore.loadGenerationHistoryDetail(jobID: "job_history")
+        activeStore.openGenerationHistorySession()
+        await Task.yield()
+
+        #expect(!activeRouteOpened)
+        #expect(activeStore.statusText == APCLocalization.text(
+            .studioHistorySessionUnavailable
+        ))
 
         var archivedRouteOpened = false
         let archivedStore = makeStore(
@@ -2429,7 +2491,7 @@ struct UIModelTests {
                         "can_resume": true,
                         "can_cancel": true,
                         "can_open_result": false,
-                        "can_open_session": true,
+                        "can_open_session": false,
                         "can_delete": false,
                     ],
                 ]
@@ -2470,6 +2532,11 @@ struct UIModelTests {
         await store.refreshGenerationHistory()
         store.selectGenerationHistoryJob(jobID)
         await store.loadGenerationHistoryDetail(jobID: jobID)
+        #expect(store.canResumeSelectedGenerationHistory)
+
+        store.presentDeferredAppUpdateHandoff()
+        #expect(store.appUpdateConvergenceState == .waitingForActiveWork)
+        #expect(!store.canStartNewGenerationWork)
         #expect(store.canResumeSelectedGenerationHistory)
 
         store.resumeSelectedGenerationHistory()

@@ -6,6 +6,39 @@ import Testing
 
 @Suite
 struct PetFramePipelineTests {
+    @Test
+    func settledIdleKeepsSemanticProjectionOwnershipAcrossStateChanges() {
+        let toolEntryID = "tool:codex:session-a:activation-1"
+        let toolPlayback = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: toolEntryID,
+            presentsSettledIdle: false
+        )
+        let toolSettledIdle = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: toolEntryID,
+            presentsSettledIdle: true
+        )
+        let doneEntryID = "done:codex:session-a:activation-1"
+        let doneSettledIdle = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: doneEntryID,
+            presentsSettledIdle: true
+        )
+
+        #expect(toolPlayback.renderEntryID == toolEntryID)
+        #expect(toolSettledIdle.renderEntryID == "\(toolEntryID):settled-idle")
+        #expect(toolPlayback.semanticOwnerEntryID == toolEntryID)
+        #expect(toolSettledIdle.semanticOwnerEntryID == toolEntryID)
+        #expect(doneSettledIdle.semanticOwnerEntryID == doneEntryID)
+        #expect(doneSettledIdle.semanticOwnerEntryID != toolSettledIdle.semanticOwnerEntryID)
+
+        let localInteraction = OverlayPetFrameProjectionIdentity.resolve(
+            semanticEntryID: doneEntryID,
+            interactionEntryID: "acknowledge:local-1",
+            presentsSettledIdle: true
+        )
+        #expect(localInteraction.renderEntryID == "acknowledge:local-1")
+        #expect(localInteraction.semanticOwnerEntryID == doneEntryID)
+    }
+
     @MainActor
     @Test
     func rendererContentReplayLeavesTheRepresentableUpdateCycle() async {

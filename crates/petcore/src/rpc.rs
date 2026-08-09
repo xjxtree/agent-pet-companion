@@ -2592,10 +2592,12 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 active_generation.as_ref().map(|job| enum_name(job.status));
             let connection_operation_active =
                 state.connection_operation_active.load(Ordering::Acquire);
-            let runtime_replacement_safe = active_generation
-                .as_ref()
-                .is_none_or(|job| job.status == GenerationJobStatus::WaitingForUser)
-                && !connection_operation_active;
+            let runtime_replacement_safe = active_generation.as_ref().is_none_or(|job| {
+                matches!(
+                    job.status,
+                    GenerationJobStatus::WaitingForUser | GenerationJobStatus::Failed
+                )
+            }) && !connection_operation_active;
             Ok(json!({
                 "safe": active_generation.is_none() && !connection_operation_active,
                 "active_generation": active_generation.is_some(),
@@ -4701,6 +4703,24 @@ done
                 "safe": false,
                 "active_generation": true,
                 "active_generation_status": "waiting_for_user",
+                "connection_operation_active": false,
+                "runtime_replacement_safe": true,
+            })
+        );
+        state
+            .database
+            .mark_generation_recoverable_failure(
+                "preflight-active-generation",
+                "checkpoint_paused",
+                "recoverable checkpoint",
+            )
+            .unwrap();
+        assert_eq!(
+            preflight(),
+            json!({
+                "safe": false,
+                "active_generation": true,
+                "active_generation_status": "failed",
                 "connection_operation_active": false,
                 "runtime_replacement_safe": true,
             })

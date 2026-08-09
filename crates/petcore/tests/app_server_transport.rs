@@ -2,8 +2,8 @@ use petcore::app_server::{
     archive_pet_studio_thread, inspect_pet_studio_thread, probe_codex_app_server,
     read_codex_recent_thread_activities, read_codex_recent_thread_activities_cached,
     read_codex_thread_display, run_pet_studio_session,
-    run_pet_studio_session_with_updates_and_cancel, CodexRecentThreadActivityCache,
-    PetStudioSessionUpdateKind,
+    run_pet_studio_session_with_updates_and_cancel, unarchive_pet_studio_thread,
+    CodexRecentThreadActivityCache, PetStudioSessionUpdateKind,
 };
 use petcore::paths::AppPaths;
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
@@ -162,6 +162,43 @@ done
     let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
 
     archive_pet_studio_thread("019f5b0f-88ff-7413-8953-29de4ed0951e", &job_dir).unwrap();
+}
+
+#[test]
+fn pet_studio_unarchive_releases_the_exact_stopped_thread() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("unarchive-studio-thread.sh");
+    let job_dir = temp.path().join("generation-jobs/job_released");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    let thread_id = "019f5b0f-88ff-7413-8953-29de4ed0951f";
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"unarchive-test"}}}}}}'
+      ;;
+    *\"method\":\"thread/unarchive\"*)
+      case "$request" in
+        *\"threadId\":\"{thread_id}\"*)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+          ;;
+        *) exit 41 ;;
+      esac
+      ;;
+  esac
+done
+"#,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+
+    unarchive_pet_studio_thread(thread_id, &job_dir).unwrap();
 }
 
 #[test]

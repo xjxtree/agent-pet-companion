@@ -143,18 +143,34 @@ cp "$ROOT_DIR/script/test_all.sh" "$TEST_ROOT/script/test_all.sh"
 cp "$ROOT_DIR/script/validation_helpers.sh" "$TEST_ROOT/script/validation_helpers.sh"
 for script_name in \
   validate_test_isolation.sh validate_app_lifecycle_contract.sh validate_schema_fixtures.sh \
-  validate_build_scripts_safety.sh validate_source_syntax.sh validate_swift_tests.sh build_app_bundle.sh \
+  validate_build_scripts_safety.sh validate_source_syntax.sh validate_localizations.py \
+  validate_swift_tests.sh build_app_bundle.sh \
   validate_connectors_runtime.sh validate_event_storm.sh \
   validate_portable_pet_maker.sh validate_pet_skills.sh validate_petpack_spec_schemas.sh \
   validate_security_boundaries.sh validate_overlay_offline.sh validate_main_window_ui.sh \
   validate_overlay_non_mouse.sh validate_overlay_interaction.sh \
   prepare_interaction_attestation.sh \
   validate_overlay_display_width_persistence.sh validate_renderer_runtime_budget.sh \
-  validate_app_recovery.sh; do
+  validate_app_recovery.sh validate_interaction_attestation.py; do
   write_executable "$TEST_ROOT/script/$script_name" \
     '#!/usr/bin/env bash' \
     'exit 0'
 done
+write_executable "$TEST_ROOT/script/validation_fingerprint.py" \
+  '#!/usr/bin/env bash' \
+  'printf '\''fixture-fingerprint\n'\'''
+write_executable "$TEST_ROOT/script/prepare_interaction_attestation.sh" \
+  '#!/usr/bin/env bash' \
+  'output=""' \
+  'while (($# > 0)); do' \
+  '  case "$1" in' \
+  '    --output) output="$2"; shift 2 ;;' \
+  '    --proof-in) shift 2 ;;' \
+  '    *) shift ;;' \
+  '  esac' \
+  'done' \
+  'mkdir -p "$(dirname "$output")"' \
+  'printf '\''{}\n'\'' >"$output"'
 write_executable "$TEST_ROOT/script/build_and_run.sh" \
   '#!/usr/bin/env bash' \
   'printf '\''host-ui\n'\'' >>"$APC_ISOLATION_FORBIDDEN_LOG"' \
@@ -189,6 +205,40 @@ if ! rg -q '^fmt --all --manifest-path .+/Cargo\.toml -- --check$' "$TEST_ALL_CA
 fi
 if ! rg -q '^clippy --manifest-path .+/Cargo\.toml --workspace --all-targets --all-features --locked -- -D warnings$' "$TEST_ALL_CARGO_LOG"; then
   record_failure 'default test_all did not invoke the strict Rust linting gate'
+fi
+
+# The explicit local resume mode must cache successful source-scoped steps,
+# while final overlay/App assembly stays outside the cache. The fixture uses a
+# deterministic fingerprint and inert proof validator so no real build runs.
+git -C "$TEST_ROOT" init -q
+: >"$TEST_ALL_CARGO_LOG"
+if ! env \
+  -u APC_VALIDATE_HOST_UI \
+  -u APC_VALIDATE_REAL_AGENT_CONNECTORS \
+  -u APC_VALIDATE_REAL_APP_SERVER \
+  PATH="$SHIM_DIR:$PATH" \
+  APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+  APC_TEST_ALL_CARGO_LOG="$TEST_ALL_CARGO_LOG" \
+  "$TEST_ROOT/script/test_all.sh" --resume >/dev/null 2>&1; then
+  record_failure 'resumable test_all.sh failed on its first isolated run'
+fi
+first_resume_cargo_count="$(wc -l <"$TEST_ALL_CARGO_LOG" | tr -d ' ')"
+if [[ "$first_resume_cargo_count" == "0" ]]; then
+  record_failure 'resumable test_all.sh did not execute uncached Rust steps'
+fi
+if ! env \
+  -u APC_VALIDATE_HOST_UI \
+  -u APC_VALIDATE_REAL_AGENT_CONNECTORS \
+  -u APC_VALIDATE_REAL_APP_SERVER \
+  PATH="$SHIM_DIR:$PATH" \
+  APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
+  APC_TEST_ALL_CARGO_LOG="$TEST_ALL_CARGO_LOG" \
+  "$TEST_ROOT/script/test_all.sh" --resume >/dev/null 2>&1; then
+  record_failure 'resumable test_all.sh failed on its second isolated run'
+fi
+second_resume_cargo_count="$(wc -l <"$TEST_ALL_CARGO_LOG" | tr -d ' ')"
+if [[ "$second_resume_cargo_count" != "$first_resume_cargo_count" ]]; then
+  record_failure 'resumable test_all.sh repeated unchanged successful Rust steps'
 fi
 
 if rg -n '/tmp/apc-connector-extra\.(out|err)' "$ROOT_DIR/script/validate_connectors_runtime.sh" >/dev/null; then

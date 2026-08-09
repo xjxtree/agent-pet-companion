@@ -2,8 +2,89 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESUME_VALIDATION="${APC_TEST_ALL_RESUME:-0}"
+CLEAR_VALIDATION_CACHE=0
+
+usage() {
+  cat <<'EOF'
+usage: test_all.sh [--resume] [--clear-cache]
+
+  --resume       Reuse successful local steps only when their scoped source
+                 fingerprint and toolchain context are unchanged.
+  --clear-cache  Remove this worktree's local validation checkpoints and exit.
+
+The default invocation never consumes checkpoints and remains the CI/Release
+proof path.
+EOF
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --resume)
+      RESUME_VALIDATION=1
+      shift
+      ;;
+    --clear-cache)
+      CLEAR_VALIDATION_CACHE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$RESUME_VALIDATION" in
+  0|false|FALSE|no|NO) RESUME_VALIDATION=0 ;;
+  1|true|TRUE|yes|YES) RESUME_VALIDATION=1 ;;
+  *) echo 'APC_TEST_ALL_RESUME must be 0 or 1' >&2; exit 2 ;;
+esac
+
+VALIDATION_CACHE_DIR=""
+if [[ "$RESUME_VALIDATION" == "1" || "$CLEAR_VALIDATION_CACHE" == "1" ]]; then
+  validation_git_path="$(git -C "$ROOT_DIR" rev-parse --git-path apc-validation-cache-v1)"
+  if [[ "$validation_git_path" == /* ]]; then
+    VALIDATION_CACHE_DIR="$validation_git_path"
+  else
+    VALIDATION_CACHE_DIR="$ROOT_DIR/$validation_git_path"
+  fi
+fi
+if [[ "$CLEAR_VALIDATION_CACHE" == "1" ]]; then
+  [[ -n "$VALIDATION_CACHE_DIR" && "$VALIDATION_CACHE_DIR" != "/" ]] || {
+    echo 'refusing to clear an invalid validation cache path' >&2
+    exit 1
+  }
+  rm -rf -- "$VALIDATION_CACHE_DIR"
+  echo "Cleared local validation checkpoints: $VALIDATION_CACHE_DIR"
+  exit 0
+fi
+
 TEST_ALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-test-all.XXXXXX")"
 trap 'rm -rf "$TEST_ALL_TEMP_DIR"' EXIT
+CACHE_CONTEXT=""
+if [[ "$RESUME_VALIDATION" == "1" ]]; then
+  mkdir -p "$VALIDATION_CACHE_DIR/steps" "$VALIDATION_CACHE_DIR/artifacts"
+  find "$VALIDATION_CACHE_DIR/steps" -type f -name '*.ok' -mtime +14 -delete
+  CACHE_CONTEXT="$(
+    {
+      uname -a
+      rustc -Vv
+      swift --version
+      python3 --version 2>&1
+      node --version 2>/dev/null || true
+      python3 -c 'import PIL; print(PIL.__version__)' 2>/dev/null || true
+      env | LC_ALL=C sort | awk -F= '
+        /^APC_/ && $1 != "APC_TEST_ALL_RESUME" && $1 != "APC_BUILD_ID" && $1 != "APC_INTERACTION_ATTESTATION_PATH" { print }
+      '
+      shasum -a 256 "$ROOT_DIR/script/test_all.sh" "$ROOT_DIR/script/validation_fingerprint.py"
+    } | shasum -a 256 | awk '{print $1}'
+  )"
+fi
 
 log_legend() {
   cat <<'EOF'
@@ -22,8 +103,54 @@ run_step() {
   local profile="$1"
   local label="$2"
   shift 2
+  local started_at=$SECONDS
   printf '\n== [%s] %s ==\n' "$profile" "$label"
-  "$@"
+  if "$@"; then
+    printf 'Completed in %ss: %s\n' "$((SECONDS - started_at))" "$label"
+    return 0
+  else
+    local status=$?
+    printf 'Failed after %ss: %s\n' "$((SECONDS - started_at))" "$label" >&2
+    return "$status"
+  fi
+}
+
+run_cached_step() {
+  local profile="$1"
+  local step_id="$2"
+  local scope="$3"
+  local label="$4"
+  shift 4
+  if [[ "$RESUME_VALIDATION" != "1" ]]; then
+    run_step "$profile" "$label" "$@"
+    return
+  fi
+
+  local command_key command_source_digest fingerprint marker_dir marker temporary_marker
+  printf -v command_key '%q ' "$@"
+  command_source_digest=""
+  if [[ "$1" == "$ROOT_DIR/"* && -f "$1" ]]; then
+    command_source_digest="$(shasum -a 256 "$1" | awk '{print $1}')"
+  fi
+  fingerprint="$(
+    "$ROOT_DIR/script/validation_fingerprint.py" \
+      --root "$ROOT_DIR" \
+      --scope "$scope" \
+      --extra "$CACHE_CONTEXT|$command_source_digest|$step_id|$command_key|${APC_EVENT_STORM_COUNT:-180}"
+  )"
+  marker_dir="$VALIDATION_CACHE_DIR/steps/$step_id"
+  marker="$marker_dir/$fingerprint.ok"
+  if [[ -f "$marker" ]]; then
+    printf '\n== [%s] %s ==\n' "$profile" "$label"
+    printf 'Reused local checkpoint for unchanged %s inputs (%s)\n' "$scope" "${fingerprint:0:12}"
+    return
+  fi
+
+  run_step "$profile" "$label" "$@"
+  mkdir -p "$marker_dir"
+  temporary_marker="$marker_dir/.${fingerprint}.$$"
+  printf '%s\n' "$fingerprint" >"$temporary_marker"
+  mv "$temporary_marker" "$marker"
 }
 
 log_skip() {
@@ -107,26 +234,54 @@ real_agent_connectors_skip_reason() {
 
 log_legend
 
-run_step "fast/core" "default test isolation and owned-process safety" "$ROOT_DIR/script/validate_test_isolation.sh"
-run_step "fast/core" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/script/validate_app_lifecycle_contract.sh"
-run_step "fast/core" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
-run_step "fast/core" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
+run_cached_step "fast/core" "test-isolation" "scripts" "default test isolation and owned-process safety" "$ROOT_DIR/script/validate_test_isolation.sh"
+run_cached_step "fast/core" "app-lifecycle-contract" "swift" "macOS UI-host and PetCore lifecycle contract" "$ROOT_DIR/script/validate_app_lifecycle_contract.sh"
+run_cached_step "fast/core" "schema-fixtures" "schemas" "JSON Schema positive/negative fixtures" "$ROOT_DIR/script/validate_schema_fixtures.sh"
+run_cached_step "fast/core" "petpack-schemas" "schemas" "published petpack producer-profile schemas" "$ROOT_DIR/script/validate_petpack_spec_schemas.sh"
+run_cached_step "fast/core" "localization-parity" "localization" "String Catalog and shipped localization parity" "$ROOT_DIR/script/validate_localizations.py"
+
+if [[ -z "${APC_BUILD_ID:-}" ]]; then
+  export APC_BUILD_ID="validation.$(date -u +%Y%m%d%H%M%S).$$"
+fi
 export APC_INTERACTION_ATTESTATION_PATH="$TEST_ALL_TEMP_DIR/interaction-attestation.json"
+INTERACTION_PROOF_IN=""
+if [[ "$RESUME_VALIDATION" == "1" ]]; then
+  interaction_fingerprint="$(
+    "$ROOT_DIR/script/validation_fingerprint.py" --root "$ROOT_DIR" --scope interaction
+  )"
+  cached_interaction_proof="$VALIDATION_CACHE_DIR/artifacts/interaction-$interaction_fingerprint-$CACHE_CONTEXT.json"
+  if [[ -f "$cached_interaction_proof" ]] \
+    && "$ROOT_DIR/script/validate_interaction_attestation.py" "$cached_interaction_proof" >/dev/null; then
+    INTERACTION_PROOF_IN="$cached_interaction_proof"
+  fi
+fi
+INTERACTION_PREPARE_ARGS=(--output "$APC_INTERACTION_ATTESTATION_PATH")
+if [[ -n "$INTERACTION_PROOF_IN" ]]; then
+  INTERACTION_PREPARE_ARGS+=(--proof-in "$INTERACTION_PROOF_IN")
+fi
 run_step "fast/core" "native Swift Phase A/T-B4 interaction attestation bound to this PetCore build" \
-  "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
-  --output "$APC_INTERACTION_ATTESTATION_PATH"
-run_step "simulated integration" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
-run_step "fast/core" "pet-making Skill structure and shared contracts" "$ROOT_DIR/script/validate_pet_skills.sh"
-run_step "fast/core" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
-run_step "fast/core" "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
-run_step "fast/core" "strict Rust linting" cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --all-targets --all-features --locked -- -D warnings
-run_step "fast/core" "Rust workspace unit and integration tests" cargo test --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --locked
-run_step "fast/core" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
-run_step "simulated integration" "generated connector hook/plugin runtime smoke; not real third-party agent acceptance" "$ROOT_DIR/script/validate_connectors_runtime.sh"
-run_step "perf/nightly" "bounded event storm stress at APC_EVENT_STORM_COUNT=${APC_EVENT_STORM_COUNT:-180}" "$ROOT_DIR/script/validate_event_storm.sh"
-run_step "fast/core" "offline overlay geometry, scheduler, accessibility, frame-pipeline and pointer contracts" "$ROOT_DIR/script/validate_overlay_offline.sh"
-run_step "fast/core" "security boundary checks with fake sentinel secrets" "$ROOT_DIR/script/validate_security_boundaries.sh"
-run_step "simulated integration" "development app bundle assembly without launch" "$ROOT_DIR/script/build_app_bundle.sh" --configuration debug
+  "$ROOT_DIR/script/prepare_interaction_attestation.sh" "${INTERACTION_PREPARE_ARGS[@]}"
+if [[ "$RESUME_VALIDATION" == "1" && -z "$INTERACTION_PROOF_IN" ]]; then
+  cp "$APC_INTERACTION_ATTESTATION_PATH" "$cached_interaction_proof"
+fi
+
+run_cached_step "simulated integration" "portable-pet-maker" "producer" "portable pet maker helper, create/modify, and isolated daemon roundtrip" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
+run_cached_step "fast/core" "pet-skills" "producer" "pet-making Skill structure and shared contracts" "$ROOT_DIR/script/validate_pet_skills.sh"
+run_cached_step "fast/core" "build-script-safety" "scripts" "shell, Python, JSON and release-script syntax/safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
+run_cached_step "fast/core" "rust-format" "rust" "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
+run_cached_step "fast/core" "rust-clippy" "rust" "strict Rust linting" cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --all-targets --all-features --locked -- -D warnings
+run_cached_step "fast/core" "rust-tests" "rust" "Rust workspace unit and integration tests" cargo test --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --locked
+run_cached_step "fast/core" "swift-tests" "swift" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
+run_cached_step "simulated integration" "connector-runtime" "connectors" "generated connector hook/plugin runtime smoke; not real third-party agent acceptance" "$ROOT_DIR/script/validate_connectors_runtime.sh"
+run_cached_step "perf/nightly" "event-storm" "rust" "bounded event storm stress at APC_EVENT_STORM_COUNT=${APC_EVENT_STORM_COUNT:-180}" "$ROOT_DIR/script/validate_event_storm.sh"
+run_step "fast/core" "offline overlay geometry, scheduler, accessibility, frame-pipeline and pointer contracts" \
+  "$ROOT_DIR/script/validate_overlay_offline.sh" \
+  --interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"
+run_cached_step "fast/core" "security-boundaries" "security" "security boundary checks with fake sentinel secrets" "$ROOT_DIR/script/validate_security_boundaries.sh"
+run_step "simulated integration" "development app bundle assembly without launch" \
+  "$ROOT_DIR/script/build_app_bundle.sh" \
+  --configuration debug \
+  --interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"
 
 if host_ui_skip_reason_value="$(host_ui_skip_reason)"; then
   log_skip "macos runtime" "real app bundle, overlay layout, display-width persistence, renderer telemetry, and app recovery" "$host_ui_skip_reason_value"

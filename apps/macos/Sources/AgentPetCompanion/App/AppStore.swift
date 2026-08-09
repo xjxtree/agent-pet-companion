@@ -83,7 +83,7 @@ struct AppStoreBootstrapHooks {
 private struct OverlayPetFrameHitTestProjection {
     var hitTest: OverlayPetFrameHitTest?
     var petID: String
-    var stateEntryID: String
+    var semanticOwnerEntryID: String
 }
 
 enum PetCoreRuntimePhase: Equatable {
@@ -697,7 +697,7 @@ final class AppStore: ObservableObject {
         guard let projection = overlayPetFrameHitTestProjection,
               activePet?.id == projection.petID,
               OverlayPetAnimationIdentity.stateEntryID(for: presentedActiveAgentState)
-                == projection.stateEntryID else {
+                == projection.semanticOwnerEntryID else {
             return nil
         }
         return projection.hitTest
@@ -709,7 +709,7 @@ final class AppStore: ObservableObject {
         guard activePet?.id == projection.petID,
               OverlayPetAnimationIdentity.stateEntryID(
                   for: presentedActiveAgentState
-              ) == projection.stateEntryID else {
+              ) == projection.semanticOwnerEntryID else {
             return .stale
         }
         return projection.hitTest == nil ? .missing : .valid
@@ -808,6 +808,10 @@ final class AppStore: ObservableObject {
     private var generationHistoryListSequence: UInt64 = 0
     private var generationHistoryDetailSequence: UInt64 = 0
     private var generationHistoryMessagesSequence: UInt64 = 0
+    /// A job ID returned by a successful start/edit/retry RPC is authoritative
+    /// before it appears in an eventually refreshed history list. Keep that
+    /// selection stable until a list snapshot catches up.
+    private var generationHistorySelectionIntentJobID: String?
     private var reselectedReferenceImagePaths: Set<String> = []
     private var activeGenerationRecoveryProjection: SanitizedGenerationRecoveryProjection?
     private var runtimeBootstrapCompleted = false
@@ -1273,6 +1277,21 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Continuing the one preserved Studio job is different from starting new
+    /// protected work. An update waiting for that job to finish must not make
+    /// the job impossible to resume; the convergence task will keep waiting
+    /// for the resumed generation to reach a terminal state.
+    private var canResumeExistingGenerationWork: Bool {
+        return switch appUpdateConvergenceState {
+        case .idle, .completed, .waitingForActiveWork:
+            true
+        case let .needsAttention(.connectors(issues)):
+            !issues.contains { $0.source == .codex }
+        case .needsAttention(.bundledPets), .needsAttention(.service), .updating:
+            false
+        }
+    }
+
     var canClearStudioForm: Bool {
         !generationSession.isActive
             && (
@@ -1304,7 +1323,7 @@ final class AppStore: ObservableObject {
 
     var canResumeGeneration: Bool {
         generationSession.canResume
-            && canStartNewGenerationWork
+            && canResumeExistingGenerationWork
             && petStudioCodexAvailability.permitsGeneration
             && referenceReselectionCount == 0
     }
@@ -1316,7 +1335,7 @@ final class AppStore: ObservableObject {
               jobID == selectedGenerationHistoryJobID,
               detail.capabilities?.canResume == true
         else { return false }
-        return canStartNewGenerationWork
+        return canResumeExistingGenerationWork
             && petStudioCodexAvailability.permitsGeneration
     }
 
@@ -3260,9 +3279,7 @@ final class AppStore: ObservableObject {
                     jobID: jobID,
                     baselineRevisionID: acceptedBaselineRevisionID
                 ))
-                makerDraftIsActive = false
-                await refreshGenerationHistory()
-                await selectGenerationHistoryJobAndWait(jobID)
+                await selectAcceptedGenerationHistoryJobAndWait(jobID)
                 statusText = "正在修改 \(pet.name)"
             } catch {
                 let failure = GenerationMessage(
@@ -3542,9 +3559,7 @@ final class AppStore: ObservableObject {
                     jobID: jobID,
                     baselineRevisionID: dict["baseline_revision_id"] as? String
                 ))
-                makerDraftIsActive = false
-                await refreshGenerationHistory()
-                await selectGenerationHistoryJobAndWait(jobID)
+                await selectAcceptedGenerationHistoryJobAndWait(jobID)
             } catch {
                 let failure = GenerationMessage(
                     role: "assistant",
@@ -3805,8 +3820,14 @@ final class AppStore: ObservableObject {
             generationHistorySnapshot = snapshot
             if let selectedGenerationHistoryJobID,
                !snapshot.jobs.contains(where: { $0.jobID == selectedGenerationHistoryJobID }) {
-                self.selectedGenerationHistoryJobID = nil
-                generationHistoryDetail = nil
+                if generationHistorySelectionIntentJobID != selectedGenerationHistoryJobID {
+                    clearGenerationHistorySelection()
+                }
+            } else if let generationHistorySelectionIntentJobID,
+                      snapshot.jobs.contains(where: {
+                          $0.jobID == generationHistorySelectionIntentJobID
+                      }) {
+                self.generationHistorySelectionIntentJobID = nil
             }
         } catch {
             guard sequence == generationHistoryListSequence else { return }
@@ -3828,11 +3849,8 @@ final class AppStore: ObservableObject {
         guard generationHistorySnapshot.jobs.contains(where: { $0.jobID == jobID }) else {
             return
         }
-        selectedGenerationHistoryJobID = jobID
-        makerDraftIsActive = false
-        generationHistoryDetail = nil
-        generationHistoryMessages = []
-        generationHistoryMessagesHasMore = false
+        generationHistorySelectionIntentJobID = nil
+        activateGenerationHistorySelection(jobID)
         Task { [weak self] in
             guard let self else { return }
             async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
@@ -3845,23 +3863,50 @@ final class AppStore: ObservableObject {
         guard generationHistorySnapshot.jobs.contains(where: { $0.jobID == jobID }) else {
             return
         }
-        selectedGenerationHistoryJobID = jobID
-        makerDraftIsActive = false
-        generationHistoryDetail = nil
-        generationHistoryMessages = []
-        generationHistoryMessagesHasMore = false
+        generationHistorySelectionIntentJobID = nil
+        activateGenerationHistorySelection(jobID)
         async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
         async let messages: Void = loadGenerationHistoryMessages(jobID: jobID)
         _ = await (detail, messages)
     }
 
+    /// Selects the exact job acknowledged by PetCore immediately, without
+    /// waiting for the eventually consistent history list to expose it.
+    private func selectAcceptedGenerationHistoryJobAndWait(_ jobID: String) async {
+        generationHistorySelectionIntentJobID = jobID
+        activateGenerationHistorySelection(jobID)
+        async let history: Void = refreshGenerationHistory()
+        async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
+        async let messages: Void = loadGenerationHistoryMessages(jobID: jobID)
+        _ = await (history, detail, messages)
+    }
+
+    private func activateGenerationHistorySelection(_ jobID: String) {
+        if selectedGenerationHistoryJobID != jobID {
+            generationReplyText = ""
+        }
+        generationHistoryDetailSequence &+= 1
+        generationHistoryMessagesSequence &+= 1
+        selectedGenerationHistoryJobID = jobID
+        makerDraftIsActive = false
+        generationHistoryDetail = nil
+        generationHistoryMessages = []
+        generationHistoryMessagesHasMore = false
+        generationHistoryDetailIsLoading = false
+        generationHistoryMessagesIsLoading = false
+    }
+
     func clearGenerationHistorySelection() {
         generationHistoryDetailSequence &+= 1
+        generationHistoryMessagesSequence &+= 1
+        generationHistorySelectionIntentJobID = nil
         selectedGenerationHistoryJobID = nil
         generationHistoryDetail = nil
         generationHistoryMessages = []
         generationHistoryMessagesHasMore = false
         generationHistoryDetailIsLoading = false
+        generationHistoryMessagesIsLoading = false
+        generationReplyText = ""
     }
 
     func loadGenerationHistoryDetail(jobID: String) async {
@@ -3970,7 +4015,20 @@ final class AppStore: ObservableObject {
     func prepareMakerWorkspace() async {
         await refreshGenerationHistory()
         if let selectedGenerationHistoryJobID,
-           generationHistorySnapshot.jobs.contains(where: { $0.jobID == selectedGenerationHistoryJobID }) {
+           generationHistorySelectionIntentJobID == selectedGenerationHistoryJobID {
+            async let detail: Void = loadGenerationHistoryDetail(
+                jobID: selectedGenerationHistoryJobID
+            )
+            async let messages: Void = loadGenerationHistoryMessages(
+                jobID: selectedGenerationHistoryJobID
+            )
+            _ = await (detail, messages)
+            return
+        }
+        if let selectedGenerationHistoryJobID,
+           generationHistorySnapshot.jobs.contains(where: {
+               $0.jobID == selectedGenerationHistoryJobID
+           }) {
             await selectGenerationHistoryJobAndWait(selectedGenerationHistoryJobID)
             return
         }
@@ -4186,11 +4244,7 @@ final class AppStore: ObservableObject {
             generationHistorySnapshot = localSnapshot
             generationHistoryHasLoaded = true
             if deletedSelection {
-                selectedGenerationHistoryJobID = nil
-                generationHistoryDetail = nil
-                generationHistoryMessages = []
-                generationHistoryMessagesHasMore = false
-                generationHistoryDetailIsLoading = false
+                clearGenerationHistorySelection()
             }
 
             await refreshGenerationHistory()
@@ -4203,9 +4257,7 @@ final class AppStore: ObservableObject {
                 )
                 if remainingJobs.indices.contains(preferredIndex) {
                     let nextJobID = remainingJobs[preferredIndex].jobID
-                    selectedGenerationHistoryJobID = nextJobID
-                    generationHistoryDetail = nil
-                    await loadGenerationHistoryDetail(jobID: nextJobID)
+                    await selectGenerationHistoryJobAndWait(nextJobID)
                 }
             }
 
@@ -4280,7 +4332,8 @@ final class AppStore: ObservableObject {
     }
 
     func openGenerationHistorySession() {
-        guard let session = generationHistoryDetail?.session,
+        guard generationHistoryDetail?.capabilities?.canOpenSession == true,
+              let session = generationHistoryDetail?.session,
               session.availability == .available,
               session.canOpen,
               let url = AgentSessionDeepLink.url(
@@ -6084,11 +6137,11 @@ final class AppStore: ObservableObject {
     func updateOverlayPetVisualEnvelope(
         _ envelope: OverlayPetVisualEnvelope?,
         petID: String,
-        stateEntryID: String
+        semanticOwnerEntryID: String
     ) {
         guard activePet?.id == petID else { return }
         guard OverlayPetAnimationIdentity.stateEntryID(for: presentedActiveAgentState)
-            == stateEntryID
+            == semanticOwnerEntryID
         else {
             return
         }
@@ -6103,23 +6156,23 @@ final class AppStore: ObservableObject {
     func updateOverlayPetFrameHitTest(
         _ hitTest: OverlayPetFrameHitTest?,
         petID: String,
-        stateEntryID: String
+        semanticOwnerEntryID: String
     ) {
         guard activePet?.id == petID else { return }
         guard OverlayPetAnimationIdentity.stateEntryID(for: presentedActiveAgentState)
-            == stateEntryID else {
+            == semanticOwnerEntryID else {
             return
         }
         if let projection = overlayPetFrameHitTestProjection,
            projection.petID == petID,
-           projection.stateEntryID == stateEntryID,
+           projection.semanticOwnerEntryID == semanticOwnerEntryID,
            projection.hitTest == hitTest {
             return
         }
         overlayPetFrameHitTestProjection = OverlayPetFrameHitTestProjection(
             hitTest: hitTest,
             petID: petID,
-            stateEntryID: stateEntryID
+            semanticOwnerEntryID: semanticOwnerEntryID
         )
         // A frame can change under a stationary pointer. Re-evaluate the panel
         // immediately so a newly transparent pixel never retains the window's

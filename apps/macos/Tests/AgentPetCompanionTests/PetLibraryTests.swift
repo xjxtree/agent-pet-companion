@@ -748,6 +748,11 @@ struct PetLibraryTests {
         #expect(source.contains("pet-library.hero.history"))
         #expect(source.contains("pet-library.hero.export"))
         #expect(source.contains("pet-library.hero.more"))
+        #expect(!source.contains(
+            ".accessibilityIdentifier(\"pet-library.hero.secondary-actions\")"
+        ))
+        #expect(source.contains("await Task.yield()"))
+        #expect(source.contains("presentPetSheet(PetLibrarySheetRequest("))
         #expect(source.contains("pet-library.hero.action-picker"))
         #expect(source.contains(
             "@State private var selectedPreviewAction = PetLibraryPreviewActionPolicy.defaultAction"

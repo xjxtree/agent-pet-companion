@@ -1058,6 +1058,8 @@ struct AdvancedDetailsDisclosure<Content: View>: View {
     let summary: String?
     @Binding var isExpanded: Bool
     @ViewBuilder let content: Content
+    @State private var isHeaderHovered = false
+    @FocusState private var isHeaderFocused: Bool
 
     init(
         identity: ProductComponentIdentity,
@@ -1107,6 +1109,24 @@ struct AdvancedDetailsDisclosure<Content: View>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .background {
+                    RoundedRectangle(
+                        cornerRadius: SharedProductComponentLayout.cornerRadius - 4,
+                        style: .continuous
+                    )
+                    .fill(
+                        Color.primary.opacity(
+                            isHeaderHovered || isHeaderFocused ? 0.05 : 0
+                        )
+                    )
+                    .allowsHitTesting(false)
+                }
+                .focused($isHeaderFocused)
+                .onHover { isHeaderHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: isHeaderHovered)
+                .animation(.easeOut(duration: 0.12), value: isHeaderFocused)
                 .accessibilityLabel(title)
                 .accessibilityValue(APCLocalization.text(
                     isExpanded ? .commonExpanded : .commonCollapsed

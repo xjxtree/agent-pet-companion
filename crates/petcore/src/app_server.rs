@@ -1021,6 +1021,86 @@ pub fn archive_pet_studio_thread(thread_id: &str, expected_job_dir: &Path) -> Re
     ))
 }
 
+/// Re-exposes an exact Studio thread after cancellation has stopped its owned
+/// worker and completed the archive handoff. This does not resume a turn; it
+/// only makes the now-inactive transcript routable in ChatGPT. A thread that
+/// is already active in the exact job workspace is treated as released.
+pub fn unarchive_pet_studio_thread(thread_id: &str, expected_job_dir: &Path) -> Result<()> {
+    if thread_id.trim() != thread_id
+        || thread_id.is_empty()
+        || thread_id.len() > 256
+        || thread_id.chars().any(char::is_control)
+        || !expected_job_dir.is_absolute()
+    {
+        return Err(PetCoreError::InvalidRequest(
+            "Pet Studio thread release requires an exact thread id and absolute job workspace"
+                .to_string(),
+        ));
+    }
+    let (command, _) = codex_app_server_command()
+        .ok_or_else(|| PetCoreError::Validation("Codex App Server is not available".to_string()))?;
+    let mut session = StdioSession::spawn(&command)?;
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "AgentPetCompanion",
+                "version": env!("CARGO_PKG_VERSION")
+            },
+            "capabilities": {}
+        }
+    }))?;
+    let initialize = session.read_response(1, "initialize", PET_STUDIO_INITIALIZE_TIMEOUT)?;
+    if initialize.get("error").is_some() {
+        return Err(response_error(
+            "initialize",
+            "initialize",
+            1,
+            &initialize,
+            &session,
+        ));
+    }
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }))?;
+    session.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/unarchive",
+        "params": { "threadId": thread_id }
+    }))?;
+    let unarchive = session.read_response(2, "thread/unarchive", THREAD_ARCHIVE_TIMEOUT)?;
+    if unarchive.get("error").is_none() {
+        session.terminate();
+        return Ok(());
+    }
+
+    let source_kinds = ["cli", "vscode", "appServer", "unknown"];
+    let active = list_exact_pet_studio_thread(
+        &mut session,
+        3,
+        thread_id,
+        &expected_job_dir.display().to_string(),
+        false,
+        &source_kinds,
+    )?;
+    session.terminate();
+    if active.is_some() {
+        return Ok(());
+    }
+    Err(response_error(
+        "thread_unarchive",
+        "thread/unarchive",
+        2,
+        &unarchive,
+        &session,
+    ))
+}
+
 fn list_exact_pet_studio_thread(
     session: &mut StdioSession,
     request_id: i64,
@@ -3605,8 +3685,47 @@ fn interrupt_turn_and_wait_for_completion(
     }
 }
 
+pub(crate) fn pet_studio_source_candidates(job_dir: &Path) -> [PathBuf; 2] {
+    [
+        job_dir.join("petpack-source"),
+        job_dir.join("workspace/petpack-source"),
+    ]
+}
+
+pub(crate) fn pet_studio_motion_evidence_candidates(job_dir: &Path) -> [(PathBuf, PathBuf); 4] {
+    [
+        (
+            job_dir.join("motion-qa/report.json"),
+            job_dir.join("motion-review.json"),
+        ),
+        (
+            job_dir.join(".agent-pet-maker/motion-qa/report.json"),
+            job_dir.join(".agent-pet-maker/motion-review.json"),
+        ),
+        (
+            job_dir.join("workspace/motion-qa/report.json"),
+            job_dir.join("workspace/motion-review.json"),
+        ),
+        (
+            job_dir.join("workspace/.agent-pet-maker/motion-qa/report.json"),
+            job_dir.join("workspace/.agent-pet-maker/motion-review.json"),
+        ),
+    ]
+}
+
 fn external_source_ready_for_checkpoint(job_dir: &Path) -> bool {
-    let source_dir = job_dir.join("petpack-source");
+    if !pet_studio_source_candidates(job_dir)
+        .into_iter()
+        .any(|candidate| checkpoint_source_is_complete(&candidate))
+    {
+        return false;
+    }
+    pet_studio_motion_evidence_candidates(job_dir)
+        .into_iter()
+        .any(|(report, review)| report.is_file() && review.is_file())
+}
+
+fn checkpoint_source_is_complete(source_dir: &Path) -> bool {
     let validation = read_checkpoint_json(&source_dir.join("build/validation.json"));
     if validation
         .as_ref()
@@ -3659,7 +3778,7 @@ fn external_source_ready_for_checkpoint(job_dir: &Path) -> bool {
             return false;
         }
     }
-    job_dir.join("motion-qa/report.json").is_file() && job_dir.join("motion-review.json").is_file()
+    true
 }
 
 fn read_checkpoint_json(path: &Path) -> Option<Value> {
@@ -5505,6 +5624,44 @@ mod timing_normalization_tests {
             collected.assistant_text.as_deref(),
             Some("{\"timing_changed\":true,\"states\":[]}")
         );
+    }
+
+    #[test]
+    fn final_checkpoint_accepts_agent_pet_maker_workspace_evidence() {
+        for source_relative in ["petpack-source", "workspace/petpack-source"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let job_dir = temporary.path();
+            let source_dir = job_dir.join(source_relative);
+            let manifest = PetManifest::new(
+                "pet_checkpointtest".to_string(),
+                "Checkpoint Test".to_string(),
+                "test".to_string(),
+                QualityLevel::Standard,
+                "2026-08-09T00:00:00Z".to_string(),
+            );
+            fs::create_dir_all(source_dir.join("build")).unwrap();
+            fs::write(
+                source_dir.join("manifest.json"),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            fs::write(source_dir.join("build/validation.json"), br#"{"ok":true}"#).unwrap();
+            for state in &manifest.states {
+                let state_dir = source_dir.join(&state.frames_dir);
+                fs::create_dir_all(&state_dir).unwrap();
+                for frame_index in 0..state.frame_durations_ms.len() {
+                    fs::write(state_dir.join(format!("{frame_index:04}.png")), []).unwrap();
+                }
+            }
+
+            assert!(!external_source_ready_for_checkpoint(job_dir));
+            let evidence_dir = job_dir.join("workspace/.agent-pet-maker");
+            fs::create_dir_all(evidence_dir.join("motion-qa")).unwrap();
+            fs::write(evidence_dir.join("motion-qa/report.json"), b"{}").unwrap();
+            fs::write(evidence_dir.join("motion-review.json"), b"{}").unwrap();
+
+            assert!(external_source_ready_for_checkpoint(job_dir));
+        }
     }
 }
 

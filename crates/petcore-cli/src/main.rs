@@ -964,10 +964,27 @@ fn summarize_generation_artifacts(
     let skill_helper = source_metadata
         .and_then(|metadata| metadata.get("skill_helper"))
         .and_then(Value::as_str);
+    let runner = source_metadata
+        .and_then(|metadata| metadata.get("runner"))
+        .and_then(Value::as_str);
+    let visual_source = source_metadata
+        .and_then(|metadata| metadata.get("visual_source"))
+        .and_then(Value::as_str);
+    let preview_only = source_metadata
+        .and_then(|metadata| metadata.get("preview_only"))
+        .and_then(Value::as_bool);
     let materialized_by_petcore = materializer == Some("petcore-internal-skill-materializer");
     let deterministic_preview = is_deterministic_preview(generator, provenance);
-    let real_skill_source = generator == Some("codex-app-server-skill")
+    let trusted_producer_identity = generator == Some("codex-app-server-skill")
+        || (skill_helper == Some("agent-pet-maker")
+            && runner.is_some_and(|value| !value.trim().is_empty()));
+    let real_skill_source = trusted_producer_identity
         && provenance == Some("skill-full-source")
+        && matches!(
+            visual_source,
+            Some("image-generation" | "user-reference-derived")
+        )
+        && preview_only == Some(false)
         && materializer.is_none()
         && !deterministic_preview;
     let fallback_used = deterministic_preview
@@ -1057,7 +1074,7 @@ fn generation_mode(
             Some("skill-full-source"),
             Some("petcore-internal-skill-materializer"),
         ) => "petcore_internal_skill_materialized",
-        (Some("codex-app-server-skill"), Some("skill-full-source"), None) => "skill_full_source",
+        (_, Some("skill-full-source"), None) => "skill_full_source",
         (Some("codex-app-server-brief-petpack-v3"), Some("codex_app_server_brief"), _) => {
             "codex_brief_materialized"
         }

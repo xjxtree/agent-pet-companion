@@ -2448,6 +2448,7 @@ public enum ActiveGenerationStatus: String, Codable, Hashable, Sendable {
     case pending
     case running
     case waitingForUser = "waiting_for_user"
+    case failed
 }
 
 public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {

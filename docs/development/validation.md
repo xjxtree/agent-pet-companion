@@ -25,6 +25,22 @@ APC_VALIDATE_REAL_APP_SERVER=0 \
 
 The default gate uses isolated homes and must not launch the GUI, mutate user LaunchAgents, invoke real Agents, or read credentials. Run a focused component check first when diagnosing a failure. / 默认门禁使用隔离 home，不启动 GUI、不修改用户 LaunchAgent、不调用真实 Agent，也不读取凭据；排错时先运行最小相关检查。
 
+For an ordinary local commit, start with the change-scoped pre-push gate. It always checks the diff and source syntax, then selects localization parity, Rust packages, Swift tests, connector smoke, or pet-production checks from the changed paths. `--plan-only` shows the selection without running it, and `--full` moves to the complete local gate. / 普通本地提交应先运行变更范围预推送门禁。它始终检查 diff 与源码语法，再根据变更路径选择本地化一致性、Rust package、Swift 测试、连接器 smoke 或宠物制作检查；`--plan-only` 仅显示计划，`--full` 转入完整本地门禁。
+
+```bash
+./script/validate_pre_push.sh --plan-only
+./script/validate_pre_push.sh
+```
+
+During local full-gate diagnosis, `test_all.sh --resume` stores successful step checkpoints under this worktree's Git directory, and every executed step reports its wall-clock duration. Every checkpoint includes a source-scope fingerprint, command, workload settings, and local toolchain identity; a relevant source or toolchain change reruns that step, while unrelated successful steps can be reused. Interaction evidence is content-bound to `interaction-contract-files.txt`; the same proven suites may be rebound to the current validation build and reused by offline overlay and App assembly only after the source digest is rechecked. App assembly itself always reruns because it produces the final bundle. Clear local checkpoints explicitly with `test_all.sh --clear-cache`. / 本地完整门禁排错时，`test_all.sh --resume` 会把成功步骤的检查点写入当前 worktree 的 Git 目录，每个实际执行的步骤也会报告墙钟耗时。每个检查点都绑定源码作用域指纹、命令、负载设置与本机工具链；相关源码或工具链变化会重跑该步骤，无关的已通过步骤可以复用。交互证据按 `interaction-contract-files.txt` 内容绑定；只有重新核对源码摘要后，已证明的同组测试才能绑定到当前验证 build，并供离线悬浮层与 App 组装复用。最终 App 组装始终重跑，因为它负责产出最终 bundle。可用 `test_all.sh --clear-cache` 显式清除本地检查点。
+
+```bash
+./script/test_all.sh --resume
+./script/test_all.sh --clear-cache
+```
+
+GitHub Release and other authoritative CI evidence must invoke plain `./script/test_all.sh`; they never consume local checkpoints. The String Catalog/`.strings` parity check intentionally runs before expensive Rust and Swift suites so translation drift fails fast. / GitHub Release 与其他权威 CI 证据必须调用无参数的 `./script/test_all.sh`，绝不消费本地检查点。String Catalog 与 `.strings` 的一致性检查会刻意前置到昂贵的 Rust、Swift 测试之前，使翻译漂移尽早失败。
+
 ## Environment-dependent gates / 环境门禁
 
 - `APC_VALIDATE_HOST_UI=1` permits repository validators that affect a packaged App runtime. It does not prescribe the UI inspection tool; the executing Agent selects a suitable method. Computer Use is recommended when available and useful.

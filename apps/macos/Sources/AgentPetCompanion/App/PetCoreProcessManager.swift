@@ -434,6 +434,15 @@ enum PetCoreRuntimeReplacementSafetyPolicy {
                 expectedReplacementSafe = false
             case "waiting_for_user":
                 expectedReplacementSafe = !connectionOperation
+            case "failed":
+                // Older PetCore builds projected recoverable failures as
+                // active and incorrectly reported replacement_safe=false.
+                // Recheck their authoritative snapshot instead of deadlocking
+                // the update that is needed to resume the durable job.
+                if !replacementSafe, !connectionOperation {
+                    return .snapshotRequired
+                }
+                expectedReplacementSafe = !connectionOperation
             default:
                 return .unknown
             }
@@ -463,10 +472,11 @@ enum PetCoreRuntimeReplacementSafetyPolicy {
             switch status {
             case "pending", "running":
                 generationProtected = true
-            case "waiting_for_user":
-                // Waiting input is durable PetCore state. Replacing the runtime
-                // lets the new App restore the prompt; deferring here would
-                // deadlock because no UI is connected to answer it.
+            case "waiting_for_user", "failed":
+                // Waiting input and recoverable failure are durable PetCore
+                // states. Replacing the runtime lets the new App restore the
+                // prompt or continuation; deferring here would deadlock
+                // because no active worker can make either state progress.
                 generationProtected = false
             default:
                 return .unknown

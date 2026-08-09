@@ -66,6 +66,47 @@ struct MakerHistoryActionsTests {
 
     @MainActor
     @Test
+    func acceptedGenerationSelectsItsSessionBeforeHistoryListCatchesUp() async {
+        let jobID = "job_just_created"
+        let store = makeStore { method, _, _ in
+            switch method {
+            case "generation.start":
+                return ["ok": true, "job_id": jobID]
+            case "generation.history.list":
+                // Reproduce a stale list projection arriving immediately
+                // after generation.start committed the new job.
+                return Self.historyList([])
+            case "generation.history.detail":
+                return Self.historyDetail(jobID: jobID, status: "running")
+            case "generation.messages.list":
+                return [
+                    "ok": true,
+                    "job_id": jobID,
+                    "messages": [],
+                    "has_more": false,
+                    "next_before_sequence": NSNull(),
+                    "revision": "0",
+                ]
+            default:
+                throw PetCoreClientError.invalidResponse
+            }
+        }
+        store.beginMakerDraft()
+        store.updateGenerationDescription("A tiny blue robot bear")
+
+        store.startGeneration()
+        for _ in 0..<200 where store.generationHistoryDetail?.jobID != jobID {
+            await Task.yield()
+        }
+
+        #expect(store.generationSession.jobID == jobID)
+        #expect(store.selectedGenerationHistoryJobID == jobID)
+        #expect(store.generationHistoryDetail?.jobID == jobID)
+        #expect(!store.makerDraftIsActive)
+    }
+
+    @MainActor
+    @Test
     func draftIsPreservedAcrossRefreshAndCanBeDiscardedBackToHistory() async {
         let store = makeStore { method, params, _ in
             switch method {
@@ -344,6 +385,7 @@ struct MakerHistoryActionsTests {
     @Test
     func deletingSelectedHistoryRefreshesAndSelectsTheAdjacentRecord() async {
         var listCalls = 0
+        var messageListCalls: [String] = []
         var deletedJobID: String?
         let store = makeStore { method, params, _ in
             switch method {
@@ -366,6 +408,24 @@ struct MakerHistoryActionsTests {
                     status: jobID == "job_b" ? "canceled" : "completed",
                     resultPetID: jobID == "job_a" ? "pet_retained" : nil
                 )
+            case "generation.messages.list":
+                let jobID = (params as? [String: Any])?["job_id"] as? String ?? "missing"
+                messageListCalls.append(jobID)
+                return [
+                    "ok": true,
+                    "job_id": jobID,
+                    "messages": [[
+                        "id": "message_\(jobID)",
+                        "sequence": 1,
+                        "role": "assistant",
+                        "content": jobID,
+                        "progress": 1.0,
+                        "created_at": "2026-08-07T00:00:00Z",
+                    ]],
+                    "has_more": false,
+                    "next_before_sequence": NSNull(),
+                    "revision": "1",
+                ]
             case "generation.history.delete":
                 deletedJobID = (params as? [String: Any])?["job_id"] as? String
                 return [
@@ -394,6 +454,8 @@ struct MakerHistoryActionsTests {
         #expect(store.generationHistorySnapshot.jobs.map(\.jobID) == ["job_b"])
         #expect(store.selectedGenerationHistoryJobID == "job_b")
         #expect(store.generationHistoryDetail?.jobID == "job_b")
+        #expect(messageListCalls == ["job_a", "job_b"])
+        #expect(store.generationHistoryMessages.map(\.content) == ["job_b"])
         #expect(store.generationHistoryDeleteInFlightJobID == nil)
         #expect(store.generationHistoryMutationError == nil)
         #expect(store.pets.map(\.id) == ["pet_retained"])
