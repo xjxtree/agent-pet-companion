@@ -9150,7 +9150,7 @@ mod tests {
             .as_ref()
             .expect("retired Studio Skill history must be valid");
         assert!(
-            retired.contains("98ab92e04810099587bf50f2d340ea588568dd305a3d4a6fb177f08d6c344f59")
+            retired.contains("76487d8b995dc60adde490f7361cfe418047d5b99befb7a2ecbbf5f1ee647343")
         );
         assert!(
             retired.contains("5150ab91ba5f14567f0a2be0b6053688dffcd564e665a3e281fd5a110f8e852d")
