@@ -380,12 +380,23 @@ struct PetStudioTests {
             kind: "generation_failed"
         )
 
-        let detail = PetStudioPresentation.failureDetail(for: [failure])
+        let chineseDetail = PetStudioPresentation.failureDetail(
+            for: [failure],
+            localeIdentifier: "zh-Hans"
+        )
+        let englishDetail = PetStudioPresentation.failureDetail(
+            for: [failure],
+            localeIdentifier: "en"
+        )
 
-        #expect(detail.contains("旧版固定续接次数上限"))
-        #expect(detail.contains("并非 Codex App Server 连接故障"))
-        #expect(detail.contains("继续制作"))
-        #expect(!detail.contains("Agent 连接中修复"))
+        #expect(chineseDetail.contains("旧版固定续接次数上限"))
+        #expect(chineseDetail.contains("并非 Codex App Server 连接故障"))
+        #expect(chineseDetail.contains("继续制作"))
+        #expect(!chineseDetail.contains("Agent 连接中修复"))
+        #expect(englishDetail.contains("old fixed continuation limit"))
+        #expect(englishDetail.contains("connection did not fail"))
+        #expect(englishDetail.contains("Choose Continue"))
+        #expect(!englishDetail.contains("Agent 连接中修复"))
     }
 
     @Test

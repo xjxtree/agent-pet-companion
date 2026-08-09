@@ -141,7 +141,13 @@ jobs:
       - name: Run host-safe source, Phase A/T-B4 interaction, and integration gates
         env:
           APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}
-        run: ./script/test_all.sh
+        run: |
+          # Some protected historical candidates contain a legacy presentation
+          # assertion that reads the runner's system language. Pin the isolated
+          # release host for deterministic rebuilds; current tests inject locales.
+          defaults write NSGlobalDomain AppleLanguages -array "zh-Hans" "en"
+          test "$(defaults read NSGlobalDomain AppleLanguages | sed -n '2s/[ ,\"]//gp')" = "zh-Hans"
+          ./script/test_all.sh
 
       - name: Build both official GitHub Release archives
         env:

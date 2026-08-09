@@ -831,10 +831,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('Image.__version__ != "11.3.0"', self.build)
         self.assertIn('features.check("webp_anim")', self.build)
         self.assertIn('>>"$GITHUB_PATH"', self.build)
-        self.assertIn("run: ./script/test_all.sh", self.build)
+        self.assertIn("./script/test_all.sh", self.build)
         self.assertLess(
             self.build.index("Prepare pinned Python validation environment"),
-            self.build.index("run: ./script/test_all.sh"),
+            self.build.index("./script/test_all.sh"),
         )
         self.assertIn(
             "run: ./script/build_release.sh --github-release --arch all",

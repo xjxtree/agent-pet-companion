@@ -1660,9 +1660,13 @@ enum PetStudioPresentation {
     static func failureDetail(
         for messages: [GenerationMessage],
         homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
-        maximumSummaryScalars: Int = 240
+        maximumSummaryScalars: Int = 240,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
-        let recovery = APCLocalization.text(.studioFailedDetail)
+        let recovery = APCLocalization.text(
+            .studioFailedDetail,
+            locale: localeIdentifier
+        )
         guard maximumSummaryScalars > 0,
               let failure = messages.last(where: { $0.kind == "generation_failed" })
         else { return recovery }
@@ -1670,7 +1674,10 @@ enum PetStudioPresentation {
         if failure.content.contains("bounded checkpoint turns")
             || failure.content.contains("固定续接次数上限")
         {
-            return APCLocalization.text(.studioLegacyCheckpointFailure)
+            return APCLocalization.text(
+                .studioLegacyCheckpointFailure,
+                locale: localeIdentifier
+            )
         }
 
         let sanitized = AppDiagnosticRedactor.sanitizeLegacyLog(

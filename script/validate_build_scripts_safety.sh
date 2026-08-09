@@ -269,7 +269,7 @@ if source.count("ref: ${{ needs.build.outputs.commit }}") != 3:
 if source.count("./script/verify_remote_release_tag.sh") < 3:
     raise SystemExit("remote tag identity must be rechecked before and after publication")
 
-source_gate = build.index("run: ./script/test_all.sh")
+source_gate = build.index("./script/test_all.sh")
 official_build = build.index(
     "run: ./script/build_release.sh --github-release --arch all"
 )
