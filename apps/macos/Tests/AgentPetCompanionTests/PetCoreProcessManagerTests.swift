@@ -336,6 +336,140 @@ struct PetCoreProcessManagerTests {
     }
 
     @Test
+    func healthyCommitPrunesSupersededManagedRuntimesAndKeepsTheRollbackPair() async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: home) }
+
+        let current = runtimeManifest(buildID: "build-current")
+        let priorLKG = runtimeManifest(buildID: "build-prior-lkg")
+        let orphan = runtimeManifest(buildID: "build-orphan")
+        let candidate = runtimeManifest(buildID: "build-candidate")
+        for manifest in [current, priorLKG, orphan, candidate] {
+            try installManagedRuntime(
+                manifest,
+                homeURL: home,
+                fileManager: fileManager
+            )
+        }
+
+        let runtimeRoot = home.appendingPathComponent("runtime", isDirectory: true)
+        try writeRuntimePointer(
+            .init(buildID: current.buildID),
+            to: runtimeRoot.appendingPathComponent("current.json")
+        )
+        try writeRuntimePointer(
+            .init(buildID: priorLKG.buildID),
+            to: runtimeRoot.appendingPathComponent("last-known-good.json")
+        )
+
+        let candidateDirectory = runtimeRoot
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(candidate.buildID, isDirectory: true)
+        let store = PetCoreRuntimeStore(homeURL: home)
+        try await store.commitHealthy(PreparedPetCoreRuntime(
+            executableURL: candidateDirectory.appendingPathComponent("petcore"),
+            cliURL: candidateDirectory.appendingPathComponent("petcore-cli"),
+            manifestURL: candidateDirectory.appendingPathComponent("runtime-manifest.json"),
+            manifest: candidate,
+            previous: .init(buildID: current.buildID)
+        ))
+
+        let versions = runtimeRoot.appendingPathComponent("versions", isDirectory: true)
+        #expect(fileManager.fileExists(atPath: versions.appendingPathComponent(candidate.buildID).path))
+        #expect(fileManager.fileExists(atPath: versions.appendingPathComponent(current.buildID).path))
+        #expect(!fileManager.fileExists(atPath: versions.appendingPathComponent(priorLKG.buildID).path))
+        #expect(!fileManager.fileExists(atPath: versions.appendingPathComponent(orphan.buildID).path))
+        #expect(
+            try JSONDecoder().decode(
+                InstalledPetCoreRuntime.self,
+                from: Data(contentsOf: runtimeRoot.appendingPathComponent("current.json"))
+            ).buildID == candidate.buildID
+        )
+        #expect(
+            try JSONDecoder().decode(
+                InstalledPetCoreRuntime.self,
+                from: Data(contentsOf: runtimeRoot.appendingPathComponent("last-known-good.json"))
+            ).buildID == current.buildID
+        )
+    }
+
+    @Test
+    func runtimePruningKeepsCheckpointReferencesAndUnrecognizedEntries() async throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? fileManager.removeItem(at: home) }
+
+        let current = runtimeManifest(buildID: "build-current")
+        let lkg = runtimeManifest(buildID: "build-lkg")
+        let checkpointCandidate = runtimeManifest(buildID: "build-checkpoint")
+        let orphan = runtimeManifest(buildID: "build-orphan")
+        for manifest in [current, lkg, checkpointCandidate, orphan] {
+            try installManagedRuntime(
+                manifest,
+                homeURL: home,
+                fileManager: fileManager
+            )
+        }
+
+        let runtimeRoot = home.appendingPathComponent("runtime", isDirectory: true)
+        try writeRuntimePointer(
+            .init(buildID: current.buildID),
+            to: runtimeRoot.appendingPathComponent("current.json")
+        )
+        try writeRuntimePointer(
+            .init(buildID: lkg.buildID),
+            to: runtimeRoot.appendingPathComponent("last-known-good.json")
+        )
+        let foreign = runtimeRoot
+            .appendingPathComponent("versions/build-foreign", isDirectory: true)
+        try fileManager.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data("user-owned".utf8).write(to: foreign.appendingPathComponent("notes.txt"))
+
+        let checkpoint = runtimeRoot.appendingPathComponent(
+            "rollback-checkpoint",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: checkpoint, withIntermediateDirectories: true)
+        let checkpointState: [String: Any] = [
+            "schema_version": "apc.runtime-rollback-checkpoint.v1",
+            "phase": "ready",
+            "source_build_id": current.buildID,
+            "candidate_build_id": checkpointCandidate.buildID,
+            "database_was_present": true,
+            "database_sha256": String(repeating: "a", count: 64),
+        ]
+        try JSONSerialization.data(withJSONObject: checkpointState).write(
+            to: checkpoint.appendingPathComponent("state.json")
+        )
+
+        let currentDirectory = runtimeRoot
+            .appendingPathComponent("versions", isDirectory: true)
+            .appendingPathComponent(current.buildID, isDirectory: true)
+        let store = PetCoreRuntimeStore(homeURL: home)
+        try await store.commitHealthy(PreparedPetCoreRuntime(
+            executableURL: currentDirectory.appendingPathComponent("petcore"),
+            cliURL: currentDirectory.appendingPathComponent("petcore-cli"),
+            manifestURL: currentDirectory.appendingPathComponent("runtime-manifest.json"),
+            manifest: current,
+            previous: nil
+        ))
+
+        let versions = runtimeRoot.appendingPathComponent("versions", isDirectory: true)
+        #expect(fileManager.fileExists(atPath: versions.appendingPathComponent(current.buildID).path))
+        #expect(fileManager.fileExists(atPath: versions.appendingPathComponent(lkg.buildID).path))
+        #expect(
+            fileManager.fileExists(
+                atPath: versions.appendingPathComponent(checkpointCandidate.buildID).path
+            )
+        )
+        #expect(!fileManager.fileExists(atPath: versions.appendingPathComponent(orphan.buildID).path))
+        #expect(fileManager.fileExists(atPath: foreign.appendingPathComponent("notes.txt").path))
+    }
+
+    @Test
     func healthRequiresTheCompleteRuntimeReleaseManifest() throws {
         let manifest = runtimeManifest(buildID: "build-a")
         let manifestObject = try #require(

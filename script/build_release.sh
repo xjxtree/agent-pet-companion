@@ -119,15 +119,31 @@ if [[ "$TAG_COMMIT" != "$RELEASE_COMMIT" ]]; then
   exit 1
 fi
 
-PREVIOUS_RELEASE_TAG="$({
-  git -C "$ROOT_DIR" describe \
-    --tags \
-    --match 'v[0-9]*.[0-9]*.[0-9]*' \
-    --abbrev=0 \
-    "$RELEASE_COMMIT^"
-} 2>/dev/null || true)"
+PREVIOUS_RELEASE_TAG="${APC_PREVIOUS_RELEASE_TAG:-}"
+if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+  PREVIOUS_RELEASE_TAG="$({
+    git -C "$ROOT_DIR" describe \
+      --tags \
+      --match 'v[0-9]*.[0-9]*.[0-9]*' \
+      --abbrev=0 \
+      "$RELEASE_COMMIT^"
+  } 2>/dev/null || true)"
+fi
 if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
   echo 'GitHub Release distribution requires a previous version tag baseline' >&2
+  exit 1
+fi
+if [[ ! "$PREVIOUS_RELEASE_TAG" =~ ^v[0-9]+([.][0-9]+){2}$ ]]; then
+  echo 'previous GitHub Release tag baseline must be strict vX.Y.Z SemVer' >&2
+  exit 1
+fi
+PREVIOUS_RELEASE_COMMIT="$({
+  git -C "$ROOT_DIR" rev-parse --verify "$PREVIOUS_RELEASE_TAG^{commit}"
+} 2>/dev/null || true)"
+if [[ -z "$PREVIOUS_RELEASE_COMMIT" ]] \
+  || ! git -C "$ROOT_DIR" merge-base \
+    --is-ancestor "$PREVIOUS_RELEASE_COMMIT" "$RELEASE_COMMIT^"; then
+  echo 'previous GitHub Release tag baseline must be an ancestor of the candidate' >&2
   exit 1
 fi
 "$ROOT_DIR/script/validate_codex_plugin_version.py" \

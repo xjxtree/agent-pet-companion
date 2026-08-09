@@ -132,6 +132,8 @@ rg -q 'CHANGELOG.md must contain a frozen' "$ROOT_DIR/script/build_release.sh"
 rg -q 'GitHub Release distribution requires tag' "$ROOT_DIR/script/build_release.sh"
 rg -q 'GitHub Release distribution requires a previous version tag baseline' \
   "$ROOT_DIR/script/build_release.sh"
+rg -Fq 'PREVIOUS_RELEASE_TAG="${APC_PREVIOUS_RELEASE_TAG:-}"' \
+  "$ROOT_DIR/script/build_release.sh"
 rg -Fq '"$ROOT_DIR/script/validate_codex_plugin_version.py"' \
   "$ROOT_DIR/script/build_release.sh"
 rg -Fq -- '--base-ref "$PREVIOUS_RELEASE_TAG"' \
@@ -219,6 +221,8 @@ rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
 rg -q 'validate_github_release_api.py' "$WORKFLOW"
 rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
+rg -Fq 'APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}' \
+  "$WORKFLOW"
 rg -q 'codex-studio-skill-history.json' \
   "$ROOT_DIR/script/validate_codex_plugin_version.py"
 rg -Fq 'gh release edit "$RELEASE_TAG" --draft=false --latest' "$WORKFLOW"

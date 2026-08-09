@@ -588,13 +588,25 @@ class ValidationOrderTests(unittest.TestCase):
         validate = (ROOT / "script/validate_app_bundle.sh").read_text(
             encoding="utf-8"
         )
-        attestation = build.index(
-            '"$ROOT_DIR/script/validate_overlay_interaction.sh" \\\n'
-            '  --attestation-out "$INTERACTION_ATTESTATION" \\\n'
-            '  --build-id "$BUILD_ID"'
+        reused_attestation = build.index(
+            '"$ROOT_DIR/script/validate_interaction_attestation.py" \\\n'
+            '    "$INTERACTION_ATTESTATION_SOURCE"'
         )
-        rust_build = build.index('if [[ "$UNIVERSAL" == "1" ]]', attestation)
-        self.assertLess(attestation, rust_build)
+        generated_attestation = build.index(
+            '"$ROOT_DIR/script/validate_overlay_interaction.sh"'
+        )
+        rust_build = build.index(
+            'if [[ "$UNIVERSAL" == "1" ]]',
+            generated_attestation,
+        )
+        self.assertLess(reused_attestation, rust_build)
+        self.assertLess(generated_attestation, rust_build)
+        self.assertIn('--attestation-out "$INTERACTION_ATTESTATION"', build)
+        self.assertIn('--build-id "$BUILD_ID"', build)
+        self.assertGreaterEqual(
+            build.count('--expected-build-id "$BUILD_ID"'),
+            2,
+        )
         self.assertIn(
             'INTERACTION_ATTESTATION="$APP_RESOURCES/interaction-attestation.json"',
             build,
@@ -833,6 +845,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             '  --base-ref "$PREVIOUS_RELEASE_TAG"',
             release_builder,
         )
+        self.assertIn(
+            'PREVIOUS_RELEASE_TAG="${APC_PREVIOUS_RELEASE_TAG:-}"',
+            release_builder,
+        )
+        self.assertIn(
+            "APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}",
+            self.build,
+        )
         stage_index = self.build.index(
             "- name: Stage exact three-file release candidate"
         )
@@ -914,6 +934,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "./script/validate_codex_plugin_version.py --base-ref \"$previous_tag\"",
             self.build,
         )
+        latest_lookup = self.build.index(
+            '"repos/$GITHUB_REPOSITORY/releases/latest"'
+        )
+        plugin_validation = self.build.index(
+            './script/validate_codex_plugin_version.py --base-ref "$previous_tag"'
+        )
+        self.assertLess(latest_lookup, plugin_validation)
+        self.assertIn('echo "previous_tag=$previous_tag"', self.build)
 
     def test_native_architecture_jobs_and_download_revalidation_are_mandatory(self) -> None:
         self.assertNotIn("self-hosted", self.source)

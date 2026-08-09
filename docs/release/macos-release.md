@@ -24,6 +24,8 @@ The runtime build ID is `X.Y.Z.BUILD.FULL_40_CHARACTER_COMMIT`. App, PetCore, CL
 
 The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. A Studio change also requires the previous shipped Skill digest in the append-only retired-Skill history. If an App-managed pre-release Skill reached local installations without a Git release baseline, its recovery digest must be pinned explicitly in the release validator; arbitrary additional history digests remain invalid.
 
+The previous release baseline is the current latest stable GitHub Release, not merely the nearest semantic-version Git tag. A protected candidate tag whose workflow fails before publication remains an immutable audit marker, but it is not a shipped upgrade or retired-Skill ownership baseline. The next candidate uses a new semantic version and continues from the actual latest stable Release. / 上一版本基线取 GitHub 当前 latest stable Release，而不是距离最近的语义版本 Git tag。若受保护的候选标签在公开发布前失败，该标签会作为不可变审计标记保留，但不会成为已发布升级或退役 Skill 所有权基线；下一候选使用新的语义版本，并继续以实际 latest stable Release 为基线。
+
 ## Prerequisites and gates / 环境与门禁
 
 Build hosts need macOS 14+, Swift 6 with a macOS SDK, the pinned Rust toolchain and both Apple targets, Python 3 with the pinned visual-validation dependencies, `rg`, `ditto`, `codesign`, `lipo`, and `shasum`.
@@ -65,6 +67,8 @@ export APC_RELEASE_VERSION='X.Y.Z'
 export APC_RELEASE_BUILD='1'
 ./script/build_release.sh --github-release --arch all
 ```
+
+Normally the previous baseline is inferred from Git history for local builds. If an intervening protected candidate tag never became a GitHub Release, set `APC_PREVIOUS_RELEASE_TAG` to the actual latest stable Release tag; GitHub automation resolves and supplies this value from `/releases/latest` automatically. / 本地构建通常从 Git 历史推断上一基线；若中间存在从未成为 GitHub Release 的受保护失败候选标签，请将 `APC_PREVIOUS_RELEASE_TAG` 设为实际 latest stable Release 标签。GitHub 自动化会从 `/releases/latest` 解析并传入该值。
 
 Official mode accepts only `--arch all`, applies ad-hoc signatures, and produces exactly:
 

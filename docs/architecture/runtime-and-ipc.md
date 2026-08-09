@@ -36,6 +36,8 @@ flowchart TD
 
 Every current managed runtime also carries the build-bound `interaction-attestation.json` produced by the native overlay interaction suites. The App stages a candidate, verifies its manifest and database compatibility, performs an instance-bound replacement, and commits `runtime/current` only after exact health succeeds. Before that boundary, failure restores the verified checkpoint and compatible last-known-good runtime; ambiguous or malformed rollback state fails closed.
 
+After the healthy commit boundary, the runtime store retains the exact current build, the compatible last-known-good build, and any source/candidate builds named by a live rollback checkpoint. It prunes only unreferenced version directories whose private ownership, closed file inventory, regular-file identity, and manifest build ID prove that they are App-managed runtimes. Unknown, malformed, linked, or foreign entries remain untouched; pruning failure never reverses a healthy runtime commit. This retention does not affect SQLite, pets, generation workspaces, connectors, logs, or settings.
+
 At bootstrap, the App applies persisted interface language and appearance before showing ordinary windows. A short system-default fallback prevents a stalled PetCore read from leaving them invisible. Initial launch and recovery coalesce onto one behavior → seed → snapshot → overlay pipeline. PetCore's first complete snapshot is the final authority for settings, onboarding, pets, placement, connections, and active sessions.
 
 ## Overlay and state delivery

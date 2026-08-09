@@ -35,6 +35,7 @@ jobs:
       version: ${{ steps.release_identity.outputs.version }}
       build: ${{ steps.release_identity.outputs.build }}
       commit: ${{ steps.release_identity.outputs.commit }}
+      previous_tag: ${{ steps.release_identity.outputs.previous_tag }}
       arm64_zip_sha256: ${{ steps.candidate_digests.outputs.arm64_zip_sha256 }}
       x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
       checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
@@ -43,6 +44,7 @@ jobs:
       APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -79,18 +81,23 @@ jobs:
           test "$version" = "$source_version"
           grep -q "^## \\[$version\\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" CHANGELOG.md
           previous_tag="$(
-            git describe \
-              --tags \
-              --match 'v[0-9]*.[0-9]*.[0-9]*' \
-              --abbrev=0 \
-              "$commit^"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/releases/latest" \
+              --jq '.tag_name'
           )"
+          [[ "$previous_tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          test "$previous_tag" != "$tag"
+          previous_commit="$(git rev-parse --verify "$previous_tag^{commit}")"
+          git merge-base --is-ancestor "$previous_commit" "$commit^"
           ./script/validate_codex_plugin_version.py --base-ref "$previous_tag"
           {
             echo "tag=$tag"
             echo "version=$version"
             echo "build=$build"
             echo "commit=$commit"
+            echo "previous_tag=$previous_tag"
           } >>"$GITHUB_OUTPUT"
 
       - name: Prepare native build host and cross targets
@@ -140,6 +147,7 @@ jobs:
         env:
           APC_RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
           APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
+          APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}
         run: ./script/build_release.sh --github-release --arch all
 
       - name: Stage exact three-file release candidate

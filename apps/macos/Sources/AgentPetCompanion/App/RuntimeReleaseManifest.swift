@@ -1,6 +1,7 @@
 import AgentPetCompanionCore
 import Darwin
 import Foundation
+import OSLog
 
 struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     let codex: String
@@ -387,6 +388,18 @@ struct PreparedPetCoreRuntime: Sendable {
 
 actor PetCoreRuntimeStore {
     private static let interactionAttestationFilename = "interaction-attestation.json"
+    private static let runtimeManifestFilename = "runtime-manifest.json"
+    private static let runtimeExecutableFilename = "petcore"
+    private static let runtimeCLIFilename = "petcore-cli"
+    private static let recognizedRuntimeEntryNames: Set<String> = [
+        runtimeExecutableFilename,
+        runtimeCLIFilename,
+        runtimeManifestFilename,
+    ]
+    private static let logger = Logger(
+        subsystem: "dev.agentpet.companion",
+        category: "runtime-store"
+    )
     private let homeURL: URL
     private let fileManager: FileManager
     private var recordedBuildIDs: Set<String> = []
@@ -470,6 +483,7 @@ actor PetCoreRuntimeStore {
         guard let buildID = candidate.buildID, candidate.isManaged else { return }
         if recordedBuildIDs.contains(buildID) {
             try replaceCurrentRuntimeLink(buildID: buildID)
+            pruneUnreferencedVersionsAfterCommit()
             return
         }
         let current = try readPointer(at: currentPointerURL)
@@ -481,6 +495,7 @@ actor PetCoreRuntimeStore {
         try writePointer(InstalledPetCoreRuntime(buildID: buildID), to: currentPointerURL)
         try replaceCurrentRuntimeLink(buildID: buildID)
         recordedBuildIDs.insert(buildID)
+        pruneUnreferencedVersionsAfterCommit()
     }
 
     func resolve(_ installation: InstalledPetCoreRuntime) throws -> PreparedPetCoreRuntime {
@@ -536,6 +551,14 @@ actor PetCoreRuntimeStore {
         runtimeRootURL.appendingPathComponent("current", isDirectory: true)
     }
 
+    private var versionsRootURL: URL {
+        runtimeRootURL.appendingPathComponent("versions", isDirectory: true)
+    }
+
+    private var rollbackCheckpointURL: URL {
+        runtimeRootURL.appendingPathComponent("rollback-checkpoint", isDirectory: true)
+    }
+
     private func installedRuntime(
         buildID: String,
         validationProfile: RuntimeManifestValidationProfile
@@ -543,12 +566,11 @@ actor PetCoreRuntimeStore {
         guard buildID.range(of: "^[A-Za-z0-9._+-]{1,128}$", options: .regularExpression) != nil else {
             throw RuntimeManifestError.invalid("运行时指针包含无效构建标识")
         }
-        let directory = runtimeRootURL
-            .appendingPathComponent("versions", isDirectory: true)
+        let directory = versionsRootURL
             .appendingPathComponent(buildID, isDirectory: true)
-        let executableURL = directory.appendingPathComponent("petcore")
-        let cliURL = directory.appendingPathComponent("petcore-cli")
-        let manifestURL = directory.appendingPathComponent("runtime-manifest.json")
+        let executableURL = directory.appendingPathComponent(Self.runtimeExecutableFilename)
+        let cliURL = directory.appendingPathComponent(Self.runtimeCLIFilename)
+        let manifestURL = directory.appendingPathComponent(Self.runtimeManifestFilename)
         let interactionAttestationURL = directory.appendingPathComponent(
             Self.interactionAttestationFilename
         )
@@ -638,6 +660,250 @@ actor PetCoreRuntimeStore {
         var metadata = stat()
         return lstat(url.path, &metadata) == 0
             && metadata.st_mode & S_IFMT == S_IFREG
+    }
+
+    private func pruneUnreferencedVersionsAfterCommit() {
+        do {
+            let removed = try pruneUnreferencedVersions()
+            guard !removed.isEmpty else { return }
+            Self.logger.notice(
+                "Pruned \(removed.count, privacy: .public) unreferenced managed runtime versions"
+            )
+        } catch {
+            // Runtime commit is the irreversible success boundary. Storage
+            // maintenance must never turn a healthy candidate into a failed
+            // update or trigger rollback after the new runtime is authoritative.
+            Self.logger.error(
+                "Managed runtime pruning skipped: \(error.localizedDescription, privacy: .private)"
+            )
+        }
+    }
+
+    /// Removes only complete App-owned runtime directories that are no longer
+    /// reachable from current, last-known-good, or a rollback checkpoint.
+    /// Unknown, malformed, linked, or foreign entries fail closed and remain.
+    private func pruneUnreferencedVersions() throws -> [String] {
+        var versionsStatus = stat()
+        switch lstat(versionsRootURL.path, &versionsStatus) {
+        case 0:
+            guard versionsStatus.st_mode & S_IFMT == S_IFDIR,
+                  versionsStatus.st_uid == getuid()
+            else {
+                throw RuntimeManifestError.invalid("运行时版本根目录无效，已跳过历史运行时清理")
+            }
+        default:
+            if errno == ENOENT { return [] }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let current = try readClosedPointer(at: currentPointerURL)
+        guard let current else {
+            throw RuntimeManifestError.invalid("当前运行时指针缺失，已跳过历史运行时清理")
+        }
+        guard try currentLinkBuildID() == current.buildID else {
+            throw RuntimeManifestError.invalid("当前运行时链接与指针不一致，已跳过历史运行时清理")
+        }
+
+        var protectedBuildIDs: Set<String> = [current.buildID]
+        if let lastKnownGood = try readClosedPointer(at: lastKnownGoodPointerURL) {
+            protectedBuildIDs.insert(lastKnownGood.buildID)
+        }
+        protectedBuildIDs.formUnion(try rollbackCheckpointBuildIDs())
+
+        let entries = try fileManager.contentsOfDirectory(
+            at: versionsRootURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+        var removed: [String] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let buildID = entry.lastPathComponent
+            guard !protectedBuildIDs.contains(buildID),
+                  isSafeBuildID(buildID),
+                  try isRecognizedOwnedRuntimeDirectory(entry, buildID: buildID)
+            else { continue }
+            try fileManager.removeItem(at: entry)
+            removed.append(buildID)
+        }
+        return removed
+    }
+
+    private func readClosedPointer(at url: URL) throws -> InstalledPetCoreRuntime? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let data = try readOwnedRegularFile(at: url, maximumBytes: 4_096)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == ["build_id"],
+              let buildID = object["build_id"] as? String,
+              isSafeBuildID(buildID)
+        else {
+            throw RuntimeManifestError.invalid("运行时指针格式无效，已跳过历史运行时清理")
+        }
+        return InstalledPetCoreRuntime(buildID: buildID)
+    }
+
+    private func currentLinkBuildID() throws -> String {
+        var metadata = stat()
+        guard lstat(currentRuntimeURL.path, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFLNK,
+              metadata.st_uid == getuid(),
+              metadata.st_size > 0,
+              metadata.st_size <= 256
+        else {
+            throw RuntimeManifestError.invalid("当前运行时链接无效")
+        }
+        let destination = try fileManager.destinationOfSymbolicLink(
+            atPath: currentRuntimeURL.path
+        )
+        let prefix = "versions/"
+        guard destination.hasPrefix(prefix),
+              !destination.dropFirst(prefix.count).contains("/"),
+              isSafeBuildID(String(destination.dropFirst(prefix.count)))
+        else {
+            throw RuntimeManifestError.invalid("当前运行时链接目标无效")
+        }
+        return String(destination.dropFirst(prefix.count))
+    }
+
+    private func rollbackCheckpointBuildIDs() throws -> Set<String> {
+        var directoryStatus = stat()
+        switch lstat(rollbackCheckpointURL.path, &directoryStatus) {
+        case 0:
+            guard directoryStatus.st_mode & S_IFMT == S_IFDIR,
+                  directoryStatus.st_uid == getuid()
+            else {
+                throw RuntimeManifestError.invalid("运行时回滚检查点目录无效")
+            }
+        default:
+            if errno == ENOENT { return [] }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+
+        let stateURL = rollbackCheckpointURL.appendingPathComponent("state.json")
+        guard fileManager.fileExists(atPath: stateURL.path) else {
+            let entries = try fileManager.contentsOfDirectory(
+                at: rollbackCheckpointURL,
+                includingPropertiesForKeys: nil
+            )
+            if entries.isEmpty { return [] }
+            throw RuntimeManifestError.invalid("运行时回滚检查点不完整")
+        }
+        let data = try readOwnedRegularFile(at: stateURL, maximumBytes: 4_096)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == [
+                  "schema_version",
+                  "phase",
+                  "source_build_id",
+                  "candidate_build_id",
+                  "database_was_present",
+                  "database_sha256",
+              ],
+              object["schema_version"] as? String == "apc.runtime-rollback-checkpoint.v1",
+              let phase = object["phase"] as? String,
+              ["creating", "ready", "restored"].contains(phase),
+              let sourceBuildID = object["source_build_id"] as? String,
+              let candidateBuildID = object["candidate_build_id"] as? String,
+              isSafeBuildID(sourceBuildID),
+              isSafeBuildID(candidateBuildID)
+        else {
+            throw RuntimeManifestError.invalid("运行时回滚检查点状态无效")
+        }
+        return [sourceBuildID, candidateBuildID]
+    }
+
+    private func isRecognizedOwnedRuntimeDirectory(
+        _ url: URL,
+        buildID: String
+    ) throws -> Bool {
+        var directoryStatus = stat()
+        guard lstat(url.path, &directoryStatus) == 0,
+              directoryStatus.st_mode & S_IFMT == S_IFDIR,
+              directoryStatus.st_uid == getuid()
+        else { return false }
+
+        let entries = try fileManager.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+        let names = Set(entries.map(\.lastPathComponent))
+        let recognizedWithAttestation = Self.recognizedRuntimeEntryNames.union([
+            Self.interactionAttestationFilename
+        ])
+        guard names == Self.recognizedRuntimeEntryNames
+                || names == recognizedWithAttestation
+        else { return false }
+
+        for name in names {
+            var fileStatus = stat()
+            let fileURL = url.appendingPathComponent(name)
+            guard lstat(fileURL.path, &fileStatus) == 0,
+                  fileStatus.st_mode & S_IFMT == S_IFREG,
+                  fileStatus.st_uid == getuid(),
+                  fileStatus.st_nlink == 1
+            else { return false }
+        }
+
+        let manifestData = try readOwnedRegularFile(
+            at: url.appendingPathComponent(Self.runtimeManifestFilename),
+            maximumBytes: 64 * 1_024
+        )
+        guard let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+              manifest["build_id"] as? String == buildID
+        else { return false }
+        return true
+    }
+
+    private func readOwnedRegularFile(at url: URL, maximumBytes: Int) throws -> Data {
+        var pathStatus = stat()
+        guard lstat(url.path, &pathStatus) == 0,
+              pathStatus.st_mode & S_IFMT == S_IFREG,
+              pathStatus.st_uid == getuid(),
+              pathStatus.st_nlink == 1,
+              pathStatus.st_size > 0,
+              pathStatus.st_size <= maximumBytes
+        else {
+            throw RuntimeManifestError.invalid("运行时维护文件无效")
+        }
+
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { Darwin.close(descriptor) }
+        var openedStatus = stat()
+        guard fstat(descriptor, &openedStatus) == 0,
+              openedStatus.st_dev == pathStatus.st_dev,
+              openedStatus.st_ino == pathStatus.st_ino,
+              openedStatus.st_size == pathStatus.st_size
+        else {
+            throw RuntimeManifestError.invalid("运行时维护文件在读取期间发生变化")
+        }
+        var data = Data(count: Int(openedStatus.st_size))
+        let bytesRead = data.withUnsafeMutableBytes { bytes -> Int in
+            guard let baseAddress = bytes.baseAddress else { return 0 }
+            var total = 0
+            while total < bytes.count {
+                let count = Darwin.read(
+                    descriptor,
+                    baseAddress.advanced(by: total),
+                    bytes.count - total
+                )
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { break }
+                total += count
+            }
+            return total
+        }
+        guard bytesRead == data.count else {
+            throw RuntimeManifestError.invalid("运行时维护文件读取不完整")
+        }
+        return data
+    }
+
+    private func isSafeBuildID(_ value: String) -> Bool {
+        value.range(
+            of: "^[A-Za-z0-9._+-]{1,128}$",
+            options: .regularExpression
+        ) != nil
     }
 
     private func preflight(_ runtime: ManagedRuntime) async throws {

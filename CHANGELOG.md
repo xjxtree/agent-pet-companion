@@ -10,7 +10,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-08-09
+## [0.3.1] - 2026-08-09
 
 ### Added / 新增
 
@@ -89,6 +89,7 @@ Use the `Added`, `Changed`, `Fixed`, `Deprecated`, `Removed`, and `Security` cat
 
 ### Fixed / 修复
 
+- Managed PetCore runtime storage now retains only the current build, its last-known-good rollback build, and any build referenced by a live rollback checkpoint after a healthy commit. Complete unreferenced App-owned runtime directories are pruned without touching user data or foreign entries, preventing repeated development launches and upgrades from accumulating a new PetCore/CLI copy indefinitely. / 受管 PetCore 运行时存储现在会在健康提交后仅保留当前构建、上一可用回滚构建，以及仍被有效回滚检查点引用的构建；完整且无引用的 App 自有运行时目录会被清理，同时不触碰用户数据或外来条目，避免重复开发启动与升级无限累积 PetCore/CLI 副本。
 - Desktop pets that finish a `burst_then_idle` action now publish the settled idle frame's real visible bounds and Alpha click mask while retaining ownership under the originating semantic Agent event. Session bubbles therefore remain attached to the visible pet instead of overlapping its head, and transparent-pixel hit testing follows the frame actually on screen; late geometry from a previous semantic state is still rejected. / 桌宠完成 `burst_then_idle` 动作后，现在会在继续归属于原始 Agent 语义事件的同时，发布 settled idle 帧真实的可见包围盒与 Alpha 点击遮罩。会话气泡会继续贴合屏幕上实际可见的宠物，不再覆盖宠物头部，透明像素命中也会跟随真正显示的帧；来自上一语义状态的迟到几何回调仍会被拒绝。
 - Submitting a new or edited pet now switches immediately from the draft to the exact created Maker session even when the history list has not caught up yet. Active, waiting, recoverable, and cancellation-cleanup sessions no longer offer a ChatGPT jump that the desktop client would reject as in use elsewhere; completed, canceled, and terminal-failed sessions retain the action when their exact released thread is available. Session switching and post-delete selection also clear stale reply text and synchronize both detail and paged messages. / 提交新建或修改宠物后，即使历史列表尚未同步，也会立即从草稿切换到服务端返回的精确制作会话。运行中、等待输入、可恢复及取消清理中的会话不再提供会被 ChatGPT 以“正在其他位置使用”拒绝的跳转；已完成、已取消及终态失败会话在精确已释放线程可用时保留该入口。切换会话和删除后选中相邻会话时，也会清理陈旧回复草稿并同步详情与分页消息。
 - Technical-information disclosures now make their entire header row clickable and keyboard-focusable instead of relying on the small chevron target, with matching hover and VoiceOver expanded/collapsed feedback everywhere the shared component appears. / 技术信息折叠区现在会让整排标题都可点击并可通过键盘聚焦，不再依赖狭小的箭头命中区；所有复用该组件的页面也会统一提供悬停反馈及 VoiceOver 展开/收起状态。
