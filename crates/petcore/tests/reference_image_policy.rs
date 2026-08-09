@@ -1,11 +1,18 @@
-use image::{ImageBuffer, ImageFormat, Rgba};
+use image::{ImageBuffer, ImageFormat, Rgb, Rgba};
 use petcore::reference_images::{validate_reference_inputs, MAX_REFERENCE_IMAGES};
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 fn write_image(path: &Path, format: ImageFormat) {
-    let image = ImageBuffer::from_pixel(8, 8, Rgba([24u8, 48, 96, 255]));
-    image.save_with_format(path, format).unwrap();
+    if format == ImageFormat::Jpeg {
+        ImageBuffer::from_pixel(8, 8, Rgb([24u8, 48, 96]))
+            .save_with_format(path, format)
+            .unwrap();
+    } else {
+        ImageBuffer::from_pixel(8, 8, Rgba([24u8, 48, 96, 255]))
+            .save_with_format(path, format)
+            .unwrap();
+    }
 }
 
 fn strings(paths: &[PathBuf]) -> Vec<String> {
@@ -16,17 +23,23 @@ fn strings(paths: &[PathBuf]) -> Vec<String> {
 }
 
 #[test]
-fn reference_policy_accepts_png_and_webp() {
+fn reference_policy_accepts_png_jpeg_and_webp() {
     let temp = tempfile::tempdir().unwrap();
     let png = temp.path().join("one.png");
-    let webp = temp.path().join("two.webp");
+    let jpg = temp.path().join("two.jpg");
+    let jpeg = temp.path().join("three.jpeg");
+    let webp = temp.path().join("four.webp");
     write_image(&png, ImageFormat::Png);
+    write_image(&jpg, ImageFormat::Jpeg);
+    write_image(&jpeg, ImageFormat::Jpeg);
     write_image(&webp, ImageFormat::WebP);
 
-    let validated = validate_reference_inputs(&strings(&[png, webp])).unwrap();
-    assert_eq!(validated.len(), 2);
+    let validated = validate_reference_inputs(&strings(&[png, jpg, jpeg, webp])).unwrap();
+    assert_eq!(validated.len(), 4);
     assert_eq!(validated[0].extension, "png");
-    assert_eq!(validated[1].extension, "webp");
+    assert_eq!(validated[1].extension, "jpg");
+    assert_eq!(validated[2].extension, "jpeg");
+    assert_eq!(validated[3].extension, "webp");
     assert!(validated
         .iter()
         .all(|item| item.width == 8 && item.height == 8));
@@ -49,15 +62,18 @@ fn reference_policy_rejects_extension_content_mismatch() {
 }
 
 #[test]
-fn reference_policy_rejects_unsupported_jpeg() {
+fn reference_policy_rejects_unsupported_gif() {
     let temp = tempfile::tempdir().unwrap();
-    let jpeg = temp.path().join("reference.jpg");
-    std::fs::write(&jpeg, b"not even decoded because JPEG is unsupported").unwrap();
+    let gif = temp.path().join("reference.gif");
+    std::fs::write(&gif, b"not decoded because GIF is unsupported").unwrap();
 
-    let error = validate_reference_inputs(&strings(&[jpeg]))
+    let error = validate_reference_inputs(&strings(&[gif]))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("PNG") && error.contains("WebP"), "{error}");
+    assert!(
+        error.contains("PNG") && error.contains("JPG") && error.contains("WebP"),
+        "{error}"
+    );
 }
 
 #[test]

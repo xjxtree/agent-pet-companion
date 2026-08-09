@@ -1,4 +1,94 @@
+import AgentPetCompanionCore
 import SwiftUI
+
+struct AppUpdateConvergenceAttentionPresentation: Equatable {
+    let title: String
+    let detail: String
+
+    static func resolve(
+        _ attention: AppUpdateConvergenceAttention,
+        locale: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> AppUpdateConvergenceAttentionPresentation {
+        switch attention {
+        case .bundledPets:
+            AppUpdateConvergenceAttentionPresentation(
+                title: APCLocalization.text(
+                    .appUpdateConvergenceBundledPetsTitle,
+                    locale: locale
+                ),
+                detail: APCLocalization.text(
+                    .appUpdateConvergenceBundledPetsDetail,
+                    locale: locale
+                )
+            )
+        case let .connectors(issues):
+            connectorPresentation(issues, locale: locale)
+        case .service:
+            AppUpdateConvergenceAttentionPresentation(
+                title: APCLocalization.text(
+                    .appUpdateConvergenceServiceTitle,
+                    locale: locale
+                ),
+                detail: APCLocalization.text(
+                    .appUpdateConvergenceServiceDetail,
+                    locale: locale
+                )
+            )
+        }
+    }
+
+    private static func connectorPresentation(
+        _ issues: [ProductConnectorConvergenceIssue],
+        locale: String
+    ) -> AppUpdateConvergenceAttentionPresentation {
+        let sources = AgentSource.allCases.filter { source in
+            issues.contains { $0.source == source }
+        }
+        let names = sources
+            .map(\.title)
+            .joined(separator: locale.lowercased().hasPrefix("zh") ? "、" : ", ")
+        guard !names.isEmpty else {
+            return AppUpdateConvergenceAttentionPresentation(
+                title: APCLocalization.text(
+                    .appUpdateConvergenceAttentionTitle,
+                    locale: locale
+                ),
+                detail: APCLocalization.text(
+                    .appUpdateConvergenceAttentionDetail,
+                    locale: locale
+                )
+            )
+        }
+        let detailKey: APCLocalizationKey
+        if let firstReason = issues.first?.reason,
+           issues.allSatisfy({ $0.reason == firstReason }) {
+            detailKey = switch firstReason {
+            case .managedPathConflict:
+                .appUpdateConvergenceConnectorConflictDetailFormat
+            case .hostUnavailable:
+                .appUpdateConvergenceConnectorHostDetailFormat
+            case .refreshFailed:
+                .appUpdateConvergenceConnectorFailedDetailFormat
+            case .verificationIncomplete:
+                .appUpdateConvergenceConnectorVerificationDetailFormat
+            }
+        } else {
+            detailKey = .appUpdateConvergenceConnectorMixedDetailFormat
+        }
+        return AppUpdateConvergenceAttentionPresentation(
+            title: APCLocalization.format(
+                .appUpdateConvergenceConnectorsTitleFormat,
+                locale: locale,
+                names
+            ),
+            detail: APCLocalization.format(
+                detailKey,
+                locale: locale,
+                names
+            )
+        )
+    }
+}
 
 struct AppUpdateConvergenceBlockingView: View {
     @EnvironmentObject private var store: AppStore
@@ -86,25 +176,25 @@ struct AppUpdateConvergenceBanner: View {
                 dismiss: store.dismissAppUpdateConvergenceNotice
             )
         case let .needsAttention(attention):
+            let presentation = AppUpdateConvergenceAttentionPresentation.resolve(
+                attention
+            )
             banner(
                 systemImage: "exclamationmark.triangle.fill",
-                title: APCLocalization.text(.appUpdateConvergenceAttentionTitle),
-                detail: APCLocalization.text(.appUpdateConvergenceAttentionDetail),
+                title: presentation.title,
+                detail: presentation.detail,
                 tint: APCDesign.warning,
-                primaryAction: (
-                    APCLocalization.text(.appUpdateConvergenceRetryAction),
-                    store.retryProductConvergence
-                ),
-                secondaryAction: secondaryAction(for: attention)
+                primaryAction: recoveryAction(for: attention),
+                secondaryAction: recheckAction(for: attention)
             )
         }
     }
 
-    private func secondaryAction(
+    private func recoveryAction(
         for attention: AppUpdateConvergenceAttention
     ) -> (String, () -> Void)? {
         switch attention {
-        case let .connectors(sources) where !sources.isEmpty:
+        case let .connectors(issues) where !issues.isEmpty:
             (
                 APCLocalization.text(.appUpdateConvergenceOpenConnectionsAction),
                 { store.selection = .connections }
@@ -116,6 +206,21 @@ struct AppUpdateConvergenceBanner: View {
             )
         case .bundledPets, .connectors(_):
             nil
+        }
+    }
+
+    private func recheckAction(
+        for attention: AppUpdateConvergenceAttention
+    ) -> (String, () -> Void)? {
+        let title = APCLocalization.text(.appUpdateConvergenceCheckAgainAction)
+        switch attention {
+        case .bundledPets:
+            return nil
+        case .service:
+            return (title, store.retryProductConvergence)
+        case let .connectors(issues):
+            guard !issues.isEmpty else { return nil }
+            return (title, { store.checkConnections(issues.map(\.source)) })
         }
     }
 

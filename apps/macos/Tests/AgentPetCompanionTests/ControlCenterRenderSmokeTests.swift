@@ -29,8 +29,51 @@ struct ControlCenterRenderSmokeTests {
     }
 
     @MainActor
-    private func render(_ view: AnyView, store: AppStore) throws -> NSBitmapImageRep {
-        let size = CGSize(width: 856, height: 720)
+    @Test
+    func petPreviewRendersForEveryNavigationSelectionAndMultiSessionLayout() throws {
+        let cases: [(
+            name: String,
+            selection: NavigationSection,
+            width: CGFloat,
+            grouped: Bool,
+            display: SessionGroupDisplay,
+            fontScale: BubbleFontScale,
+            desktopPetEnabled: Bool
+        )] = [
+            ("sidebar-library", .library, 248, true, .stacked, .standard, true),
+            ("sidebar-maker", .maker, 288, true, .expanded, .large, true),
+            ("sidebar-configuration", .configuration, 248, false, .stacked, .standard, true),
+            ("sidebar-connections", .connections, 288, false, .expanded, .large, true),
+            ("sidebar-diagnostics-hidden-pet", .diagnostics, 248, true, .stacked, .standard, false),
+        ]
+
+        for previewCase in cases {
+            let store = makeStore()
+            store.selection = previewCase.selection
+            store.behavior.groupSessionsByAgent = previewCase.grouped
+            store.behavior.sessionGroupDisplay = previewCase.display
+            store.behavior.bubbleFontScale = previewCase.fontScale
+            store.behavior.enabled = previewCase.desktopPetEnabled
+            let size = CGSize(width: previewCase.width, height: 520)
+            let bitmap = try render(
+                AnyView(SidebarView()),
+                store: store,
+                size: size
+            )
+
+            #expect(bitmap.pixelsWide > 0)
+            #expect(bitmap.pixelsHigh > 0)
+            #expect(hasVisibleContent(bitmap))
+            try writeCaptureIfRequested(bitmap, name: previewCase.name)
+        }
+    }
+
+    @MainActor
+    private func render(
+        _ view: AnyView,
+        store: AppStore,
+        size: CGSize = CGSize(width: 856, height: 720)
+    ) throws -> NSBitmapImageRep {
         let root = view
             .environmentObject(store)
             .environment(\.controlCenterShellMode, .allColumns)

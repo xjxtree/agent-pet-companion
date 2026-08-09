@@ -27,20 +27,21 @@ enum OverlayPetMenuPolicy {
 }
 
 enum OverlayBubbleToggleContent: Equatable {
-    case count(Int)
     case chevron(systemImage: String)
 }
 
 enum OverlayBubbleTogglePresentation {
     static func content(
         sessionCount: Int,
-        collapsed: Bool
+        revealsMoreContent: Bool,
+        anchorDirection: OverlayBubbleAnchorDirection = .above
     ) -> OverlayBubbleToggleContent? {
         guard sessionCount > 0 else { return nil }
-        if sessionCount > 1 {
-            return .count(sessionCount)
+        let pointsUp = switch (anchorDirection, revealsMoreContent) {
+        case (.above, true), (.below, false): true
+        case (.above, false), (.below, true): false
         }
-        return .chevron(systemImage: collapsed ? "chevron.up" : "chevron.down")
+        return .chevron(systemImage: pointsUp ? "chevron.up" : "chevron.down")
     }
 }
 
@@ -196,19 +197,26 @@ struct OverlayMenuControlRootView: View {
 
     var body: some View {
         let sessionCount = store.overlayBubbleSessionCount
-        let content = OverlayBubbleTogglePresentation.content(
-            sessionCount: sessionCount,
-            collapsed: store.overlayBubbleIsCollapsed
-        )
+        let action = store.overlayBubbleDisclosureAction
+        let content = action.flatMap {
+            OverlayBubbleTogglePresentation.content(
+                sessionCount: sessionCount,
+                revealsMoreContent: $0.revealsMoreContent,
+                anchorDirection: store.overlayBubbleAnchorDirection
+            )
+        }
 
         Group {
-            if let content {
+            if let action, let content {
                 PetMenuButton(
-                    collapsed: store.overlayBubbleIsCollapsed,
                     sessionCount: sessionCount,
                     content: content,
                     tone: store.overlayBubbleStatusTone,
-                    onToggleBubble: { store.toggleOverlayBubble() }
+                    accessibilityLabel: disclosureActionLabel(
+                        action,
+                        sessionCount: sessionCount
+                    ),
+                    onPrimaryAction: { store.stepOverlayBubbleDisclosure() }
                 )
             } else {
                 Color.clear
@@ -226,6 +234,30 @@ struct OverlayMenuControlRootView: View {
         .onDisappear { controlPresentation.setHovered(.menu, false) }
         .apcAppearanceTheme(store.behavior.appearanceTheme)
     }
+
+    private func disclosureActionLabel(
+        _ action: OverlayBubbleDisclosureAction,
+        sessionCount: Int
+    ) -> String {
+        switch action {
+        case .expandStandaloneStack:
+            APCLocalization.format(.overlayExpandSessionsFormat, sessionCount)
+        case .collapseStandaloneStack:
+            APCLocalization.format(.overlayCollapseSessionsFormat, sessionCount)
+        case .revealBubble, .revealCollapsedStandaloneStack:
+            APCLocalization.format(
+                .overlayBubbleCountFormat,
+                APCLocalization.text(.overlayExpandBubble),
+                sessionCount
+            )
+        case .dismissBubble:
+            APCLocalization.format(
+                .overlayBubbleCountFormat,
+                APCLocalization.text(.overlayCollapseBubble),
+                sessionCount
+            )
+        }
+    }
 }
 
 struct BubbleOverlayRootView: View {
@@ -235,7 +267,10 @@ struct BubbleOverlayRootView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var contents: [OverlayBubbleContent] {
-        store.overlayBubbleContents
+        OverlayGeometry.visuallyOrderedBubbleContents(
+            store.overlayBubbleContents,
+            anchorDirection: store.overlayBubbleAnchorDirection
+        )
     }
 
     var body: some View {
@@ -276,6 +311,7 @@ struct BubbleOverlayRootView: View {
                 let rect = bubbleRects.indices.contains(index) ? bubbleRects[index] : .zero
                 ConversationBubble(
                     content: content,
+                    anchorDirection: store.overlayBubbleAnchorDirection,
                     hovered: controlPresentation.isVisible,
                     keyboardNavigationActive: controlPresentation.keyboardNavigationActive,
                     onClose: {
@@ -319,6 +355,7 @@ private struct ConversationBubble: View {
     @Environment(\.overlayBubbleFontScale) private var fontScale
 
     var content: OverlayBubbleContent
+    var anchorDirection: OverlayBubbleAnchorDirection
     var hovered: Bool
     var keyboardNavigationActive: Bool
     var onClose: () -> Void
@@ -333,36 +370,35 @@ private struct ConversationBubble: View {
     var body: some View {
         GeometryReader { proxy in
             let surfaceHeight = max(0, proxy.size.height - content.stackDecorationDepth)
+            let surfaceOffset = anchorDirection == .below
+                ? content.stackDecorationDepth
+                : 0
+            let stackDirection: CGFloat = anchorDirection == .above ? 1 : -1
 
             ZStack(alignment: .topLeading) {
-                if content.isStacked {
+                if content.showsStackDecoration {
                     ForEach(
-                        Array((1 ... OverlayGeometry.bubbleCollapsedStackLayerCount).reversed()),
+                        Array((1 ... content.stackDecorationLayerCount).reversed()),
                         id: \.self
                     ) { layer in
-                        let inset = CGFloat(layer) * OverlayGeometry.bubbleCollapsedStackLayerInset
-                        let offset = CGFloat(layer) * OverlayGeometry.bubbleCollapsedStackLayerOffset
+                        let layerOffset = content.isStandaloneSessionCard
+                            ? OverlayGeometry.bubbleStandaloneStackLayerOffset
+                            : OverlayGeometry.bubbleCollapsedStackLayerOffset
+                        let layerInset = content.isStandaloneSessionCard
+                            ? OverlayGeometry.bubbleStandaloneStackLayerInset
+                            : OverlayGeometry.bubbleCollapsedStackLayerInset
+                        let inset = CGFloat(layer) * layerInset
+                        let offset = CGFloat(layer) * layerOffset
 
-                        RoundedRectangle(
-                            cornerRadius: OverlayGeometry.bubbleCornerRadius,
-                            style: .continuous
-                        )
-                        .fill((content.statusTone.color ?? .clear).opacity(0.12))
-                        .overlay {
-                            RoundedRectangle(
-                                cornerRadius: OverlayGeometry.bubbleCornerRadius,
-                                style: .continuous
-                            )
-                            .stroke(
-                                (content.statusTone.color ?? .clear).opacity(0.46),
-                                lineWidth: 0.7
-                            )
-                        }
+                        stackDecorationLayer
                         .frame(
                             width: max(0, proxy.size.width - inset * 2),
                             height: surfaceHeight
                         )
-                        .offset(x: inset, y: offset)
+                        .offset(
+                            x: inset,
+                            y: surfaceOffset + stackDirection * offset
+                        )
                         .transition(.opacity)
                         .allowsHitTesting(false)
                     }
@@ -370,9 +406,22 @@ private struct ConversationBubble: View {
 
                 bubbleSurface
                     .frame(width: proxy.size.width, height: surfaceHeight, alignment: .top)
+                    .offset(y: surfaceOffset)
             }
         }
         .accessibilityIdentifier("overlay.group.\(content.id)")
+    }
+
+    private var stackDecorationLayer: some View {
+        // Every represented session remains a complete native lens in the
+        // folded tray. Offsets expose the rear-card depth; no material plate,
+        // gray veil, opacity reduction, or synthetic outline replaces the
+        // live desktop refraction.
+        Color.clear
+            .modifier(ConversationBubbleSurfaceStyle(
+                semanticTintOpacity: 0.12,
+                statusTone: content.statusTone
+            ))
     }
 
     private var bubbleSurface: some View {
@@ -385,7 +434,10 @@ private struct ConversationBubble: View {
         }
         .padding(.horizontal, OverlayGeometry.bubbleLeadingPadding)
         .padding(.vertical, OverlayGeometry.bubbleVerticalPadding)
-        .apcNativeBubbleGlass(cornerRadius: OverlayGeometry.bubbleCornerRadius)
+        .modifier(ConversationBubbleSurfaceStyle(
+            semanticTintOpacity: content.isStandaloneSessionCard ? 0.12 : 0,
+            statusTone: content.statusTone
+        ))
         .contentShape(RoundedRectangle(
             cornerRadius: OverlayGeometry.bubbleCornerRadius,
             style: .continuous
@@ -400,42 +452,18 @@ private struct ConversationBubble: View {
     private func standaloneSessionSurface(_ session: OverlaySessionContent) -> some View {
         let accessoryWidth = OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale)
             + OverlayGeometry.bubbleHeaderGap
-            + (content.hasMultipleSessions
-                ? OverlayGeometry.bubbleGroupToggleWidth(fontScale: fontScale)
-                    + OverlayGeometry.bubbleHeaderGap
-                : 0)
         return ZStack(alignment: .topTrailing) {
             SessionBubbleRow(
                 session: session,
-                action: {
-                    if content.isStacked {
-                        onToggleGroup()
-                    } else {
-                        onActivateSession(session)
-                    }
-                },
+                action: { performPrimarySessionAction(session) },
                 dismissAction: nil,
-                agentIndicatorSource: content.source,
-                agentIndicatorTitle: content.agentName,
+                presentation: .standaloneSummary,
+                agentName: content.agentName,
                 reservedTrailingAccessoryWidth: accessoryWidth,
-                primaryActionLabel: content.isStacked
-                    ? APCLocalization.format(
-                        .overlayExpandSessionsFormat,
-                        content.disclosureSessionCount
-                    )
-                    : nil
+                primaryActionLabel: primarySessionActionLabel
             )
 
             HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
-                if content.hasMultipleSessions {
-                    SessionCountButton(
-                        count: content.disclosureSessionCount,
-                        expanded: content.isExpanded,
-                        tone: content.statusTone,
-                        action: onToggleGroup
-                    )
-                }
-
                 if content.canDismiss {
                     BubbleIconButton(
                         systemImage: "xmark",
@@ -523,10 +551,11 @@ private struct ConversationBubble: View {
             ForEach(Array(content.visibleSessions.enumerated()), id: \.element.id) { index, session in
                 SessionBubbleRow(
                     session: session,
-                    action: { onActivateSession(session) },
+                    action: { performPrimarySessionAction(session) },
                     dismissAction: content.canDismiss
                         ? { onDismissSession(session) }
-                        : nil
+                        : nil,
+                    primaryActionLabel: primarySessionActionLabel
                 )
                 .frame(height: rowHeights.indices.contains(index) ? rowHeights[index] : nil)
                 .accessibilitySortPriority(
@@ -549,7 +578,53 @@ private struct ConversationBubble: View {
             ? .opacity
             : .move(edge: .top).combined(with: .opacity)
     }
+
+    private var primarySessionActionLabel: String? {
+        guard content.isStacked else { return nil }
+        return APCLocalization.format(
+            .overlayExpandSessionsFormat,
+            content.disclosureSessionCount
+        )
+    }
+
+    private func performPrimarySessionAction(_ session: OverlaySessionContent) {
+        switch OverlayBubbleSessionPrimaryAction.resolve(content: content) {
+        case .expandSessions:
+            onToggleGroup()
+        case .activateSession:
+            onActivateSession(session)
+        }
+    }
 }
+
+struct ConversationBubbleSurfaceStyle: ViewModifier {
+    let semanticTintOpacity: Double
+    let statusTone: OverlaySessionGroupTone
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(
+            cornerRadius: OverlayGeometry.bubbleCornerRadius,
+            style: .continuous
+        )
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if semanticTintOpacity > 0, let color = statusTone.color {
+                    // Preserve the semantic terminal-state cue as a restrained
+                    // foreground wash. The native lens remains full strength
+                    // underneath, so the desktop still refracts through it.
+                    shape.fill(color.opacity(semanticTintOpacity))
+                }
+            }
+            .apcNativeBubbleGlass(
+                cornerRadius: OverlayGeometry.bubbleCornerRadius
+            )
+    }
+}
+
 private struct SessionCountButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.overlayBubbleFontScale) private var fontScale
@@ -1531,23 +1606,16 @@ private struct PetFrameLayerView: NSViewRepresentable {
 
 private struct PetMenuButton: View {
     @EnvironmentObject private var store: AppStore
-    var collapsed: Bool
     var sessionCount: Int
     var content: OverlayBubbleToggleContent
     var tone: OverlaySessionGroupTone
-    var onToggleBubble: () -> Void
+    var accessibilityLabel: String
+    var onPrimaryAction: () -> Void
 
     var body: some View {
-        Button(action: onToggleBubble) {
+        Button(action: onPrimaryAction) {
             Group {
                 switch content {
-                case let .count(count):
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .accessibilityHidden(true)
                 case let .chevron(systemImage):
                     Image(systemName: systemImage)
                         .font(.system(size: 9, weight: .bold))
@@ -1572,11 +1640,11 @@ private struct PetMenuButton: View {
         .help(accessibilityLabel)
         .contextMenu {
             Button {
-                onToggleBubble()
+                onPrimaryAction()
             } label: {
                 Label(
                     accessibilityLabel,
-                    systemImage: collapsed ? "chevron.up" : "chevron.down"
+                    systemImage: content.systemImage
                 )
             }
             Button {
@@ -1596,13 +1664,13 @@ private struct PetMenuButton: View {
         }
     }
 
-    private var accessibilityLabel: String {
-        let action = APCLocalization.text(
-            collapsed ? .overlayExpandBubble : .overlayCollapseBubble
-        )
-        return sessionCount > 0
-            ? APCLocalization.format(.overlayBubbleCountFormat, action, sessionCount)
-            : action
+}
+
+private extension OverlayBubbleToggleContent {
+    var systemImage: String {
+        switch self {
+        case let .chevron(systemImage): systemImage
+        }
     }
 }
 

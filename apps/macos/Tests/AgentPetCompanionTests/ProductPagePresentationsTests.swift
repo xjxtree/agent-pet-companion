@@ -84,7 +84,7 @@ struct ProductPagePresentationsTests {
                     submittedForm: generationForm
                 ),
                 .createTogether,
-                .retry
+                .unavailable
             ),
         ]
 

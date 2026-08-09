@@ -277,27 +277,25 @@ for identifier in \
   pet-library.page product.pet-library.page-header pet-library.hero \
   product.pet-library.featured.primary-experience-card \
   product.pet-library.featured.pet-preview-stage pet-library.collection-title pet-library.grid \
-  maker.page product.maker.page-header maker.layout.describe maker.brief \
-  maker.brief.description product.maker.primary-experience-card \
-  product.maker.primary-experience-card.primary-action \
-  configuration.root product.configuration.page-header configuration.subpage-picker \
-  configuration.page.appearance configuration.appearance.status-bubble \
+  maker.page maker.session-list maker.session-list.new \
+  maker.session-list.draft maker.draft maker.draft.discard maker.draft.submit product.maker.draft.page-header \
+  maker.brief maker.brief.description \
+  configuration.root configuration.appearance.enabled configuration.appearance.status-bubble \
   configuration.appearance.theme configuration.appearance.pet-size \
+  product.configuration.appearance.advanced-details-disclosure \
   connections.root product.connections.page-header connections.agent-section.codex \
-  product.connections.codex.agent-health-row \
-  product.connections.codex.advanced-details-disclosure \
-  diagnostics.page diagnostics.layout.single-column diagnostics.service-summary \
-  product.diagnostics.service.primary-experience-card \
+  connections.primary.check-all connections.secondary.setup-all \
+  diagnostics.page diagnostics.layout.single-column diagnostics.service-details \
   product.diagnostics.service.primary-experience-card.primary-action \
-  diagnostics.log-package diagnostics.export diagnostics.technical-details; do
+  ; do
   if ! rg -Fq "$identifier" "$MAIN_UI_VALIDATOR"; then
     record_failure "main window validator is missing semantic AX identifier: $identifier"
   fi
 done
 for current_copy in '新宠物' '参考图（可选）' '开始制作' \
   'New Pet' 'Reference Images (Optional)' 'Create Pet' \
-  '服务状态' '日志打包下载' '打包并下载' \
-  'Service Status' 'Diagnostic Download' 'Package and Download'; do
+  '服务状态' '诊断日志包' '打包并下载' \
+  'Service Status' 'Diagnostic Archive' 'Package and Download'; do
   if ! rg -Fq "$current_copy" "$MAIN_UI_VALIDATOR"; then
     record_failure "main window validator is missing current localized product copy: $current_copy"
   fi

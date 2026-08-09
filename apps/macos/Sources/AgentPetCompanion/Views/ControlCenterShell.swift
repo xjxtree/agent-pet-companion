@@ -5,10 +5,6 @@ enum ControlCenterShellMode: Equatable, Sendable {
     case allColumns
     case sidebarAndContent
     case singleContent
-
-    var keepsInspectorPresented: Bool {
-        self == .allColumns
-    }
 }
 
 struct ControlCenterShellPolicy: Equatable, Sendable {

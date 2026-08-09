@@ -174,6 +174,7 @@ enum PetCoreRuntimeContract {
 
 enum PetCoreServiceEnvironmentPolicy {
     static let connectorPathKeys = [
+        "APC_AGENT_CONFIG_HOME",
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
         "PI_CODING_AGENT_DIR",

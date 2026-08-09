@@ -1,4 +1,5 @@
-use petcore::adapter_contracts::parse_contract_event;
+use petcore::adapter_contracts::{contract_parse_warnings, parse_contract_event};
+use petcore::diagnostics::{AgentParseFailure, AgentParseField, AgentParseWarning};
 use petcore::event_envelope::NormalizedAgentEvent;
 use petcore_types::{AgentEventType, AgentSource};
 use serde_json::Value;
@@ -968,6 +969,64 @@ fn pi_uses_settled_and_marks_shutdown_navigation_closed() {
 }
 
 #[test]
+fn pi_reads_current_tool_and_thinking_shapes_and_reports_parse_failures_without_content() {
+    let tool_input = serde_json::json!({
+        "type": "tool_execution_start",
+        "session_id": "pi-current-tool",
+        "toolName": "read",
+        "args": {"path": "Sources/App.swift"}
+    });
+    let tool = parse_contract_event(AgentSource::Pi, &tool_input)
+        .unwrap()
+        .unwrap();
+    assert_eq!(tool.kind, AgentEventType::Tool);
+    assert_eq!(tool.activity_content.as_deref(), Some("Sources/App.swift"));
+    assert!(contract_parse_warnings(&tool_input, &tool).is_empty());
+
+    let thinking_input = serde_json::json!({
+        "type": "message_end",
+        "session_id": "pi-current-thinking",
+        "activity_kind": "thinking",
+        "activity_content": "Inspecting the Swift view"
+    });
+    let thinking = parse_contract_event(AgentSource::Pi, &thinking_input)
+        .unwrap()
+        .unwrap();
+    assert_eq!(thinking.kind, AgentEventType::Thinking);
+    assert!(thinking.affects_activity);
+    assert_eq!(thinking.activity_kind.as_deref(), Some("thinking"));
+    assert_eq!(
+        thinking.activity_content.as_deref(),
+        Some("Inspecting the Swift view")
+    );
+
+    let malformed = serde_json::json!({
+        "type": "message_end",
+        "session_id": "pi-malformed",
+        "message_content": {"private": "must-not-enter-diagnostics"},
+        "parse_warnings": [{
+            "field": "message_content",
+            "failure": "unsupported_shape"
+        }]
+    });
+    let malformed_contract = parse_contract_event(AgentSource::Pi, &malformed)
+        .unwrap()
+        .unwrap();
+    let warnings = contract_parse_warnings(&malformed, &malformed_contract);
+    assert!(warnings.contains(&AgentParseWarning {
+        field: AgentParseField::MessageContent,
+        failure: AgentParseFailure::UnsupportedShape,
+    }));
+    assert!(warnings.contains(&AgentParseWarning {
+        field: AgentParseField::MessageContent,
+        failure: AgentParseFailure::InvalidType,
+    }));
+    assert!(!serde_json::to_string(&warnings)
+        .unwrap()
+        .contains("must-not-enter-diagnostics"));
+}
+
+#[test]
 fn opencode_v1_17_18_reads_discriminated_and_direct_payloads() {
     let idle = parsed(AgentSource::Opencode, "opencode-v1.17.18/session_idle.json");
     assert_eq!(idle.kind, AgentEventType::Done);
@@ -1198,7 +1257,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-events-v11"));
+    assert!(pi.contains("pi-extension-0.80.10-events-v13"));
     assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));
@@ -1217,7 +1276,7 @@ fn versioned_templates_only_claim_supported_contracts() {
 
     let opencode =
         std::fs::read_to_string(root.join("plugins/opencode/agent-pet-companion.js.tpl")).unwrap();
-    assert!(opencode.contains("opencode-v1.18.4-events-v13"));
+    assert!(opencode.contains("opencode-v1.18.4-events-v16"));
     assert!(opencode.contains(
         "APC_OPENCODE_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""
     ));

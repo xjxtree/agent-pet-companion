@@ -299,7 +299,7 @@ def build_source(form):
     for index, raw_path in enumerate(form.get("reference_images") or []):
         reference_path = Path(str(raw_path))
         suffix = reference_path.suffix.lower()
-        if suffix not in {".png", ".webp"} or not reference_path.is_file():
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"} or not reference_path.is_file():
             continue
         copied_name = f"reference-{index + 1}{suffix}"
         shutil.copyfile(reference_path, references_dir / copied_name)

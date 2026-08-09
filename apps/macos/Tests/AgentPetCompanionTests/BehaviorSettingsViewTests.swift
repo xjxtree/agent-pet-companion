@@ -45,7 +45,7 @@ struct BehaviorSettingsViewTests {
         #expect(BubbleFontScale.allCases == [.standard, .large])
         #expect(BehaviorSettings().bubbleFontScale == .standard)
         #expect(BubbleFontScale.standard.multiplier == 1)
-        #expect(BubbleFontScale.large.multiplier > 1)
+        #expect(BubbleFontScale.large.multiplier == 1.15)
         #expect(
             APCLocalizedPresentation.bubbleFontScaleTitle(.standard, locale: "en") == "Standard"
         )
@@ -195,7 +195,12 @@ struct BehaviorSettingsViewTests {
         )
 
         #expect(source.contains(".pickerStyle(.segmented)"))
-        #expect(source.contains("settingsColumn(showsInlinePreview: false)"))
+        #expect(source.contains("LayoutPreservingHorizontalSeparatorGap()"))
+        #expect(source.contains("private var settingsColumn: some View"))
+        #expect(!source.contains("showsInlinePreview"))
+        #expect(!source.contains("BehaviorAppearancePreview"))
+        #expect(!source.contains("BehaviorMessagePreview"))
+        #expect(!source.contains("configuration.preview-pane"))
         #expect(!source.contains("BehaviorSettingsSubnavigation"))
         #expect(!source.contains("configuration.subnavigation"))
         #expect(!source.contains("navigationWidth"))
@@ -204,9 +209,170 @@ struct BehaviorSettingsViewTests {
         #expect(source.contains("\"configuration.appearance.language\""))
         #expect(source.contains("\"configuration.messages.group-by-agent\""))
         #expect(source.contains("behaviorBinding(\\.groupSessionsByAgent)"))
+        let grouping = try #require(source.range(of: "sessionGroupingSetting"))
+        let groupDisplay = try #require(
+            source.range(
+                of: "sessionGroupDisplaySetting",
+                range: grouping.upperBound ..< source.endIndex
+            )
+        )
+        let advancedMessages = try #require(
+            source.range(
+                of: "AdvancedDetailsDisclosure(",
+                range: groupDisplay.upperBound ..< source.endIndex
+            )
+        )
+        #expect(groupDisplay.lowerBound < advancedMessages.lowerBound)
         #expect(!source.contains("bubbleTransparencySetting"))
         #expect(!source.contains("configuration.appearance.bubble-transparency"))
         #expect(!source.contains("bubbleTransparencyDraft"))
+        #expect(!source.contains("configuration.appearance.mouse-passthrough"))
+        #expect(!source.contains("configMousePassthrough"))
+    }
+
+    @Test
+    func sidebarPreviewUsesTheDefaultAgentGroupAndFoldedMultiSessionPreference() throws {
+        let presentation = SidebarConfigurationPreviewPresentation(
+            behavior: BehaviorSettings(),
+            localeIdentifier: "en"
+        )
+        let content = try #require(presentation.contents.first)
+
+        #expect(presentation.contents.count == 1)
+        #expect(presentation.emptyReason == nil)
+        #expect(content.source == .codex)
+        #expect(!content.isStandaloneSessionCard)
+        #expect(content.sessions.count == 2)
+        #expect(content.visibleSessions.count == 1)
+        #expect(content.isStacked)
+        #expect(content.showsStackDecoration)
+        #expect(content.sessions.map(\.eventType) == [.waiting, .failed])
+        #expect(presentation.petAction == .waiting)
+    }
+
+    @Test
+    func sidebarPreviewExpandsAgentSessionsAndPreservesTheirStateMessages() throws {
+        var behavior = BehaviorSettings()
+        behavior.sessionGroupDisplay = .expanded
+        let presentation = SidebarConfigurationPreviewPresentation(
+            behavior: behavior,
+            localeIdentifier: "zh-Hans"
+        )
+        let content = try #require(presentation.contents.first)
+
+        #expect(content.visibleSessions.count == 2)
+        #expect(!content.isStacked)
+        #expect(content.visibleSessions[0].statusText == "等待你操作")
+        #expect(content.visibleSessions[0].messageText.contains("必须等你"))
+        #expect(content.visibleSessions[1].statusText == "执行失败")
+        #expect(content.visibleSessions[1].messageText == "任务执行失败")
+    }
+
+    @Test
+    func sidebarPreviewUsesTheSamePreferenceForTheGlobalSessionStack() throws {
+        var behavior = BehaviorSettings()
+        behavior.groupSessionsByAgent = false
+
+        let stacked = SidebarConfigurationPreviewPresentation(
+            behavior: behavior,
+            localeIdentifier: "en"
+        )
+        let stack = try #require(stacked.contents.first)
+        #expect(stacked.contents.count == 1)
+        #expect(stack.isStandaloneSessionCard)
+        #expect(stack.disclosureSessionCount == 2)
+        #expect(stack.isStacked)
+
+        behavior.sessionGroupDisplay = .expanded
+        let expanded = SidebarConfigurationPreviewPresentation(
+            behavior: behavior,
+            localeIdentifier: "en"
+        )
+        #expect(expanded.contents.count == 2)
+        #expect(expanded.contents.allSatisfy { $0.isStandaloneSessionCard })
+        #expect(expanded.contents.allSatisfy { !$0.isStacked })
+        #expect(expanded.contents.compactMap(\.source) == [.codex, .claudeCode])
+    }
+
+    @Test
+    func sidebarPreviewIgnoresDesktopVisibilityAndExplainsBubbleSuppression() {
+        var behavior = BehaviorSettings()
+        behavior.enabled = false
+        let hiddenDesktopPresentation = SidebarConfigurationPreviewPresentation(
+            behavior: behavior
+        )
+        #expect(hiddenDesktopPresentation.emptyReason == nil)
+        #expect(!hiddenDesktopPresentation.contents.isEmpty)
+        #expect(hiddenDesktopPresentation.petAction == .waiting)
+
+        behavior.statusBubble = false
+        #expect(
+            SidebarConfigurationPreviewPresentation(behavior: behavior).emptyReason
+                == .bubbleHidden
+        )
+
+        behavior.statusBubble = true
+        behavior.sources = Dictionary(
+            uniqueKeysWithValues: AgentSource.allCases.map { ($0, false) }
+        )
+        #expect(
+            SidebarConfigurationPreviewPresentation(behavior: behavior).emptyReason
+                == .noSources
+        )
+
+        behavior.sources[.codex] = true
+        behavior.events = Dictionary(
+            uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, false) }
+        )
+        #expect(
+            SidebarConfigurationPreviewPresentation(behavior: behavior).emptyReason
+                == .noEvents
+        )
+    }
+
+    @Test
+    func sidebarPreviewImmediatelyUsesTheEnabledSourceAndEvent() throws {
+        var behavior = BehaviorSettings()
+        behavior.sources = Dictionary(
+            uniqueKeysWithValues: AgentSource.allCases.map { ($0, false) }
+        )
+        behavior.sources[.pi] = true
+        behavior.events = Dictionary(
+            uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, false) }
+        )
+        behavior.events[.done] = true
+
+        let presentation = SidebarConfigurationPreviewPresentation(
+            behavior: behavior,
+            localeIdentifier: "en"
+        )
+        let content = try #require(presentation.contents.first)
+
+        #expect(content.source == .pi)
+        #expect(content.sessions.map(\.source) == [.pi, .pi])
+        #expect(content.sessions.map(\.eventType) == [.done, .done])
+        #expect(content.sessions.allSatisfy { $0.statusText == "Completed" })
+        #expect(presentation.petAction == .done)
+    }
+
+    @Test
+    func sidebarPetPreviewScalesTheFullDisplayWidthRangeIntoItsBoundedStage() {
+        #expect(
+            SidebarConfigurationPreviewLayout.petWidth(displayWidthPt: 100)
+                == SidebarConfigurationPreviewLayout.minimumPetWidth
+        )
+        #expect(
+            SidebarConfigurationPreviewLayout.petWidth(displayWidthPt: 300)
+                == SidebarConfigurationPreviewLayout.maximumPetWidth
+        )
+        #expect(
+            SidebarConfigurationPreviewLayout.petWidth(displayWidthPt: -1)
+                == SidebarConfigurationPreviewLayout.minimumPetWidth
+        )
+        #expect(
+            SidebarConfigurationPreviewLayout.petWidth(displayWidthPt: 1_000)
+                == SidebarConfigurationPreviewLayout.maximumPetWidth
+        )
     }
 
     @MainActor

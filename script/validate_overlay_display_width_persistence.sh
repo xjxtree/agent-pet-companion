@@ -8,7 +8,7 @@ APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/AgentPetCompanion"
 PETCORE_BINARY="$APP_BUNDLE/Contents/Resources/bin/petcore"
 PETCORE_CLI="$APP_BUNDLE/Contents/Resources/bin/petcore-cli"
-TARGET_DISPLAY_WIDTH_PT="${APC_OVERLAY_PERSISTENCE_DISPLAY_WIDTH_PT:-176}"
+TARGET_DISPLAY_WIDTH_PT="${APC_OVERLAY_PERSISTENCE_DISPLAY_WIDTH_PT:-300}"
 # Keep APC_HOME short enough for macOS' sockaddr_un path limit. The runtime
 # socket lives below `$TMP_DIR/home/run`, so a descriptive mktemp prefix here
 # can otherwise turn an isolated-host check into a false startup deferral.
@@ -168,7 +168,15 @@ min_x = float(os.environ["TARGET_MIN_X"])
 max_x = float(os.environ["TARGET_MAX_X"])
 min_y = float(os.environ["TARGET_MIN_Y"])
 max_y = float(os.environ["TARGET_MAX_Y"])
-if not (min_x <= x <= max_x and min_y <= y <= max_y):
+behavior = data.get("behavior", {})
+visibility = data.get("overlay_visibility", {})
+has_presentable_pet = (
+    isinstance(data.get("pets"), list)
+    and len(data["pets"]) > 0
+    and behavior.get("enabled", True)
+    and visibility.get("pet_visible", True)
+)
+if has_presentable_pet and not (min_x <= x <= max_x and min_y <= y <= max_y):
     sys.exit(1)
 
 sys.exit(0)
@@ -180,6 +188,6 @@ PY
   sleep 0.25
 done
 
-echo "overlay display-width persistence validation failed: app reset persisted width or display" >&2
+echo "overlay display-width persistence validation failed: width/display persistence or presented placement was invalid" >&2
 "$PETCORE_CLI" snapshot >&2 || true
 exit 1

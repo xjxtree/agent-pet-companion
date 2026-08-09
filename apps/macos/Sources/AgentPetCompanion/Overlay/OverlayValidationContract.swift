@@ -79,7 +79,7 @@ public enum AgentPetCompanionUIValidationContract {
             CGRect(x: -1280, y: 0, width: 1280, height: 775)
         ]
         for visibleFrame in visibleFrames {
-            for displayWidthPt: CGFloat in [80, 112, 224] {
+            for displayWidthPt: CGFloat in [100, 112, 300] {
                 let localPetCenter = CGPoint(x: 420, y: 360)
                 let menuScreenRect = OverlayGeometry.rect(
                     center: OverlayGeometry.menuScreenCenter(
@@ -88,16 +88,6 @@ public enum AgentPetCompanionUIValidationContract {
                     ),
                     size: OverlayGeometry.menuHitSize
                 )
-                let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-                    displayWidthPt: displayWidthPt,
-                    petScreenCenter: localPetCenter,
-                    clickMenuEnabled: true
-                )
-                try require(
-                    activationRect.contains(menuScreenRect.insetBy(dx: -8, dy: -8)),
-                    "bubble toggle lacks a preactivation margin at \(displayWidthPt)pt"
-                )
-
                 let bubbleSize = CGSize(width: OverlayGeometry.bubbleWidth, height: 76)
                 let bubbleRect = OverlayGeometry.rect(
                     center: OverlayGeometry.bubbleScreenCenter(
@@ -197,8 +187,8 @@ public enum AgentPetCompanionUIValidationContract {
             OverlayGeometry.resolvedInitialDisplayWidthPt(
                 persistedDisplayWidthPt: 80,
                 hasPersistedPosition: true
-            ) == 80,
-            "persisted display width was overwritten"
+            ) == 100,
+            "legacy persisted display width was not clamped to the current minimum"
         )
     }
 
@@ -691,15 +681,19 @@ public enum AgentPetCompanionUIValidationContract {
                 usesPolling: monitor.usesPolling,
                 isRunning: monitor.isRunning,
                 hasMouseMoved: OverlayPointerEventMonitor.eventMask.contains(.mouseMoved),
+                hasMouseDown: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDown),
                 hasMouseUp: OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp),
-                hasDrag: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged)
+                hasDrag: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged),
+                hasPreDispatchMouseDown: OverlayPointerEventMonitor.preDispatchEventTypes
+                    .contains(.leftMouseDown)
             )
         }
-        try require(!result.usesPolling, "pointer monitor still uses polling")
+        try require(!result.usesPolling, "idle pointer monitor unexpectedly uses fallback polling")
         try require(!result.isRunning, "pointer monitor starts while not needed")
         try require(
-            result.hasMouseMoved && result.hasMouseUp && !result.hasDrag,
-            "pointer event mask must track hover and release without duplicating drag delivery"
+            result.hasMouseMoved && result.hasMouseDown && result.hasMouseUp
+                && result.hasPreDispatchMouseDown && !result.hasDrag,
+            "pointer event masks must pre-dispatch mouse-down and track hover/release without duplicating drag delivery"
         )
     }
 

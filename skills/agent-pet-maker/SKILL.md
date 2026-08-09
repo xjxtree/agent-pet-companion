@@ -80,6 +80,9 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
    new or regenerated crop through the shared transparency script; package only
    its exact-tier runtime PNGs. Accept a state only when the report and every
    frame say `"ok": true` and the multi-background previews pass inspection.
+   The script performs its closed runtime-size RGB edge repair automatically;
+   an isolated low-Alpha fringe warning still requires preview review but is
+   not a reason to search nearby crop, key-color, or feather values.
 
    ```bash
    python3 <skill-dir>/scripts/prepare_transparent_frames.py \
@@ -87,6 +90,17 @@ python3 <skill-dir>/scripts/petpack_workspace.py capability-missing \
      --report /absolute/workspace/transparency-report.json \
      --preview-dir /absolute/workspace/transparency-previews
    ```
+
+   On a hard transparency failure, rerun only the failing frames. Start from
+   the recorded shared crop geometry and automatic key color. Permit at most
+   one `--edge-contract 1` retry, then add `--edge-feather 0.25` only when the
+   contracted preview visibly stair-steps. Change the shared crop only for a
+   proven crop-geometry error, and use an explicit key only when automatic key
+   sampling or a real subject-color conflict is visibly wrong. Never enumerate
+   adjacent crops, similar key colors, or feather values. If this bounded path
+   still fails, regenerate the opaque source with a flatter, more contrasting
+   background; if the same source defect recurs, change the production prompt
+   or action design instead of extending the search.
 
 6. Run `motion-qa --state <state>` immediately after each accepted state. After
    every run, compare its per-frame body-anchor and baseline path with the

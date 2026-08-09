@@ -8,37 +8,20 @@ struct MakerExperiencePresentationTests {
     @Test
     func sourceKeepsDescribeSessionAndResultAsDistinctSurfaces() throws {
         let studioSource = try source("PetStudioView.swift")
-        let resultSource = try source("PetMakerResultView.swift")
+        let workspaceSource = try source("MakerSessionWorkspace.swift")
 
-        #expect(studioSource.contains("if experience.showsCenteredBrief"))
-        #expect(studioSource.contains("PrimaryExperienceCard("))
-        #expect(studioSource.contains("AdvancedDetailsDisclosure("))
-        #expect(studioSource.contains("InlineRecoveryBanner("))
-        #expect(!studioSource.contains("private var welcomeState"))
+        #expect(studioSource.contains("MakerSessionWorkspace()"))
+        #expect(workspaceSource.contains("HSplitView"))
+        #expect(workspaceSource.contains("MakerDraftContent()"))
+        #expect(workspaceSource.contains("MakerConversationContent()"))
+        #expect(workspaceSource.contains("MakerResultSummary(detail: detail)"))
+        #expect(workspaceSource.contains("MakerSessionComposer(detail: detail)"))
+        #expect(workspaceSource.contains("maker.draft.submit"))
+        #expect(workspaceSource.contains("maker.draft.discard"))
+        #expect(workspaceSource.contains("maker.session-result-summary"))
+        #expect(workspaceSource.contains("copySelectedGenerationHistoryBriefToNewDraft"))
+        #expect(!workspaceSource.contains("GenerationHistorySheet("))
         #expect(!studioSource.contains("maker.layout.two-stage"))
-
-        #expect(resultSource.contains("PetPreviewStage("))
-        #expect(resultSource.contains(
-            "experience.primaryAction == .usePet"
-        ))
-        #expect(resultSource.contains("PetMakerPrimaryAction.continueEditing"))
-        #expect(resultSource.contains(".libraryExportAction"))
-        #expect(resultSource.contains("result-technical"))
-        #expect(studioSource.contains("action: experience.primaryAction"))
-        #expect(resultSource.contains("primaryAction: primaryAction"))
-        #expect(resultSource.contains("action: .usePet"))
-        #expect(resultSource.contains("PetAssetRecoveryCard("))
-        #expect(!resultSource.contains("status: statusPresentation"))
-        #expect(!resultSource.contains("private var statusPresentation"))
-        #expect(resultSource.contains(
-            "title: resultPet?.name ?? APCLocalization.text(.libraryMissingPreview)"
-        ))
-        #expect(!resultSource.contains(
-            "title: resultPet?.name ?? APCLocalization.text(.studioSucceededTitle)"
-        ))
-        #expect(resultSource.contains(
-            "resultPet.flatMap { store.petAssetWarningIndex[$0.id] }"
-        ))
     }
 
     @Test
@@ -218,6 +201,121 @@ struct MakerExperiencePresentationTests {
             for: running,
             in: [expected]
         ) == nil)
+    }
+
+    @Test
+    func historyOutcomeFiltersDoNotMisclassifyActiveJobs() {
+        #expect(MakerHistoryFilter.all.matches(.pending))
+        #expect(MakerHistoryFilter.all.matches(.running))
+        #expect(MakerHistoryFilter.all.matches(.waitingForUser))
+        #expect(MakerHistoryFilter.succeeded.matches(.completed))
+        #expect(!MakerHistoryFilter.succeeded.matches(.running))
+        #expect(MakerHistoryFilter.failed.matches(.failed))
+        #expect(!MakerHistoryFilter.failed.matches(.canceled))
+        #expect(MakerHistoryFilter.cancelled.matches(.canceled))
+        #expect(MakerHistoryFilter.allCases.map {
+            $0.title(localeIdentifier: "zh-Hans")
+        } == ["全部", "成功", "失败", "已取消"])
+    }
+
+    @Test
+    func historyTimestampKeepsRelativeAndExactRepresentations() throws {
+        let now = try #require(ISO8601DateFormatter().date(
+            from: "2026-08-07T12:00:00Z"
+        ))
+        let timestamp = MakerHistoryTimestampPresentation(
+            value: "2026-08-07T09:00:00Z",
+            now: now,
+            localeIdentifier: "en_US",
+            timeZone: try #require(TimeZone(secondsFromGMT: 0))
+        )
+
+        #expect(timestamp.relative.contains("3"))
+        #expect(timestamp.relative.lowercased().contains("hour"))
+        #expect(timestamp.absolute != timestamp.relative)
+        #expect(timestamp.absolute != "—")
+        #expect(MakerHistoryTimestampPresentation(
+            value: "not-a-date",
+            now: now
+        ) == MakerHistoryTimestampPresentation(
+            value: "",
+            now: now
+        ))
+    }
+
+    @Test
+    func historyProgressRemovesTechnicalIDsDeduplicatesAndBounds() {
+        let firstThreadID = "019f6ed7-de50-7623-8462-6a857e367a96"
+        let secondThreadID = "019f6ed7-de50-7623-8462-6a857e367a97"
+        let messages = [
+            GenerationMessage(
+                id: "first",
+                role: "assistant",
+                content: "已创建 Codex App Server 会话 \(firstThreadID)，正在启动 Pet Studio brief turn。",
+                progress: 0.08,
+                createdAt: ""
+            ),
+            GenerationMessage(
+                id: "duplicate",
+                role: "assistant",
+                content: "已创建 Codex App Server 会话 \(secondThreadID)，正在启动 Pet Studio brief turn。",
+                progress: 0.08,
+                createdAt: ""
+            ),
+            GenerationMessage(
+                id: "brief",
+                role: "assistant",
+                content: "turn_id: \(secondThreadID) 正在处理蓝色围巾与绿色眼睛。",
+                progress: 0.3,
+                createdAt: ""
+            ),
+        ]
+
+        let items = MakerHistoryProgressPresentation.items(messages)
+        #expect(items.map(\.id) == ["first", "brief"])
+        #expect(!items.map(\.content).joined().contains(firstThreadID))
+        #expect(!items.map(\.content).joined().contains(secondThreadID))
+        #expect(!items.map(\.content).joined().lowercased().contains("turn_id"))
+        #expect(items.last?.content.contains("蓝色围巾与绿色眼睛") == true)
+
+        let bounded = MakerHistoryProgressPresentation.items(
+            (0 ..< 20).map { index in
+                GenerationMessage(
+                    id: "item-\(index)",
+                    role: "assistant",
+                    content: "Progress \(index)",
+                    progress: Double(index) / 20,
+                    createdAt: ""
+                )
+            }
+        )
+        #expect(bounded.count == MakerHistoryProgressPresentation.maximumItems)
+        #expect(bounded.first?.id == "item-8")
+    }
+
+    @Test
+    func briefGuidanceUsesThresholdTemplatesAndProducerCapabilityCopy() {
+        #expect(!MakerBriefPresentation.showsDescriptionCount(scalarCount: 6_400))
+        #expect(MakerBriefPresentation.showsDescriptionCount(scalarCount: 6_401))
+        #expect(MakerBriefPresentation.descriptionCount(
+            scalarCount: 6_401,
+            localeIdentifier: "en"
+        ) == "6,401/8,000 characters")
+
+        let guidance = MakerBriefPresentation.qualityGuidance(
+            .standard,
+            localeIdentifier: "en"
+        )
+        #expect(guidance.contains("384×416"))
+        #expect(guidance.contains("built-in Codex Studio"))
+        #expect(guidance.contains("Low and Standard"))
+
+        #expect(MakerBriefTemplate.allCases.map(\.rawValue)
+            == ["appearance", "action", "palette"])
+        #expect(MakerBriefTemplate.appearance.title(localeIdentifier: "zh-Hans") == "外观")
+        #expect(MakerBriefTemplate.action.insertionText(localeIdentifier: "en")
+            .hasPrefix("Actions:"))
+        #expect(!MakerBriefTemplate.palette.systemImage.isEmpty)
     }
 
     private func form(

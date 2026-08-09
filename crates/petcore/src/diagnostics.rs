@@ -91,6 +91,44 @@ pub enum DiagnosticIngestOutcome {
     Suppressed,
 }
 
+/// Closed, content-free field categories for connector parsing diagnostics.
+/// Raw host values, identifiers, messages, tool arguments, and paths must
+/// never be copied into diagnostic logs when parsing fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentParseField {
+    Payload,
+    EventType,
+    ContractVersion,
+    SessionId,
+    SessionTitle,
+    ToolName,
+    ToolArguments,
+    MessageContent,
+    ActivityContent,
+    Transcript,
+    NormalizedEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentParseFailure {
+    InvalidJson,
+    InvalidType,
+    MissingRequired,
+    UnsupportedShape,
+    ContractMismatch,
+    ReadFailed,
+    NormalizationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentParseWarning {
+    pub field: AgentParseField,
+    pub failure: AgentParseFailure,
+}
+
 #[derive(Clone)]
 pub struct DiagnosticLogger {
     inner: Arc<Mutex<LogState>>,
@@ -349,6 +387,18 @@ impl DiagnosticLogger {
                 ("event_type", json!(event_type)),
                 ("outcome", json!(outcome)),
                 ("triggered", json!(triggered)),
+            ],
+        );
+    }
+
+    pub fn agent_parse_warning(&self, source: AgentSource, warning: AgentParseWarning) {
+        self.write_record(
+            "warning",
+            "agent.parse_warning",
+            [
+                ("source", json!(source)),
+                ("field", json!(warning.field)),
+                ("failure", json!(warning.failure)),
             ],
         );
     }
@@ -643,6 +693,7 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "settings.get" => "settings.get",
         "settings.update" => "settings.update",
         "agent.ingest" => "agent.ingest",
+        "agent.parse_warnings" => "agent.parse_warnings",
         "events.recent" => "events.recent",
         "pet.list" => "pet.list",
         "pet.activate" => "pet.activate",
@@ -657,6 +708,9 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "generation.messages" => "generation.messages",
         "generation.for_pet" => "generation.for_pet",
         "generation.latest" => "generation.latest",
+        "generation.history.list" => "generation.history.list",
+        "generation.history.detail" => "generation.history.detail",
+        "generation.history.delete" => "generation.history.delete",
         "generation.edit" => "generation.edit",
         "generation.messages.wait" => "generation.messages.wait",
         "generation.reply" => "generation.reply",
@@ -698,6 +752,7 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
             | "generation.edit"
             | "generation.reply"
             | "generation.cancel"
+            | "generation.history.delete"
             | "connections.check"
             | "connections.repair"
             | "connections.refresh_installed"
@@ -2138,6 +2193,33 @@ mod tests {
     }
 
     #[test]
+    fn connector_parse_warnings_are_structured_and_content_free() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("home"));
+        let logger = DiagnosticLogger::new(&paths);
+        logger.agent_parse_warning(
+            AgentSource::Pi,
+            AgentParseWarning {
+                field: AgentParseField::ToolArguments,
+                failure: AgentParseFailure::UnsupportedShape,
+            },
+        );
+        logger.sync();
+
+        let records = fs::read_to_string(paths.logs_dir.join("petcore.jsonl")).unwrap();
+        let record = records
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|record| record.get("event").and_then(Value::as_str) == Some("parse_warning"))
+            .expect("parse warning record");
+        assert_eq!(record["category"], "agent");
+        assert_eq!(record["metadata"]["source"], "pi");
+        assert_eq!(record["metadata"]["field"], "tool_arguments");
+        assert_eq!(record["metadata"]["failure"], "unsupported_shape");
+        assert_eq!(record["metadata"].as_object().unwrap().len(), 3);
+    }
+
+    #[test]
     fn long_running_logger_rotates_on_age_during_write() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(temp.path().join("home"));
@@ -2333,6 +2415,25 @@ mod tests {
         assert!(result["archive_bytes"]
             .as_u64()
             .is_some_and(|bytes| bytes > 0));
+    }
+
+    #[test]
+    fn generation_history_delete_has_a_safe_mutation_diagnostic_category() {
+        assert_eq!(
+            safe_rpc_method("generation.history.list"),
+            "generation.history.list"
+        );
+        assert_eq!(
+            safe_rpc_method("generation.history.detail"),
+            "generation.history.detail"
+        );
+        assert_eq!(
+            safe_rpc_method("generation.history.delete"),
+            "generation.history.delete"
+        );
+        assert!(!rpc_success_is_diagnostic("generation.history.list"));
+        assert!(!rpc_success_is_diagnostic("generation.history.detail"));
+        assert!(rpc_success_is_diagnostic("generation.history.delete"));
     }
 
     #[test]

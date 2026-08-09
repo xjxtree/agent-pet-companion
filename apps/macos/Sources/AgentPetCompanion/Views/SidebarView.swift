@@ -5,38 +5,46 @@ struct SidebarView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        List(selection: $store.selection) {
-            ForEach(ControlCenterNavigationPresentation.items(selection: store.selection)) { item in
-                Label {
-                    Text(item.title)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: item.systemImage)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
-                .tag(item.section)
-                .accessibilityIdentifier("sidebar.navigation.\(item.section.rawValue)")
-                .accessibilityRepresentation {
-                    Button(item.title) {
-                        store.selection = item.section
+        VStack(spacing: 0) {
+            List(selection: $store.selection) {
+                ForEach(ControlCenterNavigationPresentation.items(selection: store.selection)) { item in
+                    Label {
+                        Text(item.title)
+                            .lineLimit(1)
+                    } icon: {
+                        Image(systemName: item.systemImage)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                    .tag(item.section)
                     .accessibilityIdentifier("sidebar.navigation.\(item.section.rawValue)")
-                    .accessibilityValue(
-                        UIControlSemantics.selectionValue(isSelected: item.isSelected)
-                    )
-                    .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+                    .accessibilityRepresentation {
+                        Button(item.title) {
+                            store.selection = item.section
+                        }
+                        .accessibilityIdentifier("sidebar.navigation.\(item.section.rawValue)")
+                        .accessibilityValue(
+                            UIControlSemantics.selectionValue(isSelected: item.isSelected)
+                        )
+                        .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+                    }
                 }
             }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("sidebar.navigation-list")
+
             SidebarCurrentPetView()
                 .environmentObject(store)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.bar, ignoresSafeAreaEdges: .all)
     }
 }
 
@@ -46,18 +54,13 @@ private struct SidebarCurrentPetView: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider()
-            if let activePet = store.activePet {
-                PetCoverImage(
-                    pet: activePet,
-                    assetWarning: store.petAssetWarningIndex[activePet.id],
-                    fallbackScale: 0.45
-                )
-                .frame(width: 112, height: 126)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 12)
-                .padding(.bottom, 2)
-                .accessibilityHidden(true)
-            }
+
+            SidebarConfigurationLivePreview(
+                behavior: store.behavior,
+                pet: store.activePet,
+                assetWarning: activePetAssetWarning,
+                displayWidthPt: store.overlayDisplayWidthPt
+            )
             HStack(spacing: 8) {
                 APCBrandMark(size: 18)
                     .saturation(store.behavior.enabled ? 1 : 0)
@@ -74,14 +77,18 @@ private struct SidebarCurrentPetView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("sidebar.current-pet")
+            .accessibilityLabel(APCLocalization.format(
+                .configCurrentPetFormat,
+                store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
+            ))
+            .accessibilityValue(UIControlSemantics.toggleValue(isOn: store.behavior.enabled))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("sidebar.current-pet")
-        .accessibilityLabel(APCLocalization.format(
-            .configCurrentPetFormat,
-            store.activePet?.name ?? APCLocalization.text(.appStateNoPet)
-        ))
-        .accessibilityValue(UIControlSemantics.toggleValue(isOn: store.behavior.enabled))
+    }
+
+    private var activePetAssetWarning: PetAssetWarning? {
+        store.activePet.flatMap { store.petAssetWarningIndex[$0.id] }
     }
 }

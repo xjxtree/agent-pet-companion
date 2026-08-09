@@ -1,11 +1,15 @@
 use petcore::app_server::{
-    probe_codex_app_server, read_codex_recent_thread_activities,
-    read_codex_recent_thread_activities_cached, read_codex_thread_display, run_pet_studio_session,
-    CodexRecentThreadActivityCache,
+    archive_pet_studio_thread, inspect_pet_studio_thread, probe_codex_app_server,
+    read_codex_recent_thread_activities, read_codex_recent_thread_activities_cached,
+    read_codex_thread_display, run_pet_studio_session,
+    run_pet_studio_session_with_updates_and_cancel, CodexRecentThreadActivityCache,
+    PetStudioSessionUpdateKind,
 };
 use petcore::paths::AppPaths;
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
-use petcore_types::{AgentEventType, GenerationForm, QualityLevel};
+use petcore_types::{
+    AgentEventType, GenerationForm, GenerationStudioSessionAvailability, QualityLevel,
+};
 use rustix::io::Errno;
 use rustix::process::{kill_process, test_kill_process, Pid, Signal};
 use serde_json::json;
@@ -15,6 +19,150 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn pet_studio_thread_inspection_routes_only_the_exact_live_thread() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("inspect-studio-thread.sh");
+    let job_dir = temp.path().join("generation-jobs/job_history");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    let thread_id = "019f5b0f-88ff-7413-8953-29de4ed0951c";
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"inspection-test"}}}}}}'
+      ;;
+    *\"method\":\"thread/list\"*)
+      case "$request" in
+        *\"archived\":false*)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[{{"id":"{thread_id}","name":null,"source":"appServer","cwd":"'"$APC_TEST_JOB_CWD"'","ephemeral":false,"archived":false}}]}}}}'
+          ;;
+        *)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[]}}}}'
+          ;;
+      esac
+      ;;
+    *\"method\":\"thread/name/set\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{}}}}'
+      ;;
+  esac
+done
+"#,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let _job_cwd = EnvGuard::set("APC_TEST_JOB_CWD", job_dir.as_os_str());
+    let form = GenerationForm {
+        description: "A calm fox with a glowing data-stream tail".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+    };
+
+    let navigation = inspect_pet_studio_thread(thread_id, &job_dir, &form).unwrap();
+    assert_eq!(
+        navigation.availability,
+        GenerationStudioSessionAvailability::Available
+    );
+    assert!(navigation.can_open);
+    assert_eq!(navigation.routable_session_id.as_deref(), Some(thread_id));
+    assert!(navigation
+        .name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("Agent Pet Studio · ")));
+}
+
+#[test]
+fn pet_studio_thread_inspection_withholds_archived_thread_routes() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("inspect-archived-studio-thread.sh");
+    let job_dir = temp.path().join("generation-jobs/job_archived");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    let thread_id = "019f5b0f-88ff-7413-8953-29de4ed0951d";
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"inspection-test"}}}}}}'
+      ;;
+    *\"method\":\"thread/list\"*)
+      case "$request" in
+        *\"archived\":false*)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[]}}}}'
+          ;;
+        *)
+          printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[{{"id":"{thread_id}","name":"Archived Studio task","source":"appServer","cwd":"'"$APC_TEST_JOB_CWD"'","ephemeral":false,"archived":true}}]}}}}'
+          ;;
+      esac
+      ;;
+  esac
+done
+"#,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let _job_cwd = EnvGuard::set("APC_TEST_JOB_CWD", job_dir.as_os_str());
+    let form = GenerationForm {
+        description: "Archived pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+    };
+
+    let navigation = inspect_pet_studio_thread(thread_id, &job_dir, &form).unwrap();
+    assert_eq!(
+        navigation.availability,
+        GenerationStudioSessionAvailability::Archived
+    );
+    assert!(!navigation.can_open);
+    assert!(navigation.routable_session_id.is_none());
+    assert_eq!(navigation.name.as_deref(), Some("Archived Studio task"));
+}
+
+#[test]
+fn pet_studio_archive_treats_an_already_missing_exact_thread_as_closed() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("archive-missing-studio-thread.sh");
+    let job_dir = temp.path().join("generation-jobs/job_missing");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"archive-missing-test"}}}'
+      ;;
+    *\"method\":\"thread/archive\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"thread not found"}}'
+      ;;
+    *\"method\":\"thread/list\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"data":[]}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+
+    archive_pet_studio_thread("019f5b0f-88ff-7413-8953-29de4ed0951e", &job_dir).unwrap();
+}
 
 #[test]
 fn recent_thread_activity_uses_state_db_and_bounded_display_fields() {
@@ -34,6 +182,9 @@ while IFS= read -r request; do
     *\"method\":\"initialize\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"activity-test"}}}}}}'
       ;;
+    *\"sourceKinds\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[]}}}}'
+      ;;
     *\"method\":\"thread/list\"*)
       case "$request" in
         *\"useStateDbOnly\":true*) ;;
@@ -42,7 +193,7 @@ while IFS= read -r request; do
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"  Active task  ","preview":"fallback","source":"vscode","status":{{"type":"active","activeFlags":[]}},"updatedAt":{recent}}},{{"id":"019f5a6f-0c52-75e1-b652-004d4487c4ae","name":"Stale task","preview":"stale","source":"vscode","status":{{"type":"notLoaded"}},"updatedAt":{stale}}}]}}}}'
       ;;
     *\"method\":\"thread/read\"*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Active task","updatedAt":{recent},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Latest prompt"}}]}},{{"type":"commandExecution","command":"do-not-expose --secret"}},{{"type":"agentMessage","text":"Latest agent update"}},{{"type":"reasoning","summary":["**Checking connector parity**"]}}]}}]}}}}}}'
+      printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Active task","updatedAt":{recent},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Latest prompt"}}]}},{{"type":"commandExecution","command":"do-not-expose --secret"}},{{"type":"agentMessage","text":"Latest agent update"}},{{"type":"reasoning","summary":["**Checking connector parity**"]}}]}}]}}}}}}'
       ;;
   esac
 done
@@ -109,6 +260,9 @@ while IFS= read -r request; do
     *\"method\":\"initialize\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"activity-cache-test"}}}}}}'
       ;;
+    *\"sourceKinds\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951e","parentThreadId":"019f5b0f-88ff-7413-8953-29de4ed0951c","source":{{"subAgent":{{}}}},"updatedAt":{first_updated}}}]}}}}'
+      ;;
     *\"method\":\"thread/list\"*)
       case "$phase" in
         paged)
@@ -140,10 +294,10 @@ while IFS= read -r request; do
           exit 41
           ;;
         changed)
-          printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Revision two","updatedAt":{changed_updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Prompt"}}]}},{{"type":"agentMessage","text":"Reply two"}}]}}]}}}}}}'
+          printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Revision two","updatedAt":{changed_updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Prompt"}}]}},{{"type":"agentMessage","text":"Reply two"}}]}}]}}}}}}'
           ;;
         *)
-          printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Revision one","updatedAt":{first_updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Prompt"}}]}},{{"type":"agentMessage","text":"Reply one"}}]}}]}}}}}}'
+          printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Revision one","updatedAt":{first_updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Prompt"}}]}},{{"type":"agentMessage","text":"Reply one"}}]}}]}}}}}}'
           ;;
       esac
       ;;
@@ -178,6 +332,9 @@ done
         "Reply one"
     );
     assert_eq!(read_count(), 1);
+    assert!(cache
+        .child_thread_ids()
+        .contains("019f5b0f-88ff-7413-8953-29de4ed0951e"));
 
     let unchanged =
         read_codex_recent_thread_activities_cached(Duration::from_secs(900), 8, &mut cache)
@@ -278,11 +435,14 @@ while IFS= read -r request; do
     *\"method\":\"initialize\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"internal-studio-filter-test"}}}}}}'
       ;;
+    *\"sourceKinds\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[]}}}}'
+      ;;
     *\"method\":\"thread/list\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Pet Studio prompt","cwd":"/Users/test/Library/Application Support/AgentPetCompanion/generation-jobs/job_test","status":{{"type":"active"}},"updatedAt":{now}}},{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951d","name":"List omitted cwd","status":{{"type":"active"}},"updatedAt":{now}}}]}}}}'
       ;;
     *\"method\":\"thread/read\"*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951d","name":"List omitted cwd","cwd":"/private/tmp/apc-test/generation-jobs/job_hidden","updatedAt":{now},"turns":[{{"status":"inProgress","items":[{{"type":"userMessage","content":[{{"type":"text","text":"Internal generation instructions"}}]}}]}}]}}}}}}'
+      printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951d","name":"List omitted cwd","cwd":"/private/tmp/apc-test/generation-jobs/job_hidden","updatedAt":{now},"turns":[{{"status":"inProgress","items":[{{"type":"userMessage","content":[{{"type":"text","text":"Internal generation instructions"}}]}}]}}]}}}}}}'
       ;;
   esac
 done
@@ -298,7 +458,7 @@ done
 }
 
 #[test]
-fn daemon_activity_sync_surfaces_chatgpt_task_without_hook_event() {
+fn daemon_activity_sync_surfaces_stopped_chatgpt_task_without_hook_event() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let script = temp.path().join("activity-sync.sh");
@@ -315,11 +475,14 @@ while IFS= read -r request; do
     *\"method\":\"initialize\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"sync-test"}}}}}}'
       ;;
+    *\"sourceKinds\"*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[]}}}}'
+      ;;
     *\"method\":\"thread/list\"*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"data":[{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Synced ChatGPT task","preview":"fallback","source":"vscode","status":{{"type":"notLoaded"}},"updatedAt":{updated}}}]}}}}'
       ;;
     *\"method\":\"thread/read\"*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Synced ChatGPT task","updatedAt":{updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"completed","startedAt":{started},"completedAt":{updated},"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Sync this task"}}]}},{{"type":"agentMessage","text":"Task result is ready"}},{{"type":"reasoning","summary":["Final verification"]}}]}}]}}}}}}'
+      printf '%s\n' '{{"jsonrpc":"2.0","id":4,"result":{{"thread":{{"id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Synced ChatGPT task","updatedAt":{updated},"turns":[{{"id":"019f5f7c-ed41-76f2-bd7a-94ef01b580b1","status":"interrupted","startedAt":{started},"completedAt":{updated},"durationMs":10310,"items":[{{"type":"userMessage","content":[{{"type":"text","text":"Sync this task"}}]}},{{"type":"agentMessage","text":"Task result is ready"}},{{"type":"reasoning","summary":["Final verification"]}}]}}]}}}}}}'
       ;;
   esac
 done
@@ -781,6 +944,131 @@ done
 }
 
 #[test]
+fn generation_cancel_interrupts_the_active_codex_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("cancel-active-turn.sh");
+    let interrupt_file = temp.path().join("interrupt-request");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"cancel-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_cancel","sessionId":"thread_cancel"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_cancel","status":"inProgress"}}}'
+      ;;
+    *\"method\":\"turn/interrupt\"*)
+      printf '%s' "$request" > "$APC_TEST_INTERRUPT_FILE"
+      printf '%s\n' '{"jsonrpc":"2.0","id":9001,"result":{}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_cancel","turn":{"id":"turn_cancel","status":"interrupted"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let _interrupt_file = EnvGuard::set("APC_TEST_INTERRUPT_FILE", interrupt_file.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Cancelable pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+    };
+
+    let result = run_pet_studio_session_with_updates_and_cancel(
+        &paths,
+        "job_cancel_active_turn",
+        &form,
+        |_| {},
+        || true,
+    );
+
+    assert_eq!(result["completed"], false, "{result}");
+    assert_eq!(result["error"], "generation canceled", "{result}");
+    let interrupt = std::fs::read_to_string(interrupt_file).unwrap();
+    assert!(interrupt.contains("thread_cancel"), "{interrupt}");
+    assert!(interrupt.contains("turn_cancel"), "{interrupt}");
+    assert_eq!(
+        result.pointer("/events/0/acknowledged"),
+        Some(&json!(true)),
+        "{result}"
+    );
+    assert_eq!(
+        result.pointer("/events/0/completion_observed"),
+        Some(&json!(true)),
+        "{result}"
+    );
+}
+
+#[test]
+fn native_user_input_request_is_returned_with_options_and_stops_the_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("native-user-input.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *\"method\":\"initialize\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"input-test"}}}'
+      ;;
+    *\"method\":\"thread/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread_input","sessionId":"thread_input"}}}'
+      ;;
+    *\"method\":\"turn/start\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_input","status":"inProgress"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":"request_palette","method":"item/tool/requestUserInput","params":{"threadId":"thread_input","turnId":"turn_input","itemId":"input_item","isBlocking":true,"questions":[{"id":"palette","header":"Palette","question":"Choose a palette","isOther":true,"options":[{"label":"Warm","description":"Amber and coral"},{"label":"Cool","description":"Cyan and violet"}]}]}}'
+      ;;
+    *\"method\":\"turn/interrupt\"*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":9002,"result":{}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_input","turn":{"id":"turn_input","status":"interrupted"}}}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
+    let paths = AppPaths::new(temp.path().join("home"));
+    paths.ensure().unwrap();
+    let form = GenerationForm {
+        description: "Input request pet".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+    };
+
+    let result = run_pet_studio_session(&paths, "job_native_input", &form);
+
+    assert_eq!(result["needs_input"], true, "{result}");
+    assert_eq!(result["completed"], false, "{result}");
+    assert_eq!(result["input_request"]["payload_type"], "input_request");
+    assert_eq!(result["input_request"]["request_id"], "request_palette");
+    assert_eq!(result["input_request"]["questions"][0]["id"], "palette");
+    assert_eq!(
+        result["input_request"]["questions"][0]["options"][1]["label"],
+        "Cool"
+    );
+    assert_eq!(
+        result.pointer("/events/0/completion_observed"),
+        Some(&json!(true)),
+        "{result}"
+    );
+}
+
+#[test]
 fn generation_waits_through_transient_app_server_reconnects() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -823,15 +1111,31 @@ done
         &paths,
         "job_transient_reconnect",
         &form,
-        |update| updates.push(update.content),
+        |update| updates.push(update),
     );
 
     assert_eq!(result["completed"], true, "{result}");
     assert_eq!(result["ai_brief"]["name"], "Recovered Pet", "{result}");
     assert_eq!(result["error"], serde_json::Value::Null, "{result}");
     assert!(
-        updates.iter().any(|message| message.contains("自动重连")),
+        updates
+            .iter()
+            .any(|update| update.content.contains("自动重连")),
         "{updates:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .filter(|update| {
+                !matches!(
+                    update.kind,
+                    PetStudioSessionUpdateKind::SessionStarted
+                        | PetStudioSessionUpdateKind::TurnStarted
+                )
+            })
+            .all(|update| !update.content.contains("thread_reconnect")
+                && !update.content.contains("turn_reconnect")),
+        "user-visible Studio progress leaked an internal thread/turn id: {updates:?}"
     );
 }
 
@@ -938,7 +1242,7 @@ done
 }
 
 #[test]
-fn external_generation_interrupts_timed_out_turn_and_resumes_from_checkpoint() {
+fn external_generation_continues_past_six_hours_and_checkpoints_while_workspace_progresses() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let script = temp.path().join("checkpoint-resume.sh");
@@ -971,8 +1275,19 @@ while IFS= read -r request; do
     *\"method\":\"turn/start\"*)
       turn_count=$((turn_count + 1))
       printf '%s' "$turn_count" > "$APC_TEST_TURN_COUNT_FILE"
+      request_id="${request#*\"id\":}"
+      request_id="${request_id%%,*}"
       if [ "$turn_count" = 1 ]; then
         printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn_checkpoint_0","status":"inProgress"}}}'
+        continue
+      fi
+
+      if [ "$turn_count" -lt 8 ]; then
+        mkdir -p "$APC_TEST_JOB_DIR/checkpoint-progress"
+        printf '%s' "$turn_count" > "$APC_TEST_JOB_DIR/checkpoint-progress/segment-$turn_count"
+        printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"turn":{"id":"turn_checkpoint_'"$turn_count"'","status":"inProgress"}}}'
+        printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_'"$turn_count"'","item":{"type":"agentMessage","id":"message_checkpoint_'"$turn_count"'","text":"work remains"}}}'
+        printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_checkpoint","turn":{"id":"turn_checkpoint_'"$turn_count"'","status":"completed"}}}'
         continue
       fi
 
@@ -995,9 +1310,9 @@ while IFS= read -r request; do
       printf '%s\n' '{"ok":true}' > "$APC_TEST_JOB_DIR/motion-qa/report.json"
       printf '%s\n' '{"status":"approved"}' > "$APC_TEST_JOB_DIR/motion-review.json"
 
-      printf '%s\n' '{"jsonrpc":"2.0","id":103,"result":{"turn":{"id":"turn_checkpoint_1","status":"inProgress"}}}'
-      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_1","item":{"type":"agentMessage","id":"message_checkpoint","text":"{\"petpack_source\":\"petpack-source\",\"mode\":\"external_full_source\",\"timing_changed\":false,\"authored_timing\":[]}"}}}'
-      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_checkpoint","turn":{"id":"turn_checkpoint_1","status":"completed"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","id":'"$request_id"',"result":{"turn":{"id":"turn_checkpoint_8","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread_checkpoint","turnId":"turn_checkpoint_8","item":{"type":"agentMessage","id":"message_checkpoint","text":"{\"petpack_source\":\"petpack-source\",\"mode\":\"external_full_source\",\"timing_changed\":false,\"authored_timing\":[]}"}}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread_checkpoint","turn":{"id":"turn_checkpoint_8","status":"completed"}}}'
       ;;
   esac
 done
@@ -1008,6 +1323,10 @@ done
     let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
     let _strict = EnvGuard::set("APC_REQUIRE_EXTERNAL_SKILL_SOURCE", "1");
     let _timeout = EnvGuard::set("APC_TEST_PET_STUDIO_TURN_TIMEOUT_MS", "200");
+    let _elapsed = EnvGuard::set(
+        "APC_TEST_EXTERNAL_CHECKPOINT_ELAPSED_MS",
+        (6 * 60 * 60 * 1_000 + 1).to_string(),
+    );
     let _job = EnvGuard::set("APC_TEST_JOB_DIR", job_dir.as_os_str());
     let _turn_count = EnvGuard::set("APC_TEST_TURN_COUNT_FILE", turn_count_file.as_os_str());
     let _interrupt_count = EnvGuard::set(
@@ -1029,14 +1348,22 @@ done
 
     assert_eq!(result["completed"], true, "{result}");
     assert_eq!(result["error"], serde_json::Value::Null, "{result}");
-    assert_eq!(result["checkpoint_turns_started"], 1, "{result}");
+    assert_eq!(result["checkpoint_turns_started"], 7, "{result}");
     assert_eq!(
         result["checkpoint_turn_ids"],
-        json!(["turn_checkpoint_1"]),
+        json!([
+            "turn_checkpoint_2",
+            "turn_checkpoint_3",
+            "turn_checkpoint_4",
+            "turn_checkpoint_5",
+            "turn_checkpoint_6",
+            "turn_checkpoint_7",
+            "turn_checkpoint_8"
+        ]),
         "{result}"
     );
     assert_eq!(result["helper_turn_started"], false, "{result}");
-    assert_eq!(std::fs::read_to_string(turn_count_file).unwrap(), "2");
+    assert_eq!(std::fs::read_to_string(turn_count_file).unwrap(), "8");
     assert_eq!(std::fs::read_to_string(interrupt_count_file).unwrap(), "1");
     assert!(
         updates.iter().any(|message| message.contains("保存进度")),

@@ -22,10 +22,15 @@ model-native transparency. Use only:
 ```
 
 The script owns background connectivity, matte thresholds, Alpha-boundary RGB
-reconstruction, source-resolution master retention, exact sizing, and
-multi-background QA. `visible_key_pixels` is a diagnostic count, not a zero-
-tolerance gate: an isolated key-like subject pixel does not by itself make a
-frame invalid. Do not replace the script with custom Pillow, OpenCV,
+reconstruction at source and final runtime size, source-resolution master
+retention, exact sizing, and multi-background QA. `visible_key_pixels` is a
+diagnostic count, not a zero-tolerance gate: an isolated key-like subject pixel
+does not by itself make a frame invalid. After both deterministic RGB repairs,
+the only nonzero edge-fringe result that may remain usable is the script's
+closed `review_warning`: no more than 4/8/12 raw pixels for low/standard/high,
+no pixel above Alpha 48, no more than 0.5 equivalent opaque pixel in total, and
+no connected component larger than two pixels. It still requires review on all
+five backgrounds. Do not replace the script with custom Pillow, OpenCV,
 ImageMagick, shell, background-removal, color-replacement, edge-cleaning,
 Alpha, or resizing code. Do not tune its thresholds.
 
@@ -103,11 +108,14 @@ The script, in order:
    Alpha and insufficient source capacity;
 2. samples the border key and rejects low saturation or excess variation;
 3. removes only conservative key candidates connected to the frame border;
-4. reconstructs contaminated RGB only inside the Alpha boundary and verifies
-   byte-identical opaque-interior RGB;
+4. reconstructs contaminated RGB only inside the source Alpha boundary and
+   verifies byte-identical opaque-interior RGB;
 5. saves the source-resolution transparent master, then performs one
    linear-light premultiplied-Alpha Lanczos downscale or an exact copy;
-6. runs structural/chroma QA and renders checkerboard, white, gray, black, and
+6. applies an explicitly requested bounded Alpha fallback, then reconstructs
+   newly exposed key contamination only inside the final runtime Alpha boundary
+   without changing Alpha or opaque-interior RGB;
+7. runs structural/chroma QA and renders checkerboard, white, gray, black, and
    complementary-color previews.
 
 Do not reorder the stages or post-process the output.
@@ -120,18 +128,29 @@ Treat a non-zero exit or any `"ok": false` frame as unusable.
 - `source_capacity_missing`: obtain a larger real source crop or ask the user
   to choose a lower tier; never upscale.
 - Meaningful key-colored subject detail: inspect all five previews. Use another
-  key only when the detail is actually confused with the matte or produces
-  visible contamination; the diagnostic count alone is not a failure.
+  key only when automatic sampling is visibly wrong or the detail is actually
+  confused with the matte; the diagnostic count alone is not a failure. Do not
+  enumerate similar explicit key colors to repair an edge-fringe result.
 - Enclosed background: prefer regeneration. If necessary, supply a visually
   inspected hard black/white sure-foreground mask; white must remain foreground
   and black remains matte-eligible. The mask may not trace or erode fine edges.
-- Residual edge contamination after a valid default run: inspect first, then as
-  a last resort rerun untouched sources with `--replace --edge-contract 1`.
-- A staircase caused by that contraction may add `--edge-feather 0.25`; `0.5`
-  is the maximum. Do not feather fur, lace, glows, translucency, or already-soft
-  edges to conceal a bad matte.
+- A hard residual edge-contamination result after the default source- and
+  runtime-size RGB repairs: inspect first, then rerun only the failing frames
+  once from untouched sources with `--replace --edge-contract 1`.
+- A staircase visibly caused by that contraction may add
+  `--edge-feather 0.25`; `0.5` remains an exceptional manually inspected
+  maximum, not another routine search candidate. Do not feather fur, lace,
+  glows, translucency, or already-soft edges to conceal a bad matte.
+- Keep the recorded equal-size shared action crop. Change it only when canvas
+  contact or the deterministic geometry record proves the crop itself wrong;
+  never search adjacent per-frame crops. If the subject overflows correct
+  geometry, regenerate it at the proper scale.
+- After that bounded local path, regenerate on a flatter contrasting opaque
+  background. If the same source defect occurs twice, change the prompt, key
+  choice, or action design instead of extending the parameter search.
 
-Start every retry from the untouched opaque crop. Do not stack fallback runs.
+Start every retry from the untouched opaque crop. Do not stack fallback runs or
+rerun frames that already passed.
 
 ## Acceptance
 
@@ -140,13 +159,14 @@ Accept a state only when:
 - the report root and every frame say `"ok": true`;
 - normalization is `exact_copy` or `single_downscale`, the master keeps source
   dimensions, and the runtime PNG matches the package tier;
-- opaque-interior RGB changes, transparent RGB residue, edge fringe, and
-  visible canvas-edge contact are all zero;
+- opaque-interior RGB changes, transparent RGB residue, hard edge fringe, and
+  visible canvas-edge contact are all zero; only a reported bounded
+  `review_warning` may retain nonzero isolated low-Alpha edge evidence;
 - `visible_key_pixels` remains reported for both master and runtime output but
   is review evidence only and never fails a frame by itself;
 - enclosed transparent components have been intentionally reviewed;
 - all five preview backgrounds are visually clean at 100%, including any pixels
-  counted by `visible_key_pixels`;
+  counted by `visible_key_pixels` or the bounded edge-fringe warning;
 - the exact-tier authored-timing animation passes identity, action, anatomy,
   prop, continuity, crop, settle/loop, and reduced-motion review.
 

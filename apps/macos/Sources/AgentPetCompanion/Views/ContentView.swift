@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -51,12 +52,21 @@ struct ContentView: View {
                             .padding(.top, 14)
                         }
                         mainContent
+                            .frame(
+                                maxWidth: .infinity,
+                                maxHeight: .infinity,
+                                alignment: .topLeading
+                            )
+                            .layoutPriority(1)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .navigationTitle("")
                 }
                 .navigationSplitViewStyle(.balanced)
                 .environment(\.controlCenterShellMode, policy.mode)
+                .background {
+                    ControlCenterWindowChromeBridge()
+                }
                 .toolbar {
 #if compiler(>=6.2)
                     if #available(macOS 26.0, *) {
@@ -158,6 +168,34 @@ struct ContentView: View {
         ControlCenterRecoveryBannerPresentation.resolve(
             for: store.petCoreOperationalState
         )
+    }
+}
+
+@MainActor
+enum ControlCenterWindowChrome {
+    static func hideTitlebarSeparator(in window: NSWindow?) {
+        window?.titlebarSeparatorStyle = .none
+    }
+}
+
+private struct ControlCenterWindowChromeBridge: NSViewRepresentable {
+    func makeNSView(context: Context) -> ControlCenterWindowChromeProbe {
+        ControlCenterWindowChromeProbe()
+    }
+
+    func updateNSView(_ nsView: ControlCenterWindowChromeProbe, context: Context) {
+        nsView.applyWindowChrome()
+    }
+}
+
+private final class ControlCenterWindowChromeProbe: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyWindowChrome()
+    }
+
+    func applyWindowChrome() {
+        ControlCenterWindowChrome.hideTitlebarSeparator(in: window)
     }
 }
 

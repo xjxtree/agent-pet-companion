@@ -220,8 +220,8 @@ if opencode_server.get("status") != "not_required":
 expected_contracts = {
     "codex": "codex-hooks-2026-08-01-events-v9",
     "claude_code": "claude-hooks-2026-08-01-events-v9",
-    "pi": "pi-extension-0.80.10-events-v11",
-    "opencode": "opencode-v1.18.4-events-v13",
+    "pi": "pi-extension-0.80.10-events-v13",
+    "opencode": "opencode-v1.18.4-events-v16",
 }
 expected_capability_counts = {
     "codex": (80, 11),
@@ -246,16 +246,18 @@ for source, expected in expected_contracts.items():
     if source != "codex":
         last_event = verification.get("last_event")
         if verification.get("status") == "verified" and (
-            not isinstance(last_event, str) or last_event.endswith(" (canary)")
+            not isinstance(last_event, str)
+            or last_event.endswith((" (canary)", " (passive)"))
         ):
             failures.append(
-                f"{source}: verified status lacks a current non-canary ordinary event"
+                f"{source}: verified status lacks a current ordinary event"
             )
         if verification.get("status") == "unverified" and (
-            not isinstance(last_event, str) or not last_event.endswith(" (canary)")
+            not isinstance(last_event, str)
+            or not last_event.endswith((" (canary)", " (passive)"))
         ):
             failures.append(
-                f"{source}: host_loaded-only status lacks the expected diagnostic canary receipt"
+                f"{source}: host_loaded-only status lacks an expected canary/passive receipt"
             )
     if capabilities.get("contract_version") != expected:
         failures.append(
@@ -289,8 +291,8 @@ entries = json.loads(os.environ["RECEIPTS"])
 contracts = {
     "codex": "codex-hooks-2026-08-01-events-v9",
     "claude_code": "claude-hooks-2026-08-01-events-v9",
-    "pi": "pi-extension-0.80.10-events-v11",
-    "opencode": "opencode-v1.18.4-events-v13",
+    "pi": "pi-extension-0.80.10-events-v13",
+    "opencode": "opencode-v1.18.4-events-v16",
 }
 task_events = {
     "codex": (

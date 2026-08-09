@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const RECEIVED_AT: &str = "2026-07-10T00:00:00Z";
+// Keep ordinary fixtures inside the retention window regardless of the host
+// clock. Tests that exercise pruning provide their own explicit timestamps.
+const RECEIVED_AT: &str = "2099-08-09T00:00:00Z";
 const FORBIDDEN_VALUES: &[&str] = &[
     "FORBIDDEN_PROMPT_VALUE_7f16",
     "FORBIDDEN_COMMAND_VALUE_b8c2",
@@ -687,6 +689,57 @@ fn internal_codex_suggestion_session_is_deleted_and_future_events_are_suppressed
         )
         .unwrap();
     assert_eq!(marker_count, 1);
+}
+
+#[test]
+fn child_session_marker_deletes_existing_projection_and_blocks_future_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = Database::new(temp.path().join("events.sqlite"));
+    database.init().unwrap();
+    let session_id = "opencode-child-session";
+
+    let ordinary = strict_event(
+        "child-before-lineage",
+        AgentSource::Opencode,
+        Some(session_id),
+        RECEIVED_AT,
+    );
+    assert_eq!(
+        database.insert_event(&ordinary).unwrap(),
+        InsertEventOutcome::Inserted
+    );
+
+    let marker = AgentEvent {
+        id: "child-lineage-marker".to_string(),
+        source: AgentSource::Opencode,
+        project_path: None,
+        session_id: Some(session_id.to_string()),
+        event_type: AgentEventType::Start,
+        title: AgentEventType::Start.zh_label().to_string(),
+        detail: None,
+        payload_json: json!({
+            "source_event": "session.child",
+            "session_active": false,
+            "diagnostic": false
+        }),
+        created_at: RECEIVED_AT.to_string(),
+    };
+    assert_eq!(
+        database.insert_event(&marker).unwrap(),
+        InsertEventOutcome::Suppressed
+    );
+    assert!(database.recent_events(10).unwrap().is_empty());
+
+    let later = strict_event(
+        "child-after-lineage",
+        AgentSource::Opencode,
+        Some(session_id),
+        RECEIVED_AT,
+    );
+    assert_eq!(
+        database.insert_event(&later).unwrap(),
+        InsertEventOutcome::Suppressed
+    );
 }
 
 #[test]

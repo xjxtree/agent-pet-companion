@@ -85,7 +85,7 @@ fn claude_completion_routes_latest_agent_text_to_petcore() {
     let listener = UnixListener::bind(&paths.socket_path).unwrap();
     let (request_tx, request_rx) = mpsc::sync_channel(1);
     let rpc_state = state.clone();
-    let responder = std::thread::spawn(move || {
+    let responder = std::thread::spawn(move || loop {
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = String::new();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -93,8 +93,8 @@ fn claude_completion_routes_latest_agent_text_to_petcore() {
         reader.read_to_end(&mut Vec::new()).unwrap();
         let rpc_request: RpcRequest = serde_json::from_str(request.trim()).unwrap();
         let response_id = rpc_request.id.clone();
+        let is_ingest = rpc_request.method == "agent.ingest";
         let result = handle_request(&rpc_state, rpc_request).unwrap();
-        request_tx.send(request).unwrap();
         let response = json!({
             "jsonrpc": "2.0",
             "id": response_id,
@@ -103,6 +103,10 @@ fn claude_completion_routes_latest_agent_text_to_petcore() {
         stream
             .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
             .unwrap();
+        if is_ingest {
+            request_tx.send(request).unwrap();
+            break;
+        }
     });
 
     let mut child = Command::new(cli())

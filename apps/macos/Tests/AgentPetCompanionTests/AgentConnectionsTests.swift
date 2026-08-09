@@ -13,6 +13,116 @@ struct AgentConnectionsTests {
         )
     }
 
+    @Test
+    func pageRequestsOneAutomaticRuntimeCheckWhenItFirstAppears() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: packageRoot.appendingPathComponent(
+                "Sources/AgentPetCompanion/Views/AgentConnectionsView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(source.contains(".onAppear {"))
+        #expect(source.contains(
+            "store.requestAutomaticConnectionCheckOnFirstPresentation()"
+        ))
+    }
+
+    @MainActor
+    @Test
+    func automaticRuntimeCheckWaitsForStartupProjectionAndRunsOnlyOnce() async throws {
+        var checkCount = 0
+        let runtimeStatuses = AgentSource.allCases.map { source in
+            currentStatus(
+                source: source,
+                items: [item(.ok, code: .managedConnector)]
+            )
+        }
+        let response = try jsonObject(runtimeStatuses)
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, params, _ in
+                #expect(method == "connections.check")
+                #expect((params as? [String: String])?.isEmpty == true)
+                checkCount += 1
+                return response
+            },
+            productConvergenceManifest: nil
+        )
+
+        store.requestAutomaticConnectionCheckOnFirstPresentation()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(checkCount == 0)
+
+        store.connections = AgentSource.allCases.map(lightStatus)
+        for _ in 0..<1_000 where
+            checkCount == 0 || store.connectionOperationState.isRunning
+        {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+
+        #expect(checkCount == 1)
+        #expect(
+            store.connectionOperationState.succeededOperation
+                == AgentConnectionOperation(
+                    kind: .check,
+                    sources: AgentSource.allCases
+                )
+        )
+        #expect(store.connections.allSatisfy { $0.checkMode == .runtime })
+
+        store.requestAutomaticConnectionCheckOnFirstPresentation()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(checkCount == 1)
+    }
+
+    @MainActor
+    @Test
+    func automaticRuntimeCheckKeepsFreshFullStatusesWithoutRechecking() async {
+        var checkCount = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { _, _, _ in
+                checkCount += 1
+                return []
+            },
+            productConvergenceManifest: nil
+        )
+        store.connections = AgentSource.allCases.map { source in
+            currentStatus(
+                source: source,
+                items: [item(.ok, code: .managedConnector)]
+            )
+        }
+
+        store.requestAutomaticConnectionCheckOnFirstPresentation()
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+
+        #expect(checkCount == 0)
+        #expect(store.connectionOperationState == .idle)
+    }
+
     @MainActor
     @Test
     func connectionTestIsBoundedAndDoesNotWaitForSnapshotRefresh() async throws {
@@ -149,6 +259,24 @@ struct AgentConnectionsTests {
             #expect(presentation.taskVerification == .awaitingTask)
             #expect(!presentation.canRepairManagedConnector)
             #expect(presentation.primaryAction == .verify)
+            #expect(
+                AgentConnectionsPresentation.healthTitle(
+                    for: presentation,
+                    locale: "zh-Hans"
+                ) == "待验证"
+            )
+            #expect(
+                AgentConnectionsPresentation.healthSummary(
+                    for: presentation,
+                    operationState: .idle,
+                    locale: "zh-Hans"
+                ) == "请在此 Agent 中运行一次真实任务，然后重新检查连接。"
+            )
+            #expect(
+                AgentConnectionsPresentation.healthAppearance(
+                    for: presentation
+                ) == .neutral
+            )
         }
 
         let notRequired = product(currentStatus(
@@ -157,6 +285,17 @@ struct AgentConnectionsTests {
         ))
         #expect(notRequired.health == .connected)
         #expect(notRequired.taskVerification == .notRun)
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: notRequired,
+                locale: "zh-Hans"
+            ) == "已连接"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthAppearance(
+                for: notRequired
+            ) == .normal
+        )
     }
 
     @Test
@@ -387,22 +526,22 @@ struct AgentConnectionsTests {
 
     @Test
     func unavailableReasonsGiveSpecificStatusAndNextAction() throws {
-        let update = product(currentStatus(
+        let informationalVersion = product(currentStatus(
             source: .pi,
             items: [item(.unsupported, code: .agentVersion)]
         ))
         #expect(
             AgentConnectionsPresentation.healthTitle(
-                for: update,
+                for: informationalVersion,
                 locale: "en"
-            ) == "Update Required"
+            ) == "Connected"
         )
         #expect(
             AgentConnectionsPresentation.healthSummary(
-                for: update,
+                for: informationalVersion,
                 operationState: .idle,
                 locale: "en"
-            ) == "The installed Pi Coding Agent version is not supported."
+            ) == "This Agent is connected."
         )
 
         let restart = product(currentStatus(
@@ -496,8 +635,22 @@ struct AgentConnectionsTests {
             )
         ))
         #expect(light.health == .notChecked)
+        #expect(light.hasCurrentLightSnapshot)
         #expect(light.taskVerification == .notRun)
         #expect(light.primaryAction == .verify)
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: light,
+                locale: "zh-Hans"
+            ) == "基础检查完成"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthSummary(
+                for: light,
+                operationState: .idle,
+                locale: "zh-Hans"
+            ) == "基础检查已完成，正在等待完整运行检测。"
+        )
     }
 
     @Test
@@ -528,6 +681,7 @@ struct AgentConnectionsTests {
         ))
 
         #expect(!presentation.hasCurrentTypedSnapshot)
+        #expect(presentation.hasCurrentLightSnapshot)
         #expect(presentation.taskVerification == .notRun)
         #expect(presentation.health == .needsRepair)
         #expect(presentation.primaryAction == .connect)
@@ -1049,8 +1203,8 @@ struct AgentConnectionsTests {
             name: "agent-pet-companion.ts",
             ownership: .appManaged,
             status: .ok,
-            expectedVersion: "pi-extension-0.80.10-events-v11",
-            activeVersion: "pi-extension-0.80.10-events-v11",
+            expectedVersion: "pi-extension-0.80.10-events-v13",
+            activeVersion: "pi-extension-0.80.10-events-v13",
             contentMatches: true
         )
         #expect(
@@ -1103,8 +1257,8 @@ struct AgentConnectionsTests {
             )
         )
         #expect(piCopy.contains("0.79.9"))
-        #expect(piCopy.contains("0.80.10"))
-        #expect(piCopy.contains("更新 Pi Coding Agent"))
+        #expect(piCopy.contains("仅供诊断"))
+        #expect(piCopy.contains("实时宿主/通道检查"))
         #expect(!piCopy.contains("/Users/"))
         #expect(!piCopy.contains("token"))
         #expect(!piCopy.contains("secret"))
@@ -1298,6 +1452,24 @@ struct AgentConnectionsTests {
         )
     }
 
+    private func lightStatus(
+        source: AgentSource
+    ) -> AgentConnectionStatus {
+        AgentConnectionStatus(
+            source: source,
+            items: [item(.ok, code: .managedConnector)],
+            installPaths: [],
+            connectorInstalled: true,
+            checkMode: .light,
+            verification: verification(.unverified),
+            capabilities: capabilities(
+                repairable: false,
+                conflict: false,
+                canUninstall: true
+            )
+        )
+    }
+
     private func item(
         _ status: CheckStatus,
         code: ConnectionCheckCode,
@@ -1342,5 +1514,11 @@ struct AgentConnectionsTests {
             detail: "untrusted-verification-detail",
             actionDetail: "/Users/alice/project"
         )
+    }
+
+    private func jsonObject<Value: Encodable>(
+        _ value: Value
+    ) throws -> Any {
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
     }
 }

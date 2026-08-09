@@ -121,7 +121,7 @@ enum MakerReferenceImagePolicy {
         let expectedStem = String(format: "reference-%02d", index)
         let leaf = URL(fileURLWithPath: suffix[4])
         guard leaf.deletingPathExtension().lastPathComponent == expectedStem,
-              ["png", "webp"].contains(leaf.pathExtension.lowercased())
+              ["png", "jpg", "jpeg", "webp"].contains(leaf.pathExtension.lowercased())
         else { return nil }
         return validatedPath(for: url)
     }
@@ -133,6 +133,8 @@ enum MakerReferenceImagePolicy {
         switch extensionName {
         case "png":
             expectedType = .png
+        case "jpg", "jpeg":
+            expectedType = .jpeg
         case "webp":
             expectedType = .webP
         default:

@@ -23,6 +23,16 @@ RETIRED_V1_STUDIO_SKILL = pathlib.PurePosixPath(
     "crates/petcore/tests/fixtures/retired-agent-pet-studio-v1.md"
 )
 STUDIO_SKILL_HISTORY_SCHEMA = "apc.codex-studio-skill-history.v1"
+# The App-managed 0.4.6 development bundle reached local installations before
+# its Studio Skill revision was represented by a Git release baseline. Keep the
+# exception exact so release validation can recover those installations without
+# accepting arbitrary historical content.
+RECOVERED_APP_MANAGED_STUDIO_SHA256 = frozenset(
+    {
+        "5150ab91ba5f14567f0a2be0b6053688dffcd564e665a3e281fd5a110f8e852d",
+        "5611d90ef3aa0b94682915df0135b2b3cae2b3b23360e80625f0bf2a5fc8bafa",
+    }
+)
 PLUGIN_BUNDLE_PATHS = (
     "plugins/codex",
     "skills/agent-pet-maker",
@@ -201,19 +211,24 @@ def validate(base_reference: str) -> tuple[str, str, bool, bool]:
                 "Studio Skill history is append-only; retired SHA-256 values were removed: "
                 + ", ".join(sorted(removed))
             )
-        permitted_additions = {base_studio_digest} if studio_changed else set()
+        permitted_additions = set(RECOVERED_APP_MANAGED_STUDIO_SHA256)
+        if studio_changed:
+            permitted_additions.add(base_studio_digest)
         unexpected = (current_history - base_history) - permitted_additions
         if unexpected:
             raise ValueError(
                 "Studio Skill history added SHA-256 values that are not the previous "
-                "shipped Skill: "
+                "shipped Skill or a reviewed App-managed recovery digest: "
                 + ", ".join(sorted(unexpected))
             )
     else:
         retired_v1_digest = hashlib.sha256(
             (ROOT / RETIRED_V1_STUDIO_SKILL).read_bytes()
         ).hexdigest()
-        expected_bootstrap = {retired_v1_digest}
+        expected_bootstrap = {
+            retired_v1_digest,
+            *RECOVERED_APP_MANAGED_STUDIO_SHA256,
+        }
         if studio_changed:
             expected_bootstrap.add(base_studio_digest)
         if current_history != expected_bootstrap:

@@ -47,8 +47,11 @@ quality name.
 
 ## Choose one output mode
 
-1. If one essential identity detail is missing, return only
-   `{"needs_input":true,"question":"one concise question"}`.
+1. If one essential identity decision is missing, call the native
+   `request_user_input` tool with exactly one concise question and two or three
+   concrete options. Do not return `needs_input` JSON when the native tool is
+   available. The Studio host persists the request, ends the current turn, and
+   resumes the same job and thread after the user replies.
 2. When `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1`, use a real image-capable tool,
    write and validate the complete `petpack-source`, and return compact
    completion JSON. A brief, deterministic preview, or materializer output does
@@ -85,14 +88,22 @@ All modes remain limited to `low` and `standard`.
   Generate fully opaque flat-background source art; inspect actual decoded
   dimensions, subject scale, and stable equal-size 12:13 crops; use
   `../agent-pet-maker/scripts/prepare_transparent_frames.py` for every new or
-  regenerated frame; and run incremental Motion QA before starting the next
-  state. Compare the reported per-frame body-anchor and baseline path with the
-  action card and deterministic pose guide. Preserve intentional travel and
-  authored easing. When registration alone is wrong and identity, anatomy,
-  pose, scale, props, Alpha, and crop are otherwise accepted, do not regenerate
-  first: use the shared Maker `motion-align` command with a fresh QA-digest-
-  bound plan, inspect its integer-translation-only transparent output, copy
-  only approved frames back, and rerun Motion QA.
+  regenerated frame. Its closed runtime-size RGB repair and bounded isolated
+  low-Alpha fringe warning are authoritative. On a hard failure, rerun only the
+  failing frames: allow one edge-contraction retry and add 0.25-pixel feathering
+  only for a visibly stair-stepped contraction. Do not enumerate adjacent
+  crops, similar key colors, or feather values; change the shared crop only for
+  proven geometry error and the key only for visibly wrong automatic sampling
+  or a real subject-color conflict. If the bounded retry still fails,
+  regenerate the opaque source on a flatter contrasting background. Then run
+  incremental Motion QA before starting the next state. Compare the reported
+  per-frame body-anchor and baseline path with the action card and deterministic
+  pose guide. Preserve intentional travel and authored easing. When
+  registration alone is wrong and identity, anatomy, pose, scale, props,
+  Alpha, and crop are otherwise accepted, do not regenerate first: use the
+  shared Maker `motion-align` command with a fresh QA-digest-bound plan, inspect
+  its integer-translation-only transparent output, copy only approved frames
+  back, and rerun Motion QA.
 - After all affected states pass, run combined `motion-qa`, inspect the
   authored-timing and presence previews, bind `motion-review`, and run
   `production-verify`. Keep `build/validation.json` at `ok:false` until the

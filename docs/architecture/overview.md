@@ -42,8 +42,9 @@ The App and overlay share one UI process. PetCore is a separate per-user service
 - A session title, latest user message, current-turn Agent message, and normalized activity detail are separate bounded fields. PetCore supplies them; Swift does not reconstruct host payloads.
 - Bubbles can group sessions per Agent or show one cross-Agent card list. The flat list keeps stable slots while a turn alternates between thinking, planning, and tools; only a new activation or attention-state transition may move a card.
 - Clicking the pet toggles the bubble. Only a concrete session row can open a validated exact-session or host-level destination.
-- On macOS 26, session bubbles use one untinted native Regular Liquid Glass surface. Compact floating controls may use Clear glass. Older systems use the system material fallback; accessibility settings can replace or strengthen the optical treatment.
+- On macOS 26, session bubbles use one untinted native Regular Liquid Glass surface plus a paired sub-point light/dark optical rim that preserves the rounded boundary across mixed bright and dark backdrops without adding a fill, tint, shadow, or second material. Compact floating controls may use Clear glass. Older systems use the system material fallback; accessibility settings can replace or strengthen the optical treatment.
 - Bundled pets are read-only defaults. Same-name pets coexist because identity is the manifest ID, not the display name.
+- Pet Library previews are local-only and bind fallback readiness to the exact pet revision and selected action. Metal remains eligible to present during a change, while an opaque fallback masks any retained drawable until the exact new render identity reaches the display; stale callbacks are ignored. Finite `burst_then_idle` or `once_then_return` previews return visually to `idle` after their authored playback completes.
 
 ## Main flows
 
@@ -56,7 +57,7 @@ The App and overlay share one UI process. PetCore is a separate per-user service
 
 Closing the control center leaves the menu bar and enabled pet running. Reopen targets the registered control-center window rather than whichever App window happens to be visible. Standard Quit closes the UI host and overlay; the LaunchAgent-hosted PetCore may remain available.
 
-The pet, bubble, and menu form one AppKit composition. A drag has one presentation owner, uses absolute screen coordinates from a captured anchor, and commits one final hard-clamped position without momentum. Display size is a separate Pet Configuration setting; the overlay exposes no resize interaction. See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and persistence.
+The pet, bubble, and menu form one AppKit composition. A drag has one presentation owner, uses absolute screen coordinates from a captured anchor, and commits one final hard-clamped position without momentum. Pointer ownership is exact and non-configurable: opaque pet pixels and rendered bubble/menu surfaces are interactive, while transparent pet and panel regions pass through to lower apps; missing or stale masks retain a geometric pet fallback. Display size is a separate Pet Configuration setting; the overlay exposes no resize interaction. See [Runtime and IPC](runtime-and-ipc.md) for lifecycle and persistence.
 
 ### Agent activity
 
@@ -77,7 +78,15 @@ Persisted events are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and
 
 ### Pet creation, import, and activation
 
-AI Pet Maker creates a PetCore generation job and private workspace, then drives Codex App Server with the internal Studio contract. App creation supports `low` and `standard`; portable workflows may produce `high` when the untouched source pixels satisfy the V3 contract. Generated output is untrusted until the shared package and production validators pass.
+AI Pet Maker is a permanent split workspace: the left column lists every retained creation or edit task and the right column shows either an in-memory draft or that task's user-visible timeline. Submitting a draft replaces it in place with a PetCore job. The database admits exactly one unfinished task across pending, running, waiting for input, recoverable failure, and cancellation cleanup; the App disables its new-task action under the same contract. The unfinished task is listed first and terminal tasks follow newest-first.
+
+PetCore, not ChatGPT, owns the product session. It persists bounded user messages, Agent replies, business-level phases, checkpoint summaries, native App Server `requestUserInput` questions, recoverable errors, validation evidence, and results. The page supports upward message pagination and only follows new messages when the user is already near the bottom. Hidden reasoning, raw tool arguments, complete commands, and complete tool results are never copied into this timeline. A verified live Codex deep link can be offered as an auxiliary action, but ChatGPT sidebar visibility, rendering, or availability is not a creation, input, or recovery dependency.
+
+External-source work continues across checkpoint turns while its bounded workspace fingerprint advances; three consecutive no-progress turns become a recoverable failure and a separate twelve-hour continuous-run bound becomes a recoverable pause. Waiting releases its worker while retaining the task, request, workspace, and thread identity. After sleep or restart, waiting remains waiting; a running task whose owner disappeared becomes recoverable and resumes the same thread when available, otherwise it starts a replacement thread in the same job and workspace. Accepted assets and QA evidence remain in place.
+
+Task duration is derived only from PetCore's `started_at` and `ended_at`. Waiting, sleep gaps, and recoverable failures continue to accrue time. A cancel request freezes `ended_at` immediately, fences every later message and artifact commit, interrupts the exact turn, synchronously stops the owned worker/App Server process group, and archives the exact thread before the task becomes `canceled`; an archive failure remains a non-recoverable cancellation-cleanup state with bounded retries. Canceled tasks expose no reply, resume, retry, or session-open capability.
+
+The App accepts bounded, content-verified PNG, JPG/JPEG, and WebP references. User messages and bounded visible Codex `agentMessage` text are written to the private per-job message stream so the creation page can refresh and scroll the live conversation; tool payloads, hidden reasoning, credentials, and arbitrary server objects do not enter that stream. App creation supports `low` and `standard`; portable workflows may produce `high` when the untouched source pixels satisfy the V3 contract. Generated output is untrusted until the shared package and production validators pass.
 
 Imports and successful jobs stage a new immutable revision, atomically update the active revision pointer, and commit the database row. Failure restores the previous pointer. A damaged local runtime projection can be rebuilt from the immutable package. Exact package, timing, production, and privacy requirements live in the [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md).
 

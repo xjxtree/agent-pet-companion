@@ -5,14 +5,18 @@ public enum GenerationSessionState: String, CaseIterable, Codable, Hashable, Sen
     case starting
     case running
     case waitingForInput
+    case paused
+    case recoverableFailed
     case cancelling
+    case cancelCleanup
     case succeeded
     case failed
     case cancelled
 
     public var isActive: Bool {
         switch self {
-        case .starting, .running, .waitingForInput, .cancelling:
+        case .starting, .running, .waitingForInput, .paused, .recoverableFailed,
+             .cancelling, .cancelCleanup:
             true
         case .idle, .succeeded, .failed, .cancelled:
             false
@@ -23,7 +27,8 @@ public enum GenerationSessionState: String, CaseIterable, Codable, Hashable, Sen
         switch self {
         case .succeeded, .failed, .cancelled:
             true
-        case .idle, .starting, .running, .waitingForInput, .cancelling:
+        case .idle, .starting, .running, .waitingForInput, .paused, .recoverableFailed,
+             .cancelling, .cancelCleanup:
             false
         }
     }
@@ -48,6 +53,14 @@ public struct GenerationSessionRestore: Equatable, Sendable {
     public var messages: [GenerationMessage]
     public var progress: Double
     public var messageRevision: String
+    public var heartbeatAt: String?
+    public var startedAt: String?
+    public var endedAt: String?
+    public var recoverable: Bool
+    public var failureCode: String?
+    public var pauseReason: String?
+    public var cancellationPending: Bool
+    public var capabilities: GenerationSessionCapabilities?
     public var operation: GenerationOperation
     public var resultPetID: String?
     public var baselineRevisionID: String?
@@ -62,6 +75,14 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         messages: [GenerationMessage],
         progress: Double,
         messageRevision: String,
+        heartbeatAt: String? = nil,
+        startedAt: String? = nil,
+        endedAt: String? = nil,
+        recoverable: Bool = false,
+        failureCode: String? = nil,
+        pauseReason: String? = nil,
+        cancellationPending: Bool = false,
+        capabilities: GenerationSessionCapabilities? = nil,
         operation: GenerationOperation = .create,
         resultPetID: String? = nil,
         baselineRevisionID: String? = nil,
@@ -75,6 +96,14 @@ public struct GenerationSessionRestore: Equatable, Sendable {
         self.messages = messages
         self.progress = progress
         self.messageRevision = messageRevision
+        self.heartbeatAt = heartbeatAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.recoverable = recoverable
+        self.failureCode = failureCode
+        self.pauseReason = pauseReason
+        self.cancellationPending = cancellationPending
+        self.capabilities = capabilities
         self.operation = operation
         self.resultPetID = resultPetID
         self.baselineRevisionID = baselineRevisionID
@@ -89,16 +118,28 @@ public struct GenerationSessionRestore: Equatable, Sendable {
            !messages.contains(where: { $0.id == inputRequest.id }) {
             messages.append(inputRequest)
         }
-        state = switch snapshot.status {
-        case .pending: .starting
-        case .running: .running
-        case .waitingForUser: .waitingForInput
+        if snapshot.cancellationPending {
+            state = .cancelCleanup
+        } else {
+            state = switch snapshot.status {
+            case .pending: .starting
+            case .running: .running
+            case .waitingForUser: .waitingForInput
+            }
         }
         jobID = snapshot.jobID
         submittedForm = snapshot.form
         self.messages = messages
         progress = messages.last?.progress ?? snapshot.inputRequest?.progress ?? 0
         messageRevision = snapshot.messageRevision
+        heartbeatAt = snapshot.heartbeatAt
+        startedAt = snapshot.startedAt
+        endedAt = snapshot.endedAt
+        recoverable = snapshot.recoverable
+        failureCode = snapshot.failureCode
+        pauseReason = snapshot.pauseReason
+        cancellationPending = snapshot.cancellationPending
+        capabilities = snapshot.capabilities
         operation = snapshot.operation ?? .create
         resultPetID = snapshot.resultPetID
         baselineRevisionID = snapshot.baselineRevisionID
@@ -115,19 +156,36 @@ public struct GenerationSessionRestore: Equatable, Sendable {
               snapshot.form != nil,
               (0 ... 4).contains(snapshot.referenceReselectionCount)
         else { return nil }
-        state = switch status {
-        case .pending: .starting
-        case .running: .running
-        case .waitingForUser: .waitingForInput
-        case .completed: .succeeded
-        case .failed: .failed
-        case .canceled: .cancelled
+        if snapshot.cancellationPending {
+            state = .cancelCleanup
+        } else {
+            state = switch status {
+            case .pending: .starting
+            case .running: .running
+            case .waitingForUser: .waitingForInput
+            case .completed: .succeeded
+            case .failed:
+                if snapshot.recoverable {
+                    snapshot.failureCode == "owner_interrupted" ? .paused : .recoverableFailed
+                } else {
+                    .failed
+                }
+            case .canceled: .cancelled
+            }
         }
         self.jobID = jobID
         submittedForm = snapshot.form
         messages = snapshot.messages
         progress = snapshot.messages.last?.progress ?? (state.isTerminal ? 1 : 0)
         messageRevision = snapshot.messageRevision
+        heartbeatAt = snapshot.heartbeatAt
+        startedAt = snapshot.startedAt
+        endedAt = snapshot.endedAt
+        recoverable = snapshot.recoverable
+        failureCode = snapshot.failureCode
+        pauseReason = snapshot.pauseReason
+        cancellationPending = snapshot.cancellationPending
+        capabilities = snapshot.capabilities
         operation = snapshot.operation ?? .create
         resultPetID = snapshot.resultPetID
         baselineRevisionID = snapshot.baselineRevisionID
@@ -146,12 +204,15 @@ public enum GenerationSessionAction: Equatable, Sendable {
         baselineRevisionID: String? = nil
     )
     case retryRequested(form: GenerationForm, initialMessage: GenerationMessage)
+    case resumeRequested
+    case resumeFailed(restoring: GenerationSessionState)
     case startAccepted(
         jobID: String,
         baselineRevisionID: String? = nil
     )
     case startFailed(message: GenerationMessage)
     case messagesReceived([GenerationMessage], revision: String?)
+    case heartbeatReceived(String?)
     case resultMetadataReceived(GenerationResultMetadata)
     case restore(GenerationSessionRestore)
     case replySubmitted
@@ -170,6 +231,14 @@ public struct GenerationSession: Equatable, Sendable {
     public private(set) var messages: [GenerationMessage]
     public private(set) var progress: Double
     public private(set) var messageRevision: String
+    public private(set) var heartbeatAt: String?
+    public private(set) var startedAt: String?
+    public private(set) var endedAt: String?
+    public private(set) var recoverable: Bool
+    public private(set) var failureCode: String?
+    public private(set) var pauseReason: String?
+    public private(set) var cancellationPending: Bool
+    public private(set) var capabilities: GenerationSessionCapabilities?
     public private(set) var operation: GenerationOperation
     public private(set) var resultPetID: String?
     public private(set) var baselineRevisionID: String?
@@ -184,6 +253,14 @@ public struct GenerationSession: Equatable, Sendable {
         messages: [GenerationMessage] = [],
         progress: Double = 0,
         messageRevision: String = "",
+        heartbeatAt: String? = nil,
+        startedAt: String? = nil,
+        endedAt: String? = nil,
+        recoverable: Bool = false,
+        failureCode: String? = nil,
+        pauseReason: String? = nil,
+        cancellationPending: Bool = false,
+        capabilities: GenerationSessionCapabilities? = nil,
         operation: GenerationOperation = .create,
         resultPetID: String? = nil,
         baselineRevisionID: String? = nil,
@@ -197,6 +274,14 @@ public struct GenerationSession: Equatable, Sendable {
         self.messages = messages
         self.progress = progress
         self.messageRevision = messageRevision
+        self.heartbeatAt = heartbeatAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.recoverable = recoverable
+        self.failureCode = failureCode
+        self.pauseReason = pauseReason
+        self.cancellationPending = cancellationPending
+        self.capabilities = capabilities
         self.operation = operation
         self.resultPetID = resultPetID
         self.baselineRevisionID = baselineRevisionID
@@ -208,15 +293,23 @@ public struct GenerationSession: Equatable, Sendable {
     public var isActive: Bool { state.isActive }
 
     public var canCancel: Bool {
-        jobID != nil && (state == .starting || state == .running || state == .waitingForInput)
+        guard jobID != nil else { return false }
+        return capabilities?.canCancel
+            ?? [.starting, .running, .waitingForInput, .paused, .recoverableFailed].contains(state)
     }
 
     public var canSendReply: Bool {
-        jobID != nil && state == .waitingForInput
+        jobID != nil && (capabilities?.canReply ?? (state == .waitingForInput))
     }
 
     public var canRetry: Bool {
-        submittedForm != nil && (state == .failed || state == .cancelled)
+        submittedForm != nil && state == .failed
+    }
+
+    public var canResume: Bool {
+        submittedForm != nil
+            && jobID != nil
+            && (capabilities?.canResume ?? [.paused, .recoverableFailed].contains(state))
     }
 
     @discardableResult
@@ -230,6 +323,14 @@ public struct GenerationSession: Equatable, Sendable {
             messages = [initialMessage]
             progress = initialMessage.progress
             messageRevision = ""
+            heartbeatAt = nil
+            startedAt = nil
+            endedAt = nil
+            recoverable = false
+            failureCode = nil
+            pauseReason = nil
+            cancellationPending = false
+            capabilities = nil
             operation = .create
             resultPetID = nil
             baselineRevisionID = nil
@@ -246,6 +347,14 @@ public struct GenerationSession: Equatable, Sendable {
             messages = [initialMessage]
             progress = initialMessage.progress
             messageRevision = ""
+            heartbeatAt = nil
+            startedAt = nil
+            endedAt = nil
+            recoverable = false
+            failureCode = nil
+            pauseReason = nil
+            cancellationPending = false
+            capabilities = nil
             operation = .modify
             resultPetID = petID
             self.baselineRevisionID = baselineRevisionID
@@ -261,6 +370,7 @@ public struct GenerationSession: Equatable, Sendable {
             messages = [initialMessage]
             progress = initialMessage.progress
             messageRevision = ""
+            heartbeatAt = nil
             resultRevisionID = nil
             validationSummary = nil
             referenceReselectionCount = 0
@@ -268,6 +378,18 @@ public struct GenerationSession: Equatable, Sendable {
             // the retry RPC is accepted. If transport/startup fails, the same
             // safe immutable baseline can be retried instead of falling back
             // to the current head or a new create job.
+            return []
+
+        case .resumeRequested:
+            guard canResume else { return [] }
+            state = .starting
+            return []
+
+        case let .resumeFailed(previousState):
+            guard state == .starting,
+                  previousState == .paused || previousState == .recoverableFailed
+            else { return [] }
+            state = previousState
             return []
 
         case let .resultMetadataReceived(metadata):
@@ -322,6 +444,10 @@ public struct GenerationSession: Equatable, Sendable {
             }
             return []
 
+        case let .heartbeatReceived(heartbeatAt):
+            self.heartbeatAt = heartbeatAt
+            return []
+
         case let .restore(restore):
             let previousJobID = jobID
             let wasActive = state.isActive
@@ -331,6 +457,14 @@ public struct GenerationSession: Equatable, Sendable {
             messages = restore.messages
             progress = restore.progress
             messageRevision = restore.messageRevision
+            heartbeatAt = restore.heartbeatAt
+            startedAt = restore.startedAt
+            endedAt = restore.endedAt
+            recoverable = restore.recoverable
+            failureCode = restore.failureCode
+            pauseReason = restore.pauseReason
+            cancellationPending = restore.cancellationPending
+            capabilities = restore.capabilities
             operation = restore.operation
             resultPetID = restore.resultPetID
             baselineRevisionID = restore.baselineRevisionID
@@ -363,11 +497,14 @@ public struct GenerationSession: Equatable, Sendable {
         case .cancelRequested:
             guard canCancel else { return [] }
             state = .cancelling
+            cancellationPending = true
+            endedAt = ISO8601DateFormatter().string(from: Date())
             return []
 
         case .cancelConfirmed:
             guard state == .cancelling else { return [] }
             state = .cancelled
+            cancellationPending = false
             progress = 1
             return [.stopMessageStream, .refreshSnapshot]
 

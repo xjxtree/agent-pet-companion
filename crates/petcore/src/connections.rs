@@ -97,6 +97,7 @@ const CODEX_HOOKS_TEMPLATE: &str = include_str!("../../../plugins/codex/hooks/ho
 const CODEX_STUDIO_SKILL_HISTORY_JSON: &str =
     include_str!("../resources/codex-studio-skill-history.json");
 const CODEX_STUDIO_SKILL_HISTORY_SCHEMA: &str = "apc.codex-studio-skill-history.v1";
+const CODEX_INSTALL_RESULT_SCHEMA: &str = "apc.codex-install-result.v1";
 const CLAUDE_SETTINGS_TEMPLATE: &str =
     include_str!("../../../plugins/claude-code/settings.fragment.json.tpl");
 const PI_EXTENSION_TEMPLATE: &str = include_str!("../../../plugins/pi/agent-pet-companion.ts.tpl");
@@ -145,6 +146,24 @@ enum CodexMarketplaceEntryState {
 struct CodexStudioSkillHistory {
     schema_version: String,
     retired_sha256: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexVerifiedInstallResult {
+    schema_version: String,
+    status: String,
+    phase: String,
+    expected_version: String,
+    active_version: String,
+    expected_skills_sha256: String,
+    active_skills_sha256: String,
+    expected_content_sha256: String,
+    managed_source_content_sha256: String,
+    active_content_sha256: String,
+    expected_studio_skill_sha256: String,
+    managed_source_studio_skill_sha256: String,
+    active_studio_skill_sha256: String,
 }
 
 static RETIRED_CODEX_STUDIO_SKILL_SHA256: LazyLock<Option<BTreeSet<String>>> =
@@ -221,6 +240,9 @@ struct CodexActivePluginProbe {
     expected_content_sha256: String,
     managed_source_content_sha256: Option<String>,
     active_content_sha256: Option<String>,
+    expected_studio_skill_sha256: String,
+    managed_source_studio_skill_sha256: Option<String>,
+    active_studio_skill_sha256: Option<String>,
     managed_source: bool,
     exact: bool,
     detail: String,
@@ -259,18 +281,11 @@ const CODEX_APP_SERVER_HOOK_EVENTS: &[&str] = &[
     "subagentStop",
     "stop",
 ];
-const CODEX_AUDITED_VERSIONS: &[&str] = &[
-    "0.144.5",
-    "0.145.0-alpha.18",
-    "0.146.0-alpha.3.1",
-    "0.146.0-alpha.9.2",
-];
-const CODEX_AUDITED_VERSION_DISPLAY: &str =
-    "0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1 / 0.146.0-alpha.9.2";
-// Generated and diffed from Codex CLI 0.144.5 plus the ChatGPT desktop bundled
-// Codex CLI 0.145.0-alpha.18, 0.146.0-alpha.3.1, and 0.146.0-alpha.9.2 with
-// `codex app-server generate-json-schema --experimental`. These are audited
-// notification methods, not fields that Agent Pet Companion persists.
+// Generated and diffed from representative Codex CLI and ChatGPT desktop
+// App Server schemas with `codex app-server generate-json-schema
+// --experimental`.
+// These are audited notification methods, not fields that Agent Pet Companion
+// persists.
 const CODEX_APP_SERVER_NOTIFICATION_EVENTS: &[&str] = &[
     "error",
     "thread/started",
@@ -1580,9 +1595,11 @@ fn verification_requires_item(source: AgentSource, item: &ConnectionCheckItem) -
     match item.code {
         CheckCode::AgentCli
         | CheckCode::EventCli
-        | CheckCode::AgentVersion
         | CheckCode::EventDelivery
         | CheckCode::ChannelTest => true,
+        // The reported host version is diagnostic context only. Compatibility
+        // is decided by the exact managed adapter plus live host/channel probes.
+        CheckCode::AgentVersion => false,
         // Decode-only compatibility: current checks never emit this legacy
         // product-inappropriate project-scoped row.
         CheckCode::ProjectDirectory => false,
@@ -2481,7 +2498,7 @@ fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapabilities {
                 subscribed_events,
                 mapped_information: strings(&[
                     "10 个官方 Hook 提供任务开始/完成、工具、权限、压缩与子 Agent 生命周期",
-                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 / 0.146.0-alpha.9.2 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
+                    "已审计 CLI 0.144.5 与桌面内置 0.145.0-alpha.18 / 0.146.0-alpha.3.1 / 0.146.0-alpha.9.2 / 0.147.0-alpha.1.2 的 70 个 App Server 通知；仅以 thread/list/read 作有损只读后备",
                     "有界的用户提示、最终助手消息、reasoning、命令与工具输入输出",
                 ]),
                 privacy_exclusions: strings(&[
@@ -4942,7 +4959,12 @@ fn probe_codex_active_plugin(
     let expected_version = expected_codex_plugin_version()?;
     let expected_skills_sha256 = expected_codex_skill_bundle_sha256();
     let expected_content_sha256 = expected_codex_plugin_content_sha256(connector_cli)?;
+    let expected_studio_skill_sha256 = hex::encode(Sha256::digest(PET_STUDIO_SKILL_MD.as_bytes()));
     let managed_source_content_sha256 = codex_plugin_content_sha256(source_root).ok();
+    let managed_source_studio_skill_sha256 = safe_regular_file_sha256(
+        source_root,
+        &source_root.join("skills/agent-pet-studio/SKILL.md"),
+    );
     let listing = read_codex_plugin_listing(codex)?;
     let active_version = listing.as_ref().and_then(|plugin| plugin.version.clone());
     let expected_source = source_root.display().to_string();
@@ -4976,6 +4998,10 @@ fn probe_codex_active_plugin(
     let cache_maker_matches = check_codex_agent_pet_maker(&cache_root).status == CheckStatus::Ok;
     let active_skills_sha256 = codex_skill_bundle_sha256(&cache_root).ok();
     let active_content_sha256 = codex_plugin_content_sha256(&cache_root).ok();
+    let active_studio_skill_sha256 = safe_regular_file_sha256(
+        &cache_root,
+        &cache_root.join("skills/agent-pet-studio/SKILL.md"),
+    );
     let skill_digest_matches =
         active_skills_sha256.as_deref() == Some(expected_skills_sha256.as_str());
     let source_content_matches =
@@ -4983,6 +5009,9 @@ fn probe_codex_active_plugin(
     let active_content_matches = active_content_sha256.as_deref()
         == managed_source_content_sha256.as_deref()
         && active_content_sha256.as_deref() == Some(expected_content_sha256.as_str());
+    let studio_digest_matches = managed_source_studio_skill_sha256.as_deref()
+        == Some(expected_studio_skill_sha256.as_str())
+        && active_studio_skill_sha256.as_deref() == Some(expected_studio_skill_sha256.as_str());
     let exact = installed_and_enabled
         && source_matches
         && version_matches
@@ -4992,7 +5021,8 @@ fn probe_codex_active_plugin(
         && cache_studio_matches
         && cache_maker_matches
         && skill_digest_matches
-        && active_content_matches;
+        && active_content_matches
+        && studio_digest_matches;
 
     let detail = if exact {
         format!(
@@ -5042,6 +5072,9 @@ fn probe_codex_active_plugin(
         expected_content_sha256,
         managed_source_content_sha256,
         active_content_sha256,
+        expected_studio_skill_sha256,
+        managed_source_studio_skill_sha256,
+        active_studio_skill_sha256,
         managed_source: listing.is_none() || source_matches,
         exact,
         detail,
@@ -5791,153 +5824,22 @@ fn check_agent_cli_version(
                 .then_some(stdout)
                 .or_else(|| (!stderr.is_empty()).then_some(stderr))
         });
-    if source == AgentSource::Codex {
-        return check_codex_cli_version(label, text);
-    }
-    let (minimum, audited_maximum) = match source {
-        AgentSource::Codex => unreachable!("Codex uses an exact audited version allowlist"),
-        AgentSource::ClaudeCode => ((2, 1, 212), (2, 1, 216)),
-        AgentSource::Pi => ((0, 80, 10), (0, 80, 10)),
-        AgentSource::Opencode => ((1, 18, 0), (1, 18, 4)),
-    };
-    let parsed = text
-        .as_deref()
-        .and_then(parse_version_triplet_with_stability);
-    let status = parsed.map(|(version, stable)| {
-        if !stable {
-            CheckStatus::Unverified
-        } else if version < minimum {
-            CheckStatus::NeedsFix
-        } else if version > audited_maximum {
-            CheckStatus::Unverified
-        } else {
-            CheckStatus::Ok
-        }
-    });
     ConnectionCheckItem::new(
         CheckCode::AgentVersion,
         label,
-        status.unwrap_or(CheckStatus::Unverified),
-        match (text, parsed, status) {
-            (Some(text), _, Some(CheckStatus::Ok)) if minimum == audited_maximum => format!(
-                "检测到 {text}；命中精确审计版本 {}.{}.{}",
-                minimum.0, minimum.1, minimum.2
+        if text.is_some() {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Unverified
+        },
+        match text {
+            Some(text) => format!(
+                "检测到 {text}；版本仅作为诊断信息，不参与兼容性或连接健康判定。兼容性由受管连接器契约、宿主运行探针与事件通道共同验证"
             ),
-            (Some(text), _, Some(CheckStatus::Ok)) => format!(
-                "检测到 {text}；位于已审计范围 {}.{}.{}–{}.{}.{}",
-                minimum.0,
-                minimum.1,
-                minimum.2,
-                audited_maximum.0,
-                audited_maximum.1,
-                audited_maximum.2
-            ),
-            (Some(text), _, Some(CheckStatus::NeedsFix)) => format!(
-                "检测到 {text}，低于当前连接器最低版本 {}.{}.{}",
-                minimum.0, minimum.1, minimum.2
-            ),
-            (Some(text), Some((_, false)), Some(CheckStatus::Unverified)) => {
-                format!("检测到 {text}；预发布或 build 后缀不属于已审计稳定版本")
-            }
-            (Some(text), _, Some(CheckStatus::Unverified)) => format!(
-                "检测到 {text}，高于已审计上限 {}.{}.{}；请更新 App 的连接器契约后重新验证",
-                audited_maximum.0, audited_maximum.1, audited_maximum.2
-            ),
-            (Some(text), _, _) => format!("检测到版本输出但无法判定：{text}"),
-            (None, _, _) => "Agent CLI 未返回可解析的 --version 输出".to_string(),
+            None => "Agent CLI 未返回版本信息；此项不阻断兼容性或连接健康判定，继续以受管连接器契约、宿主运行探针与事件通道为准".to_string(),
         },
         Some(RecoveryAction::Recheck),
     )
-}
-
-fn check_codex_cli_version(label: String, text: Option<String>) -> ConnectionCheckItem {
-    const MINIMUM: (u64, u64, u64) = (0, 144, 5);
-    let canonical_version = text
-        .as_deref()
-        .and_then(parse_canonical_codex_version_output);
-    let audited =
-        canonical_version.is_some_and(|version| CODEX_AUDITED_VERSIONS.contains(&version));
-    let parsed = canonical_version.and_then(parse_version_triplet);
-    let status = if audited {
-        CheckStatus::Ok
-    } else if parsed.is_some_and(|version| version < MINIMUM) {
-        CheckStatus::NeedsFix
-    } else {
-        CheckStatus::Unverified
-    };
-    let detail = match (text.as_deref(), status) {
-        (Some(text), CheckStatus::Ok) => {
-            format!("检测到 {text}；命中精确审计版本 {CODEX_AUDITED_VERSION_DISPLAY}")
-        }
-        (Some(text), CheckStatus::NeedsFix) => {
-            format!("检测到 {text}，低于当前连接器最低版本 0.144.5")
-        }
-        (Some(text), _) => format!(
-            "检测到 {text}，不在精确审计版本 {CODEX_AUDITED_VERSION_DISPLAY} 中；不会把其他 alpha 或正式版自动视为兼容"
-        ),
-        (None, _) => "Codex CLI 未返回可解析的 --version 输出".to_string(),
-    };
-    ConnectionCheckItem::new(
-        CheckCode::AgentVersion,
-        label,
-        status,
-        detail,
-        Some(RecoveryAction::Recheck),
-    )
-}
-
-fn parse_canonical_codex_version_output(output: &str) -> Option<&str> {
-    let mut fields = output.split_whitespace();
-    match (fields.next(), fields.next(), fields.next()) {
-        (Some("codex-cli"), Some(version), None)
-            if !version.is_empty()
-                && version.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+')
-                }) =>
-        {
-            Some(version)
-        }
-        _ => None,
-    }
-}
-
-fn parse_version_triplet(value: &str) -> Option<(u64, u64, u64)> {
-    parse_version_triplet_with_stability(value).map(|(version, _)| version)
-}
-
-fn parse_version_triplet_with_stability(value: &str) -> Option<((u64, u64, u64), bool)> {
-    value.char_indices().find_map(|(start, character)| {
-        if !character.is_ascii_digit() {
-            return None;
-        }
-        let candidate = &value[start..];
-        let bytes = candidate.as_bytes();
-        let mut cursor = 0;
-        let parse_component = |cursor: &mut usize| -> Option<u64> {
-            let begin = *cursor;
-            while bytes.get(*cursor).is_some_and(u8::is_ascii_digit) {
-                *cursor += 1;
-            }
-            (begin != *cursor)
-                .then(|| candidate[begin..*cursor].parse().ok())
-                .flatten()
-        };
-        let major = parse_component(&mut cursor)?;
-        if bytes.get(cursor) != Some(&b'.') {
-            return None;
-        }
-        cursor += 1;
-        let minor = parse_component(&mut cursor)?;
-        if bytes.get(cursor) != Some(&b'.') {
-            return None;
-        }
-        cursor += 1;
-        let patch = parse_component(&mut cursor)?;
-        let stable = bytes.get(cursor).is_none_or(|next| {
-            !next.is_ascii_alphanumeric() && !matches!(*next, b'-' | b'+' | b'.' | b'_')
-        });
-        Some(((major, minor, patch), stable))
-    })
 }
 
 fn source_cli_arg(source: AgentSource) -> &'static str {
@@ -6169,6 +6071,59 @@ fn is_lowercase_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn safe_regular_file_sha256(root: &Path, path: &Path) -> Option<String> {
+    (managed_regular_file_state(root, path) == ManagedPathState::Safe)
+        .then(|| fs::read(path).ok())
+        .flatten()
+        .map(|content| hex::encode(Sha256::digest(content)))
+}
+
+fn verified_codex_install_studio_sha256(root: &Path) -> Option<String> {
+    let result_path = root.join("codex-install-result.json");
+    if managed_regular_file_state(root, &result_path) != ManagedPathState::Safe {
+        return None;
+    }
+    let result: CodexVerifiedInstallResult =
+        serde_json::from_value(read_regular_json_config(&result_path)?).ok()?;
+    if result.schema_version != CODEX_INSTALL_RESULT_SCHEMA
+        || result.status != "ok"
+        || result.phase != "active_cache_verified"
+        || result.expected_version != result.active_version
+        || result.expected_skills_sha256 != result.active_skills_sha256
+        || result.expected_content_sha256 != result.managed_source_content_sha256
+        || result.expected_content_sha256 != result.active_content_sha256
+        || result.expected_studio_skill_sha256 != result.managed_source_studio_skill_sha256
+        || result.expected_studio_skill_sha256 != result.active_studio_skill_sha256
+        || ![
+            &result.expected_skills_sha256,
+            &result.expected_content_sha256,
+            &result.expected_studio_skill_sha256,
+        ]
+        .into_iter()
+        .all(|digest| is_lowercase_sha256(digest))
+    {
+        return None;
+    }
+    let manifest = read_regular_json_config(&root.join(".codex-plugin/plugin.json"))?;
+    if manifest.get("version").and_then(Value::as_str) != Some(result.expected_version.as_str()) {
+        return None;
+    }
+    let cache_root = codex_active_cache_root(&result.expected_version);
+    let cache_manifest = read_regular_json_config(&cache_root.join(".codex-plugin/plugin.json"))?;
+    if cache_manifest.get("version").and_then(Value::as_str)
+        != Some(result.expected_version.as_str())
+        || safe_regular_file_sha256(
+            &cache_root,
+            &cache_root.join("skills/agent-pet-studio/SKILL.md"),
+        )
+        .as_deref()
+            != Some(result.expected_studio_skill_sha256.as_str())
+    {
+        return None;
+    }
+    Some(result.expected_studio_skill_sha256)
+}
+
 fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
     managed_regular_file_state(root, path) == ManagedPathState::Safe
         && fs::read(path).is_ok_and(|content| {
@@ -6179,6 +6134,7 @@ fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
             RETIRED_CODEX_STUDIO_SKILL_SHA256
                 .as_ref()
                 .is_some_and(|retired| retired.contains(&digest))
+                || verified_codex_install_studio_sha256(root).as_deref() == Some(digest.as_str())
         })
 }
 
@@ -6653,6 +6609,7 @@ fn install_codex_plugin_if_possible(
         write_managed_file_atomic(
             &result_path,
             &serde_json::to_vec_pretty(&json!({
+                "schema_version": CODEX_INSTALL_RESULT_SCHEMA,
                 "status": "failed",
                 "phase": "active_cache_verification",
                 "expected_version": probe.expected_version,
@@ -6662,6 +6619,9 @@ fn install_codex_plugin_if_possible(
                 "expected_content_sha256": probe.expected_content_sha256,
                 "managed_source_content_sha256": probe.managed_source_content_sha256,
                 "active_content_sha256": probe.active_content_sha256,
+                "expected_studio_skill_sha256": probe.expected_studio_skill_sha256,
+                "managed_source_studio_skill_sha256": probe.managed_source_studio_skill_sha256,
+                "active_studio_skill_sha256": probe.active_studio_skill_sha256,
                 "detail": probe.detail
             }))?,
             0o644,
@@ -6679,6 +6639,7 @@ fn install_codex_plugin_if_possible(
     write_managed_file_atomic(
         &result_path,
         &serde_json::to_vec_pretty(&json!({
+            "schema_version": CODEX_INSTALL_RESULT_SCHEMA,
             "status": "ok",
             "phase": "active_cache_verified",
             "expected_version": probe.expected_version,
@@ -6687,7 +6648,10 @@ fn install_codex_plugin_if_possible(
             "active_skills_sha256": probe.active_skills_sha256,
             "expected_content_sha256": probe.expected_content_sha256,
             "managed_source_content_sha256": probe.managed_source_content_sha256,
-            "active_content_sha256": probe.active_content_sha256
+            "active_content_sha256": probe.active_content_sha256,
+            "expected_studio_skill_sha256": probe.expected_studio_skill_sha256,
+            "managed_source_studio_skill_sha256": probe.managed_source_studio_skill_sha256,
+            "active_studio_skill_sha256": probe.active_studio_skill_sha256
         }))?,
         0o644,
     )?;
@@ -7169,8 +7133,8 @@ mod tests {
         has_required_ordinary_task_evidence, host_verification_check_is_fresh,
         install_claude_settings, install_root, is_agent_pet_claude_command,
         json_config_backup_path, managed_connector_script_ownership, opencode_debug_reports_plugin,
-        opencode_plugins_dir, parse_canonical_codex_version_output, pi_extensions_dir,
-        pi_native_probe_spec, remove_claude_settings_hooks, remove_codex_marketplace_entry,
+        opencode_plugins_dir, pi_extensions_dir, pi_native_probe_spec,
+        remove_claude_settings_hooks, remove_codex_marketplace_entry,
         remove_owned_connector_script, render_connector_script, rendered_claude_hook,
         rendered_claude_settings_fragment, rendered_codex_hooks, repair_claude, repair_source_at,
         uninstall_codex_plugin_if_possible, verification_requires_item,
@@ -7712,95 +7676,26 @@ mod tests {
     }
 
     #[test]
-    fn codex_audited_versions_are_exact_including_alpha_build() {
-        assert_eq!(
-            parse_canonical_codex_version_output("codex-cli 0.144.5"),
-            Some("0.144.5")
-        );
-        assert_eq!(
-            parse_canonical_codex_version_output("codex-cli 0.145.0-alpha.18\n"),
-            Some("0.145.0-alpha.18")
-        );
-        assert_eq!(
-            parse_canonical_codex_version_output(
-                "codex-cli 9.9.9 compatible-with 0.146.0-alpha.9.2"
+    fn agent_host_versions_are_informational_for_every_source() {
+        let temp = tempfile::tempdir().unwrap();
+        for (source, filename, output) in [
+            (AgentSource::Codex, "codex", "codex-cli 99.0.0-future.1"),
+            (AgentSource::ClaudeCode, "claude", "0.0.1 (Claude Code)"),
+            (AgentSource::Pi, "pi", "pi 0.84.0-beta.1"),
+            (
+                AgentSource::Opencode,
+                "opencode",
+                "unparseable future output",
             ),
-            None
-        );
-        assert_eq!(
-            parse_canonical_codex_version_output("warning codex-cli 0.146.0-alpha.9.2"),
-            None
-        );
-        assert_eq!(
-            super::check_codex_cli_version(
-                "Codex CLI".to_string(),
-                Some("codex-cli 0.146.0-alpha.9.2".to_string())
-            )
-            .status,
-            CheckStatus::Ok
-        );
-        assert_eq!(
-            super::check_codex_cli_version(
-                "Codex CLI".to_string(),
-                Some("codex-cli 0.146.0-alpha.9.20".to_string())
-            )
-            .status,
-            CheckStatus::Unverified
-        );
-        assert_eq!(
-            super::check_codex_cli_version(
-                "Codex CLI".to_string(),
-                Some("codex-cli 9.9.9 compatible-with 0.146.0-alpha.9.2".to_string())
-            )
-            .status,
-            CheckStatus::Unverified
-        );
-    }
-
-    #[test]
-    fn stable_agent_version_gates_reject_unreviewed_prerelease_suffixes() {
-        let temp = tempfile::tempdir().unwrap();
-        let pi = temp.path().join("pi");
-        std::fs::write(&pi, "#!/bin/sh\necho 'pi 0.80.10-beta.1'\n").unwrap();
-        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let check = check_agent_cli_version(AgentSource::Pi, Some(&pi), true);
-        assert_eq!(check.status, CheckStatus::Unverified);
-        assert!(check.detail.contains("预发布或 build 后缀"));
-    }
-
-    #[test]
-    fn stable_agent_full_capability_claim_requires_an_audited_range() {
-        let temp = tempfile::tempdir().unwrap();
-        let claude = temp.path().join("claude");
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.211 (Claude Code)'\n").unwrap();
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let old = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
-        assert_eq!(old.status, CheckStatus::NeedsFix);
-
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.212 (Claude Code)'\n").unwrap();
-        let audited = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
-        assert_eq!(audited.status, CheckStatus::Ok);
-        assert!(audited.detail.contains("已审计范围 2.1.212–2.1.216"));
-
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.216 (Claude Code)'\n").unwrap();
-        let current = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
-        assert_eq!(current.status, CheckStatus::Ok);
-
-        std::fs::write(&claude, "#!/bin/sh\necho '2.1.217 (Claude Code)'\n").unwrap();
-        let future = check_agent_cli_version(AgentSource::ClaudeCode, Some(&claude), true);
-        assert_eq!(future.status, CheckStatus::Unverified);
-
-        let opencode = temp.path().join("opencode");
-        std::fs::write(&opencode, "#!/bin/sh\necho 'opencode 1.18.4'\n").unwrap();
-        std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let current = check_agent_cli_version(AgentSource::Opencode, Some(&opencode), true);
-        assert_eq!(current.status, CheckStatus::Ok);
-        assert!(current.detail.contains("已审计范围 1.18.0–1.18.4"));
-
-        std::fs::write(&opencode, "#!/bin/sh\necho 'opencode 1.18.5'\n").unwrap();
-        let future = check_agent_cli_version(AgentSource::Opencode, Some(&opencode), true);
-        assert_eq!(future.status, CheckStatus::Unverified);
+        ] {
+            let command = temp.path().join(filename);
+            std::fs::write(&command, format!("#!/bin/sh\necho '{output}'\n")).unwrap();
+            std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let check = check_agent_cli_version(source, Some(&command), true);
+            assert_eq!(check.status, CheckStatus::Ok, "{source:?}");
+            assert!(check.detail.contains("版本仅作为诊断信息"));
+            assert!(!verification_requires_item(source, &check));
+        }
     }
 
     #[test]
@@ -9176,12 +9071,92 @@ mod tests {
     }
 
     #[test]
+    fn codex_repair_accepts_the_exact_studio_skill_from_its_verified_install_receipt() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+        let result_path = root.join("codex-install-result.json");
+        let prior_app_managed = b"---\nname: agent-pet-studio\n---\nprior app-managed revision\n";
+        let prior_digest = hex::encode(Sha256::digest(prior_app_managed));
+        let bundle_digest = "a".repeat(64);
+        let content_digest = "b".repeat(64);
+        let version = super::expected_codex_plugin_version().unwrap();
+        let cache_root = super::codex_active_cache_root(&version);
+        std::fs::create_dir_all(cache_root.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(cache_root.join("skills/agent-pet-studio")).unwrap();
+        std::fs::copy(
+            root.join(".codex-plugin/plugin.json"),
+            cache_root.join(".codex-plugin/plugin.json"),
+        )
+        .unwrap();
+        std::fs::write(
+            cache_root.join("skills/agent-pet-studio/SKILL.md"),
+            prior_app_managed,
+        )
+        .unwrap();
+        let verified_result = json!({
+            "schema_version": super::CODEX_INSTALL_RESULT_SCHEMA,
+            "status": "ok",
+            "phase": "active_cache_verified",
+            "expected_version": version,
+            "active_version": version,
+            "expected_skills_sha256": bundle_digest,
+            "active_skills_sha256": bundle_digest,
+            "expected_content_sha256": content_digest,
+            "managed_source_content_sha256": content_digest,
+            "active_content_sha256": content_digest,
+            "expected_studio_skill_sha256": prior_digest,
+            "managed_source_studio_skill_sha256": prior_digest,
+            "active_studio_skill_sha256": prior_digest
+        });
+
+        std::fs::write(&studio, prior_app_managed).unwrap();
+        std::fs::write(
+            &result_path,
+            serde_json::to_vec_pretty(&verified_result).unwrap(),
+        )
+        .unwrap();
+        assert!(super::codex_studio_skill_is_owned(&studio, &root));
+        super::repair_codex(&root, &cli).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&studio).unwrap(),
+            super::PET_STUDIO_SKILL_MD
+        );
+
+        let mut customized = prior_app_managed.to_vec();
+        customized.extend_from_slice(b"\n## My custom workflow\n");
+        std::fs::write(&studio, &customized).unwrap();
+        std::fs::write(
+            &result_path,
+            serde_json::to_vec_pretty(&verified_result).unwrap(),
+        )
+        .unwrap();
+        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+        assert!(super::repair_codex(&root, &cli).is_err());
+        assert_eq!(std::fs::read(&studio).unwrap(), customized);
+    }
+
+    #[test]
     fn codex_upgrade_history_includes_exact_retired_skills_but_not_the_current_skill() {
         let retired = super::RETIRED_CODEX_STUDIO_SKILL_SHA256
             .as_ref()
             .expect("retired Studio Skill history must be valid");
         assert!(
             retired.contains("98ab92e04810099587bf50f2d340ea588568dd305a3d4a6fb177f08d6c344f59")
+        );
+        assert!(
+            retired.contains("5150ab91ba5f14567f0a2be0b6053688dffcd564e665a3e281fd5a110f8e852d")
+        );
+        assert!(
+            retired.contains("5611d90ef3aa0b94682915df0135b2b3cae2b3b23360e80625f0bf2a5fc8bafa")
         );
         assert!(
             retired.contains("b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc")
@@ -9727,6 +9702,9 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
             expected_content_sha256: "content".to_string(),
             managed_source_content_sha256: Some("content".to_string()),
             active_content_sha256: Some("content".to_string()),
+            expected_studio_skill_sha256: "studio".to_string(),
+            managed_source_studio_skill_sha256: Some("studio".to_string()),
+            active_studio_skill_sha256: Some("studio".to_string()),
             managed_source: true,
             exact: true,
             detail: String::new(),

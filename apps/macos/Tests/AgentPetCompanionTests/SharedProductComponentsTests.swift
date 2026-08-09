@@ -35,6 +35,22 @@ struct SharedProductComponentsTests {
     }
 
     @Test
+    func standaloneSessionIndicatorsCoverOnlyAttentionAndTerminalStates() {
+        let eventTypes: [AgentEventKind?] = [
+            nil, .start, .thinking, .plan, .tool, .waiting, .done, .failed,
+        ]
+        #expect(eventTypes.map(SessionBubbleRowStateIndicator.init(eventType:)) == [
+            nil, nil, nil, nil, nil, .needsInput, .done, .failed,
+        ])
+        #expect(SessionBubbleRowStateIndicator.needsInput.systemImage
+            == "exclamationmark.circle.fill")
+        #expect(SessionBubbleRowStateIndicator.done.systemImage
+            == "checkmark.circle.fill")
+        #expect(SessionBubbleRowStateIndicator.failed.systemImage
+            == "xmark.circle.fill")
+    }
+
+    @Test
     func actionPresentationKeepsMutationAuthoritySemantic() {
         let sharedDisplayCopy = "Continue"
         let repair = ProductActionPresentation(
@@ -194,12 +210,64 @@ struct SharedProductComponentsTests {
         #expect(!sharedSource.contains("SharedProductComponents.SessionBubbleRow"))
         #expect(!overlaySource.contains("struct SessionBubbleRow: View"))
         #expect(overlaySource.contains("SessionBubbleRow(\n                    session: session,"))
+        #expect(overlaySource.contains("presentation: .standaloneSummary"))
+        #expect(overlaySource.contains("agentName: content.agentName"))
+        #expect(overlaySource.contains("if content.showsStackDecoration {"))
+        #expect(overlaySource.contains(
+            "Every represented session remains a complete native lens"
+        ))
+        #expect(occurrences(
+            of: "ConversationBubbleSurfaceStyle(",
+            in: overlaySource
+        ) == 2)
+        #expect(overlaySource.contains("statusTone: content.statusTone"))
+        #expect(overlaySource.contains(
+            "no material plate,"
+        ))
+        #expect(occurrences(
+            of: "action: { performPrimarySessionAction(session) }",
+            in: overlaySource
+        ) == 2)
+        #expect(overlaySource.contains(
+            "case .expandSessions:\n            onToggleGroup()\n        case .activateSession:\n            onActivateSession(session)"
+        ))
+        #expect(!overlaySource.contains("agentIndicatorSource:"))
+        #expect(!overlaySource.contains("agentIndicatorTitle:"))
 
         #expect(sharedSource.contains("Button(action: action) {\n            rowContent"))
+        #expect(sharedSource.contains("case standaloneSummary"))
+        #expect(sharedSource.contains("private var standaloneIdentityLine: some View"))
+        #expect(sharedSource.contains("if let agentName = resolvedStandaloneAgentName"))
+        #expect(sharedSource.contains("Text(\"· \\(surfaceLabel)\")"))
+        #expect(sharedSource.contains(
+            "case .standaloneSummary:\n                // The card already owns one full glass surface."
+        ))
+        #expect(sharedSource.contains("Text(\" · \")"))
+        #expect(sharedSource.contains(
+            "OverlayGeometry.bubbleStandaloneSummaryLineLimit,\n                    reservesSpace: true"
+        ))
+        let standaloneStart = try #require(
+            sharedSource.range(of: "private var standaloneSummaryContent")
+        )
+        let standaloneEnd = try #require(
+            sharedSource.range(of: "private var standaloneSummaryText")
+        )
+        let standaloneSource = String(
+            sharedSource[standaloneStart.lowerBound ..< standaloneEnd.lowerBound]
+        )
+        #expect(!standaloneSource.contains("destinationIndicator"))
+        #expect(standaloneSource.contains(
+            ".padding(.trailing, reservedTrailingAccessoryWidth)"
+        ))
+        #expect(standaloneSource.contains("if let stateIndicator"))
+        #expect(standaloneSource.contains(".help(session.statusText)"))
+        #expect(standaloneSource.contains(
+            "\"overlay.session.status.\\(stateIndicator.rawValue)\""
+        ))
         #expect(!sharedSource.contains("if session.canOpen {"))
         #expect(sharedSource.contains(".focused($focused)"))
         #expect(sharedSource.contains(
-            "Image(systemName: session.canOpen\n                    ? \"arrow.up.forward\"\n                    : \"exclamationmark.circle\")"
+            "Image(systemName: session.canOpen\n            ? \"arrow.up.forward\"\n            : \"exclamationmark.circle\")"
         ))
         #expect(sharedSource.contains(".opacity(hovered || focused ? 1 : 0)"))
         #expect(sharedSource.contains("if hovered || focused {"))
@@ -207,21 +275,12 @@ struct SharedProductComponentsTests {
         #expect(sharedSource.contains(".accessibilityIdentifier(\"overlay.session.\\(session.id)\")"))
         #expect(sharedSource.contains(".accessibilityLabel(session.accessibilityLabel)"))
         #expect(sharedSource.contains(".fill((statusColor ?? .clear).opacity(0.12))"))
-        #expect(sharedSource.contains("case .start, .thinking, .plan, .tool, nil: nil"))
+        #expect(sharedSource.contains("case .start, .thinking, .plan, .tool, nil:"))
+        #expect(sharedSource.contains("return nil"))
         #expect(!sharedSource.contains("case .start, .tool: .blue"))
-        let adaptiveDetailLineLimit = """
-        Text(session.primaryDetailText)
-                            .font(OverlayBubbleTypography.font(
-                                .caption1,
-                                weight: .semibold,
-                                scale: fontScale
-                            ))
-                            .foregroundStyle(Color.primary)
-                            .lineLimit(session.secondaryDetailText == nil
-                                ? OverlayGeometry.bubbleDetailLineLimit
-                                : 1)
-        """
-        #expect(sharedSource.contains(adaptiveDetailLineLimit))
+        #expect(sharedSource.contains(
+            "reservesSpace: session.secondaryDetailText == nil"
+        ))
         #expect(sharedSource.contains(
             "openLabel: primaryActionLabel ?? session.actionLabel"
         ))

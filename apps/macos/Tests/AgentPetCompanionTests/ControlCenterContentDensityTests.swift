@@ -7,6 +7,7 @@ struct ControlCenterContentDensityTests {
     func topLevelPagesUseToolbarActionsWithoutRepeatingNavigationTitles() throws {
         let library = try viewSource("PetLibraryView.swift")
         let maker = try viewSource("PetStudioView.swift")
+        let makerWorkspace = try viewSource("MakerSessionWorkspace.swift")
         let connections = try viewSource("AgentConnectionsView.swift")
         let diagnostics = try viewSource("ServiceDiagnosticsView.swift")
         let designSystem = try viewSource("DesignSystem.swift")
@@ -17,11 +18,16 @@ struct ControlCenterContentDensityTests {
         #expect(library.contains("ProductPageHeader("))
         #expect(library.contains("summary: APCLocalization.text(.libraryPageSubtitle)"))
 
-        #expect(maker.contains("ToolbarItemGroup(placement: .primaryAction)"))
-        #expect(!maker.contains("ToolbarItemGroup(placement: .secondaryAction)"))
-        #expect(!maker.contains("studioSubtitleIdle"))
-        #expect(!maker.contains("studioWelcomeTitle"))
-        #expect(!maker.contains("studioOutputContractTitle"))
+        #expect(maker.contains("MakerSessionWorkspace()"))
+        #expect(maker.contains("MakerBriefTemplate.allCases"))
+        #expect(maker.contains("MakerBriefPresentation.showsDescriptionCount"))
+        #expect(makerWorkspace.contains("HSplitView"))
+        #expect(makerWorkspace.contains("summary: store.generationStartPresentationDetail"))
+        #expect(makerWorkspace.contains(".safeAreaInset(edge: .bottom, spacing: 0)"))
+        #expect(occurrences(of: "store.startGeneration()", in: makerWorkspace) == 1)
+        #expect(makerWorkspace.contains("maker.session-list"))
+        #expect(makerWorkspace.contains("maker.session-timeline"))
+        #expect(makerWorkspace.contains("studioHistoryDeleteConfirmTitle"))
 
         #expect(!connections.contains("ToolbarItemGroup(placement: .secondaryAction)"))
         #expect(connections.contains("ProductPageHeader("))
@@ -138,6 +144,26 @@ struct ControlCenterContentDensityTests {
         ) == 1)
         #expect(!diagnostics.contains("DiagnosticPackageMetadataRow"))
         #expect(!diagnostics.contains("Text(presentation.status)"))
+    }
+
+    @Test
+    func makerStyleChoicesKeepDistinctVisibleButtonStates() throws {
+        let designSystem = try viewSource("DesignSystem.swift")
+        let pillStart = try #require(designSystem.range(of: "struct PillButton: View"))
+        let pillEnd = try #require(designSystem.range(
+            of: "struct PrimaryActionButton: View",
+            range: pillStart.upperBound ..< designSystem.endIndex
+        ))
+        let pillSource = String(
+            designSystem[pillStart.lowerBound ..< pillEnd.lowerBound]
+        )
+
+        #expect(pillSource.contains(".buttonStyle(.plain)"))
+        #expect(pillSource.contains("shape.fill(pillBackground)"))
+        #expect(pillSource.contains(".strokeBorder(pillBorder, lineWidth: borderWidth)"))
+        #expect(pillSource.contains("selected ? APCDesign.onAccent : .primary"))
+        #expect(pillSource.contains(".onHover"))
+        #expect(!pillSource.contains(".apcClearGlassButtonStyle"))
     }
 
     private func viewSource(_ fileName: String) throws -> String {

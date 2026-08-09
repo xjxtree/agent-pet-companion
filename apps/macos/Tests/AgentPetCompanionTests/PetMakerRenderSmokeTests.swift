@@ -90,6 +90,93 @@ struct PetMakerRenderSmokeTests {
     }
 
     @MainActor
+    @Test
+    func sessionWorkspaceRendersACompletedResultAtDesktopSize() async throws {
+        let resultPet = PetSummary(
+            id: "pet_history_result",
+            name: "History Result",
+            style: StylePreset.modern.rawValue,
+            quality: .standard,
+            renderSize: .init(width: 384, height: 416),
+            petpackPath: "/nonexistent/pet_history_result.petpack",
+            coverPath: "/nonexistent/pet_history_result.png",
+            active: false,
+            createdAt: "2026-08-07T00:00:00Z"
+        )
+        let store = makeStore { method, _, _ in
+            switch method {
+            case "generation.history.list":
+                return [
+                    "ok": true,
+                    "jobs": [[
+                        "job_id": "job_history_result",
+                        "status": "completed",
+                        "operation": "create",
+                        "brief_preview": "A calm companion with a blue scarf",
+                        "style": StylePreset.modern.rawValue,
+                        "quality": QualityLevel.standard.rawValue,
+                        "reference_count": 0,
+                        "result_pet_id": resultPet.id,
+                        "retry_of_job_id": NSNull(),
+                        "created_at": "2026-08-07T00:00:00Z",
+                        "updated_at": "2026-08-07T00:01:00Z",
+                    ]],
+                    "truncated": false,
+                ]
+            case "generation.history.detail":
+                return [
+                    "ok": true,
+                    "found": true,
+                    "job_id": "job_history_result",
+                    "status": "completed",
+                    "operation": "create",
+                    "description": "A calm companion with a blue scarf",
+                    "style": StylePreset.modern.rawValue,
+                    "quality": QualityLevel.standard.rawValue,
+                    "reference_count": 0,
+                    "result_pet_id": resultPet.id,
+                    "retry_of_job_id": NSNull(),
+                    "revision_id": "rev_history_result",
+                    "created_at": "2026-08-07T00:00:00Z",
+                    "updated_at": "2026-08-07T00:01:00Z",
+                    "progress_messages": [[
+                        "id": "progress_history_result",
+                        "role": "assistant",
+                        "kind": "generation_progress",
+                        "content": "Validated the final pet package.",
+                        "progress": 1.0,
+                        "created_at": "2026-08-07T00:01:00Z",
+                    ]],
+                    "latest_codex_excerpt": "The pet is ready.",
+                    "message_count": 1,
+                    "messages_truncated": false,
+                    "session": [
+                        "availability": "not_created",
+                        "can_open": false,
+                    ],
+                ]
+            default:
+                throw PetCoreClientError.invalidResponse
+            }
+        }
+        store.pets = [resultPet]
+        await store.refreshGenerationHistory()
+        await store.selectGenerationHistoryJobAndWait("job_history_result")
+
+        let bitmap = try render(
+            MakerSessionWorkspace(),
+            store: store,
+            size: CGSize(width: 980, height: 720),
+            shellMode: .allColumns
+        )
+
+        #expect(bitmap.pixelsWide > 0)
+        #expect(bitmap.pixelsHigh > 0)
+        #expect(hasVisibleContent(bitmap))
+        #expect(store.selectedGenerationHistoryResultPet?.id == resultPet.id)
+    }
+
+    @MainActor
     private func render<Content: View>(
         _ view: Content,
         store: AppStore,
@@ -124,14 +211,18 @@ struct PetMakerRenderSmokeTests {
     }
 
     @MainActor
-    private func makeStore() -> AppStore {
+    private func makeStore(
+        request: AppStore.PetCoreRequestOverride? = nil
+    ) -> AppStore {
         AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
                 recover: { .alreadyHealthy },
                 refreshSnapshot: { _ in },
                 onReady: { _ in }
-            )
+            ),
+            petCoreRequestOverride: request,
+            initialPetStudioCodexAvailability: .available
         )
     }
 

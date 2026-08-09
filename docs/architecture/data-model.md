@@ -32,8 +32,8 @@ The current schema is version 6. PetCore enables WAL, foreign keys, secure delet
 |---|---|
 | `pets` | Manifest-ID identity, display metadata, V3 render/timing contract, owned paths, provenance, one active pet |
 | `retired_pet_records` | Rollback-compatible quarantine for unsupported pre-V3 or invalid stored pet rows; assets are preserved, never aliased |
-| `generation_jobs` | Private form, status, workspace/session identity, result/retry ownership; at most one active job |
-| `generation_messages` | Ordered per-job progress/conversation records with terminal monotonicity |
+| `generation_jobs` | Private form, status, workspace/session identity, result/retry ownership; at most one active job; terminal rows may be explicitly deleted |
+| `generation_messages` | Ordered per-job progress/conversation records with explicit terminal and in-place continuation boundaries |
 | `generation_message_migrations` | Idempotent legacy-message import marker |
 | `agent_events` | Deduplicated `apc.agent-event.v1` envelopes with bounded typed payloads |
 | `agent_event_daily_counts` | Content-free aggregates for pruned events |
@@ -51,9 +51,9 @@ The exact schema and migrations are in [db.rs](../../crates/petcore/src/db.rs); 
 
 `onboarding_progress` uses `apc.onboarding-progress.v1` with `choose_pet`, `connect_agents`, `demo`, `completed`, and `skipped`. Missing data means `choose_pet` at revision `0`. Updates are compare-and-swap, move only forward or explicitly skip, and make `completed`/`skipped` terminal. Completion and enabling the pet commit together. Demo phases are App-local and never enter events or diagnostics.
 
-`behavior` owns language, appearance, source/event enablement, timeouts, attention settings, bubble text scale, and `group_sessions_by_agent`. Agent-group disclosure defaults come from the setting; flat-tray disclosure, card slots, hover, and scrolling remain App-local.
+`behavior` owns language, appearance, source/event enablement, timeouts, attention settings, bubble text scale, and `group_sessions_by_agent`. Agent-group disclosure defaults come from the setting; flat-tray disclosure, card slots, hover, and scrolling remain App-local. Transparent-area pointer passthrough is an App invariant, not a behavior preference. The legacy `mouse_passthrough` field remains serialized as `true` for mixed-version compatibility; persisted `false` values canonicalize to `true`, and new patches to that field are rejected.
 
-`overlay_placement` stores the hard-clamped absolute center, display identity, and logical `display_width_pt` (80–224, default 112). Coordinates canonicalize to a shared 1/256 pt grid. A placement-specific decimal revision provides compare-and-swap authority. `overlay_placement_intent` carries only explicit reset/reposition instructions and clears atomically when the App acknowledges them. App-side drag revisions and retry journals are presentation state, not a second durable placement model.
+`overlay_placement` stores the hard-clamped absolute center, display identity, and logical `display_width_pt` (100–300, default 112). Coordinates canonicalize to a shared 1/256 pt grid. A placement-specific decimal revision provides compare-and-swap authority. During upgrade, values from the previous 80–224 contract below the current minimum are normalized once to 100; all other malformed or out-of-contract values remain rejected. `overlay_placement_intent` carries only explicit reset/reposition instructions and clears atomically when the App acknowledges them. App-side drag revisions and retry journals are presentation state, not a second durable placement model.
 
 ## Pet identity and revisions
 
@@ -74,13 +74,23 @@ Validation and runtime-frame preparation occur in private staging. Publication s
 
 Bundled authority requires both a fixed manifest ID and PetCore-assigned origin/provenance. An ordinary same-ID pet is preserved and never gains bundled authority. A changed trusted bundled resource appends a revision without deleting history or changing the selected pet. Bundled pets remain read-only.
 
-Runtime assets are derived from the immutable package. `pet.assets.repair` forces package, cover, and all nine action directories through fresh staged validation and atomically replaces the derived assets.
+Runtime assets are derived from the immutable package. Cached asset fingerprints include the current validator-contract domain, so a stricter media gate revalidates unchanged installed packages without a database migration. `pet.assets.repair` forces package, cover, and all nine action directories through fresh staged validation and atomically replaces the derived assets.
 
 ## Generation
 
-`GenerationForm` contains description, style, `low` or `standard` quality, and bounded copied references. Authored frame timing is package output, not an App form setting. Portable imported packages may be `high`; the Codex-backed in-App Studio rejects `high` before generation.
+`GenerationForm` contains description, style, `low` or `standard` quality, and bounded copied PNG, JPG/JPEG, or WebP references. Extension, decoded format, byte count, pixel count, ownership, and no-follow snapshot identity are validated before use. Authored frame timing is package output, not an App form setting. Portable imported packages may be `high`; the Codex-backed in-App Studio rejects `high` before generation.
 
-Jobs are `pending`, `running`, `waiting_for_user`, `failed`, `completed`, or `canceled`. SQLite is the message authority. Private job directories may contain source rows, copied references, deterministic guides, transparent masters, runtime frames, QA previews/reports, App Server state, and an optional validated edit baseline. These artifacts never enter the package or library projection unless the closed V3 builder explicitly includes them.
+Jobs retain the compatible `pending`, `running`, `waiting_for_user`, `failed`, `completed`, and `canceled` storage enum. `recoverable`, `failure_code`, `pause_reason`, and cancellation timestamps project the finer paused, recoverable-failed, and cancellation-cleanup UI states. `started_at` is fixed at job creation. `ended_at` is set only for completion, terminal failure, or the user's `cancel_requested_at`; therefore waiting, sleep gaps, and recoverable failures continue to accrue duration while cancellation freezes it immediately. `execution_stopped_at` and `thread_archived_at` prove the two cancellation cleanup boundaries. `active_turn_id`, `last_checkpoint_at`, and `visible_title` support exact control, recovery, and stable list presentation.
+
+A partial unique index admits only one unfinished job: pending, running, waiting, recoverable failed, or any row with cancellation requested but thread archival incomplete. Every create, edit, and new-job retry also checks the same rule inside its transaction and returns `generation_active_conflict` with the occupying job ID/status. SQLite is the message authority and retains every job, including terminal jobs without a result pet, until explicit terminal deletion. `generation.history.list` puts the unfinished row first, then terminal rows newest-first, and returns bounded metadata plus PetCore-authoritative capabilities without reference paths, workspaces, messages, or raw provider identities.
+
+`generation.history.delete` is irreversible and accepts only `completed`, `failed`, or `canceled` jobs. It removes the job row, cascading message and message-migration rows, and the descriptor-bound private `generation-jobs/<job-id>` workspace; pending, running, and waiting jobs fail with a conflict. A completed job's immutable Pet Library pet and revisions remain installed. The provider-owned Codex/ChatGPT thread is not archived or deleted by this local history operation; removing the local job also removes PetCore's route back to that thread. To prevent dangling local history, direct retry children are atomically relinked to the deleted job's own still-retained retry predecessor; if that predecessor is absent, self-referential, or the deleted job was a retry root, their `retry_of_job_id` is cleared. Relinking does not change child timestamps or history ordering. Workspace removal validates the exact owned jobs root and job directory with no-follow descriptor identity, removes symlinks as entries rather than traversing them, and never derives a deletion target from the stored path alone.
+
+`generation_messages` stores a strict per-job sequence of user text, visible Agent text, phase/activity/checkpoint summaries, structured `input_request` payloads, recoverable or terminal errors, results, and cancellation. Input payloads contain only bounded request/question/option fields. Periodic liveness coalesces into `generation_jobs.heartbeat_at` and the wait revision instead of growing the table. `generation.messages.list` pages backward by sequence while returning each page in chronological order. `generation_action_requests` binds reply/resume request IDs to action and content digest so transport retries cannot start duplicate turns.
+
+Only waiting accepts `generation.reply`; only a recoverable failure accepts `generation.resume`. Both persist the user text first and continue the same job/workspace and available thread. A completed task is closed and changes use a new edit task. A canceled task has an irreversible write fence and no reply, resume, retry, or session-open capability. Terminal failed tasks may create a distinct retry job linked by `retry_of_job_id`.
+
+The App may render this job-scoped conversation directly, but heartbeat/activity records are separate from Agent conversation bubbles and the entire Maker stream is excluded from ordinary Agent session projection and diagnostics; the thread/job identity is persisted before the first Studio turn so concurrent Codex hooks are suppressed, and startup removes legacy Studio bubble rows. Tool payloads, hidden reasoning, credentials, and arbitrary App Server objects are not copied into the Maker projection. Private job directories may contain source rows, copied references, deterministic guides, transparent masters, runtime frames, QA previews/reports, App Server state, and an optional validated edit baseline. These artifacts never enter the package or library projection unless the closed V3 builder explicitly includes them.
 
 An edit context pins the selected immutable baseline and the active-head digest confirmed by the user. Commit fails if the active head changes. Timing or playback edits are authored state changes and require a complete fresh sequence plus fresh production evidence; sampling, padding, duplicating, retiming, or interpolation is rejected.
 
@@ -119,6 +129,7 @@ Do not change an identity without an explicit compatibility or migration design.
 - Agent events: at most 10,000 rows and 30 days by default; removed content contributes only to daily counts.
 - Suppressed sessions: at most 10,000 entries and 30 days.
 - Anonymous aliases exist only while their session retains an event and are never reused.
+- Maker tasks persist until an explicit terminal-only delete; deleting a task retains its published Pet Library result and safely repairs retained retry links.
 - `events.recent`: at most 200 rows; snapshots use smaller bounded projections.
 - Package and diagnostic limits are owned by the [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md) and [Runtime and IPC](runtime-and-ipc.md).
 

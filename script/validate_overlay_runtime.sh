@@ -123,7 +123,7 @@ let activeSessions = ((snapshotObject["active_agent_sessions"] as? [Any])?.isEmp
 let hasCanonicalState = snapshotObject["active_agent_state"] is [String: Any]
 let persistedDisplayWidthPt = (placement["display_width_pt"] as? NSNumber)?.doubleValue ?? 112
 let displayWidthPt = persistedDisplayWidthPt.isFinite
-    ? max(80, min(224, persistedDisplayWidthPt))
+    ? max(100, min(300, persistedDisplayWidthPt))
     : 112
 let expectsBubble = (behavior["status_bubble"] as? Bool ?? true)
     && (activeSessions || (!hasCanonicalState && !(behavior["auto_hide"] as? Bool ?? false)))

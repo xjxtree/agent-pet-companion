@@ -7,7 +7,7 @@ import Testing
 @Suite
 struct BubbleGlassRegressionTests {
     @Test
-    func bubbleUsesOneOuterGlassWithoutNestedSessionControlGlass() throws {
+    func foregroundAndFoldedCardsShareNativeGlassWithoutNestedControlGlass() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let macOSRoot = testFile
             .deletingLastPathComponent()
@@ -25,15 +25,43 @@ struct BubbleGlassRegressionTests {
         let countButtonSource = String(
             bubbleSource[countStart.lowerBound..<toneStart.lowerBound]
         )
+        let surfaceStyleStart = try #require(
+            bubbleSource.range(of: "struct ConversationBubbleSurfaceStyle")
+        )
+        let surfaceStyleSource = String(
+            bubbleSource[surfaceStyleStart.lowerBound..<countStart.lowerBound]
+        )
+        let stackStart = try #require(
+            bubbleSource.range(of: "private var stackDecorationLayer")
+        )
+        let surfaceStart = try #require(
+            bubbleSource.range(of: "private var bubbleSurface")
+        )
+        let stackSource = String(
+            bubbleSource[stackStart.lowerBound..<surfaceStart.lowerBound]
+        )
 
         #expect(bubbleSource.components(separatedBy: ".apcNativeBubbleGlass").count - 1 == 1)
+        #expect(
+            bubbleSource.components(separatedBy: ".modifier(ConversationBubbleSurfaceStyle(")
+                .count - 1 == 2
+        )
         #expect(!bubbleSource.contains("glassTransparency"))
         #expect(!bubbleSource.contains("bubbleTransparency"))
         #expect(!bubbleSource.contains(".apcClearGlass"))
         #expect(countButtonSource.contains("Capsule()"))
-        #expect(bubbleSource.contains(
-            ".fill((content.statusTone.color ?? .clear).opacity(0.12))"
-        ))
+        #expect(stackSource.contains("Color.clear"))
+        #expect(stackSource.contains("semanticTintOpacity: 0.12"))
+        #expect(stackSource.contains("statusTone: content.statusTone"))
+        #expect(!stackSource.contains(".regularMaterial"))
+        #expect(!stackSource.contains("Color.primary.opacity"))
+        #expect(!stackSource.contains("shape.stroke"))
+        #expect(!stackSource.contains(".opacity("))
+        #expect(surfaceStyleSource.contains("shape.fill(color.opacity(semanticTintOpacity))"))
+        #expect(bubbleSource.contains("statusTone: content.statusTone"))
+        #expect(surfaceStyleSource.contains(".apcNativeBubbleGlass("))
+        #expect(!surfaceStyleSource.contains(".regularMaterial"))
+        #expect(!surfaceStyleSource.contains("Color.primary.opacity(0.045)"))
         #expect(countButtonSource.contains(".fill((tone.color ?? .clear).opacity(0.34))"))
         #expect(countButtonSource.contains(".stroke((tone.color ?? .clear).opacity(0.65)"))
         #expect(bubbleSource.contains("case .running: nil"))
@@ -69,12 +97,13 @@ struct BubbleGlassRegressionTests {
         // Geometry updates cannot trail an AppKit animation transaction.
         #expect(source.contains("CATransaction.setDisableActions(true)"))
 
-        // Glass and foreground stay ordered siblings. Installing the hosting
-        // view as NSGlassEffectView.contentView can leave only the optical
-        // layer visible inside a transparent NSPanel.
-        #expect(source.contains("addSubview(glassView)"))
-        #expect(source.contains("addSubview(foregroundView)"))
-        #expect(!source.contains("glassView.contentView"))
+        // AppKit owns both the rounded sampling mask and foreground placement.
+        // A sibling glass view can expose its rectangular sampling backing at
+        // the transparent panel boundary.
+        #expect(source.contains("contentView = foregroundView"))
+        #expect(!source.contains("addSubview(glassView)"))
+        #expect(!source.contains("addSubview(foregroundView)"))
+        #expect(source.contains("layer?.isOpaque = false"))
 
         // Floating overlay controls stay on the plain SwiftUI clear path.
         let controlFunctionStart = try #require(source.range(of: "func apcClearGlass"))
@@ -87,17 +116,14 @@ struct BubbleGlassRegressionTests {
     }
 
     @Test
-    func opticalRimIsAThinReflectionCueRatherThanAnotherMaterialLayer() throws {
-        #expect(APCBubbleGlassStyle.opticalRimWidth > 0)
-        #expect(APCBubbleGlassStyle.opticalRimWidth < 1)
-        #expect(
-            APCBubbleGlassStyle.opticalRimHighlightOpacity
-                > APCBubbleGlassStyle.opticalRimMidpointOpacity
-        )
-        #expect(
-            APCBubbleGlassStyle.opticalRimHighlightOpacity
-                > APCBubbleGlassStyle.opticalRimDepthOpacity
-        )
+    func nativeBubbleUsesOnlyASubpointDualToneOpticalRim() throws {
+        #expect(APCBubbleGlassStyle.opticalRimDarkWidth > 0)
+        #expect(APCBubbleGlassStyle.opticalRimDarkWidth < 1)
+        #expect(APCBubbleGlassStyle.opticalRimLightWidth > 0)
+        #expect(APCBubbleGlassStyle.opticalRimLightWidth < 1)
+        #expect(APCBubbleGlassStyle.opticalRimLightInset > 0)
+        #expect(APCBubbleGlassStyle.opticalRimDarkOpacity > 0)
+        #expect(APCBubbleGlassStyle.opticalRimLightOpacity > 0)
 
         let testFile = URL(fileURLWithPath: #filePath)
         let macOSRoot = testFile
@@ -116,18 +142,34 @@ struct BubbleGlassRegressionTests {
             ),
             encoding: .utf8
         )
-        let settingsSource = try String(
+        let bubbleSource = try String(
             contentsOf: macOSRoot.appendingPathComponent(
-                "Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift"
+                "Sources/AgentPetCompanion/Overlay/OverlayRootView.swift"
             ),
             encoding: .utf8
         )
+        let modifierStart = try #require(
+            designSource.range(of: "private struct APCBubbleGlassModifier")
+        )
+        let modifierEnd = try #require(
+            designSource.range(
+                of: "private struct APCClearGlassButtonStyleModifier",
+                range: modifierStart.upperBound ..< designSource.endIndex
+            )
+        )
+        let modifierSource = String(
+            designSource[modifierStart.lowerBound ..< modifierEnd.lowerBound]
+        )
 
-        #expect(designSource.contains(".strokeBorder("))
-        #expect(designSource.contains("LinearGradient("))
-        #expect(designSource.contains("private var bubbleOpticalRim"))
+        #expect(modifierSource.contains("private var bubbleOpticalRim"))
+        #expect(modifierSource.contains("Color.black.opacity"))
+        #expect(modifierSource.contains("Color.white.opacity"))
+        #expect(modifierSource.contains(".inset(by: APCBubbleGlassStyle.opticalRimLightInset)"))
+        #expect(!modifierSource.contains("LinearGradient("))
+        #expect(modifierSource.contains("if increasedContrast"))
+        #expect(modifierSource.contains("bubbleBorder(supportsLiquidGlass: true)"))
         #expect(geometrySource.contains("static let bubbleCornerRadius: CGFloat = 20"))
-        #expect(settingsSource.contains(
+        #expect(bubbleSource.contains(
             "cornerRadius: OverlayGeometry.bubbleCornerRadius"
         ))
     }

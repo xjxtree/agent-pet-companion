@@ -194,8 +194,8 @@ struct AppStoreOverlaySnapshotTests {
         #expect(contents.allSatisfy { $0.isStandaloneSessionCard })
         #expect(contents.allSatisfy { $0.sessions.count == 1 })
         #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
-            "older-claude",
             "newer-codex",
+            "older-claude",
         ])
 
         // A later tool/thinking edge changes content but stays in the same
@@ -208,8 +208,8 @@ struct AppStoreOverlaySnapshotTests {
         try apply("ungrouped-2", [olderChurn, newer])
         contents = store.overlayAvailableBubbleContents
         #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
-            "older-claude",
             "newer-codex",
+            "older-claude",
         ])
 
         // A real new user/task epoch promotes the session exactly once.
@@ -220,8 +220,8 @@ struct AppStoreOverlaySnapshotTests {
         try apply("ungrouped-3", [reactivated, newer])
         contents = store.overlayAvailableBubbleContents
         #expect(contents.compactMap { $0.sessions.first?.sessionID } == [
-            "newer-codex",
             "older-claude",
+            "newer-codex",
         ])
     }
 
@@ -263,11 +263,11 @@ struct AppStoreOverlaySnapshotTests {
         #expect(store.overlayAvailableBubbleContents.compactMap {
             $0.sessions.first?.sessionID
         } == [
-            "running-old",
-            "running-new",
-            "ready",
-            "blocked",
             "needs-input",
+            "blocked",
+            "ready",
+            "running-new",
+            "running-old",
         ])
 
         try apply("ungrouped-partitions-stacked", display: .stacked)
@@ -277,13 +277,33 @@ struct AppStoreOverlaySnapshotTests {
         #expect(contents.first?.representedSessionCount == 5)
         #expect(contents.first?.isStacked == true)
 
-        store.toggleOverlayStandaloneStack()
+        #expect(store.overlayBubbleDisclosureAction == .expandStandaloneStack)
+        store.stepOverlayBubbleDisclosure()
         contents = store.overlayAvailableBubbleContents
         #expect(contents.count == 5)
         #expect(contents.allSatisfy { $0.isStandaloneSessionCard })
         #expect(contents.allSatisfy { !$0.isStacked })
-        #expect(contents.last?.disclosureSessionCount == 5)
+        #expect(contents.first?.disclosureSessionCount == 5)
         #expect(store.overlayBubbleSessionCount == 5)
+
+        #expect(store.overlayBubbleDisclosureAction == .collapseStandaloneStack)
+        store.stepOverlayBubbleDisclosure()
+        #expect(store.overlayAvailableBubbleContents.count == 1)
+        #expect(store.overlayBubbleDisclosureAction == .dismissBubble)
+
+        store.stepOverlayBubbleDisclosure()
+        #expect(store.overlayBubbleDismissed)
+        #expect(store.overlayBubbleContents.isEmpty)
+        #expect(store.overlayBubbleDisclosureAction == .revealCollapsedStandaloneStack)
+
+        store.stepOverlayBubbleDisclosure()
+        #expect(!store.overlayBubbleDismissed)
+        #expect(store.overlayBubbleContents.count == 1)
+        #expect(store.overlayBubbleDisclosureAction == .expandStandaloneStack)
+
+        store.stepOverlayBubbleDisclosure()
+        #expect(store.overlayBubbleContents.count == 5)
+        #expect(store.overlayBubbleDisclosureAction == .collapseStandaloneStack)
     }
 
     @MainActor

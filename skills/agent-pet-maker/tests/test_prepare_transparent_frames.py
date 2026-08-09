@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 
 from PIL import Image, ImageDraw
 
@@ -18,6 +20,17 @@ PIPELINE = ROOT / "scripts" / "prepare_transparent_frames.py"
 TARGET_LOW = {"width": 192, "height": 208}
 GREEN = (0, 255, 0, 255)
 RED = (220, 40, 30, 255)
+
+
+def load_pipeline_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("apc_transparent_frames", PIPELINE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PIPELINE_MODULE = load_pipeline_module()
 
 
 def image_values(image: Image.Image) -> list[object]:
@@ -114,6 +127,12 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertEqual(frame["resize_count"], 1)
         self.assertEqual(frame["interior_opaque_rgb_changed_pixels"], 0)
         self.assertEqual(frame["edge_rgb_reconstruction"]["alpha_preserved"], True)
+        self.assertEqual(
+            frame["runtime_edge_rgb_reconstruction"]["alpha_preserved"],
+            True,
+        )
+        self.assertTrue(frame["runtime_edge_rgb_reconstruction"]["applied"])
+        self.assertEqual(frame["runtime_interior_opaque_rgb_changed_pixels"], 0)
         with Image.open(master) as master_image:
             self.assertEqual(master_image.size, (384, 416))
             self.assertEqual(master_image.getpixel((192, 208)), RED)
@@ -170,6 +189,9 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["target_tier"], "high")
         self.assertEqual(report["frames"][0]["resize_count"], 0)
+        self.assertFalse(
+            report["frames"][0]["runtime_edge_rgb_reconstruction"]["applied"]
+        )
         self.assertEqual(
             report["frames"][0]["size_normalization"],
             {
@@ -182,6 +204,7 @@ class TransparentFramePipelineTests(unittest.TestCase):
         with Image.open(master) as master_image, Image.open(output) as runtime_image:
             self.assertEqual(master_image.size, (576, 624))
             self.assertEqual(runtime_image.size, (576, 624))
+            self.assertEqual(image_values(master_image), image_values(runtime_image))
 
     def test_all_three_tiers_accept_one_downscale_from_a_larger_source(self) -> None:
         cases = (
@@ -333,6 +356,52 @@ class TransparentFramePipelineTests(unittest.TestCase):
         self.assertIn(
             "visible silhouette-edge pixels retain chroma contamination",
             report["frames"][0]["errors"],
+        )
+
+    def test_runtime_edge_repair_removes_low_alpha_resample_spill(self) -> None:
+        image = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+        ImageDraw.Draw(image).rectangle((40, 30, 151, 179), fill=RED)
+        image.putpixel((40, 100), (60, 248, 3, 16))
+
+        before, before_errors, before_warnings = (
+            PIPELINE_MODULE.validate_transparent_frame(image, GREEN[:3])
+        )
+        repaired, repair = PIPELINE_MODULE.reconstruct_edge_rgb(
+            image,
+            GREEN[:3],
+            image.size,
+        )
+        after, after_errors, _ = PIPELINE_MODULE.validate_transparent_frame(
+            repaired,
+            GREEN[:3],
+        )
+
+        self.assertEqual(before_errors, [])
+        self.assertEqual(before["edge_chroma_fringe"]["disposition"], "review_warning")
+        self.assertTrue(any("bounded review allowance" in item for item in before_warnings))
+        self.assertGreater(repair["reconstructed_translucent_pixels"], 0)
+        self.assertTrue(repair["alpha_preserved"])
+        self.assertEqual(after_errors, [])
+        self.assertEqual(after["edge_chroma_fringe"]["disposition"], "none")
+        self.assertEqual(repaired.getpixel((40, 100))[3], 16)
+
+    def test_minor_edge_allowance_rejects_a_contiguous_fringe(self) -> None:
+        image = Image.new("RGBA", (192, 208), (0, 0, 0, 0))
+        ImageDraw.Draw(image).rectangle((40, 30, 151, 179), fill=RED)
+        for y in range(99, 102):
+            image.putpixel((40, y), (0, 255, 0, 16))
+
+        qa, errors, _ = PIPELINE_MODULE.validate_transparent_frame(
+            image,
+            GREEN[:3],
+        )
+
+        self.assertEqual(qa["edge_chroma_fringe_pixels"], 3)
+        self.assertEqual(qa["edge_chroma_fringe"]["max_component_pixels"], 3)
+        self.assertEqual(qa["edge_chroma_fringe"]["disposition"], "hard_failure")
+        self.assertIn(
+            "visible silhouette-edge pixels retain chroma contamination",
+            errors,
         )
 
     def test_edge_contraction_is_one_runtime_pixel_and_does_not_change_master(self) -> None:
@@ -499,6 +568,8 @@ class SharedSkillContractTests(unittest.TestCase):
             self.assertIn("prepare_transparent_frames.py", normalized)
             self.assertIn("deterministic pose guide", normalized)
             self.assertIn("deterministic size-reference image", normalized)
+            self.assertIn("enumerate adjacent crops", normalized)
+            self.assertIn("0.25", normalized)
 
     def test_shared_reference_forbids_agent_specific_pixel_processing(self) -> None:
         contract = (ROOT / "references" / "transparent-frame-production.md").read_text(
@@ -516,6 +587,10 @@ class SharedSkillContractTests(unittest.TestCase):
             '"ok": true',
             "visible_key_pixels",
             "review evidence only",
+            "runtime Alpha boundary",
+            "review_warning",
+            "0.5 equivalent opaque pixel",
+            "Do not stack fallback runs",
         ):
             self.assertIn(required, normalized)
 

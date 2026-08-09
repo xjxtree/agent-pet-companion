@@ -25,6 +25,9 @@ pub const BUNDLED_PET_GENERATOR_MARKER: &str = "agent-pet-companion.release-inve
 pub const BUNDLED_PET_PROVENANCE_MARKER: &str = BUNDLED_PET_INVENTORY_VERSION;
 const RUNTIME_ASSETS_MARKER: &str = ".apc-runtime-assets.json";
 const RUNTIME_ASSETS_SCHEMA_VERSION: &str = "apc.runtime-assets.v3";
+// Bump whenever a stricter package/runtime-asset rule must invalidate a
+// previously successful cache entry without rewriting immutable revisions.
+const PET_ASSET_FINGERPRINT_DOMAIN: &[u8] = b"apc.pet-assets.fingerprint.v4\0";
 const MAX_PETPACK_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PETPACK_ENTRIES: usize = 5_000;
 const MAX_PETPACK_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
@@ -1387,7 +1390,7 @@ fn validate_preview_image(
         PetCoreError::Validation(format!("invalid preview asset {relative_path}: {error}"))
     })?;
     if relative_path == "assets/preview/cover.png" {
-        validate_visible_cover(&decoded.to_rgba8(), relative_path)?;
+        validate_cover_image(&decoded, relative_path)?;
     }
     if width != 384 || height != 416 {
         warnings.push(format!(
@@ -2941,7 +2944,7 @@ pub fn repair_runtime_assets(
 
 fn pet_asset_fingerprint(paths: &AppPaths, pet: &PetSummary) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"apc.pet-assets.fingerprint.v3\0");
+    hasher.update(PET_ASSET_FINGERPRINT_DOMAIN);
     if let Ok(states) = serde_json::to_vec(&pet.states) {
         hasher.update(states);
     }
@@ -3629,7 +3632,7 @@ fn validate_cover_file(path: &Path) -> Result<()> {
     validate_pixel_budget(width, height, "cover image")?;
     let decoded = image::open(path)
         .map_err(|error| PetCoreError::Validation(format!("invalid cover image: {error}")))?;
-    validate_visible_cover(&decoded.to_rgba8(), "cover image")
+    validate_cover_image(&decoded, "cover image")
 }
 
 fn is_png(path: &Path) -> bool {
@@ -4574,6 +4577,130 @@ fn validate_visible_cover(image: &RgbaImage, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_cover_image(image: &image::DynamicImage, label: &str) -> Result<()> {
+    if !image.color().has_alpha() {
+        return Err(PetCoreError::Validation(format!(
+            "{label} must use a PNG color type with an Alpha channel"
+        )));
+    }
+
+    let decoded = image.to_rgba8();
+    validate_visible_cover(&decoded, label)?;
+
+    let transparent_pixels = decoded
+        .pixels()
+        .filter(|pixel| pixel.0[3] <= MAX_TRANSPARENT_ALPHA)
+        .count();
+    if !has_minimum_visual_coverage(transparent_pixels, decoded.pixels().len()) {
+        return Err(PetCoreError::Validation(format!(
+            "{label} must contain at least 1% transparent pixels"
+        )));
+    }
+
+    if has_baked_checkerboard_background(&decoded) {
+        return Err(PetCoreError::Validation(format!(
+            "{label} appears to contain a baked-in checkerboard background; transparency previews must not be flattened into cover pixels"
+        )));
+    }
+    Ok(())
+}
+
+/// Detect only a high-confidence checker pattern in the outer background.
+/// Local checks on clothing or props remain valid because at least two corner
+/// patches must carry the same two-axis alternating structure.
+fn has_baked_checkerboard_background(image: &RgbaImage) -> bool {
+    let width = image.width();
+    let height = image.height();
+    if width < 12 || height < 12 {
+        return false;
+    }
+
+    let patch_width = width.min((width / 3).max(48)).min(160);
+    let patch_height = height.min((height / 3).max(48)).min(160);
+    let mut origins = Vec::with_capacity(4);
+    for origin in [
+        (0, 0),
+        (width - patch_width, 0),
+        (0, height - patch_height),
+        (width - patch_width, height - patch_height),
+    ] {
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+
+    let matching_corners = origins
+        .iter()
+        .filter(|&&(x, y)| patch_has_baked_checkerboard(image, x, y, patch_width, patch_height))
+        .count();
+    matching_corners >= origins.len().min(2)
+}
+
+fn patch_has_baked_checkerboard(
+    image: &RgbaImage,
+    origin_x: u32,
+    origin_y: u32,
+    width: u32,
+    height: u32,
+) -> bool {
+    let maximum_tile = 64.min(width / 3).min(height / 3);
+    if maximum_tile < 4 {
+        return false;
+    }
+
+    for tile in 4..=maximum_tile {
+        let mut compared = 0usize;
+        let mut matching = 0usize;
+        let end_x = origin_x + width - tile;
+        let end_y = origin_y + height - tile;
+        for y in (origin_y..end_y).step_by(2) {
+            for x in (origin_x..end_x).step_by(2) {
+                let top_left = image.get_pixel(x, y);
+                let top_right = image.get_pixel(x + tile, y);
+                let bottom_left = image.get_pixel(x, y + tile);
+                let bottom_right = image.get_pixel(x + tile, y + tile);
+                if [top_left, top_right, bottom_left, bottom_right]
+                    .iter()
+                    .any(|pixel| pixel.0[3] < MIN_VISIBLE_ALPHA)
+                {
+                    continue;
+                }
+
+                compared += 1;
+                if rgb_channels_are_close(top_left, bottom_right)
+                    && rgb_channels_are_close(top_right, bottom_left)
+                    && rgb_distance_squared(top_left, top_right) >= 300
+                    && rgb_distance_squared(top_left, bottom_left) >= 300
+                {
+                    matching += 1;
+                }
+            }
+        }
+        if compared >= 128 && matching.saturating_mul(100) >= compared.saturating_mul(85) {
+            return true;
+        }
+    }
+    false
+}
+
+fn rgb_channels_are_close(left: &Rgba<u8>, right: &Rgba<u8>) -> bool {
+    left.0[..3]
+        .iter()
+        .zip(&right.0[..3])
+        .all(|(left, right)| left.abs_diff(*right) <= 8)
+}
+
+fn rgb_distance_squared(left: &Rgba<u8>, right: &Rgba<u8>) -> u32 {
+    left.0[..3]
+        .iter()
+        .zip(&right.0[..3])
+        .map(|(left, right)| {
+            let delta = u32::from(left.abs_diff(*right));
+            delta * delta
+        })
+        .sum()
+}
+
 pub(crate) fn normalize_visible_pixels(image: &mut RgbaImage) {
     for pixel in image.pixels_mut() {
         let alpha = pixel.0[3];
@@ -5085,6 +5212,90 @@ mod asset_contract_tests {
         let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
 
         assert!(error.contains("at least 1% visible pixels"), "{error}");
+    }
+
+    #[test]
+    fn petpack_rejects_a_cover_without_an_alpha_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        image::RgbImage::from_fn(384, 416, |x, y| {
+            if (x / 16 + y / 16).is_multiple_of(2) {
+                image::Rgb([232, 229, 224])
+            } else {
+                image::Rgb([210, 206, 200])
+            }
+        })
+        .save(temp.path().join("assets/preview/cover.png"))
+        .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("Alpha channel"), "{error}");
+    }
+
+    #[test]
+    fn petpack_rejects_a_cover_below_one_percent_transparent_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let mut cover = RgbaImage::from_pixel(384, 416, Rgba([24, 48, 72, u8::MAX]));
+        let transparent_pixels = cover.pixels().len() / 200;
+        for pixel in cover.pixels_mut().take(transparent_pixels) {
+            *pixel = Rgba([0, 0, 0, 0]);
+        }
+        cover
+            .save(temp.path().join("assets/preview/cover.png"))
+            .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(error.contains("at least 1% transparent pixels"), "{error}");
+    }
+
+    #[test]
+    fn petpack_rejects_an_alpha_cover_with_a_baked_checkerboard_background() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let cover = RgbaImage::from_fn(384, 416, |x, y| {
+            if (x / 16 + y / 16).is_multiple_of(2) {
+                Rgba([232, 229, 224, 200])
+            } else {
+                Rgba([210, 206, 200, 200])
+            }
+        });
+        cover
+            .save(temp.path().join("assets/preview/cover.png"))
+            .unwrap();
+
+        let error = validate_petpack_dir(temp.path()).unwrap_err().to_string();
+
+        assert!(
+            error.contains("baked-in checkerboard background"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn petpack_accepts_a_local_checker_pattern_on_a_transparent_cover() {
+        let temp = tempfile::tempdir().unwrap();
+        write_strict_sample(temp.path());
+        let mut cover = RgbaImage::from_pixel(384, 416, Rgba([0, 0, 0, 0]));
+        for y in 144u32..272 {
+            for x in 128u32..256 {
+                let color = if (x / 16 + y / 16).is_multiple_of(2) {
+                    [232, 229, 224, u8::MAX]
+                } else {
+                    [210, 206, 200, u8::MAX]
+                };
+                cover.put_pixel(x, y, Rgba(color));
+            }
+        }
+        cover
+            .save(temp.path().join("assets/preview/cover.png"))
+            .unwrap();
+
+        let validation = validate_petpack_dir(temp.path()).unwrap();
+
+        assert!(validation.ok);
     }
 
     #[test]

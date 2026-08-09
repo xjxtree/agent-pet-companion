@@ -16,6 +16,7 @@ struct OverlayGeometryTests {
     @Test
     func testCompactOverlayMetricsKeepTwoLineMessagesAndAccessibleControls() {
         #expect(OverlayGeometry.bubbleDetailLineLimit == 2)
+        #expect(OverlayGeometry.bubbleStandaloneSummaryLineLimit == 2)
         #expect(OverlayGeometry.bubbleWidth == 344)
         #expect(OverlayGeometry.bubbleGap <= 3)
         #expect(OverlayGeometry.menuHitSize.width >= 38)
@@ -26,37 +27,185 @@ struct OverlayGeometryTests {
     }
 
     @Test
+    func standaloneBubbleHeightAlwaysReservesItsTwoLineMaximum() {
+        let sessions = [
+            OverlaySessionContent(
+                id: "empty",
+                source: .codex,
+                sessionID: "empty",
+                eventType: .thinking,
+                sessionTitle: "Investigate bubble",
+                messageText: "",
+                statusText: ""
+            ),
+            OverlaySessionContent(
+                id: "one-line",
+                source: .codex,
+                sessionID: "one-line",
+                eventType: .thinking,
+                sessionTitle: "Investigate bubble",
+                messageText: "Thinking",
+                statusText: "Thinking"
+            ),
+            OverlaySessionContent(
+                id: "two-lines",
+                source: .codex,
+                sessionID: "two-lines",
+                eventType: .tool,
+                sessionTitle: "Investigate bubble",
+                messageText: String(repeating: "Bounded two-line session detail ", count: 8),
+                statusText: "Running"
+            ),
+        ]
+
+        for fontScale in BubbleFontScale.allCases {
+            let heights = sessions.map { session in
+                OverlayGeometry.resolvedBubbleSize(
+                    in: CGSize(width: 1_512, height: 934),
+                    content: OverlayBubbleContent(
+                        id: "standalone-\(session.id)",
+                        source: .codex,
+                        agentName: "Codex",
+                        sessions: [session],
+                        isStandaloneSessionCard: true
+                    ),
+                    fontScale: fontScale
+                ).height
+            }
+            #expect(heights.dropFirst().allSatisfy { $0 == heights[0] })
+        }
+    }
+
+    @Test
     func displayWidthContractUsesExactRangeAspectAndDefault() {
-        #expect(OverlayGeometry.minimumDisplayWidthPt == 80)
+        #expect(OverlayGeometry.minimumDisplayWidthPt == 100)
         #expect(OverlayGeometry.defaultDisplayWidthPt == 112)
-        #expect(OverlayGeometry.maximumDisplayWidthPt == 224)
+        #expect(OverlayGeometry.maximumDisplayWidthPt == 300)
         let size = OverlayGeometry.petVisibleSize(displayWidthPt: 112)
         #expect(size.width == 112)
         #expect(abs(size.height - 112 * OverlayGeometry.displayAspectHeightRatio) < 0.001)
     }
 
     @Test
-    func testBubbleToggleUsesCountChevronAndVisibilityBySessionCount() {
+    func bubbleToggleUsesAnAnchorAwareChevronForEverySessionCount() {
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 0,
-            collapsed: true
+            revealsMoreContent: true
         ) == nil)
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 1,
-            collapsed: true
+            revealsMoreContent: true
         ) == .chevron(systemImage: "chevron.up"))
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 1,
-            collapsed: false
+            revealsMoreContent: false
         ) == .chevron(systemImage: "chevron.down"))
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 2,
-            collapsed: true
-        ) == .count(2))
+            revealsMoreContent: true
+        ) == .chevron(systemImage: "chevron.up"))
         #expect(OverlayBubbleTogglePresentation.content(
             sessionCount: 12,
-            collapsed: false
-        ) == .count(12))
+            revealsMoreContent: false
+        ) == .chevron(systemImage: "chevron.down"))
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 2,
+            revealsMoreContent: true,
+            anchorDirection: .below
+        ) == .chevron(systemImage: "chevron.down"))
+        #expect(OverlayBubbleTogglePresentation.content(
+            sessionCount: 2,
+            revealsMoreContent: false,
+            anchorDirection: .below
+        ) == .chevron(systemImage: "chevron.up"))
+    }
+
+    @Test
+    func bubbleToggleMovesOneLevelThroughTheFlatTrayInEitherDirection() {
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: false,
+            sessionCount: 2,
+            bubbleDismissed: false,
+            standaloneStackExpanded: true,
+            standaloneStackDirection: .expanding
+        ) == .collapseStandaloneStack)
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: false,
+            sessionCount: 2,
+            bubbleDismissed: false,
+            standaloneStackExpanded: false,
+            standaloneStackDirection: .collapsing
+        ) == .dismissBubble)
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: false,
+            sessionCount: 2,
+            bubbleDismissed: true,
+            standaloneStackExpanded: false,
+            standaloneStackDirection: .collapsing
+        ) == .revealCollapsedStandaloneStack)
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: false,
+            sessionCount: 2,
+            bubbleDismissed: false,
+            standaloneStackExpanded: false,
+            standaloneStackDirection: .expanding
+        ) == .expandStandaloneStack)
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: false,
+            sessionCount: 1,
+            bubbleDismissed: false,
+            standaloneStackExpanded: true,
+            standaloneStackDirection: .expanding
+        ) == .dismissBubble)
+        #expect(OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: true,
+            sessionCount: 2,
+            bubbleDismissed: true,
+            standaloneStackExpanded: true,
+            standaloneStackDirection: .collapsing
+        ) == .revealBubble)
+    }
+
+    @Test
+    func flatCardsKeepOnePriorityFirstReadingOrderOnEitherSide() {
+        func card(_ id: String) -> OverlayBubbleContent {
+            OverlayBubbleContent(
+                id: id,
+                source: .codex,
+                agentName: "Codex",
+                sessions: [OverlaySessionContent(
+                    id: id,
+                    source: .codex,
+                    sessionID: id,
+                    eventType: .tool,
+                    sessionTitle: id,
+                    messageText: "Summary",
+                    statusText: "Running"
+                )],
+                isStandaloneSessionCard: true
+            )
+        }
+
+        let contents = [card("priority"), card("older")]
+        #expect(OverlayGeometry.visuallyOrderedBubbleContents(
+            contents,
+            anchorDirection: .above
+        ).map(\.id) == ["priority", "older"])
+        #expect(OverlayGeometry.visuallyOrderedBubbleContents(
+            contents,
+            anchorDirection: .below
+        ).map(\.id) == ["priority", "older"])
+
+        let grouped = OverlayBubbleContent(
+            id: "agent-codex",
+            source: .codex,
+            agentName: "Codex",
+            sessions: contents.flatMap(\.sessions)
+        )
+        #expect(OverlayGeometry.visuallyOrderedBubbleContents(
+            [grouped],
+            anchorDirection: .below
+        ) == [grouped])
     }
 
     @Test
@@ -91,7 +240,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func testCompactControlsPreactivateMouseAndStayClearOfBubblePanel() {
+    func testCompactControlsStayClearOfBubblePanel() {
         let displayWidthPt: CGFloat = 112
         let petCenter = CGPoint(x: 900, y: 420)
         let visibleFrame = CGRect(x: 0, y: 0, width: 1512, height: 934)
@@ -110,14 +259,7 @@ struct OverlayGeometryTests {
             ),
             size: OverlayGeometry.menuHitSize
         )
-        let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            displayWidthPt: displayWidthPt,
-            petScreenCenter: petCenter,
-            clickMenuEnabled: true
-        )
-
         #expect(!bubbleRect.intersects(menuRect))
-        #expect(activationRect.contains(menuRect.insetBy(dx: -8, dy: -8)))
 
         let petTop = petCenter.y + OverlayGeometry.petVisualVerticalOffsets(
             displayWidthPt: displayWidthPt,
@@ -127,22 +269,13 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func broadActivationZoneDoesNotKeepMenuArtworkVisible() {
+    func controlVisibilityUsesOnlyVisiblePetAndMenuRegions() {
         let displayWidthPt: CGFloat = 112
         let petCenter = CGPoint(x: 900, y: 420)
-        let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            displayWidthPt: displayWidthPt,
-            petScreenCenter: petCenter,
-            clickMenuEnabled: true
-        )
-        let activationOnlyPoint = CGPoint(
-            x: activationRect.minX + 1,
-            y: activationRect.maxY - 1
-        )
+        let outsidePoint = CGPoint(x: petCenter.x - 100, y: petCenter.y + 100)
 
-        #expect(activationRect.contains(activationOnlyPoint))
         #expect(!OverlayGeometry.shouldShowControls(
-            at: activationOnlyPoint,
+            at: outsidePoint,
             displayWidthPt: displayWidthPt,
             petScreenCenter: petCenter,
             clickMenuEnabled: true
@@ -182,16 +315,8 @@ struct OverlayGeometryTests {
             displayWidthPt: displayWidthPt,
             petVisualEnvelope: envelope
         )
-        let activationRect = OverlayGeometry.pointerNearPetScreenRect(
-            displayWidthPt: displayWidthPt,
-            petScreenCenter: petCenter,
-            clickMenuEnabled: true,
-            petVisualEnvelope: envelope
-        )
-
         #expect(visualRect.midX > petCenter.x)
         #expect(menuCenter.x > visualRect.maxX)
-        #expect(activationRect.contains(menuCenter))
         #expect(OverlayGeometry.shouldShowControls(
             at: CGPoint(x: visualRect.midX, y: visualRect.midY),
             displayWidthPt: displayWidthPt,
@@ -293,6 +418,38 @@ struct OverlayGeometryTests {
     }
 
     @Test
+    func pointerMonitorPreDispatchesExactMouseDownOwnership() throws {
+        let sourceDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/AgentPetCompanion", isDirectory: true)
+        let controllerSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/PetOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+        let monitorStart = try #require(controllerSource.range(
+            of: "final class OverlayPointerEventMonitor"
+        ))
+        let monitorEnd = try #require(controllerSource.range(
+            of: "private final class PassthroughOverlayHostingView",
+            range: monitorStart.upperBound..<controllerSource.endIndex
+        ))
+        let monitorSource = controllerSource[monitorStart.lowerBound..<monitorEnd.lowerBound]
+        #expect(monitorSource.contains("CGEvent.tapCreate"))
+        #expect(monitorSource.contains("tap: .cgSessionEventTap"))
+        #expect(monitorSource.contains("place: .headInsertEventTap"))
+        #expect(monitorSource.contains("options: .listenOnly"))
+        #expect(monitorSource.contains(".leftMouseDown"))
+        #expect(!monitorSource.contains("Task { @MainActor"))
+        #expect(!controllerSource.contains("pointerNearPetScreenRect"))
+        #expect(!controllerSource.contains("guard !isKeyWindow"))
+        #expect(!controllerSource.contains("behavior.mousePassthrough"))
+    }
+
+    @Test
     func fiveHundredFirstPressAndMaskTransitionSequencesNeverLoseActiveLease() {
         for index in 0 ..< 500 {
             let interactionID = UUID()
@@ -374,7 +531,7 @@ struct OverlayGeometryTests {
             )
         }
 
-        for displayWidthPt in [CGFloat(80), CGFloat(224)] {
+        for displayWidthPt in [CGFloat(100), CGFloat(300)] {
             let opaqueTopLeft = topLeftPointForPixel(
                 x: 0,
                 topRow: 0,
@@ -418,7 +575,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func disablingMousePassthroughRestoresWholePanelHitTesting() throws {
+    func transparentPetPixelsAlwaysPassThrough() throws {
         let transparentMask = try #require(OverlayPetAlphaMask(
             pixelWidth: 1,
             pixelHeight: 1,
@@ -427,7 +584,7 @@ struct OverlayGeometryTests {
         let containerSize = CGSize(width: 800, height: 600)
         let panelFrame = CGRect(origin: .zero, size: containerSize)
 
-        #expect(OverlayGeometry.shouldHandleMouse(
+        #expect(!OverlayGeometry.shouldHandleMouse(
             atTopLeftPoint: CGPoint(x: 40, y: 40),
             in: containerSize,
             displayWidthPt: 112,
@@ -437,7 +594,6 @@ struct OverlayGeometryTests {
             panelFrame: panelFrame,
             screenFrame: panelFrame,
             includeBubble: false,
-            mousePassthroughEnabled: false,
             petFrameHitTest: OverlayPetFrameHitTest(
                 canvasSize: CGSize(width: 1, height: 1),
                 alphaMask: transparentMask
@@ -473,7 +629,7 @@ struct OverlayGeometryTests {
             return center.y - bubbleSize.height / 2
         }
 
-        for displayWidthPt: CGFloat in [80, 112, 160] {
+        for displayWidthPt: CGFloat in [100, 112, 160] {
             let offsets = OverlayGeometry.petVisualVerticalOffsets(
                 displayWidthPt: displayWidthPt,
                 envelope: tallAction
@@ -506,9 +662,9 @@ struct OverlayGeometryTests {
             )
         }
 
-        let smallOffset = bubbleBottom(displayWidthPt: 80, envelope: tallAction)
+        let smallOffset = bubbleBottom(displayWidthPt: 100, envelope: tallAction)
             - petCenter.y
-        let largeOffset = bubbleBottom(displayWidthPt: 224, envelope: tallAction)
+        let largeOffset = bubbleBottom(displayWidthPt: 300, envelope: tallAction)
             - petCenter.y
         #expect(largeOffset > smallOffset)
     }
@@ -523,12 +679,12 @@ struct OverlayGeometryTests {
             visibleBounds: CGRect(x: 14, y: 31, width: 174, height: 142)
         )
         let petTop = petCenter.y + OverlayGeometry.petVisualVerticalOffsets(
-            displayWidthPt: 224,
+            displayWidthPt: 300,
             envelope: envelope
         ).top
         let bubbleCenter = OverlayGeometry.bubbleScreenCenter(
             bubbleSize: bubbleSize,
-            displayWidthPt: 224,
+            displayWidthPt: 300,
             petScreenCenter: petCenter,
             screenFrame: visibleFrame,
             petVisualEnvelope: envelope
@@ -585,7 +741,7 @@ struct OverlayGeometryTests {
             CGPoint(x: visibleFrame.midX, y: visibleFrame.maxY - 80),
             CGPoint(x: visibleFrame.midX, y: visibleFrame.minY + 80),
         ]
-        for petWidth: CGFloat in [80, 112, 224] {
+        for petWidth: CGFloat in [100, 112, 300] {
             for sessionCount in [1, 2, 8] {
                 for language in ["zh", "en"] {
                     for center in centers {
@@ -672,7 +828,7 @@ struct OverlayGeometryTests {
             visibleBounds: CGRect(x: 54, y: 20, width: 252, height: 370)
         )
 
-        for displayWidthPt: CGFloat in [80, 112, 224] {
+        for displayWidthPt: CGFloat in [100, 112, 300] {
             let fallbackMenu = OverlayGeometry.menuScreenCenter(
                 petScreenCenter: petCenter,
                 displayWidthPt: displayWidthPt
@@ -688,18 +844,18 @@ struct OverlayGeometryTests {
 
         let smallInset = OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            displayWidthPt: 80
+            displayWidthPt: 100
         ).x - OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            displayWidthPt: 80,
+            displayWidthPt: 100,
             petVisualEnvelope: envelope
         ).x
         let largeInset = OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            displayWidthPt: 224
+            displayWidthPt: 300
         ).x - OverlayGeometry.menuScreenCenter(
             petScreenCenter: petCenter,
-            displayWidthPt: 224,
+            displayWidthPt: 300,
             petVisualEnvelope: envelope
         ).x
         #expect(largeInset > smallInset)
@@ -711,7 +867,7 @@ struct OverlayGeometryTests {
             CGRect(x: 0.001, y: 25.002, width: 1511.997, height: 919.995),
             CGRect(x: -1279.999, y: 0.003, width: 1279.998, height: 759.994)
         ]
-        let displayWidths: [CGFloat] = [80, 112, 224]
+        let displayWidths: [CGFloat] = [100, 112, 300]
 
         for visibleFrame in displays {
             for displayWidthPt in displayWidths {
@@ -926,8 +1082,10 @@ struct OverlayGeometryTests {
             == OverlayGeometry.minimumDisplayWidthPt)
         #expect(OverlayGeometry.clampedDisplayWidthPt(400)
             == OverlayGeometry.maximumDisplayWidthPt)
-        #expect(OverlayGeometry.clampedDisplayWidthPt(80) == 80)
-        #expect(OverlayGeometry.clampedDisplayWidthPt(224) == 224)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(80) == 100)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(100) == 100)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(300) == 300)
+        #expect(OverlayGeometry.clampedDisplayWidthPt(301) == 300)
         #expect(OverlayGeometry.clampedDisplayWidthPt(.nan)
             == OverlayGeometry.defaultDisplayWidthPt)
     }
@@ -965,7 +1123,7 @@ struct OverlayGeometryTests {
             OverlayGeometry.resolvedInitialDisplayWidthPt(
                 persistedDisplayWidthPt: 80,
                 hasPersistedPosition: true
-            ) == 80
+            ) == 100
         )
         #expect(
             OverlayGeometry.resolvedInitialDisplayWidthPt(
@@ -981,12 +1139,12 @@ struct OverlayGeometryTests {
         let resizedCenter = OverlayGeometry.bottomAnchoredCenter(
             from: initialCenter,
             currentDisplayWidthPt: 112,
-            proposedDisplayWidthPt: 224
+            proposedDisplayWidthPt: 300
         )
         let initialBottom = initialCenter.y
             - OverlayGeometry.petVisibleSize(displayWidthPt: 112).height / 2
         let resizedBottom = resizedCenter.y
-            - OverlayGeometry.petVisibleSize(displayWidthPt: 224).height / 2
+            - OverlayGeometry.petVisibleSize(displayWidthPt: 300).height / 2
 
         #expect(resizedCenter.x == initialCenter.x)
         #expect(abs(resizedBottom - initialBottom) < 0.001)

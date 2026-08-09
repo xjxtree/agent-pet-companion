@@ -49,6 +49,43 @@ struct GenerationSessionStateTests {
         #expect(history.validationSummary == nil)
     }
 
+    @Test("Maker history detail exposes only a verified routable Studio thread")
+    func studioHistoryDetailDecodesVerifiedNavigation() throws {
+        let data = Data(#"""
+        {
+          "ok":true,
+          "found":true,
+          "job_id":"job_history",
+          "status":"failed",
+          "operation":"create",
+          "description":"A small fox",
+          "style":"半写实",
+          "quality":"standard",
+          "reference_count":1,
+          "created_at":"2026-08-07T00:00:00Z",
+          "updated_at":"2026-08-07T00:01:00Z",
+          "progress_messages":[{"id":"msg_progress","job_id":"job_history","sequence":2,"role":"assistant","kind":"generation_progress","content":"Preparing","progress":0.1,"created_at":"2026-08-07T00:00:01Z"}],
+          "latest_codex_excerpt":"Bounded excerpt",
+          "message_count":3,
+          "messages_truncated":false,
+          "session":{"availability":"available","can_open":true,"routable_session_id":"019f5b0f-88ff-7413-8953-29de4ed0951c","name":"Agent Pet Studio · A small fox"}
+        }
+        """#.utf8)
+
+        let detail = try JSONDecoder().decode(GenerationStudioHistoryDetail.self, from: data)
+
+        #expect(detail.found)
+        #expect(detail.status == .failed)
+        #expect(detail.referenceCount == 1)
+        #expect(detail.progressMessages.map(\.id) == ["msg_progress"])
+        #expect(detail.session.availability == .available)
+        #expect(detail.session.canOpen)
+        #expect(
+            detail.session.routableSessionID
+                == "019f5b0f-88ff-7413-8953-29de4ed0951c"
+        )
+    }
+
     @Test("input_request remains an active generation session")
     func inputRequestRemainsActive() {
         var session = runningSession()
@@ -252,6 +289,88 @@ struct GenerationSessionStateTests {
         #expect(session.canRetry)
     }
 
+    @Test("resuming a failed job preserves its job and complete message history")
+    func resumePreservesJobAndMessages() {
+        var session = GenerationSession()
+        let submitted = form(description: "Resume me")
+        _ = session.reduce(.startRequested(
+            form: submitted,
+            initialMessage: message(id: "msg_user", progress: 0.01)
+        ))
+        _ = session.reduce(.startAccepted(jobID: "job_resume"))
+        let failedMessages = [
+            message(id: "msg_user", progress: 0.01),
+            message(id: "msg_checkpoint", kind: "generation_checkpoint", progress: 0.13),
+            message(id: "msg_failed", kind: "generation_failed", progress: 1),
+        ]
+        _ = session.reduce(.messagesReceived(failedMessages, revision: "3"))
+        _ = session.reduce(.restore(GenerationSessionRestore(
+            state: .recoverableFailed,
+            jobID: "job_resume",
+            submittedForm: submitted,
+            messages: failedMessages,
+            progress: 0.13,
+            messageRevision: "3",
+            recoverable: true,
+            failureCode: "checkpoint_stalled",
+            pauseReason: "The last verified checkpoint is retained.",
+            capabilities: GenerationSessionCapabilities(
+                canResume: true,
+                canCancel: true
+            )
+        )))
+
+        #expect(session.canResume)
+        _ = session.reduce(.resumeRequested)
+        #expect(session.state == .starting)
+        #expect(session.jobID == "job_resume")
+        #expect(session.messages == failedMessages)
+        #expect(session.messageRevision == "3")
+
+        let effects = session.reduce(.startAccepted(jobID: "job_resume"))
+        #expect(session.state == .running)
+        #expect(effects.contains(.startMessageStream))
+    }
+
+    @Test("typed runtime activity drives stages even while numeric progress stays low")
+    func typedRuntimeActivityDrivesStages() {
+        let generating = [
+            message(id: "msg_generate", kind: "generation_activity_generating", progress: 0.11),
+        ]
+        let validating = [
+            message(id: "msg_validate", kind: "generation_activity_validating", progress: 0.14),
+        ]
+        let importing = [
+            message(id: "msg_import", kind: "generation_activity_importing", progress: 0.90),
+        ]
+
+        #expect(GenerationConversation.activeStepIndex(
+            messages: generating,
+            progress: 0.11,
+            operation: .create
+        ) == 1)
+        #expect(GenerationConversation.activeStepIndex(
+            messages: validating,
+            progress: 0.14,
+            operation: .create
+        ) == 2)
+        #expect(GenerationConversation.activeStepIndex(
+            messages: importing,
+            progress: 0.90,
+            operation: .create
+        ) == 3)
+        #expect(GenerationConversation.activeStepIndex(
+            messages: generating,
+            progress: 0.11,
+            operation: .modify
+        ) == 2)
+        #expect(GenerationConversation.checkpointCount([
+            message(id: "checkpoint-1", kind: "generation_checkpoint", progress: 0.13),
+            message(id: "heartbeat", kind: "generation_heartbeat", progress: 0.13),
+            message(id: "checkpoint-2", kind: "generation_checkpoint", progress: 0.13),
+        ]) == 2)
+    }
+
     @Test("reconciling the same active snapshot does not restart its stream")
     func repeatedSnapshotDoesNotRestartStream() {
         let restore = GenerationSessionRestore(
@@ -348,6 +467,27 @@ struct GenerationSessionStateTests {
             #expect(!GenerationConversation.failed(messages))
             #expect(!GenerationConversation.terminalUnsuccessful(messages))
         }
+    }
+
+    @Test("cancellation preserves the last real generation stage")
+    func cancellationPreservesTheLastRealStage() {
+        let canceledDuringBrief = [
+            message(id: "msg_brief", kind: "generation_progress", progress: 0.10),
+            message(id: "msg_cancelled", kind: "generation_canceled", progress: 1),
+        ]
+        let canceledDuringGeneration = [
+            message(id: "msg_generation", kind: "generation_progress", progress: 0.40),
+            message(id: "msg_cancelled_later", kind: "generation_canceled", progress: 1),
+        ]
+
+        #expect(GenerationConversation.activeStepIndex(
+            messages: canceledDuringBrief,
+            progress: 1
+        ) == 0)
+        #expect(GenerationConversation.activeStepIndex(
+            messages: canceledDuringGeneration,
+            progress: 1
+        ) == 1)
     }
 
     @Test("generation history decodes terminal status into a typed bounded value")
@@ -477,7 +617,10 @@ struct GenerationSessionStateTests {
             .starting,
             .running,
             .waitingForInput,
+            .paused,
+            .recoverableFailed,
             .cancelling,
+            .cancelCleanup,
             .succeeded,
             .failed,
             .cancelled,
@@ -486,7 +629,10 @@ struct GenerationSessionStateTests {
         #expect(GenerationSessionState.starting.isActive)
         #expect(GenerationSessionState.running.isActive)
         #expect(GenerationSessionState.waitingForInput.isActive)
+        #expect(GenerationSessionState.paused.isActive)
+        #expect(GenerationSessionState.recoverableFailed.isActive)
         #expect(GenerationSessionState.cancelling.isActive)
+        #expect(GenerationSessionState.cancelCleanup.isActive)
         #expect(!GenerationSessionState.succeeded.isActive)
         #expect(!GenerationSessionState.failed.isActive)
         #expect(!GenerationSessionState.cancelled.isActive)

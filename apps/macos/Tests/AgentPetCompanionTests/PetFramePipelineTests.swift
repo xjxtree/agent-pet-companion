@@ -6,6 +6,35 @@ import Testing
 
 @Suite
 struct PetFramePipelineTests {
+    @MainActor
+    @Test
+    func rendererContentReplayLeavesTheRepresentableUpdateCycle() async {
+        let renderer = PetMetalFrameRenderer()
+        let view = renderer.makeView()
+        var received: [Bool] = []
+        let loadRequest = request(
+            quality: .low,
+            stateName: "idle",
+            frameCount: 1
+        )
+
+        renderer.configure(
+            view: view,
+            pet: loadRequest.pet,
+            stateName: "idle",
+            stateEntryID: "deferred-content-replay",
+            active: false,
+            reduceMotion: false,
+            onVisualEnvelopeChanged: { _ in },
+            onFrameContentChanged: { received.append($0) }
+        )
+
+        #expect(received.isEmpty)
+        await Task.yield()
+        #expect(received == [false])
+        renderer.dismantlePipeline()
+    }
+
     @Test(arguments: QualityLevel.allCases, [
         PlaybackMatrixFixture(
             name: "loop",
@@ -976,12 +1005,14 @@ struct PetFramePipelineTests {
 
     @MainActor
     @Test
-    func testPointerTrackingHasNoHighFrequencyTimer() {
+    func testPointerTrackingPreDispatchesMouseDownWithoutEagerPolling() {
         let monitor = OverlayPointerEventMonitor()
 
         #expect(!monitor.usesPolling)
         #expect(OverlayPointerEventMonitor.eventMask.contains(.mouseMoved))
+        #expect(OverlayPointerEventMonitor.eventMask.contains(.leftMouseDown))
         #expect(OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp))
+        #expect(OverlayPointerEventMonitor.preDispatchEventTypes.contains(.leftMouseDown))
         #expect(!OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged))
         #expect(!monitor.isRunning)
     }

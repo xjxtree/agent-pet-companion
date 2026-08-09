@@ -135,10 +135,26 @@ enum AgentConnectionsPresentation {
             return operationFailureDetail(failure.reason, locale: locale)
         }
 
+        if presentation.health == .notChecked,
+           presentation.hasCurrentLightSnapshot {
+            return APCLocalization.text(
+                .connectionsSummaryLight,
+                locale: locale
+            )
+        }
+
         if let reason = attentionReason(for: presentation) {
             return attentionSummary(
                 reason,
                 source: presentation.source,
+                locale: locale
+            )
+        }
+
+        if presentation.health == .connected,
+           presentation.taskVerification == .awaitingTask {
+            return taskVerificationDetail(
+                presentation.taskVerification,
                 locale: locale
             )
         }
@@ -157,7 +173,21 @@ enum AgentConnectionsPresentation {
         for presentation: AgentConnectionProductPresentation,
         locale: String = APCLocalization.interfaceLocaleIdentifier
     ) -> String {
+        if presentation.health == .notChecked,
+           presentation.hasCurrentLightSnapshot {
+            return APCLocalization.text(
+                .connectionsHealthLight,
+                locale: locale
+            )
+        }
         guard let reason = attentionReason(for: presentation) else {
+            if presentation.health == .connected,
+               presentation.taskVerification == .awaitingTask {
+                return APCLocalization.text(
+                    .connectionsHealthUnverified,
+                    locale: locale
+                )
+            }
             return APCLocalizedPresentation.connectionHealthTitle(
                 presentation.health,
                 locale: locale
@@ -175,6 +205,16 @@ enum AgentConnectionsPresentation {
         case .actionRequired: .connectionsStatusActionRequired
         }
         return APCLocalization.text(key, locale: locale)
+    }
+
+    static func healthAppearance(
+        for presentation: AgentConnectionProductPresentation
+    ) -> ProductStatusAppearance {
+        if presentation.health == .connected,
+           presentation.taskVerification == .awaitingTask {
+            return .neutral
+        }
+        return ProductStatusAppearance(connectionHealth: presentation.health)
     }
 
     static func userGuidance(
@@ -256,14 +296,6 @@ enum AgentConnectionsPresentation {
                 && ($0.status == .missing || $0.status == .unsupported)
         }) {
             return .agentMissing
-        }
-        if items.contains(where: {
-            $0.code == .agentVersion
-                && ($0.status == .missing
-                    || $0.status == .needsFix
-                    || $0.status == .unsupported)
-        }) {
-            return .updateRequired
         }
         if items.contains(where: {
             $0.code == .claudeHooksPolicy && $0.status.isBlocking
@@ -537,41 +569,19 @@ enum AgentConnectionsPresentation {
     ) -> String? {
         switch item.evidence {
         case let .agentVersion(source, detected):
-            let support = versionSupportDescription(
-                for: source,
-                locale: locale
-            )
             guard let detected else {
                 return APCLocalization.format(
                     .connectionsEvidenceVersionMissingFormat,
                     locale: locale,
-                    support
-                )
-            }
-            switch item.status {
-            case .ok:
-                return APCLocalization.format(
-                    .connectionsEvidenceVersionSupportedFormat,
-                    locale: locale,
-                    detected,
-                    support
-                )
-            case .missing, .needsFix:
-                return APCLocalization.format(
-                    .connectionsEvidenceVersionUpdateFormat,
-                    locale: locale,
-                    detected,
-                    support,
                     source.title
                 )
-            case .unverified, .unsupported, .notRequired:
-                return APCLocalization.format(
-                    .connectionsEvidenceVersionUnverifiedFormat,
-                    locale: locale,
-                    detected,
-                    support
-                )
             }
+            return APCLocalization.format(
+                .connectionsEvidenceVersionSupportedFormat,
+                locale: locale,
+                detected,
+                source.title
+            )
         case let .codexHookTrust(disabled, modified, untrusted, total):
             return APCLocalization.format(
                 .connectionsEvidenceCodexTrustFormat,
@@ -584,19 +594,6 @@ enum AgentConnectionsPresentation {
         case nil:
             return nil
         }
-    }
-
-    private static func versionSupportDescription(
-        for source: AgentSource,
-        locale: String
-    ) -> String {
-        let key: APCLocalizationKey = switch source {
-        case .codex: .connectionsVersionSupportCodex
-        case .claudeCode: .connectionsVersionSupportClaude
-        case .pi: .connectionsVersionSupportPi
-        case .opencode: .connectionsVersionSupportOpencode
-        }
-        return APCLocalization.text(key, locale: locale)
     }
 
     static func extensionKindTitle(
@@ -850,6 +847,13 @@ struct AgentConnectionsView: View {
                 for: manageableStatuses
             ))
         }
+        .onAppear {
+            store.requestAutomaticConnectionCheckOnFirstPresentation()
+            revealFirstUpdateAttentionSource()
+        }
+        .onChange(of: store.appUpdateConvergenceState) { _, _ in
+            revealFirstUpdateAttentionSource()
+        }
     }
 
     private var pageHeader: some View {
@@ -926,6 +930,14 @@ struct AgentConnectionsView: View {
 
     private var manageableSources: [AgentSource] {
         manageableStatuses.map(\.source)
+    }
+
+    private func revealFirstUpdateAttentionSource() {
+        guard case let .needsAttention(.connectors(issues)) =
+                store.appUpdateConvergenceState,
+              let source = issues.first?.source
+        else { return }
+        expandedSource = source
     }
 }
 
@@ -1074,7 +1086,9 @@ private struct AgentConnectionSection: View {
     private var healthIndicator: some View {
         ProductStatusIndicator(
             presentation: ProductStatusPresentation(
-                connectionHealth: presentation.health,
+                appearance: AgentConnectionsPresentation.healthAppearance(
+                    for: presentation
+                ),
                 title: healthTitle
             )
         )

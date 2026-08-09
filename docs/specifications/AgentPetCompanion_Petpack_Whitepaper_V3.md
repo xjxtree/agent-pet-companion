@@ -150,7 +150,7 @@ multiple batches is not a substitute for missing source capacity.
 layer covers this boundary.
 
 Display size is a separate App preference and never changes package identity or
-authored pixels. The App exposes an 80–224 pt logical-width slider; it does not
+authored pixels. The App exposes a 100–300 pt logical-width slider; it does not
 rewrite, upscale, or retime a package.
 
 ### Fixed actions and defaults
@@ -271,7 +271,9 @@ must not be used to infer runtime timing.
   PetCore, the Maker Skill, and macOS playback. Producers use zero-padded ASCII
   names such as `0000.png` and `0001.png`.
 - `assets/preview/cover.png` and
-  `assets/preview/animated_preview.webp` decode completely. `384×416` remains
+  `assets/preview/animated_preview.webp` decode completely. The cover uses a
+  PNG color type with Alpha, contains at least 1% visible and 1% transparent
+  pixels, and contains no baked-in checkerboard background. `384×416` remains
   the recommended preview size; another size produces a warning.
 - Ordinary packages with poor alpha coverage or adjacent duplicate frames may
   produce bounded warnings. Trusted `skill-full-source` packages fail when a
@@ -316,8 +318,10 @@ must not be used to infer runtime timing.
   producer gate requires cross-action distinction. Acknowledge remains a
   restrained return gesture; both drag actions remain compact direction-readable
   loops. Neither requirement introduces gaze tracking.
-- `cover.png` identifies the same character without animation; the animated
-  preview may not depict assets absent from the package.
+- `cover.png` identifies the same character without animation, preserves real
+  transparent pixels, and never flattens a checkerboard transparency preview
+  into its RGB pixels; the animated preview may not depict assets absent from
+  the package.
 
 ### Authored-timing QA
 

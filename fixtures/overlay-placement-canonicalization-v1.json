@@ -3,8 +3,8 @@
   "cases": [
     {
       "id": "positive-coordinate",
-      "input": {"x": 123.456, "y": 45.678, "display_width_pt": 80, "display_id": "main"},
-      "expected": {"x": 123.45703125, "y": 45.6796875, "display_width_pt": 80, "display_id": "main"}
+      "input": {"x": 123.456, "y": 45.678, "display_width_pt": 100, "display_id": "main"},
+      "expected": {"x": 123.45703125, "y": 45.6796875, "display_width_pt": 100, "display_id": "main"}
     },
     {
       "id": "negative-coordinate",
@@ -13,8 +13,8 @@
     },
     {
       "id": "positive-half-grid-away-from-zero",
-      "input": {"x": 10.001953125, "y": 0.001953125, "display_width_pt": 224, "display_id": "right"},
-      "expected": {"x": 10.00390625, "y": 0.00390625, "display_width_pt": 224, "display_id": "right"}
+      "input": {"x": 10.001953125, "y": 0.001953125, "display_width_pt": 300, "display_id": "right"},
+      "expected": {"x": 10.00390625, "y": 0.00390625, "display_width_pt": 300, "display_id": "right"}
     },
     {
       "id": "negative-half-grid-away-from-zero",
@@ -28,13 +28,13 @@
     },
     {
       "id": "large-positive-and-negative",
-      "input": {"x": 1000000.001953125, "y": -1000000.001953125, "display_width_pt": 224, "display_id": "extreme"},
-      "expected": {"x": 1000000.00390625, "y": -1000000.00390625, "display_width_pt": 224, "display_id": "extreme"}
+      "input": {"x": 1000000.001953125, "y": -1000000.001953125, "display_width_pt": 300, "display_id": "extreme"},
+      "expected": {"x": 1000000.00390625, "y": -1000000.00390625, "display_width_pt": 300, "display_id": "extreme"}
     },
     {
       "id": "already-canonical",
-      "input": {"x": -4096.00390625, "y": 8192.99609375, "display_width_pt": 80, "display_id": "canonical"},
-      "expected": {"x": -4096.00390625, "y": 8192.99609375, "display_width_pt": 80, "display_id": "canonical"}
+      "input": {"x": -4096.00390625, "y": 8192.99609375, "display_width_pt": 100, "display_id": "canonical"},
+      "expected": {"x": -4096.00390625, "y": 8192.99609375, "display_width_pt": 100, "display_id": "canonical"}
     }
   ]
 }

@@ -126,11 +126,13 @@ fn candidate_preflight_rejects_an_incompatible_active_generation_without_writing
             r#"
             INSERT INTO generation_jobs (
               id, status, form_json, session_id, job_dir, result_pet_id,
-              retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+              retry_of_job_id, owner_instance_id, heartbeat_at, started_at,
+              created_at, updated_at
             )
             VALUES (
               'job_legacy_waiting', 'waiting_for_user', ?1, NULL, ?2, NULL,
               NULL, NULL, '2026-07-01T00:00:00Z',
+              '2026-07-01T00:00:00Z',
               '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
             )
             "#,

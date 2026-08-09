@@ -1,11 +1,12 @@
 use petcore::adapter_contracts::{
     apply_transcript_display, claude_transcript_display, claude_transcript_path,
-    parse_contract_event, ContractEvent,
+    contract_parse_warnings, parse_contract_event, ContractEvent,
 };
 use petcore::connections;
 use petcore::daemon;
 use petcore::daemon::instance_lock::InstanceGuard;
 use petcore::db::Database;
+use petcore::diagnostics::{AgentParseFailure, AgentParseField, AgentParseWarning};
 use petcore::event_envelope::NormalizedAgentEvent;
 use petcore::interaction_attestation::INTERACTION_CONTRACT_DIGEST;
 use petcore::launch_agent::{self, LaunchAgentConfig};
@@ -209,6 +210,7 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
         }
         "hook" => {
             let source = flag(&mut args, "--source")?;
+            let trusted_source = enum_from_name::<AgentSource>(&source)?;
             let event_type_arg = flag_optional(&mut args, "--event-type");
             // Legacy flags are accepted so older installed hooks keep working,
             // but their arbitrary text is never forwarded or persisted.
@@ -229,10 +231,43 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
             }
             let reported_contract_version = reported_connector_contract_version(&payload);
             let Some(mut contract) =
-                contract_event_for_hook(&source, event_type_arg.as_deref(), &payload)?
+                (match contract_event_for_hook(&source, event_type_arg.as_deref(), &payload) {
+                    Ok(contract) => contract,
+                    Err(error) => {
+                        report_agent_parse_warnings(
+                            trusted_source,
+                            &[fatal_contract_parse_warning(&payload)],
+                        );
+                        return Err(error);
+                    }
+                })
             else {
                 return print_json(json!({ "ok": true, "ignored": true }));
             };
+            let mut parse_warnings = contract_parse_warnings(&payload, &contract);
+            match (
+                contract.contract_version.as_deref(),
+                reported_contract_version.as_deref(),
+            ) {
+                (Some(expected), Some(reported)) if expected != reported => {
+                    push_cli_parse_warning(
+                        &mut parse_warnings,
+                        AgentParseWarning {
+                            field: AgentParseField::ContractVersion,
+                            failure: AgentParseFailure::ContractMismatch,
+                        },
+                    );
+                }
+                (Some(_), None) => push_cli_parse_warning(
+                    &mut parse_warnings,
+                    AgentParseWarning {
+                        field: AgentParseField::ContractVersion,
+                        failure: AgentParseFailure::MissingRequired,
+                    },
+                ),
+                _ => {}
+            }
+            report_agent_parse_warnings(trusted_source, &parse_warnings);
             contract.contract_version = validated_reported_contract_version(
                 contract.contract_version.as_deref(),
                 reported_contract_version.as_deref(),
@@ -246,6 +281,58 @@ fn run_agent(mut args: Vec<String>) -> Result<()> {
             "unknown agent subcommand {other}"
         ))),
     }
+}
+
+fn fatal_contract_parse_warning(payload: &Value) -> AgentParseWarning {
+    if payload.get("stdin_parse_error").is_some() {
+        AgentParseWarning {
+            field: AgentParseField::Payload,
+            failure: AgentParseFailure::InvalidJson,
+        }
+    } else if !payload.is_object() {
+        AgentParseWarning {
+            field: AgentParseField::Payload,
+            failure: AgentParseFailure::InvalidType,
+        }
+    } else if payload
+        .get("type")
+        .or_else(|| payload.get("hook_event_name"))
+        .or_else(|| payload.get("event").and_then(|event| event.get("type")))
+        .is_none()
+    {
+        AgentParseWarning {
+            field: AgentParseField::EventType,
+            failure: AgentParseFailure::MissingRequired,
+        }
+    } else {
+        AgentParseWarning {
+            field: AgentParseField::NormalizedEvent,
+            failure: AgentParseFailure::UnsupportedShape,
+        }
+    }
+}
+
+fn push_cli_parse_warning(warnings: &mut Vec<AgentParseWarning>, warning: AgentParseWarning) {
+    if warnings.len() < 8 && !warnings.contains(&warning) {
+        warnings.push(warning);
+    }
+}
+
+fn report_agent_parse_warnings(source: AgentSource, warnings: &[AgentParseWarning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Ok(paths) = AppPaths::from_env() else {
+        return;
+    };
+    let _ = daemon::request(
+        &paths,
+        "agent.parse_warnings",
+        json!({
+            "source": source,
+            "warnings": warnings,
+        }),
+    );
 }
 
 fn read_bounded_hook_input(reader: impl Read) -> io::Result<Option<String>> {
@@ -601,8 +688,13 @@ fn run_generation(mut args: Vec<String>) -> Result<()> {
         "status" => {
             let job_id = flag(&mut args, "--job-id")?;
             let include_messages = flag_present(&mut args, "--include-messages");
+            let inspect_thread = flag_present(&mut args, "--inspect-thread");
             reject_extra_args(&args, "generation status")?;
-            print_json(generation_status(&job_id, include_messages)?)
+            print_json(generation_status(
+                &job_id,
+                include_messages,
+                inspect_thread,
+            )?)
         }
         "for-pet" => {
             let pet_id = flag(&mut args, "--pet-id")?;
@@ -615,27 +707,93 @@ fn run_generation(mut args: Vec<String>) -> Result<()> {
         "reply" => {
             let job_id = flag(&mut args, "--job-id")?;
             let content = flag(&mut args, "--content")?;
+            let request_id = flag_optional(&mut args, "--request-id");
+            reject_extra_args(&args, "generation reply")?;
+            let mut params = json!({ "job_id": job_id, "content": content });
+            if let Some(request_id) = request_id {
+                params["request_id"] = json!(request_id);
+            }
             print_json(daemon::request(
                 &AppPaths::from_env()?,
                 "generation.reply",
-                json!({ "job_id": job_id, "content": content }),
+                params,
+            )?)
+        }
+        "resume" => {
+            let job_id = flag(&mut args, "--job-id")?;
+            let instruction = flag_optional(&mut args, "--instruction");
+            let request_id = flag_optional(&mut args, "--request-id");
+            reject_extra_args(&args, "generation resume")?;
+            let mut params = json!({ "job_id": job_id });
+            if let Some(instruction) = instruction {
+                params["instruction"] = json!(instruction);
+            }
+            if let Some(request_id) = request_id {
+                params["request_id"] = json!(request_id);
+            }
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                "generation.resume",
+                params,
             )?)
         }
         "cancel" => {
             let job_id = flag(&mut args, "--job-id")?;
+            reject_extra_args(&args, "generation cancel")?;
             print_json(daemon::request(
                 &AppPaths::from_env()?,
                 "generation.cancel",
                 json!({ "job_id": job_id }),
             )?)
         }
+        "history" => run_generation_history(args),
         other => Err(PetCoreError::InvalidRequest(format!(
             "unknown generation subcommand {other}"
         ))),
     }
 }
 
-fn generation_status(job_id: &str, include_messages: bool) -> Result<Value> {
+fn run_generation_history(mut args: Vec<String>) -> Result<()> {
+    let subcommand = pop(&mut args, "generation history subcommand")?;
+    match subcommand.as_str() {
+        "list" => {
+            let limit = flag_optional(&mut args, "--limit")
+                .map(|value| {
+                    value.parse::<u64>().map_err(|error| {
+                        PetCoreError::InvalidRequest(format!("invalid --limit: {error}"))
+                    })
+                })
+                .transpose()?;
+            reject_extra_args(&args, "generation history list")?;
+            let params = limit.map_or_else(|| json!({}), |limit| json!({ "limit": limit }));
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                "generation.history.list",
+                params,
+            )?)
+        }
+        "detail" | "delete" => {
+            let job_id = flag_optional(&mut args, "--job-id")
+                .unwrap_or_else(|| pop(&mut args, "generation job id").unwrap_or_default());
+            if job_id.is_empty() {
+                return Err(PetCoreError::InvalidRequest(format!(
+                    "missing generation history {subcommand} job id"
+                )));
+            }
+            reject_extra_args(&args, &format!("generation history {subcommand}"))?;
+            print_json(daemon::request(
+                &AppPaths::from_env()?,
+                &format!("generation.history.{subcommand}"),
+                json!({ "job_id": job_id }),
+            )?)
+        }
+        other => Err(PetCoreError::InvalidRequest(format!(
+            "unknown generation history subcommand {other}"
+        ))),
+    }
+}
+
+fn generation_status(job_id: &str, include_messages: bool, inspect_thread: bool) -> Result<Value> {
     let paths = AppPaths::from_env()?;
     let job_dir = paths.jobs_dir.join(job_id);
     if !job_dir.is_dir() {
@@ -644,13 +802,12 @@ fn generation_status(job_id: &str, include_messages: bool) -> Result<Value> {
         )));
     }
 
-    let status = if paths.db_path.is_file() {
-        Database::new(paths.db_path.clone())
-            .generation_job_status(job_id)?
-            .map(enum_name)
+    let job = if paths.db_path.is_file() {
+        Database::new(paths.db_path.clone()).generation_job(job_id)?
     } else {
         None
     };
+    let status = job.as_ref().map(|job| enum_name(job.status));
     let messages = petcore::generation::read_messages(&paths, job_id)?;
     let latest_message = messages.last().cloned();
     let session_path = job_dir.join("app_server_session.json");
@@ -683,6 +840,39 @@ fn generation_status(job_id: &str, include_messages: bool) -> Result<Value> {
         source_manifest.as_ref(),
         &petpack_files,
     );
+    let lifecycle = job.as_ref().map_or_else(
+        || json!(null),
+        |job| {
+            json!({
+                "started_at": job.started_at,
+                "ended_at": job.ended_at,
+                "cancel_requested_at": job.cancel_requested_at,
+                "execution_stopped_at": job.execution_stopped_at,
+                "thread_archived_at": job.thread_archived_at,
+                "recoverable": job.recoverable,
+                "failure_code": job.failure_code,
+                "pause_reason": job.pause_reason,
+                "thread_id": job.session_id,
+                "active_turn_id": job.active_turn_id,
+                "last_checkpoint_at": job.last_checkpoint_at,
+            })
+        },
+    );
+    let thread_inspection = if inspect_thread {
+        job.as_ref()
+            .and_then(|job| {
+                let thread_id = job.session_id.as_deref()?;
+                let form = serde_json::from_str::<GenerationForm>(&job.form_json).ok()?;
+                Some(
+                    petcore::app_server::inspect_pet_studio_thread(thread_id, &job.job_dir, &form)
+                        .map(|navigation| json!(navigation)),
+                )
+            })
+            .transpose()?
+            .unwrap_or(Value::Null)
+    } else {
+        json!(null)
+    };
 
     let mut value = json!({
         "ok": true,
@@ -694,6 +884,8 @@ fn generation_status(job_id: &str, include_messages: bool) -> Result<Value> {
         "app_server": app_server,
         "artifacts": artifacts,
         "actions": actions,
+        "lifecycle": lifecycle,
+        "thread_inspection": thread_inspection,
     });
     if include_messages {
         if let Some(object) = value.as_object_mut() {
@@ -1627,7 +1819,7 @@ fn normalized_terminal_app(term_program: &str) -> Option<String> {
 
 fn usage() {
     eprintln!(
-        "usage: petcore-cli build-info | health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set|reset | pet list|activate|delete | petpack sample|materialize|validate|verify-production-interaction|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|cancel | connections check [--source SOURCE|SOURCE] [--cwd PATH] | connections receipts | connections repair --source SOURCE [--cwd PATH] | connections uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
+        "usage: petcore-cli build-info | health | state snapshot|wait | snapshot | codex | agent ingest|hook | behavior get|set-json | overlay placement get|set|reset | pet list|activate|delete | petpack sample|materialize|validate|verify-production-interaction|build|import [--offline] <path>|export [--offline] --id PET_ID --output PATH | generation start|messages|retry|status|for-pet|reply|resume|cancel|history list|detail|delete | connections check [--source SOURCE|SOURCE] [--cwd PATH] | connections receipts | connections repair --source SOURCE [--cwd PATH] | connections uninstall|test --source SOURCE | connections refresh-installed | connections probe-opencode-server | events recent | renderer budget | launch-agent plist|install|uninstall|status"
     );
 }
 

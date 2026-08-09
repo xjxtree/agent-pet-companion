@@ -13,7 +13,7 @@ repository = "https://github.com/xjxtree/agent-pet-companion"
 
 [workspace.dependencies]
 hex = "0.4"
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 rustix = { version = "1", features = ["event", "fs", "net", "process"] }
 serde = { version = "1", features = ["derive"] }

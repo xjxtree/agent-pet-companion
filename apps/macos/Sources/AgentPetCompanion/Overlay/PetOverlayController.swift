@@ -227,7 +227,7 @@ final class PetOverlayController {
             defer: false
         )
         menuPanel.onPrimaryAction = { [weak store] in
-            store?.toggleOverlayBubble()
+            store?.stepOverlayBubbleDisclosure()
         }
         configureControlPanel(menuPanel, contentView: menuHostingView)
 
@@ -389,6 +389,7 @@ final class PetOverlayController {
         }
         if let anchor = plan.bubbleAnchor {
             bubbleAnchor = anchor
+            store.updateOverlayBubbleAnchorDirection(anchor.direction)
         }
         presentedPetScreenCenter = petScreenCenter
         syncInteractionViews(
@@ -651,10 +652,7 @@ final class PetOverlayController {
         )
 
         guard panel?.isVisible == true else { return }
-        let bubbleToggleVisible = OverlayBubbleTogglePresentation.content(
-            sessionCount: store.overlayBubbleSessionCount,
-            collapsed: store.overlayBubbleIsCollapsed
-        ) != nil
+        let bubbleToggleVisible = store.overlayBubbleDisclosureAction != nil
         if controlPresentation.isVisible {
             controlPanelFadeOutTask?.cancel()
             controlPanelFadeOutTask = nil
@@ -748,6 +746,7 @@ final class PetOverlayController {
         )
         let targetFrame = bubbleLayout.frame
         bubbleAnchor = bubbleLayout.anchor
+        store.updateOverlayBubbleAnchorDirection(bubbleLayout.direction)
         guard panel?.isVisible == true else {
             bubbleAnimationGeneration &+= 1
             bubblePanel.alphaValue = 1
@@ -1093,7 +1092,9 @@ final class BubbleOverlayPanel: NSPanel {
             refreshPointerPassthrough()
             return
         }
-        pointerMonitor.start { [weak self] in self?.refreshPointerPassthrough() }
+        pointerMonitor.start { [weak self] screenPoint in
+            self?.refreshPointerPassthrough(at: screenPoint)
+        }
         refreshPointerPassthrough()
     }
 
@@ -1104,19 +1105,15 @@ final class BubbleOverlayPanel: NSPanel {
     }
 
     func refreshPointerPassthrough() {
+        refreshPointerPassthrough(at: NSEvent.mouseLocation)
+    }
+
+    private func refreshPointerPassthrough(at screenPoint: NSPoint) {
         guard pointerMonitor.isRunning else { return }
         if overlayStore?.overlayPetDragInProgress == true {
             return
         }
-        guard !isKeyWindow else {
-            setIgnoresMouseEventsIfNeeded(false)
-            return
-        }
-        guard overlayStore?.behavior.mousePassthrough ?? true else {
-            setIgnoresMouseEventsIfNeeded(false)
-            return
-        }
-        setIgnoresMouseEventsIfNeeded(!shouldHandleMouse(screenPoint: NSEvent.mouseLocation))
+        setIgnoresMouseEventsIfNeeded(!shouldHandleMouse(screenPoint: screenPoint))
     }
 
     func beginKeyboardNavigation() {
@@ -1185,7 +1182,6 @@ final class BubbleOverlayPanel: NSPanel {
             return true
         }
         guard frame.contains(screenPoint) else { return false }
-        guard overlayStore?.behavior.mousePassthrough ?? true else { return true }
         return shouldHandleMouse(localPoint: CGPoint(
             x: screenPoint.x - frame.minX,
             y: screenPoint.y - frame.minY
@@ -1193,7 +1189,6 @@ final class BubbleOverlayPanel: NSPanel {
     }
 
     private func shouldHandleMouse(localPoint: NSPoint) -> Bool {
-        guard overlayStore?.behavior.mousePassthrough ?? true else { return true }
         let topLeftPoint = CGPoint(x: localPoint.x, y: frame.height - localPoint.y)
         return bubbleRects().contains { rect in
             roundedRectContains(topLeftPoint, in: rect, radius: OverlayGeometry.bubbleCornerRadius)
@@ -1375,19 +1370,27 @@ final class BubbleOverlayPanel: NSPanel {
         rect: CGRect,
         topLeftPoint: CGPoint
     )? {
-        guard let overlayStore else { return nil }
+        guard overlayStore != nil else { return nil }
         let topLeftPoint = CGPoint(x: location.x, y: frame.height - location.y)
-        for (content, rect) in zip(overlayStore.overlayBubbleContents, bubbleRects())
+        for (content, rect) in zip(visuallyOrderedContents, bubbleRects())
         where roundedRectContains(topLeftPoint, in: rect, radius: OverlayGeometry.bubbleCornerRadius) {
             return (content, rect, topLeftPoint)
         }
         return nil
     }
 
+    private var visuallyOrderedContents: [OverlayBubbleContent] {
+        guard let overlayStore else { return [] }
+        return OverlayGeometry.visuallyOrderedBubbleContents(
+            overlayStore.overlayBubbleContents,
+            anchorDirection: overlayStore.overlayBubbleAnchorDirection
+        )
+    }
+
     private func bubbleRects() -> [CGRect] {
         guard let overlayStore else { return [] }
         let visibleFrame = screen?.visibleFrame ?? overlayStore.overlayScreenVisibleFrame
-        let contents = overlayStore.overlayBubbleContents
+        let contents = visuallyOrderedContents
         let alignLeft = OverlayGeometry.bubbleAlignsLeft(
             petScreenCenter: overlayStore.overlayPresentedPetScreenCenter,
             screenFrame: visibleFrame
@@ -1516,7 +1519,9 @@ private final class OverlayPanel: NSPanel {
             refreshPointerPassthrough()
             return
         }
-        pointerMonitor.start { [weak self] in self?.refreshPointerPassthrough() }
+        pointerMonitor.start { [weak self] screenPoint in
+            self?.refreshPointerPassthrough(at: screenPoint)
+        }
         refreshPointerPassthrough()
     }
 
@@ -1528,14 +1533,17 @@ private final class OverlayPanel: NSPanel {
     }
 
     func refreshPointerPassthrough() {
+        refreshPointerPassthrough(at: NSEvent.mouseLocation)
+    }
+
+    private func refreshPointerPassthrough(at mouseLocation: NSPoint) {
         guard pointerMonitor.isRunning else { return }
-        let mouseLocation = NSEvent.mouseLocation
-        var pointerInActivationZone = false
+        var overlayOwnsPointer = false
         if let overlayStore {
             overlayStore.reconcileOverlayPointerInteractions(
                 pressedMouseButtons: NSEvent.pressedMouseButtons
             )
-            pointerInActivationZone = shouldHandleMouse(screenPoint: mouseLocation)
+            overlayOwnsPointer = shouldHandleMouse(screenPoint: mouseLocation)
             overlayStore.setOverlayPointerNearPet(OverlayGeometry.shouldShowControls(
                 at: mouseLocation,
                 displayWidthPt: overlayStore.overlayDisplayWidthPt,
@@ -1544,14 +1552,7 @@ private final class OverlayPanel: NSPanel {
                 petVisualEnvelope: overlayStore.overlayPetVisualEnvelope
             ))
         }
-        guard overlayStore?.behavior.mousePassthrough ?? true else {
-            setIgnoresMouseEventsIfNeeded(false)
-            return
-        }
-        // Activate before the pointer reaches a compact control. Waiting until
-        // it is inside the exact 36/38pt target races the asynchronous global
-        // mouse monitor and lets the first click fall through to another app.
-        setIgnoresMouseEventsIfNeeded(!pointerInActivationZone)
+        setIgnoresMouseEventsIfNeeded(!overlayOwnsPointer)
     }
 
     override func sendEvent(_ event: NSEvent) {
@@ -1581,7 +1582,6 @@ private final class OverlayPanel: NSPanel {
 
     private func shouldHandleMouse(screenPoint: NSPoint) -> Bool {
         guard frame.contains(screenPoint) else { return false }
-        guard overlayStore?.behavior.mousePassthrough ?? true else { return true }
         let localPoint = CGPoint(
             x: screenPoint.x - frame.minX,
             y: screenPoint.y - frame.minY
@@ -1591,7 +1591,6 @@ private final class OverlayPanel: NSPanel {
 
     private func shouldHandleMouse(localPoint: NSPoint) -> Bool {
         guard let overlayStore else { return false }
-        guard overlayStore.behavior.mousePassthrough else { return true }
 
         let containerSize = CGSize(width: frame.width, height: frame.height)
         let topLeftPoint = CGPoint(x: localPoint.x, y: containerSize.height - localPoint.y)
@@ -1612,7 +1611,6 @@ private final class OverlayPanel: NSPanel {
             panelFrame: frame,
             screenFrame: screen?.visibleFrame ?? overlayStore.overlayScreenVisibleFrame,
             includeBubble: false,
-            mousePassthroughEnabled: overlayStore.behavior.mousePassthrough,
             petFrameHitTest: overlayStore.overlayPetFrameHitTest,
             overlayVisible: overlayStore.overlayVisible,
             primaryButtonDown: NSEvent.pressedMouseButtons & 1 != 0,
@@ -1632,31 +1630,112 @@ private final class OverlayPanel: NSPanel {
 final class OverlayPointerEventMonitor {
     static let eventMask: NSEvent.EventTypeMask = [
         .mouseMoved,
+        .leftMouseDown,
+        .rightMouseDown,
+        .otherMouseDown,
         .leftMouseUp,
         .rightMouseUp,
         .otherMouseUp
     ]
 
+    static let preDispatchEventTypes: [CGEventType] = [
+        CGEventType.mouseMoved,
+        .leftMouseDown,
+        .rightMouseDown,
+        .otherMouseDown,
+        .leftMouseUp,
+        .rightMouseUp,
+        .otherMouseUp
+    ]
+
+    static let preDispatchEventMask: CGEventMask = preDispatchEventTypes.reduce(
+        CGEventMask(0)
+    ) { mask, type in
+        mask | (CGEventMask(1) << type.rawValue)
+    }
+
     private var localMonitor: Any?
     private var globalMonitor: Any?
-    private var handler: (() -> Void)?
+    private var eventTap: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
+    private var fallbackTimer: Timer?
+    private var handler: ((NSPoint) -> Void)?
 
-    var isRunning: Bool { localMonitor != nil || globalMonitor != nil }
-    let usesPolling = false
+    var isRunning: Bool {
+        eventTap != nil || localMonitor != nil || globalMonitor != nil || fallbackTimer != nil
+    }
+    var usesPolling: Bool { fallbackTimer != nil }
 
-    func start(handler: @escaping () -> Void) {
+    func start(handler: @escaping (NSPoint) -> Void) {
         self.handler = handler
         guard !isRunning else { return }
 
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.eventMask) { [weak self] event in
+        if let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: Self.preDispatchEventMask,
+            callback: Self.eventTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) {
+            eventTap = tap
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            eventTapSource = source
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+        } else {
+            // A listen-only mouse tap normally needs no user permission. If
+            // macOS still refuses it (for example during a transient secure
+            // input transition), retain exact ownership without reintroducing
+            // a broad activation rectangle. The timer is fallback-only.
+            let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) {
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.handler?(NSEvent.mouseLocation)
+                }
+            }
+            fallbackTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.eventMask) {
+            [weak self] event in
             MainActor.assumeIsolated {
-                self?.handler?()
+                self?.handler?(NSEvent.mouseLocation)
             }
             return event
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: Self.eventMask) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.handler?() }
+            MainActor.assumeIsolated {
+                self?.handler?(NSEvent.mouseLocation)
+            }
         }
+    }
+
+    private static let eventTapCallback: CGEventTapCallBack = {
+        _, type, event, userInfo in
+        guard let userInfo else { return Unmanaged.passUnretained(event) }
+        let monitor = Unmanaged<OverlayPointerEventMonitor>
+            .fromOpaque(userInfo)
+            .takeUnretainedValue()
+        let eventLocation = event.location
+        MainActor.assumeIsolated {
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = monitor.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+            } else {
+                let zeroOriginFrame = NSScreen.screens.first(where: {
+                    $0.frame.origin == .zero
+                })?.frame ?? NSScreen.main?.frame ?? .zero
+                let screenPoint = OverlayPointerCoordinateSpace.screenPoint(
+                    forGlobalEventLocation: eventLocation,
+                    zeroOriginScreenFrame: zeroOriginFrame
+                )
+                monitor.handler?(screenPoint)
+            }
+        }
+        return Unmanaged.passUnretained(event)
     }
 
     func stop() {
@@ -1666,8 +1745,19 @@ final class OverlayPointerEventMonitor {
         if let globalMonitor {
             NSEvent.removeMonitor(globalMonitor)
         }
+        fallbackTimer?.invalidate()
+        if let eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
+        }
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            CFMachPortInvalidate(eventTap)
+        }
         localMonitor = nil
         globalMonitor = nil
+        eventTap = nil
+        eventTapSource = nil
+        fallbackTimer = nil
         handler = nil
     }
 }
@@ -1693,9 +1783,6 @@ private final class PassthroughOverlayHostingView<Content: View>: NSHostingView<
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if store?.behavior.mousePassthrough == false {
-            return super.hitTest(point)
-        }
         guard shouldHandleMouse(at: point) else { return nil }
         return super.hitTest(point)
     }
@@ -1726,7 +1813,6 @@ private final class PassthroughOverlayHostingView<Content: View>: NSHostingView<
             panelFrame: panelFrame,
             screenFrame: window?.screen?.visibleFrame ?? store.overlayScreenVisibleFrame,
             includeBubble: includeBubble,
-            mousePassthroughEnabled: store.behavior.mousePassthrough,
             petFrameHitTest: store.overlayPetFrameHitTest,
             overlayVisible: store.overlayVisible,
             primaryButtonDown: NSEvent.pressedMouseButtons & 1 != 0,
@@ -1773,9 +1859,6 @@ private final class PassthroughBubbleHostingView<Content: View>: NSHostingView<C
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if store?.behavior.mousePassthrough == false {
-            return super.hitTest(point)
-        }
         guard roundedBubbleContains(point) else { return nil }
         return super.hitTest(point)
     }

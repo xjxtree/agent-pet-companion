@@ -611,6 +611,38 @@ fn unchanged_asset_fingerprint_reuses_cached_validation() {
 }
 
 #[test]
+fn stale_validator_contract_fingerprint_revalidates_unchanged_assets() {
+    let temp = tempfile::tempdir().unwrap();
+    let (paths, database) = ready_state(&temp.path().join("home"));
+    let source = temp.path().join("validator-contract-cache");
+    write_sample_petpack_dir(
+        &source,
+        QualityLevel::Standard,
+        "Validator Contract Cache",
+        "半写实",
+    )
+    .unwrap();
+    let pet = import_petpack(&paths, &database, &source).unwrap();
+
+    petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
+    let current = database.pet_asset_validation(&pet.id).unwrap().unwrap();
+    database
+        .set_pet_asset_validation(&pet.id, "pre-alpha-cover-validator-fingerprint", true, None)
+        .unwrap();
+
+    let outcome = petcore::petpack::ensure_runtime_assets_cached(&paths, &database, &pet).unwrap();
+    let refreshed = database.pet_asset_validation(&pet.id).unwrap().unwrap();
+
+    assert!(outcome.warning.is_none());
+    assert!(refreshed.valid);
+    assert_eq!(refreshed.fingerprint, current.fingerprint);
+    assert_ne!(
+        refreshed.fingerprint,
+        "pre-alpha-cover-validator-fingerprint"
+    );
+}
+
+#[test]
 fn fingerprint_change_revalidates_and_repairs_runtime_frames() {
     let temp = tempfile::tempdir().unwrap();
     let (paths, database) = ready_state(&temp.path().join("home"));

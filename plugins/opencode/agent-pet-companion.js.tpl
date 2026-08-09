@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 const APC_OPENCODE_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-events-v13";
+const APC_OPENCODE_CONTRACT_VERSION = "opencode-v1.18.4-events-v16";
 
 // OpenCode 1.18.0–1.18.4 plugin hooks. Agent Pet Companion implements only observation
 // hooks; configuration, auth, headers, and environment data are never modified
@@ -138,6 +138,7 @@ const connectorProbeID = /^apc-probe-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[8
   ? process.env.APC_CONNECTOR_PROBE_ID
   : undefined;
 const sessions = new Map();
+const childSessions = new Map();
 const messageRoles = new Map();
 const messageTexts = new Map();
 const messageTextParts = new Map();
@@ -348,6 +349,9 @@ function nextDeliveryIndex() {
 
 function forward(allowlisted, options = {}) {
   const id = deliverySessionID(allowlisted);
+  if (id && childSessions.has(id) && allowlisted?.type !== "session.child") {
+    return Promise.resolve();
+  }
   if (id
     && options.allowTerminalPrelude !== true
     && ["failed", "idle", "deleted"].includes(terminalStates.get(id))
@@ -585,6 +589,60 @@ function rememberSession(properties) {
     remember(sessions, id, title.trim());
   }
   return id;
+}
+
+function declaredParentSessionID(properties) {
+  const parentID = properties?.info?.parentID ?? properties?.parentID;
+  return typeof parentID === "string" && parentID.trim() ? parentID.trim() : undefined;
+}
+
+function markChildSession(id) {
+  if (!id) return false;
+  const firstObservation = !childSessions.has(id);
+  remember(childSessions, id, true);
+  sessions.delete(id);
+  clearStepTracking(id);
+  clearPendingAssistant(id, true);
+  terminalStates.delete(id);
+  for (let index = deliveryItems.length - 1; index >= 0; index -= 1) {
+    if (deliverySessionID(deliveryItems[index].event) === id) removeQueuedItem(index);
+  }
+  return firstObservation;
+}
+
+function childSessionMarker(id, properties = {}) {
+  return {
+    type: "session.child",
+    properties: {
+      sessionID: id,
+      diagnostic: diagnostic(properties?.diagnostic, properties?.info?.diagnostic),
+    },
+  };
+}
+
+async function discoverExistingChildSessions(client) {
+  if (typeof client?.session?.list !== "function") return;
+  let response;
+  try {
+    response = await client.session.list();
+  } catch {
+    return;
+  }
+  const listed = Array.isArray(response?.data)
+    ? response.data
+    : Array.isArray(response)
+      ? response
+      : [];
+  const markers = [];
+  for (const info of listed.slice(0, MAX_TRACKED_ITEMS)) {
+    const id = typeof info?.id === "string" && info.id.trim() ? info.id.trim() : undefined;
+    if (!id || !declaredParentSessionID({ info }) || !markChildSession(id)) continue;
+    markers.push(childSessionMarker(id, { info }));
+  }
+  // Child identities must be known before hooks accept live events, but the
+  // content-free cleanup deliveries remain best-effort background work and do
+  // not extend plugin activation.
+  for (const marker of markers) void forward(marker);
 }
 
 function toolKey(session, callID) {
@@ -998,6 +1056,15 @@ function compatibleNextEvent(type, properties, id) {
 function compatibleEvent(event) {
   const type = event?.type;
   const properties = event?.properties ?? {};
+  const declaredID = sessionID(properties);
+  if (declaredID
+    && ["session.created", "session.updated", "session.deleted"].includes(type)
+    && declaredParentSessionID(properties)) {
+    return markChildSession(declaredID)
+      ? childSessionMarker(declaredID, properties)
+      : undefined;
+  }
+  if (declaredID && childSessions.has(declaredID)) return undefined;
   const id = rememberSession(properties);
 
   if (typeof type === "string" && type.startsWith("session.next.")) {
@@ -1118,9 +1185,19 @@ function compatibleEvent(event) {
   };
 }
 
-export const AgentPetCompanion = async () => {
+export const AgentPetCompanion = async (context = {}) => {
+  // Queue lineage discovery for the next task instead of entering the
+  // in-process SDK from inside Plugin activation. Current OpenCode hosts wait
+  // for this factory before their Server API can answer, and even starting the
+  // request synchronously creates a self-dependent instance initialization.
+  // Session-bearing hooks share this gate, preserving classification-before-
+  // delivery once activation has completed.
+  const sessionLineageReady = new Promise((resolve) => {
+    setTimeout(() => resolve(discoverExistingChildSessions(context?.client)), 0);
+  });
   const hooks = {
     event: async ({ event }) => {
+      await sessionLineageReady;
       const allowlisted = compatibleEvent(event);
       if (!allowlisted) return;
       const normalized = {
@@ -1149,10 +1226,12 @@ export const AgentPetCompanion = async () => {
     },
 
     dispose: async () => {
+      await sessionLineageReady;
       await drainDeliveriesForDispose();
     },
 
     "chat.message": async (input, output) => {
+      await sessionLineageReady;
       const content = textParts(output?.parts);
       if (!input?.sessionID || !content) return;
       markSessionActive(input?.sessionID);
@@ -1169,6 +1248,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "permission.ask": async (input, output) => {
+      await sessionLineageReady;
       if (!input?.sessionID) return;
       const response = ["allow", "deny"].includes(output?.status) ? output.status : undefined;
       markSessionActive(input?.sessionID);
@@ -1183,6 +1263,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "command.execute.before": async (input, output) => {
+      await sessionLineageReady;
       if (!input?.sessionID) return;
       markSessionActive(input?.sessionID);
       await forward({
@@ -1199,6 +1280,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "tool.execute.before": async (input, output) => {
+      await sessionLineageReady;
       if (!input?.sessionID) return;
       markSessionActive(input?.sessionID);
       if (activeStepKeys.has(input.sessionID)) {
@@ -1218,6 +1300,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "tool.execute.after": async (input, output) => {
+      await sessionLineageReady;
       if (!input?.sessionID) return;
       await forward(toolEvent(
         "tool.execute.after",
@@ -1232,6 +1315,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "experimental.session.compacting": async (input) => {
+      await sessionLineageReady;
       if (!input?.sessionID) return;
       markSessionActive(input?.sessionID);
       await forward({
@@ -1244,6 +1328,7 @@ export const AgentPetCompanion = async () => {
     },
 
     "experimental.text.complete": async (input, output) => {
+      await sessionLineageReady;
       if (!input?.sessionID || typeof output?.text !== "string" || !output.text.trim()) return;
       const message = assistantMessageEvent(
         input.sessionID,

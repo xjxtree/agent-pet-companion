@@ -1,5 +1,6 @@
 use crate::adapter_contracts::normalize_claude_display_message;
 use crate::agent_environment::connector_identity_environment;
+use crate::agent_session_filters::AGENT_CHILD_SESSION_SOURCE_EVENT;
 use crate::agent_state;
 use crate::connections;
 use crate::db::{
@@ -8,7 +9,10 @@ use crate::db::{
     ProductConvergenceReceipt, RevisionChecked, SessionMessageProjection,
     PRODUCT_CONVERGENCE_RECEIPT_SCHEMA_VERSION,
 };
-use crate::diagnostics::{self, DiagnosticIngestOutcome, DiagnosticLogger, DiagnosticRejection};
+use crate::diagnostics::{
+    self, AgentParseFailure, AgentParseField, AgentParseWarning, DiagnosticIngestOutcome,
+    DiagnosticLogger, DiagnosticRejection,
+};
 use crate::event_envelope::{
     event_affects_activity, validated_warp_focus_url, NormalizedAgentEvent, MAX_RECENT_EVENTS,
     MAX_SESSION_TITLE_BYTES,
@@ -53,6 +57,7 @@ const CODEX_ACTIVE_THREAD_DISPLAY_REFRESH_SECONDS: u64 = 1;
 const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
 const CODEX_ACTIVITY_REFRESH_SECONDS: u64 = 1;
 const CONNECTION_LIGHT_STATUS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW: Duration = Duration::from_secs(5);
 const MAX_CACHED_CONNECTION_STATUSES: usize = 4;
 const MAX_CACHED_SESSION_DISPLAY_ENTRIES: usize = 16;
 const MAX_SNAPSHOT_REVISION_RETRIES: usize = 8;
@@ -145,15 +150,19 @@ struct ConnectionLightStatusCache {
 
 #[derive(Debug, Clone)]
 struct CachedConnectionEvidenceProjection {
+    refreshed_at: Instant,
     artifact_revision: u64,
     base_status_json: String,
     status: AgentConnectionStatus,
+    dirty: bool,
 }
 
 /// Evidence is deliberately isolated from the five-minute filesystem cache.
 /// Entries are bounded by the four supported sources and are dirtied for only
-/// the source whose event stream changed. The exact serialized base status is
-/// part of the key so a newly persisted runtime check is visible immediately.
+/// the source whose event stream changed. Event-driven dirtiness is coalesced
+/// for a short window so a busy hook stream cannot make every `state.wait`
+/// snapshot reparse the complete retained history. Explicit checks and exact
+/// base/artifact changes still invalidate immediately.
 #[derive(Debug, Default)]
 struct ConnectionEvidenceProjectionCache {
     entries: Mutex<BTreeMap<AgentSource, CachedConnectionEvidenceProjection>>,
@@ -367,6 +376,8 @@ impl ConnectionLightStatusCache {
 impl ConnectionEvidenceProjectionCache {
     fn get_or_try_refresh<F>(
         &self,
+        now: Instant,
+        dirty_coalesce_window: Duration,
         artifact_revision: u64,
         base: &AgentConnectionStatus,
         refresh: F,
@@ -382,6 +393,8 @@ impl ConnectionEvidenceProjectionCache {
         if let Some(cached) = entries.get(&base.source).filter(|cached| {
             cached.artifact_revision == artifact_revision
                 && cached.base_status_json == base_status_json
+                && (!cached.dirty
+                    || now.saturating_duration_since(cached.refreshed_at) < dirty_coalesce_window)
         }) {
             return Ok(cached.status.clone());
         }
@@ -390,12 +403,25 @@ impl ConnectionEvidenceProjectionCache {
         entries.insert(
             base.source,
             CachedConnectionEvidenceProjection {
+                refreshed_at: now,
                 artifact_revision,
                 base_status_json,
                 status: status.clone(),
+                dirty: false,
             },
         );
         Ok(status)
+    }
+
+    fn mark_dirty(&self, source: AgentSource) {
+        if let Some(cached) = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&source)
+        {
+            cached.dirty = true;
+        }
     }
 
     fn invalidate(&self, source: AgentSource) {
@@ -540,12 +566,18 @@ impl CoreState {
             .into_iter()
             .map(|status| {
                 self.connection_evidence_projection_cache
-                    .get_or_try_refresh(artifact_revision, &status, || {
-                        Ok(connections::project_connection_evidence(
-                            &self.paths,
-                            &status,
-                        ))
-                    })
+                    .get_or_try_refresh(
+                        Instant::now(),
+                        CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                        artifact_revision,
+                        &status,
+                        || {
+                            Ok(connections::project_connection_evidence(
+                                &self.paths,
+                                &status,
+                            ))
+                        },
+                    )
             })
             .collect()
     }
@@ -556,6 +588,10 @@ impl CoreState {
 
     fn invalidate_connection_evidence_projection(&self, source: AgentSource) {
         self.connection_evidence_projection_cache.invalidate(source);
+    }
+
+    fn mark_connection_evidence_projection_dirty(&self, source: AgentSource) {
+        self.connection_evidence_projection_cache.mark_dirty(source);
     }
 
     fn invalidate_all_connection_evidence_projections(&self) {
@@ -760,12 +796,18 @@ impl CoreState {
                         activities,
                         cache.listed_thread_ids(),
                         cache.listed_thread_surfaces(),
+                        cache.child_thread_ids(),
                         cache.listing_complete(),
                     )
                 })
             };
-            let Ok((mut activities, listed_threads, listed_thread_surfaces, listing_complete)) =
-                activity_round
+            let Ok((
+                mut activities,
+                listed_threads,
+                listed_thread_surfaces,
+                child_threads,
+                listing_complete,
+            )) = activity_round
             else {
                 if let Ok(mut sync) = shared_sync.lock() {
                     sync.in_flight = false;
@@ -795,6 +837,15 @@ impl CoreState {
                 .retain(|thread_id, _| listed_threads.contains(thread_id));
             sync.in_flight = false;
             drop(sync);
+
+            // A marker deletes any hook-backed child projection already in
+            // the database and permanently suppresses later events for the
+            // same bounded session identity. Parent lineage itself is never
+            // persisted.
+            for thread_id in child_threads {
+                let marker = child_session_suppression_event(AgentSource::Codex, &thread_id);
+                let _ = database.insert_event(&marker);
+            }
 
             // Raw unarchived-list membership is authoritative even when a task
             // has aged out of bounded detail hydration. This also repairs
@@ -841,6 +892,25 @@ impl CoreState {
                 }
             }
         });
+    }
+}
+
+fn child_session_suppression_event(source: AgentSource, session_id: &str) -> AgentEvent {
+    AgentEvent {
+        id: new_id("evt_child_session"),
+        source,
+        project_path: None,
+        session_id: Some(session_id.to_string()),
+        event_type: AgentEventType::Start,
+        title: AgentEventType::Start.zh_label().to_string(),
+        detail: None,
+        payload_json: json!({
+            "source_event": AGENT_CHILD_SESSION_SOURCE_EVENT,
+            "session_active": false,
+            "session_open": false,
+            "diagnostic": false
+        }),
+        created_at: now_rfc3339(),
     }
 }
 
@@ -1436,6 +1506,7 @@ fn known_rpc_method(method: &str) -> bool {
             | "settings.get"
             | "settings.update"
             | "agent.ingest"
+            | "agent.parse_warnings"
             | "agent.session.acknowledge"
             | "events.recent"
             | "pet.list"
@@ -1449,9 +1520,14 @@ fn known_rpc_method(method: &str) -> bool {
             | "petpack.export"
             | "generation.start"
             | "generation.retry"
+            | "generation.resume"
             | "generation.messages"
+            | "generation.messages.list"
             | "generation.for_pet"
             | "generation.latest"
+            | "generation.history.list"
+            | "generation.history.detail"
+            | "generation.history.delete"
             | "generation.edit"
             | "generation.messages.wait"
             | "generation.reply"
@@ -1501,6 +1577,7 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "settings.get" => &["key"],
         "settings.update" => &["key", "value"],
         "agent.ingest" => AGENT_EVENT_ALLOWED_FIELDS,
+        "agent.parse_warnings" => &["source", "warnings"],
         "agent.session.acknowledge" => &["acknowledgement_id"],
         "events.recent" => &["limit"],
         "pet.activate" | "pet.delete" | "pet.assets.repair" => &["id"],
@@ -1511,11 +1588,17 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         "petpack.export" => &["id", "path"],
         "generation.start" => &["description", "style", "quality", "reference_images"],
         "generation.retry" => &["job_id", "form"],
-        "generation.messages" | "generation.cancel" => &["job_id"],
+        "generation.resume" => &["job_id", "instruction", "request_id"],
+        "generation.messages"
+        | "generation.cancel"
+        | "generation.history.detail"
+        | "generation.history.delete" => &["job_id"],
+        "generation.messages.list" => &["job_id", "before_sequence", "limit"],
         "generation.for_pet" => &["pet_id"],
+        "generation.history.list" => &["limit"],
         "generation.edit" => &["pet_id", "instruction", "baseline_revision_id"],
         "generation.messages.wait" => &["job_id", "after_revision", "timeout_ms"],
-        "generation.reply" => &["job_id", "content"],
+        "generation.reply" => &["job_id", "content", "request_id"],
         "connections.check" => &["source", "cwd"],
         "connections.repair" => &["source", "cwd"],
         "connections.uninstall" | "connections.test" => &["source"],
@@ -1573,14 +1656,24 @@ fn invalid_params_message(message: &str) -> bool {
 }
 
 fn rpc_error_value(id: Value, code: i64, message: &str) -> Value {
-    json!({
+    let mut value = json!({
         "jsonrpc": "2.0",
         "id": id,
         "error": {
             "code": code,
             "message": bounded_rpc_error_message(message),
         }
-    })
+    });
+    if let Some(payload) = message
+        .strip_prefix("generation_active_conflict: ")
+        .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+    {
+        value["error"]["data"] = json!({
+            "kind": "generation_active_conflict",
+            "active_job": payload
+        });
+    }
+    value
 }
 
 fn bounded_rpc_error_message(message: &str) -> String {
@@ -2022,9 +2115,24 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             Ok(json!({ "ok": true }))
         }
         "agent.ingest" => {
-            let event = normalize_event(&request.params)?;
+            let event = match normalize_event(&request.params) {
+                Ok(event) => event,
+                Err(error) => {
+                    if let Ok(source) = required_source(&request.params) {
+                        state.diagnostics.agent_parse_warning(
+                            source,
+                            AgentParseWarning {
+                                field: AgentParseField::NormalizedEvent,
+                                failure: AgentParseFailure::NormalizationFailed,
+                            },
+                        );
+                    }
+                    return Err(error);
+                }
+            };
             ingest_event(state, event)
         }
+        "agent.parse_warnings" => record_agent_parse_warnings(state, &request.params),
         "agent.session.acknowledge" => acknowledge_agent_session(state, &request.params),
         "events.recent" => {
             let limit = optional_u64_param(&request.params, "limit")?
@@ -2184,12 +2292,56 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 "baseline_revision_id": baseline_revision_id
             }))
         }
+        "generation.resume" => {
+            let job_id = required_string(&request.params, "job_id")?;
+            let instruction = optional_string_param(&request.params, "instruction")?;
+            let request_id = optional_string_param(&request.params, "request_id")?;
+            let _admission_guard = state.agent_host_process_guard();
+            state.ensure_generation_admission_open()?;
+            let resumed_job_id = generation::resume_generation_with_instruction_for_instance(
+                &state.paths,
+                &state.database,
+                &job_id,
+                instruction,
+                request_id,
+                state.instance_id(),
+            )?;
+            let resumed_job = state.database.generation_job(&resumed_job_id)?;
+            let operation = resumed_job
+                .as_ref()
+                .map(generation::generation_job_operation)
+                .unwrap_or(generation::GENERATION_OPERATION_CREATE);
+            let baseline_revision_id = resumed_job
+                .as_ref()
+                .map(|job| generation::generation_job_baseline_revision_id(&state.paths, job))
+                .transpose()?
+                .flatten();
+            Ok(json!({
+                "ok": true,
+                "job_id": resumed_job_id,
+                "resumed": true,
+                "operation": operation,
+                "baseline_revision_id": baseline_revision_id
+            }))
+        }
         "generation.messages" => {
             let job_id = required_string(&request.params, "job_id")?;
             Ok(json!(generation::read_messages_with_database(
                 &state.paths,
                 &state.database,
                 &job_id
+            )?))
+        }
+        "generation.messages.list" => {
+            let job_id = required_string(&request.params, "job_id")?;
+            let before_sequence = optional_u64_param(&request.params, "before_sequence")?;
+            let limit = bounded_u64_param(&request.params, "limit", 50, 1, 200)? as usize;
+            Ok(json!(generation::studio_messages_page(
+                &state.paths,
+                &state.database,
+                &job_id,
+                before_sequence,
+                limit,
             )?))
         }
         "generation.for_pet" => {
@@ -2213,6 +2365,32 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
                 }));
             };
             generation_session_recovery_snapshot(state, &job, None)
+        }
+        "generation.history.list" => {
+            let limit = bounded_u64_param(
+                &request.params,
+                "limit",
+                generation::DEFAULT_STUDIO_HISTORY_LIMIT as u64,
+                1,
+                generation::MAX_STUDIO_HISTORY_LIMIT as u64,
+            )? as usize;
+            Ok(json!(generation::studio_history(&state.database, limit)?))
+        }
+        "generation.history.detail" => {
+            let job_id = required_string(&request.params, "job_id")?;
+            Ok(json!(generation::studio_history_detail(
+                &state.paths,
+                &state.database,
+                &job_id,
+            )?))
+        }
+        "generation.history.delete" => {
+            let job_id = required_string(&request.params, "job_id")?;
+            Ok(json!(generation::delete_studio_history(
+                &state.paths,
+                &state.database,
+                &job_id,
+            )?))
         }
         "generation.edit" => {
             let pet_id = required_string(&request.params, "pet_id")?;
@@ -2259,13 +2437,17 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
         "generation.reply" => {
             let job_id = required_string(&request.params, "job_id")?;
             let content = required_string(&request.params, "content")?;
-            Ok(json!(generation::append_user_reply_for_instance(
-                &state.paths,
-                &state.database,
-                &job_id,
-                &content,
-                state.instance_id(),
-            )?))
+            let request_id = optional_string_param(&request.params, "request_id")?;
+            Ok(json!(
+                generation::append_user_reply_with_request_for_instance(
+                    &state.paths,
+                    &state.database,
+                    &job_id,
+                    &content,
+                    request_id,
+                    state.instance_id(),
+                )?
+            ))
         }
         "generation.cancel" => {
             let job_id = required_string(&request.params, "job_id")?;
@@ -2534,7 +2716,7 @@ fn ingest_event(state: &CoreState, event: AgentEvent) -> Result<Value> {
         // Receipts, ordinary activity, and complete task evidence are all
         // derived from this source's event stream. Refresh only that evidence
         // projection; the static filesystem scan remains reusable.
-        state.invalidate_connection_evidence_projection(event.source);
+        state.mark_connection_evidence_projection_dirty(event.source);
     }
     let behavior = state.database.behavior()?;
     let triggered = inserted && event_drives_overlay(&behavior, &event);
@@ -2559,6 +2741,26 @@ fn ingest_event(state: &CoreState, event: AgentEvent) -> Result<Value> {
         "event": (!suppressed).then_some(event),
         "active_agent_state": active_agent_state,
     }))
+}
+
+fn record_agent_parse_warnings(state: &CoreState, params: &Value) -> Result<Value> {
+    const MAX_WARNINGS: usize = 8;
+    let source = required_source(params)?;
+    let warnings = params
+        .get("warnings")
+        .cloned()
+        .ok_or_else(|| invalid_params("missing warnings"))?;
+    let warnings: Vec<AgentParseWarning> = serde_json::from_value(warnings)
+        .map_err(|_| invalid_params("warnings must use the closed parse-warning schema"))?;
+    if warnings.is_empty() || warnings.len() > MAX_WARNINGS {
+        return Err(invalid_params(format!(
+            "warnings must contain between 1 and {MAX_WARNINGS} entries"
+        )));
+    }
+    for warning in warnings.iter().copied() {
+        state.diagnostics.agent_parse_warning(source, warning);
+    }
+    Ok(json!({ "ok": true, "recorded": warnings.len() }))
 }
 
 fn acknowledge_agent_session(state: &CoreState, params: &Value) -> Result<Value> {
@@ -3008,6 +3210,9 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
         .rev()
         .find(|message| message.get("kind").and_then(Value::as_str) == Some("input_request"))
         .cloned();
+    let cancellation_pending =
+        job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+    let capabilities = generation::generation_job_capabilities(&job, false);
     Ok(Some(json!({
         "job_id": job.id,
         "status": enum_name(job.status),
@@ -3019,6 +3224,13 @@ fn active_generation_snapshot(state: &CoreState) -> Result<Option<Value>> {
         "baseline_revision_id": baseline_revision_id,
         "owner_instance_id": job.owner_instance_id,
         "heartbeat_at": job.heartbeat_at,
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+        "recoverable": job.recoverable,
+        "failure_code": job.failure_code,
+        "pause_reason": job.pause_reason,
+        "cancellation_pending": cancellation_pending,
+        "capabilities": capabilities,
         "message_revision": state.database.generation_message_revision(&job.id)?.to_string(),
         "messages": messages,
         "input_request": input_request,
@@ -3034,6 +3246,9 @@ fn generation_session_recovery_snapshot(
     let operation = generation::generation_job_operation(job);
     let baseline_revision_id = generation::generation_job_baseline_revision_id(&state.paths, job)?;
     let result = generation::read_generation_result(&state.paths, &state.database, &job.id)?;
+    let cancellation_pending =
+        job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+    let capabilities = generation::generation_job_capabilities(job, false);
     Ok(json!({
         "ok": true,
         "found": true,
@@ -3049,6 +3264,14 @@ fn generation_session_recovery_snapshot(
         "validation_summary": result.as_ref().map(|result| &result.validation_summary),
         "created_at": job.created_at,
         "updated_at": job.updated_at,
+        "heartbeat_at": job.heartbeat_at,
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+        "recoverable": job.recoverable,
+        "failure_code": job.failure_code,
+        "pause_reason": job.pause_reason,
+        "cancellation_pending": cancellation_pending,
+        "capabilities": capabilities,
         "form": recovery_form.form,
         "reference_reselection_count": recovery_form.reference_reselection_count,
         "message_revision": state.database.generation_message_revision(&job.id)?.to_string(),
@@ -3819,7 +4042,43 @@ mod tests {
     }
 
     #[test]
-    fn inserted_evidence_dirties_only_its_source_projection_not_static_scan() {
+    fn agent_parse_warning_rpc_logs_only_closed_categories() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
+        state.ensure_ready().unwrap();
+        let result = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!(1)),
+                method: "agent.parse_warnings".to_string(),
+                params: json!({
+                    "source": "pi",
+                    "warnings": [{
+                        "field": "message_content",
+                        "failure": "unsupported_shape"
+                    }]
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(result["recorded"], 1);
+        state.diagnostics.sync();
+
+        let records = std::fs::read_to_string(state.paths.logs_dir.join("petcore.jsonl")).unwrap();
+        let warning = records
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|record| record.get("event").and_then(Value::as_str) == Some("parse_warning"))
+            .expect("parse warning log");
+        assert_eq!(warning["metadata"]["source"], "pi");
+        assert_eq!(warning["metadata"]["field"], "message_content");
+        assert_eq!(warning["metadata"]["failure"], "unsupported_shape");
+        assert_eq!(warning["metadata"].as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn inserted_evidence_is_coalesced_without_dirtying_the_static_scan() {
         let temp = tempfile::tempdir().unwrap();
         let state = CoreState::new(AppPaths::new(temp.path().join("app-home")));
         state.ensure_ready().unwrap();
@@ -3846,10 +4105,16 @@ mod tests {
             .unwrap();
         state
             .connection_evidence_projection_cache
-            .get_or_try_refresh(7, &status, || {
-                evidence_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(status.clone())
-            })
+            .get_or_try_refresh(
+                started_at,
+                CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                7,
+                &status,
+                || {
+                    evidence_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(status.clone())
+                },
+            )
             .unwrap();
 
         let event = AgentEvent {
@@ -3885,14 +4150,96 @@ mod tests {
             .unwrap();
         state
             .connection_evidence_projection_cache
-            .get_or_try_refresh(7, &status, || {
-                evidence_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(status.clone())
-            })
+            .get_or_try_refresh(
+                started_at + Duration::from_secs(1),
+                CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                7,
+                &status,
+                || {
+                    evidence_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(status.clone())
+                },
+            )
             .unwrap();
 
         assert_eq!(static_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(evidence_calls.load(Ordering::SeqCst), 1);
+
+        state
+            .connection_evidence_projection_cache
+            .get_or_try_refresh(
+                started_at + CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                7,
+                &status,
+                || {
+                    evidence_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(status.clone())
+                },
+            )
+            .unwrap();
         assert_eq!(evidence_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn evidence_projection_coalesces_a_ten_thousand_event_burst() {
+        let cache = ConnectionEvidenceProjectionCache::default();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let started_at = Instant::now();
+        let status = AgentConnectionStatus {
+            source: AgentSource::Codex,
+            items: Vec::new(),
+            install_paths: Vec::new(),
+            connector_installed: true,
+            verification: petcore_types::AgentVerification::default(),
+            capabilities: petcore_types::AgentConnectorCapabilities::default(),
+            check_mode: petcore_types::ConnectionCheckMode::Runtime,
+            checked_at: now_rfc3339(),
+        };
+
+        cache
+            .get_or_try_refresh(
+                started_at,
+                CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                1,
+                &status,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(status.clone())
+                },
+            )
+            .unwrap();
+
+        for offset in 0..10_000_u64 {
+            cache.mark_dirty(AgentSource::Codex);
+            cache
+                .get_or_try_refresh(
+                    started_at + Duration::from_micros(offset % 1_000),
+                    CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                    1,
+                    &status,
+                    || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(status.clone())
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        cache
+            .get_or_try_refresh(
+                started_at + CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW,
+                1,
+                &status,
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(status.clone())
+                },
+            )
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

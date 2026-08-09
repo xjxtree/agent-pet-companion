@@ -59,10 +59,21 @@ struct PetStudioTests {
             sessionState: .failed
         ) == .failed)
         #expect(PetStudioPresentation.stageState(
+            at: 0,
+            activeIndex: 0,
+            sessionState: .cancelled
+        ) == .cancelled)
+        #expect(PetStudioPresentation.stageState(
             at: 3,
             activeIndex: 3,
             sessionState: .succeeded
         ) == .complete)
+        #expect(PetStudioPresentation.stageState(
+            at: 1,
+            activeIndex: 0,
+            sessionState: .failed,
+            hasRecordedRuntimePhase: false
+        ) == .unrecorded)
     }
 
     @Test
@@ -237,6 +248,68 @@ struct PetStudioTests {
     }
 
     @Test
+    func codexConversationCombinesLiveDeltasAndStartsANewBubbleAfterUserInput() {
+        let messages = [
+            GenerationMessage(
+                id: "user-1",
+                role: "user",
+                content: "Make a fox",
+                progress: 0.01,
+                createdAt: ""
+            ),
+            GenerationMessage(
+                id: "progress",
+                role: "assistant",
+                content: "Starting",
+                progress: 0.08,
+                createdAt: "",
+                kind: "generation_progress"
+            ),
+            GenerationMessage(
+                id: "codex-1",
+                role: "assistant",
+                content: "I am ",
+                progress: 0.11,
+                createdAt: "",
+                kind: "codex_message"
+            ),
+            GenerationMessage(
+                id: "codex-2",
+                role: "assistant",
+                content: "building it.",
+                progress: 0.11,
+                createdAt: "",
+                kind: "codex_message"
+            ),
+            GenerationMessage(
+                id: "user-2",
+                role: "user",
+                content: "Keep the blue scarf",
+                progress: 0.2,
+                createdAt: ""
+            ),
+            GenerationMessage(
+                id: "codex-3",
+                role: "assistant",
+                content: "Understood.",
+                progress: 0.25,
+                createdAt: "",
+                kind: "codex_message"
+            ),
+        ]
+
+        let entries = PetStudioPresentation.codexConversationEntries(messages)
+
+        #expect(entries.count == 4)
+        #expect(entries[0].role == .user)
+        #expect(entries[1].role == .codex)
+        #expect(entries[1].content == "I am building it.")
+        #expect(entries[2].content == "Keep the blue scarf")
+        #expect(entries[3].content == "Understood.")
+        #expect(PetStudioPresentation.progressMessages(messages).map(\.id) == ["progress"])
+    }
+
+    @Test
     func onlyTypedRuntimeProgressKindsUseTheCompactProgressRow() {
         let progress = GenerationMessage(
             role: "assistant",
@@ -266,11 +339,53 @@ struct PetStudioTests {
             createdAt: "",
             kind: "not_progress"
         )
+        let activity = GenerationMessage(
+            role: "assistant",
+            content: "Generating",
+            progress: 0.11,
+            createdAt: "",
+            kind: "generation_activity_generating"
+        )
+        let checkpoint = GenerationMessage(
+            role: "assistant",
+            content: "Continuing",
+            progress: 0.13,
+            createdAt: "",
+            kind: "generation_checkpoint"
+        )
+        let heartbeat = GenerationMessage(
+            role: "assistant",
+            content: "Alive",
+            progress: 0.13,
+            createdAt: "",
+            kind: "generation_heartbeat"
+        )
 
         #expect(PetStudioPresentation.isProgressMessage(progress))
         #expect(PetStudioPresentation.isProgressMessage(legacyStarted))
+        #expect(PetStudioPresentation.isProgressMessage(activity))
+        #expect(PetStudioPresentation.isProgressMessage(checkpoint))
+        #expect(!PetStudioPresentation.isProgressMessage(heartbeat))
         #expect(!PetStudioPresentation.isProgressMessage(ordinary))
         #expect(!PetStudioPresentation.isProgressMessage(misleadingUnknown))
+    }
+
+    @Test
+    func legacyCheckpointLimitFailureIsNotPresentedAsAConnectionFailure() {
+        let failure = GenerationMessage(
+            role: "assistant",
+            content: "external full source remained incomplete after 6 bounded checkpoint turns。请在 Agent 连接中修复 Codex App Server 后重试。",
+            progress: 1,
+            createdAt: "",
+            kind: "generation_failed"
+        )
+
+        let detail = PetStudioPresentation.failureDetail(for: [failure])
+
+        #expect(detail.contains("旧版固定续接次数上限"))
+        #expect(detail.contains("并非 Codex App Server 连接故障"))
+        #expect(detail.contains("继续制作"))
+        #expect(!detail.contains("Agent 连接中修复"))
     }
 
     @Test

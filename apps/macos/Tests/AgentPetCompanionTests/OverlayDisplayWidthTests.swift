@@ -35,8 +35,8 @@ struct OverlayDisplayWidthTests {
     @Test
     func persistedPlacementRejectsNonfiniteOutOfRangeAndAnonymousValues() {
         let invalidPayloads = [
-            #"{"x":0,"y":0,"display_width_pt":79,"display_id":"main"}"#,
-            #"{"x":0,"y":0,"display_width_pt":225,"display_id":"main"}"#,
+            #"{"x":0,"y":0,"display_width_pt":99,"display_id":"main"}"#,
+            #"{"x":0,"y":0,"display_width_pt":301,"display_id":"main"}"#,
             #"{"x":0,"y":0,"display_width_pt":112,"display_id":""}"#,
             #"{"x":0,"y":0,"display_width_pt":112,"display_id":"  \n"}"#,
         ]
@@ -69,11 +69,11 @@ struct OverlayDisplayWidthTests {
     }
 
     @Test(arguments: [
-        (-100.0, 80.0),
-        (80.0, 80.0),
+        (-100.0, 100.0),
+        (100.0, 100.0),
         (112.0, 112.0),
-        (224.0, 224.0),
-        (999.0, 224.0),
+        (300.0, 300.0),
+        (999.0, 300.0),
     ])
     func placementClampsDisplayWidthToTheSupportedRange(
         proposed: Double,
@@ -85,11 +85,11 @@ struct OverlayDisplayWidthTests {
 
     @Test
     func everySupportedAndSeededIntermediateWidthKeepsTheTwelveByThirteenCanvas() {
-        var widths: [CGFloat] = [80, 112, 224]
+        var widths: [CGFloat] = [100, 112, 300]
         var seed: UInt64 = 0xA6E1_5EED
         for _ in 0 ..< 64 {
             seed = seed &* 6_364_136_223_846_793_005 &+ 1
-            widths.append(80 + CGFloat(seed % 145))
+            widths.append(100 + CGFloat(seed % 201))
         }
 
         for width in widths {
@@ -125,8 +125,8 @@ struct OverlayDisplayWidthTests {
         }
 
         for (currentWidth, proposedWidth): (CGFloat, CGFloat) in [
-            (112, 224),
-            (224, 80),
+            (112, 300),
+            (300, 100),
         ] {
             let currentBounds = allowedCenters(for: currentWidth)
             let proposedBounds = allowedCenters(for: proposedWidth)
@@ -243,7 +243,7 @@ struct OverlayDisplayWidthTests {
 
         let samplesPerSecond = 60
         for sample in 0 ..< 10 * samplesPerSecond {
-            let width = 80 + CGFloat(sample % 145)
+            let width = 100 + CGFloat(sample % 201)
             store.previewOverlayDisplayWidthPt(width)
         }
 

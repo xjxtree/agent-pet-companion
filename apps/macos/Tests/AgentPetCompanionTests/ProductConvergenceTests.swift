@@ -180,7 +180,7 @@ struct ProductConvergenceTests {
         await first.value
         #expect(
             store.appUpdateConvergenceState
-                == .needsAttention(.connectors([.codex]))
+                == .needsAttention(.connectors([codexConflictIssue]))
         )
         #expect(!store.canStartNewGenerationWork)
         #expect(updateCalls == 0)
@@ -189,6 +189,141 @@ struct ProductConvergenceTests {
         await retry.value
         #expect(store.appUpdateConvergenceState == .idle)
         #expect(updateCalls == 1)
+    }
+
+    @Test
+    func connectorAttentionNamesTheFailureAndTheRecoverySteps() {
+        let issues = incompleteCodexReport().attentionIssues
+        #expect(issues == [codexConflictIssue])
+
+        let attention = AppUpdateConvergenceAttention.connectors(issues)
+        let chinese = AppUpdateConvergenceAttentionPresentation.resolve(
+            attention,
+            locale: "zh-Hans"
+        )
+        #expect(chinese.title == "Codex 连接需要处理")
+        #expect(chinese.detail.contains("不属于本 App"))
+        #expect(chinese.detail.contains("全部检查"))
+
+        let english = AppUpdateConvergenceAttentionPresentation.resolve(
+            attention,
+            locale: "en"
+        )
+        #expect(english.title == "Action Required for Codex")
+        #expect(english.detail.contains("left them untouched"))
+        #expect(english.detail.contains("Check All"))
+    }
+
+    @Test
+    func nonConnectorAttentionProvidesAConcreteRecoveryPath() {
+        let bundled = AppUpdateConvergenceAttentionPresentation.resolve(
+            .bundledPets,
+            locale: "en"
+        )
+        #expect(bundled.title == "Bundled Pet Files Are Missing")
+        #expect(bundled.detail.contains("official release"))
+        #expect(bundled.detail.contains("replace the App"))
+
+        let service = AppUpdateConvergenceAttentionPresentation.resolve(
+            .service,
+            locale: "zh-Hans"
+        )
+        #expect(service.title == "无法验证本地服务")
+        #expect(service.detail.contains("恢复服务"))
+        #expect(service.detail.contains("重新检查"))
+    }
+
+    @Test
+    func successfulManualRuntimeCheckPersistsAuthoritativeConvergence() async throws {
+        let manifest = runtimeManifest(buildID: "build-new", releaseChannel: "release")
+        let incomplete = incompleteCodexReport()
+        let complete = completeReport()
+        let receipt = convergenceReceipt(manifest: manifest, report: complete)
+        let checkedStatus = healthyManagedCodexStatus()
+        var methods: [String] = []
+        var refreshCount = 0
+        let store = makeStore(
+            manifest: manifest,
+            sleeper: { _ in await Task.yield() },
+            initialPetStudioCodexAvailability: .available,
+            request: { method, _, _ in
+                methods.append(method)
+                switch method {
+                case "product.convergence.get":
+                    return NSNull()
+                case "product.convergence.preflight":
+                    return try jsonObject(safePreflight)
+                case "connections.refresh_installed":
+                    refreshCount += 1
+                    return try jsonObject(refreshCount == 1 ? incomplete : complete)
+                case "connections.check":
+                    return try jsonObject(checkedStatus)
+                case "product.convergence.update":
+                    return try jsonObject(receipt)
+                default:
+                    throw ProductConvergenceTestError.unexpectedMethod(method)
+                }
+            }
+        )
+
+        let convergence = try #require(store.scheduleProductConvergence())
+        await convergence.value
+        #expect(
+            store.appUpdateConvergenceState
+                == .needsAttention(.connectors([codexConflictIssue]))
+        )
+        #expect(!store.canStartNewGenerationWork)
+        store.updateGenerationDescription("A complete mechanical otter pet brief")
+        #expect(
+            store.generationStartBlockingDetail
+                == APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+        )
+        #expect(
+            store.generationStartPresentationDetail
+                == APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+        )
+
+        store.checkConnection(.codex)
+        for _ in 0..<1_000 where store.connectionOperationState.isRunning {
+            await Task.yield()
+        }
+        for _ in 0..<2_000 where
+            !methods.contains("product.convergence.update")
+                || store.appUpdateConvergenceState != .idle
+                || !store.canStartNewGenerationWork
+        {
+            await Task.yield()
+        }
+
+        #expect(!store.connectionOperationState.isRunning)
+        #expect(store.appUpdateConvergenceState == .idle)
+        #expect(store.canStartNewGenerationWork)
+        #expect(store.canStartGeneration)
+        #expect(store.generationStartBlockingDetail == nil)
+        #expect(
+            store.generationStartPresentationDetail
+                == APCLocalization.text(.studioWelcomeDetail)
+        )
+        #expect(methods.contains("product.convergence.update"))
+        #expect(refreshCount == 2)
+    }
+
+    @Test
+    func manualRecoveryRequiresAnExactVerifiedRuntimeStatus() {
+        let healthy = healthyManagedCodexStatus()
+        #expect(ProductConvergenceConnectionRecoveryPolicy.resolvesAttention(healthy))
+
+        var light = healthy
+        light.checkMode = .light
+        #expect(!ProductConvergenceConnectionRecoveryPolicy.resolvesAttention(light))
+
+        var unverified = healthy
+        unverified.verification.status = .unverified
+        #expect(!ProductConvergenceConnectionRecoveryPolicy.resolvesAttention(unverified))
+
+        var incomplete = healthy
+        incomplete.items[1].status = .needsFix
+        #expect(!ProductConvergenceConnectionRecoveryPolicy.resolvesAttention(incomplete))
     }
 
     @Test
@@ -411,6 +546,7 @@ struct ProductConvergenceTests {
         sleeper: @escaping AppStore.ProductConvergenceSleeper = { _ in
             try await Task.sleep(for: .seconds(60))
         },
+        initialPetStudioCodexAvailability: PetStudioCodexAvailability = .checking,
         request: @escaping AppStore.PetCoreRequestOverride,
         refreshSnapshot: @escaping @MainActor () async throws -> Void = {},
         bundledPetSeeder: @escaping AppStore.BundledPetSeeder = { true },
@@ -430,6 +566,7 @@ struct ProductConvergenceTests {
             ),
             bundledPetSeeder: bundledPetSeeder,
             petCoreRequestOverride: request,
+            initialPetStudioCodexAvailability: initialPetStudioCodexAvailability,
             productConvergenceSleeper: sleeper,
             productConvergenceNoticePreferences: ProductConvergenceNoticePreferences(
                 defaults: defaults
@@ -467,6 +604,13 @@ struct ProductConvergenceTests {
             safe: true,
             activeGeneration: false,
             connectionOperationActive: false
+        )
+    }
+
+    private var codexConflictIssue: ProductConnectorConvergenceIssue {
+        ProductConnectorConvergenceIssue(
+            source: .codex,
+            reason: .managedPathConflict
         )
     }
 
@@ -558,6 +702,39 @@ struct ProductConvergenceTests {
             error: "conflict"
         )
         return ProductConnectorRefreshReport(ok: false, results: results)
+    }
+
+    private func healthyManagedCodexStatus() -> AgentConnectionStatus {
+        AgentConnectionStatus(
+            source: .codex,
+            items: ["Plugin", "Studio", "Maker"].map {
+                ConnectionCheckItem(
+                    code: .managedConnector,
+                    name: $0,
+                    status: .ok,
+                    detail: "v0.5.3 · 正常"
+                )
+            },
+            installPaths: ["/managed/codex"],
+            connectorInstalled: true,
+            checkMode: .runtime,
+            checkedAt: "2026-08-07T12:00:00Z",
+            verification: AgentVerification(
+                status: .verified,
+                title: "Codex",
+                detail: "verified"
+            ),
+            capabilities: AgentConnectorCapabilities(
+                contractVersion: "codex-hooks.v0.5.3",
+                subscribedEvents: [],
+                mappedInformation: [],
+                privacyExclusions: [],
+                repairableConnectorIssue: false,
+                canRepairManagedConnector: true,
+                managedPathConflict: false,
+                canUninstallManagedConnector: true
+            )
+        )
     }
 
     private func convergenceReceipt(

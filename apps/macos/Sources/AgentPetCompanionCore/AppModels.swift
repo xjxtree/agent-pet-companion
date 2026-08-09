@@ -449,7 +449,7 @@ public enum BubbleFontScale: String, CaseIterable, Identifiable, Codable, Sendab
     public var multiplier: Double {
         switch self {
         case .standard: 1
-        case .large: 1.25
+        case .large: 1.15
         }
     }
 
@@ -468,7 +468,9 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
     public var appearanceTheme: AppearanceTheme
     public var bubbleFontScale: BubbleFontScale
     public var clickMenu: Bool
-    public var mousePassthrough: Bool
+    /// Retained on the wire for compatibility. Transparent-area passthrough is
+    /// a product invariant and is therefore always enabled.
+    public let mousePassthrough: Bool
     public var autoHide: Bool
     public var sessionMessageTimeoutMinutes: Int
     public var groupSessionsByAgent: Bool
@@ -483,7 +485,6 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         appearanceTheme: AppearanceTheme = .system,
         bubbleFontScale: BubbleFontScale = .standard,
         clickMenu: Bool = true,
-        mousePassthrough: Bool = true,
         autoHide: Bool = false,
         sessionMessageTimeoutMinutes: Int = 15,
         groupSessionsByAgent: Bool = true,
@@ -497,7 +498,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         self.appearanceTheme = appearanceTheme
         self.bubbleFontScale = bubbleFontScale
         self.clickMenu = clickMenu
-        self.mousePassthrough = mousePassthrough
+        self.mousePassthrough = true
         self.autoHide = autoHide
         self.sessionMessageTimeoutMinutes = sessionMessageTimeoutMinutes
         self.groupSessionsByAgent = groupSessionsByAgent
@@ -538,7 +539,9 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
             forKey: .bubbleFontScale
         ) ?? defaults.bubbleFontScale
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu) ?? defaults.clickMenu
-        mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough) ?? defaults.mousePassthrough
+        // Canonicalize legacy persisted `false` values during decode. The key
+        // remains present so older App/PetCore versions can still read state.
+        mousePassthrough = true
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide) ?? defaults.autoHide
         sessionMessageTimeoutMinutes = try container.decodeIfPresent(
             Int.self,
@@ -571,7 +574,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         try container.encode(appearanceTheme, forKey: .appearanceTheme)
         try container.encode(bubbleFontScale, forKey: .bubbleFontScale)
         try container.encode(clickMenu, forKey: .clickMenu)
-        try container.encode(mousePassthrough, forKey: .mousePassthrough)
+        try container.encode(true, forKey: .mousePassthrough)
         try container.encode(autoHide, forKey: .autoHide)
         try container.encode(sessionMessageTimeoutMinutes, forKey: .sessionMessageTimeoutMinutes)
         try container.encode(groupSessionsByAgent, forKey: .groupSessionsByAgent)
@@ -599,7 +602,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
     public var appearanceTheme: AppearanceTheme?
     public var bubbleFontScale: BubbleFontScale?
     public var clickMenu: Bool?
-    public var mousePassthrough: Bool?
     public var autoHide: Bool?
     public var sessionMessageTimeoutMinutes: Int?
     public var groupSessionsByAgent: Bool?
@@ -618,9 +620,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             ? nil
             : next.bubbleFontScale
         clickMenu = previous.clickMenu == next.clickMenu ? nil : next.clickMenu
-        mousePassthrough = previous.mousePassthrough == next.mousePassthrough
-            ? nil
-            : next.mousePassthrough
         autoHide = previous.autoHide == next.autoHide ? nil : next.autoHide
         sessionMessageTimeoutMinutes = previous.sessionMessageTimeoutMinutes == next.sessionMessageTimeoutMinutes
             ? nil
@@ -644,7 +643,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             && appearanceTheme == nil
             && bubbleFontScale == nil
             && clickMenu == nil
-            && mousePassthrough == nil
             && autoHide == nil
             && sessionMessageTimeoutMinutes == nil
             && groupSessionsByAgent == nil
@@ -660,7 +658,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         case appearanceTheme = "appearance_theme"
         case bubbleFontScale = "bubble_font_scale"
         case clickMenu = "click_menu"
-        case mousePassthrough = "mouse_passthrough"
         case autoHide = "auto_hide"
         case sessionMessageTimeoutMinutes = "session_message_timeout_minutes"
         case groupSessionsByAgent = "group_sessions_by_agent"
@@ -683,7 +680,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
             forKey: .bubbleFontScale
         )
         clickMenu = try container.decodeIfPresent(Bool.self, forKey: .clickMenu)
-        mousePassthrough = try container.decodeIfPresent(Bool.self, forKey: .mousePassthrough)
         autoHide = try container.decodeIfPresent(Bool.self, forKey: .autoHide)
         sessionMessageTimeoutMinutes = try container.decodeIfPresent(
             Int.self,
@@ -719,7 +715,6 @@ public struct BehaviorSettingsPatch: Codable, Equatable, Sendable {
         try container.encodeIfPresent(appearanceTheme, forKey: .appearanceTheme)
         try container.encodeIfPresent(bubbleFontScale, forKey: .bubbleFontScale)
         try container.encodeIfPresent(clickMenu, forKey: .clickMenu)
-        try container.encodeIfPresent(mousePassthrough, forKey: .mousePassthrough)
         try container.encodeIfPresent(autoHide, forKey: .autoHide)
         try container.encodeIfPresent(
             sessionMessageTimeoutMinutes,
@@ -1041,8 +1036,8 @@ public enum OverlayPlacementCanonicalization {
 }
 
 public struct OverlayPlacement: Codable, Hashable, Sendable {
-    public static let minimumDisplayWidthPt = 80.0
-    public static let maximumDisplayWidthPt = 224.0
+    public static let minimumDisplayWidthPt = 100.0
+    public static let maximumDisplayWidthPt = 300.0
     public static let defaultDisplayWidthPt = 112.0
 
     public var x: Double
@@ -1458,30 +1453,79 @@ public struct OverlayVisibility: Codable, Equatable, Sendable {
     }
 }
 
+public struct GenerationInputOption: Codable, Hashable, Sendable {
+    public var label: String
+    public var description: String?
+}
+
+public struct GenerationInputQuestion: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var prompt: String
+    public var options: [GenerationInputOption]
+    public var allowsFreeform: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case prompt
+        case options
+        case allowsFreeform = "allows_freeform"
+    }
+}
+
+public struct GenerationMessagePayload: Codable, Hashable, Sendable {
+    public enum PayloadType: String, Codable, Hashable, Sendable {
+        case inputRequest = "input_request"
+        case result
+    }
+
+    public var payloadType: PayloadType
+    public var requestID: String?
+    public var questions: [GenerationInputQuestion]?
+    public var resultPetID: String?
+    public var revisionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case payloadType = "payload_type"
+        case requestID = "request_id"
+        case questions
+        case resultPetID = "result_pet_id"
+        case revisionID = "revision_id"
+    }
+}
+
 public struct GenerationMessage: Codable, Identifiable, Hashable, Sendable {
     public var id: String
+    public var jobID: String?
+    public var sequence: UInt64?
     public var role: String
     public var content: String
     public var progress: Double
     public var createdAt: String
     public var kind: String?
+    public var payload: GenerationMessagePayload?
 
-    public init(id: String = UUID().uuidString, role: String, content: String, progress: Double, createdAt: String, kind: String? = nil) {
+    public init(id: String = UUID().uuidString, jobID: String? = nil, sequence: UInt64? = nil, role: String, content: String, progress: Double, createdAt: String, kind: String? = nil, payload: GenerationMessagePayload? = nil) {
         self.id = id
+        self.jobID = jobID
+        self.sequence = sequence
         self.role = role
         self.content = content
         self.progress = progress
         self.createdAt = createdAt
         self.kind = kind
+        self.payload = payload
     }
 
     enum CodingKeys: String, CodingKey {
         case id
+        case jobID = "job_id"
+        case sequence
         case role
         case content
         case progress
         case createdAt = "created_at"
         case kind
+        case payload
     }
 
     public init(from decoder: Decoder) throws {
@@ -1491,6 +1535,9 @@ public struct GenerationMessage: Codable, Identifiable, Hashable, Sendable {
         progress = try container.decode(Double.self, forKey: .progress)
         createdAt = try container.decode(String.self, forKey: .createdAt)
         kind = try container.decodeIfPresent(String.self, forKey: .kind)
+        jobID = try container.decodeIfPresent(String.self, forKey: .jobID)
+        sequence = try container.decodeIfPresent(UInt64.self, forKey: .sequence)
+        payload = try container.decodeIfPresent(GenerationMessagePayload.self, forKey: .payload)
         let suppliedID = try container.decodeIfPresent(String.self, forKey: .id)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         id = suppliedID.flatMap { $0.isEmpty ? nil : $0 }
@@ -1532,6 +1579,14 @@ public enum GenerationConversation {
     private static let canceledKind = "generation_canceled"
     private static let inputRequestKind = "input_request"
     private static let terminalKinds: Set<String> = [completedKind, failedKind, canceledKind]
+    private static let briefKind = "generation_activity_brief"
+    private static let generatingKind = "generation_activity_generating"
+    private static let processingKind = "generation_activity_processing"
+    private static let validatingKind = "generation_activity_validating"
+    private static let importingKind = "generation_activity_importing"
+    private static let checkpointKind = "generation_checkpoint"
+    private static let heartbeatKind = "generation_heartbeat"
+    private static let resumedKind = "generation_resumed"
 
     public static func succeeded(_ messages: [GenerationMessage]) -> Bool {
         latestTerminalKind(messages) == completedKind
@@ -1559,17 +1614,96 @@ public enum GenerationConversation {
         needsUserInput(messages)
     }
 
-    public static func activeStepIndex(messages: [GenerationMessage], progress: Double) -> Int {
+    public static func activeStepIndex(
+        messages: [GenerationMessage],
+        progress: Double,
+        operation: GenerationOperation = .create
+    ) -> Int {
         if succeeded(messages) {
             return 3
         }
         if needsUserInput(messages) {
-            return 1
+            return operation == .modify ? 1 : 0
         }
+        let typedStep = runtimePhase(messages)?.stepIndex(for: operation)
         if terminalUnsuccessful(messages) {
-            return 2
+            if let typedStep { return typedStep }
+            let lastActiveProgress = messages.reversed().first { message in
+                guard let kind = message.kind else { return true }
+                return !terminalKinds.contains(kind)
+            }?.progress
+            let fallbackProgress = failed(messages) ? min(progress, 0.95) : 0
+            return stepIndex(for: lastActiveProgress ?? fallbackProgress)
         }
 
+        if let typedStep { return typedStep }
+        return stepIndex(for: progress)
+    }
+
+    public static func runtimePhase(
+        _ messages: [GenerationMessage]
+    ) -> GenerationRuntimePhase? {
+        for message in messages.reversed() {
+            switch message.kind {
+            case importingKind:
+                return .importing
+            case validatingKind:
+                return .validating
+            case generatingKind, processingKind, checkpointKind:
+                return .producing
+            case briefKind:
+                return .brief
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    public static func currentActivity(
+        _ messages: [GenerationMessage]
+    ) -> GenerationMessage? {
+        let activityKinds: Set<String> = [
+            briefKind,
+            generatingKind,
+            processingKind,
+            validatingKind,
+            importingKind,
+            checkpointKind,
+            resumedKind,
+            "generation_progress",
+            "generation_started",
+        ]
+        return messages.reversed().first { message in
+            message.kind.map(activityKinds.contains) == true
+                && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    public static func checkpointCount(_ messages: [GenerationMessage]) -> Int {
+        messages.reduce(into: 0) { count, message in
+            if message.kind == checkpointKind { count += 1 }
+        }
+    }
+
+    public static func heartbeatMessage(
+        _ messages: [GenerationMessage]
+    ) -> GenerationMessage? {
+        messages.reversed().first { message in
+            message.kind == heartbeatKind
+        } ?? messages.reversed().first { message in
+            guard !message.createdAt.isEmpty else { return false }
+            return message.role == "assistant"
+        }
+    }
+
+    public static func startedMessage(
+        _ messages: [GenerationMessage]
+    ) -> GenerationMessage? {
+        messages.first { !$0.createdAt.isEmpty }
+    }
+
+    private static func stepIndex(for progress: Double) -> Int {
         switch progress {
         case 0..<0.25:
             return 0
@@ -1590,6 +1724,25 @@ public enum GenerationConversation {
             return nil
         }
         return kind
+    }
+}
+
+public enum GenerationRuntimePhase: String, Codable, Hashable, Sendable {
+    case brief
+    case producing
+    case validating
+    case importing
+
+    fileprivate func stepIndex(for operation: GenerationOperation) -> Int {
+        switch (operation, self) {
+        case (.create, .brief): 0
+        case (.create, .producing): 1
+        case (.create, .validating): 2
+        case (.create, .importing): 3
+        case (.modify, .brief): 1
+        case (.modify, .producing): 2
+        case (.modify, .validating), (.modify, .importing): 3
+        }
     }
 }
 
@@ -1766,6 +1919,260 @@ public struct PetHistorySnapshot: Codable, Equatable, Sendable {
     }
 }
 
+public struct GenerationStudioHistoryRecord: Codable, Equatable, Identifiable, Sendable {
+    public var jobID: String
+    public var status: GenerationJobHistoryStatus
+    public var operation: GenerationOperation
+    public var visibleTitle: String?
+    public var briefPreview: String
+    public var style: String
+    public var quality: QualityLevel
+    public var referenceCount: Int
+    public var resultPetID: String?
+    public var retryOfJobID: String?
+    public var createdAt: String
+    public var updatedAt: String
+    public var startedAt: String?
+    public var endedAt: String?
+    public var progress: Double?
+    public var recoverable: Bool?
+    public var pauseReason: String?
+    public var cancellationPending: Bool?
+    public var capabilities: GenerationSessionCapabilities?
+
+    public var id: String { jobID }
+
+    enum CodingKeys: String, CodingKey {
+        case jobID = "job_id"
+        case status
+        case operation
+        case visibleTitle = "visible_title"
+        case briefPreview = "brief_preview"
+        case style
+        case quality
+        case referenceCount = "reference_count"
+        case resultPetID = "result_pet_id"
+        case retryOfJobID = "retry_of_job_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case progress
+        case recoverable
+        case pauseReason = "pause_reason"
+        case cancellationPending = "cancellation_pending"
+        case capabilities
+    }
+}
+
+public struct GenerationSessionCapabilities: Codable, Equatable, Hashable, Sendable {
+    public var canReply: Bool
+    public var canResume: Bool
+    public var canCancel: Bool
+    public var canOpenResult: Bool
+    public var canOpenSession: Bool
+    public var canDelete: Bool
+
+    public init(
+        canReply: Bool = false,
+        canResume: Bool = false,
+        canCancel: Bool = false,
+        canOpenResult: Bool = false,
+        canOpenSession: Bool = false,
+        canDelete: Bool = false
+    ) {
+        self.canReply = canReply
+        self.canResume = canResume
+        self.canCancel = canCancel
+        self.canOpenResult = canOpenResult
+        self.canOpenSession = canOpenSession
+        self.canDelete = canDelete
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case canReply = "can_reply"
+        case canResume = "can_resume"
+        case canCancel = "can_cancel"
+        case canOpenResult = "can_open_result"
+        case canOpenSession = "can_open_session"
+        case canDelete = "can_delete"
+    }
+}
+
+public struct GenerationStudioHistorySnapshot: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var jobs: [GenerationStudioHistoryRecord]
+    public var truncated: Bool
+
+    public init(
+        ok: Bool = true,
+        jobs: [GenerationStudioHistoryRecord] = [],
+        truncated: Bool = false
+    ) {
+        self.ok = ok
+        self.jobs = jobs
+        self.truncated = truncated
+    }
+}
+
+public struct GenerationStudioHistoryDeleteReceipt: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var jobID: String
+    public var deletedStatus: GenerationJobHistoryStatus
+    public var deletedMessageCount: Int
+    public var workspaceRemoved: Bool
+    public var retainedResultPetID: String?
+    public var retryChildrenRelinked: Int
+    public var stateRevision: String
+
+    public init(
+        ok: Bool = true,
+        jobID: String,
+        deletedStatus: GenerationJobHistoryStatus,
+        deletedMessageCount: Int,
+        workspaceRemoved: Bool,
+        retainedResultPetID: String? = nil,
+        retryChildrenRelinked: Int,
+        stateRevision: String
+    ) {
+        self.ok = ok
+        self.jobID = jobID
+        self.deletedStatus = deletedStatus
+        self.deletedMessageCount = max(0, deletedMessageCount)
+        self.workspaceRemoved = workspaceRemoved
+        self.retainedResultPetID = retainedResultPetID
+        self.retryChildrenRelinked = max(0, retryChildrenRelinked)
+        self.stateRevision = stateRevision
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case jobID = "job_id"
+        case deletedStatus = "deleted_status"
+        case deletedMessageCount = "deleted_message_count"
+        case workspaceRemoved = "workspace_removed"
+        case retainedResultPetID = "retained_result_pet_id"
+        case retryChildrenRelinked = "retry_children_relinked"
+        case stateRevision = "state_revision"
+    }
+}
+
+public enum GenerationStudioSessionAvailability: String, Codable, Equatable, Sendable {
+    case notCreated = "not_created"
+    case available
+    case archived
+    case missing
+    case unavailable
+}
+
+public struct GenerationStudioSessionNavigation: Codable, Equatable, Sendable {
+    public var availability: GenerationStudioSessionAvailability
+    public var canOpen: Bool
+    public var routableSessionID: String?
+    public var name: String?
+
+    public init(
+        availability: GenerationStudioSessionAvailability,
+        canOpen: Bool = false,
+        routableSessionID: String? = nil,
+        name: String? = nil
+    ) {
+        self.availability = availability
+        self.canOpen = canOpen
+        self.routableSessionID = routableSessionID
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case availability
+        case canOpen = "can_open"
+        case routableSessionID = "routable_session_id"
+        case name
+    }
+}
+
+public struct GenerationStudioHistoryDetail: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var found: Bool
+    public var jobID: String?
+    public var status: GenerationJobHistoryStatus?
+    public var operation: GenerationOperation?
+    public var visibleTitle: String?
+    public var description: String?
+    public var style: String?
+    public var quality: QualityLevel?
+    public var referenceCount: Int
+    public var resultPetID: String?
+    public var retryOfJobID: String?
+    public var revisionID: String?
+    public var validationSummary: GenerationValidationSummary?
+    public var createdAt: String?
+    public var updatedAt: String?
+    public var startedAt: String?
+    public var endedAt: String?
+    public var progress: Double?
+    public var recoverable: Bool?
+    public var failureCode: String?
+    public var pauseReason: String?
+    public var cancellationPending: Bool?
+    public var progressMessages: [GenerationMessage]
+    public var latestCodexExcerpt: String?
+    public var messageCount: Int
+    public var messagesTruncated: Bool
+    public var session: GenerationStudioSessionNavigation
+    public var capabilities: GenerationSessionCapabilities?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case found
+        case jobID = "job_id"
+        case status
+        case operation
+        case visibleTitle = "visible_title"
+        case description
+        case style
+        case quality
+        case referenceCount = "reference_count"
+        case resultPetID = "result_pet_id"
+        case retryOfJobID = "retry_of_job_id"
+        case revisionID = "revision_id"
+        case validationSummary = "validation_summary"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case progress
+        case recoverable
+        case failureCode = "failure_code"
+        case pauseReason = "pause_reason"
+        case cancellationPending = "cancellation_pending"
+        case progressMessages = "progress_messages"
+        case latestCodexExcerpt = "latest_codex_excerpt"
+        case messageCount = "message_count"
+        case messagesTruncated = "messages_truncated"
+        case session
+        case capabilities
+    }
+}
+
+public struct GenerationMessagesPage: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var jobID: String
+    public var messages: [GenerationMessage]
+    public var hasMore: Bool
+    public var nextBeforeSequence: UInt64?
+    public var revision: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case jobID = "job_id"
+        case messages
+        case hasMore = "has_more"
+        case nextBeforeSequence = "next_before_sequence"
+        case revision
+    }
+}
+
 public struct GenerationHistory: Codable, Sendable {
     public var found: Bool
     public var petId: String
@@ -1902,6 +2309,14 @@ public struct LatestGenerationSessionSnapshot: Codable, Equatable, Sendable {
     public var form: GenerationForm?
     public var referenceReselectionCount: Int
     public var messageRevision: String
+    public var heartbeatAt: String?
+    public var startedAt: String?
+    public var endedAt: String?
+    public var recoverable: Bool
+    public var failureCode: String?
+    public var pauseReason: String?
+    public var cancellationPending: Bool
+    public var capabilities: GenerationSessionCapabilities?
     public var messages: [GenerationMessage]
 
     public init(
@@ -1916,6 +2331,14 @@ public struct LatestGenerationSessionSnapshot: Codable, Equatable, Sendable {
         form: GenerationForm? = nil,
         referenceReselectionCount: Int = 0,
         messageRevision: String = "",
+        heartbeatAt: String? = nil,
+        startedAt: String? = nil,
+        endedAt: String? = nil,
+        recoverable: Bool = false,
+        failureCode: String? = nil,
+        pauseReason: String? = nil,
+        cancellationPending: Bool = false,
+        capabilities: GenerationSessionCapabilities? = nil,
         messages: [GenerationMessage] = []
     ) {
         self.found = found
@@ -1929,6 +2352,14 @@ public struct LatestGenerationSessionSnapshot: Codable, Equatable, Sendable {
         self.form = form
         self.referenceReselectionCount = referenceReselectionCount
         self.messageRevision = messageRevision
+        self.heartbeatAt = heartbeatAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.recoverable = recoverable
+        self.failureCode = failureCode
+        self.pauseReason = pauseReason
+        self.cancellationPending = cancellationPending
+        self.capabilities = capabilities
         self.messages = messages
     }
 
@@ -1944,6 +2375,14 @@ public struct LatestGenerationSessionSnapshot: Codable, Equatable, Sendable {
         case form
         case referenceReselectionCount = "reference_reselection_count"
         case messageRevision = "message_revision"
+        case heartbeatAt = "heartbeat_at"
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case recoverable
+        case failureCode = "failure_code"
+        case pauseReason = "pause_reason"
+        case cancellationPending = "cancellation_pending"
+        case capabilities
         case messages
     }
 
@@ -1987,6 +2426,20 @@ public struct LatestGenerationSessionSnapshot: Codable, Equatable, Sendable {
             )
         }
         messageRevision = try container.decodeIfPresent(String.self, forKey: .messageRevision) ?? ""
+        heartbeatAt = try container.decodeIfPresent(String.self, forKey: .heartbeatAt)
+        startedAt = try container.decodeIfPresent(String.self, forKey: .startedAt)
+        endedAt = try container.decodeIfPresent(String.self, forKey: .endedAt)
+        recoverable = try container.decodeIfPresent(Bool.self, forKey: .recoverable) ?? false
+        failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        pauseReason = try container.decodeIfPresent(String.self, forKey: .pauseReason)
+        cancellationPending = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .cancellationPending
+        ) ?? false
+        capabilities = try container.decodeIfPresent(
+            GenerationSessionCapabilities.self,
+            forKey: .capabilities
+        )
         messages = try container.decodeIfPresent([GenerationMessage].self, forKey: .messages) ?? []
     }
 }
@@ -2007,6 +2460,13 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
     public var baselineRevisionID: String?
     public var ownerInstanceID: String?
     public var heartbeatAt: String
+    public var startedAt: String?
+    public var endedAt: String?
+    public var recoverable: Bool
+    public var failureCode: String?
+    public var pauseReason: String?
+    public var cancellationPending: Bool
+    public var capabilities: GenerationSessionCapabilities?
     public var messageRevision: String
     public var referenceReselectionCount: Int
     public var messages: [GenerationMessage]
@@ -2022,6 +2482,13 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         baselineRevisionID: String? = nil,
         ownerInstanceID: String? = nil,
         heartbeatAt: String,
+        startedAt: String? = nil,
+        endedAt: String? = nil,
+        recoverable: Bool = false,
+        failureCode: String? = nil,
+        pauseReason: String? = nil,
+        cancellationPending: Bool = false,
+        capabilities: GenerationSessionCapabilities? = nil,
         messageRevision: String,
         referenceReselectionCount: Int = 0,
         messages: [GenerationMessage],
@@ -2036,6 +2503,13 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         self.baselineRevisionID = baselineRevisionID
         self.ownerInstanceID = ownerInstanceID
         self.heartbeatAt = heartbeatAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.recoverable = recoverable
+        self.failureCode = failureCode
+        self.pauseReason = pauseReason
+        self.cancellationPending = cancellationPending
+        self.capabilities = capabilities
         self.messageRevision = messageRevision
         self.referenceReselectionCount = referenceReselectionCount
         self.messages = messages
@@ -2052,6 +2526,13 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         case baselineRevisionID = "baseline_revision_id"
         case ownerInstanceID = "owner_instance_id"
         case heartbeatAt = "heartbeat_at"
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case recoverable
+        case failureCode = "failure_code"
+        case pauseReason = "pause_reason"
+        case cancellationPending = "cancellation_pending"
+        case capabilities
         case messageRevision = "message_revision"
         case referenceReselectionCount = "reference_reselection_count"
         case messages
@@ -2072,6 +2553,19 @@ public struct ActiveGenerationSnapshot: Codable, Equatable, Sendable {
         )
         ownerInstanceID = try container.decodeIfPresent(String.self, forKey: .ownerInstanceID)
         heartbeatAt = try container.decode(String.self, forKey: .heartbeatAt)
+        startedAt = try container.decodeIfPresent(String.self, forKey: .startedAt)
+        endedAt = try container.decodeIfPresent(String.self, forKey: .endedAt)
+        recoverable = try container.decodeIfPresent(Bool.self, forKey: .recoverable) ?? false
+        failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        pauseReason = try container.decodeIfPresent(String.self, forKey: .pauseReason)
+        cancellationPending = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .cancellationPending
+        ) ?? false
+        capabilities = try container.decodeIfPresent(
+            GenerationSessionCapabilities.self,
+            forKey: .capabilities
+        )
         messageRevision = try container.decode(String.self, forKey: .messageRevision)
         let decodedReferenceReselectionCount = try container.decodeIfPresent(
             Int.self,

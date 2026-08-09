@@ -46,7 +46,11 @@ Rows expose `exact_session`, `agent_host`, or `unavailable`. The App acknowledge
 
 Each projected session carries separate bounded fields for title, latest user message, current-turn Agent message, and normalized activity. The title is the latest explicit title, falling back to the first user message only until one exists. Later prompts update context without renaming the session.
 
-Codex, Pi, and OpenCode publish available display fields in their managed event paths. Codex may also hydrate current bounded display state through a read-only App Server thread read.
+Only root Agent sessions enter the session projection. Connectors use explicit host lineage—not titles or display order—to suppress child sessions: OpenCode `parentID`, Codex App Server sub-Agent source kinds and `parentThreadId`, Pi session-header `parentSession`, and Claude sidechain markers. The suppression marker contains only the child session identity; it deletes any earlier projection for that identity, blocks later events, and never persists the parent identity. Sub-Agent lifecycle may still appear as bounded activity on the owning root session, but it never creates another desktop card.
+
+OpenCode queues bounded existing-session discovery for the first task after Plugin activation instead of entering its own in-process Server API while that activation is still being constructed. Every session-bearing live hook waits behind the same lineage gate, so activation can complete without deadlocking while an already-running child is still classified before any of its activity can enter the projection. Cleanup-marker delivery is queued asynchronously after classification and does not carry the parent identity.
+
+Codex, Pi, and OpenCode publish available display fields in their managed event paths. Codex may also hydrate current bounded display state through a read-only App Server thread read. For Codex, an `interrupted` turn with a persisted `completedAt` boundary is terminal and refreshes the session bubble to done; an externally running turn reloaded by another App Server as `interrupted` without that boundary remains active under the bounded activity lease.
 
 Claude Desktop hooks omit the message-bearing prompt/stop events needed for a useful bubble. When a Claude hook supplies `transcript_path`, the adapter may read a fixed tail of that one file to recover only title, latest user prompt, and latest Agent text. The path must be absolute, current-user-owned, regular, and not a symlink; the read is size bounded. Tool results, structured message envelopes, sub-Agent turns, and transcript history are excluded. Failure leaves fields absent and never changes connector health.
 
@@ -56,7 +60,7 @@ Activity normalization selects only bounded semantic scalars such as reasoning, 
 |---|---|
 | Codex | App Server reasoning/tool items and managed-hook command/tool detail |
 | Claude Code | Tool descriptions, commands/results/errors, permission/input requests, sub-Agent and compaction hooks; no private model reasoning |
-| Pi | Tool input/output and bounded Agent reply; no inferred reasoning or plan |
+| Pi | Tool input/output, bounded Agent reply, and explicit finalized `ThinkingContent.thinking`; no inference from token/timestamp churn |
 | OpenCode | Stable reasoning/plan boundaries, command/tool data, compaction, errors, and session steps |
 
 ## Event mapping
@@ -88,9 +92,43 @@ The App offers Agent-scoped operations:
 
 PetCore supplies typed capabilities for safe repair and removal; the App never infers mutation authority from text. Missing capability denies mutation. Operations are serialized, publish inline progress/result, and do not prevent switching Agent rows.
 
-Agent Connections distinguishes local integration health from evidence of a real provider task. It lists only App-owned plugins, connectors, extensions, and bundled Skills with safe names and verified active/required release versions. Paths, digests, internal contract IDs, user-managed components, and unrelated runtime diagnostics remain hidden. Exact supported host versions are a closed implementation allowlist in [adapter contracts](../../crates/petcore/src/adapter_contracts.rs) and tests rather than a duplicated documentation list.
+Every authoritative App snapshot includes a bounded light check for all four
+Agents. Agent Connections presents a healthy light result as **Basic check
+complete** and immediately exposes specific missing-host or managed-repair
+findings; it never labels an available light result as if no check ran. The
+first Agent Connections presentation in each App session requests one full
+runtime check after all four light projections are loaded and release connector
+convergence is idle. A fresh runtime projection is reused instead of probing
+again, while **Check All** remains the explicit retry path. Full host probes stay
+out of the launch-critical path because they may cold-start Agent hosts, load
+plugins, or encounter host trust and protected-folder prompts.
+
+Agent Connections distinguishes local integration health from evidence of a real provider task. It lists only App-owned plugins, connectors, extensions, and bundled Skills with safe names and verified active/required release versions. Paths, digests, internal contract IDs, user-managed components, and unrelated runtime diagnostics remain hidden. A detected Agent host version is diagnostic context only and never gates compatibility. Health is decided by the exact App-managed connector contract, host runtime probe, local event channel, and current connector receipts, so a host upgrade does not require a new hardcoded version allowance.
+
+Native diagnostic canaries prove only that the host loaded the expected managed adapter and that a bounded event reached the local channel; they never claim that an ordinary provider task ran. Codex additionally requires the authoritative `hooks/list` result to report every managed hook trusted, so modified hooks remain an explicit user-authorization and restart action. OpenCode accepts its native probe only when `debug info` reports the exact expected plugin file (including an equivalent percent-encoded file URL) and the matching `connector.probe` arrives; another or disabled load path is repairable, not verified. Claude Code, Pi, and OpenCode remain `unverified` until a current-contract ordinary task event exists, even when their no-model host probes pass.
+
+The ordinary Agent card preserves local connector health as a separate internal fact, but projects a healthy connector without ordinary-task evidence as a neutral **Awaiting verification** state. It must not show a green **Connected** badge until that real-task evidence is current, and it must not offer repair merely because verification is pending.
+
+Snapshot evidence is projected from the bounded retained event history through a
+per-source cache. Incoming hooks mark that source dirty but are coalesced for a
+maximum of five seconds; explicit connection operations and managed-artifact
+changes invalidate immediately. Evidence parsing selects only `source_event`,
+`contract_version`, `diagnostic`, `affects_activity`, `session_active`, and
+`outcome`, never the arbitrary nested content of tool payloads.
+
+A fresh manual runtime check may resolve stale post-update connector attention
+only for the checked source when its connector is installed, verification is
+exact, the contract is nonempty, its managed connector is healthy, and every
+reported item is `ok` or `not_required`. Once all affected sources pass, the
+App reruns the authoritative four-Agent convergence flow so a real receipt can
+be persisted and the warning does not return at the next launch. The scoped
+runtime check itself does not mutate other Agents or synthesize that receipt.
+
+Connector JSON, required event types, and selected display/activity fields are parsed at the bounded adapter boundary. Invalid JSON, missing required fields, wrong field types, unsupported shapes, contract mismatches, and normalized-envelope failures emit content-free structured diagnostics containing only the Agent source, closed field category, and closed failure category. Raw values, messages, tool arguments, paths, identifiers, and credentials are never copied into those warnings or persisted with the Agent event.
 
 After an App replacement, PetCore refreshes only previously managed integrations. One failed Agent remains repairable without rolling back the core runtime or healthy Agents.
+
+The post-update notice preserves a closed App-side reason for each failed Agent: managed-path conflict, unavailable host command, refresh failure, or incomplete runtime verification. It names the affected Agent, gives the corresponding user recovery steps, and opens that Agent expanded in Agent Connections. After repair, authorization, installation, or a full host restart, the notice first runs a scoped runtime check for only the affected sources. Once all of them pass, the App reruns authoritative convergence to persist the exact receipt instead of blindly repeating the entire update as the first response. Missing bundled pets instead direct the user to replace the incomplete App copy, while service verification failure directs them through Service & Diagnostics recovery before rechecking.
 
 ## Security and privacy boundary
 
@@ -99,7 +137,9 @@ After an App replacement, PetCore refreshes only previously managed integrations
 - Explicit title/user/Agent display messages and selected session activity are product data. Complete transcripts and high-frequency token streams are not.
 - Claude transcript hydration reads only the hook-supplied safe file and returns three bounded display strings; it never becomes a general transcript reader.
 - Project paths and raw session IDs are correlation data and are removed or redacted from diagnostics.
-- Internal Codex suggestion/Studio sessions are suppressed from ordinary desktop activity.
+- Connector parse warnings contain only closed source/field/failure categories; the rejected host value is never logged.
+- Internal Codex suggestion/Studio sessions are suppressed from ordinary desktop activity. Pet Studio persists its exact thread/job link before the first turn; Maker history is the only App projection for those threads, and its exact ChatGPT route is exposed only after live unarchived verification.
+- Host-declared child Agent sessions and subsessions are suppressed before projection; parent lineage is inspected locally and never persisted.
 - Managed connector files must be attributable, atomically replaced, and removable without modifying unrelated user configuration. Foreign or customized commands remain untouched and create a managed-path conflict.
 - UDS and loopback ingress are local-only; loopback requires the private App-managed capability token.
 
@@ -107,7 +147,7 @@ After an App replacement, PetCore refreshes only previously managed integrations
 
 Codex receives one App-managed plugin containing its hook and the bundled Studio and Maker Skills. Any content change under those three areas requires a strictly greater plugin version. Repair and post-update refresh verify the active cache content, not only installed/enabled flags.
 
-Studio upgrade ownership recognizes the current Skill or an exact digest in the append-only retired-Skill history. When Studio changes for a release, that history must add the previous shipped Skill digest; customized or merely similar content remains a conflict. A running generation retains the capability version with which it started.
+Studio upgrade ownership recognizes the current Skill, an exact digest in the append-only retired-Skill history, or the exact Studio digest bound into the App's last successful source-and-active-cache verification receipt. The receipt path covers repeated development builds before a release baseline exists without weakening customization protection: all receipt versions and bundle/content/Studio digest pairs must be internally exact, and the installed manifest version must still match. When Studio changes for a release, the retired history must add the previous shipped Skill digest. A pre-release App-managed Skill that reached users before verified receipts existed may be recovered only through an explicitly pinned exact digest in the release validator; customized or merely similar content remains a conflict. A running generation retains the capability version with which it started.
 
 ## Changing a connector
 

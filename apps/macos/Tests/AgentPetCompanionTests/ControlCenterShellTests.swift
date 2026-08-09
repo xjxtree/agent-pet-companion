@@ -6,6 +6,21 @@ import Testing
 
 @Suite("Control Center shell")
 struct ControlCenterShellTests {
+    @Test @MainActor
+    func controlCenterWindowHidesOnlyTheTitlebarSeparator() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.titlebarSeparatorStyle = .line
+
+        ControlCenterWindowChrome.hideTitlebarSeparator(in: window)
+
+        #expect(window.titlebarSeparatorStyle == .none)
+    }
+
     @Test
     func navigationUsesTheFixedProductOrderAndTypedSelection() {
         let items = ControlCenterNavigationPresentation.items(
@@ -166,6 +181,8 @@ struct ControlCenterShellTests {
         )
 
         #expect(contentSource.contains("InlineRecoveryBanner("))
+        #expect(contentSource.contains("ControlCenterWindowChromeBridge()"))
+        #expect(contentSource.contains("titlebarSeparatorStyle = .none"))
         #expect(contentSource.contains("store.selection = .diagnostics"))
         #expect(contentSource.contains("if let serviceAttention"))
         #expect(!contentSource.contains("toolbar.service-status"))
@@ -175,24 +192,28 @@ struct ControlCenterShellTests {
     }
 
     @Test
-    func currentPetPreviewIsCenteredAboveItsSidebarIdentityRow() throws {
+    func petPreviewIsGlobalAndAboveTheSidebarIdentityRow() throws {
         let sidebarSource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(
                 "Views/SidebarView.swift"
             ),
             encoding: .utf8
         )
-        let preview = try #require(sidebarSource.range(of: "PetCoverImage("))
+        let preview = try #require(
+            sidebarSource.range(of: "SidebarConfigurationLivePreview(")
+        )
         let identity = try #require(sidebarSource.range(of: "APCBrandMark(size: 18)"))
 
         #expect(preview.lowerBound < identity.lowerBound)
-        #expect(sidebarSource.contains(
-            ".frame(maxWidth: .infinity, alignment: .center)"
-        ))
-        #expect(sidebarSource.contains(
-            "assetWarning: store.petAssetWarningIndex[activePet.id]"
-        ))
-        #expect(sidebarSource.contains(".accessibilityHidden(true)"))
+        #expect(!sidebarSource.contains("store.selection == .configuration"))
+        #expect(!sidebarSource.contains("PetCoverImage("))
+        #expect(sidebarSource.contains("displayWidthPt: store.overlayDisplayWidthPt"))
+        #expect(sidebarSource.contains("assetWarning: activePetAssetWarning"))
+        #expect(!sidebarSource.contains(".safeAreaInset(edge: .bottom"))
+        #expect(sidebarSource.contains(".scrollContentBackground(.hidden)"))
+        #expect(sidebarSource.contains(".background(.bar, ignoresSafeAreaEdges: .all)"))
+        #expect(sidebarSource.contains(".fixedSize(horizontal: false, vertical: true)"))
+        #expect(sidebarSource.contains(".layoutPriority(1)"))
     }
 
     private var sourceDirectory: URL {

@@ -48,6 +48,25 @@ while IFS= read -r request; do
     *initialize*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"serverInfo":{{"name":"fake-codex-app-server","petcoreCli":"'"$APC_PETCORE_CLI"'"}}}}}}'
       ;;
+    *thread/archive*)
+      if [ -n "${{APC_FAKE_APP_SERVER_ARCHIVE_FILE:-}}" ]; then
+        printf '%s' "$request" > "$APC_FAKE_APP_SERVER_ARCHIVE_FILE"
+      fi
+      if [ -n "${{APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE:-}}" ]; then
+        count=0
+        [ ! -f "$APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE" ] || count=$(cat "$APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE")
+        count=$((count + 1))
+        printf '%s' "$count" > "$APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE"
+        if [ "$count" = 1 ]; then
+          printf '%s\n' '{{"jsonrpc":"2.0","id":2,"error":{{"code":-32000,"message":"temporary archive failure"}}}}'
+          continue
+        fi
+      fi
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+      ;;
+    *thread/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"data":[{{"id":"{thread_id}","cwd":"'"${{APC_FAKE_APP_SERVER_JOB_CWD:-/tmp}}"'","ephemeral":false,"archived":false}}]}}}}'
+      ;;
     *thread/start*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"thread":{{"id":"{thread_id}","sessionId":"{thread_id}","ephemeral":false,"status":{{"type":"idle"}},"cwd":"/tmp","turns":[]}},"model":"fake-model","modelProvider":"fake","cwd":"/tmp","approvalPolicy":"never","sandbox":{{"type":"workspaceWrite"}}}}}}'
       ;;
@@ -293,7 +312,12 @@ fn historical_edit_receipt_returns_the_selected_baseline_timing_instead_of_the_c
     let accepted_form: GenerationForm = serde_json::from_str(&job.form_json).unwrap();
     assert_eq!(accepted_form.style, baseline_manifest.style);
     assert_eq!(accepted_form.quality, baseline_manifest.quality);
-    wait_for_terminal_message(&state, job_id, "generation_failed");
+    wait_for_terminal_message(&state, job_id, "recoverable_error");
+    assert!(state
+        .database
+        .generation_job(job_id)
+        .unwrap()
+        .is_some_and(|job| job.recoverable));
 }
 
 #[test]
@@ -352,7 +376,11 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
     .unwrap();
     assert!(original["baseline_revision_id"].is_null());
     let original_job_id = original["job_id"].as_str().unwrap();
-    wait_for_terminal_message(&state, original_job_id, "generation_failed");
+    wait_for_terminal_message(&state, original_job_id, "recoverable_error");
+    state
+        .database
+        .update_generation_job(original_job_id, GenerationJobStatus::Failed, None)
+        .unwrap();
     let original_snapshot = paths
         .jobs_dir
         .join(original_job_id)
@@ -397,7 +425,11 @@ fn unowned_pet_edit_retry_pins_original_submitted_baseline() {
         retry_context["base_petpack_sha256"],
         original_context["base_petpack_sha256"]
     );
-    wait_for_terminal_message(&state, retry_job_id, "generation_failed");
+    wait_for_terminal_message(&state, retry_job_id, "recoverable_error");
+    state
+        .database
+        .update_generation_job(retry_job_id, GenerationJobStatus::Failed, None)
+        .unwrap();
 
     // Keep the same pet ID and database path but replace the external package
     // bytes. Retrying the original job must now fail as a conflict instead of
@@ -522,7 +554,7 @@ fn wait_for_terminal_message(state: &CoreState, job_id: &str, kind: &str) {
     // runner than it does on a developer machine. Keep this as a bounded wait,
     // but leave enough headroom that scheduler load is not reported as a
     // lifecycle failure.
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let messages = generation_messages(state, job_id);
         if messages
@@ -554,9 +586,12 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-complete");
+    let archive_file = temp.path().join("archive-request");
     write_fake_app_server_script(&fake_app_server, "thread_lifecycle_cancel");
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
     let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
+    let _archive_file =
+        EnvVarGuard::set("APC_FAKE_APP_SERVER_ARCHIVE_FILE", archive_file.as_os_str());
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
@@ -572,7 +607,7 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
                 .contains("Pet Studio brief turn 已启动")
         })
         .expect("runtime progress message");
-    assert_eq!(progress["kind"], "generation_progress");
+    assert_eq!(progress["kind"], "generation_activity_brief");
 
     handle_request(
         &state,
@@ -588,6 +623,19 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
         state.database.generation_job_status(&job_id).unwrap(),
         Some(GenerationJobStatus::Canceled)
     );
+    let canceled = state.database.generation_job(&job_id).unwrap().unwrap();
+    assert!(canceled.execution_stopped_at.is_some());
+    assert!(canceled.thread_archived_at.is_some());
+    assert_eq!(canceled.ended_at, canceled.cancel_requested_at);
+    let archive_request = std::fs::read_to_string(&archive_file).unwrap();
+    assert!(
+        archive_request.contains("thread/archive"),
+        "{archive_request}"
+    );
+    assert!(
+        archive_request.contains("thread_lifecycle_cancel"),
+        "{archive_request}"
+    );
 
     std::fs::write(&wait_file, "ok").unwrap();
     std::thread::sleep(Duration::from_millis(900));
@@ -600,7 +648,59 @@ fn generation_lifecycle_cancel_is_idempotent_and_thread_cannot_complete() {
 }
 
 #[test]
-fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
+fn generation_cancel_retries_a_temporary_exact_thread_archive_failure() {
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let fake_app_server = temp.path().join("fake_app_server.sh");
+    let wait_file = temp.path().join("allow-complete");
+    let archive_attempts = temp.path().join("archive-attempts");
+    write_fake_app_server_script(&fake_app_server, "thread_archive_retry");
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
+    let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
+    let _archive_attempts = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_ARCHIVE_FAIL_ONCE_FILE",
+        archive_attempts.as_os_str(),
+    );
+    let paths = AppPaths::new(temp.path().join("home"));
+    let _job_cwd = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_JOB_CWD",
+        paths.jobs_dir.join("placeholder").as_os_str(),
+    );
+    let state = CoreState::new(paths);
+    state.ensure_ready().unwrap();
+
+    let job_id = start_generation(&state, "归档暂时失败后重试的桌宠。");
+    let _job_cwd = EnvVarGuard::set(
+        "APC_FAKE_APP_SERVER_JOB_CWD",
+        state.paths.jobs_dir.join(&job_id).as_os_str(),
+    );
+    wait_for_message(&state, &job_id, "Pet Studio brief turn 已启动");
+
+    handle_request(
+        &state,
+        request("generation.cancel", json!({ "job_id": job_id })),
+    )
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let job = state.database.generation_job(&job_id).unwrap().unwrap();
+        if job.status == GenerationJobStatus::Canceled {
+            assert!(job.execution_stopped_at.is_some());
+            assert!(job.thread_archived_at.is_some());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "archive retry did not finish: {job:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(std::fs::read_to_string(archive_attempts).unwrap(), "2");
+}
+
+#[test]
+fn generation_lifecycle_completed_job_rejects_reply_and_keeps_committed_pet() {
     let _env_lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
@@ -647,8 +747,7 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
         terminal["validation_summary"]
     );
 
-    std::fs::remove_file(&wait_file).unwrap();
-    let reply_messages = handle_request(
+    let error = handle_request(
         &state,
         request(
             "generation.reply",
@@ -658,33 +757,16 @@ fn generation_lifecycle_reply_sets_running_and_cancel_keeps_previous_pet() {
             }),
         ),
     )
-    .unwrap();
-    assert!(reply_messages.as_array().unwrap().iter().any(|message| {
-        message["role"].as_str() == Some("user")
-            && message["content"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("等待确认动作")
-    }));
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("generation is completed"), "{error}");
     assert_eq!(
         state.database.generation_job_status(&job_id).unwrap(),
-        Some(GenerationJobStatus::Running)
+        Some(GenerationJobStatus::Completed)
     );
-
-    handle_request(
-        &state,
-        request("generation.cancel", json!({ "job_id": job_id })),
-    )
-    .unwrap();
-    std::fs::write(&wait_file, "revision").unwrap();
-    std::thread::sleep(Duration::from_millis(900));
-
     let messages = generation_messages(&state, &job_id);
-    assert_eq!(
-        state.database.generation_job_status(&job_id).unwrap(),
-        Some(GenerationJobStatus::Canceled)
-    );
-    assert_eq!(terminal_count(&messages, "generation_canceled"), 1);
+    assert_eq!(terminal_count(&messages, "generation_completed"), 1);
+    assert_eq!(terminal_count(&messages, "generation_canceled"), 0);
     assert_eq!(terminal_count(&messages, "generation_failed"), 0);
     assert_eq!(state.database.list_pets().unwrap().len(), 1);
 }
@@ -1059,7 +1141,7 @@ fn pet_edit_rejects_commit_when_base_revision_changes() {
 }
 
 #[test]
-fn generation_lifecycle_interrupted_recovery_appends_one_failed_terminal() {
+fn generation_lifecycle_interrupted_recovery_pauses_once_and_remains_resumable() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths.clone());
@@ -1103,8 +1185,17 @@ fn generation_lifecycle_interrupted_recovery_appends_one_failed_terminal() {
             .unwrap(),
         Some(GenerationJobStatus::Failed)
     );
+    let recovered = restarted
+        .database
+        .generation_job("job_lifecycle_interrupted")
+        .unwrap()
+        .unwrap();
+    assert!(recovered.recoverable, "{recovered:?}");
+    assert_eq!(recovered.failure_code.as_deref(), Some("owner_interrupted"));
+    assert!(recovered.ended_at.is_none());
     let messages = generation_messages(&restarted, "job_lifecycle_interrupted");
-    assert_eq!(terminal_count(&messages, "generation_failed"), 1);
+    assert_eq!(terminal_count(&messages, "recoverable_error"), 1);
+    assert_eq!(terminal_count(&messages, "generation_failed"), 0);
 }
 
 #[test]

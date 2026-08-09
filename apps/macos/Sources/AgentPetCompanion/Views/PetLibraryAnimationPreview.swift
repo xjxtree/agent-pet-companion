@@ -40,21 +40,45 @@ struct PetPreviewRenderIdentity: Hashable, Sendable {
 }
 
 struct PetPreviewContentState: Equatable {
-    private(set) var presentedIdentities: Set<PetPreviewRenderIdentity> = []
+    private(set) var selectedIdentity: PetPreviewRenderIdentity?
+    private(set) var presentedIdentity: PetPreviewRenderIdentity?
 
-    func hasPresentedContent(for identity: PetPreviewRenderIdentity) -> Bool {
-        presentedIdentities.contains(identity)
+    init(selectedIdentity: PetPreviewRenderIdentity? = nil) {
+        self.selectedIdentity = selectedIdentity
     }
 
+    func hasPresentedContent(for identity: PetPreviewRenderIdentity) -> Bool {
+        selectedIdentity == identity && presentedIdentity == identity
+    }
+
+    mutating func select(_ identity: PetPreviewRenderIdentity) {
+        guard selectedIdentity != identity else { return }
+        selectedIdentity = identity
+        presentedIdentity = nil
+    }
+
+    @discardableResult
     mutating func receive(
         hasContent: Bool,
         for identity: PetPreviewRenderIdentity
-    ) {
-        if hasContent {
-            presentedIdentities.insert(identity)
-        } else {
-            presentedIdentities.remove(identity)
-        }
+    ) -> Bool {
+        guard selectedIdentity == identity else { return false }
+        let nextIdentity = hasContent ? identity : nil
+        guard presentedIdentity != nextIdentity else { return false }
+        presentedIdentity = nextIdentity
+        return true
+    }
+}
+
+enum PetLibraryPreviewPlaybackPolicy {
+    static func returnsToIdle(after mode: PetPlaybackMode) -> Bool {
+        mode == .burstThenIdle || mode == .onceThenReturn
+    }
+
+    static func entryDurationMS(for timing: PetStateTiming) -> Int? {
+        guard returnsToIdle(after: timing.playback.mode) else { return nil }
+        return timing.frameDurationsMS.reduce(0, +)
+            * max(1, timing.playback.entryRepeatCount ?? 1)
     }
 }
 
@@ -91,11 +115,13 @@ struct PetActionFallbackImage: View {
 /// A library-scoped action preview. It owns an independent renderer and never
 /// writes to AppStore or the desktop overlay's visual-envelope state.
 struct PetLibraryAnimationPreview: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let pet: PetSummary
     let action: PetAnimationAction
     let assetWarning: PetAssetWarning?
 
-    @State private var contentState = PetPreviewContentState()
+    @State private var contentState: PetPreviewContentState
+    @State private var settledSelectionIdentity: PetPreviewRenderIdentity?
 
     init(
         pet: PetSummary,
@@ -105,25 +131,59 @@ struct PetLibraryAnimationPreview: View {
         self.pet = pet
         self.action = action
         self.assetWarning = assetWarning
+        _contentState = State(initialValue: PetPreviewContentState(
+            selectedIdentity: PetPreviewRenderIdentity(
+                pet: pet,
+                stateName: action.rawValue,
+                assetWarning: assetWarning
+            )
+        ))
     }
 
     var body: some View {
-        let identity = previewIdentity
+        let selectionIdentity = selectedPreviewIdentity
+        let presentedAction = settledSelectionIdentity == selectionIdentity
+            ? PetAnimationAction.idle
+            : action
+        let identity = previewIdentity(for: presentedAction)
+        let rendererHasContent = contentState.hasPresentedContent(for: identity)
+        let entryID = renderEntryID(for: presentedAction)
         ZStack {
-            PetActionFallbackImage(
-                pet: pet,
-                stateName: action.rawValue,
-                assetWarning: assetWarning,
-                fallbackScale: 0.44
-            )
-                .opacity(contentState.hasPresentedContent(for: identity) ? 0 : 1)
-
             if PetLibraryPreviewPolicy.canRender(assetWarning: assetWarning) {
-                PetLibraryMetalView(pet: pet, action: action) { hasContent in
-                    contentState.receive(hasContent: hasContent, for: identity)
-                }
+                PetLibraryMetalView(
+                    pet: pet,
+                    action: presentedAction,
+                    stateEntryID: entryID,
+                    onPlaybackCompleted: { completedEntryID, mode in
+                        guard completedEntryID == entryID,
+                              PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: mode)
+                        else { return }
+                        settledSelectionIdentity = selectionIdentity
+                    },
+                    onRendererContentChanged: { hasContent in
+                        contentState.receive(hasContent: hasContent, for: identity)
+                    }
+                )
                 .id(identity)
             }
+
+            if !rendererHasContent {
+                Color(nsColor: .textBackgroundColor)
+                    .overlay {
+                        PetActionFallbackImage(
+                            pet: pet,
+                            stateName: presentedAction.rawValue,
+                            assetWarning: assetWarning,
+                            fallbackScale: 0.44
+                        )
+                    }
+            }
+        }
+        // The opaque fallback mask lets Metal acquire and present a drawable
+        // without ever compositing its retained prior frame underneath the
+        // replacement image during an action or pet handoff.
+        .transaction { transaction in
+            transaction.animation = nil
         }
         .clipped()
         .allowsHitTesting(false)
@@ -133,14 +193,53 @@ struct PetLibraryAnimationPreview: View {
             action: action
         ))
         .accessibilityIdentifier("pet-library.animation-preview")
+        .onChange(of: selectionIdentity) { _, _ in
+            settledSelectionIdentity = nil
+        }
+        .onChange(of: identity) { _, nextIdentity in
+            contentState.select(nextIdentity)
+        }
+        .task(id: finitePlaybackTaskID(
+            for: selectionIdentity,
+            rendererHasContent: rendererHasContent
+        )) {
+            let timing = pet.timing(for: action.rawValue)
+            guard rendererHasContent,
+                  let durationMS = PetLibraryPreviewPlaybackPolicy.entryDurationMS(
+                    for: timing
+                  )
+            else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(durationMS))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            settledSelectionIdentity = selectionIdentity
+        }
     }
 
-    private var previewIdentity: PetPreviewRenderIdentity {
+    private var selectedPreviewIdentity: PetPreviewRenderIdentity {
+        previewIdentity(for: action)
+    }
+
+    private func previewIdentity(for action: PetAnimationAction) -> PetPreviewRenderIdentity {
         PetPreviewRenderIdentity(
             pet: pet,
             stateName: action.rawValue,
             assetWarning: assetWarning
         )
+    }
+
+    private func renderEntryID(for action: PetAnimationAction) -> String {
+        "library-preview-\(action.rawValue):\(pet.id):\(pet.revisionID ?? pet.petpackPath)"
+    }
+
+    private func finitePlaybackTaskID(
+        for selectionIdentity: PetPreviewRenderIdentity,
+        rendererHasContent: Bool
+    ) -> String {
+        "\(selectionIdentity.assetKey):\(selectionIdentity.assetWarningFingerprint ?? "ok"):\(reduceMotion):\(rendererHasContent)"
     }
 }
 
@@ -148,6 +247,8 @@ private struct PetLibraryMetalView: NSViewRepresentable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let pet: PetSummary
     let action: PetAnimationAction
+    let stateEntryID: String
+    let onPlaybackCompleted: @MainActor (String, PetPlaybackMode) -> Void
     let onRendererContentChanged: @MainActor (Bool) -> Void
 
     func makeCoordinator() -> PetMetalFrameRenderer {
@@ -165,9 +266,10 @@ private struct PetLibraryMetalView: NSViewRepresentable {
             view: view,
             pet: pet,
             stateName: action.rawValue,
-            stateEntryID: "library-preview-\(action.rawValue):\(pet.id):\(pet.revisionID ?? pet.petpackPath)",
+            stateEntryID: stateEntryID,
             active: true,
             reduceMotion: reduceMotion,
+            onPlaybackCompleted: onPlaybackCompleted,
             onVisualEnvelopeChanged: { _ in },
             onFrameContentChanged: onRendererContentChanged
         )

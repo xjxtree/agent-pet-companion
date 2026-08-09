@@ -2,6 +2,9 @@ use petcore_types::{AgentEvent, AgentSource};
 use serde_json::Value;
 
 pub const CODEX_INTERNAL_SUGGESTIONS_REASON: &str = "codex_internal_suggestions";
+pub const PET_STUDIO_INTERNAL_SESSION_REASON: &str = "pet_studio_internal_session";
+pub const AGENT_CHILD_SESSION_REASON: &str = "agent_child_session";
+pub const AGENT_CHILD_SESSION_SOURCE_EVENT: &str = "session.child";
 
 const CODEX_INTERNAL_SUGGESTIONS_PREFIXES: [&str; 2] = [
     "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:",
@@ -46,6 +49,14 @@ pub fn is_codex_internal_suggestions_payload(payload: &Value) -> bool {
 }
 
 pub fn suppressed_agent_session_reason(event: &AgentEvent) -> Option<&'static str> {
+    if event
+        .payload_json
+        .get("source_event")
+        .and_then(Value::as_str)
+        == Some(AGENT_CHILD_SESSION_SOURCE_EVENT)
+    {
+        return Some(AGENT_CHILD_SESSION_REASON);
+    }
     if event.source != AgentSource::Codex
         || !is_codex_internal_suggestions_payload(&event.payload_json)
     {
@@ -90,5 +101,33 @@ mod tests {
             "session_title": "Analyze this # Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:",
             "message_role": "assistant"
         })));
+    }
+
+    #[test]
+    fn recognizes_structured_child_session_markers_for_every_agent() {
+        for source in [
+            AgentSource::Codex,
+            AgentSource::ClaudeCode,
+            AgentSource::Pi,
+            AgentSource::Opencode,
+        ] {
+            let event = AgentEvent {
+                id: "child-marker".to_string(),
+                source,
+                project_path: None,
+                session_id: Some("child-session".to_string()),
+                event_type: petcore_types::AgentEventType::Start,
+                title: "start".to_string(),
+                detail: None,
+                payload_json: serde_json::json!({
+                    "source_event": AGENT_CHILD_SESSION_SOURCE_EVENT
+                }),
+                created_at: "2026-08-06T00:00:00Z".to_string(),
+            };
+            assert_eq!(
+                suppressed_agent_session_reason(&event),
+                Some(AGENT_CHILD_SESSION_REASON)
+            );
+        }
     }
 }

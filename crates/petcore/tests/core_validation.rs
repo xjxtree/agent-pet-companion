@@ -163,6 +163,9 @@ while IFS= read -r request; do
     *thread/resume*)
       printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"thread":{{"id":"{thread_id}","sessionId":"{thread_id}","ephemeral":false,"status":{{"type":"idle"}},"cwd":"/tmp","turns":[{{"id":"turn_fake_pet_studio","status":"completed"}}]}},"model":"fake-model","modelProvider":"fake","cwd":"/tmp","approvalPolicy":"never","sandbox":{{"type":"readOnly"}}}}}}'
       ;;
+    *thread/archive*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+      ;;
     *turn/start*)
       request_id="${{request#*\"id\":}}"
       request_id="${{request_id%%,*}}"
@@ -1441,6 +1444,7 @@ fn behavior_settings_default_serializes_system_language_and_stacked_session_grou
 fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     let legacy = json!({
         "enabled": true,
+        "mouse_passthrough": false,
         "sources": {
             "codex": false
         },
@@ -3190,7 +3194,7 @@ fn launch_agent_plist_can_be_installed_and_uninstalled_without_loading() {
 }
 
 #[test]
-fn generation_fails_without_app_server_when_local_fallback_is_not_enabled() {
+fn generation_pauses_recoverably_without_app_server_when_local_fallback_is_not_enabled() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "");
@@ -3246,13 +3250,16 @@ fn generation_fails_without_app_server_when_local_fallback_is_not_enabled() {
     };
 
     assert!(messages.as_array().unwrap().iter().any(|message| {
-        message["progress"].as_f64() == Some(1.0)
-            && message["kind"].as_str() == Some("generation_failed")
+        message["kind"].as_str() == Some("recoverable_error")
             && message["content"]
                 .as_str()
                 .unwrap_or("")
                 .contains("Codex App Server brief turn 未完成")
     }));
+    let job = state.database.generation_job(job_id).unwrap().unwrap();
+    assert_eq!(job.status, GenerationJobStatus::Failed);
+    assert!(job.recoverable);
+    assert!(job.ended_at.is_none());
     let snapshot = handle_request(
         &state,
         RpcRequest {
@@ -3267,7 +3274,7 @@ fn generation_fails_without_app_server_when_local_fallback_is_not_enabled() {
 }
 
 #[test]
-fn generation_fails_when_skill_petpack_source_is_invalid_without_local_fallback() {
+fn generation_pauses_recoverably_when_skill_petpack_source_is_invalid_without_local_fallback() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
@@ -3330,13 +3337,16 @@ fn generation_fails_when_skill_petpack_source_is_invalid_without_local_fallback(
     };
 
     assert!(messages.as_array().unwrap().iter().any(|message| {
-        message["progress"].as_f64() == Some(1.0)
-            && message["kind"].as_str() == Some("generation_failed")
+        message["kind"].as_str() == Some("recoverable_error")
             && message["content"]
                 .as_str()
                 .unwrap_or("")
                 .contains("修复 Codex App Server / Skill 后重试")
     }));
+    let job = state.database.generation_job(job_id).unwrap().unwrap();
+    assert_eq!(job.status, GenerationJobStatus::Failed);
+    assert!(job.recoverable);
+    assert!(job.ended_at.is_none());
     let snapshot = handle_request(
         &state,
         RpcRequest {
@@ -3394,10 +3404,11 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
         )
         .unwrap();
         let failed = messages.as_array().unwrap().iter().any(|message| {
-            message["kind"].as_str() == Some("generation_failed")
-                && message["content"].as_str().unwrap_or("").contains(
-                    "external full source remained incomplete after 6 bounded checkpoint turns",
-                )
+            message["kind"].as_str() == Some("recoverable_error")
+                && message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("连续 3 个续接段没有检测到新的持久化产物")
         });
         if failed {
             break messages;
@@ -3411,11 +3422,27 @@ fn generation_external_full_source_rejects_brief_only_materialization() {
     };
 
     assert!(messages.as_array().unwrap().iter().any(|message| {
-        message["kind"].as_str() == Some("generation_failed")
+        message["kind"].as_str() == Some("recoverable_error")
             && message["content"]
                 .as_str()
                 .unwrap_or("")
-                .contains("external full source remained incomplete")
+                .contains("Codex App Server 连接本身正常")
+    }));
+    assert_eq!(
+        messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["kind"].as_str() == Some("generation_checkpoint"))
+            .count(),
+        3
+    );
+    assert!(!messages.as_array().unwrap().iter().any(|message| {
+        message["kind"].as_str() == Some("recoverable_error")
+            && message["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Agent 连接中修复 Codex App Server")
     }));
     assert!(!messages.as_array().unwrap().iter().any(|message| {
         message["content"]
@@ -3520,7 +3547,7 @@ fn generation_external_full_source_rejects_injected_deterministic_preview() {
         )
         .unwrap();
         let rejected = messages.as_array().unwrap().iter().any(|message| {
-            message["kind"].as_str() == Some("generation_failed")
+            message["kind"].as_str() == Some("recoverable_error")
                 && message["content"]
                     .as_str()
                     .unwrap_or("")
@@ -4047,6 +4074,115 @@ fn generation_retry_creates_tracked_job_from_previous_form() {
 }
 
 #[test]
+fn generation_resume_reuses_recoverable_job_workspace_and_codex_thread() {
+    let _env_lock = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().to_path_buf());
+    let database = Database::new(paths.db_path.clone());
+    paths.ensure().unwrap();
+    database.init().unwrap();
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", "");
+    let _disable_auto = EnvVarGuard::set("APC_DISABLE_CODEX_APP_SERVER_AUTO", "1");
+
+    let form = GenerationForm {
+        description: "从原工作区继续的宠物".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: vec![],
+    };
+    let job_id = "job_resume_same_workspace";
+    let job_dir = paths.jobs_dir.join(job_id);
+    std::fs::create_dir_all(job_dir.join("petpack-source")).unwrap();
+    std::fs::write(job_dir.join("petpack-source/accepted-state.txt"), "passed").unwrap();
+    database
+        .create_generation_job(job_id, &form, &job_dir)
+        .unwrap();
+    database
+        .update_generation_job_session(job_id, "thread_resume_same_workspace")
+        .unwrap();
+    database
+        .mark_generation_recoverable_failure(job_id, "fixture_failure", "fixture paused")
+        .unwrap();
+
+    let resumed =
+        generation::resume_generation_for_instance(&paths, &database, job_id, "test-instance")
+            .unwrap();
+    assert_eq!(resumed, job_id);
+    assert_eq!(database.generation_jobs(10).unwrap().len(), 1);
+    let resumed_job = database.generation_job(job_id).unwrap().unwrap();
+    assert_eq!(
+        resumed_job.session_id.as_deref(),
+        Some("thread_resume_same_workspace")
+    );
+    assert!(job_dir.join("petpack-source/accepted-state.txt").is_file());
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let messages = database.generation_messages(job_id).unwrap();
+        let resumed_message = messages
+            .iter()
+            .any(|message| message.kind.as_deref() == Some("generation_resumed"));
+        let worker_stopped_recoverably = messages
+            .iter()
+            .any(|message| message.kind.as_deref() == Some("recoverable_error"));
+        if resumed_message && worker_stopped_recoverably {
+            assert!(messages.iter().any(|message| {
+                message.kind.as_deref() == Some("generation_resumed")
+                    && message
+                        .content
+                        .contains("保留原 job、Codex 会话、素材与已通过的 QA")
+            }));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "resume message was not persisted"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn generation_heartbeat_wakes_live_wait_without_growing_the_timeline() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().to_path_buf());
+    let database = Database::new(paths.db_path.clone());
+    paths.ensure().unwrap();
+    database.init().unwrap();
+    let form = GenerationForm {
+        description: "heartbeat projection".to_string(),
+        style: "半写实".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: vec![],
+    };
+    let job_id = "job_heartbeat_projection";
+    let job_dir = paths.jobs_dir.join(job_id);
+    std::fs::create_dir_all(&job_dir).unwrap();
+    database
+        .create_generation_job(job_id, &form, &job_dir)
+        .unwrap();
+    database
+        .update_generation_job(job_id, GenerationJobStatus::Running, None)
+        .unwrap();
+
+    let initial =
+        generation::wait_messages_with_database(&paths, &database, job_id, "", 250).unwrap();
+    let revision = initial["revision"].as_str().unwrap().to_string();
+    let initial_heartbeat = initial["heartbeat_at"].as_str().unwrap().to_string();
+    assert_eq!(initial["messages"].as_array().unwrap().len(), 0);
+
+    std::thread::sleep(Duration::from_millis(2));
+    database.touch_generation_job(job_id).unwrap();
+    let update =
+        generation::wait_messages_with_database(&paths, &database, job_id, &revision, 250).unwrap();
+
+    assert_eq!(update["changed"], true);
+    assert_ne!(update["revision"], revision);
+    assert_ne!(update["heartbeat_at"], initial_heartbeat);
+    assert_eq!(update["messages"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn generation_waits_for_user_input_and_resumes_after_reply() {
     let _env_lock = lock_env();
     let temp = tempfile::tempdir().unwrap();
@@ -4165,7 +4301,7 @@ fn generation_waits_for_user_input_and_resumes_after_reply() {
 }
 
 #[test]
-fn ensure_ready_marks_stale_interrupted_generation_job_failed() {
+fn ensure_ready_marks_stale_interrupted_generation_job_recoverable() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths.clone());
@@ -4207,14 +4343,17 @@ fn ensure_ready_marks_stale_interrupted_generation_job_failed() {
         restarted.database.generation_job_status(job_id).unwrap(),
         Some(GenerationJobStatus::Failed)
     );
+    let recovered = restarted.database.generation_job(job_id).unwrap().unwrap();
+    assert!(recovered.recoverable);
+    assert_eq!(recovered.failure_code.as_deref(), Some("owner_interrupted"));
+    assert!(recovered.ended_at.is_none());
     let messages = petcore::generation::read_messages(&restarted.paths, job_id).unwrap();
     assert!(messages.iter().any(|message| {
-        message["progress"].as_f64() == Some(1.0)
-            && message["kind"].as_str() == Some("generation_failed")
+        message["kind"].as_str() == Some("recoverable_error")
             && message["content"]
                 .as_str()
                 .unwrap_or("")
-                .contains("生成已中断")
+                .contains("制作已暂停")
     }));
     assert!(restarted
         .database
@@ -4369,6 +4508,15 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     )
     .unwrap();
     let final_items = final_messages.as_array().unwrap();
+    assert!(final_items.iter().all(|message| {
+        let kind = message["kind"].as_str().unwrap_or("");
+        let user_visible_progress =
+            kind == "generation_progress" || kind.starts_with("generation_activity_");
+        let content = message["content"].as_str().unwrap_or("");
+        !user_visible_progress
+            || (!content.contains("thread_fake_pet_studio")
+                && !content.contains("turn_fake_pet_studio"))
+    }));
     assert!(final_items.iter().any(|message| {
         message["content"]
             .as_str()
@@ -4504,7 +4652,7 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
     assert_eq!(validation_metadata["states"][1]["name"], "thinking");
     assert_eq!(validation_metadata["state_frame_counts"]["thinking"], 4);
 
-    let reply_messages = handle_request(
+    let reply_error = handle_request(
         &state,
         RpcRequest {
             jsonrpc: Some("2.0".to_string()),
@@ -4516,81 +4664,13 @@ fn generation_builds_form_driven_petpack_with_cover_and_source() {
             }),
         },
     )
-    .unwrap();
-    let reply_items = reply_messages.as_array().unwrap();
-    assert!(reply_items.iter().any(|message| {
-        message["role"] == "user" && message["content"] == "等待确认动作再明显一点"
-    }));
-    assert!(reply_items.iter().any(|message| {
-        message["role"] == "assistant"
-            && message["content"]
-                .as_str()
-                .unwrap()
-                .contains("正在恢复 Codex 会话")
-    }));
-
-    // A revision repeats the strict 6-state decode/validation pass. Leave enough
-    // headroom for the full core_validation suite to run concurrently on CI.
-    let revision_deadline = Instant::now() + Duration::from_secs(240);
-    let reply_message_count = reply_items.len();
-    let revision_messages = loop {
-        let messages = handle_request(
-            &state,
-            RpcRequest {
-                jsonrpc: Some("2.0".to_string()),
-                id: Some(json!("test")),
-                method: "generation.messages".to_string(),
-                params: json!({ "job_id": job_id }),
-            },
-        )
-        .unwrap();
-        let completed = messages
-            .as_array()
-            .unwrap()
-            .iter()
-            .skip(reply_message_count)
-            .any(|message| message["kind"].as_str() == Some("generation_completed"));
-        if completed {
-            break messages;
-        }
-        assert!(
-            Instant::now() < revision_deadline,
-            "revision did not complete"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let revision_items = revision_messages.as_array().unwrap();
-    assert!(revision_items.iter().any(|message| {
-        message["content"]
-            .as_str()
-            .unwrap()
-            .contains("已恢复 Codex App Server 会话")
-    }));
-    assert!(revision_items.iter().any(|message| {
-        message["content"]
-            .as_str()
-            .unwrap()
-            .contains("调整 turn 已启动")
-    }));
-
-    let revised_snapshot = handle_request(
-        &state,
-        RpcRequest {
-            jsonrpc: Some("2.0".to_string()),
-            id: Some(json!("test")),
-            method: "state.snapshot".to_string(),
-            params: json!({}),
-        },
-    )
-    .unwrap();
-    let revised_pets = revised_snapshot["pets"].as_array().unwrap();
-    assert_eq!(revised_pets.len(), 1);
-    let active_pet = revised_pets
-        .iter()
-        .find(|pet| pet["active"] == true)
-        .expect("revised pet should be active");
-    assert_eq!(active_pet["id"], pet["id"]);
-    assert_eq!(active_pet["name"], "AI 云袖");
+    .unwrap_err()
+    .to_string();
+    assert!(
+        reply_error.contains("generation is completed"),
+        "{reply_error}"
+    );
+    assert_eq!(state.database.list_pets().unwrap().len(), 1);
 }
 
 #[test]
@@ -4808,7 +4888,7 @@ fn generation_rejects_provider_symlink_before_portable_metadata_write() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|message| message["kind"].as_str() == Some("generation_failed"))
+            .any(|message| message["kind"].as_str() == Some("recoverable_error"))
         {
             break;
         }

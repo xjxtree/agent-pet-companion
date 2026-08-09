@@ -90,6 +90,7 @@ struct OnboardingView: View {
             minHeight: ControlCenterShellPolicy.supportedMinimumWindowHeight
         )
         .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding.root")
         .onAppear(perform: synchronizePetSelection)
         .onChange(of: store.onboardingCompanionCandidates.map(\.id)) {

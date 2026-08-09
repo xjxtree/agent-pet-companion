@@ -121,7 +121,7 @@ pub(crate) fn stage_reference_inputs(
 /// Performs the lightweight checks needed to disclose one job-local reference
 /// path in the frequently refreshed recovery projection. Unlike the actual
 /// generation/retry validator, this intentionally reads only the 12-byte
-/// PNG/WebP header: full pixel decoding here would put up to 64 MP of work on
+/// PNG/JPEG/WebP header: full pixel decoding here would put up to 64 MP of work on
 /// every `state.wait` snapshot. The consuming generation path still reopens
 /// and fully validates the staged copies before using them.
 ///
@@ -202,6 +202,7 @@ pub(crate) fn validate_private_recovery_reference_at<Fd: AsFd>(
     }
     let header_matches_extension = match extension {
         "png" => header.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+        "jpg" | "jpeg" => header.starts_with(&[0xff, 0xd8, 0xff]),
         "webp" => &header[..4] == b"RIFF" && &header[8..12] == b"WEBP",
         _ => false,
     };
@@ -379,12 +380,15 @@ fn decode_reference_bytes(
 ) -> Result<(u32, u32, ImageFormat, DynamicImage)> {
     let reader = ImageReader::new(Cursor::new(contents))
         .with_guessed_format()
-        .map_err(|_| reference_error(index, "无法识别格式；仅支持 PNG 和 WebP"))?;
+        .map_err(|_| reference_error(index, "无法识别格式；仅支持 PNG、JPG 和 WebP"))?;
     let actual_format = reader
         .format()
-        .ok_or_else(|| reference_error(index, "无法识别格式；仅支持 PNG 和 WebP"))?;
-    if !matches!(actual_format, ImageFormat::Png | ImageFormat::WebP) {
-        return Err(reference_error(index, "仅支持 PNG 和 WebP"));
+        .ok_or_else(|| reference_error(index, "无法识别格式；仅支持 PNG、JPG 和 WebP"))?;
+    if !matches!(
+        actual_format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+    ) {
+        return Err(reference_error(index, "仅支持 PNG、JPG 和 WebP"));
     }
     let (width, height) = reader
         .into_dimensions()
@@ -483,14 +487,17 @@ fn supported_extension(index: usize, path: &Path) -> Result<&'static str> {
         .as_deref()
     {
         Some("png") => Ok("png"),
+        Some("jpg") => Ok("jpg"),
+        Some("jpeg") => Ok("jpeg"),
         Some("webp") => Ok("webp"),
-        _ => Err(reference_error(index, "仅支持 PNG 和 WebP")),
+        _ => Err(reference_error(index, "仅支持 PNG、JPG 和 WebP")),
     }
 }
 
 fn format_for_extension(extension: &str) -> ImageFormat {
     match extension {
         "png" => ImageFormat::Png,
+        "jpg" | "jpeg" => ImageFormat::Jpeg,
         "webp" => ImageFormat::WebP,
         _ => unreachable!("supported_extension returns only known formats"),
     }

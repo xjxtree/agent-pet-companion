@@ -10,7 +10,7 @@ Commands listed here define proof boundaries; they do not prove that a commit pa
 | Simulated integration | `validate_portable_pet_maker.sh`, `validate_connectors_runtime.sh` | Isolated package production, QA freshness, connector generation/normalization, library flows / 隔离宠物制作、QA 新鲜度、连接器与宠物库流程 | Artistic quality or a real provider task / 艺术质量或真实服务任务 |
 | macOS runtime | `build_and_run.sh --verify`, bundle/overlay/window/renderer/recovery validators | The packaged App/runtime, clean-home bundled pets, persistence, rendering, and exercised recovery / 打包 App、运行时、内置宠物、持久化、渲染与恢复 | Unobserved UI behavior, real provider behavior, full profiling / 未直接观察的 UI、真实服务与完整性能结论 |
 | Real connectors | `validate_real_agent_connectors.sh` | Current managed adapters can emit through the local runtime without reading credentials / 当前受管适配器可通过本地运行时发送事件 | Authentication, model execution, complete user task / 认证、模型执行、完整任务 |
-| Real App Server | `validate_real_app_server.sh` | Codex App Server generation through validation, import, and activation / 真实 Codex 制作、校验、导入与启用 | Visible rendering of the same artifact / 同一产物的可见渲染 |
+| Real App Server | `validate_real_app_server.sh`, optional `soak_ai_pet_maker_six_hours.sh` | Native input, generation/import, PetCore restart, same-job resume, exact-turn interrupt, worker stop, and thread archive; the soak additionally proves a real task duration above six hours / 原生输入、制作导入、PetCore 重启、同任务继续、精确 turn 中断、worker 停止与 thread 归档；soak 额外证明真实任务时长超过六小时 | Visible rendering of the same artifact or unattended system sleep unless the matching host-UI step is also observed / 同一产物的可见渲染；未配合主机 UI 验收时也不能证明无人值守系统睡眠 |
 | Performance | `validate_event_storm.sh`, renderer summaries, external profiling | Measured bounded workload and renderer budgets / 已测量负载与渲染预算 | CPU/GPU conclusions without matching profiler evidence / 未采集 profiler 时的完整性能结论 |
 | GitHub Release | `build_release.sh --github-release --arch all` and release artifact/API validators | Exact assets, identity, checksums, ZIP safety, ad-hoc signatures, thin architectures, native packaged acceptance, downloaded-asset equality / 资产、身份、校验和、安全、签名、架构、原生验收与下载一致性 | Developer identity, notarization, stapling, default Gatekeeper trust, untested hardware / 开发者身份、公证、stapling、默认 Gatekeeper 信任与未测硬件 |
 
@@ -29,7 +29,8 @@ The default gate uses isolated homes and must not launch the GUI, mutate user La
 
 - `APC_VALIDATE_HOST_UI=1` permits repository validators that affect a packaged App runtime. It does not prescribe the UI inspection tool; the executing Agent selects a suitable method. Computer Use is recommended when available and useful.
 - `APC_VALIDATE_REAL_AGENT_CONNECTORS=1` permits checks against installed Agent CLIs and managed connector files. It never permits reading credential stores.
-- `APC_VALIDATE_REAL_APP_SERVER=1` permits a real App Server generation session. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` keeps the strict release proof; lowering it weakens the result.
+- `APC_VALIDATE_REAL_APP_SERVER=1` permits the real App Server lifecycle validation. It deliberately requests native input, completes one pet, interrupts and restarts its owned PetCore, resumes a second task, then strictly cancels and verifies the exact Studio thread is archived or absent from the ordinary list. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` keeps the strict release proof; lowering it weakens the result.
+- `APC_RUN_SIX_HOUR_MAKER_SOAK=1` runs the non-default six-hour gate. It holds a real task in durable waiting-for-user state for just over six hours, verifies the backend-authoritative duration includes that interval, and then runs the same resume/cancel lifecycle checks.
 - `APC_EVENT_STORM_COUNT` changes the bounded stress workload.
 
 `validate_overlay_interaction.sh` always runs the deterministic placement, snapshot, geometry, display-width, and telemetry suites and emits the build-bound interaction attestation. Real pointer, focus, keyboard, and lifecycle behavior remains a separate visible-UI acceptance step whose method is selected for the task. / 悬浮层脚本始终验证确定性交互契约；真实指针、焦点、键盘和生命周期仍需按任务单独验收。
@@ -39,6 +40,7 @@ Useful focused commands:
 ```bash
 APC_VALIDATE_REAL_AGENT_CONNECTORS=1 ./script/validate_real_agent_connectors.sh
 APC_VALIDATE_REAL_APP_SERVER=1 ./script/validate_real_app_server.sh
+APC_RUN_SIX_HOUR_MAKER_SOAK=1 ./script/soak_ai_pet_maker_six_hours.sh
 APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
 ./script/validate_overlay_performance_summary.sh /absolute/summary.json 60
 ```

@@ -148,6 +148,15 @@ struct AgentPetCompanionApp: App {
                 }
                 store?.presentMainWindow()
             }
+            MakerNotificationCoordinator.shared.configure { [weak store] jobID in
+                guard let store else { return }
+                store.selection = .maker
+                store.presentMainWindow()
+                Task {
+                    await store.refreshGenerationHistory()
+                    await store.selectGenerationHistoryJobAndWait(jobID)
+                }
+            }
             if AppLaunchMode.manualInstallationRequest == nil {
                 Task { @MainActor in
                     await store.bootstrapIfNeeded()
@@ -472,6 +481,14 @@ private struct MainWindowContent: View {
                         )
                     ) { _ in
                         store.appUpdater.checkAutomaticallyIfDue()
+                        Task { await store.refreshMakerAfterLifecycleEvent() }
+                    }
+                    .onReceive(
+                        NSWorkspace.shared.notificationCenter.publisher(
+                            for: NSWorkspace.didWakeNotification
+                        )
+                    ) { _ in
+                        Task { await store.refreshMakerAfterLifecycleEvent() }
                     }
             }
         }

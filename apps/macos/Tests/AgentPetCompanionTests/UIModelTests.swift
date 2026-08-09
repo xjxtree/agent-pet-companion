@@ -503,12 +503,20 @@ struct UIModelTests {
     @MainActor
     @Test
     func activationRefreshFailureDoesNotMisreportTheSuccessfulMutation() async {
-        let store = makeStore()
+        var unexpectedRequests = 0
+        let store = makeStore(
+            petCoreRequestOverride: { _, _, _ in
+                unexpectedRequests += 1
+                return ["ok": true]
+            }
+        )
+        let previouslyActivePet = makePet(id: "pet_previously_active", active: true)
         let pet = makePet(id: "pet_activation_refresh", active: false)
+        store.pets = [previouslyActivePet, pet]
         var mutationCalls = 0
         var recoveryCalls = 0
 
-        await store.finishPetActivation(
+        let activated = await store.finishPetActivation(
             pet,
             activate: { mutationCalls += 1 },
             refreshSnapshot: {
@@ -520,9 +528,15 @@ struct UIModelTests {
             },
             recoverSnapshot: { recoveryCalls += 1 }
         )
+        let repeatedActivation = await store.activatePetAndWait(pet)
 
+        #expect(activated)
+        #expect(repeatedActivation)
         #expect(mutationCalls == 1)
+        #expect(unexpectedRequests == 0)
         #expect(recoveryCalls == 1)
+        #expect(store.activePet?.id == pet.id)
+        #expect(store.pets.filter(\.active).count == 1)
         #expect(store.statusText == "已启用 pet_activation_refresh，但状态刷新失败：snapshot unavailable")
         #expect(!store.statusText.contains("启用失败"))
     }
@@ -531,11 +545,13 @@ struct UIModelTests {
     @Test
     func activationMutationFailureRemainsAnActivationFailure() async {
         let store = makeStore()
+        let previouslyActivePet = makePet(id: "pet_still_active", active: true)
         let pet = makePet(id: "pet_activation_mutation", active: false)
+        store.pets = [previouslyActivePet, pet]
         var snapshotCalls = 0
         var recoveryCalls = 0
 
-        await store.finishPetActivation(
+        let activated = await store.finishPetActivation(
             pet,
             activate: {
                 throw NSError(
@@ -548,8 +564,11 @@ struct UIModelTests {
             recoverSnapshot: { recoveryCalls += 1 }
         )
 
+        #expect(!activated)
         #expect(snapshotCalls == 0)
         #expect(recoveryCalls == 1)
+        #expect(store.activePet?.id == previouslyActivePet.id)
+        #expect(store.pets.filter(\.active).count == 1)
         #expect(store.statusText == "启用失败：activation rejected")
     }
 
@@ -1204,6 +1223,70 @@ struct UIModelTests {
         #expect(row.maxY <= bubble.maxY)
         #expect(!content.hasMultipleSessions)
         #expect(content.visibleSessions == [session])
+        #expect(session.standaloneSummaryText == "Agent reply")
+
+        let detailedContent = OverlayBubbleContent(
+            id: "agent-claude-code",
+            source: .claudeCode,
+            agentName: "Claude Code",
+            sessions: [session]
+        )
+        let detailedSize = OverlayGeometry.resolvedBubbleSize(
+            in: CGSize(width: 1512, height: 934),
+            content: detailedContent
+        )
+        #expect(size.height < detailedSize.height)
+        #expect(size.height > OverlayGeometry.bubbleMinimumHeight)
+
+        var statusOnly = session
+        statusOnly.messageText = ""
+        #expect(statusOnly.standaloneSummaryText == "Using Tools")
+
+        for expanded in [false, true] {
+            let trayCard = OverlayBubbleContent(
+                id: "session-card-tray",
+                source: .claudeCode,
+                agentName: "Claude Code",
+                sessions: [session],
+                isExpanded: expanded,
+                isStandaloneSessionCard: true,
+                standaloneStackSessionCount: 2
+            )
+            #expect(trayCard.isStacked == !expanded)
+            #expect(
+                OverlayBubbleSessionPrimaryAction.resolve(content: trayCard)
+                    == (expanded ? .activateSession : .expandSessions)
+            )
+            #expect(trayCard.showsStackDecoration == !expanded)
+            #expect(trayCard.stackDecorationLayerCount == (expanded ? 0 : 1))
+            #expect(
+                trayCard.stackDecorationDepth
+                    == (expanded ? 0 : OverlayGeometry.bubbleStandaloneStackLayerOffset)
+            )
+            #expect(OverlayGeometry.bubbleGroupToggleHitRect(
+                in: bubble,
+                content: trayCard
+            ).isEmpty)
+        }
+
+        let deepTrayCard = OverlayBubbleContent(
+            id: "session-card-deep-tray",
+            source: .claudeCode,
+            agentName: "Claude Code",
+            sessions: [session],
+            isExpanded: false,
+            isStandaloneSessionCard: true,
+            standaloneStackSessionCount: 5
+        )
+        #expect(
+            deepTrayCard.stackDecorationLayerCount
+                == OverlayGeometry.bubbleCollapsedStackLayerCount
+        )
+        #expect(
+            deepTrayCard.stackDecorationDepth
+                == CGFloat(OverlayGeometry.bubbleCollapsedStackLayerCount)
+                    * OverlayGeometry.bubbleStandaloneStackLayerOffset
+        )
     }
 
     @Test
@@ -1247,9 +1330,18 @@ struct UIModelTests {
         )
         #expect(collapsed.statusTone == .failed)
         #expect(collapsed.isStacked)
+        #expect(
+            OverlayBubbleSessionPrimaryAction.resolve(content: collapsed)
+                == .expandSessions
+        )
+        #expect(collapsed.showsStackDecoration)
         #expect(collapsed.stackDecorationDepth > 0)
-        #expect(expanded.visibleSessions.map(\.sessionID) == ["newer-session", "older-session"])
+        #expect(expanded.visibleSessions.map(\.sessionID) == ["older-session", "newer-session"])
         #expect(!expanded.isStacked)
+        #expect(
+            OverlayBubbleSessionPrimaryAction.resolve(content: expanded)
+                == .activateSession
+        )
         #expect(expanded.stackDecorationDepth == 0)
         let collapsedHeight = OverlayGeometry.resolvedBubbleSize(
             in: CGSize(width: 1512, height: 934),
@@ -1302,20 +1394,20 @@ struct UIModelTests {
 
         #expect(content.sessionCount == 8)
         #expect(content.visibleSessions.count == 1)
-        #expect(visibleIDs.first == "session-0")
-        #expect(visibleIDs.filter { $0 == "session-0" }.count == 1)
+        #expect(visibleIDs.first == "session-1")
+        #expect(visibleIDs.filter { $0 == "session-1" }.count == 1)
         #expect(Set(visibleIDs).count == visibleIDs.count)
         #expect(expanded.visibleSessions.count == expanded.sessionCount)
-        #expect(expandedIDs.first == "session-0")
+        #expect(expandedIDs.first == "session-1")
         #expect(Set(expandedIDs).count == expandedIDs.count)
-        #expect(expanded.visibleSessions.dropFirst().allSatisfy {
-            $0.eventType == .waiting || $0.eventType == .failed
-        })
-        #expect(expandedIDs == (0 ..< 8).map { "session-\($0)" })
+        #expect(expandedIDs == [
+            "session-1", "session-3", "session-5", "session-7",
+            "session-0", "session-2", "session-4", "session-6",
+        ])
     }
 
     @Test
-    func legacySessionGroupPreservesPetCoreFirstSeenOrder() throws {
+    func legacySessionGroupUsesTheSamePriorityFirstOrderAtBothDisclosureLevels() throws {
         let first = try animationState(
             source: .pi,
             eventID: "first-legacy",
@@ -1343,7 +1435,7 @@ struct UIModelTests {
 
         #expect(
             content.visibleSessions.map(\.sessionID)
-                == ["first-legacy", "second-legacy"]
+                == ["second-legacy", "first-legacy"]
         )
         #expect(content.statusTone == .failed)
     }
@@ -2172,6 +2264,227 @@ struct UIModelTests {
         )
     }
 
+    @MainActor
+    @Test
+    func makerHistoryOpensOnlyTheVerifiedChatGPTThread() async throws {
+        let threadID = "019f5b0f-88ff-7413-8953-29de4ed0951c"
+        let historyList: [String: Any] = [
+            "ok": true,
+            "truncated": false,
+            "jobs": [[
+                "job_id": "job_history",
+                "status": "failed",
+                "operation": "create",
+                "brief_preview": "A small fox",
+                "style": "半写实",
+                "quality": "standard",
+                "reference_count": 0,
+                "created_at": "2026-08-07T00:00:00Z",
+                "updated_at": "2026-08-07T00:01:00Z",
+            ]],
+        ]
+        var openedRoute: AgentSessionOpenRoute?
+        let store = makeStore(
+            petCoreRequestOverride: { method, _, _ in
+                switch method {
+                case "generation.history.list":
+                    return historyList
+                case "generation.history.detail":
+                    return [
+                        "ok": true,
+                        "found": true,
+                        "job_id": "job_history",
+                        "status": "failed",
+                        "operation": "create",
+                        "description": "A small fox",
+                        "style": "半写实",
+                        "quality": "standard",
+                        "reference_count": 0,
+                        "progress_messages": [],
+                        "message_count": 0,
+                        "messages_truncated": false,
+                        "session": [
+                            "availability": "available",
+                            "can_open": true,
+                            "routable_session_id": threadID,
+                        ],
+                    ]
+                default:
+                    throw PetCoreClientError.invalidResponse
+                }
+            },
+            agentSessionRouteOpener: { route in
+                openedRoute = route
+                return .openedExactSession
+            }
+        )
+
+        #expect(!store.generationHistoryHasLoaded)
+        await store.refreshGenerationHistory()
+        #expect(store.generationHistoryHasLoaded)
+        store.selectGenerationHistoryJob("job_history")
+        await store.loadGenerationHistoryDetail(jobID: "job_history")
+        store.openGenerationHistorySession()
+        for _ in 0..<20 where openedRoute == nil {
+            await Task.yield()
+        }
+
+        #expect(openedRoute == .url(try #require(URL(
+            string: "codex://threads/\(threadID)"
+        ))))
+
+        var archivedRouteOpened = false
+        let archivedStore = makeStore(
+            petCoreRequestOverride: { method, _, _ in
+                switch method {
+                case "generation.history.list":
+                    return historyList
+                case "generation.history.detail":
+                    return [
+                        "ok": true,
+                        "found": true,
+                        "job_id": "job_history",
+                        "status": "failed",
+                        "operation": "create",
+                        "description": "A small fox",
+                        "style": "半写实",
+                        "quality": "standard",
+                        "reference_count": 0,
+                        "progress_messages": [],
+                        "message_count": 0,
+                        "messages_truncated": false,
+                        "session": [
+                            "availability": "archived",
+                            "can_open": false,
+                        ],
+                    ]
+                default:
+                    throw PetCoreClientError.invalidResponse
+                }
+            },
+            agentSessionRouteOpener: { _ in
+                archivedRouteOpened = true
+                return .openedExactSession
+            }
+        )
+        await archivedStore.refreshGenerationHistory()
+        archivedStore.selectGenerationHistoryJob("job_history")
+        await archivedStore.loadGenerationHistoryDetail(jobID: "job_history")
+        archivedStore.openGenerationHistorySession()
+        await Task.yield()
+
+        #expect(!archivedRouteOpened)
+        #expect(archivedStore.statusText == APCLocalization.text(
+            .studioHistorySessionUnavailable
+        ))
+    }
+
+    @MainActor
+    @Test
+    func makerHistoryResumesTheSelectedFailedJobWithoutCreatingANewJob() async {
+        let jobID = "job_history_resume"
+        var resumeRequests = 0
+        let historyList: [String: Any] = [
+            "ok": true,
+            "truncated": false,
+            "jobs": [[
+                "job_id": jobID,
+                "status": "failed",
+                "recoverable": true,
+                "operation": "create",
+                "brief_preview": "A small fox",
+                "style": "半写实",
+                "quality": "standard",
+                "reference_count": 0,
+                "created_at": "2026-08-07T00:00:00Z",
+                "updated_at": "2026-08-07T00:01:00Z",
+            ]],
+        ]
+        let store = makeStore(petCoreRequestOverride: { method, params, _ in
+            switch method {
+            case "generation.history.list":
+                return historyList
+            case "generation.history.detail":
+                return [
+                    "ok": true,
+                    "found": true,
+                    "job_id": jobID,
+                    "status": "failed",
+                    "recoverable": true,
+                    "operation": "create",
+                    "description": "A small fox",
+                    "style": "半写实",
+                    "quality": "standard",
+                    "reference_count": 0,
+                    "progress_messages": [],
+                    "message_count": 1,
+                    "messages_truncated": false,
+                    "session": [
+                        "availability": "available",
+                        "can_open": true,
+                        "routable_session_id": "019f5b0f-88ff-7413-8953-29de4ed0951c",
+                    ],
+                    "capabilities": [
+                        "can_reply": false,
+                        "can_resume": true,
+                        "can_cancel": true,
+                        "can_open_result": false,
+                        "can_open_session": true,
+                        "can_delete": false,
+                    ],
+                ]
+            case "generation.resume":
+                #expect((params as? [String: Any])?["job_id"] as? String == jobID)
+                resumeRequests += 1
+                return ["ok": true, "job_id": jobID, "resumed": true]
+            case "generation.latest":
+                return [
+                    "ok": true,
+                    "found": true,
+                    "job_id": jobID,
+                    "status": "running",
+                    "operation": "create",
+                    "form": [
+                        "description": "A small fox",
+                        "style": "半写实",
+                        "quality": "standard",
+                        "reference_images": [],
+                    ],
+                    "reference_reselection_count": 0,
+                    "message_revision": "2:2026-08-07T00:02:00Z",
+                    "heartbeat_at": "2026-08-07T00:02:00Z",
+                    "messages": [[
+                        "id": "message_resume",
+                        "role": "assistant",
+                        "content": "Continuing the existing workspace",
+                        "progress": 0.2,
+                        "created_at": "2026-08-07T00:02:00Z",
+                        "kind": "generation_resumed",
+                    ]],
+                ]
+            default:
+                throw PetCoreClientError.invalidResponse
+            }
+        })
+
+        await store.refreshGenerationHistory()
+        store.selectGenerationHistoryJob(jobID)
+        await store.loadGenerationHistoryDetail(jobID: jobID)
+        #expect(store.canResumeSelectedGenerationHistory)
+
+        store.resumeSelectedGenerationHistory()
+        for _ in 0..<100 where store.generationSession.jobID != jobID
+            || store.generationSession.state != GenerationSessionState.running {
+            await Task.yield()
+        }
+
+        #expect(resumeRequests == 1)
+        #expect(store.generationSession.jobID == jobID)
+        #expect(store.generationSession.state == GenerationSessionState.running)
+        #expect(store.generationSession.messages.map { $0.id } == ["message_resume"])
+        #expect(store.generationSession.submittedForm?.description == "A small fox")
+    }
+
     @Test
     func overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination() {
         func session(
@@ -2389,14 +2702,22 @@ struct UIModelTests {
     }
 
     @MainActor
-    private func makeStore() -> AppStore {
+    private func makeStore(
+        petCoreRequestOverride: AppStore.PetCoreRequestOverride? = nil,
+        agentSessionRouteOpener: @escaping AppStore.AgentSessionRouteOpener = { _ in
+            .failed(.applicationUnavailable)
+        }
+    ) -> AppStore {
         AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
                 ensureRunning: { .alreadyHealthy },
                 recover: { .alreadyHealthy },
                 refreshSnapshot: { _ in },
                 onReady: { _ in }
-            )
+            ),
+            agentSessionRouteOpener: agentSessionRouteOpener,
+            petCoreRequestOverride: petCoreRequestOverride,
+            initialPetStudioCodexAvailability: .available
         )
     }
 }

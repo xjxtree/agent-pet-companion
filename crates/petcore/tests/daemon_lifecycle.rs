@@ -108,6 +108,58 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
+#[test]
+fn uds_generation_history_delete_removes_terminal_job_and_workspace() {
+    let daemon = start_daemon();
+    let database = Database::new(daemon.paths.db_path.clone());
+    let job_id = "job_uds_history_delete";
+    let job_dir = daemon.paths.jobs_dir.join(job_id);
+    fs::create_dir_all(&job_dir).unwrap();
+    fs::write(job_dir.join("private-artifact.txt"), "private").unwrap();
+    let form = GenerationForm {
+        description: "terminal transport delete".to_string(),
+        style: "pixel".to_string(),
+        quality: QualityLevel::Standard,
+        reference_images: Vec::new(),
+    };
+    database
+        .create_generation_job(job_id, &form, &job_dir)
+        .unwrap();
+    database
+        .append_generation_message(
+            job_id,
+            "assistant",
+            Some("generation_canceled"),
+            "canceled",
+            1.0,
+            Some(GenerationJobStatus::Canceled),
+            None,
+        )
+        .unwrap();
+
+    let response = rpc_exchange(
+        &daemon.paths,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "delete-terminal-history",
+            "method": "generation.history.delete",
+            "params": { "job_id": job_id }
+        }),
+    );
+    assert_eq!(response["id"], "delete-terminal-history");
+    assert_eq!(response["result"]["ok"], true, "{response}");
+    assert_eq!(response["result"]["job_id"], job_id, "{response}");
+    assert_eq!(
+        response["result"]["deleted_status"], "canceled",
+        "{response}"
+    );
+    assert_eq!(response["result"]["deleted_message_count"], 1, "{response}");
+    assert_eq!(response["result"]["workspace_removed"], true, "{response}");
+    assert!(response["result"]["state_revision"].as_str().is_some());
+    assert!(database.generation_job(job_id).unwrap().is_none());
+    assert!(!job_dir.exists());
+}
+
 fn spawn_fake_health_listener(
     listener: UnixListener,
     instance_id: String,
@@ -900,13 +952,13 @@ fn nested_generation_form_and_overlay_placement_are_strict() {
                 "jsonrpc": "2.0",
                 "id": "small-display-width",
                 "method": "overlay.placement.update",
-                "params": { "x": 0, "y": 0, "display_width_pt": 79.9, "display_id": "main", "expected_revision": "1" }
+                "params": { "x": 0, "y": 0, "display_width_pt": 99.9, "display_id": "main", "expected_revision": "1" }
             },
             {
                 "jsonrpc": "2.0",
                 "id": "large-display-width",
                 "method": "overlay.placement.update",
-                "params": { "x": 0, "y": 0, "display_width_pt": 224.1, "display_id": "main", "expected_revision": "1" }
+                "params": { "x": 0, "y": 0, "display_width_pt": 300.1, "display_id": "main", "expected_revision": "1" }
             },
             {
                 "jsonrpc": "2.0",

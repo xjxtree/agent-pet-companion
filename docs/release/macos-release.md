@@ -22,7 +22,7 @@ Choose semantic version `X.Y.Z` and a positive build number. The exact release c
 
 The runtime build ID is `X.Y.Z.BUILD.FULL_40_CHARACTER_COMMIT`. App, PetCore, CLI, manifest, and both archives must agree. One version maps to one tag, one changelog section, and one GitHub Release. / 版本、tag、CHANGELOG、完整 commit、build ID 与两个架构产物必须一一对应。
 
-The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. A Studio change also requires the previous shipped Skill digest in the append-only retired-Skill history.
+The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. A Studio change also requires the previous shipped Skill digest in the append-only retired-Skill history. If an App-managed pre-release Skill reached local installations without a Git release baseline, its recovery digest must be pinned explicitly in the release validator; arbitrary additional history digests remain invalid.
 
 ## Prerequisites and gates / 环境与门禁
 

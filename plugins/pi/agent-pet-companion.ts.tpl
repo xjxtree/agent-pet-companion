@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-events-v11";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-events-v13";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered
@@ -75,6 +75,7 @@ const finalAgentErrors = new Map();
 const finalAssistantMessages = new Map();
 const activeTurnIds = new Map();
 const pendingInputTexts = new Map();
+const childSessionMarkers = new Map();
 const MAX_TRACKED_SESSIONS = 256;
 
 function sessionId(ctx) {
@@ -84,6 +85,11 @@ function sessionId(ctx) {
 function sessionTitle(ctx, event) {
   const title = event?.type === "session_info_changed" ? event?.name : undefined;
   return title ?? ctx?.sessionManager?.getSessionName?.() ?? ctx?.sessionManager?.sessionName;
+}
+
+function isChildSession(ctx) {
+  const parentSession = ctx?.sessionManager?.getHeader?.()?.parentSession;
+  return typeof parentSession === "string" && parentSession.trim().length > 0;
 }
 
 function messageText(message) {
@@ -126,27 +132,33 @@ function displayMessage(event, id, includeBeforeAgentPrompt) {
   return undefined;
 }
 
+function reasoningText(event) {
+  const message = event?.type === "message_end" ? event?.message : undefined;
+  if (!Array.isArray(message?.content)) return undefined;
+  const reasoning = message.content
+    .filter((part) => (
+      ["reasoning", "thinking", "analysis"].includes(part?.type)
+      && part?.redacted !== true
+      && typeof (part?.thinking ?? part?.text ?? part?.content) === "string"
+    ))
+    .map((part) => part.thinking ?? part.text ?? part.content)
+    .join("\n")
+    .trim();
+  return reasoning || undefined;
+}
+
 function activityText(event) {
   let value;
   if (typeof event?.activity_content === "string") {
     value = event.activity_content;
-  } else if (["tool_call", "tool_execution_start"].includes(event?.type)) {
+  } else if (event?.type === "tool_call") {
     value = event?.input;
+  } else if (event?.type === "tool_execution_start") {
+    value = event?.args ?? event?.input;
   } else if (event?.type === "tool_execution_end") {
     value = event?.result ?? event?.output ?? event?.error;
   } else {
-    const message = event?.type === "message_end" ? event?.message : undefined;
-    const reasoning = Array.isArray(message?.content)
-      ? message.content
-        .filter((part) => (
-          ["reasoning", "thinking", "analysis"].includes(part?.type)
-          && typeof (part?.text ?? part?.content) === "string"
-        ))
-        .map((part) => part.text ?? part.content)
-        .join("\n")
-        .trim()
-      : undefined;
-    value = reasoning
+    value = reasoningText(event)
       || event?.reasoning_summary
       || event?.reasoning
       || event?.summary
@@ -204,6 +216,50 @@ function activityScalar(value, policy, depth, budget, seen, jsonLayers = 0) {
   }
   if (policy !== "command" && containsSensitiveDumpLine(text)) return undefined;
   return text;
+}
+
+function parseWarnings(event, message, activity) {
+  const warnings = [];
+  const add = (field, failure) => {
+    if (!warnings.some((warning) => warning.field === field && warning.failure === failure)) {
+      warnings.push({ field, failure });
+    }
+  };
+  if (event?.type === "message_end" && event?.message?.role === "assistant") {
+    const content = event.message.content;
+    if (content != null && typeof content !== "string" && !Array.isArray(content)) {
+      add("message_content", "unsupported_shape");
+    } else if (Array.isArray(content)) {
+      if (content.some((part) => part?.type === "text" && typeof part?.text !== "string")) {
+        add("message_content", "invalid_type");
+      }
+      if (content.some((part) => (
+        ["reasoning", "thinking", "analysis"].includes(part?.type)
+        && part?.redacted !== true
+        && typeof part?.thinking !== "string"
+        && typeof part?.text !== "string"
+        && typeof part?.content !== "string"
+      ))) {
+        add("activity_content", "invalid_type");
+      }
+      if (content.length > 0 && !message?.content && !activity) {
+        add("message_content", "unsupported_shape");
+      }
+    }
+  }
+  const argumentField = event?.type === "tool_call"
+    ? "input"
+    : event?.type === "tool_execution_start"
+      ? "args"
+      : undefined;
+  if (argumentField) {
+    if (!Object.prototype.hasOwnProperty.call(event, argumentField)) {
+      add("tool_arguments", "missing_required");
+    } else if (event?.[argumentField] != null && !activity) {
+      add("tool_arguments", "unsupported_shape");
+    }
+  }
+  return warnings;
 }
 
 function semanticActivityScalar(value, depth, budget, seen) {
@@ -340,6 +396,17 @@ function sendEvent(payload) {
 
 async function forward(event, ctx) {
   const id = sessionId(ctx);
+  if (id && isChildSession(ctx)) {
+    if (!childSessionMarkers.has(id)) {
+      remember(childSessionMarkers, id, true);
+      await sendEvent({
+        type: "session.child",
+        session_id: id,
+        diagnostic: connectorDiagnostic || event?.diagnostic === true,
+      });
+    }
+    return;
+  }
   let includeBeforeAgentPrompt = true;
   if (event?.type === "input") {
     remember(activeTurnIds, id, randomUUID());
@@ -377,7 +444,9 @@ async function forward(event, ctx) {
 
   const agentError = event?.type === "agent_settled" && finalAgentErrors.get(id) === true;
   const message = displayMessage(event, id, includeBeforeAgentPrompt);
-  if (event?.type === "message_end" && !message) return;
+  const activity = activityText(event);
+  const parse_warnings = parseWarnings(event, message, activity);
+  if (event?.type === "message_end" && !message && !activity && parse_warnings.length === 0) return;
   const allowlisted = {
     type: event?.type,
     session_id: id,
@@ -392,7 +461,9 @@ async function forward(event, ctx) {
     diagnostic: connectorDiagnostic || event?.diagnostic === true,
     message_role: message?.role,
     message_content: message?.content,
-    activity_content: activityText(event),
+    activity_kind: reasoningText(event) ? "thinking" : undefined,
+    activity_content: activity,
+    parse_warnings: parse_warnings.length > 0 ? parse_warnings : undefined,
   };
   try {
     await sendEvent(allowlisted);

@@ -528,6 +528,14 @@ class CodexPluginVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the previous shipped Skill"):
             plugin_version.validate("HEAD")
 
+    def test_studio_history_accepts_only_the_reviewed_app_managed_recovery_digest(self) -> None:
+        recovered = next(iter(plugin_version.RECOVERED_APP_MANAGED_STUDIO_SHA256))
+        self.write_history(sorted(["0" * 64, recovered]))
+        self.assertEqual(
+            plugin_version.validate("HEAD"),
+            ("1.2.3", "1.2.3", False, False),
+        )
+
     def test_studio_history_rejects_unsorted_or_noncanonical_digests(self) -> None:
         self.write_history(["f" * 64, "a" * 64])
         with self.assertRaisesRegex(ValueError, "sorted and unique"):
@@ -559,7 +567,15 @@ class CodexPluginVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must contain exactly"):
             plugin_version.validate("HEAD")
 
-        self.write_history(sorted([retired_v1_digest, previous_digest]))
+        self.write_history(
+            sorted(
+                [
+                    retired_v1_digest,
+                    previous_digest,
+                    *plugin_version.RECOVERED_APP_MANAGED_STUDIO_SHA256,
+                ]
+            )
+        )
         self.assertEqual(
             plugin_version.validate("HEAD"),
             ("1.2.3", "1.2.4", True, True),

@@ -17,20 +17,25 @@ use crate::reference_images::{
 };
 use crate::{app_server, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
-    GenerationForm, GenerationJobHistoryRecord, GenerationJobStatus, GenerationMessageRecord,
-    GenerationOperation, GenerationResultSummary, GenerationValidationSummary, PetHistorySnapshot,
-    PetManifest, PetOrigin, PetRevisionHistoryRecord, PetState, PetStateName, PetSummary,
-    MAX_GENERATION_DESCRIPTION_CHARS, PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
+    GenerationForm, GenerationJobHistoryRecord, GenerationJobStatus, GenerationMessagePayload,
+    GenerationMessageRecord, GenerationMessagesPage, GenerationOperation, GenerationResultSummary,
+    GenerationSessionCapabilities, GenerationStudioHistoryDeleteReceipt,
+    GenerationStudioHistoryDetail, GenerationStudioHistoryRecord, GenerationStudioHistorySnapshot,
+    GenerationStudioSessionAvailability, GenerationStudioSessionNavigation,
+    GenerationValidationSummary, PetHistorySnapshot, PetManifest, PetOrigin,
+    PetRevisionHistoryRecord, PetState, PetStateName, PetSummary, MAX_GENERATION_DESCRIPTION_CHARS,
+    PETPACK_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -39,15 +44,29 @@ const KIND_GENERATION_COMPLETED: &str = "generation_completed";
 const KIND_GENERATION_FAILED: &str = "generation_failed";
 const KIND_GENERATION_CANCELED: &str = "generation_canceled";
 const KIND_GENERATION_PROGRESS: &str = "generation_progress";
+const KIND_GENERATION_RESUMED: &str = "generation_resumed";
+const KIND_GENERATION_RECOVERABLE_ERROR: &str = "recoverable_error";
+const KIND_ACTIVITY_BRIEF: &str = "generation_activity_brief";
+const KIND_ACTIVITY_GENERATING: &str = "generation_activity_generating";
+const KIND_ACTIVITY_PROCESSING: &str = "generation_activity_processing";
+const KIND_ACTIVITY_VALIDATING: &str = "generation_activity_validating";
+const KIND_ACTIVITY_IMPORTING: &str = "generation_activity_importing";
+const KIND_GENERATION_CHECKPOINT: &str = "generation_checkpoint";
+const KIND_GENERATION_HEARTBEAT: &str = "generation_heartbeat";
+const KIND_CODEX_MESSAGE: &str = "codex_message";
 const KIND_INPUT_REQUEST: &str = "input_request";
 pub const GENERATION_OPERATION_CREATE: &str = "create";
 pub const GENERATION_OPERATION_MODIFY: &str = "modify";
 static GENERATION_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 static MESSAGE_LOG_LOCK: Mutex<()> = Mutex::new(());
+static GENERATION_WORKERS: OnceLock<Mutex<HashMap<String, Arc<GenerationWorkerControl>>>> =
+    OnceLock::new();
+const GENERATION_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(8);
 const GENERATION_OWNER_STALE_SECONDS: i64 = 30;
 const GENERATION_RESULT_FILENAME: &str = "result.json";
 const MAX_GENERATION_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_STAGED_GENERATION_FORM_BYTES: u64 = 64 * 1024;
+const MAX_CODEX_CONVERSATION_BYTES: usize = 96 * 1024;
 const MAX_EDIT_CONTEXT_BYTES: u64 = 512 * 1024;
 const MAX_MOTION_EVIDENCE_JSON_BYTES: u64 = 512 * 1024;
 const MAX_MOTION_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
@@ -61,6 +80,12 @@ const VISUAL_PRODUCTION_VERIFICATION_SCHEMA: &str = "apc.pet-visual-production-v
 const EDIT_BASELINE_SNAPSHOT_FILENAME: &str = "baseline-input.petpack";
 pub const DEFAULT_PET_HISTORY_LIMIT: usize = 16;
 pub const MAX_PET_HISTORY_LIMIT: usize = 32;
+pub const DEFAULT_STUDIO_HISTORY_LIMIT: usize = 24;
+pub const MAX_STUDIO_HISTORY_LIMIT: usize = 32;
+const MAX_STUDIO_HISTORY_BRIEF_CHARS: usize = 240;
+const MAX_STUDIO_DETAIL_PROGRESS_MESSAGES: usize = 24;
+const MAX_STUDIO_DETAIL_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_STUDIO_DETAIL_CODEX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Serialize)]
 pub struct VisualProductionVerification {
@@ -87,6 +112,78 @@ struct ProductionReadiness {
     interaction_ok: bool,
     runtime_ok: bool,
     visual_ok: bool,
+}
+
+#[derive(Debug, Default)]
+struct GenerationWorkerControl {
+    stopped: Mutex<bool>,
+    stopped_signal: Condvar,
+}
+
+struct GenerationWorkerGuard {
+    job_id: String,
+    control: Arc<GenerationWorkerControl>,
+}
+
+impl Drop for GenerationWorkerGuard {
+    fn drop(&mut self) {
+        if let Ok(mut stopped) = self.control.stopped.lock() {
+            *stopped = true;
+            self.control.stopped_signal.notify_all();
+        }
+        let registry = generation_worker_registry();
+        if let Ok(mut workers) = registry.lock() {
+            if workers
+                .get(&self.job_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.control))
+            {
+                workers.remove(&self.job_id);
+            }
+        }
+    }
+}
+
+fn generation_worker_registry() -> &'static Mutex<HashMap<String, Arc<GenerationWorkerControl>>> {
+    GENERATION_WORKERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn spawn_generation_worker<F>(job_id: &str, worker: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let control = Arc::new(GenerationWorkerControl::default());
+    generation_worker_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(job_id.to_string(), Arc::clone(&control));
+    let job_id = job_id.to_string();
+    thread::spawn(move || {
+        let _guard = GenerationWorkerGuard { job_id, control };
+        worker();
+    });
+}
+
+fn wait_for_generation_worker_stop(job_id: &str, timeout: Duration) -> bool {
+    let control = generation_worker_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(job_id)
+        .cloned();
+    let Some(control) = control else {
+        return true;
+    };
+    let stopped = control
+        .stopped
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *stopped {
+        return true;
+    }
+    control
+        .stopped_signal
+        .wait_timeout_while(stopped, timeout, |stopped| !*stopped)
+        .map(|(stopped, _)| *stopped)
+        .unwrap_or(false)
 }
 
 impl ProductionReadiness {
@@ -277,14 +374,15 @@ fn start_pet_edit_with_retry(
     let paths = paths.clone();
     let database = database.clone();
     let job_id_for_thread = job_id.clone();
-    thread::spawn(move || {
+    spawn_generation_worker(&job_id, move || {
         if let Err(error) =
             run_local_petpack_generation(&paths, &database, &job_id_for_thread, &form)
         {
-            let _ = fail_generation(
+            let _ = fail_generation_for_execution_error(
                 &paths,
                 &database,
                 &job_id_for_thread,
+                &error,
                 &format!("修改失败：{error}。已保留当前版本。"),
             );
         }
@@ -324,6 +422,16 @@ pub fn retry_generation_for_instance(
         return Err(PetCoreError::InvalidRequest(format!(
             "generation job {retry_of_job_id} is not retryable while status is {}",
             crate::enum_name(original.status)
+        )));
+    }
+    if original.status == GenerationJobStatus::Canceled {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "canceled generation job {retry_of_job_id} cannot be retried or reopened"
+        )));
+    }
+    if original.status == GenerationJobStatus::Failed && original.recoverable {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job {retry_of_job_id} must continue in place from its recoverable failure"
         )));
     }
     if generation_job_operation(&original) == GENERATION_OPERATION_MODIFY {
@@ -425,6 +533,154 @@ pub fn retry_generation_for_instance(
         Some(retry_of_job_id),
         owner_instance_id,
     )
+}
+
+pub fn resume_generation_for_instance(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    owner_instance_id: &str,
+) -> Result<String> {
+    resume_generation_with_instruction_for_instance(
+        paths,
+        database,
+        job_id,
+        None,
+        None,
+        owner_instance_id,
+    )
+}
+
+pub fn resume_generation_with_instruction_for_instance(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    instruction: Option<&str>,
+    request_id: Option<&str>,
+    owner_instance_id: &str,
+) -> Result<String> {
+    recover_interrupted_jobs_for_instance(paths, database, owner_instance_id)?;
+    let Some(job) = database.generation_job(job_id)? else {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job not found: {job_id}"
+        )));
+    };
+    let instruction = instruction.map(str::trim).filter(|value| !value.is_empty());
+    if instruction.is_some_and(|value| value.chars().count() > MAX_GENERATION_DESCRIPTION_CHARS) {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation continuation instruction must not exceed {MAX_GENERATION_DESCRIPTION_CHARS} characters"
+        )));
+    }
+    let request_content = instruction.unwrap_or("");
+    if job.status != GenerationJobStatus::Failed || !job.recoverable {
+        if let Some(request_id) = request_id {
+            if database.generation_action_request_matches(
+                job_id,
+                request_id,
+                "resume",
+                request_content,
+            )? {
+                return Ok(job_id.to_string());
+            }
+        }
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job {job_id} can continue only from a recoverable failure; current status is {}",
+            enum_name(job.status),
+        )));
+    }
+    let expected_job_dir = paths.jobs_dir.join(job_id);
+    if job.job_dir != expected_job_dir || !expected_job_dir.is_dir() {
+        return Err(PetCoreError::Validation(
+            "failed generation workspace is unavailable for an in-place continuation".to_string(),
+        ));
+    }
+    let recovery = generation_recovery_form(paths, &job)?;
+    if recovery.reference_reselection_count > 0 {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation continuation requires reselecting {} reference image(s)",
+            recovery.reference_reselection_count
+        )));
+    }
+    validate_generation_form(&recovery.form)?;
+    if let Some(request_id) = request_id {
+        if !database.begin_generation_action_request(
+            job_id,
+            request_id,
+            "resume",
+            request_content,
+        )? {
+            return Ok(job_id.to_string());
+        }
+    }
+    let resume_progress = database
+        .generation_messages(job_id)?
+        .into_iter()
+        .rev()
+        .find(|message| {
+            !matches!(
+                message.kind.as_deref(),
+                Some(KIND_GENERATION_COMPLETED | KIND_GENERATION_FAILED | KIND_GENERATION_CANCELED)
+            )
+        })
+        .map(|message| message.progress.clamp(0.05, 0.94))
+        .unwrap_or(0.08);
+
+    {
+        let _lifecycle = lifecycle_lock();
+        database.claim_generation_job(job_id, owner_instance_id)?;
+        if let Some(instruction) = instruction {
+            append_message_with_kind(
+                paths,
+                database,
+                job_id,
+                "user",
+                instruction,
+                resume_progress,
+                None,
+                None,
+                None,
+            )?;
+        }
+        append_message_with_kind(
+            paths,
+            database,
+            job_id,
+            "assistant",
+            if instruction.is_some() {
+                "已收到修正指令并继续原任务：保留原 job、Codex 会话、素材与已通过的 QA。"
+            } else {
+                "已继续原任务：保留原 job、Codex 会话、素材与已通过的 QA，从未完成状态接着制作。"
+            },
+            resume_progress,
+            Some(KIND_GENERATION_RESUMED),
+            Some(GenerationJobStatus::Running),
+            None,
+        )?;
+    }
+
+    let paths = paths.clone();
+    let database = database.clone();
+    let job_id_for_thread = job_id.to_string();
+    let form = recovery.form;
+    let resume_instruction = instruction.map(ToOwned::to_owned);
+    spawn_generation_worker(job_id, move || {
+        if let Err(error) = run_resumed_petpack_generation(
+            &paths,
+            &database,
+            &job_id_for_thread,
+            &form,
+            resume_instruction.as_deref(),
+        ) {
+            let _ = fail_generation_for_execution_error(
+                &paths,
+                &database,
+                &job_id_for_thread,
+                &error,
+                &format!("继续制作失败：{error}。原工作区和已通过产物仍已保留。"),
+            );
+        }
+    });
+    Ok(job_id.to_string())
 }
 
 pub fn generation_job_operation(job: &GenerationJobRecord) -> &'static str {
@@ -555,6 +811,545 @@ pub fn pet_history(
     })
 }
 
+/// Builds the global task list owned by AI Pet Maker. Unlike Pet Library
+/// history this includes jobs that never produced a pet, while still omitting
+/// source paths, workspaces, transcripts, and App Server identities.
+pub fn studio_history(
+    database: &Database,
+    limit: usize,
+) -> Result<GenerationStudioHistorySnapshot> {
+    let limit = limit.clamp(1, MAX_STUDIO_HISTORY_LIMIT);
+    let mut jobs = database.generation_jobs(limit.saturating_add(1))?;
+    let truncated = jobs.len() > limit;
+    jobs.truncate(limit);
+    let jobs = jobs
+        .into_iter()
+        .map(|job| {
+            let form: GenerationForm = serde_json::from_str(&job.form_json)?;
+            let operation = generation_job_operation_kind(&job);
+            let progress = database
+                .generation_messages_page(&job.id, None, 1)?
+                .0
+                .last()
+                .map(|message| message.progress)
+                .unwrap_or(0.0);
+            let cancellation_pending =
+                job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+            let capabilities = generation_job_capabilities(&job, false);
+            Ok(GenerationStudioHistoryRecord {
+                job_id: job.id,
+                status: job.status,
+                operation,
+                visible_title: job.visible_title,
+                brief_preview: bounded_normalized_brief(
+                    &form.description,
+                    MAX_STUDIO_HISTORY_BRIEF_CHARS,
+                ),
+                style: form.style,
+                quality: form.quality,
+                reference_count: form.reference_images.len().min(MAX_REFERENCE_IMAGES),
+                result_pet_id: job.result_pet_id,
+                retry_of_job_id: job.retry_of_job_id,
+                created_at: job.created_at,
+                updated_at: job.updated_at,
+                started_at: job.started_at,
+                ended_at: job.ended_at,
+                progress,
+                recoverable: job.recoverable,
+                pause_reason: job.pause_reason,
+                cancellation_pending,
+                capabilities,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(GenerationStudioHistorySnapshot {
+        ok: true,
+        jobs,
+        truncated,
+    })
+}
+
+/// Builds one bounded Maker detail and resolves its ChatGPT route live. A
+/// persisted session ID is never projected unless App Server confirms the
+/// exact non-archived thread in the exact task workspace.
+pub fn studio_history_detail(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+) -> Result<GenerationStudioHistoryDetail> {
+    let Some(job) = database.generation_job(job_id)? else {
+        return Ok(GenerationStudioHistoryDetail {
+            ok: true,
+            found: false,
+            job_id: None,
+            status: None,
+            operation: None,
+            visible_title: None,
+            description: None,
+            style: None,
+            quality: None,
+            reference_count: 0,
+            result_pet_id: None,
+            retry_of_job_id: None,
+            revision_id: None,
+            validation_summary: None,
+            created_at: None,
+            updated_at: None,
+            started_at: None,
+            ended_at: None,
+            progress: 0.0,
+            recoverable: false,
+            failure_code: None,
+            pause_reason: None,
+            cancellation_pending: false,
+            progress_messages: Vec::new(),
+            latest_codex_excerpt: None,
+            message_count: 0,
+            messages_truncated: false,
+            session: studio_session_navigation(GenerationStudioSessionAvailability::NotCreated),
+            capabilities: GenerationSessionCapabilities::default(),
+        });
+    };
+    let form: GenerationForm = serde_json::from_str(&job.form_json)?;
+    let operation = generation_job_operation_kind(&job);
+    let result = read_generation_result(paths, database, &job.id)?;
+    let messages = read_messages_with_database(paths, database, &job.id)?
+        .into_iter()
+        .map(serde_json::from_value::<GenerationMessageRecord>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let progress_total = messages
+        .iter()
+        .filter(|message| {
+            message.role != "user"
+                && !matches!(
+                    message.kind.as_deref(),
+                    Some(KIND_CODEX_MESSAGE | KIND_GENERATION_HEARTBEAT)
+                )
+        })
+        .count();
+    let progress_messages = messages
+        .iter()
+        .filter(|message| {
+            message.role != "user"
+                && !matches!(
+                    message.kind.as_deref(),
+                    Some(KIND_CODEX_MESSAGE | KIND_GENERATION_HEARTBEAT)
+                )
+        })
+        .rev()
+        .take(MAX_STUDIO_DETAIL_PROGRESS_MESSAGES)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|mut message| {
+            message.content =
+                bounded_utf8_prefix(&message.content, MAX_STUDIO_DETAIL_MESSAGE_BYTES).to_string();
+            message.diagnostic = None;
+            message
+        })
+        .collect::<Vec<_>>();
+    let codex_content = messages
+        .iter()
+        .filter(|message| message.kind.as_deref() == Some(KIND_CODEX_MESSAGE))
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let codex_truncated = codex_content.len() > MAX_STUDIO_DETAIL_CODEX_BYTES;
+    let visible_message_count = messages
+        .iter()
+        .filter(|message| message.kind.as_deref() != Some(KIND_GENERATION_HEARTBEAT))
+        .count();
+    let latest_codex_excerpt = (!codex_content.is_empty())
+        .then(|| bounded_utf8_suffix(&codex_content, MAX_STUDIO_DETAIL_CODEX_BYTES).to_string());
+    let session = match (
+        job.status,
+        job.cancel_requested_at.as_ref(),
+        job.session_id.as_deref(),
+    ) {
+        (GenerationJobStatus::Canceled, _, _) | (_, Some(_), _) => {
+            studio_session_navigation(GenerationStudioSessionAvailability::Archived)
+        }
+        (_, _, None) => studio_session_navigation(GenerationStudioSessionAvailability::NotCreated),
+        (_, _, Some(thread_id)) => {
+            app_server::inspect_pet_studio_thread(thread_id, &job.job_dir, &form).unwrap_or_else(
+                |_| studio_session_navigation(GenerationStudioSessionAvailability::Unavailable),
+            )
+        }
+    };
+    let progress = messages
+        .last()
+        .map(|message| message.progress)
+        .unwrap_or(0.0);
+    let cancellation_pending =
+        job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+    let capabilities = generation_job_capabilities(&job, session.can_open);
+    Ok(GenerationStudioHistoryDetail {
+        ok: true,
+        found: true,
+        job_id: Some(job.id),
+        status: Some(job.status),
+        operation: Some(operation),
+        visible_title: Some(job.visible_title),
+        description: Some(form.description),
+        style: Some(form.style),
+        quality: Some(form.quality),
+        reference_count: form.reference_images.len().min(MAX_REFERENCE_IMAGES),
+        result_pet_id: job.result_pet_id,
+        retry_of_job_id: job.retry_of_job_id,
+        revision_id: result.as_ref().map(|result| result.revision_id.clone()),
+        validation_summary: result.map(|result| result.validation_summary),
+        created_at: Some(job.created_at),
+        updated_at: Some(job.updated_at),
+        started_at: Some(job.started_at),
+        ended_at: job.ended_at,
+        progress,
+        recoverable: job.recoverable,
+        failure_code: job.failure_code,
+        pause_reason: job.pause_reason,
+        cancellation_pending,
+        progress_messages,
+        latest_codex_excerpt,
+        message_count: visible_message_count,
+        messages_truncated: progress_total > MAX_STUDIO_DETAIL_PROGRESS_MESSAGES || codex_truncated,
+        session,
+        capabilities,
+    })
+}
+
+pub fn generation_job_capabilities(
+    job: &GenerationJobRecord,
+    exact_session_available: bool,
+) -> GenerationSessionCapabilities {
+    let cancellation_pending =
+        job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+    let unfinished = matches!(
+        job.status,
+        GenerationJobStatus::Pending
+            | GenerationJobStatus::Running
+            | GenerationJobStatus::WaitingForUser
+    ) || (job.status == GenerationJobStatus::Failed && job.recoverable);
+    let terminal = matches!(
+        job.status,
+        GenerationJobStatus::Completed | GenerationJobStatus::Canceled
+    ) || (job.status == GenerationJobStatus::Failed && !job.recoverable);
+    GenerationSessionCapabilities {
+        can_reply: !cancellation_pending && job.status == GenerationJobStatus::WaitingForUser,
+        can_resume: !cancellation_pending
+            && job.status == GenerationJobStatus::Failed
+            && job.recoverable,
+        can_cancel: !cancellation_pending && unfinished,
+        can_open_result: job.status == GenerationJobStatus::Completed
+            && job.result_pet_id.is_some(),
+        can_open_session: !cancellation_pending
+            && job.status != GenerationJobStatus::Canceled
+            && exact_session_available,
+        can_delete: !cancellation_pending && terminal,
+    }
+}
+
+/// Irreversibly removes one terminal Maker task while retaining any published
+/// Pet Library pet. The workspace is first moved under the descriptor-bound
+/// jobs root; a database failure restores its original name. After the atomic
+/// database delete and retry-lineage rewrite commit, recursive removal never
+/// follows symlinks or leaves the owned generation root.
+pub fn delete_studio_history(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+) -> Result<GenerationStudioHistoryDeleteReceipt> {
+    if job_id.len() > 128 || !single_path_component(job_id) {
+        return Err(PetCoreError::InvalidRequest(
+            "generation history job id must be one bounded path component".to_string(),
+        ));
+    }
+
+    let _lifecycle = lifecycle_lock();
+    let _message_log = message_log_lock();
+    let job = database.generation_job(job_id)?.ok_or_else(|| {
+        PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
+    })?;
+    if !generation_job_is_terminal(&job) {
+        return Err(PetCoreError::Conflict(format!(
+            "generation job {job_id} cannot be deleted while status is {}",
+            enum_name(job.status)
+        )));
+    }
+
+    let staged_workspace = stage_generation_workspace_for_deletion(paths, &job)?;
+    let deleted = match database.delete_generation_history_job(job_id) {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            staged_workspace.rollback()?;
+            return Err(error);
+        }
+    };
+    let workspace_removed = staged_workspace.commit()?;
+    Ok(GenerationStudioHistoryDeleteReceipt {
+        ok: true,
+        job_id: job_id.to_string(),
+        deleted_status: deleted.status,
+        deleted_message_count: deleted.deleted_message_count,
+        workspace_removed,
+        retained_result_pet_id: deleted.result_pet_id,
+        retry_children_relinked: deleted.retry_children_relinked,
+        state_revision: deleted.state_revision.to_string(),
+    })
+}
+
+struct StagedGenerationWorkspaceDeletion {
+    jobs_directory: File,
+    original_name: String,
+    staged_name: Option<String>,
+    workspace_directory: Option<File>,
+}
+
+impl StagedGenerationWorkspaceDeletion {
+    fn rollback(self) -> Result<()> {
+        let Some(staged_name) = self.staged_name.as_deref() else {
+            return Ok(());
+        };
+        rustix::fs::renameat(
+            &self.jobs_directory,
+            staged_name,
+            &self.jobs_directory,
+            self.original_name.as_str(),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(())
+    }
+
+    fn commit(self) -> Result<bool> {
+        let (Some(staged_name), Some(workspace_directory)) = (
+            self.staged_name.as_deref(),
+            self.workspace_directory.as_ref(),
+        ) else {
+            return Ok(false);
+        };
+        remove_private_directory_contents(workspace_directory)?;
+        ensure_directory_identity_at(&self.jobs_directory, staged_name, workspace_directory)?;
+        rustix::fs::unlinkat(
+            &self.jobs_directory,
+            staged_name,
+            rustix::fs::AtFlags::REMOVEDIR,
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(true)
+    }
+}
+
+fn stage_generation_workspace_for_deletion(
+    paths: &AppPaths,
+    job: &GenerationJobRecord,
+) -> Result<StagedGenerationWorkspaceDeletion> {
+    let expected_job_dir = paths.jobs_dir.join(&job.id);
+    if paths.jobs_dir != paths.home.join("generation-jobs")
+        || job.job_dir != expected_job_dir
+        || !single_path_component(&job.id)
+    {
+        return Err(invalid_deletion_workspace());
+    }
+
+    let home = open_private_directory(&paths.home).map_err(|_| invalid_deletion_workspace())?;
+    let jobs_directory = open_private_child_directory(&home, Path::new("generation-jobs"))
+        .map_err(|_| invalid_deletion_workspace())?;
+    let observed = match rustix::fs::statat(
+        &jobs_directory,
+        job.id.as_str(),
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(observed) => observed,
+        Err(rustix::io::Errno::NOENT) => {
+            return Ok(StagedGenerationWorkspaceDeletion {
+                jobs_directory,
+                original_name: job.id.clone(),
+                staged_name: None,
+                workspace_directory: None,
+            });
+        }
+        Err(_) => return Err(invalid_deletion_workspace()),
+    };
+    let workspace_directory = open_private_child_directory(&jobs_directory, Path::new(&job.id))
+        .map_err(|_| invalid_deletion_workspace())?;
+    let opened =
+        rustix::fs::fstat(&workspace_directory).map_err(|_| invalid_deletion_workspace())?;
+    if !same_owned_directory(&observed, &opened) {
+        return Err(invalid_deletion_workspace());
+    }
+
+    let staged_name = format!(".apc-delete-{}-{}", job.id, uuid::Uuid::now_v7().simple());
+    rustix::fs::renameat(
+        &jobs_directory,
+        job.id.as_str(),
+        &jobs_directory,
+        staged_name.as_str(),
+    )
+    .map_err(std::io::Error::from)?;
+    if let Err(error) =
+        ensure_directory_identity_at(&jobs_directory, staged_name.as_str(), &workspace_directory)
+            .and_then(|()| validate_private_directory_contents(&workspace_directory))
+    {
+        let _ = rustix::fs::renameat(
+            &jobs_directory,
+            staged_name.as_str(),
+            &jobs_directory,
+            job.id.as_str(),
+        );
+        return Err(error);
+    }
+
+    Ok(StagedGenerationWorkspaceDeletion {
+        jobs_directory,
+        original_name: job.id.clone(),
+        staged_name: Some(staged_name),
+        workspace_directory: Some(workspace_directory),
+    })
+}
+
+fn validate_private_directory_contents(directory: &File) -> Result<()> {
+    let mut entries = rustix::fs::Dir::read_from(directory).map_err(std::io::Error::from)?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(std::io::Error::from)?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let observed = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(std::io::Error::from)?;
+        if observed.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(invalid_deletion_workspace());
+        }
+        if !rustix::fs::FileType::from_raw_mode(observed.st_mode).is_dir() {
+            continue;
+        }
+        let child_descriptor = rustix::fs::openat(
+            directory,
+            name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        let child = File::from(child_descriptor);
+        let opened = rustix::fs::fstat(&child).map_err(std::io::Error::from)?;
+        if !same_owned_directory(&observed, &opened) {
+            return Err(invalid_deletion_workspace());
+        }
+        validate_private_directory_contents(&child)?;
+        ensure_directory_identity_at(directory, name, &child)?;
+    }
+    Ok(())
+}
+
+fn remove_private_directory_contents(directory: &File) -> Result<()> {
+    let mut entries = rustix::fs::Dir::read_from(directory).map_err(std::io::Error::from)?;
+    while let Some(entry) = entries.read() {
+        let entry = entry.map_err(std::io::Error::from)?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let observed = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(std::io::Error::from)?;
+        if observed.st_uid != rustix::process::geteuid().as_raw() {
+            return Err(invalid_deletion_workspace());
+        }
+        if rustix::fs::FileType::from_raw_mode(observed.st_mode).is_dir() {
+            let child_descriptor = rustix::fs::openat(
+                directory,
+                name,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(std::io::Error::from)?;
+            let child = File::from(child_descriptor);
+            let opened = rustix::fs::fstat(&child).map_err(std::io::Error::from)?;
+            if !same_owned_directory(&observed, &opened) {
+                return Err(invalid_deletion_workspace());
+            }
+            remove_private_directory_contents(&child)?;
+            ensure_directory_identity_at(directory, name, &child)?;
+            rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::REMOVEDIR)
+                .map_err(std::io::Error::from)?;
+        } else {
+            rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty())
+                .map_err(std::io::Error::from)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_directory_identity_at<Fd: AsFd, P: rustix::path::Arg>(
+    parent: Fd,
+    name: P,
+    opened_directory: &File,
+) -> Result<()> {
+    let observed = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(std::io::Error::from)?;
+    let opened = rustix::fs::fstat(opened_directory).map_err(std::io::Error::from)?;
+    if !same_owned_directory(&observed, &opened) {
+        return Err(invalid_deletion_workspace());
+    }
+    Ok(())
+}
+
+fn same_owned_directory(observed: &rustix::fs::Stat, opened: &rustix::fs::Stat) -> bool {
+    let current_uid = rustix::process::geteuid().as_raw();
+    rustix::fs::FileType::from_raw_mode(observed.st_mode).is_dir()
+        && rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
+        && observed.st_uid == current_uid
+        && opened.st_uid == current_uid
+        && observed.st_dev == opened.st_dev
+        && observed.st_ino == opened.st_ino
+}
+
+fn invalid_deletion_workspace() -> PetCoreError {
+    PetCoreError::Validation(
+        "generation workspace deletion refused an unowned or unsafe path".to_string(),
+    )
+}
+
+fn studio_session_navigation(
+    availability: GenerationStudioSessionAvailability,
+) -> GenerationStudioSessionNavigation {
+    GenerationStudioSessionNavigation {
+        availability,
+        can_open: false,
+        routable_session_id: None,
+        name: None,
+    }
+}
+
+fn bounded_normalized_brief(value: &str, maximum_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= maximum_chars {
+        return normalized;
+    }
+    let mut bounded = normalized
+        .chars()
+        .take(maximum_chars.saturating_sub(1))
+        .collect::<String>();
+    bounded.push('…');
+    bounded
+}
+
+fn bounded_utf8_suffix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut start = value.len().saturating_sub(maximum_bytes);
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
+}
+
 fn start_generation_with_retry(
     paths: &AppPaths,
     database: &Database,
@@ -577,18 +1372,28 @@ fn start_generation_with_retry(
         let _ = fs::remove_dir_all(&job_dir);
         return Err(error);
     }
+    append_message(
+        paths,
+        database,
+        &job_id,
+        "user",
+        form.description.trim(),
+        0.01,
+    )?;
 
     let paths = paths.clone();
     let database = database.clone();
     let job_id_for_thread = job_id.clone();
-    thread::spawn(move || {
+    let worker_job_id = job_id.clone();
+    spawn_generation_worker(&worker_job_id, move || {
         if let Err(error) =
             run_local_petpack_generation(&paths, &database, &job_id_for_thread, &form)
         {
-            let _ = fail_generation(
+            let _ = fail_generation_for_execution_error(
                 &paths,
                 &database,
                 &job_id_for_thread,
+                &error,
                 &format!("生成失败：{error}"),
             );
         }
@@ -705,7 +1510,7 @@ fn validated_staged_recovery_form(
             .extension()
             .and_then(|value| value.to_str())
             .map(str::to_ascii_lowercase)
-            .filter(|value| matches!(value.as_str(), "png" | "webp"))
+            .filter(|value| matches!(value.as_str(), "png" | "jpg" | "jpeg" | "webp"))
             .ok_or_else(invalid_recovery_workspace)?;
         let original_extension = Path::new(&original.reference_images[index])
             .extension()
@@ -867,6 +1672,29 @@ pub fn recover_interrupted_jobs_for_instance(
     current_instance_id: &str,
 ) -> Result<usize> {
     let mut recovered = 0;
+    if let Some(job) = database
+        .active_generation_job()?
+        .filter(|job| job.cancel_requested_at.is_some() && job.thread_archived_at.is_none())
+    {
+        fs::create_dir_all(&job.job_dir)?;
+        if !is_generation_canceled(paths, &job.id) {
+            fs::write(cancel_marker_path(paths, &job.id), now_rfc3339())?;
+        }
+        if wait_for_generation_worker_stop(&job.id, GENERATION_WORKER_STOP_TIMEOUT) {
+            database.confirm_generation_execution_stopped(&job.id)?;
+            if archive_canceled_generation_thread(database, &job.id).is_ok() {
+                let _lifecycle = lifecycle_lock();
+                mark_canceled_locked(paths, database, &job.id)?;
+            } else {
+                schedule_canceled_generation_archive_retry(
+                    paths.clone(),
+                    database.clone(),
+                    &job.id,
+                );
+            }
+        }
+        recovered += 1;
+    }
     for job in database.interrupted_generation_job_records()? {
         if !generation_heartbeat_is_stale(&job.heartbeat_at) {
             continue;
@@ -880,11 +1708,12 @@ pub fn recover_interrupted_jobs_for_instance(
             continue;
         }
         fs::create_dir_all(&job.job_dir)?;
-        fail_generation(
+        pause_generation_recoverably(
             paths,
             database,
             &job.id,
-            "生成已中断：PetCore 上次退出时该任务仍在运行，已标记失败。请重新发起生成。",
+            "owner_interrupted",
+            "制作已暂停：PetCore 上次退出时该任务仍在运行。已保留工作区和检查点，可输入继续指令后恢复。",
         )?;
         recovered += 1;
     }
@@ -918,6 +1747,38 @@ pub fn read_messages_with_database(
         .into_iter()
         .map(|message| serde_json::to_value(message).map_err(Into::into))
         .collect()
+}
+
+pub fn studio_messages_page(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    before_sequence: Option<u64>,
+    limit: usize,
+) -> Result<GenerationMessagesPage> {
+    let path = paths.jobs_dir.join(job_id).join("messages.jsonl");
+    let _log = message_log_lock();
+    sync_legacy_messages_unlocked(database, &path, job_id)?;
+    if database.generation_job(job_id)?.is_none() {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job not found: {job_id}"
+        )));
+    }
+    let (mut messages, has_more) =
+        database.generation_messages_page(job_id, before_sequence, limit)?;
+    for message in &mut messages {
+        message.diagnostic = None;
+    }
+    Ok(GenerationMessagesPage {
+        ok: true,
+        job_id: job_id.to_string(),
+        next_before_sequence: has_more
+            .then(|| messages.first().map(|message| message.sequence))
+            .flatten(),
+        messages,
+        has_more,
+        revision: messages_revision(database, job_id)?,
+    })
 }
 
 fn sync_legacy_messages_unlocked(database: &Database, path: &Path, job_id: &str) -> Result<()> {
@@ -1086,18 +1947,31 @@ fn messages_payload(
     changed: bool,
 ) -> Result<Value> {
     let result = read_generation_result(paths, database, job_id)?;
+    let job = database.generation_job(job_id)?.ok_or_else(|| {
+        PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
+    })?;
     let legacy_result_pet_id = if result.is_none() {
-        database.generation_job(job_id)?.and_then(|job| {
-            (job.status == GenerationJobStatus::Completed)
-                .then_some(job.result_pet_id)
-                .flatten()
-        })
+        (job.status == GenerationJobStatus::Completed)
+            .then_some(job.result_pet_id.clone())
+            .flatten()
     } else {
         None
     };
+    let cancellation_pending =
+        job.cancel_requested_at.is_some() && job.thread_archived_at.is_none();
+    let capabilities = generation_job_capabilities(&job, false);
     Ok(json!({
         "revision": messages_revision(database, job_id)?,
         "changed": changed,
+        "heartbeat_at": job.heartbeat_at,
+        "status": enum_name(job.status),
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+        "recoverable": job.recoverable,
+        "failure_code": job.failure_code,
+        "pause_reason": job.pause_reason,
+        "cancellation_pending": cancellation_pending,
+        "capabilities": capabilities,
         "messages": read_messages_with_database(paths, database, job_id)?,
         "result_pet_id": result
             .as_ref()
@@ -1190,7 +2064,14 @@ fn valid_revision_id(value: &str) -> bool {
 }
 
 fn messages_revision(database: &Database, job_id: &str) -> Result<String> {
-    Ok(database.generation_message_revision(job_id)?.to_string())
+    let sequence = database.generation_message_revision(job_id)?;
+    let heartbeat_at = database
+        .generation_job(job_id)?
+        .map(|job| job.heartbeat_at)
+        .ok_or_else(|| {
+            PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
+        })?;
+    Ok(format!("{sequence}:{heartbeat_at}"))
 }
 
 pub fn cancel_generation(
@@ -1205,28 +2086,69 @@ pub fn cancel_generation(
         )));
     }
 
-    let _lifecycle = lifecycle_lock();
-    let status = database.generation_job_status(job_id)?.ok_or_else(|| {
-        PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
-    })?;
-    match status {
-        GenerationJobStatus::Completed | GenerationJobStatus::Failed => {
+    {
+        let _lifecycle = lifecycle_lock();
+        let job = database.generation_job(job_id)?.ok_or_else(|| {
+            PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
+        })?;
+        if job.status == GenerationJobStatus::Canceled {
             return read_messages(paths, job_id);
         }
-        GenerationJobStatus::Canceled => {
-            if !is_generation_canceled(paths, job_id) {
-                fs::write(cancel_marker_path(paths, job_id), now_rfc3339())?;
-            }
-            mark_canceled_locked(paths, database, job_id)?;
+        if matches!(job.status, GenerationJobStatus::Completed)
+            || (job.status == GenerationJobStatus::Failed && !job.recoverable)
+        {
+            return read_messages(paths, job_id);
         }
-        GenerationJobStatus::Pending
-        | GenerationJobStatus::Running
-        | GenerationJobStatus::WaitingForUser => {
+        database.request_generation_cancellation(job_id)?;
+        if !is_generation_canceled(paths, job_id) {
             fs::write(cancel_marker_path(paths, job_id), now_rfc3339())?;
-            mark_canceled_locked(paths, database, job_id)?;
         }
     }
+
+    if !wait_for_generation_worker_stop(job_id, GENERATION_WORKER_STOP_TIMEOUT) {
+        return Err(PetCoreError::Conflict(format!(
+            "generation cancellation is still waiting for the owned worker to stop: {job_id}"
+        )));
+    }
+    database.confirm_generation_execution_stopped(job_id)?;
+    if let Err(error) = archive_canceled_generation_thread(database, job_id) {
+        schedule_canceled_generation_archive_retry(paths.clone(), database.clone(), job_id);
+        // Execution is already stopped and the cancellation fence is
+        // irreversible. Return the frozen task projection while a bounded
+        // exact-thread archive cleanup continues in the background.
+        let _ = error;
+        return read_messages(paths, job_id);
+    }
+    let _lifecycle = lifecycle_lock();
+    mark_canceled_locked(paths, database, job_id)?;
     read_messages(paths, job_id)
+}
+
+fn archive_canceled_generation_thread(database: &Database, job_id: &str) -> Result<()> {
+    let job = database.generation_job(job_id)?.ok_or_else(|| {
+        PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
+    })?;
+    if job.thread_archived_at.is_some() {
+        return Ok(());
+    }
+    if let Some(thread_id) = job.session_id.as_deref() {
+        app_server::archive_pet_studio_thread(thread_id, &job.job_dir)?;
+    }
+    database.confirm_generation_thread_archived(job_id)
+}
+
+fn schedule_canceled_generation_archive_retry(paths: AppPaths, database: Database, job_id: &str) {
+    let job_id = job_id.to_string();
+    thread::spawn(move || {
+        for _ in 0..3 {
+            if archive_canceled_generation_thread(&database, &job_id).is_ok() {
+                let _lifecycle = lifecycle_lock();
+                let _ = mark_canceled_locked(&paths, &database, &job_id);
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
 }
 
 pub fn append_user_reply(
@@ -1245,9 +2167,37 @@ pub fn append_user_reply_for_instance(
     content: &str,
     owner_instance_id: &str,
 ) -> Result<Vec<serde_json::Value>> {
+    append_user_reply_with_request_for_instance(
+        paths,
+        database,
+        job_id,
+        content,
+        None,
+        owner_instance_id,
+    )
+}
+
+pub fn append_user_reply_with_request_for_instance(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    content: &str,
+    request_id: Option<&str>,
+    owner_instance_id: &str,
+) -> Result<Vec<serde_json::Value>> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return read_messages(paths, job_id);
+    }
+    if trimmed.chars().count() > MAX_GENERATION_DESCRIPTION_CHARS {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation reply must not exceed {MAX_GENERATION_DESCRIPTION_CHARS} characters"
+        )));
+    }
+    if let Some(request_id) = request_id {
+        if database.generation_action_request_matches(job_id, request_id, "reply", trimmed)? {
+            return read_messages(paths, job_id);
+        }
     }
 
     let job_dir = paths.jobs_dir.join(job_id);
@@ -1257,7 +2207,7 @@ pub fn append_user_reply_for_instance(
         )));
     }
 
-    let status = {
+    {
         let _lifecycle = lifecycle_lock();
         if is_generation_canceled(paths, job_id) {
             mark_canceled_locked(paths, database, job_id)?;
@@ -1270,7 +2220,13 @@ pub fn append_user_reply_for_instance(
             PetCoreError::InvalidRequest(format!("generation job not found: {job_id}"))
         })?;
         match status {
-            GenerationJobStatus::Completed | GenerationJobStatus::WaitingForUser => {}
+            GenerationJobStatus::WaitingForUser => {}
+            GenerationJobStatus::Completed => {
+                return Err(PetCoreError::InvalidRequest(
+                    "generation is completed; start a new edit task instead of replying to the closed task"
+                        .to_string(),
+                ));
+            }
             GenerationJobStatus::Canceled => {
                 return Err(PetCoreError::InvalidRequest(
                     "generation was canceled; start a new generation job before sending revision feedback"
@@ -1291,18 +2247,11 @@ pub fn append_user_reply_for_instance(
             }
         }
 
-        let messages = read_messages(paths, job_id)?;
-        let progress = messages
-            .last()
-            .and_then(|message| message.get("progress").and_then(serde_json::Value::as_f64))
-            .unwrap_or(0.0);
-        if status == GenerationJobStatus::Completed && progress < 1.0 {
-            return Err(PetCoreError::InvalidRequest(
-                "generation is still running; wait for completion before sending revision feedback"
-                    .to_string(),
-            ));
+        if let Some(request_id) = request_id {
+            if !database.begin_generation_action_request(job_id, request_id, "reply", trimmed)? {
+                return read_messages(paths, job_id);
+            }
         }
-
         database.claim_generation_job(job_id, owner_instance_id)?;
         append_message_with_kind(
             paths,
@@ -1315,13 +2264,8 @@ pub fn append_user_reply_for_instance(
             Some(GenerationJobStatus::Running),
             None,
         )?;
-        status
-    };
-    let assistant_message = if status == GenerationJobStatus::WaitingForUser {
-        "已收到补充信息，正在恢复 Codex 会话继续生成。"
-    } else {
-        "已发送调整意见，正在恢复 Codex 会话生成新版本。"
-    };
+    }
+    let assistant_message = "已收到补充信息，正在恢复 Codex 会话继续生成。";
     append_progress_message_if_active(
         paths,
         database,
@@ -1334,9 +2278,10 @@ pub fn append_user_reply_for_instance(
     let paths = paths.clone();
     let database = database.clone();
     let job_id = job_id.to_string();
+    let worker_job_id = job_id.clone();
     let content = trimmed.to_string();
-    let rebase_on_current_revision = status == GenerationJobStatus::Completed;
-    thread::spawn(move || {
+    let rebase_on_current_revision = false;
+    spawn_generation_worker(&worker_job_id, move || {
         if let Err(error) = run_reply_revision(
             &paths,
             &database,
@@ -1344,10 +2289,11 @@ pub fn append_user_reply_for_instance(
             &content,
             rebase_on_current_revision,
         ) {
-            let _ = fail_generation(
+            let _ = fail_generation_for_execution_error(
                 &paths,
                 &database,
                 &job_id,
+                &error,
                 &format!("调整失败：{error}。已保留当前版本。"),
             );
         }
@@ -1384,6 +2330,27 @@ fn append_progress_message(
         content,
         progress,
         Some(KIND_GENERATION_PROGRESS),
+        None,
+        None,
+    )
+}
+
+fn append_typed_progress_message(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    content: &str,
+    progress: f64,
+    kind: &str,
+) -> Result<()> {
+    append_message_with_kind(
+        paths,
+        database,
+        job_id,
+        "assistant",
+        content,
+        progress,
+        Some(kind),
         None,
         None,
     )
@@ -1462,18 +2429,46 @@ fn append_message_with_kind(
     status_transition: Option<GenerationJobStatus>,
     result_pet_id: Option<&str>,
 ) -> Result<()> {
+    append_message_with_payload(
+        paths,
+        database,
+        job_id,
+        role,
+        content,
+        progress,
+        kind,
+        None,
+        status_transition,
+        result_pet_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_message_with_payload(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    role: &str,
+    content: &str,
+    progress: f64,
+    kind: Option<&str>,
+    payload: Option<&GenerationMessagePayload>,
+    status_transition: Option<GenerationJobStatus>,
+    result_pet_id: Option<&str>,
+) -> Result<()> {
     let _log = message_log_lock();
     let job_dir = paths.jobs_dir.join(job_id);
     fs::create_dir_all(&job_dir)?;
     let message_path = job_dir.join("messages.jsonl");
     sync_legacy_messages_unlocked(database, &message_path, job_id)?;
     repair_truncated_message_tail(&message_path, job_id)?;
-    let message = database.append_generation_message(
+    let message = database.append_generation_message_with_payload(
         job_id,
         role,
         kind,
         content,
         progress,
+        payload,
         status_transition,
         result_pet_id,
     )?;
@@ -1514,6 +2509,129 @@ fn append_progress_message_if_active(
         return Ok(());
     }
     append_progress_message(paths, database, job_id, role, content, progress)
+}
+
+fn append_app_server_update_if_active(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    codex_conversation_bytes_remaining: &mut usize,
+    update: app_server::PetStudioSessionUpdate,
+) -> Result<()> {
+    if update.kind == app_server::PetStudioSessionUpdateKind::SessionStarted {
+        // Record the exact thread identity before `turn/start`. Codex hooks can
+        // begin immediately, and event ingestion uses this durable ownership
+        // link to keep Studio activity out of the ordinary desktop bubble.
+        return database.update_generation_job_session(job_id, update.content.trim());
+    }
+    if update.kind == app_server::PetStudioSessionUpdateKind::TurnStarted {
+        return database.update_generation_active_turn(job_id, Some(update.content.trim()));
+    }
+    if update.kind == app_server::PetStudioSessionUpdateKind::TurnStopped {
+        return database.update_generation_active_turn(job_id, None);
+    }
+    if is_generation_canceled(paths, job_id) || is_terminal_job(database, job_id)? {
+        return Ok(());
+    }
+    match update.kind {
+        app_server::PetStudioSessionUpdateKind::SessionStarted
+        | app_server::PetStudioSessionUpdateKind::TurnStarted
+        | app_server::PetStudioSessionUpdateKind::TurnStopped => Ok(()),
+        app_server::PetStudioSessionUpdateKind::Progress => append_progress_message(
+            paths,
+            database,
+            job_id,
+            "assistant",
+            &update.content,
+            update.progress,
+        ),
+        app_server::PetStudioSessionUpdateKind::Brief => append_typed_progress_message(
+            paths,
+            database,
+            job_id,
+            &update.content,
+            update.progress,
+            KIND_ACTIVITY_BRIEF,
+        ),
+        app_server::PetStudioSessionUpdateKind::Generating => append_typed_progress_message(
+            paths,
+            database,
+            job_id,
+            &update.content,
+            update.progress,
+            KIND_ACTIVITY_GENERATING,
+        ),
+        app_server::PetStudioSessionUpdateKind::Processing => append_typed_progress_message(
+            paths,
+            database,
+            job_id,
+            &update.content,
+            update.progress,
+            KIND_ACTIVITY_PROCESSING,
+        ),
+        app_server::PetStudioSessionUpdateKind::Validating => append_typed_progress_message(
+            paths,
+            database,
+            job_id,
+            &update.content,
+            update.progress,
+            KIND_ACTIVITY_VALIDATING,
+        ),
+        app_server::PetStudioSessionUpdateKind::Checkpoint => {
+            database.checkpoint_generation_job(job_id)?;
+            append_typed_progress_message(
+                paths,
+                database,
+                job_id,
+                &update.content,
+                update.progress,
+                KIND_GENERATION_CHECKPOINT,
+            )
+        }
+        app_server::PetStudioSessionUpdateKind::Heartbeat => database.touch_generation_job(job_id),
+        app_server::PetStudioSessionUpdateKind::CodexMessage => {
+            let content = bounded_utf8_prefix(&update.content, *codex_conversation_bytes_remaining);
+            if content.is_empty() {
+                return Ok(());
+            }
+            append_message_with_kind(
+                paths,
+                database,
+                job_id,
+                "assistant",
+                content,
+                update.progress,
+                Some(KIND_CODEX_MESSAGE),
+                None,
+                None,
+            )?;
+            *codex_conversation_bytes_remaining =
+                (*codex_conversation_bytes_remaining).saturating_sub(content.len());
+            Ok(())
+        }
+    }
+}
+
+fn codex_conversation_bytes_remaining(database: &Database, job_id: &str) -> Result<usize> {
+    let used = database
+        .generation_messages(job_id)?
+        .iter()
+        .filter(|message| message.kind.as_deref() == Some(KIND_CODEX_MESSAGE))
+        .fold(0usize, |total, message| {
+            total.saturating_add(message.content.len())
+        });
+    Ok(MAX_CODEX_CONVERSATION_BYTES.saturating_sub(used))
+}
+
+fn bounded_utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut end = maximum_bytes.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 fn repair_truncated_message_tail(path: &Path, job_id: &str) -> Result<()> {
@@ -1570,22 +2688,33 @@ fn lifecycle_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn is_terminal_status(status: GenerationJobStatus) -> bool {
+fn generation_job_is_terminal(job: &GenerationJobRecord) -> bool {
     matches!(
-        status,
-        GenerationJobStatus::Completed
-            | GenerationJobStatus::Failed
-            | GenerationJobStatus::Canceled
-    )
+        job.status,
+        GenerationJobStatus::Completed | GenerationJobStatus::Canceled
+    ) || (job.status == GenerationJobStatus::Failed && !job.recoverable)
 }
 
 fn is_terminal_job(database: &Database, job_id: &str) -> Result<bool> {
     Ok(database
-        .generation_job_status(job_id)?
-        .is_some_and(is_terminal_status))
+        .generation_job(job_id)?
+        .is_some_and(|job| generation_job_is_terminal(&job)))
 }
 
 fn mark_canceled_locked(paths: &AppPaths, database: &Database, job_id: &str) -> Result<()> {
+    let Some(job) = database.generation_job(job_id)? else {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job not found: {job_id}"
+        )));
+    };
+    if job.status == GenerationJobStatus::Canceled {
+        return Ok(());
+    }
+    if job.cancel_requested_at.is_some()
+        && (job.execution_stopped_at.is_none() || job.thread_archived_at.is_none())
+    {
+        return Ok(());
+    }
     append_canceled_message(paths, database, job_id, "assistant", "已取消生成。")?;
     Ok(())
 }
@@ -1610,19 +2739,72 @@ fn fail_generation(
         mark_canceled_locked(paths, database, job_id)?;
         return Ok(());
     }
-    if database
-        .generation_job_status(job_id)?
-        .is_some_and(|status| {
-            matches!(
-                status,
-                GenerationJobStatus::Completed | GenerationJobStatus::Canceled
-            )
-        })
-    {
+    let Some(job) = database.generation_job(job_id)? else {
+        return Err(PetCoreError::InvalidRequest(format!(
+            "generation job not found: {job_id}"
+        )));
+    };
+    if generation_job_is_terminal(&job) {
         return Ok(());
     }
-    append_failed_message(paths, database, job_id, "assistant", content)?;
+    let recovery_is_safe = generation_recovery_form(paths, &job)
+        .ok()
+        .is_some_and(|recovery| {
+            recovery.reference_reselection_count == 0
+                && validate_generation_form(&recovery.form).is_ok()
+        });
+    if recovery_is_safe {
+        pause_generation_recoverably(paths, database, job_id, "generation_failed", content)?;
+    } else {
+        append_failed_message(paths, database, job_id, "assistant", content)?;
+    }
     Ok(())
+}
+
+fn fail_generation_for_execution_error(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    error: &PetCoreError,
+    content: &str,
+) -> Result<()> {
+    if !matches!(error, PetCoreError::Conflict(_)) {
+        return fail_generation(paths, database, job_id, content);
+    }
+    let _lifecycle = lifecycle_lock();
+    if is_generation_canceled(paths, job_id) {
+        return mark_canceled_locked(paths, database, job_id);
+    }
+    append_failed_message(paths, database, job_id, "assistant", content)
+}
+
+fn pause_generation_recoverably(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    failure_code: &str,
+    content: &str,
+) -> Result<()> {
+    if is_generation_canceled(paths, job_id) {
+        mark_canceled_locked(paths, database, job_id)?;
+        return Ok(());
+    }
+    database.mark_generation_recoverable_failure(job_id, failure_code, content)?;
+    append_message_with_kind(
+        paths,
+        database,
+        job_id,
+        "assistant",
+        content,
+        database
+            .generation_messages(job_id)?
+            .last()
+            .map(|message| message.progress.clamp(0.05, 0.94))
+            .unwrap_or(0.08),
+        Some(KIND_GENERATION_RECOVERABLE_ERROR),
+        None,
+        None,
+    )
 }
 
 fn mark_running_if_active(paths: &AppPaths, database: &Database, job_id: &str) -> Result<bool> {
@@ -1632,8 +2814,8 @@ fn mark_running_if_active(paths: &AppPaths, database: &Database, job_id: &str) -
         return Ok(false);
     }
     if database
-        .generation_job_status(job_id)?
-        .is_some_and(is_terminal_status)
+        .generation_job(job_id)?
+        .is_some_and(|job| generation_job_is_terminal(&job))
     {
         return Ok(false);
     }
@@ -1647,29 +2829,103 @@ fn run_local_petpack_generation(
     job_id: &str,
     form: &GenerationForm,
 ) -> Result<()> {
+    run_local_petpack_generation_mode(paths, database, job_id, form, false, None)
+}
+
+fn run_resumed_petpack_generation(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    form: &GenerationForm,
+    instruction: Option<&str>,
+) -> Result<()> {
+    run_local_petpack_generation_mode(paths, database, job_id, form, true, instruction)
+}
+
+fn run_local_petpack_generation_mode(
+    paths: &AppPaths,
+    database: &Database,
+    job_id: &str,
+    form: &GenerationForm,
+    resume_existing: bool,
+    resume_instruction: Option<&str>,
+) -> Result<()> {
     if !mark_running_if_active(paths, database, job_id)? {
         return Ok(());
     }
-    let staged_form = stage_reference_images(paths, job_id, form)?;
+    let staged_form = if resume_existing {
+        form.clone()
+    } else {
+        stage_reference_images(paths, job_id, form)?
+    };
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
-    let app_server_session = app_server::run_pet_studio_session_with_updates_and_cancel(
-        paths,
-        job_id,
-        &staged_form,
-        |update| {
-            let _ = append_progress_message_if_active(
+    let mut codex_conversation_bytes_remaining =
+        codex_conversation_bytes_remaining(database, job_id)?;
+    let existing_thread_id = if resume_existing {
+        database
+            .generation_job(job_id)?
+            .and_then(|job| job.session_id)
+            .or_else(|| {
+                read_app_server_session(paths, job_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|session| {
+                        session
+                            .get("thread_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                    })
+            })
+    } else {
+        None
+    };
+    let app_server_session = if let Some(thread_id) = existing_thread_id.as_deref() {
+        app_server::run_pet_studio_resume_with_updates_and_cancel(
+            paths,
+            job_id,
+            thread_id,
+            &staged_form,
+            resume_instruction,
+            |update| {
+                let _ = append_app_server_update_if_active(
+                    paths,
+                    database,
+                    job_id,
+                    &mut codex_conversation_bytes_remaining,
+                    update,
+                );
+            },
+            || is_generation_canceled(paths, job_id),
+        )
+    } else {
+        if resume_existing {
+            append_progress_message_if_active(
                 paths,
                 database,
                 job_id,
                 "assistant",
-                &update.content,
-                update.progress,
-            );
-        },
-        || is_generation_canceled(paths, job_id),
-    );
+                "原任务尚未创建 Codex 会话；将保留同一 job 与工作区并启动首个 Studio 会话。",
+                0.08,
+            )?;
+        }
+        app_server::run_pet_studio_session_with_updates_and_cancel(
+            paths,
+            job_id,
+            &staged_form,
+            |update| {
+                let _ = append_app_server_update_if_active(
+                    paths,
+                    database,
+                    job_id,
+                    &mut codex_conversation_bytes_remaining,
+                    update,
+                );
+            },
+            || is_generation_canceled(paths, job_id),
+        )
+    };
     write_app_server_session(paths, job_id, &app_server_session)?;
     if let Some(session_id) = app_server_session
         .get("session_id")
@@ -1744,12 +3000,12 @@ fn run_local_petpack_generation(
         }
         let detail = app_server_failure_detail(&app_server_session);
         if !local_pet_studio_fallback_enabled() {
-            fail_generation(
-                paths,
-                database,
-                job_id,
-                &format!("Codex App Server brief turn 未完成：{detail}。请在 Agent 连接中修复 Codex App Server 后重试。"),
-            )?;
+            let failure = recoverable_checkpoint_pause_message(&detail).unwrap_or_else(|| {
+                format!(
+                    "Codex App Server brief turn 未完成：{detail}。请在 Agent 连接中修复 Codex App Server 后重试。"
+                )
+            });
+            fail_generation(paths, database, job_id, &failure)?;
             return Ok(());
         }
 
@@ -1766,6 +3022,14 @@ fn run_local_petpack_generation(
     if finish_if_canceled(paths, database, job_id)? {
         return Ok(());
     }
+    append_typed_progress_message(
+        paths,
+        database,
+        job_id,
+        "正在执行最终产物校验并导入宠物库。",
+        0.90,
+        KIND_ACTIVITY_IMPORTING,
+    )?;
     match prepare_and_import_skill_petpack_source(
         paths,
         database,
@@ -1980,6 +3244,8 @@ fn run_reply_revision(
         fs::remove_dir_all(&source_dir)?;
     }
     let previous_session = read_app_server_session(paths, job_id)?.unwrap_or(Value::Null);
+    let mut codex_conversation_bytes_remaining =
+        codex_conversation_bytes_remaining(database, job_id)?;
 
     let thread_id = previous_session
         .get("thread_id")
@@ -1994,13 +3260,12 @@ fn run_reply_revision(
             previous_session.get("ai_brief"),
             user_message,
             |update| {
-                let _ = append_progress_message_if_active(
+                let _ = append_app_server_update_if_active(
                     paths,
                     database,
                     job_id,
-                    "assistant",
-                    &update.content,
-                    update.progress,
+                    &mut codex_conversation_bytes_remaining,
+                    update,
                 );
             },
             || is_generation_canceled(paths, job_id),
@@ -2038,13 +3303,12 @@ fn run_reply_revision(
             job_id,
             &render_form,
             |update| {
-                let _ = append_progress_message_if_active(
+                let _ = append_app_server_update_if_active(
                     paths,
                     database,
                     job_id,
-                    "assistant",
-                    &update.content,
-                    update.progress,
+                    &mut codex_conversation_bytes_remaining,
+                    update,
                 );
             },
             || is_generation_canceled(paths, job_id),
@@ -4331,8 +5595,8 @@ fn complete_imported_pet(
         return Ok(());
     }
     if database
-        .generation_job_status(job_id)?
-        .is_some_and(is_terminal_status)
+        .generation_job(job_id)?
+        .is_some_and(|job| generation_job_is_terminal(&job))
     {
         cleanup_canceled_import(paths, database, pet, previous_pet)?;
         return Ok(());
@@ -4479,8 +5743,16 @@ fn pause_generation_for_input_request(
     session: &Value,
     progress: f64,
 ) -> Result<bool> {
-    let Some(question) = app_server::input_request_question(session) else {
+    let Some(payload) = app_server::input_request_payload(session) else {
         return Ok(false);
+    };
+    let question = match &payload {
+        GenerationMessagePayload::InputRequest { questions, .. } => questions
+            .iter()
+            .map(|question| question.prompt.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        GenerationMessagePayload::Result { .. } => return Ok(false),
     };
     let _lifecycle = lifecycle_lock();
     if is_generation_canceled(paths, job_id) {
@@ -4488,12 +5760,12 @@ fn pause_generation_for_input_request(
         return Ok(true);
     }
     if database
-        .generation_job_status(job_id)?
-        .is_some_and(is_terminal_status)
+        .generation_job(job_id)?
+        .is_some_and(|job| generation_job_is_terminal(&job))
     {
         return Ok(true);
     }
-    append_message_with_kind(
+    append_message_with_payload(
         paths,
         database,
         job_id,
@@ -4501,6 +5773,7 @@ fn pause_generation_for_input_request(
         &question,
         progress,
         Some(KIND_INPUT_REQUEST),
+        Some(&payload),
         Some(GenerationJobStatus::WaitingForUser),
         None,
     )?;
@@ -4541,6 +5814,28 @@ fn app_server_failure_detail(session: &Value) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| raw.to_string())
+}
+
+fn recoverable_checkpoint_pause_message(detail: &str) -> Option<String> {
+    if detail.contains("consecutive checkpoint turns without durable workspace progress") {
+        return Some(
+            "制作已暂停：连续 3 个续接段没有检测到新的持久化产物。Codex App Server 连接本身正常；原 job、Codex 会话、素材和已通过 QA 均已保留，可点击“继续制作”从当前工作区接着运行。"
+                .to_string(),
+        );
+    }
+    if detail.contains("12-hour continuation safety window") {
+        return Some(
+            "制作已达到 12 小时连续运行安全窗口并暂停。Codex App Server 连接本身正常；原 job、Codex 会话、素材和已通过 QA 均已保留，可点击“继续制作”接着运行。"
+                .to_string(),
+        );
+    }
+    if detail.contains("bounded checkpoint turns") {
+        return Some(
+            "任务由旧版固定续接次数上限停止，并非 Codex App Server 连接故障。原 job、Codex 会话和工作区仍可复用；点击“继续制作”即可从已有产物接着运行。"
+                .to_string(),
+        );
+    }
+    None
 }
 
 fn app_server_completed(session: &Value) -> bool {
@@ -4864,6 +6159,85 @@ mod tests {
             quality: QualityLevel::Standard,
             reference_images: Vec::new(),
         }
+    }
+
+    #[test]
+    fn studio_history_keeps_unresolved_jobs_without_exposing_reference_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(temp.path().join("home"));
+        paths.ensure().unwrap();
+        let database = Database::new(paths.db_path.clone());
+        database.init().unwrap();
+        let job_id = "job_history_failed_create";
+        let form = GenerationForm {
+            description: "  A calm fox\nwith a glowing data-stream tail  ".to_string(),
+            style: "半写实".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: vec!["/Users/private/secret-reference.png".to_string()],
+        };
+        let job_dir = paths.jobs_dir.join(job_id);
+        fs::create_dir_all(&job_dir).unwrap();
+        database
+            .create_generation_job(job_id, &form, &job_dir)
+            .unwrap();
+        database
+            .append_generation_message(job_id, "user", None, &form.description, 0.01, None, None)
+            .unwrap();
+        database
+            .append_generation_message(
+                job_id,
+                "assistant",
+                Some(KIND_GENERATION_PROGRESS),
+                "Preparing the persistent Studio thread",
+                0.08,
+                None,
+                None,
+            )
+            .unwrap();
+        database
+            .append_generation_message(
+                job_id,
+                "assistant",
+                Some(KIND_CODEX_MESSAGE),
+                "Bounded Codex response",
+                0.10,
+                None,
+                None,
+            )
+            .unwrap();
+        database
+            .update_generation_job(job_id, GenerationJobStatus::Failed, None)
+            .unwrap();
+
+        let history = studio_history(&database, 24).unwrap();
+        assert_eq!(history.jobs.len(), 1);
+        assert_eq!(history.jobs[0].status, GenerationJobStatus::Failed);
+        assert_eq!(
+            history.jobs[0].brief_preview,
+            "A calm fox with a glowing data-stream tail"
+        );
+        assert_eq!(history.jobs[0].reference_count, 1);
+        assert!(!serde_json::to_string(&history)
+            .unwrap()
+            .contains("secret-reference"));
+
+        let detail = studio_history_detail(&paths, &database, job_id).unwrap();
+        assert!(detail.found);
+        assert_eq!(detail.reference_count, 1);
+        assert_eq!(detail.progress_messages.len(), 1);
+        assert_eq!(
+            detail.latest_codex_excerpt.as_deref(),
+            Some("Bounded Codex response")
+        );
+        assert_eq!(
+            detail.session.availability,
+            GenerationStudioSessionAvailability::NotCreated
+        );
+        assert!(!detail.session.can_open);
+        assert!(detail.session.routable_session_id.is_none());
+        assert!(!serde_json::to_string(&detail)
+            .unwrap()
+            .contains("secret-reference"));
     }
 
     #[test]

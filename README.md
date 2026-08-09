@@ -11,7 +11,7 @@ Agent Pet Companion is a native macOS desktop companion for coding-agent users. 
 ## Highlights
 
 - **Ready to use** — includes `星雾团子`, `Bytebud 字节芽`, and `桃蕾`, each with complete authored animations.
-- **AI Pet Maker** — creates or edits low 192×208 and standard 384×416 pets through Codex. The portable V3 format also accepts high 576×624 packages from an external source-capable workflow.
+- **AI Pet Maker** — a persistent split-view creation workspace with an untimed local draft, one long-running task at a time, a readable paged timeline, in-App answers to Codex questions, checkpoint resume after sleep/restart, strict task cancellation, and frozen backend-owned duration. It creates or edits low 192×208 and standard 384×416 pets through Codex; portable V3 also accepts high 576×624 packages from an external source-capable workflow.
 - **Multi-Agent sessions** — supports Codex, Claude Code, Pi Coding Agent, and OpenCode across projects. Bubbles can group sessions by Agent or show one stable cross-Agent card list that does not reshuffle on every thinking/tool update.
 - **Native desktop experience** — the pet, menu, and Liquid Glass session bubble move as one overlay composition. Pet size, bubble text size, attention behavior, and grouping live in Pet Configuration.
 - **Local first** — pets, settings, bounded session context, and diagnostics stay on the Mac unless explicitly exported. The App does not read Agent credentials, tokens, cookies, or API keys.

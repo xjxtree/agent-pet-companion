@@ -238,6 +238,7 @@ struct PetCoreProcessManagerTests {
     func petCoreServiceEnvironmentAlwaysCarriesHomeAndOnlyAbsoluteConnectorPaths() {
         let environment = PetCoreServiceEnvironmentPolicy.userPathEnvironment(
             processEnvironment: [
+                "APC_AGENT_CONFIG_HOME": "/tmp/agent-config-home",
                 "CODEX_HOME": "~/codex-home",
                 "CLAUDE_CONFIG_DIR": "/tmp/claude-config",
                 "PI_CODING_AGENT_DIR": "relative/pi",
@@ -251,6 +252,7 @@ struct PetCoreProcessManagerTests {
         )
 
         #expect(environment["HOME"] == "/Users/tester")
+        #expect(environment["APC_AGENT_CONFIG_HOME"] == "/tmp/agent-config-home")
         #expect(environment["CODEX_HOME"] == "/Users/tester/codex-home")
         #expect(environment["CLAUDE_CONFIG_DIR"] == "/tmp/claude-config")
         #expect(environment["OPENCODE_CONFIG_DIR"] == "/tmp/opencode-config")

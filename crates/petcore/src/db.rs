@@ -1,7 +1,7 @@
 use crate::adapter_contracts::CODEX_HOOKS_CONTRACT_VERSION;
 use crate::agent_session_filters::{
     is_codex_internal_suggestions_payload, suppressed_agent_session_reason,
-    CODEX_INTERNAL_SUGGESTIONS_REASON,
+    CODEX_INTERNAL_SUGGESTIONS_REASON, PET_STUDIO_INTERNAL_SESSION_REASON,
 };
 use crate::agent_state::{is_valid_session_acknowledgement_id, SequencedAgentEvent};
 use crate::event_envelope::{
@@ -12,16 +12,17 @@ use crate::{enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result
 use petcore_types::{
     AgentConnectionStatus, AgentEvent, AgentEventType, AgentSource, AppearanceTheme,
     BehaviorSettings, BubbleFontScale, GenerationForm, GenerationJobStatus,
-    GenerationMessageRecord, InterfaceLanguage, OnboardingProgress, OnboardingStage,
-    OverlayPlacement, OverlayPlacementIntent, PetOrigin, PetState, PetSummary, QualityLevel,
-    RenderSize, SessionGroupDisplay, DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
-    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_SESSION_MESSAGE_TIMEOUT_MINUTES,
-    ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
+    GenerationMessagePayload, GenerationMessageRecord, InterfaceLanguage, OnboardingProgress,
+    OnboardingStage, OverlayPlacement, OverlayPlacementIntent, PetOrigin, PetState, PetSummary,
+    QualityLevel, RenderSize, SessionGroupDisplay, DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
+    MAX_SESSION_MESSAGE_TIMEOUT_MINUTES, MIN_OVERLAY_DISPLAY_WIDTH_PT,
+    MIN_SESSION_MESSAGE_TIMEOUT_MINUTES, ONBOARDING_PROGRESS_SCHEMA_VERSION, REQUIRED_STATES,
 };
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Read;
@@ -32,9 +33,12 @@ const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const PET_REVISION_DATABASE_COMMIT_ATTEMPTS: usize = 3;
 const PET_REVISION_DATABASE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_GENERATION_HISTORY_QUERY_LIMIT: usize = 33;
+const MAX_GENERATION_MESSAGE_PAGE_LIMIT: usize = 200;
 const ONBOARDING_PROGRESS_SETTING_KEY: &str = "onboarding_progress";
 const OVERLAY_PLACEMENT_SETTING_KEY: &str = "overlay_placement";
 const OVERLAY_PLACEMENT_INTENT_SETTING_KEY: &str = "overlay_placement_intent";
+const LEGACY_MIN_OVERLAY_DISPLAY_WIDTH_PT: f64 = 80.0;
+const LEGACY_MAX_OVERLAY_DISPLAY_WIDTH_PT: f64 = 224.0;
 const AGENT_SESSION_ACKNOWLEDGEMENTS_SETTING_KEY: &str = "agent_session_acknowledgements";
 const AGENT_SESSION_ACKNOWLEDGEMENTS_SCHEMA_VERSION: &str = "apc.agent-session-acknowledgements.v1";
 const MAX_AGENT_SESSION_ACKNOWLEDGEMENTS: usize = 1_024;
@@ -98,8 +102,28 @@ pub struct GenerationJobRecord {
     pub retry_of_job_id: Option<String>,
     pub owner_instance_id: Option<String>,
     pub heartbeat_at: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub cancel_requested_at: Option<String>,
+    pub execution_stopped_at: Option<String>,
+    pub thread_archived_at: Option<String>,
+    pub recoverable: bool,
+    pub failure_code: Option<String>,
+    pub pause_reason: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub last_checkpoint_at: Option<String>,
+    pub visible_title: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedGenerationHistoryJob {
+    pub status: GenerationJobStatus,
+    pub result_pet_id: Option<String>,
+    pub deleted_message_count: usize,
+    pub retry_children_relinked: usize,
+    pub state_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -136,11 +160,35 @@ pub struct ConnectorEvidenceSummary {
     pub newer_stale_receipt: Option<ConnectorEventReceipt>,
 }
 
+/// Narrow projection of the bounded connector fields used by verification.
+///
+/// Agent payloads can contain sizeable tool metadata that is irrelevant to
+/// connector health. Deserializing those rows into a complete `Value` tree on
+/// every connection snapshot made the retained 10,000-event history an
+/// expensive hot path. Unknown fields are skipped by serde without allocating
+/// their nested representation, while `Value` on the six accepted fields keeps
+/// the old tolerant type semantics for legacy rows.
+#[derive(Debug, Default, Deserialize)]
+struct ConnectorEvidencePayload {
+    #[serde(default)]
+    source_event: Option<Value>,
+    #[serde(default)]
+    contract_version: Option<Value>,
+    #[serde(default)]
+    diagnostic: Option<Value>,
+    #[serde(default)]
+    affects_activity: Option<Value>,
+    #[serde(default)]
+    session_active: Option<Value>,
+    #[serde(default)]
+    outcome: Option<Value>,
+}
+
 fn task_evidence_event_matches(
     source: AgentSource,
     candidates: &[&str],
     source_event: &str,
-    payload: &Value,
+    payload: &ConnectorEvidencePayload,
     event_type: &str,
 ) -> bool {
     if !candidates.contains(&source_event) {
@@ -149,14 +197,14 @@ fn task_evidence_event_matches(
     if source != AgentSource::Opencode {
         return true;
     }
-    let inactive = payload.get("session_active").and_then(Value::as_bool) == Some(false);
+    let inactive = payload.session_active.as_ref().and_then(Value::as_bool) == Some(false);
     match source_event {
         "session.status" => {
             event_type == "done"
                 && inactive
-                && payload.get("outcome").and_then(Value::as_str) == Some("idle")
+                && payload.outcome.as_ref().and_then(Value::as_str) == Some("idle")
         }
-        "session.next.step.ended" => match payload.get("outcome").and_then(Value::as_str) {
+        "session.next.step.ended" => match payload.outcome.as_ref().and_then(Value::as_str) {
             Some("completed") => event_type == "done" && inactive,
             Some("session_failure") => event_type == "failed" && inactive,
             _ => false,
@@ -164,7 +212,7 @@ fn task_evidence_event_matches(
         "session.next.step.failed" => {
             event_type == "failed"
                 && inactive
-                && payload.get("outcome").and_then(Value::as_str) == Some("session_failure")
+                && payload.outcome.as_ref().and_then(Value::as_str) == Some("session_failure")
         }
         "session.error" => event_type == "failed" && inactive,
         _ => true,
@@ -224,9 +272,6 @@ impl BehaviorSettingsPatch {
         }
         if let Some(value) = self.click_menu {
             behavior.click_menu = value;
-        }
-        if let Some(value) = self.mouse_passthrough {
-            behavior.mouse_passthrough = value;
         }
         if let Some(value) = self.auto_hide {
             behavior.auto_hide = value;
@@ -519,6 +564,17 @@ impl Database {
               retry_of_job_id TEXT,
               owner_instance_id TEXT,
               heartbeat_at TEXT NOT NULL,
+              started_at TEXT NOT NULL,
+              ended_at TEXT,
+              cancel_requested_at TEXT,
+              execution_stopped_at TEXT,
+              thread_archived_at TEXT,
+              recoverable INTEGER NOT NULL DEFAULT 0 CHECK(recoverable IN (0, 1)),
+              failure_code TEXT,
+              pause_reason TEXT,
+              active_turn_id TEXT,
+              last_checkpoint_at TEXT,
+              visible_title TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
@@ -532,6 +588,7 @@ impl Database {
               content TEXT NOT NULL,
               progress REAL NOT NULL,
               created_at TEXT NOT NULL,
+              payload_json TEXT,
               diagnostic_json TEXT,
               UNIQUE(job_id, sequence),
               FOREIGN KEY(job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
@@ -546,6 +603,16 @@ impl Database {
             CREATE TABLE IF NOT EXISTS generation_message_migrations (
               job_id TEXT PRIMARY KEY,
               migrated_at TEXT NOT NULL,
+              FOREIGN KEY(job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS generation_action_requests (
+              job_id TEXT NOT NULL,
+              request_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              PRIMARY KEY(job_id, request_id),
               FOREIGN KEY(job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
             );
 
@@ -653,6 +720,7 @@ impl Database {
         self.ensure_pets_metadata_columns(&connection)?;
         self.ensure_retired_pet_record_columns(&mut connection)?;
         self.ensure_generation_job_columns(&connection)?;
+        self.ensure_generation_message_columns(&connection)?;
         self.ensure_settings_columns(&connection)?;
         self.migrate_removed_agent_event_data(&mut connection)?;
         self.migrate_agent_session_aliases(&mut connection)?;
@@ -661,6 +729,7 @@ impl Database {
         self.migrate_retired_pet_qualities(&mut connection, pre_v2_pet_table)?;
         self.migrate_retired_pet_state_contracts(&mut connection)?;
         self.migrate_internal_codex_suggestion_sessions(&mut connection)?;
+        self.migrate_internal_pet_studio_sessions(&mut connection)?;
         self.scrub_legacy_connector_diagnostics(&mut connection)?;
         self.normalize_legacy_pi_tool_failures(&mut connection)?;
         if previous_schema_version < DATABASE_SCHEMA_VERSION {
@@ -1069,29 +1138,42 @@ impl Database {
         };
 
         let parsed = serde_json::from_str::<Value>(&value)?;
-        if !parsed
+        let uses_legacy_scale = parsed
             .as_object()
-            .is_some_and(|object| object.contains_key("scale"))
-        {
-            return Err(current_error);
-        }
-        let legacy = serde_json::from_value::<LegacyOverlayPlacement>(parsed)?;
-        if !legacy.x.is_finite()
-            || !legacy.y.is_finite()
-            || !(0.10..=1.80).contains(&legacy.scale)
-            || legacy.display_id.trim().is_empty()
-        {
-            return Err(PetCoreError::Validation(
-                "legacy overlay placement is outside its closed bounds".to_string(),
-            ));
-        }
+            .is_some_and(|object| object.contains_key("scale"));
+        let migrated = if uses_legacy_scale {
+            let legacy = serde_json::from_value::<LegacyOverlayPlacement>(parsed)?;
+            if !legacy.x.is_finite()
+                || !legacy.y.is_finite()
+                || !(0.10..=1.80).contains(&legacy.scale)
+                || legacy.display_id.trim().is_empty()
+            {
+                return Err(PetCoreError::Validation(
+                    "legacy overlay placement is outside its closed bounds".to_string(),
+                ));
+            }
 
-        let migrated = OverlayPlacement {
-            x: legacy.x,
-            y: legacy.y,
-            display_width_pt: DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
-            display_id: legacy.display_id,
+            OverlayPlacement {
+                x: legacy.x,
+                y: legacy.y,
+                display_width_pt: DEFAULT_OVERLAY_DISPLAY_WIDTH_PT,
+                display_id: legacy.display_id,
+            }
+        } else {
+            let legacy = serde_json::from_value::<OverlayPlacement>(parsed)?;
+            if !(LEGACY_MIN_OVERLAY_DISPLAY_WIDTH_PT..=LEGACY_MAX_OVERLAY_DISPLAY_WIDTH_PT)
+                .contains(&legacy.display_width_pt)
+            {
+                return Err(current_error);
+            }
+            OverlayPlacement {
+                display_width_pt: legacy.display_width_pt.max(MIN_OVERLAY_DISPLAY_WIDTH_PT),
+                ..legacy
+            }
         };
+        let migrated = migrated.canonicalized().map_err(|error| {
+            PetCoreError::Validation(format!("legacy overlay placement is invalid: {error}"))
+        })?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
             r#"
@@ -1112,6 +1194,8 @@ impl Database {
     }
 
     fn ensure_generation_job_columns(&self, connection: &Connection) -> Result<()> {
+        let had_ended_at = table_has_column(connection, "generation_jobs", "ended_at")?;
+        let had_recoverable = table_has_column(connection, "generation_jobs", "recoverable")?;
         if !table_has_column(connection, "generation_jobs", "retry_of_job_id")? {
             connection.execute(
                 "ALTER TABLE generation_jobs ADD COLUMN retry_of_job_id TEXT",
@@ -1130,6 +1214,94 @@ impl Database {
                 [],
             )?;
             connection.execute("UPDATE generation_jobs SET heartbeat_at = updated_at", [])?;
+        }
+        if !table_has_column(connection, "generation_jobs", "started_at")? {
+            connection.execute(
+                "ALTER TABLE generation_jobs ADD COLUMN started_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+                [],
+            )?;
+            connection.execute("UPDATE generation_jobs SET started_at = created_at", [])?;
+        }
+        for (column, declaration) in [
+            ("ended_at", "TEXT"),
+            ("cancel_requested_at", "TEXT"),
+            ("execution_stopped_at", "TEXT"),
+            ("thread_archived_at", "TEXT"),
+            ("failure_code", "TEXT"),
+            ("pause_reason", "TEXT"),
+            ("active_turn_id", "TEXT"),
+            ("last_checkpoint_at", "TEXT"),
+        ] {
+            if !table_has_column(connection, "generation_jobs", column)? {
+                connection.execute(
+                    &format!("ALTER TABLE generation_jobs ADD COLUMN {column} {declaration}"),
+                    [],
+                )?;
+            }
+        }
+        if !table_has_column(connection, "generation_jobs", "recoverable")? {
+            connection.execute(
+                "ALTER TABLE generation_jobs ADD COLUMN recoverable INTEGER NOT NULL DEFAULT 0 CHECK(recoverable IN (0, 1))",
+                [],
+            )?;
+        }
+        if !table_has_column(connection, "generation_jobs", "visible_title")? {
+            connection.execute(
+                "ALTER TABLE generation_jobs ADD COLUMN visible_title TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        let missing_titles = {
+            let mut statement = connection
+                .prepare("SELECT id, form_json FROM generation_jobs WHERE visible_title = ''")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (job_id, form_json) in missing_titles {
+            if let Ok(form) = serde_json::from_str::<GenerationForm>(&form_json) {
+                connection.execute(
+                    "UPDATE generation_jobs SET visible_title = ?2 WHERE id = ?1",
+                    params![job_id, generation_visible_title(&form)],
+                )?;
+            }
+        }
+        // Legacy failures were not governed by the single-unfinished-task
+        // contract. Keep them terminal during the additive migration; only
+        // failures created by the current runtime can become recoverable.
+        if !had_ended_at || !had_recoverable {
+            connection.execute(
+                r#"
+                UPDATE generation_jobs
+                SET ended_at = updated_at,
+                    recoverable = 0
+                WHERE status IN ('completed', 'canceled', 'failed')
+                  AND ended_at IS NULL
+                "#,
+                [],
+            )?;
+        }
+        connection.execute("DROP INDEX IF EXISTS generation_single_unfinished_job", [])?;
+        connection.execute(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS generation_single_unfinished_job
+            ON generation_jobs ((1))
+            WHERE status IN ('pending', 'running', 'waiting_for_user')
+               OR (status = 'failed' AND recoverable = 1)
+               OR (cancel_requested_at IS NOT NULL AND thread_archived_at IS NULL)
+            "#,
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_generation_message_columns(&self, connection: &Connection) -> Result<()> {
+        if !table_has_column(connection, "generation_messages", "payload_json")? {
+            connection.execute(
+                "ALTER TABLE generation_messages ADD COLUMN payload_json TEXT",
+                [],
+            )?;
         }
         Ok(())
     }
@@ -1410,6 +1582,62 @@ impl Database {
         }
         prune_suppressed_agent_sessions(&transaction)?;
         if !suppressed_session_keys.is_empty() {
+            transaction.execute(
+                r#"
+                INSERT OR REPLACE INTO privacy_migrations (migration_key, phase, updated_at)
+                VALUES (?1, 'pending_secure_vacuum', ?2)
+                "#,
+                params![EVENT_PRIVACY_MIGRATION_KEY, now_rfc3339()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Pet Studio threads are intentionally visible only through the Maker
+    /// task history. Older builds could still ingest their public Codex hooks
+    /// into the ordinary desktop bubble before the generation job recorded its
+    /// App Server session ID. Convert every durable Studio identity into an
+    /// exact suppression entry and securely scrub any legacy bubble rows.
+    fn migrate_internal_pet_studio_sessions(&self, connection: &mut Connection) -> Result<()> {
+        let session_keys = {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT DISTINCT session_id
+                FROM generation_jobs
+                WHERE session_id IS NOT NULL
+                "#,
+            )?;
+            let session_keys = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(|value| normalized_session_id(Some(&value)))
+                .map(|value| normalized_session_key(Some(&value)))
+                .collect::<BTreeSet<_>>();
+            session_keys
+        };
+
+        let transaction = connection.transaction()?;
+        let mut removed_legacy_events = false;
+        for session_key in &session_keys {
+            removed_legacy_events |= transaction
+                .query_row(
+                    "SELECT 1 FROM agent_events WHERE source = 'codex' AND session_key = ?1 LIMIT 1",
+                    params![session_key],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            suppress_agent_session_in_connection(
+                &transaction,
+                AgentSource::Codex,
+                session_key,
+                PET_STUDIO_INTERNAL_SESSION_REASON,
+            )?;
+        }
+        prune_suppressed_agent_sessions(&transaction)?;
+        if removed_legacy_events {
             transaction.execute(
                 r#"
                 INSERT OR REPLACE INTO privacy_migrations (migration_key, phase, updated_at)
@@ -1804,6 +2032,12 @@ impl Database {
                 "invalid params: behavior changes must not be empty".to_string(),
             ));
         }
+        if changes.mouse_passthrough.is_some() {
+            return Err(PetCoreError::InvalidRequest(
+                "invalid params: mouse_passthrough is always enabled and is no longer configurable"
+                    .to_string(),
+            ));
+        }
         if changes
             .session_message_timeout_minutes
             .is_some_and(|minutes| {
@@ -2096,6 +2330,23 @@ impl Database {
             transaction.commit()?;
             return Ok(InsertEventOutcome::Suppressed);
         }
+        if event.source == AgentSource::Codex
+            && session_id
+                .as_deref()
+                .map(|session_id| generation_job_owns_session(&transaction, session_id))
+                .transpose()?
+                .unwrap_or(false)
+        {
+            suppress_agent_session_in_connection(
+                &transaction,
+                event.source,
+                &session_key,
+                PET_STUDIO_INTERNAL_SESSION_REASON,
+            )?;
+            prune_suppressed_agent_sessions(&transaction)?;
+            transaction.commit()?;
+            return Ok(InsertEventOutcome::Suppressed);
+        }
         if agent_session_is_suppressed(&transaction, event.source, &session_key)? {
             return Ok(InsertEventOutcome::Suppressed);
         }
@@ -2164,6 +2415,23 @@ impl Database {
             session_id.as_deref(),
         ) {
             suppress_agent_session_in_connection(&transaction, event.source, &session_key, reason)?;
+            prune_suppressed_agent_sessions(&transaction)?;
+            transaction.commit()?;
+            return Ok(false);
+        }
+        if event.source == AgentSource::Codex
+            && session_id
+                .as_deref()
+                .map(|session_id| generation_job_owns_session(&transaction, session_id))
+                .transpose()?
+                .unwrap_or(false)
+        {
+            suppress_agent_session_in_connection(
+                &transaction,
+                event.source,
+                &session_key,
+                PET_STUDIO_INTERNAL_SESSION_REASON,
+            )?;
             prune_suppressed_agent_sessions(&transaction)?;
             transaction.commit()?;
             return Ok(false);
@@ -2348,14 +2616,17 @@ impl Database {
 
         for row in rows {
             let (sequence, session_key, event_type, payload_json, created_at) = row?;
-            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            let Ok(payload) = serde_json::from_str::<ConnectorEvidencePayload>(&payload_json)
+            else {
                 continue;
             };
             let diagnostic = payload
-                .get("diagnostic")
+                .diagnostic
+                .as_ref()
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let Some(raw_source_event) = payload.get("source_event").and_then(Value::as_str) else {
+            let Some(raw_source_event) = payload.source_event.as_ref().and_then(Value::as_str)
+            else {
                 continue;
             };
             let source_event = raw_source_event.trim();
@@ -2363,7 +2634,8 @@ impl Database {
                 continue;
             }
             let contract_version = payload
-                .get("contract_version")
+                .contract_version
+                .as_ref()
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
             let current_contract = contract_version.as_deref() == Some(expected_contract_version);
@@ -2416,7 +2688,8 @@ impl Database {
 
             if current_contract && !diagnostic {
                 let affects_activity = payload
-                    .get("affects_activity")
+                    .affects_activity
+                    .as_ref()
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 if summary.ordinary_receipt.is_none()
@@ -2571,20 +2844,23 @@ impl Database {
         })?;
         for row in rows {
             let (sequence, payload_json, created_at) = row?;
-            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            let Ok(payload) = serde_json::from_str::<ConnectorEvidencePayload>(&payload_json)
+            else {
                 continue;
             };
             if payload
-                .get("diagnostic")
+                .diagnostic
+                .as_ref()
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-                || payload.get("contract_version").and_then(Value::as_str)
+                || payload.contract_version.as_ref().and_then(Value::as_str)
                     != Some(expected_contract_version)
             {
                 continue;
             }
             let Some(source_event) = payload
-                .get("source_event")
+                .source_event
+                .as_ref()
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -2592,7 +2868,8 @@ impl Database {
                 continue;
             };
             let affects_activity = payload
-                .get("affects_activity")
+                .affects_activity
+                .as_ref()
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if !source_event_proves_ordinary_activity(source_event, affects_activity) {
@@ -2660,19 +2937,21 @@ impl Database {
             if session_key == "0:" {
                 continue;
             }
-            let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            let Ok(payload) = serde_json::from_str::<ConnectorEvidencePayload>(&payload_json)
+            else {
                 continue;
             };
             if payload
-                .get("diagnostic")
+                .diagnostic
+                .as_ref()
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-                || payload.get("contract_version").and_then(Value::as_str)
+                || payload.contract_version.as_ref().and_then(Value::as_str)
                     != Some(expected_contract_version)
             {
                 continue;
             }
-            let Some(source_event) = payload.get("source_event").and_then(Value::as_str) else {
+            let Some(source_event) = payload.source_event.as_ref().and_then(Value::as_str) else {
                 continue;
             };
             let receipt = ConnectorEventReceipt {
@@ -3632,12 +3911,14 @@ impl Database {
         }
         let mut connection = self.open()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let active_job_id = transaction
+        let active_job = transaction
             .query_row(
                 r#"
-                SELECT id
+                SELECT id, status
                 FROM generation_jobs
                 WHERE status IN (?1, ?2, ?3)
+                   OR (status = ?4 AND recoverable = 1)
+                   OR (cancel_requested_at IS NOT NULL AND thread_archived_at IS NULL)
                 ORDER BY updated_at DESC
                 LIMIT 1
                 "#,
@@ -3645,21 +3926,24 @@ impl Database {
                     enum_name(GenerationJobStatus::Pending),
                     enum_name(GenerationJobStatus::Running),
                     enum_name(GenerationJobStatus::WaitingForUser),
+                    enum_name(GenerationJobStatus::Failed),
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
-        if let Some(active_job_id) = active_job_id {
-            return Err(PetCoreError::InvalidRequest(format!(
-                "active generation job already exists: {active_job_id}"
+        if let Some((active_job_id, active_status)) = active_job {
+            return Err(PetCoreError::Conflict(format!(
+                "generation_active_conflict: {}",
+                serde_json::json!({ "job_id": active_job_id, "status": active_status })
             )));
         }
         transaction.execute(
             r#"
             INSERT INTO generation_jobs
               (id, status, form_json, session_id, job_dir, result_pet_id,
-               retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at)
-            VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?8, ?8)
+               retry_of_job_id, owner_instance_id, heartbeat_at, started_at,
+               visible_title, created_at, updated_at)
+            VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?8, ?8)
             "#,
             params![
                 id,
@@ -3670,6 +3954,7 @@ impl Database {
                 retry_of_job_id,
                 owner_instance_id,
                 now,
+                generation_visible_title(form),
             ],
         )?;
         transaction.commit()?;
@@ -3691,12 +3976,169 @@ impl Database {
             SET status = ?2,
                 result_pet_id = COALESCE(?3, result_pet_id),
                 heartbeat_at = ?4,
+                ended_at = CASE
+                  WHEN ?2 = 'canceled' THEN COALESCE(cancel_requested_at, ended_at, ?4)
+                  WHEN ?2 IN ('completed', 'failed') THEN COALESCE(ended_at, ?4)
+                  ELSE NULL
+                END,
+                recoverable = 0,
+                failure_code = CASE WHEN ?2 IN ('pending', 'running', 'waiting_for_user') THEN NULL ELSE failure_code END,
+                pause_reason = CASE WHEN ?2 IN ('pending', 'running', 'waiting_for_user') THEN NULL ELSE pause_reason END,
+                active_turn_id = CASE WHEN ?2 IN ('completed', 'failed', 'canceled') THEN NULL ELSE active_turn_id END,
+                owner_instance_id = CASE WHEN ?2 IN ('completed', 'failed', 'canceled') THEN NULL ELSE owner_instance_id END,
                 updated_at = ?4
             WHERE id = ?1
             "#,
             params![id, enum_name(status), result_pet_id, now_rfc3339()],
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn mark_generation_recoverable_failure(
+        &self,
+        id: &str,
+        failure_code: &str,
+        pause_reason: &str,
+    ) -> Result<()> {
+        let now = now_rfc3339();
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        reject_other_active_generation(&transaction, id, GenerationJobStatus::Failed)?;
+        let updated = transaction.execute(
+            r#"
+            UPDATE generation_jobs
+            SET status = 'failed',
+                recoverable = 1,
+                failure_code = ?2,
+                pause_reason = ?3,
+                ended_at = NULL,
+                active_turn_id = NULL,
+                owner_instance_id = NULL,
+                heartbeat_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+              AND cancel_requested_at IS NULL
+              AND status NOT IN ('completed', 'canceled')
+            "#,
+            params![id, failure_code, pause_reason, now],
+        )?;
+        if updated == 0 {
+            return Err(PetCoreError::Conflict(format!(
+                "generation job cannot enter recoverable failure: {id}"
+            )));
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn request_generation_cancellation(&self, id: &str) -> Result<String> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT cancel_requested_at FROM generation_jobs WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        let Some(existing) = existing else {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "generation job not found: {id}"
+            )));
+        };
+        if let Some(existing) = existing {
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        let now = now_rfc3339();
+        let updated = transaction.execute(
+            r#"
+            UPDATE generation_jobs
+            SET cancel_requested_at = ?2,
+                ended_at = ?2,
+                recoverable = 0,
+                updated_at = ?2
+            WHERE id = ?1
+              AND status IN ('pending', 'running', 'waiting_for_user', 'failed')
+              AND (status <> 'failed' OR recoverable = 1)
+            "#,
+            params![id, now],
+        )?;
+        if updated == 0 {
+            return Err(PetCoreError::Conflict(format!(
+                "generation job is already terminal and cannot be canceled: {id}"
+            )));
+        }
+        transaction.commit()?;
+        Ok(now)
+    }
+
+    pub fn confirm_generation_execution_stopped(&self, id: &str) -> Result<()> {
+        let now = now_rfc3339();
+        let connection = self.open()?;
+        let updated = connection.execute(
+            r#"
+            UPDATE generation_jobs
+            SET execution_stopped_at = COALESCE(execution_stopped_at, ?2),
+                active_turn_id = NULL,
+                owner_instance_id = NULL,
+                heartbeat_at = ?2,
+                updated_at = ?2
+            WHERE id = ?1 AND cancel_requested_at IS NOT NULL
+            "#,
+            params![id, now],
+        )?;
+        if updated == 0 {
+            return Err(PetCoreError::Conflict(format!(
+                "generation cancellation was not requested: {id}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn confirm_generation_thread_archived(&self, id: &str) -> Result<()> {
+        let now = now_rfc3339();
+        let connection = self.open()?;
+        let updated = connection.execute(
+            r#"
+            UPDATE generation_jobs
+            SET thread_archived_at = COALESCE(thread_archived_at, ?2),
+                updated_at = ?2
+            WHERE id = ?1 AND execution_stopped_at IS NOT NULL
+            "#,
+            params![id, now],
+        )?;
+        if updated == 0 {
+            return Err(PetCoreError::Conflict(format!(
+                "generation execution has not stopped: {id}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn update_generation_active_turn(&self, id: &str, turn_id: Option<&str>) -> Result<()> {
+        let connection = self.open()?;
+        connection.execute(
+            "UPDATE generation_jobs SET active_turn_id = ?2, updated_at = ?3 WHERE id = ?1 AND cancel_requested_at IS NULL",
+            params![id, turn_id, now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn checkpoint_generation_job(&self, id: &str) -> Result<()> {
+        let now = now_rfc3339();
+        let connection = self.open()?;
+        connection.execute(
+            r#"
+            UPDATE generation_jobs
+            SET last_checkpoint_at = ?2,
+                heartbeat_at = ?2,
+                updated_at = ?2
+            WHERE id = ?1 AND cancel_requested_at IS NULL
+            "#,
+            params![id, now],
+        )?;
         Ok(())
     }
 
@@ -3711,6 +4153,22 @@ impl Database {
             WHERE id = ?1
             "#,
             params![id, session_id, now_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn touch_generation_job(&self, id: &str) -> Result<()> {
+        let now = now_rfc3339();
+        let connection = self.open()?;
+        connection.execute(
+            r#"
+            UPDATE generation_jobs
+            SET heartbeat_at = ?2,
+                updated_at = ?2
+            WHERE id = ?1
+              AND status IN ('pending', 'running', 'waiting_for_user')
+            "#,
+            params![id, now],
         )?;
         Ok(())
     }
@@ -3761,7 +4219,8 @@ impl Database {
             r#"
             SELECT id, job_dir
             FROM generation_jobs
-            WHERE status IN (?1, ?2, ?3)
+            WHERE status IN (?1, ?2)
+              AND cancel_requested_at IS NULL
             ORDER BY updated_at ASC
             "#,
         )?;
@@ -3769,7 +4228,6 @@ impl Database {
             params![
                 enum_name(GenerationJobStatus::Pending),
                 enum_name(GenerationJobStatus::Running),
-                enum_name(GenerationJobStatus::WaitingForUser),
             ],
             |row| {
                 Ok((
@@ -3783,45 +4241,44 @@ impl Database {
     }
 
     pub fn interrupted_generation_job_records(&self) -> Result<Vec<GenerationJobRecord>> {
-        self.generation_jobs_with_statuses(&[
-            GenerationJobStatus::Pending,
-            GenerationJobStatus::Running,
-            GenerationJobStatus::WaitingForUser,
-        ])
+        self.generation_jobs_matching_unfinished(false)
     }
 
     pub fn active_generation_job(&self) -> Result<Option<GenerationJobRecord>> {
-        let mut jobs = self.generation_jobs_with_statuses(&[
-            GenerationJobStatus::Pending,
-            GenerationJobStatus::Running,
-            GenerationJobStatus::WaitingForUser,
-        ])?;
+        let mut jobs = self.generation_jobs_matching_unfinished(true)?;
         Ok(jobs.pop())
     }
 
-    fn generation_jobs_with_statuses(
+    fn generation_jobs_matching_unfinished(
         &self,
-        statuses: &[GenerationJobStatus],
+        include_stable_waiting_and_failures: bool,
     ) -> Result<Vec<GenerationJobRecord>> {
-        debug_assert_eq!(statuses.len(), 3);
         let connection = self.open()?;
-        let mut statement = connection.prepare(
+        let predicate = if include_stable_waiting_and_failures {
+            r#"
+            status IN ('pending', 'running', 'waiting_for_user')
+            OR (status = 'failed' AND recoverable = 1)
+            OR (cancel_requested_at IS NOT NULL AND thread_archived_at IS NULL)
+            "#
+        } else {
+            r#"
+            status IN ('pending', 'running')
+            AND cancel_requested_at IS NULL
+            "#
+        };
+        let mut statement = connection.prepare(&format!(
             r#"
             SELECT id, status, form_json, session_id, job_dir, result_pet_id,
-                   retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                   retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                   cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                   failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                   created_at, updated_at
             FROM generation_jobs
-            WHERE status IN (?1, ?2, ?3)
+            WHERE {predicate}
             ORDER BY updated_at ASC, id ASC
-            "#,
-        )?;
-        let rows = statement.query_map(
-            params![
-                enum_name(statuses[0]),
-                enum_name(statuses[1]),
-                enum_name(statuses[2]),
-            ],
-            generation_job_from_row,
-        )?;
+            "#
+        ))?;
+        let rows = statement.query_map([], generation_job_from_row)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -3832,7 +4289,10 @@ impl Database {
             .query_row(
                 r#"
                 SELECT id, status, form_json, session_id, job_dir, result_pet_id,
-                       retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                       retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                       cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                       failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                       created_at, updated_at
                 FROM generation_jobs
                 WHERE result_pet_id = ?1
                 ORDER BY updated_at DESC
@@ -3855,7 +4315,10 @@ impl Database {
             .query_row(
                 r#"
                 SELECT id, status, form_json, session_id, job_dir, result_pet_id,
-                       retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                       retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                       cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                       failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                       created_at, updated_at
                 FROM generation_jobs
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1
@@ -3882,7 +4345,10 @@ impl Database {
         let mut statement = connection.prepare(
             r#"
             SELECT id, status, form_json, session_id, job_dir, result_pet_id,
-                   retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                   retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                   cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                   failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                   created_at, updated_at
             FROM generation_jobs
             WHERE result_pet_id = ?1
             ORDER BY updated_at DESC, id DESC
@@ -3897,13 +4363,53 @@ impl Database {
             .map_err(Into::into)
     }
 
+    /// Returns the unique unfinished Maker job first, followed by terminal
+    /// jobs newest-first. Failed and canceled create jobs deliberately remain
+    /// present even without a result pet, which makes this distinct from the
+    /// Pet Library history query.
+    pub fn generation_jobs(&self, limit: usize) -> Result<Vec<GenerationJobRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = limit.min(MAX_GENERATION_HISTORY_QUERY_LIMIT);
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, status, form_json, session_id, job_dir, result_pet_id,
+                   retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                   cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                   failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                   created_at, updated_at
+            FROM generation_jobs
+            ORDER BY CASE
+                       WHEN status IN ('pending', 'running', 'waiting_for_user') THEN 0
+                       WHEN status = 'failed' AND recoverable = 1 THEN 0
+                       WHEN cancel_requested_at IS NOT NULL AND thread_archived_at IS NULL THEN 0
+                       ELSE 1
+                     END ASC,
+                     updated_at DESC,
+                     id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![i64::try_from(limit).unwrap_or(i64::MAX)],
+            generation_job_from_row,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn generation_job(&self, job_id: &str) -> Result<Option<GenerationJobRecord>> {
         let connection = self.open()?;
         connection
             .query_row(
                 r#"
                 SELECT id, status, form_json, session_id, job_dir, result_pet_id,
-                       retry_of_job_id, owner_instance_id, heartbeat_at, created_at, updated_at
+                       retry_of_job_id, owner_instance_id, heartbeat_at, started_at, ended_at,
+                       cancel_requested_at, execution_stopped_at, thread_archived_at, recoverable,
+                       failure_code, pause_reason, active_turn_id, last_checkpoint_at, visible_title,
+                       created_at, updated_at
                 FROM generation_jobs
                 WHERE id = ?1
                 "#,
@@ -3914,11 +4420,110 @@ impl Database {
             .map_err(Into::into)
     }
 
+    /// Irreversibly removes one terminal Maker task and its cascading message
+    /// rows while preserving any published Pet Library result. Direct retries
+    /// are relinked to the deleted task's retained predecessor (or detached
+    /// when no predecessor remains), so retry history never points at a
+    /// missing task. The terminal check and lineage rewrite share the same
+    /// immediate transaction as the delete.
+    pub fn delete_generation_history_job(
+        &self,
+        job_id: &str,
+    ) -> Result<DeletedGenerationHistoryJob> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row = transaction
+            .query_row(
+                r#"
+                SELECT status, result_pet_id, retry_of_job_id
+                FROM generation_jobs
+                WHERE id = ?1
+                "#,
+                params![job_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((status, result_pet_id, retry_of_job_id)) = row else {
+            return Err(PetCoreError::InvalidRequest(format!(
+                "generation job not found: {job_id}"
+            )));
+        };
+        let status = enum_from_name::<GenerationJobStatus>(&status)?;
+        if !matches!(
+            status,
+            GenerationJobStatus::Completed
+                | GenerationJobStatus::Failed
+                | GenerationJobStatus::Canceled
+        ) {
+            return Err(PetCoreError::Conflict(format!(
+                "generation job {job_id} cannot be deleted while status is {}",
+                enum_name(status)
+            )));
+        }
+
+        let deleted_message_count = transaction.query_row(
+            "SELECT COUNT(*) FROM generation_messages WHERE job_id = ?1",
+            params![job_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let retained_predecessor = retry_of_job_id
+            .as_deref()
+            .filter(|predecessor| *predecessor != job_id)
+            .map(|predecessor| {
+                transaction
+                    .query_row(
+                        "SELECT 1 FROM generation_jobs WHERE id = ?1",
+                        params![predecessor],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map(|found| found.map(|()| predecessor))
+            })
+            .transpose()?
+            .flatten();
+        let retry_children_relinked = transaction.execute(
+            r#"
+            UPDATE generation_jobs
+            SET retry_of_job_id = CASE WHEN id = ?2 THEN NULL ELSE ?2 END
+            WHERE retry_of_job_id = ?1
+              AND id <> ?1
+            "#,
+            params![job_id, retained_predecessor],
+        )?;
+        let deleted =
+            transaction.execute("DELETE FROM generation_jobs WHERE id = ?1", params![job_id])?;
+        if deleted != 1 {
+            return Err(PetCoreError::Conflict(format!(
+                "generation job changed while deleting history: {job_id}"
+            )));
+        }
+        let state_revision = state_revision_in_connection(&transaction)?;
+        transaction.commit()?;
+
+        Ok(DeletedGenerationHistoryJob {
+            status,
+            result_pet_id,
+            deleted_message_count: usize::try_from(deleted_message_count).map_err(|_| {
+                PetCoreError::Validation(
+                    "generation message count must be a non-negative integer".to_string(),
+                )
+            })?,
+            retry_children_relinked,
+            state_revision,
+        })
+    }
+
     pub fn generation_messages(&self, job_id: &str) -> Result<Vec<GenerationMessageRecord>> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, job_id, sequence, role, kind, content, progress, created_at, diagnostic_json
+            SELECT id, job_id, sequence, role, kind, content, progress, created_at, payload_json, diagnostic_json
             FROM generation_messages
             WHERE job_id = ?1
             ORDER BY sequence ASC
@@ -3927,6 +4532,49 @@ impl Database {
         let rows = statement.query_map(params![job_id], generation_message_from_row)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    /// Returns one chronological page immediately before `before_sequence`.
+    /// The database query is newest-first so it can use the job/sequence
+    /// index, then the bounded result is reversed for conversation rendering.
+    pub fn generation_messages_page(
+        &self,
+        job_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<GenerationMessageRecord>, bool)> {
+        let limit = limit.clamp(1, MAX_GENERATION_MESSAGE_PAGE_LIMIT);
+        let fetch_limit = limit.saturating_add(1);
+        let before_sequence = before_sequence
+            .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
+            .unwrap_or(i64::MAX);
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, job_id, sequence, role, kind, content, progress, created_at, payload_json, diagnostic_json
+            FROM generation_messages
+            WHERE job_id = ?1
+              AND sequence < ?2
+              AND (kind IS NULL OR kind NOT IN ('generation_heartbeat', 'jsonl_diagnostic'))
+            ORDER BY sequence DESC
+            LIMIT ?3
+            "#,
+        )?;
+        let rows = statement.query_map(
+            params![
+                job_id,
+                before_sequence,
+                i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+            ],
+            generation_message_from_row,
+        )?;
+        let mut messages = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(PetCoreError::from)?;
+        let has_more = messages.len() > limit;
+        messages.truncate(limit);
+        messages.reverse();
+        Ok((messages, has_more))
     }
 
     pub fn generation_message_revision(&self, job_id: &str) -> Result<u64> {
@@ -3965,6 +4613,90 @@ impl Database {
         Ok(())
     }
 
+    /// Claims one client-generated action identity. Repeating the exact
+    /// action is a no-op; reusing an identity for different content fails
+    /// closed so transport retries cannot create duplicate turns.
+    pub fn begin_generation_action_request(
+        &self,
+        job_id: &str,
+        request_id: &str,
+        action: &str,
+        content: &str,
+    ) -> Result<bool> {
+        if request_id.trim().is_empty() || request_id.len() > 128 {
+            return Err(PetCoreError::InvalidRequest(
+                "generation action request_id must be 1-128 bytes".to_string(),
+            ));
+        }
+        if !matches!(action, "reply" | "resume") {
+            return Err(PetCoreError::InvalidRequest(
+                "generation action type is unsupported".to_string(),
+            ));
+        }
+        let content_sha256 = hex::encode(Sha256::digest(content.as_bytes()));
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = transaction.execute(
+            r#"
+            INSERT OR IGNORE INTO generation_action_requests
+              (job_id, request_id, action, content_sha256, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![job_id, request_id, action, content_sha256, now_rfc3339()],
+        )?;
+        if inserted == 0 {
+            let existing = transaction.query_row(
+                r#"
+                SELECT action, content_sha256
+                FROM generation_action_requests
+                WHERE job_id = ?1 AND request_id = ?2
+                "#,
+                params![job_id, request_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            if existing != (action.to_string(), content_sha256) {
+                return Err(PetCoreError::Conflict(
+                    "generation action request_id was reused with different content".to_string(),
+                ));
+            }
+            transaction.commit()?;
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    pub fn generation_action_request_matches(
+        &self,
+        job_id: &str,
+        request_id: &str,
+        action: &str,
+        content: &str,
+    ) -> Result<bool> {
+        let connection = self.open()?;
+        let existing = connection
+            .query_row(
+                r#"
+                SELECT action, content_sha256
+                FROM generation_action_requests
+                WHERE job_id = ?1 AND request_id = ?2
+                "#,
+                params![job_id, request_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((existing_action, existing_sha256)) = existing else {
+            return Ok(false);
+        };
+        let content_sha256 = hex::encode(Sha256::digest(content.as_bytes()));
+        if existing_action != action || existing_sha256 != content_sha256 {
+            return Err(PetCoreError::Conflict(
+                "generation action request_id was reused with different content".to_string(),
+            ));
+        }
+        Ok(true)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn import_generation_message(
         &self,
@@ -3985,6 +4717,7 @@ impl Database {
             content,
             progress,
             created_at,
+            None,
             diagnostic,
             None,
             None,
@@ -4002,6 +4735,30 @@ impl Database {
         status_transition: Option<GenerationJobStatus>,
         result_pet_id: Option<&str>,
     ) -> Result<GenerationMessageRecord> {
+        self.append_generation_message_with_payload(
+            job_id,
+            role,
+            kind,
+            content,
+            progress,
+            None,
+            status_transition,
+            result_pet_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_generation_message_with_payload(
+        &self,
+        job_id: &str,
+        role: &str,
+        kind: Option<&str>,
+        content: &str,
+        progress: f64,
+        payload: Option<&GenerationMessagePayload>,
+        status_transition: Option<GenerationJobStatus>,
+        result_pet_id: Option<&str>,
+    ) -> Result<GenerationMessageRecord> {
         self.insert_generation_message(
             None,
             job_id,
@@ -4010,6 +4767,7 @@ impl Database {
             content,
             progress,
             &now_rfc3339(),
+            payload,
             None,
             status_transition,
             result_pet_id,
@@ -4029,25 +4787,45 @@ impl Database {
         content: &str,
         progress: f64,
         created_at: &str,
+        payload: Option<&GenerationMessagePayload>,
         diagnostic: Option<&serde_json::Value>,
         status_transition: Option<GenerationJobStatus>,
         result_pet_id: Option<&str>,
     ) -> Result<Option<GenerationMessageRecord>> {
         let mut connection = self.open()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let job_status = transaction
+        let job_state = transaction
             .query_row(
-                "SELECT status FROM generation_jobs WHERE id = ?1",
+                "SELECT status, cancel_requested_at, execution_stopped_at, thread_archived_at FROM generation_jobs WHERE id = ?1",
                 params![job_id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some(job_status) = job_status else {
+        let Some((job_status, cancel_requested_at, execution_stopped_at, thread_archived_at)) =
+            job_state
+        else {
             return Err(PetCoreError::InvalidRequest(format!(
                 "generation job not found: {job_id}"
             )));
         };
         let job_status: GenerationJobStatus = enum_from_name(&job_status)?;
+        if explicit_id.is_none() && cancel_requested_at.is_some() {
+            let is_final_cancellation = kind == Some("generation_canceled")
+                && execution_stopped_at.is_some()
+                && thread_archived_at.is_some();
+            if !is_final_cancellation {
+                return Err(PetCoreError::Conflict(format!(
+                    "generation job is fenced by cancellation: {job_id}"
+                )));
+            }
+        }
         if let Some(status) = status_transition {
             reject_other_active_generation(&transaction, job_id, status)?;
         }
@@ -4059,7 +4837,7 @@ impl Database {
             if let Some(existing) = transaction
                 .query_row(
                     r#"
-                    SELECT id, job_id, sequence, role, kind, content, progress, created_at, diagnostic_json
+                    SELECT id, job_id, sequence, role, kind, content, progress, created_at, payload_json, diagnostic_json
                     FROM generation_messages
                     WHERE job_id = ?1
                       AND kind IN ('generation_completed', 'generation_failed', 'generation_canceled')
@@ -4100,8 +4878,8 @@ impl Database {
         let inserted = transaction.execute(
             r#"
             INSERT OR IGNORE INTO generation_messages
-              (id, job_id, sequence, role, kind, content, progress, created_at, diagnostic_json)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+              (id, job_id, sequence, role, kind, content, progress, created_at, payload_json, diagnostic_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
             params![
                 id,
@@ -4112,6 +4890,7 @@ impl Database {
                 content,
                 progress,
                 created_at,
+                payload.map(serde_json::to_string).transpose()?,
                 diagnostic.map(serde_json::to_string).transpose()?,
             ],
         )?;
@@ -4127,10 +4906,29 @@ impl Database {
                 SET status = ?2,
                     result_pet_id = COALESCE(?3, result_pet_id),
                     heartbeat_at = ?4,
+                    ended_at = CASE
+                      WHEN ?2 = 'canceled' THEN COALESCE(cancel_requested_at, ended_at, ?4)
+                      WHEN ?2 IN ('completed', 'failed') THEN COALESCE(ended_at, ?4)
+                      ELSE NULL
+                    END,
+                    recoverable = 0,
+                    active_turn_id = CASE WHEN ?2 IN ('completed', 'failed', 'canceled') THEN NULL ELSE active_turn_id END,
+                    owner_instance_id = CASE WHEN ?2 IN ('completed', 'failed', 'canceled') THEN NULL ELSE owner_instance_id END,
                     updated_at = ?4
                 WHERE id = ?1
                 "#,
                 params![job_id, enum_name(status), result_pet_id, now],
+            )?;
+        } else {
+            let now = now_rfc3339();
+            transaction.execute(
+                r#"
+                UPDATE generation_jobs
+                SET heartbeat_at = ?2,
+                    updated_at = ?2
+                WHERE id = ?1
+                "#,
+                params![job_id, now],
             )?;
         }
         transaction.commit()?;
@@ -4145,6 +4943,7 @@ impl Database {
             content: content.to_string(),
             progress,
             created_at: created_at.to_string(),
+            payload: payload.cloned(),
             diagnostic: diagnostic.cloned(),
         }))
     }
@@ -4403,7 +5202,11 @@ impl Database {
 
     pub fn activate_pet(&self, pet_id: &str) -> Result<()> {
         let mut connection = self.open()?;
-        let transaction = connection.transaction()?;
+        // Reserve the writer before taking the existence snapshot. A deferred
+        // transaction can read while another PetCore request is writing and
+        // then fail immediately when it tries to upgrade, bypassing the busy
+        // timeout and making a valid activation appear to need another click.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let exists = transaction
             .query_row("SELECT 1 FROM pets WHERE id = ?1", params![pet_id], |row| {
                 row.get::<_, i64>(0)
@@ -4415,8 +5218,14 @@ impl Database {
                 "pet not found: {pet_id}"
             )));
         }
-        transaction.execute("UPDATE pets SET active = 0", [])?;
-        transaction.execute("UPDATE pets SET active = 1 WHERE id = ?1", params![pet_id])?;
+        transaction.execute(
+            r#"
+            UPDATE pets
+            SET active = CASE WHEN id = ?1 THEN 1 ELSE 0 END
+            WHERE active != CASE WHEN id = ?1 THEN 1 ELSE 0 END
+            "#,
+            params![pet_id],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -5048,6 +5857,18 @@ fn suppress_agent_session_in_connection(
     Ok(())
 }
 
+fn generation_job_owns_session(connection: &Connection, session_id: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM generation_jobs WHERE session_id = ?1 LIMIT 1",
+            params![session_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(Into::into)
+}
+
 fn agent_session_is_suppressed(
     connection: &Connection,
     source: AgentSource,
@@ -5223,8 +6044,19 @@ fn generation_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Generati
         retry_of_job_id: row.get(6)?,
         owner_instance_id: row.get(7)?,
         heartbeat_at: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        started_at: row.get(9)?,
+        ended_at: row.get(10)?,
+        cancel_requested_at: row.get(11)?,
+        execution_stopped_at: row.get(12)?,
+        thread_archived_at: row.get(13)?,
+        recoverable: row.get::<_, i64>(14)? != 0,
+        failure_code: row.get(15)?,
+        pause_reason: row.get(16)?,
+        active_turn_id: row.get(17)?,
+        last_checkpoint_at: row.get(18)?,
+        visible_title: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
@@ -5232,7 +6064,8 @@ fn generation_message_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<GenerationMessageRecord> {
     let sequence = row.get::<_, i64>(2)?;
-    let diagnostic_json = row.get::<_, Option<String>>(8)?;
+    let payload_json = row.get::<_, Option<String>>(8)?;
+    let diagnostic_json = row.get::<_, Option<String>>(9)?;
     Ok(GenerationMessageRecord {
         id: row.get(0)?,
         job_id: row.get(1)?,
@@ -5248,6 +6081,9 @@ fn generation_message_from_row(
         content: row.get(5)?,
         progress: row.get(6)?,
         created_at: row.get(7)?,
+        payload: payload_json
+            .map(|value| serde_json::from_str(&value).map_err(to_sql_error))
+            .transpose()?,
         diagnostic: diagnostic_json
             .map(|value| serde_json::from_str(&value).map_err(to_sql_error))
             .transpose()?,
@@ -5268,6 +6104,31 @@ fn generation_status_for_terminal_message_kind(kind: &str) -> Option<GenerationJ
         "generation_canceled" => Some(GenerationJobStatus::Canceled),
         _ => None,
     }
+}
+
+fn generation_visible_title(form: &GenerationForm) -> String {
+    const MAX_TITLE_CHARS: usize = 64;
+    const MAX_TITLE_BYTES: usize = 256;
+    let normalized = form
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return "未命名宠物制作".to_string();
+    }
+    if normalized.chars().count() <= MAX_TITLE_CHARS && normalized.len() <= MAX_TITLE_BYTES {
+        return normalized;
+    }
+    let mut title = String::new();
+    for character in normalized.chars().take(MAX_TITLE_CHARS.saturating_sub(1)) {
+        if title.len() + character.len_utf8() > MAX_TITLE_BYTES.saturating_sub('…'.len_utf8()) {
+            break;
+        }
+        title.push(character);
+    }
+    title.push('…');
+    title
 }
 
 fn is_terminal_generation_status(status: GenerationJobStatus) -> bool {
@@ -5292,12 +6153,17 @@ fn reject_other_active_generation(
     ) {
         return Ok(());
     }
-    let active_job_id = transaction
+    let active_job = transaction
         .query_row(
             r#"
-            SELECT id
+            SELECT id, status
             FROM generation_jobs
-            WHERE id <> ?1 AND status IN (?2, ?3, ?4)
+            WHERE id <> ?1
+              AND (
+                status IN (?2, ?3, ?4)
+                OR (status = ?5 AND recoverable = 1)
+                OR (cancel_requested_at IS NOT NULL AND thread_archived_at IS NULL)
+              )
             ORDER BY updated_at DESC
             LIMIT 1
             "#,
@@ -5306,13 +6172,15 @@ fn reject_other_active_generation(
                 enum_name(GenerationJobStatus::Pending),
                 enum_name(GenerationJobStatus::Running),
                 enum_name(GenerationJobStatus::WaitingForUser),
+                enum_name(GenerationJobStatus::Failed),
             ],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
-    if let Some(active_job_id) = active_job_id {
-        return Err(PetCoreError::InvalidRequest(format!(
-            "active generation job already exists: {active_job_id}"
+    if let Some((active_job_id, active_status)) = active_job {
+        return Err(PetCoreError::Conflict(format!(
+            "generation_active_conflict: {}",
+            serde_json::json!({ "job_id": active_job_id, "status": active_status })
         )));
     }
     Ok(())
@@ -5664,6 +6532,52 @@ mod tests {
     }
 
     #[test]
+    fn pet_activation_waits_for_an_overlapping_writer_instead_of_losing_the_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("pet-activation-contention.sqlite"));
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO pets (
+                  id, name, style, quality, render_width, render_height,
+                  petpack_path, cover_path, active, created_at
+                ) VALUES
+                  ('pet-active', 'Active', 'test', 'standard', 384, 416,
+                   '/tmp/active.petpack', '/tmp/active.png', 1,
+                   '2026-08-07T00:00:00Z'),
+                  ('pet-target', 'Target', 'test', 'standard', 384, 416,
+                   '/tmp/target.petpack', '/tmp/target.png', 0,
+                   '2026-08-07T00:00:01Z');
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut blocker = Connection::open(database.path()).unwrap();
+        let blocker_transaction = blocker
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        blocker_transaction
+            .execute(
+                "UPDATE state_revision SET revision = revision + 1 WHERE singleton = 1",
+                [],
+            )
+            .unwrap();
+
+        let activation_database = database.clone();
+        let activation = std::thread::spawn(move || activation_database.activate_pet("pet-target"));
+        std::thread::sleep(Duration::from_millis(100));
+        blocker_transaction.commit().unwrap();
+
+        activation.join().unwrap().unwrap();
+        let pets = database.list_pets().unwrap();
+        assert_eq!(pets.iter().filter(|pet| pet.active).count(), 1);
+        assert!(pets.iter().any(|pet| pet.id == "pet-target" && pet.active));
+    }
+
+    #[test]
     fn product_convergence_receipt_is_optional_and_atomically_replaced() {
         let temp = tempfile::tempdir().unwrap();
         let database = Database::new(temp.path().join("product-convergence.sqlite"));
@@ -5820,6 +6734,51 @@ mod tests {
             .unwrap();
         drop(connection);
         assert!(invalid.init().is_err());
+    }
+
+    #[test]
+    fn previous_display_width_range_migrates_below_current_minimum_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("legacy-display-width.sqlite"));
+        database.init().unwrap();
+        let connection = Connection::open(database.path()).unwrap();
+        connection
+            .execute(
+                r#"
+                UPDATE settings
+                SET value_json = ?2, revision = 7
+                WHERE key = ?1
+                "#,
+                params![
+                    OVERLAY_PLACEMENT_SETTING_KEY,
+                    json!({
+                        "x": 123.5,
+                        "y": 456.25,
+                        "display_width_pt": LEGACY_MIN_OVERLAY_DISPLAY_WIDTH_PT,
+                        "display_id": "legacy-display"
+                    })
+                    .to_string()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        database.init().unwrap();
+        let migrated = database.overlay_placement_projection().unwrap();
+        assert_eq!(
+            migrated.placement.display_width_pt,
+            MIN_OVERLAY_DISPLAY_WIDTH_PT
+        );
+        assert_eq!(migrated.placement.x, 123.5);
+        assert_eq!(migrated.placement.y, 456.25);
+        assert_eq!(migrated.placement.display_id, "legacy-display");
+        assert_eq!(migrated.revision, 8);
+
+        database.init().unwrap();
+        let second_init = database.overlay_placement_projection().unwrap();
+        assert_eq!(second_init.placement, migrated.placement);
+        assert_eq!(second_init.intent, migrated.intent);
+        assert_eq!(second_init.revision, migrated.revision);
     }
 
     #[test]
@@ -6495,6 +7454,66 @@ mod tests {
     }
 
     #[test]
+    fn pet_studio_generation_session_is_suppressed_and_legacy_rows_are_scrubbed() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("events.sqlite"));
+        database.init().unwrap();
+        let session_id = "019f5b0f-88ff-7413-8953-29de4ed0951c";
+        let form = GenerationForm {
+            description: "Private Studio task".to_string(),
+            style: "半写实".to_string(),
+            quality: QualityLevel::Standard,
+            reference_images: Vec::new(),
+        };
+        let job_dir = temp.path().join("job_private");
+        database
+            .create_generation_job("job_private_studio", &form, &job_dir)
+            .unwrap();
+
+        let legacy = codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+            "studio-hook-before-link",
+            session_id,
+            Some("turn-studio"),
+            "PreToolUse",
+            "chatgpt_app",
+        ));
+        assert_eq!(
+            database.insert_event(&legacy).unwrap(),
+            InsertEventOutcome::Inserted
+        );
+        database
+            .update_generation_job_session("job_private_studio", session_id)
+            .unwrap();
+
+        // Startup migration removes the row emitted before the job/session
+        // link was durable and records the exact identity for future hooks.
+        database.init().unwrap();
+        assert!(database.recent_events(10).unwrap().is_empty());
+        let later = codex_runtime_marker(CodexRuntimeMarkerFixture::new(
+            "studio-hook-after-link",
+            session_id,
+            Some("turn-studio"),
+            "PostToolUse",
+            "chatgpt_app",
+        ));
+        assert_eq!(
+            database.insert_event(&later).unwrap(),
+            InsertEventOutcome::Suppressed
+        );
+        let connection = Connection::open(database.path()).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT reason FROM suppressed_agent_sessions WHERE source = 'codex' AND session_key = ?1",
+                    params![normalized_session_key(Some(session_id))],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            PET_STUDIO_INTERNAL_SESSION_REASON
+        );
+    }
+
+    #[test]
     fn codex_runtime_surface_history_is_bounded_and_uses_latest_trusted_current_turn_marker() {
         let temp = tempfile::tempdir().unwrap();
         let database = Database::new(temp.path().join("events.sqlite"));
@@ -7006,11 +8025,16 @@ mod tests {
             "session.next.step.failed",
         ];
         let matches = |source_event: &str, event_type: &str, outcome: &str, active: bool| {
+            let payload = serde_json::from_value(json!({
+                "outcome": outcome,
+                "session_active": active
+            }))
+            .unwrap();
             task_evidence_event_matches(
                 AgentSource::Opencode,
                 COMPLETIONS,
                 source_event,
-                &json!({ "outcome": outcome, "session_active": active }),
+                &payload,
                 event_type,
             )
         };

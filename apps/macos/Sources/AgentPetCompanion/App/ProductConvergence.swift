@@ -88,14 +88,40 @@ struct ProductConnectorRefreshReport: Codable, Equatable, Sendable {
             && results.allSatisfy(\.isExactlyConverged)
     }
 
-    var attentionSources: [AgentSource] {
-        AgentSource.allCases.filter { source in
+    var attentionIssues: [ProductConnectorConvergenceIssue] {
+        AgentSource.allCases.compactMap { source in
             guard let result = results.first(where: { $0.source == source }) else {
-                return true
+                return ProductConnectorConvergenceIssue(
+                    source: source,
+                    reason: .verificationIncomplete
+                )
             }
-            return !result.isExactlyConverged
+            guard !result.isExactlyConverged else { return nil }
+            let reason: ProductConnectorConvergenceIssueReason = switch result.status {
+            case .conflict:
+                .managedPathConflict
+            case .pendingHost:
+                .hostUnavailable
+            case .failed:
+                .refreshFailed
+            case .skippedNotManaged, .current, .updated:
+                .verificationIncomplete
+            }
+            return ProductConnectorConvergenceIssue(source: source, reason: reason)
         }
     }
+}
+
+enum ProductConnectorConvergenceIssueReason: String, Equatable, Sendable {
+    case managedPathConflict
+    case hostUnavailable
+    case refreshFailed
+    case verificationIncomplete
+}
+
+struct ProductConnectorConvergenceIssue: Equatable, Sendable {
+    let source: AgentSource
+    let reason: ProductConnectorConvergenceIssueReason
 }
 
 struct ProductConvergenceReceiptSummary: Codable, Equatable, Sendable {
@@ -219,6 +245,26 @@ struct ProductConvergencePreflight: Codable, Equatable, Sendable {
         self.activeGenerationStatus = activeGenerationStatus
         self.connectionOperationActive = connectionOperationActive
         self.runtimeReplacementSafe = runtimeReplacementSafe
+    }
+}
+
+/// A manual runtime check may prove that a connector which failed the
+/// post-update refresh is now exact and healthy (for example after its host
+/// finishes reloading). This narrows the in-memory attention banner, after
+/// which AppStore reruns the authoritative four-source convergence flow. The
+/// runtime check itself never fabricates a convergence receipt.
+enum ProductConvergenceConnectionRecoveryPolicy {
+    static func resolvesAttention(_ status: AgentConnectionStatus) -> Bool {
+        status.checkMode == .runtime
+            && status.connectorInstalled == true
+            && status.verification.status == .verified
+            && !status.capabilities.contractVersion.isEmpty
+            && status.items.contains {
+                $0.code == .managedConnector && $0.status == .ok
+            }
+            && status.items.allSatisfy {
+                $0.status == .ok || $0.status == .notRequired
+            }
     }
 }
 

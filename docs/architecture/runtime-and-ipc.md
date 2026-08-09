@@ -32,7 +32,7 @@ flowchart TD
     UI --> Wait["state.wait"]
 ```
 
-`runtime-manifest.json` (`apc.runtime-manifest.v1`) binds the App version/build, shared build ID, PetCore/CLI IDs, RPC protocol, supported SQLite range, Agent event schema, readable/writable package versions, and connector contract versions. Health is accepted only when those identities and the connector environment agree. A database newer than the candidate supports is rejected before replacement.
+`runtime-manifest.json` (`apc.runtime-manifest.v1`) binds the App version/build, shared build ID, PetCore/CLI IDs, RPC protocol, supported SQLite range, Agent event schema, readable/writable package versions, and connector contract versions. Health is accepted only when those identities and the connector environment agree. Connector roots and CLI overrides are forwarded only as normalized absolute paths; the all-Agent `APC_AGENT_CONFIG_HOME` isolation root is included in both child-process inheritance and health identity, so an isolated App cannot silently fall back to the user's live Agent configuration. A database newer than the candidate supports is rejected before replacement.
 
 Every current managed runtime also carries the build-bound `interaction-attestation.json` produced by the native overlay interaction suites. The App stages a candidate, verifies its manifest and database compatibility, performs an instance-bound replacement, and commits `runtime/current` only after exact health succeeds. Before that boundary, failure restores the verified checkpoint and compatible last-known-good runtime; ambiguous or malformed rollback state fails closed.
 
@@ -43,6 +43,8 @@ At bootstrap, the App applies persisted interface language and appearance before
 The App reads a consistent `state.snapshot`, then waits with `state.wait(after_revision, timeout_ms)`. `state_revision` is a decimal string and changes only with committed durable state. A process-local display epoch can also wake a wait when bounded host display hydration changes without inventing a database revision.
 
 `OverlayPlacementAuthority` is the only owner of presented pet position. A drag derives every frame from one captured absolute-screen anchor, moves the pet plus attached bubble/menu composition, and commits one final hard-clamped placement. Persistence uses a latest-generation journal with bounded retry; stale snapshots, late acknowledgements, superseded responses, and failed saves cannot move the presented pet. Explicit external reset/reposition intent is revisioned and remains pending until the App acknowledges it.
+
+Overlay pointer ownership is resolved before AppKit chooses the target window by a main-run-loop, listen-only CoreGraphics mouse event tap. The current frame's Alpha mask owns only opaque pet pixels; the bubble owns only its rendered rounded cards, and all surrounding transparent panel area remains available to lower applications. Missing or stale pet masks deliberately fall back to the geometric pet region so launch and frame transitions never disable dragging. The same policy is reapplied in AppKit hit testing as a defensive boundary. A conditional exact-position timer is used only if macOS cannot create the listen-only tap; no enlarged proximity region may take ownership on behalf of pet or bubble content.
 
 Display width is stored separately and changed only through Pet Configuration. Bubble and menu geometry stays App-local and does not cross RPC. Interaction telemetry is aggregate-only and excludes coordinates, display/session identifiers, paths, payloads, and user text.
 
@@ -75,12 +77,28 @@ Method families are:
 | Configuration | behavior, onboarding, placement, client settings |
 | Events | normalized ingest, bounded history, completion acknowledgement |
 | Pets | list/history, activate/delete, validate/import/seed/export, runtime-asset repair |
-| Generation | create/edit/retry, wait/reply/cancel, private recovery |
+| Generation | create/edit, in-place resume or explicit new-job retry, revision-based live message wait, reply/cancel, private recovery, bounded Maker history/detail, terminal history delete |
 | Connections | check, repair, refresh, test, uninstall, managed-component evidence |
 | Convergence | receipt and read-only replacement preflight |
 | Support | renderer budget, App Server probe, diagnostics export |
 
-[rpc.rs](../../crates/petcore/src/rpc.rs) and the Swift client own the exact method and parameter contract. Long-running App Server turns distinguish retryable transport errors from terminal protocol failure; the shared production verifier remains the final package trust boundary.
+[rpc.rs](../../crates/petcore/src/rpc.rs) and the Swift client own the exact method and parameter contract. The Maker page uses the bounded App Server probe before enabling creation. `generation.history.list` returns only task-row metadata, including title, progress, lifecycle timestamps, recovery/cancellation facts, and PetCore-authoritative `capabilities`. `generation.history.detail` returns the selected task and an exact live session-navigation check. `generation.messages.list(job_id, before_sequence, limit)` pages older visible messages; `generation.messages.wait` streams revision-based changes without duplicating rows. `generation.history.delete` is an irreversible terminal-only mutation with a typed receipt: it retains a completed task's published pet, advances `state_revision`, repairs direct retry links without changing child ordering, and removes the exact owned private workspace through descriptor-bound no-follow traversal.
+
+Persistent Studio threads receive a bounded user-facing name through `thread/name/set`. Studio turns use App Server `plan` collaboration mode so the native `request_user_input` tool is available; the Studio developer instruction asks for one concise question with two or three options, while the bounded decoder remains tolerant of the broader protocol envelope. The App consumes `item/tool/requestUserInput`, stores at most three bounded questions and eight options per question, interrupts and releases the current turn/process, and moves the job to `waiting_for_user`. `generation.reply` accepts only that state, persists the user message and request ID before starting a continuation turn, and uses `thread/resume` when the stored thread is available. `generation.resume` similarly accepts an optional instruction only for interrupted or recoverable failures. Repeated request IDs are idempotent and a reused ID with different content fails closed. Automatic ChatGPT-sidebar discovery and ChatGPT's presentation of App Server events are not protocol or recovery guarantees.
+
+Connection status inside `state.snapshot` has two independent cache layers. The
+five-minute light layer owns filesystem and host inspection; event-derived
+connector evidence is cached per Agent source. An inserted event marks only its
+source dirty, and snapshot reads coalesce that dirty projection for at most five
+seconds so a busy hook stream cannot repeatedly scan the retained 10,000-event
+history. A cold scan decodes only the six bounded fields used by connector
+verification and skips unrelated nested tool metadata. An explicit connection
+check, repair, uninstall, artifact revision, or changed base status invalidates
+the relevant projection immediately.
+
+During a job, `generation.messages.wait` carries ordered typed phase/activity records, continuation markers, the current durable heartbeat timestamp, structured input requests, and bounded visible Codex message chunks; it does not transport tool input/output or hidden reasoning. Periodic App Server liveness signals advance the job heartbeat and wait revision without appending unbounded timeline rows. Waiting jobs are excluded from interrupted-owner recovery. A stale running owner becomes `failed + recoverable` with `owner_interrupted`, retains no `ended_at`, and continues to occupy the single unfinished-task slot.
+
+`generation.cancel` first atomically records irreversible `cancel_requested_at`, freezes duration, and installs a database/write-path fence. It then signals the registered job worker, sends `turn/interrupt` for the exact active thread/turn, waits briefly for the corresponding terminal turn event, terminates only that session's private App Server process group on timeout, and waits for worker stop acknowledgement. PetCore writes `execution_stopped_at`, executes `thread/archive`, writes `thread_archived_at`, and only then commits the `canceled` terminal message/status. If archive temporarily fails, the task remains fenced in cancellation cleanup and receives bounded retries; the RPC never exposes recovery or session-open authority. `thread/unsubscribe` is not a cancellation primitive. Long-running App Server turns distinguish retryable transport errors from terminal protocol failure. External full-source checkpointing is progress-aware rather than turn-count-based: durable workspace change resets the consecutive-stall counter, three unchanged continuation turns pause with a resumable cause, and twelve hours bounds one uninterrupted continuation run. The shared production verifier remains the final package trust boundary.
 
 ### Capability-token loopback
 
@@ -88,7 +106,7 @@ PetCore may publish a random `127.0.0.1` port for `POST /agent-events`. Requests
 
 ## Diagnostics
 
-App and PetCore logs use bounded `apc.diagnostic-log.v1` JSONL rotation. Export produces `apc.diagnostics-bundle.v1`; if PetCore is unavailable, the App creates an offline bundle with the same manifest shape. Recovery and export have independent operation state.
+App and PetCore logs use bounded `apc.diagnostic-log.v1` JSONL rotation. Export produces `apc.diagnostics-bundle.v1`; if PetCore is unavailable, the App creates an offline bundle with the same manifest shape. Recovery and export have independent operation state. Connector parsing failures are recorded as structured Agent/field/failure categories only; rejected values and host content never enter the log.
 
 The ZIP is allowlist-only: manifest, bounded environment summary, explanatory README, and sanitized/truncated logs. It excludes SQLite, pet assets, generation workspaces, connector configuration, runtime tokens, prompts, complete messages, commands/tool data, credentials, raw identifiers, and user paths. Export staging expires and is size/count bounded.
 

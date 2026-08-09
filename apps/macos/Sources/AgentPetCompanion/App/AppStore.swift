@@ -4,6 +4,50 @@ import Combine
 import Foundation
 import UniformTypeIdentifiers
 
+enum OverlayBubbleDisclosureDirection: Equatable {
+    case expanding
+    case collapsing
+}
+
+enum OverlayBubbleDisclosureAction: Equatable {
+    case revealBubble
+    case revealCollapsedStandaloneStack
+    case expandStandaloneStack
+    case collapseStandaloneStack
+    case dismissBubble
+
+    static func resolve(
+        groupSessionsByAgent: Bool,
+        sessionCount: Int,
+        bubbleDismissed: Bool,
+        standaloneStackExpanded: Bool,
+        standaloneStackDirection: OverlayBubbleDisclosureDirection
+    ) -> Self? {
+        guard sessionCount > 0 else { return nil }
+        guard !groupSessionsByAgent, sessionCount > 1 else {
+            return bubbleDismissed ? .revealBubble : .dismissBubble
+        }
+        if bubbleDismissed {
+            return .revealCollapsedStandaloneStack
+        }
+        if standaloneStackExpanded {
+            return .collapseStandaloneStack
+        }
+        return standaloneStackDirection == .expanding
+            ? .expandStandaloneStack
+            : .dismissBubble
+    }
+
+    var revealsMoreContent: Bool {
+        switch self {
+        case .revealBubble, .revealCollapsedStandaloneStack, .expandStandaloneStack:
+            true
+        case .collapseStandaloneStack, .dismissBubble:
+            false
+        }
+    }
+}
+
 struct AppStoreBootstrapHooks {
     typealias EnsureRunning = @Sendable () async -> ServiceStartResult
     typealias Recover = @Sendable () async -> ServiceStartResult
@@ -46,6 +90,17 @@ enum PetCoreRuntimePhase: Equatable {
     case checking
     case running
     case failed
+}
+
+enum PetStudioCodexAvailability: Equatable, Sendable {
+    case checking
+    case available
+    case missing
+    case unavailable
+
+    var permitsGeneration: Bool {
+        self == .available
+    }
 }
 
 struct PetCoreRuntimeInfo: Equatable {
@@ -529,12 +584,12 @@ enum PetAssetRepairState: Equatable {
 
 enum AppUpdateConvergenceAttention: Equatable {
     case bundledPets
-    case connectors([AgentSource])
+    case connectors([ProductConnectorConvergenceIssue])
     case service
 
     var sources: [AgentSource] {
-        if case let .connectors(sources) = self {
-            sources
+        if case let .connectors(issues) = self {
+            issues.map(\.source)
         } else {
             []
         }
@@ -583,6 +638,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var referenceImages: [String] = []
     @Published private(set) var referenceImageIssue: MakerReferenceImageIssue?
     @Published private(set) var referenceReselectionCount = 0
+    @Published private(set) var petStudioCodexAvailability =
+        PetStudioCodexAvailability.checking
     @Published var behavior = BehaviorSettings()
     @Published private(set) var activeAgentState: ActiveAgentState?
     @Published private(set) var activeAgentSessions: [ActiveAgentState] = []
@@ -603,6 +660,20 @@ final class AppStore: ObservableObject {
         IncludedCompanionRestoreState.idle
     @Published private(set) var petAssetRepairStates: [String: PetAssetRepairState] = [:]
     @Published private(set) var generationSession = GenerationSession()
+    @Published private(set) var generationHistorySnapshot =
+        GenerationStudioHistorySnapshot()
+    @Published private(set) var selectedGenerationHistoryJobID: String?
+    @Published private(set) var generationHistoryDetail: GenerationStudioHistoryDetail?
+    @Published private(set) var generationHistoryMessages: [GenerationMessage] = []
+    @Published private(set) var generationHistoryMessagesHasMore = false
+    @Published private(set) var generationHistoryMessagesIsLoading = false
+    @Published private(set) var makerDraftIsActive = false
+    @Published private(set) var generationHistoryIsLoading = false
+    @Published private(set) var generationHistoryHasLoaded = false
+    @Published private(set) var generationHistoryDetailIsLoading = false
+    @Published private(set) var generationHistoryLoadFailed = false
+    @Published private(set) var generationHistoryDeleteInFlightJobID: String?
+    @Published private(set) var generationHistoryMutationError: String?
     @Published var generationReplyText = ""
     @Published var statusText = "正在初始化"
     @Published var serviceStatusText = "正在初始化"
@@ -647,6 +718,10 @@ final class AppStore: ObservableObject {
         overlayDragInteractionID
     }
     @Published var overlayBubbleDismissed = false
+    /// Presentation-only side of the pet used to keep flat session cards and
+    /// the disclosure chevron ordered toward the pet. It changes only when a
+    /// placement edge actually flips, never for ordinary drag samples.
+    @Published private(set) var overlayBubbleAnchorDirection: OverlayBubbleAnchorDirection = .above
     @Published var overlayDismissedBubbleEventIDs: Set<String> = []
     @Published private var overlaySessionNavigationNotices:
         [String: OverlaySessionNavigationNoticeRecord] = [:]
@@ -658,6 +733,8 @@ final class AppStore: ObservableObject {
     private var overlayStandaloneSessionOrder: [String] = []
     private var overlayStandaloneSessionActivationIDs: [String: String] = [:]
     @Published private(set) var overlayStandaloneStackExpansionOverride: Bool?
+    private var overlayStandaloneStackDisclosureDirection:
+        OverlayBubbleDisclosureDirection = .expanding
     @Published var overlayPointerNearPet = false
     @Published var overlayPetDragInProgress = false
     @Published var petOperationIDs: Set<String> = []
@@ -728,6 +805,9 @@ final class AppStore: ObservableObject {
     private var latestGenerationRestoreInFlight: (id: UInt64, task: Task<Void, Never>)?
     private var makerUserMutationRevision: UInt64 = 0
     private var automaticLatestGenerationRestoreInvalidated = false
+    private var generationHistoryListSequence: UInt64 = 0
+    private var generationHistoryDetailSequence: UInt64 = 0
+    private var generationHistoryMessagesSequence: UInt64 = 0
     private var reselectedReferenceImagePaths: Set<String> = []
     private var activeGenerationRecoveryProjection: SanitizedGenerationRecoveryProjection?
     private var runtimeBootstrapCompleted = false
@@ -741,6 +821,8 @@ final class AppStore: ObservableObject {
     private var recoverySequence: UInt64 = 0
     private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
     private var connectionOperationGate = AgentConnectionOperationGate()
+    private var automaticConnectionCheckRequested = false
+    private var automaticConnectionCheckTask: Task<Void, Never>?
     private var hasPresentedOverlay = false
     private var productConvergenceTask: Task<Void, Never>?
     private var productConvergenceVisibilityTask: Task<Void, Never>?
@@ -859,6 +941,7 @@ final class AppStore: ObservableObject {
         },
         overlayKeyboardFocusHandler: OverlayKeyboardFocusHandler? = nil,
         petCoreRequestOverride: PetCoreRequestOverride? = nil,
+        initialPetStudioCodexAvailability: PetStudioCodexAvailability = .checking,
         appUpdater: AppUpdateController? = nil,
         productConvergenceSleeper: @escaping ProductConvergenceSleeper = { duration in
             try await Task.sleep(for: duration)
@@ -891,6 +974,7 @@ final class AppStore: ObservableObject {
         self.overlayKeyboardFocusHandler = overlayKeyboardFocusHandler
             ?? Self.defaultOverlayKeyboardFocusHandler
         self.petCoreRequestOverride = petCoreRequestOverride
+        petStudioCodexAvailability = initialPetStudioCodexAvailability
         self.appUpdater = appUpdater ?? AppUpdateController(
             automaticChecksEnabled: false,
             diagnostics: diagnostics
@@ -903,6 +987,11 @@ final class AppStore: ObservableObject {
 
     var activePet: PetSummary? {
         pets.first(where: \.active)
+    }
+
+    func petSummary(id: String?) -> PetSummary? {
+        guard let id, !id.isEmpty else { return nil }
+        return pets.first { $0.id == id }
     }
 
     var interfaceLocaleIdentifier: String {
@@ -1138,8 +1227,36 @@ final class AppStore: ObservableObject {
 
     var canStartGeneration: Bool {
         canStartNewGenerationWork
+            && petStudioCodexAvailability.permitsGeneration
             && !generationSession.isActive
             && GenerationPromptPolicy.isValid(descriptionText)
+    }
+
+    var generationStartBlockingDetail: String? {
+        guard !canStartGeneration else { return nil }
+        guard canStartNewGenerationWork else {
+            return APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+        }
+        if generationSession.isActive {
+            return generationStateTitle
+        }
+        switch petStudioCodexAvailability {
+        case .checking:
+            return APCLocalization.text(.studioCodexCheckingDetail)
+        case .missing:
+            return APCLocalization.text(.studioCodexMissingDetail)
+        case .unavailable:
+            return APCLocalization.text(.studioCodexUnavailableDetail)
+        case .available:
+            return GenerationPromptPolicy.isValid(descriptionText)
+                ? nil
+                : APCLocalization.text(.studioDescriptionRequired)
+        }
+    }
+
+    var generationStartPresentationDetail: String {
+        generationStartBlockingDetail
+            ?? APCLocalization.text(.studioWelcomeDetail)
     }
 
     var canStartNewGenerationWork: Bool {
@@ -1147,8 +1264,8 @@ final class AppStore: ObservableObject {
         return switch appUpdateConvergenceState {
         case .idle, .completed:
             true
-        case let .needsAttention(.connectors(sources)):
-            !sources.contains(.codex)
+        case let .needsAttention(.connectors(issues)):
+            !issues.contains { $0.source == .codex }
         case .needsAttention(.bundledPets), .needsAttention(.service):
             false
         case .waitingForActiveWork, .updating:
@@ -1179,9 +1296,70 @@ final class AppStore: ObservableObject {
 
     var canRetryGeneration: Bool {
         generationSession.canRetry
+            && petStudioCodexAvailability.permitsGeneration
             && referenceReselectionCount == 0
             && (generationSession.operation == .modify
                 || !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var canResumeGeneration: Bool {
+        generationSession.canResume
+            && canStartNewGenerationWork
+            && petStudioCodexAvailability.permitsGeneration
+            && referenceReselectionCount == 0
+    }
+
+    var canResumeSelectedGenerationHistory: Bool {
+        guard let detail = generationHistoryDetail,
+              detail.found,
+              let jobID = detail.jobID,
+              jobID == selectedGenerationHistoryJobID,
+              detail.capabilities?.canResume == true
+        else { return false }
+        return canStartNewGenerationWork
+            && petStudioCodexAvailability.permitsGeneration
+    }
+
+    var canCopySelectedGenerationHistoryBrief: Bool {
+        guard !generationSession.isActive,
+              let detail = selectedGenerationHistoryDetail,
+              let description = detail.description,
+              !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              detail.quality?.isStudioSupported == true
+        else { return false }
+        return detail.style != nil
+    }
+
+    var canRetrySelectedGenerationHistory: Bool {
+        guard canCopySelectedGenerationHistoryBrief,
+              canStartNewGenerationWork,
+              petStudioCodexAvailability.permitsGeneration,
+              let status = selectedGenerationHistoryDetail?.status
+        else { return false }
+        return switch status {
+        case .failed:
+            selectedGenerationHistoryDetail?.recoverable != true
+        case .completed, .canceled:
+            false
+        case .pending, .running, .waitingForUser:
+            false
+        }
+    }
+
+    var selectedGenerationHistoryResultPet: PetSummary? {
+        petSummary(id: selectedGenerationHistoryDetail?.resultPetID)
+    }
+
+    var selectedGenerationHistoryResultPetIsActive: Bool {
+        selectedGenerationHistoryResultPet?.active == true
+    }
+
+    var selectedGenerationHistoryDetail: GenerationStudioHistoryDetail? {
+        guard let generationHistoryDetail,
+              generationHistoryDetail.found,
+              generationHistoryDetail.jobID == selectedGenerationHistoryJobID
+        else { return nil }
+        return generationHistoryDetail
     }
 
     var generationStateTitle: String {
@@ -1191,7 +1369,10 @@ final class AppStore: ObservableObject {
             case .starting: "正在启动修改"
             case .running: "正在修改"
             case .waitingForInput: "修改等待补充信息"
+            case .paused: "修改已中断，等待继续"
+            case .recoverableFailed: "修改失败，可继续"
             case .cancelling: "正在取消修改"
+            case .cancelCleanup: "正在清理修改会话"
             case .succeeded: "修改完成"
             case .failed: "修改失败"
             case .cancelled: "修改已取消"
@@ -1202,7 +1383,10 @@ final class AppStore: ObservableObject {
         case .starting: "正在启动"
         case .running: "正在生成"
         case .waitingForInput: "等待补充信息"
+        case .paused: "已中断，等待继续"
+        case .recoverableFailed: "生成失败，可继续"
         case .cancelling: "正在取消"
+        case .cancelCleanup: "正在清理会话"
         case .succeeded: "生成完成"
         case .failed: "生成失败"
         case .cancelled: "已取消"
@@ -1941,9 +2125,12 @@ final class AppStore: ObservableObject {
                 refreshValue
             )
             guard report.isExactlyConverged else {
+                let issues = report.attentionIssues
                 finishProductConvergenceAttention(
-                    attention: .connectors(report.attentionSources),
-                    failure: "managed_connector_verification_incomplete"
+                    attention: issues.isEmpty ? .service : .connectors(issues),
+                    failure: issues.isEmpty
+                        ? "managed_connector_report_inconsistent"
+                        : "managed_connector_verification_incomplete"
                 )
                 _ = await refreshSnapshotAfterProductConvergence()
                 return
@@ -2500,6 +2687,7 @@ final class AppStore: ObservableObject {
             {
                 overlayAgentGroupExpansionOverrides.removeAll()
                 overlayStandaloneStackExpansionOverride = nil
+                overlayStandaloneStackDisclosureDirection = .expanding
             }
         }
         behaviorRevision = snapshot.behaviorRevision ?? behaviorRevision
@@ -2916,13 +3104,50 @@ final class AppStore: ObservableObject {
         selectedQuality = quality
     }
 
+    func refreshPetStudioCodexAvailability() async {
+        if generationSession.isActive {
+            petStudioCodexAvailability = .available
+            return
+        }
+        guard petStudioCodexAvailability != .available else { return }
+        petStudioCodexAvailability = .checking
+        do {
+            let result = try await requestPetCore(method: "codex.app_server.probe")
+            guard let payload = result as? [String: Any] else {
+                petStudioCodexAvailability = .unavailable
+                return
+            }
+            if payload["initialized"] as? Bool == true {
+                petStudioCodexAvailability = .available
+                return
+            }
+            let errorInfo = payload["error_info"] as? [String: Any]
+            let kind = errorInfo?["kind"] as? String
+            petStudioCodexAvailability = payload["mode"] as? String == "missing"
+                || kind == "not_configured"
+                ? .missing
+                : .unavailable
+        } catch {
+            petStudioCodexAvailability = .unavailable
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "pet_studio_codex_probe_failed",
+                throttleKey: "pet_studio_codex_probe_failed",
+                minimumInterval: 30
+            )
+        }
+    }
+
     func startGeneration() {
         guard canStartNewGenerationWork else {
             statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
             return
         }
         guard canStartGeneration else {
-            statusText = generationSession.isActive ? generationStateTitle : "请先填写宠物描述"
+            statusText = generationSession.isActive
+                ? generationStateTitle
+                : petStudioGenerationBlockedStatus
             return
         }
         if let issue = MakerReferenceImagePolicy.issue(for: referenceImages) {
@@ -2978,6 +3203,11 @@ final class AppStore: ObservableObject {
             statusText = "请先完成或取消当前 AI 制作任务"
             return
         }
+        guard petStudioCodexAvailability.permitsGeneration else {
+            selection = .maker
+            statusText = petStudioGenerationBlockedStatus
+            return
+        }
         recordMakerUserMutation()
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
@@ -3030,6 +3260,9 @@ final class AppStore: ObservableObject {
                     jobID: jobID,
                     baselineRevisionID: acceptedBaselineRevisionID
                 ))
+                makerDraftIsActive = false
+                await refreshGenerationHistory()
+                await selectGenerationHistoryJobAndWait(jobID)
                 statusText = "正在修改 \(pet.name)"
             } catch {
                 let failure = GenerationMessage(
@@ -3072,6 +3305,8 @@ final class AppStore: ObservableObject {
         reselectedReferenceImagePaths.removeAll()
         referenceImageIssue = nil
         generationReplyText = ""
+        clearGenerationHistorySelection()
+        makerDraftIsActive = true
         selection = .maker
         statusText = APCLocalization.format(.libraryCopyPreparedFormat, pet.name)
     }
@@ -3100,6 +3335,10 @@ final class AppStore: ObservableObject {
         }
         recordMakerUserMutation()
         _ = reduceGeneration(.reset)
+        descriptionText = AIPetMakerDefaults.descriptionText
+        selectedStyle = AIPetMakerDefaults.style
+        selectedQuality = AIPetMakerDefaults.quality
+        referenceImages.removeAll()
         referenceReselectionCount = 0
         reselectedReferenceImagePaths.removeAll()
         referenceImageIssue = MakerReferenceImagePolicy.issue(for: referenceImages)
@@ -3111,6 +3350,10 @@ final class AppStore: ObservableObject {
     func retryGeneration() {
         guard canStartNewGenerationWork else {
             statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
+        guard petStudioCodexAvailability.permitsGeneration else {
+            statusText = petStudioGenerationBlockedStatus
             return
         }
         guard generationSession.submittedForm != nil else {
@@ -3176,6 +3419,63 @@ final class AppStore: ObservableObject {
         statusText = modifying ? "正在重试宠物修改" : "正在重试 AI 辅助会话"
     }
 
+    func resumeGeneration() {
+        guard canStartNewGenerationWork else {
+            statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
+        guard petStudioCodexAvailability.permitsGeneration else {
+            statusText = petStudioGenerationBlockedStatus
+            return
+        }
+        guard canResumeGeneration,
+              let jobID = generationSession.jobID
+        else {
+            statusText = generationSession.isActive
+                ? generationStateTitle
+                : APCLocalization.text(.studioResumeUnavailable)
+            return
+        }
+        let previousState = generationSession.state
+        let instruction = generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = reduceGeneration(.resumeRequested)
+        statusText = APCLocalization.text(.studioResumeStarting)
+
+        Task {
+            do {
+                var parameters: [String: Any] = [
+                    "job_id": jobID,
+                    "request_id": UUID().uuidString,
+                ]
+                if !instruction.isEmpty {
+                    parameters["instruction"] = instruction
+                }
+                let result = try await requestPetCore(
+                    method: "generation.resume",
+                    params: parameters
+                )
+                guard let object = result as? [String: Any],
+                      let resumedJobID = object["job_id"] as? String,
+                      resumedJobID == jobID
+                else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                _ = reduceGeneration(.startAccepted(
+                    jobID: resumedJobID,
+                    baselineRevisionID: object["baseline_revision_id"] as? String
+                ))
+                generationReplyText = ""
+                statusText = APCLocalization.text(.studioResumeAccepted)
+            } catch {
+                _ = reduceGeneration(.resumeFailed(restoring: previousState))
+                statusText = APCLocalization.format(
+                    .studioResumeFailedFormat,
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
     private func beginGeneration(
         with form: GenerationForm,
         initialMessage: String,
@@ -3186,6 +3486,10 @@ final class AppStore: ObservableObject {
     ) {
         guard canStartNewGenerationWork else {
             statusText = APCLocalization.text(.appUpdateConvergenceMakerBlocked)
+            return
+        }
+        guard petStudioCodexAvailability.permitsGeneration else {
+            statusText = petStudioGenerationBlockedStatus
             return
         }
         let initialUserMessage = GenerationMessage(
@@ -3238,6 +3542,9 @@ final class AppStore: ObservableObject {
                     jobID: jobID,
                     baselineRevisionID: dict["baseline_revision_id"] as? String
                 ))
+                makerDraftIsActive = false
+                await refreshGenerationHistory()
+                await selectGenerationHistoryJobAndWait(jobID)
             } catch {
                 let failure = GenerationMessage(
                     role: "assistant",
@@ -3253,6 +3560,11 @@ final class AppStore: ObservableObject {
                 _ = reduceGeneration(.startFailed(message: failure))
             }
         }
+    }
+
+    private var petStudioGenerationBlockedStatus: String {
+        generationStartBlockingDetail
+            ?? APCLocalization.text(.studioDescriptionRequired)
     }
 
     func refreshGenerationMessages() async {
@@ -3296,7 +3608,8 @@ final class AppStore: ObservableObject {
             await applyGenerationMessages(
                 snapshot.messages,
                 revision: snapshot.revision,
-                resultMetadata: snapshot.resultMetadata
+                resultMetadata: snapshot.resultMetadata,
+                heartbeatAt: snapshot.heartbeatAt
             )
             return generationSession.isActive && generationSession.jobID == jobID
         } catch {
@@ -3309,15 +3622,89 @@ final class AppStore: ObservableObject {
     private func applyGenerationMessages(
         _ messages: [GenerationMessage],
         revision: String? = nil,
-        resultMetadata: GenerationResultMetadata? = nil
+        resultMetadata: GenerationResultMetadata? = nil,
+        heartbeatAt: String? = nil
     ) async {
+        if let heartbeatAt {
+            _ = reduceGeneration(.heartbeatReceived(heartbeatAt))
+        }
         if let resultMetadata, !resultMetadata.isEmpty {
             _ = reduceGeneration(.resultMetadataReceived(resultMetadata))
         }
+        let previousState = generationSession.state
         let effects = reduceGeneration(.messagesReceived(messages, revision: revision))
+        if previousState != generationSession.state {
+            notifyForGenerationTransition(
+                from: previousState,
+                to: generationSession.state,
+                messages: messages
+            )
+        }
+        if let jobID = generationSession.jobID,
+           selectedGenerationHistoryJobID == jobID {
+            generationHistoryMessages = messages.filter {
+                $0.kind != "generation_heartbeat" && $0.kind != "jsonl_diagnostic"
+            }
+            if previousState != generationSession.state {
+                await refreshGenerationHistory()
+                await loadGenerationHistoryDetail(jobID: jobID)
+            }
+        }
         if effects.contains(.refreshSnapshot) {
             await refresh()
         }
+    }
+
+    private func notifyForGenerationTransition(
+        from previousState: GenerationSessionState,
+        to state: GenerationSessionState,
+        messages: [GenerationMessage]
+    ) {
+        guard previousState != state,
+              let jobID = generationSession.jobID,
+              !(NSApp.isActive
+                  && selection == .maker
+                  && selectedGenerationHistoryJobID == jobID)
+        else { return }
+        let notification: (String, String)? = switch state {
+        case .waitingForInput:
+            (
+                APCLocalization.text(.studioNotificationWaitingTitle),
+                messages.last(where: { $0.kind == "input_request" })?.content
+                    ?? APCLocalization.text(.studioNotificationWaitingBody)
+            )
+        case .paused:
+            (
+                APCLocalization.text(.studioNotificationPausedTitle),
+                generationSession.pauseReason
+                    ?? APCLocalization.text(.studioNotificationPausedBody)
+            )
+        case .recoverableFailed:
+            (
+                APCLocalization.text(.studioNotificationRecoverableTitle),
+                generationSession.pauseReason
+                    ?? APCLocalization.text(.studioNotificationRecoverableBody)
+            )
+        case .succeeded:
+            (
+                APCLocalization.text(.studioNotificationCompletedTitle),
+                APCLocalization.text(.studioNotificationCompletedBody)
+            )
+        case .failed:
+            (
+                APCLocalization.text(.studioNotificationFailedTitle),
+                APCLocalization.text(.studioNotificationFailedBody)
+            )
+        case .idle, .starting, .running, .cancelling, .cancelCleanup, .cancelled:
+            nil
+        }
+        guard let notification else { return }
+        MakerNotificationCoordinator.shared.notify(
+            jobID: jobID,
+            state: state,
+            title: notification.0,
+            body: notification.1
+        )
     }
 
     func sendGenerationReply() {
@@ -3339,7 +3726,11 @@ final class AppStore: ObservableObject {
             do {
                 let result = try await requestPetCore(
                     method: "generation.reply",
-                    params: ["job_id": generationJobID, "content": content]
+                    params: [
+                        "job_id": generationJobID,
+                        "content": content,
+                        "request_id": UUID().uuidString,
+                    ]
                 )
                 let data = try JSONSerialization.data(withJSONObject: result)
                 let messages = try JSONDecoder().decode([GenerationMessage].self, from: data)
@@ -3393,6 +3784,663 @@ final class AppStore: ObservableObject {
         )
         let data = try JSONSerialization.data(withJSONObject: result)
         return try JSONDecoder().decode(GenerationHistory.self, from: data)
+    }
+
+    func refreshGenerationHistory(limit: Int = 24) async {
+        generationHistoryListSequence &+= 1
+        let sequence = generationHistoryListSequence
+        generationHistoryIsLoading = true
+        generationHistoryLoadFailed = false
+        do {
+            let result = try await requestPetCore(
+                method: "generation.history.list",
+                params: ["limit": min(max(limit, 1), 32)]
+            )
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let snapshot = try JSONDecoder().decode(
+                GenerationStudioHistorySnapshot.self,
+                from: data
+            )
+            guard sequence == generationHistoryListSequence else { return }
+            generationHistorySnapshot = snapshot
+            if let selectedGenerationHistoryJobID,
+               !snapshot.jobs.contains(where: { $0.jobID == selectedGenerationHistoryJobID }) {
+                self.selectedGenerationHistoryJobID = nil
+                generationHistoryDetail = nil
+            }
+        } catch {
+            guard sequence == generationHistoryListSequence else { return }
+            generationHistoryLoadFailed = true
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "generation_history_list_failed",
+                throttleKey: "generation_history_list_failed",
+                minimumInterval: 10
+            )
+        }
+        guard sequence == generationHistoryListSequence else { return }
+        generationHistoryIsLoading = false
+        generationHistoryHasLoaded = true
+    }
+
+    func selectGenerationHistoryJob(_ jobID: String) {
+        guard generationHistorySnapshot.jobs.contains(where: { $0.jobID == jobID }) else {
+            return
+        }
+        selectedGenerationHistoryJobID = jobID
+        makerDraftIsActive = false
+        generationHistoryDetail = nil
+        generationHistoryMessages = []
+        generationHistoryMessagesHasMore = false
+        Task { [weak self] in
+            guard let self else { return }
+            async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
+            async let messages: Void = loadGenerationHistoryMessages(jobID: jobID)
+            _ = await (detail, messages)
+        }
+    }
+
+    func selectGenerationHistoryJobAndWait(_ jobID: String) async {
+        guard generationHistorySnapshot.jobs.contains(where: { $0.jobID == jobID }) else {
+            return
+        }
+        selectedGenerationHistoryJobID = jobID
+        makerDraftIsActive = false
+        generationHistoryDetail = nil
+        generationHistoryMessages = []
+        generationHistoryMessagesHasMore = false
+        async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
+        async let messages: Void = loadGenerationHistoryMessages(jobID: jobID)
+        _ = await (detail, messages)
+    }
+
+    func clearGenerationHistorySelection() {
+        generationHistoryDetailSequence &+= 1
+        selectedGenerationHistoryJobID = nil
+        generationHistoryDetail = nil
+        generationHistoryMessages = []
+        generationHistoryMessagesHasMore = false
+        generationHistoryDetailIsLoading = false
+    }
+
+    func loadGenerationHistoryDetail(jobID: String) async {
+        generationHistoryDetailSequence &+= 1
+        let sequence = generationHistoryDetailSequence
+        generationHistoryDetailIsLoading = true
+        generationHistoryLoadFailed = false
+        do {
+            let result = try await requestPetCore(
+                method: "generation.history.detail",
+                params: ["job_id": jobID],
+                timeout: .seconds(15)
+            )
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let detail = try JSONDecoder().decode(
+                GenerationStudioHistoryDetail.self,
+                from: data
+            )
+            guard sequence == generationHistoryDetailSequence,
+                  selectedGenerationHistoryJobID == jobID
+            else { return }
+            generationHistoryDetail = detail.found ? detail : nil
+            generationHistoryLoadFailed = !detail.found
+        } catch {
+            guard sequence == generationHistoryDetailSequence,
+                  selectedGenerationHistoryJobID == jobID
+            else { return }
+            generationHistoryLoadFailed = true
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "generation_history_detail_failed",
+                throttleKey: "generation_history_detail_failed",
+                minimumInterval: 10
+            )
+        }
+        guard sequence == generationHistoryDetailSequence,
+              selectedGenerationHistoryJobID == jobID
+        else { return }
+        generationHistoryDetailIsLoading = false
+    }
+
+    func loadGenerationHistoryMessages(
+        jobID: String,
+        beforeSequence: UInt64? = nil,
+        limit: Int = 50
+    ) async {
+        generationHistoryMessagesSequence &+= 1
+        let sequence = generationHistoryMessagesSequence
+        generationHistoryMessagesIsLoading = true
+        defer {
+            if sequence == generationHistoryMessagesSequence {
+                generationHistoryMessagesIsLoading = false
+            }
+        }
+        var params: [String: Any] = [
+            "job_id": jobID,
+            "limit": min(max(limit, 1), 200),
+        ]
+        if let beforeSequence {
+            params["before_sequence"] = beforeSequence
+        }
+        do {
+            let result = try await requestPetCore(
+                method: "generation.messages.list",
+                params: params,
+                timeout: .seconds(15)
+            )
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let page = try JSONDecoder().decode(GenerationMessagesPage.self, from: data)
+            guard sequence == generationHistoryMessagesSequence,
+                  selectedGenerationHistoryJobID == jobID,
+                  page.jobID == jobID
+            else { return }
+            if beforeSequence == nil {
+                generationHistoryMessages = page.messages
+            } else {
+                let currentIDs = Set(generationHistoryMessages.map(\.id))
+                generationHistoryMessages = page.messages.filter { !currentIDs.contains($0.id) }
+                    + generationHistoryMessages
+            }
+            generationHistoryMessagesHasMore = page.hasMore
+        } catch {
+            guard sequence == generationHistoryMessagesSequence,
+                  selectedGenerationHistoryJobID == jobID
+            else { return }
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "generation_history_messages_failed",
+                throttleKey: "generation_history_messages_failed",
+                minimumInterval: 5
+            )
+        }
+    }
+
+    func loadOlderGenerationHistoryMessages() async {
+        guard generationHistoryMessagesHasMore,
+              !generationHistoryMessagesIsLoading,
+              let jobID = selectedGenerationHistoryJobID,
+              let before = generationHistoryMessages.first?.sequence
+        else { return }
+        await loadGenerationHistoryMessages(jobID: jobID, beforeSequence: before)
+    }
+
+    func prepareMakerWorkspace() async {
+        await refreshGenerationHistory()
+        if let selectedGenerationHistoryJobID,
+           generationHistorySnapshot.jobs.contains(where: { $0.jobID == selectedGenerationHistoryJobID }) {
+            await selectGenerationHistoryJobAndWait(selectedGenerationHistoryJobID)
+            return
+        }
+        if let unfinished = generationHistorySnapshot.jobs.first(where: {
+            makerHistoryJobIsUnfinished($0)
+        }) {
+            await selectGenerationHistoryJobAndWait(unfinished.jobID)
+            return
+        }
+        if makerDraftIsActive { return }
+        if let mostRecent = generationHistorySnapshot.jobs.first {
+            await selectGenerationHistoryJobAndWait(mostRecent.jobID)
+            return
+        }
+        beginMakerDraft()
+    }
+
+    func refreshMakerAfterLifecycleEvent() async {
+        _ = await refresh()
+        await refreshGenerationHistory()
+        guard let jobID = selectedGenerationHistoryJobID,
+              generationHistorySnapshot.jobs.contains(where: { $0.jobID == jobID })
+        else { return }
+        async let detail: Void = loadGenerationHistoryDetail(jobID: jobID)
+        async let messages: Void = loadGenerationHistoryMessages(jobID: jobID)
+        _ = await (detail, messages)
+    }
+
+    func beginMakerDraft() {
+        let unfinishedExists = generationHistorySnapshot.jobs.contains {
+            makerHistoryJobIsUnfinished($0)
+        }
+        guard !unfinishedExists else {
+            statusText = APCLocalization.text(.studioWorkspaceActiveTaskBlocksNew)
+            return
+        }
+        clearGenerationHistorySelection()
+        showNewPetDraft()
+        makerDraftIsActive = true
+    }
+
+    func discardMakerDraft() {
+        guard makerDraftIsActive else { return }
+        clearStudioForm()
+        _ = reduceGeneration(.reset)
+        makerDraftIsActive = false
+        clearGenerationHistorySelection()
+        if let mostRecent = generationHistorySnapshot.jobs.first {
+            selectGenerationHistoryJob(mostRecent.jobID)
+        }
+    }
+
+    private func makerHistoryJobIsUnfinished(_ job: GenerationStudioHistoryRecord) -> Bool {
+        if job.cancellationPending == true { return true }
+        if let capabilities = job.capabilities {
+            return capabilities.canCancel || capabilities.canReply || capabilities.canResume
+        }
+        return job.status == .pending
+            || job.status == .running
+            || job.status == .waitingForUser
+            || (job.status == .failed && job.recoverable == true)
+    }
+
+    @discardableResult
+    func copySelectedGenerationHistoryBriefToNewDraft() -> Bool {
+        guard canCopySelectedGenerationHistoryBrief,
+              let detail = selectedGenerationHistoryDetail,
+              let form = generationHistoryDraft(from: detail)
+        else {
+            statusText = APCLocalization.text(.studioHistoryCopyBriefUnavailable)
+            return false
+        }
+
+        recordMakerUserMutation()
+        _ = reduceGeneration(.reset)
+        applyGenerationHistoryDraft(
+            form,
+            referenceReselectionCount: detail.referenceCount
+        )
+        clearGenerationHistorySelection()
+        makerDraftIsActive = true
+        generationReplyText = ""
+        selection = .maker
+        statusText = detail.referenceCount > 0
+            ? APCLocalization.format(
+                .studioHistoryCopyBriefReferencesNoticeFormat,
+                detail.referenceCount
+            )
+            : APCLocalization.text(.studioHistoryCopyBriefSuccess)
+        return true
+    }
+
+    func retrySelectedGenerationHistory() {
+        guard canRetrySelectedGenerationHistory,
+              let detail = selectedGenerationHistoryDetail,
+              let jobID = detail.jobID,
+              let status = detail.status,
+              let operation = detail.operation,
+              let form = generationHistoryDraft(from: detail)
+        else {
+            statusText = APCLocalization.text(.studioHistoryRetryUnavailable)
+            return
+        }
+        guard detail.referenceCount == 0 else {
+            statusText = APCLocalization.format(
+                .studioHistoryCopyBriefReferencesNoticeFormat,
+                detail.referenceCount
+            )
+            return
+        }
+
+        recordMakerUserMutation()
+        let state = restoredGenerationState(
+            status: status,
+            messages: detail.progressMessages
+        )
+        _ = reduceGeneration(.restore(GenerationSessionRestore(
+            state: state,
+            jobID: jobID,
+            submittedForm: form,
+            messages: detail.progressMessages,
+            progress: detail.progressMessages.last?.progress ?? 1,
+            messageRevision: "",
+            operation: operation,
+            resultPetID: detail.resultPetID,
+            resultRevisionID: detail.revisionID,
+            validationSummary: detail.validationSummary,
+            referenceReselectionCount: detail.referenceCount
+        )))
+        applyGenerationHistoryDraft(
+            form,
+            referenceReselectionCount: detail.referenceCount
+        )
+        generationReplyText = ""
+        selection = .maker
+        let initialMessage = operation == .modify
+            ? APCLocalization.text(.studioMessageRetryModify)
+            : APCLocalization.format(
+                .studioMessageRetryCreateFormat,
+                APCLocalizedPresentation.styleTitle(selectedStyle)
+            )
+        beginGeneration(
+            with: form,
+            initialMessage: initialMessage,
+            retryOfJobID: jobID,
+            operation: operation,
+            resultPetID: detail.resultPetID
+        )
+        statusText = APCLocalization.text(
+            operation == .modify
+                ? .studioHistoryRetryStartingModify
+                : .studioHistoryRetryStartingCreate
+        )
+    }
+
+    @discardableResult
+    func deleteGenerationHistory(jobID: String) async -> Bool {
+        guard !jobID.isEmpty,
+              generationHistoryDeleteInFlightJobID == nil
+        else { return false }
+
+        generationHistoryDeleteInFlightJobID = jobID
+        generationHistoryMutationError = nil
+        defer { generationHistoryDeleteInFlightJobID = nil }
+
+        let jobsBeforeDeletion = generationHistorySnapshot.jobs
+        let deletedIndex = jobsBeforeDeletion.firstIndex { $0.jobID == jobID }
+        let deletedSelection = selectedGenerationHistoryJobID == jobID
+        let expectedResultPetID = jobsBeforeDeletion.first {
+            $0.jobID == jobID
+        }?.resultPetID
+
+        do {
+            let result = try await requestPetCore(
+                method: "generation.history.delete",
+                params: ["job_id": jobID],
+                timeout: .seconds(15)
+            )
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let receipt = try JSONDecoder().decode(
+                GenerationStudioHistoryDeleteReceipt.self,
+                from: data
+            )
+            let deletedStatusIsTerminal = switch receipt.deletedStatus {
+            case .completed, .failed, .canceled:
+                true
+            case .pending, .running, .waitingForUser:
+                false
+            }
+            guard receipt.ok,
+                  receipt.jobID == jobID,
+                  deletedStatusIsTerminal,
+                  receipt.deletedMessageCount >= 0,
+                  receipt.retryChildrenRelinked >= 0,
+                  !receipt.stateRevision.isEmpty,
+                  expectedResultPetID.map({ $0 == receipt.retainedResultPetID }) ?? true
+            else {
+                throw NSError(
+                    domain: "AgentPetCompanion.GenerationHistoryDelete",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: APCLocalization.text(
+                            .studioHistoryDeleteInvalidResponse
+                        ),
+                    ]
+                )
+            }
+
+            generationHistoryListSequence &+= 1
+            generationHistoryDetailSequence &+= 1
+            var localSnapshot = generationHistorySnapshot
+            localSnapshot.jobs.removeAll { $0.jobID == jobID }
+            generationHistorySnapshot = localSnapshot
+            generationHistoryHasLoaded = true
+            if deletedSelection {
+                selectedGenerationHistoryJobID = nil
+                generationHistoryDetail = nil
+                generationHistoryMessages = []
+                generationHistoryMessagesHasMore = false
+                generationHistoryDetailIsLoading = false
+            }
+
+            await refreshGenerationHistory()
+
+            if deletedSelection, selectedGenerationHistoryJobID == nil {
+                let remainingJobs = generationHistorySnapshot.jobs
+                let preferredIndex = min(
+                    deletedIndex ?? 0,
+                    max(remainingJobs.count - 1, 0)
+                )
+                if remainingJobs.indices.contains(preferredIndex) {
+                    let nextJobID = remainingJobs[preferredIndex].jobID
+                    selectedGenerationHistoryJobID = nextJobID
+                    generationHistoryDetail = nil
+                    await loadGenerationHistoryDetail(jobID: nextJobID)
+                }
+            }
+
+            statusText = APCLocalization.text(
+                generationHistoryLoadFailed
+                    ? .studioHistoryDeleteRefreshWarning
+                    : .studioHistoryDeleteSuccess
+            )
+            return true
+        } catch {
+            let message = error.localizedDescription
+            generationHistoryMutationError = message
+            statusText = APCLocalization.format(
+                .studioHistoryDeleteFailedFormat,
+                message
+            )
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "generation_history_delete_failed",
+                throttleKey: "generation_history_delete_failed",
+                minimumInterval: 5
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    func showSelectedGenerationHistoryResultPetInLibrary() async -> Bool {
+        guard let pet = selectedGenerationHistoryResultPet else {
+            statusText = APCLocalization.text(.studioHistoryResultPetMissing)
+            return false
+        }
+        guard await activatePetAndWait(pet) else { return false }
+        selection = .library
+        return true
+    }
+
+    private func generationHistoryDraft(
+        from detail: GenerationStudioHistoryDetail
+    ) -> GenerationForm? {
+        guard let description = detail.description,
+              let style = detail.style,
+              let quality = detail.quality,
+              quality.isStudioSupported,
+              GenerationPromptPolicy.isValid(description)
+        else { return nil }
+        return GenerationForm(
+            description: GenerationPromptPolicy.truncate(description),
+            style: style,
+            quality: quality,
+            referenceImages: []
+        )
+    }
+
+    private func applyGenerationHistoryDraft(
+        _ form: GenerationForm,
+        referenceReselectionCount: Int
+    ) {
+        descriptionText = form.description
+        selectedStyle = StylePreset(rawValue: form.style) ?? .unspecified
+        selectedQuality = form.quality
+        referenceImages = []
+        self.referenceReselectionCount = min(
+            MakerReferenceImagePolicy.maximumCount,
+            max(0, referenceReselectionCount)
+        )
+        reselectedReferenceImagePaths.removeAll()
+        referenceImageIssue = self.referenceReselectionCount > 0
+            ? .reselectionRequired(self.referenceReselectionCount)
+            : nil
+    }
+
+    func openGenerationHistorySession() {
+        guard let session = generationHistoryDetail?.session,
+              session.availability == .available,
+              session.canOpen,
+              let url = AgentSessionDeepLink.url(
+                  source: .codex,
+                  sessionID: session.routableSessionID
+              )
+        else {
+            statusText = APCLocalization.text(.studioHistorySessionUnavailable)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await agentSessionRouteOpener(.url(url))
+            statusText = outcome.didOpen
+                ? APCLocalization.text(.studioHistorySessionOpened)
+                : APCLocalization.text(.studioHistorySessionOpenFailed)
+        }
+    }
+
+    func resumeSelectedGenerationHistory() {
+        guard canResumeSelectedGenerationHistory,
+              let jobID = generationHistoryDetail?.jobID
+        else {
+            statusText = generationSession.isActive
+                ? generationStateTitle
+                : APCLocalization.text(.studioResumeUnavailable)
+            return
+        }
+        recordMakerUserMutation()
+        let instruction = generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        statusText = APCLocalization.text(.studioResumeStarting)
+
+        Task {
+            do {
+                var parameters: [String: Any] = [
+                    "job_id": jobID,
+                    "request_id": UUID().uuidString,
+                ]
+                if !instruction.isEmpty {
+                    parameters["instruction"] = instruction
+                }
+                let result = try await requestPetCore(
+                    method: "generation.resume",
+                    params: parameters
+                )
+                guard let object = result as? [String: Any],
+                      object["job_id"] as? String == jobID
+                else {
+                    throw PetCoreClientError.invalidResponse
+                }
+
+                // The resumed job is now the authoritative latest job. Read
+                // its complete recovery projection so selecting an older
+                // history row replaces the currently displayed terminal job
+                // without inventing a form or dropping its message history.
+                let latestResult = try await requestPetCore(method: "generation.latest")
+                let data = try JSONSerialization.data(withJSONObject: latestResult)
+                let snapshot = try JSONDecoder().decode(
+                    LatestGenerationSessionSnapshot.self,
+                    from: data
+                )
+                guard snapshot.jobID == jobID,
+                      let restore = GenerationSessionRestore(snapshot: snapshot)
+                else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                let sanitizedRestore = sanitizedGenerationRestore(restore)
+                _ = reduceGeneration(.restore(sanitizedRestore))
+                applyRestoredGenerationForm(
+                    sanitizedRestore.submittedForm,
+                    referenceReselectionCount: sanitizedRestore.referenceReselectionCount
+                )
+                generationReplyText = ""
+                selection = .maker
+                statusText = APCLocalization.text(.studioResumeAccepted)
+                await refreshGenerationHistory()
+                await loadGenerationHistoryDetail(jobID: jobID)
+                await loadGenerationHistoryMessages(jobID: jobID)
+            } catch {
+                statusText = APCLocalization.format(
+                    .studioResumeFailedFormat,
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    func sendSelectedGenerationHistoryReply() {
+        let content = generationReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty,
+              let detail = selectedGenerationHistoryDetail,
+              detail.capabilities?.canReply == true,
+              let jobID = detail.jobID
+        else { return }
+        generationReplyText = ""
+        Task {
+            do {
+                _ = try await requestPetCore(
+                    method: "generation.reply",
+                    params: [
+                        "job_id": jobID,
+                        "content": content,
+                        "request_id": UUID().uuidString,
+                    ]
+                )
+                await refreshGenerationHistory()
+                await loadGenerationHistoryDetail(jobID: jobID)
+                await loadGenerationHistoryMessages(jobID: jobID)
+                await refreshGenerationSessionAfterExternalAction(jobID: jobID)
+            } catch {
+                generationReplyText = content
+                statusText = "发送失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func cancelSelectedGenerationHistory() {
+        guard let detail = selectedGenerationHistoryDetail,
+              detail.capabilities?.canCancel == true,
+              let jobID = detail.jobID
+        else { return }
+        statusText = "正在取消生成"
+        Task {
+            do {
+                _ = try await requestPetCore(
+                    method: "generation.cancel",
+                    params: ["job_id": jobID],
+                    timeout: .seconds(15)
+                )
+                await refreshGenerationHistory()
+                await loadGenerationHistoryDetail(jobID: jobID)
+                await loadGenerationHistoryMessages(jobID: jobID)
+                await refreshGenerationSessionAfterExternalAction(jobID: jobID)
+            } catch {
+                statusText = "取消失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func refreshGenerationSessionAfterExternalAction(jobID: String) async {
+        do {
+            let result = try await requestPetCore(method: "generation.latest")
+            let data = try JSONSerialization.data(withJSONObject: result)
+            let snapshot = try JSONDecoder().decode(
+                LatestGenerationSessionSnapshot.self,
+                from: data
+            )
+            guard snapshot.jobID == jobID,
+                  let restore = GenerationSessionRestore(snapshot: snapshot)
+            else { return }
+            _ = reduceGeneration(.restore(sanitizedGenerationRestore(restore)))
+        } catch {
+            diagnostics.logFailure(
+                error,
+                category: "generation",
+                event: "generation_selected_action_refresh_failed",
+                throttleKey: "generation_selected_action_refresh_failed",
+                minimumInterval: 5
+            )
+        }
     }
 
     func fetchPetHistory(
@@ -3612,6 +4660,7 @@ final class AppStore: ObservableObject {
         if groupSessionsByAgentChanged || sessionGroupDisplayChanged {
             overlayAgentGroupExpansionOverrides.removeAll()
             overlayStandaloneStackExpansionOverride = nil
+            overlayStandaloneStackDisclosureDirection = .expanding
         }
         if groupSessionsByAgentChanged || sessionGroupDisplayChanged || bubbleFontScaleChanged {
             overlayController.updateLayout()
@@ -3716,6 +4765,12 @@ final class AppStore: ObservableObject {
             return false
         }
 
+        // A successful pet.activate response means PetCore has committed the
+        // exclusive active-pet transaction. Reflect that committed result
+        // before requesting the broader snapshot so a transient refresh
+        // failure cannot put the Enable button back and invite another click.
+        applyCommittedPetActivation(pet.id)
+
         do {
             try await refreshSnapshot()
             statusText = "已启用 \(pet.name)"
@@ -3724,6 +4779,17 @@ final class AppStore: ObservableObject {
             await recoverSnapshot()
         }
         return true
+    }
+
+    private func applyCommittedPetActivation(_ petID: String) {
+        guard pets.contains(where: { $0.id == petID }) else { return }
+        let nextPets = pets.map { pet in
+            var nextPet = pet
+            nextPet.active = pet.id == petID
+            return nextPet
+        }
+        guard nextPets != pets else { return }
+        pets = nextPets
     }
 
     func dismissOnboardingForCurrentLaunch() {
@@ -4355,8 +5421,56 @@ final class AppStore: ObservableObject {
         launchConnectionOperation(.init(kind: .check, sources: [source]))
     }
 
+    func checkConnections(_ sources: [AgentSource]) {
+        launchConnectionOperation(.init(kind: .check, sources: sources))
+    }
+
     func checkAllConnections() {
         launchConnectionOperation(.init(kind: .check, sources: AgentSource.allCases))
+    }
+
+    /// Requests one full four-Agent runtime check for this App session.
+    ///
+    /// The Connections page may appear before the authoritative startup
+    /// snapshot or release connector convergence has finished. Keep the UI
+    /// responsive, publish the startup light projection immediately, and
+    /// begin the heavier host probes only after all four sources are loaded
+    /// and the serialized connection-operation gate is available.
+    func requestAutomaticConnectionCheckOnFirstPresentation() {
+        guard !automaticConnectionCheckRequested else { return }
+        automaticConnectionCheckRequested = true
+
+        automaticConnectionCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+
+                if self?.hasLoadedAllConnectionSources == true,
+                   self?.canStartConnectionOperation == true {
+                    let alreadyCurrent = self?.hasCurrentRuntimeConnectionStatusForEverySource
+                        == true
+                    self?.automaticConnectionCheckTask = nil
+                    if !alreadyCurrent {
+                        self?.checkAllConnections()
+                    }
+                    return
+                }
+
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            self?.automaticConnectionCheckTask = nil
+        }
+    }
+
+    private var hasLoadedAllConnectionSources: Bool {
+        AgentSource.allCases.allSatisfy { source in
+            connections.contains(where: { $0.source == source })
+        }
+    }
+
+    private var hasCurrentRuntimeConnectionStatusForEverySource: Bool {
+        AgentSource.allCases.allSatisfy { source in
+            connections.first(where: { $0.source == source })?.checkMode == .runtime
+        }
     }
 
     static func connectionOperationParameters(
@@ -4460,6 +5574,9 @@ final class AppStore: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: result)
             connections = try JSONDecoder().decode([AgentConnectionStatus].self, from: data)
             sortConnections()
+            reconcileProductConvergenceConnectorAttention(
+                afterChecking: Set(sources)
+            )
             return "连接检查完成"
         }
 
@@ -4470,6 +5587,9 @@ final class AppStore: ObservableObject {
             )
             try updateConnectionStatus(from: result)
         }
+        reconcileProductConvergenceConnectorAttention(
+            afterChecking: Set(sources)
+        )
         return sources.count == 1
             ? "\(sources[0].title) 检查完成"
             : "\(sources.count) 个 Agent 连接检查完成"
@@ -4956,6 +6076,11 @@ final class AppStore: ObservableObject {
         overlayController.updateLayout()
     }
 
+    func updateOverlayBubbleAnchorDirection(_ direction: OverlayBubbleAnchorDirection) {
+        guard overlayBubbleAnchorDirection != direction else { return }
+        overlayBubbleAnchorDirection = direction
+    }
+
     func updateOverlayPetVisualEnvelope(
         _ envelope: OverlayPetVisualEnvelope?,
         petID: String,
@@ -5058,7 +6183,57 @@ final class AppStore: ObservableObject {
                   $0 + $1.representedSessionCount
               }) > 1
         else { return }
-        overlayStandaloneStackExpansionOverride = !overlayStandaloneStackIsExpanded
+        let expands = !overlayStandaloneStackIsExpanded
+        overlayStandaloneStackDisclosureDirection = expands ? .expanding : .collapsing
+        overlayStandaloneStackExpansionOverride = expands
+        overlayController.updateLayout(animateBubble: true)
+    }
+
+    var overlayBubbleDisclosureAction: OverlayBubbleDisclosureAction? {
+        OverlayBubbleDisclosureAction.resolve(
+            groupSessionsByAgent: behavior.groupSessionsByAgent,
+            sessionCount: overlayBubbleSessionCount,
+            bubbleDismissed: overlayBubbleDismissed,
+            standaloneStackExpanded: overlayStandaloneStackIsExpanded,
+            standaloneStackDirection: overlayStandaloneStackDisclosureDirection
+        )
+    }
+
+    /// Moves the pet-side disclosure control by exactly one visual level.
+    /// A flat multi-session tray therefore travels through the folded card in
+    /// both directions: expanded -> folded -> hidden and hidden -> folded ->
+    /// expanded. Pet-body clicks continue to use `toggleOverlayBubble()` and
+    /// retain their direct visibility toggle.
+    func stepOverlayBubbleDisclosure() {
+        guard let action = overlayBubbleDisclosureAction else {
+            overlayController.updateLayout()
+            return
+        }
+        let wasDismissed = overlayBubbleDismissed
+        switch action {
+        case .revealBubble:
+            overlayBubbleDismissed = false
+        case .revealCollapsedStandaloneStack:
+            overlayStandaloneStackDisclosureDirection = .expanding
+            overlayStandaloneStackExpansionOverride = false
+            overlayBubbleDismissed = false
+        case .expandStandaloneStack:
+            overlayStandaloneStackDisclosureDirection = .expanding
+            overlayStandaloneStackExpansionOverride = true
+        case .collapseStandaloneStack:
+            overlayStandaloneStackDisclosureDirection = .collapsing
+            overlayStandaloneStackExpansionOverride = false
+        case .dismissBubble:
+            overlayBubbleDismissed = true
+        }
+        if overlayBubbleDismissed != wasDismissed {
+            diagnostics.log(
+                .info,
+                category: "overlay",
+                event: "overlay_bubble_toggled",
+                metadata: ["collapsed": .bool(overlayBubbleDismissed)]
+            )
+        }
         overlayController.updateLayout(animateBubble: true)
     }
 
@@ -5093,10 +6268,12 @@ final class AppStore: ObservableObject {
         let promotedIDs = Set(promotions.map(\.id))
         if !promotedIDs.isEmpty {
             overlayStandaloneSessionOrder.removeAll { promotedIDs.contains($0) }
-            // PetCore gives us attention/latest-first. Append in reverse so
-            // the newest promotion becomes the final card nearest the pet.
+            // PetCore gives us attention/latest-first. Keep that same reading
+            // direction in the App: the folded foreground card is also the
+            // first card when the tray expands. A true activation epoch moves
+            // once to the front; ordinary event churn keeps the existing slot.
             for entry in promotions.reversed() {
-                overlayStandaloneSessionOrder.append(entry.id)
+                overlayStandaloneSessionOrder.insert(entry.id, at: 0)
                 overlayStandaloneSessionActivationIDs[entry.id] = entry.activationID
             }
         }
@@ -5105,9 +6282,9 @@ final class AppStore: ObservableObject {
         // closed session. Retain a small history so it can recover its slot.
         let maximumRememberedSessions = 64
         if overlayStandaloneSessionOrder.count > maximumRememberedSessions {
-            let removed = overlayStandaloneSessionOrder.dropLast(maximumRememberedSessions)
+            let removed = overlayStandaloneSessionOrder.dropFirst(maximumRememberedSessions)
             overlayStandaloneSessionOrder = Array(
-                overlayStandaloneSessionOrder.suffix(maximumRememberedSessions)
+                overlayStandaloneSessionOrder.prefix(maximumRememberedSessions)
             )
             for id in removed {
                 overlayStandaloneSessionActivationIDs[id] = nil
@@ -5213,7 +6390,7 @@ final class AppStore: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.png, .webP]
+        panel.allowedContentTypes = [.png, .jpeg, .webP]
 
         guard panel.runModal() == .OK else { return }
         addReferenceImageURLs(panel.urls)
@@ -5778,6 +6955,51 @@ final class AppStore: ObservableObject {
         status.blockingItems.count
     }
 
+    private func reconcileProductConvergenceConnectorAttention(
+        afterChecking checkedSources: Set<AgentSource>
+    ) {
+        guard productConvergenceTask == nil,
+              case let .needsAttention(.connectors(attentionIssues)) =
+                appUpdateConvergenceState
+        else { return }
+
+        let resolvedSources: Set<AgentSource> = Set(connections.lazy.compactMap {
+            status -> AgentSource? in
+            guard checkedSources.contains(status.source),
+                  ProductConvergenceConnectionRecoveryPolicy.resolvesAttention(status)
+            else { return nil }
+            return status.source
+        })
+        guard !resolvedSources.isEmpty else { return }
+
+        let remainingIssues = attentionIssues.filter {
+            !resolvedSources.contains($0.source)
+        }
+        let fullyResolved = remainingIssues.isEmpty
+        appUpdateConvergenceState = fullyResolved
+            ? .idle
+            : .needsAttention(.connectors(remainingIssues))
+        diagnostics.log(
+            .notice,
+            category: "update",
+            event: "product_convergence_attention_reconciled_by_runtime_check",
+            metadata: [
+                "resolved_sources": .string(
+                    resolvedSources
+                        .sorted { $0.rawValue < $1.rawValue }
+                        .map { $0.rawValue }
+                        .joined(separator: ",")
+                ),
+                "remaining_sources": .string(
+                    remainingIssues.map { $0.source.rawValue }.joined(separator: ",")
+                ),
+            ]
+        )
+        if fullyResolved {
+            scheduleProductConvergence(force: true)
+        }
+    }
+
     private func sortConnections() {
         connections.sort {
             let lhs = AgentSource.allCases.firstIndex(of: $0.source) ?? 0
@@ -5895,7 +7117,10 @@ final class AppStore: ObservableObject {
     }
 
     private static func isUserMutationRPC(_ method: String) -> Bool {
-        method.hasPrefix("generation.")
+        if method == "generation.history.list" || method == "generation.history.detail" {
+            return false
+        }
+        return method.hasPrefix("generation.")
             || method.hasPrefix("pet.")
             || method.hasPrefix("petpack.")
             || method.hasPrefix("connections.")
@@ -5920,9 +7145,11 @@ final class AppStore: ObservableObject {
              "petpack.seed_bundled",
              "generation.start",
              "generation.retry",
+             "generation.resume",
              "generation.edit",
              "generation.reply",
              "generation.cancel",
+             "generation.history.delete",
              "connections.repair",
              "connections.uninstall",
              "connections.refresh_installed",
@@ -6036,6 +7263,7 @@ private struct StateSnapshot: Codable {
 private struct GenerationMessagesSnapshot: Codable {
     var revision: String?
     var changed: Bool?
+    var heartbeatAt: String?
     var messages: [GenerationMessage]
     var resultPetID: String?
     var revisionID: String?
@@ -6052,6 +7280,7 @@ private struct GenerationMessagesSnapshot: Codable {
     enum CodingKeys: String, CodingKey {
         case revision
         case changed
+        case heartbeatAt = "heartbeat_at"
         case messages
         case resultPetID = "result_pet_id"
         case revisionID = "revision_id"

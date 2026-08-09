@@ -7,13 +7,20 @@ import Testing
 @Suite("Maker reference image policy")
 struct MakerReferenceImagePolicyTests {
     @Test
-    func acceptsOnlyFourBoundedPNGOrWebPInputsBeforeStartingAJob() throws {
+    func acceptsOnlyFourBoundedPNGJPGOrWebPInputsBeforeStartingAJob() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let png = try pngData()
-        let urls = try (0 ..< 5).map { index in
-            let url = directory.appendingPathComponent("reference-\(index).png")
-            try png.write(to: url)
+        let jpeg = try jpegData()
+        let urls = try [
+            ("reference-0.png", png),
+            ("reference-1.jpg", jpeg),
+            ("reference-2.jpeg", jpeg),
+            ("reference-3.png", png),
+            ("reference-4.jpg", jpeg),
+        ].map { name, data in
+            let url = directory.appendingPathComponent(name)
+            try data.write(to: url)
             return url
         }
 
@@ -30,11 +37,18 @@ struct MakerReferenceImagePolicyTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let png = try pngData()
 
-        let jpegName = directory.appendingPathComponent("reference.jpg")
-        try png.write(to: jpegName)
+        let mismatchedJPEG = directory.appendingPathComponent("reference.jpg")
+        try png.write(to: mismatchedJPEG)
         #expect(MakerReferenceImagePolicy.admit(
             existingPaths: [],
-            urls: [jpegName]
+            urls: [mismatchedJPEG]
+        ).issue == .invalidContent)
+
+        let gif = directory.appendingPathComponent("reference.gif")
+        try Data("GIF89a".utf8).write(to: gif)
+        #expect(MakerReferenceImagePolicy.admit(
+            existingPaths: [],
+            urls: [gif]
         ).issue == .unsupportedFormat)
 
         let mismatchedWebP = directory.appendingPathComponent("reference.webp")
@@ -60,7 +74,7 @@ struct MakerReferenceImagePolicyTests {
         #expect(APCLocalizedPresentation.referenceImageIssue(.tooMany, locale: "en")
             == "You can add at most 4 reference images.")
         #expect(APCLocalizedPresentation.referenceImageIssue(.unsupportedFormat, locale: "zh-Hans")
-            == "请选择 PNG 或 WebP 参考图。")
+            == "请选择 PNG、JPG 或 WebP 参考图。")
         #expect(APCLocalization.format(
             .studioMessageCreateRequestedFormat,
             locale: "en",
@@ -87,6 +101,8 @@ struct MakerReferenceImagePolicyTests {
         try pngData().write(to: safe)
         let original = root.appendingPathComponent("original.png")
         try pngData().write(to: original)
+        let safeJPEG = references.appendingPathComponent("reference-01.jpg")
+        try jpegData().write(to: safeJPEG)
 
         #expect(MakerReferenceImagePolicy.validatedRecoveryProjectionPath(
             safe.path,
@@ -108,6 +124,11 @@ struct MakerReferenceImagePolicyTests {
             jobID: "job-safe",
             index: 1
         ) == nil)
+        #expect(MakerReferenceImagePolicy.validatedRecoveryProjectionPath(
+            safeJPEG.path,
+            jobID: "job-safe",
+            index: 1
+        ) == safeJPEG.path)
     }
 
     @Test
@@ -156,7 +177,8 @@ struct MakerReferenceImagePolicyTests {
                     ]
                 }
                 return ["job_id": "job_create"]
-            }
+            },
+            initialPetStudioCodexAvailability: .available
         )
 
         store.updateGenerationDescription("A calm pixel pet")
@@ -190,6 +212,43 @@ struct MakerReferenceImagePolicyTests {
 
     @MainActor
     @Test
+    func missingCodexIsShownBeforeAJobAndBlocksCreation() async {
+        var generationStartCount = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, _, _ in
+                if method == "codex.app_server.probe" {
+                    return [
+                        "initialized": false,
+                        "mode": "missing",
+                        "error_info": ["kind": "not_configured"],
+                    ]
+                }
+                if method == "generation.start" {
+                    generationStartCount += 1
+                }
+                return ["job_id": "should_not_start"]
+            }
+        )
+
+        store.updateGenerationDescription("A quiet fox")
+        await store.refreshPetStudioCodexAvailability()
+
+        #expect(store.petStudioCodexAvailability == .missing)
+        #expect(!store.canStartGeneration)
+        store.startGeneration()
+        await Task.yield()
+        #expect(generationStartCount == 0)
+        #expect(store.generationSession.state == .idle)
+    }
+
+    @MainActor
+    @Test
     func historicalEditReceiptReconcilesTheSelectedBaselineIdentity() async {
         let receiptGate = HistoricalEditReceiptGate()
         let baselineRevisionID = "rev_11111111111111111111111111111111"
@@ -210,7 +269,8 @@ struct MakerReferenceImagePolicyTests {
                 default:
                     return [:]
                 }
-            }
+            },
+            initialPetStudioCodexAvailability: .available
         )
         let currentHead = PetSummary(
             id: "pet_historicaltiming",
@@ -327,6 +387,25 @@ struct MakerReferenceImagePolicyTests {
             bitsPerPixel: 0
         ))
         return try #require(bitmap.representation(using: .png, properties: [:]))
+    }
+
+    private func jpegData() throws -> Data {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        return try #require(bitmap.representation(
+            using: .jpeg,
+            properties: [.compressionFactor: 0.9]
+        ))
     }
 }
 

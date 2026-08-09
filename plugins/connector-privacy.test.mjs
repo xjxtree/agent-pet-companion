@@ -55,7 +55,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-events-v11");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-events-v13");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
     const piActivity = await importTemplate(
       "./pi/agent-pet-companion.ts.tpl",
@@ -190,6 +190,25 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       }),
       "PATH=/usr/bin API_KEY=secret-command",
       "Pi explicit command context must retain same-line environment assignments",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "tool_execution_start",
+        args: { path: "Sources/App.swift" },
+      }),
+      "Sources/App.swift",
+      "Pi tool_execution_start must read the host's args field",
+    );
+    assert.equal(
+      piActivity.activityText({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Inspecting the Swift view" }],
+        },
+      }),
+      "Inspecting the Swift view",
+      "Pi finalized thinking blocks must read ThinkingContent.thinking",
     );
     const sensitiveIdentifierTokens = [
       "env", "environment", "header", "headers", "auth", "oauth", "authentication",
@@ -351,6 +370,33 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       },
       piContext,
     );
+    await piHandlers.get("tool_execution_start")(
+      {
+        type: "tool_execution_start",
+        toolName: "read",
+        toolCallId: "opaque-pi-read",
+        args: { path: "Sources/App.swift" },
+      },
+      piContext,
+    );
+    await piHandlers.get("tool_execution_start")(
+      {
+        type: "tool_execution_start",
+        toolName: "read",
+        toolCallId: "opaque-pi-malformed",
+      },
+      piContext,
+    );
+    await piHandlers.get("message_end")(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Inspecting the Swift view" }],
+        },
+      },
+      piContext,
+    );
     await piHandlers.get("tool_execution_end")(
       {
         type: "tool_execution_end",
@@ -401,10 +447,54 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       && payload.activity_content === "secret-tool-output"
     )));
     assert.ok(piPayloads.some((payload) => (
+      payload.type === "tool_execution_start"
+      && payload.activity_content === "Sources/App.swift"
+      && payload.parse_warnings === undefined
+    )));
+    assert.ok(piPayloads.some((payload) => (
+      payload.type === "tool_execution_start"
+      && payload.tool_call_id === "opaque-pi-malformed"
+      && payload.parse_warnings?.some((warning) => (
+        warning.field === "tool_arguments"
+        && warning.failure === "missing_required"
+      ))
+    )));
+    assert.ok(piPayloads.some((payload) => (
+      payload.type === "message_end"
+      && payload.activity_kind === "thinking"
+      && payload.activity_content === "Inspecting the Swift view"
+    )));
+    assert.ok(piPayloads.some((payload) => (
       payload.type === "session_info_changed"
       && payload.session_title === "Generated Pi title"
       && payload.message_content === undefined
     )));
+
+    const piChildStart = captured.length;
+    const piChildContext = {
+      sessionManager: {
+        getSessionId: () => "pi-child-session",
+        getSessionName: () => "must-not-cross-child-title",
+        getHeader: () => ({ parentSession: "/private/root-session.jsonl" }),
+      },
+    };
+    await piHandlers.get("input")(
+      { type: "input", text: "must-not-cross-child-prompt" },
+      piChildContext,
+    );
+    await piHandlers.get("tool_call")(
+      { type: "tool_call", toolName: "bash", input: { command: "must-not-cross-child-tool" } },
+      piChildContext,
+    );
+    const piChildPayloads = captured
+      .slice(piChildStart)
+      .filter((item) => item.source === "pi")
+      .map((item) => item.payload);
+    assert.equal(piChildPayloads.length, 1);
+    assert.equal(piChildPayloads[0].type, "session.child");
+    assert.equal(piChildPayloads[0].session_id, "pi-child-session");
+    assert.equal(JSON.stringify(piChildPayloads).includes("/private/root-session.jsonl"), false);
+    assert.equal(JSON.stringify(piChildPayloads).includes("must-not-cross"), false);
 
     const productionOpenCode = await importTemplate(
       "./opencode/agent-pet-companion.js.tpl",
@@ -426,7 +516,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
         "boundedActivity",
       ],
     );
-    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-events-v13");
+    assert.equal(opencode.APC_OPENCODE_CONTRACT_VERSION, "opencode-v1.18.4-events-v16");
     assert.equal(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.length, 21);
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("tool.definition"));
     assert.ok(opencode.APC_OPENCODE_PLUGIN_HOOK_INVENTORY.includes("dispose"));
@@ -489,10 +579,48 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       "OpenCode envelope metadata must not be mistaken for environment credentials",
     );
 
-    const hooks = await opencode.AgentPetCompanion({
+    let releaseExistingSessionList;
+    let existingSessionListRequested = false;
+    const hooksPromise = opencode.AgentPetCompanion({
       directory: "/secret/project",
       worktree: "/secret/worktree",
+      client: {
+        session: {
+          list: () => new Promise((resolve) => {
+            existingSessionListRequested = true;
+            releaseExistingSessionList = () => resolve({
+              data: [{
+                id: "opencode-existing-child",
+                parentID: "opencode-root",
+                title: "must-not-cross-existing-child-title",
+              }],
+            });
+          }),
+        },
+      },
     });
+    let hooksResolvedBeforeLineage = false;
+    void hooksPromise.then(() => { hooksResolvedBeforeLineage = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(hooksResolvedBeforeLineage, true);
+    const hooks = await hooksPromise;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(existingSessionListRequested, true);
+    let eventResolvedBeforeLineage = false;
+    const gatedExistingChildEvent = hooks.event({
+      event: {
+        type: "session.status",
+        properties: {
+          sessionID: "opencode-existing-child",
+          status: { type: "busy" },
+        },
+      },
+    });
+    void gatedExistingChildEvent.then(() => { eventResolvedBeforeLineage = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(eventResolvedBeforeLineage, false);
+    releaseExistingSessionList();
+    await gatedExistingChildEvent;
     const expectedOpenCodeHooks = [
       "event",
       "dispose",
@@ -729,6 +857,29 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       { sessionID: "opencode-session", messageID: "message", partID: "part" },
       { text: "Visible direct OpenCode answer" },
     );
+    await hooks.event({
+      event: {
+        type: "session.created",
+        properties: {
+          info: {
+            id: "opencode-live-child",
+            parentID: "opencode-root",
+            title: "must-not-cross-live-child-title",
+          },
+        },
+      },
+    });
+    await hooks["chat.message"](
+      { sessionID: "opencode-live-child", messageID: "child-message" },
+      { parts: [{ type: "text", text: "must-not-cross-live-child-prompt" }] },
+    );
+    await hooks.event({
+      event: {
+        type: "session.status",
+        properties: { sessionID: "opencode-live-child", status: { type: "busy" } },
+      },
+    });
+    await hooks.dispose();
 
     const opencodePayloads = captured
       .filter((item) => item.source === "opencode")
@@ -767,6 +918,9 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       "secret-tool-metadata",
       "secret-compact-context",
       "secret-compact-prompt",
+      "must-not-cross-existing-child-title",
+      "must-not-cross-live-child-title",
+      "must-not-cross-live-child-prompt",
       "/secret/project",
       "/secret/worktree",
     ]) {
@@ -833,6 +987,13 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     assert.ok(opencodePayloads.filter((payload) => payload.input?.callID).every((payload) => (
       /^[0-9a-f]{64}$/.test(payload.input.callID)
     )));
+    for (const childID of ["opencode-existing-child", "opencode-live-child"]) {
+      const childPayloads = opencodePayloads.filter((payload) => (
+        payload.properties?.sessionID === childID
+      ));
+      assert.equal(childPayloads.length, 1);
+      assert.equal(childPayloads[0].type, "session.child");
+    }
 
     const adversarial = await importTemplate(
       "./opencode/agent-pet-companion.js.tpl",
@@ -846,7 +1007,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     );
     await adversarialHooks.event({ event: {
       type: "message.updated",
-      properties: { info: { id: "pending-error-answer", sessionID: "opencode-error-order", role: "assistant" } },
+      properties: { info: { id: "pending-error-answer", sessionID: "opencode-error-order", parentID: "error-user", role: "assistant" } },
     } });
     await adversarialHooks.event({ event: {
       type: "message.part.updated",

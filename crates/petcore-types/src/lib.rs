@@ -9,8 +9,8 @@ pub const MAX_STATE_DURATION_MS: u32 = 5_000;
 pub const MAX_PERIODIC_COOLDOWN_MS: u32 = 86_400_000;
 pub const MIN_FRAMES_PER_STATE: usize = 2;
 pub const MAX_FRAMES_PER_STATE: usize = 40;
-pub const MIN_OVERLAY_DISPLAY_WIDTH_PT: f64 = 80.0;
-pub const MAX_OVERLAY_DISPLAY_WIDTH_PT: f64 = 224.0;
+pub const MIN_OVERLAY_DISPLAY_WIDTH_PT: f64 = 100.0;
+pub const MAX_OVERLAY_DISPLAY_WIDTH_PT: f64 = 300.0;
 pub const DEFAULT_OVERLAY_DISPLAY_WIDTH_PT: f64 = 112.0;
 pub const OVERLAY_DISPLAY_WIDTH_STEP_PT: f64 = 1.0;
 pub const OVERLAY_PLACEMENT_GRID_UNITS_PER_POINT: f64 = 256.0;
@@ -608,7 +608,8 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             appearance_theme: Option<AppearanceTheme>,
             bubble_font_scale: Option<BubbleFontScale>,
             click_menu: Option<bool>,
-            mouse_passthrough: Option<bool>,
+            #[serde(rename = "mouse_passthrough")]
+            _mouse_passthrough: Option<bool>,
             auto_hide: Option<bool>,
             group_sessions_by_agent: Option<bool>,
             session_group_display: Option<SessionGroupDisplay>,
@@ -646,7 +647,9 @@ impl<'de> Deserialize<'de> for BehaviorSettings {
             appearance_theme: raw.appearance_theme.unwrap_or(defaults.appearance_theme),
             bubble_font_scale: raw.bubble_font_scale.unwrap_or(defaults.bubble_font_scale),
             click_menu: raw.click_menu.unwrap_or(defaults.click_menu),
-            mouse_passthrough: raw.mouse_passthrough.unwrap_or(defaults.mouse_passthrough),
+            // Kept in the serialized shape for mixed-version compatibility,
+            // but legacy `false` values no longer change runtime behavior.
+            mouse_passthrough: true,
             auto_hide: raw.auto_hide.unwrap_or(defaults.auto_hide),
             group_sessions_by_agent: raw
                 .group_sessions_by_agent
@@ -865,6 +868,39 @@ pub enum GenerationJobStatus {
     Canceled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationInputOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationInputQuestion {
+    pub id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub options: Vec<GenerationInputOption>,
+    #[serde(default)]
+    pub allows_freeform: bool,
+}
+
+/// Closed, user-presentable metadata for one Maker timeline entry. Raw App
+/// Server requests, tool payloads, paths, and hidden reasoning never cross
+/// this boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "payload_type", rename_all = "snake_case")]
+pub enum GenerationMessagePayload {
+    InputRequest {
+        request_id: String,
+        questions: Vec<GenerationInputQuestion>,
+    },
+    Result {
+        result_pet_id: String,
+        revision_id: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationMessageRecord {
     pub id: String,
@@ -876,8 +912,28 @@ pub struct GenerationMessageRecord {
     pub content: String,
     pub progress: f64,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<GenerationMessagePayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<serde_json::Value>,
+}
+
+/// PetCore-authoritative actions for one Maker task. Swift renders these
+/// values directly instead of reconstructing lifecycle policy from copy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationSessionCapabilities {
+    #[serde(default)]
+    pub can_reply: bool,
+    #[serde(default)]
+    pub can_resume: bool,
+    #[serde(default)]
+    pub can_cancel: bool,
+    #[serde(default)]
+    pub can_open_result: bool,
+    #[serde(default)]
+    pub can_open_session: bool,
+    #[serde(default)]
+    pub can_delete: bool,
 }
 
 /// Compact, user-presentable evidence from the exact `.petpack` validation
@@ -957,6 +1013,158 @@ pub struct PetHistorySnapshot {
     pub truncated: bool,
 }
 
+/// Newest-first, privacy-bounded task summary for the AI Pet Maker history.
+/// Source reference paths, task workspaces, provider payloads, and App Server
+/// session IDs are intentionally excluded from this list projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationStudioHistoryRecord {
+    pub job_id: String,
+    pub status: GenerationJobStatus,
+    pub operation: GenerationOperation,
+    #[serde(default)]
+    pub visible_title: String,
+    pub brief_preview: String,
+    pub style: String,
+    pub quality: QualityLevel,
+    pub reference_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_pet_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_of_job_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub progress: f64,
+    #[serde(default)]
+    pub recoverable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    #[serde(default)]
+    pub cancellation_pending: bool,
+    #[serde(default)]
+    pub capabilities: GenerationSessionCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationStudioHistorySnapshot {
+    pub ok: bool,
+    pub jobs: Vec<GenerationStudioHistoryRecord>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationMessagesPage {
+    pub ok: bool,
+    pub job_id: String,
+    pub messages: Vec<GenerationMessageRecord>,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_sequence: Option<u64>,
+    pub revision: String,
+}
+
+/// Typed receipt for the irreversible removal of one terminal AI Pet Maker
+/// task. A completed task's published Pet Library result is deliberately
+/// retained; only the private task record, message stream, and workspace are
+/// removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationStudioHistoryDeleteReceipt {
+    pub ok: bool,
+    pub job_id: String,
+    pub deleted_status: GenerationJobStatus,
+    pub deleted_message_count: usize,
+    pub workspace_removed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_result_pet_id: Option<String>,
+    pub retry_children_relinked: usize,
+    pub state_revision: String,
+}
+
+/// Live App Server availability for a Pet Studio thread. A deep link is
+/// exposed only for `available`; persisted IDs alone are never trusted as a
+/// navigation target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationStudioSessionAvailability {
+    NotCreated,
+    Available,
+    Archived,
+    Missing,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationStudioSessionNavigation {
+    pub availability: GenerationStudioSessionAvailability,
+    pub can_open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routable_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Bounded task details for the AI Pet Maker. The complete transcript remains
+/// owned by Codex/ChatGPT; this projection carries only the information needed
+/// to understand the task without leaving the App.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerationStudioHistoryDetail {
+    pub ok: bool,
+    pub found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<GenerationJobStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<GenerationOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<QualityLevel>,
+    pub reference_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_pet_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_of_job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_summary: Option<GenerationValidationSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub progress: f64,
+    #[serde(default)]
+    pub recoverable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    #[serde(default)]
+    pub cancellation_pending: bool,
+    pub progress_messages: Vec<GenerationMessageRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_codex_excerpt: Option<String>,
+    pub message_count: usize,
+    pub messages_truncated: bool,
+    pub session: GenerationStudioSessionNavigation,
+    #[serde(default)]
+    pub capabilities: GenerationSessionCapabilities,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationSessionSnapshot {
     pub job_id: String,
@@ -979,6 +1187,20 @@ pub struct GenerationSessionSnapshot {
     pub baseline_revision_id: Option<String>,
     pub owner_instance_id: Option<String>,
     pub heartbeat_at: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub recoverable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    #[serde(default)]
+    pub cancellation_pending: bool,
+    #[serde(default)]
+    pub capabilities: GenerationSessionCapabilities,
     pub message_revision: String,
     pub messages: Vec<GenerationMessageRecord>,
     pub input_request: Option<GenerationMessageRecord>,
@@ -1614,6 +1836,17 @@ mod tests {
             "baseline_revision_id": "revision_1",
             "owner_instance_id": "instance_1",
             "heartbeat_at": "2026-07-21T00:00:00Z",
+            "started_at": "2026-07-21T00:00:00Z",
+            "recoverable": false,
+            "cancellation_pending": false,
+            "capabilities": {
+                "can_reply": false,
+                "can_resume": false,
+                "can_cancel": true,
+                "can_open_result": false,
+                "can_open_session": true,
+                "can_delete": false
+            },
             "message_revision": "4",
             "messages": [],
             "input_request": null

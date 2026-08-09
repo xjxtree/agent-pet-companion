@@ -7,11 +7,13 @@ REAL_USER_HOME="${HOME:-}"
 . "$ROOT_DIR/script/validation_helpers.sh"
 apc_use_isolated_home "$TMP_DIR"
 JOB_ID=""
+LIFECYCLE_JOB_ID=""
 PETCORE_PID=""
 ARTIFACTS_PRESERVED=0
 GENERATION_POLL_SECONDS="${APC_REAL_APP_SERVER_POLL_SECONDS:-0.5}"
-GENERATION_POLL_COUNT="${APC_REAL_APP_SERVER_POLL_COUNT:-18600}"
+GENERATION_POLL_COUNT="${APC_REAL_APP_SERVER_POLL_COUNT:-45000}"
 ARTIFACT_CHECKPOINT_EVERY="${APC_REAL_APP_SERVER_ARTIFACT_CHECKPOINT_EVERY:-600}"
+INPUT_WAIT_SECONDS="${APC_REAL_APP_SERVER_INPUT_WAIT_SECONDS:-0}"
 
 checkpoint_artifacts() {
   if [[ -z "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]]; then
@@ -26,6 +28,13 @@ checkpoint_artifacts() {
       "$ROOT_DIR/target/debug/petcore-cli" generation status \
       --job-id "$JOB_ID" --include-messages \
       >"$artifact_dir/in-progress-status.json" 2>/dev/null || true
+  fi
+  if [[ -n "$LIFECYCLE_JOB_ID" && -d "$TMP_DIR/home/generation-jobs/$LIFECYCLE_JOB_ID" ]]; then
+    ditto "$TMP_DIR/home/generation-jobs/$LIFECYCLE_JOB_ID" "$artifact_dir/lifecycle-job"
+    APC_HOME="$TMP_DIR/home" \
+      "$ROOT_DIR/target/debug/petcore-cli" generation status \
+      --job-id "$LIFECYCLE_JOB_ID" --include-messages \
+      >"$artifact_dir/lifecycle-in-progress-status.json" 2>/dev/null || true
   fi
   if [[ -s "$TMP_DIR/probe.err" ]]; then
     cp "$TMP_DIR/probe.err" "$artifact_dir/probe.err"
@@ -143,26 +152,27 @@ if reason="$(app_server_skip_reason)"; then
 fi
 
 python3 - "$GENERATION_POLL_SECONDS" "$GENERATION_POLL_COUNT" \
-  "$ARTIFACT_CHECKPOINT_EVERY" <<'PY'
+  "$ARTIFACT_CHECKPOINT_EVERY" "$INPUT_WAIT_SECONDS" <<'PY'
 import sys
 
 try:
     interval = float(sys.argv[1])
     count = int(sys.argv[2])
     checkpoint_every = int(sys.argv[3])
+    input_wait = float(sys.argv[4])
 except ValueError as error:
     raise SystemExit(
         "real App Server validation poll settings must be numeric"
     ) from error
-if interval <= 0 or count <= 0 or checkpoint_every <= 0:
+if interval <= 0 or count <= 0 or checkpoint_every <= 0 or input_wait < 0:
     raise SystemExit(
         "real App Server validation poll settings must all be positive"
     )
-if interval * count < 9_300:
+if interval * count < 22_500:
     raise SystemExit(
-        "real App Server validation must allow at least 155 minutes so its "
-        "acceptance window covers six bounded 25-minute checkpoint turns "
-        "plus final import and validation"
+        "real App Server validation must allow at least 375 minutes so its "
+        "acceptance window covers a task lasting more than six hours, "
+        "including final import and validation"
     )
 PY
 
@@ -178,25 +188,39 @@ fi
 cd "$ROOT_DIR"
 cargo build --workspace >/dev/null
 
-(
-  # PetCore storage and connector paths remain isolated. HOME is restored only
-  # for the explicitly opted-in Codex subprocess so it can use its own normal
-  # login context; this validator never reads authentication files itself.
-  HOME="$REAL_USER_HOME" \
-  APC_HOME="$TMP_DIR/home" \
-  APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
-  APC_CONNECTOR_CLI_PATH="$ROOT_DIR/target/debug/petcore-cli" \
-  APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK=0 \
-  APC_REQUIRE_SKILL_FULL_SOURCE="${APC_REQUIRE_SKILL_FULL_SOURCE:-1}" \
-  APC_REQUIRE_EXTERNAL_SKILL_SOURCE="${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-1}" \
-  "$ROOT_DIR/target/debug/petcore" serve --ready-file "$TMP_DIR/ready"
-) &
-PETCORE_PID="$!"
-for _ in {1..100}; do
-  [[ -f "$TMP_DIR/ready" ]] && break
-  sleep 0.05
-done
-[[ -f "$TMP_DIR/ready" ]] || fail "PetCore did not report ready"
+start_petcore() {
+  rm -f "$TMP_DIR/ready"
+  (
+    # PetCore storage and connector paths remain isolated. HOME is restored only
+    # for the explicitly opted-in Codex subprocess so it can use its own normal
+    # login context; this validator never reads authentication files itself.
+    HOME="$REAL_USER_HOME" \
+    APC_HOME="$TMP_DIR/home" \
+    APC_AGENT_CONFIG_HOME="$TMP_DIR/agent-home" \
+    APC_CONNECTOR_CLI_PATH="$ROOT_DIR/target/debug/petcore-cli" \
+    APC_ALLOW_LOCAL_PET_STUDIO_FALLBACK=0 \
+    APC_REQUIRE_SKILL_FULL_SOURCE="${APC_REQUIRE_SKILL_FULL_SOURCE:-1}" \
+    APC_REQUIRE_EXTERNAL_SKILL_SOURCE="${APC_REQUIRE_EXTERNAL_SKILL_SOURCE:-1}" \
+    "$ROOT_DIR/target/debug/petcore" serve --ready-file "$TMP_DIR/ready"
+  ) &
+  PETCORE_PID="$!"
+  for _ in {1..100}; do
+    [[ -f "$TMP_DIR/ready" ]] && return 0
+    sleep 0.05
+  done
+  fail "PetCore did not report ready"
+}
+
+stop_petcore() {
+  if [[ -z "$PETCORE_PID" ]]; then
+    return 0
+  fi
+  kill "$PETCORE_PID" >/dev/null 2>&1 || true
+  wait "$PETCORE_PID" >/dev/null 2>&1 || true
+  PETCORE_PID=""
+}
+
+start_petcore
 
 if ! PROBE="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" codex 2>"$TMP_DIR/probe.err")"; then
   fail "petcore-cli codex probe command failed"
@@ -204,7 +228,7 @@ fi
 assert_json "$PROBE" 'data["initialized"] is True and data["transport"] == "stdio"' \
   || fail "Codex App Server probe did not initialize"
 
-FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。请返回完整九动作 V3 设计 brief；不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
+FORM='{"description":"真实 Codex App Server 验收用的小型半写实桌宠，透明背景，动作简洁。主体是一只蓝白云朵猫，圆眼、轻盈尾巴。开始制作前必须通过 App Server 原生 requestUserInput 询问一次尾巴发光颜色，并在收到回复后继续；随后返回完整九动作 V3 设计 brief。不要读取秘密或无关项目文件。","style":"半写实","quality":"standard","reference_images":[]}'
 JOB_JSON="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation start --form-json "$FORM")"
 JOB_ID="$(JSON="$JOB_JSON" python3 - <<'PY'
 import json
@@ -219,16 +243,25 @@ for ((attempt = 0; attempt < GENERATION_POLL_COUNT; attempt += 1)); do
   if ((attempt % ARTIFACT_CHECKPOINT_EVERY == 0)); then
     checkpoint_artifacts
   fi
-  if grep -q '"status"[[:space:]]*:[[:space:]]*"failed"' <<<"$STATUS"; then
-    fail "generation job entered failed status"
-  fi
-  if grep -q '完成，可在宠物库启用\|调整版本已保存入库并已启用' <<<"$STATUS"; then
-    break
-  fi
+  JOB_STATUS="$(JSON="$STATUS" python3 - <<'PY'
+import json
+import os
+print(json.loads(os.environ["JSON"]).get("status", ""))
+PY
+)"
+  case "$JOB_STATUS" in
+    completed) break ;;
+    failed) fail "generation job entered failed status" ;;
+  esac
   if [[ "$REPLIED_TO_INPUT_REQUEST" == "0" ]] && grep -Eq '"kind"[[:space:]]*:[[:space:]]*"input_request"' <<<"$STATUS"; then
+    if [[ "$INPUT_WAIT_SECONDS" != "0" && "$INPUT_WAIT_SECONDS" != "0.0" ]]; then
+      printf 'Holding the real task in waiting-for-user for %s seconds.\n' "$INPUT_WAIT_SECONDS"
+      sleep "$INPUT_WAIT_SECONDS"
+    fi
     APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation reply \
       --job-id "$JOB_ID" \
-      --content "主体是一只蓝白云朵猫，圆眼、轻盈尾巴，待机时呼吸漂浮，工具执行时尾巴发光。" >/dev/null
+      --content "尾巴使用柔和青蓝色发光；待机时呼吸漂浮，工具执行时短暂增强。" \
+      --request-id "real-input-$JOB_ID" >/dev/null
     REPLIED_TO_INPUT_REQUEST=1
   fi
   sleep "$GENERATION_POLL_SECONDS"
@@ -237,6 +270,21 @@ done
 FINAL_STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$JOB_ID" --include-messages)"
 assert_json "$FINAL_STATUS" 'data["status"] == "completed"' \
   || fail "generation job did not complete"
+[[ "$REPLIED_TO_INPUT_REQUEST" == "1" ]] \
+  || fail "real App Server did not produce and resume from a native input request"
+if [[ "$INPUT_WAIT_SECONDS" != "0" && "$INPUT_WAIT_SECONDS" != "0.0" ]]; then
+  INPUT_WAIT_SECONDS="$INPUT_WAIT_SECONDS" JSON="$FINAL_STATUS" python3 - <<'PY' \
+    || fail "real task duration did not include the waiting-for-user soak interval"
+import datetime
+import json
+import os
+
+data = json.loads(os.environ["JSON"])["lifecycle"]
+start = datetime.datetime.fromisoformat(data["started_at"].replace("Z", "+00:00"))
+end = datetime.datetime.fromisoformat(data["ended_at"].replace("Z", "+00:00"))
+assert (end - start).total_seconds() >= float(os.environ["INPUT_WAIT_SECONDS"])
+PY
+fi
 assert_json "$FINAL_STATUS" 'data["app_server"]["initialized"] is True and data["app_server"]["started"] is True and data["app_server"]["turn_started"] is True' \
   || fail "App Server session did not initialize/start a Pet Studio turn"
 assert_json "$FINAL_STATUS" 'data["app_server"]["thread_id"] is not None and data["app_server"]["turn_id"] is not None' \
@@ -335,12 +383,110 @@ if truthy "${APC_REQUIRE_SKILL_FULL_SOURCE:-1}"; then
     || fail "strict full-source imported pet does not preserve Skill provenance"
 fi
 
+# Exercise the resumable task lifecycle separately from the completed artifact
+# acceptance above. This intentionally terminates only the validator-owned
+# PetCore, waits beyond the stale-owner lease, then resumes and cancels the
+# exact task through the public CLI/RPC surface.
+LIFECYCLE_FORM='{"description":"真实 App Server 生命周期验收任务：制作一只低分辨率青绿色圆形机械宠物。立即开始工作，不要请求额外输入；持续保存检查点，直到任务完成或收到取消。","style":"像素","quality":"low","reference_images":[]}'
+LIFECYCLE_JSON="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation start --form-json "$LIFECYCLE_FORM")"
+LIFECYCLE_JOB_ID="$(JSON="$LIFECYCLE_JSON" python3 - <<'PY'
+import json
+import os
+print(json.loads(os.environ["JSON"])["job_id"])
+PY
+)"
+
+LIFECYCLE_THREAD_ID=""
+for _ in {1..240}; do
+  LIFECYCLE_STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$LIFECYCLE_JOB_ID")"
+  if JSON="$LIFECYCLE_STATUS" python3 - <<'PY'
+import json
+import os
+data = json.loads(os.environ["JSON"])
+lifecycle = data.get("lifecycle", {})
+raise SystemExit(0 if data.get("status") == "running" and lifecycle.get("active_turn_id") and lifecycle.get("thread_id") else 1)
+PY
+  then
+    LIFECYCLE_THREAD_ID="$(JSON="$LIFECYCLE_STATUS" python3 - <<'PY'
+import json
+import os
+print(json.loads(os.environ["JSON"])["lifecycle"]["thread_id"])
+PY
+)"
+    break
+  fi
+  sleep 0.5
+done
+[[ -n "$LIFECYCLE_THREAD_ID" && "$LIFECYCLE_THREAD_ID" != "None" ]] \
+  || fail "lifecycle task did not reach a real active App Server turn"
+
+stop_petcore
+sleep "${APC_REAL_APP_SERVER_SLEEP_GAP_SECONDS:-32}"
+start_petcore
+
+RECOVERABLE_DETAIL=""
+for _ in {1..120}; do
+  RECOVERABLE_DETAIL="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation history detail --job-id "$LIFECYCLE_JOB_ID")"
+  if JSON="$RECOVERABLE_DETAIL" python3 - <<'PY'
+import json
+import os
+data = json.loads(os.environ["JSON"])
+raise SystemExit(0 if data.get("status") == "failed" and data.get("recoverable") is True else 1)
+PY
+  then
+    break
+  fi
+  sleep 0.5
+done
+assert_json "$RECOVERABLE_DETAIL" 'data["status"] == "failed" and data["recoverable"] is True and data["capabilities"]["can_resume"] is True' \
+  || fail "PetCore restart did not preserve the task as recoverable"
+
+APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation resume \
+  --job-id "$LIFECYCLE_JOB_ID" \
+  --instruction "从最后一个已验证检查点继续，只处理尚未完成的阶段。" \
+  --request-id "real-resume-$LIFECYCLE_JOB_ID" >/dev/null
+
+RESUMED_STATUS=""
+for _ in {1..240}; do
+  RESUMED_STATUS="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$LIFECYCLE_JOB_ID")"
+  if JSON="$RESUMED_STATUS" python3 - <<'PY'
+import json
+import os
+data = json.loads(os.environ["JSON"])
+raise SystemExit(0 if data.get("status") == "running" and data.get("lifecycle", {}).get("active_turn_id") else 1)
+PY
+  then
+    break
+  fi
+  sleep 0.5
+done
+assert_json "$RESUMED_STATUS" 'data["status"] == "running" and data["lifecycle"]["active_turn_id"] is not None and data["lifecycle"]["thread_id"] is not None' \
+  || fail "real thread/resume did not start a continuation turn"
+RESUMED_THREAD_ID="$(JSON="$RESUMED_STATUS" python3 - <<'PY'
+import json
+import os
+print(json.loads(os.environ["JSON"])["lifecycle"]["thread_id"])
+PY
+)"
+[[ "$RESUMED_THREAD_ID" == "$LIFECYCLE_THREAD_ID" ]] \
+  || fail "real thread/resume replaced the original durable thread identity"
+
+APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation cancel \
+  --job-id "$LIFECYCLE_JOB_ID" >/dev/null
+LIFECYCLE_FINAL="$(HOME="$REAL_USER_HOME" APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" generation status --job-id "$LIFECYCLE_JOB_ID" --inspect-thread)"
+assert_json "$LIFECYCLE_FINAL" 'data["status"] == "canceled" and data["lifecycle"]["active_turn_id"] is None and data["lifecycle"]["execution_stopped_at"] is not None and data["lifecycle"]["thread_archived_at"] is not None' \
+  || fail "real cancellation did not stop the exact active turn and worker"
+assert_json "$LIFECYCLE_FINAL" 'data["thread_inspection"]["availability"] in ["archived", "missing"] and data["thread_inspection"]["can_open"] is False' \
+  || fail "canceled real Studio thread is still present in the ordinary thread list"
+
 if [[ -n "${APC_REAL_APP_SERVER_ARTIFACT_DIR:-}" ]]; then
   preserve_artifacts
   printf '%s\n' "$FINAL_STATUS" \
     >"$APC_REAL_APP_SERVER_ARTIFACT_DIR/final-status.json"
   printf '%s\n' "$SNAPSHOT" \
     >"$APC_REAL_APP_SERVER_ARTIFACT_DIR/snapshot.json"
+  printf '%s\n' "$LIFECYCLE_FINAL" \
+    >"$APC_REAL_APP_SERVER_ARTIFACT_DIR/lifecycle-final-status.json"
 fi
 
 echo "Real Codex App Server validation ok"

@@ -202,8 +202,238 @@ fn second_generation_is_rejected_while_one_is_active() {
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains("active generation"), "{error}");
+    assert!(error.contains("generation_active_conflict"), "{error}");
+    assert!(error.contains("job-first"), "{error}");
     assert_eq!(database.generation_job_status("job-second").unwrap(), None);
+}
+
+#[test]
+fn waiting_job_survives_restart_and_still_blocks_a_second_task() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(&database, &paths, "job-waiting", "instance-dead");
+    database
+        .update_generation_job("job-waiting", GenerationJobStatus::WaitingForUser, None)
+        .unwrap();
+    drop(database);
+
+    let restarted = CoreState::new(paths.clone()).with_instance_id("instance-current");
+    restarted.ensure_ready().unwrap();
+    restarted.ensure_ready().unwrap();
+    let waiting = restarted
+        .database
+        .generation_job("job-waiting")
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.status, GenerationJobStatus::WaitingForUser);
+    assert!(!waiting.recoverable);
+    assert!(waiting.ended_at.is_none());
+
+    let second_dir = paths.jobs_dir.join("job-blocked-by-waiting");
+    fs::create_dir_all(&second_dir).unwrap();
+    let error = restarted
+        .database
+        .create_generation_job_for_instance(
+            "job-blocked-by-waiting",
+            &form(),
+            &second_dir,
+            None,
+            "instance-current",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("generation_active_conflict"), "{error}");
+    assert!(error.contains("job-waiting"), "{error}");
+}
+
+#[test]
+fn recoverable_failure_blocks_new_task_and_action_request_ids_are_idempotent() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(&database, &paths, "job-recoverable", "instance-dead");
+    set_owner_and_heartbeat(
+        &database,
+        "job-recoverable",
+        "instance-dead",
+        "2000-01-01T00:00:00Z",
+    );
+    assert_eq!(
+        generation::recover_interrupted_jobs_for_instance(&paths, &database, "instance-current",)
+            .unwrap(),
+        1
+    );
+    let recovered = database.generation_job("job-recoverable").unwrap().unwrap();
+    assert!(recovered.recoverable);
+
+    let second_dir = paths.jobs_dir.join("job-blocked-by-recoverable");
+    fs::create_dir_all(&second_dir).unwrap();
+    let error = database
+        .create_generation_job_for_instance(
+            "job-blocked-by-recoverable",
+            &form(),
+            &second_dir,
+            None,
+            "instance-current",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("generation_active_conflict"), "{error}");
+
+    assert!(database
+        .begin_generation_action_request(
+            "job-recoverable",
+            "resume-request-1",
+            "resume",
+            "continue from checkpoint",
+        )
+        .unwrap());
+    assert!(!database
+        .begin_generation_action_request(
+            "job-recoverable",
+            "resume-request-1",
+            "resume",
+            "continue from checkpoint",
+        )
+        .unwrap());
+    let mismatch = database
+        .begin_generation_action_request(
+            "job-recoverable",
+            "resume-request-1",
+            "resume",
+            "different instruction",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(mismatch.contains("different content"), "{mismatch}");
+}
+
+#[test]
+fn message_pages_are_ordered_bounded_and_cursor_stable() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(&database, &paths, "job-pages", "instance-current");
+    for index in 1..=5 {
+        database
+            .append_generation_message(
+                "job-pages",
+                "assistant",
+                Some("phase"),
+                &format!("message-{index}"),
+                f64::from(index) / 10.0,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let state = CoreState::new(paths);
+
+    let newest = handle_request(
+        &state,
+        request(
+            "generation.messages.list",
+            json!({ "job_id": "job-pages", "limit": 2 }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(newest["has_more"], true);
+    assert_eq!(newest["next_before_sequence"], 4);
+    assert_eq!(newest["messages"][0]["content"], "message-4");
+    assert_eq!(newest["messages"][1]["content"], "message-5");
+
+    let older = handle_request(
+        &state,
+        request(
+            "generation.messages.list",
+            json!({
+                "job_id": "job-pages",
+                "before_sequence": newest["next_before_sequence"],
+                "limit": 2
+            }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(older["messages"][0]["content"], "message-2");
+    assert_eq!(older["messages"][1]["content"], "message-3");
+    assert_eq!(older["next_before_sequence"], 2);
+}
+
+#[test]
+fn canceled_job_freezes_time_and_rejects_every_recovery_path() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(&database, &paths, "job-frozen-cancel", "instance-current");
+    let before = database
+        .generation_job("job-frozen-cancel")
+        .unwrap()
+        .unwrap();
+    generation::cancel_generation(&paths, &database, "job-frozen-cancel").unwrap();
+    let canceled = database
+        .generation_job("job-frozen-cancel")
+        .unwrap()
+        .unwrap();
+    assert_eq!(canceled.status, GenerationJobStatus::Canceled);
+    assert_eq!(canceled.ended_at, canceled.cancel_requested_at);
+    assert!(canceled.execution_stopped_at.is_some());
+    assert!(canceled.thread_archived_at.is_some());
+    assert!(canceled.started_at >= before.started_at);
+
+    let state = CoreState::new(paths);
+    for method in ["generation.resume", "generation.retry"] {
+        let error = handle_request(
+            &state,
+            request(method, json!({ "job_id": "job-frozen-cancel" })),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("canceled"), "{method}: {error}");
+    }
+    let detail = handle_request(
+        &state,
+        request(
+            "generation.history.detail",
+            json!({ "job_id": "job-frozen-cancel" }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(detail["capabilities"]["can_resume"], false);
+    assert_eq!(detail["capabilities"]["can_open_session"], false);
+    assert_eq!(detail["capabilities"]["can_cancel"], false);
+}
+
+#[test]
+fn startup_finishes_irreversible_cancellation_left_by_a_crashed_petcore() {
+    let (_temp, paths, database) = ready();
+    create_owned_job(
+        &database,
+        &paths,
+        "job-cancel-crash-recovery",
+        "instance-that-crashed",
+    );
+    database
+        .request_generation_cancellation("job-cancel-crash-recovery")
+        .unwrap();
+
+    let interrupted = database
+        .generation_job("job-cancel-crash-recovery")
+        .unwrap()
+        .unwrap();
+    assert!(interrupted.cancel_requested_at.is_some());
+    assert!(interrupted.execution_stopped_at.is_none());
+    assert!(interrupted.thread_archived_at.is_none());
+    assert_ne!(interrupted.status, GenerationJobStatus::Canceled);
+
+    let restarted = CoreState::new(paths);
+    restarted.ensure_ready().unwrap();
+    let canceled = restarted
+        .database
+        .generation_job("job-cancel-crash-recovery")
+        .unwrap()
+        .unwrap();
+    assert_eq!(canceled.status, GenerationJobStatus::Canceled);
+    assert_eq!(canceled.ended_at, canceled.cancel_requested_at);
+    assert!(canceled.execution_stopped_at.is_some());
+    assert!(canceled.thread_archived_at.is_some());
+    assert!(restarted
+        .database
+        .active_generation_job()
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -236,7 +466,8 @@ fn completed_job_cannot_resume_while_another_job_is_active() {
         .unwrap_err()
         .to_string();
 
-    assert!(error.contains("active generation"), "{error}");
+    assert!(error.contains("generation_active_conflict"), "{error}");
+    assert!(error.contains("job-active"), "{error}");
     assert_eq!(
         database.generation_job_status("job-completed").unwrap(),
         Some(GenerationJobStatus::Completed)
@@ -1033,6 +1264,15 @@ fn recovery_marks_only_jobs_owned_by_dead_instance() {
     )
     .unwrap();
 
+    let interrupted = database.interrupted_generation_job_records().unwrap();
+    assert_eq!(interrupted.len(), 1);
+    assert_eq!(interrupted[0].id, "job-dead-owner");
+    assert_eq!(
+        interrupted[0].owner_instance_id.as_deref(),
+        Some("instance-dead")
+    );
+    assert_eq!(interrupted[0].heartbeat_at, "2000-01-01T00:00:00Z");
+
     assert_eq!(
         generation::recover_interrupted_jobs_for_instance(&paths, &database, current_instance,)
             .unwrap(),
@@ -1042,11 +1282,18 @@ fn recovery_marks_only_jobs_owned_by_dead_instance() {
         database.generation_job_status("job-dead-owner").unwrap(),
         Some(GenerationJobStatus::Failed)
     );
+    let recovered_job = database.generation_job("job-dead-owner").unwrap().unwrap();
+    assert!(recovered_job.recoverable);
+    assert_eq!(
+        recovered_job.failure_code.as_deref(),
+        Some("owner_interrupted")
+    );
+    assert!(recovered_job.ended_at.is_none());
     let messages = generation::read_messages(&paths, "job-dead-owner").unwrap();
     assert_eq!(
         messages
             .iter()
-            .filter(|message| message["kind"] == "generation_failed")
+            .filter(|message| message["kind"] == "recoverable_error")
             .count(),
         1
     );

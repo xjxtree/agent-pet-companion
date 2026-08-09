@@ -83,18 +83,6 @@ enum BehaviorSettingsCatalog {
     }
 }
 
-enum BehaviorSettingsLayout {
-    static let wideBreakpoint: CGFloat = 800
-    static let previewWidth: CGFloat = 292
-
-    static func usesWideLayout(
-        contentWidth: CGFloat,
-        shellMode: ControlCenterShellMode
-    ) -> Bool {
-        shellMode.keepsInspectorPresented && contentWidth >= wideBreakpoint
-    }
-}
-
 struct BehaviorSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.controlCenterShellMode) private var shellMode
@@ -136,38 +124,11 @@ struct BehaviorSettingsView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            if BehaviorSettingsLayout.usesWideLayout(
-                contentWidth: geometry.size.width,
-                shellMode: shellMode
-            ) {
-                wideLayout
-            } else {
-                compactLayout
-            }
-        }
-        .accessibilityIdentifier("configuration.root")
+        settingsColumn
+            .accessibilityIdentifier("configuration.root")
     }
 
-    private var wideLayout: some View {
-        HStack(spacing: 0) {
-            settingsColumn(showsInlinePreview: false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Divider()
-
-            previewPane
-                .frame(width: BehaviorSettingsLayout.previewWidth)
-        }
-        .accessibilityIdentifier("configuration.layout.wide")
-    }
-
-    private var compactLayout: some View {
-        settingsColumn(showsInlinePreview: true)
-            .accessibilityIdentifier("configuration.layout.compact")
-    }
-
-    private func settingsColumn(showsInlinePreview: Bool) -> some View {
+    private var settingsColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             ProductPageHeader(
                 identity: ProductComponentIdentity(scope: "configuration"),
@@ -194,24 +155,24 @@ struct BehaviorSettingsView: View {
             .accessibilityLabel(APCLocalization.text(.configPagePicker))
             .accessibilityIdentifier("configuration.subpage-picker")
 
-            Divider()
+            LayoutPreservingHorizontalSeparatorGap()
 
-            settingsPane(showsInlinePreview: showsInlinePreview)
+            settingsPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     @ViewBuilder
-    private func settingsPane(showsInlinePreview: Bool) -> some View {
+    private var settingsPane: some View {
         switch selectedSection {
         case .appearance:
-            appearanceSettingsPane(showsInlinePreview: showsInlinePreview)
+            appearanceSettingsPane
         case .messages:
-            messageSettingsPane(showsInlinePreview: showsInlinePreview)
+            messageSettingsPane
         }
     }
 
-    private func appearanceSettingsPane(showsInlinePreview: Bool) -> some View {
+    private var appearanceSettingsPane: some View {
         Form {
             Section {
                 SettingToggle(
@@ -269,15 +230,6 @@ struct BehaviorSettingsView: View {
                             updateBehavior(\.clickMenu, value: value)
                         }
 
-                        SettingToggle(
-                            title: APCLocalization.text(.configMousePassthrough),
-                            detail: APCLocalization.text(.configMousePassthroughDetail),
-                            value: store.behavior.mousePassthrough,
-                            accessibilityIdentifier: "configuration.appearance.mouse-passthrough"
-                        ) { value in
-                            updateBehavior(\.mousePassthrough, value: value)
-                        }
-
                         Text(APCLocalization.text(.configSizeFooter))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -286,20 +238,12 @@ struct BehaviorSettingsView: View {
                 }
             }
 
-            if showsInlinePreview {
-                Section {
-                    appearancePreview
-                        .frame(maxWidth: .infinity)
-                } header: {
-                    Text(APCLocalization.text(.configLivePreview))
-                }
-            }
         }
         .formStyle(.grouped)
         .accessibilityIdentifier("configuration.page.appearance")
     }
 
-    private func messageSettingsPane(showsInlinePreview: Bool) -> some View {
+    private var messageSettingsPane: some View {
         Form {
             Section {
                 AttentionPresetPicker(
@@ -319,6 +263,7 @@ struct BehaviorSettingsView: View {
 
             Section {
                 sessionGroupingSetting
+                sessionGroupDisplaySetting
             }
 
             Section {
@@ -365,9 +310,6 @@ struct BehaviorSettingsView: View {
                         Divider()
 
                         sessionTimeoutSetting
-                        if store.behavior.groupSessionsByAgent {
-                            sessionGroupDisplaySetting
-                        }
 
                         Text(APCLocalization.text(.configPersistenceNote))
                             .font(.caption)
@@ -380,42 +322,9 @@ struct BehaviorSettingsView: View {
                 }
             }
 
-            if showsInlinePreview {
-                Section {
-                    messagePreview
-                        .frame(maxWidth: .infinity)
-                } header: {
-                    Text(APCLocalization.text(.configMessagePreview))
-                }
-            }
         }
         .formStyle(.grouped)
         .accessibilityIdentifier("configuration.page.messages")
-    }
-
-    private var previewPane: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(APCLocalization.text(
-                selectedSection == .appearance ? .configLivePreview : .configMessagePreview
-            ))
-                .font(.headline)
-
-            Divider()
-
-            ScrollView {
-                Group {
-                    switch selectedSection {
-                    case .appearance:
-                        appearancePreview
-                    case .messages:
-                        messagePreview
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-        }
-        .padding(16)
-        .accessibilityIdentifier("configuration.preview-pane")
     }
 
     private var appearanceThemeSetting: some View {
@@ -702,20 +611,6 @@ struct BehaviorSettingsView: View {
         .padding(.vertical, 4)
     }
 
-    private var appearancePreview: some View {
-        BehaviorAppearancePreview(
-            behavior: store.behavior,
-            pet: store.activePet,
-            assetWarning: store.activePet.flatMap {
-                store.petAssetWarningIndex[$0.id]
-            }
-        )
-    }
-
-    private var messagePreview: some View {
-        BehaviorMessagePreview(behavior: store.behavior)
-    }
-
     private func behaviorBinding<Value>(
         _ keyPath: WritableKeyPath<BehaviorSettings, Value>
     ) -> Binding<Value> {
@@ -859,328 +754,5 @@ struct EventToggle: View {
 
     private var isEnabled: Bool {
         store.behavior.events[event, default: true]
-    }
-}
-
-private struct BehaviorAppearancePreview: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let behavior: BehaviorSettings
-    let pet: PetSummary?
-    let assetWarning: PetAssetWarning?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ZStack {
-                syntheticDesktop
-
-                VStack(spacing: 14) {
-                    if behavior.enabled, behavior.statusBubble {
-                        previewBubble
-                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                    }
-
-                    Spacer(minLength: 12)
-
-                    if behavior.enabled {
-                        ConfigurationPetPreviewImage(
-                            pet: pet,
-                            assetWarning: assetWarning
-                        )
-                    } else {
-                        Label(APCLocalization.text(.configPetHidden), systemImage: "eye.slash")
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .apcClearGlass(in: Capsule())
-                    }
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: 360)
-            .aspectRatio(0.68, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(APCLocalization.text(.configDesktopPreviewAccessibility))
-            .accessibilityIdentifier("configuration.preview.desktop")
-
-        }
-        .apcAppearanceTheme(behavior.appearanceTheme)
-    }
-
-    private var syntheticDesktop: some View {
-        ZStack {
-            LinearGradient(
-                colors: desktopColors,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Circle()
-                .fill(Color.white.opacity(colorScheme == .dark ? 0.06 : 0.18))
-                .frame(width: 220, height: 220)
-                .blur(radius: 12)
-                .offset(x: -90, y: -150)
-
-            RoundedRectangle(cornerRadius: 70, style: .continuous)
-                .fill(Color.pink.opacity(colorScheme == .dark ? 0.11 : 0.18))
-                .frame(width: 260, height: 150)
-                .rotationEffect(.degrees(-18))
-                .blur(radius: 7)
-                .offset(x: 60, y: 40)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var desktopColors: [Color] {
-        switch behavior.appearanceTheme {
-        case .light:
-            [
-                Color(red: 0.77, green: 0.86, blue: 0.98),
-                Color(red: 0.96, green: 0.73, blue: 0.72),
-                Color(red: 0.53, green: 0.66, blue: 0.88)
-            ]
-        case .dark:
-            [
-                Color(red: 0.10, green: 0.16, blue: 0.34),
-                Color(red: 0.35, green: 0.19, blue: 0.40),
-                Color(red: 0.04, green: 0.11, blue: 0.25)
-            ]
-        case .system:
-            colorScheme == .dark
-                ? [
-                    Color(red: 0.09, green: 0.18, blue: 0.38),
-                    Color(red: 0.40, green: 0.25, blue: 0.48),
-                    Color(red: 0.05, green: 0.13, blue: 0.29)
-                ]
-                : [
-                    Color(red: 0.68, green: 0.80, blue: 0.97),
-                    Color(red: 0.94, green: 0.64, blue: 0.70),
-                    Color(red: 0.40, green: 0.57, blue: 0.84)
-                ]
-        }
-    }
-
-    private var previewBubble: some View {
-        HStack(alignment: .top, spacing: 9) {
-            AgentIconView(source: .codex, size: 24)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("Codex")
-                        .font(OverlayBubbleTypography.font(
-                            .caption1,
-                            weight: .semibold,
-                            scale: behavior.bubbleFontScale
-                        ))
-                    Spacer(minLength: 4)
-                    Text(APCLocalizedPresentation.eventTitle(.tool))
-                        .font(OverlayBubbleTypography.font(
-                            .caption2,
-                            weight: .semibold,
-                            scale: behavior.bubbleFontScale
-                        ))
-                        .foregroundStyle(APCDesign.accent)
-                }
-                Text(APCLocalization.text(
-                    behavior.autoHide ? .configBubbleAutoShow : .configBubbleWorking
-                ))
-                    .font(OverlayBubbleTypography.font(
-                        .caption2,
-                        weight: .regular,
-                        scale: behavior.bubbleFontScale
-                    ))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-        }
-        .padding(11)
-        .frame(maxWidth: 230)
-        .apcNativeBubbleGlass(
-            cornerRadius: OverlayGeometry.bubbleCornerRadius
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("configuration.preview.status-bubble")
-    }
-
-}
-
-private struct ConfigurationPetPreviewImage: View {
-    let pet: PetSummary?
-    let assetWarning: PetAssetWarning?
-    @State private var image: NSImage?
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Group {
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                } else {
-                    Image(systemName: "pawprint.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(.white.opacity(0.88))
-                        .padding(24)
-                }
-            }
-            .frame(width: 118, height: 134)
-            .shadow(color: .black.opacity(0.22), radius: 8, y: 5)
-
-            Text(pet?.name ?? APCLocalization.text(.configNoPetPreview))
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
-        }
-        .task(id: previewIdentity) {
-            guard let pet, let url = PetAssetLocator.coverURL(for: pet) else {
-                image = nil
-                return
-            }
-            image = PetLibraryPreviewPolicy.loadIfValidated(
-                assetWarning: assetWarning
-            ) {
-                NSImage(contentsOf: url)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(APCLocalization.format(
-            .configCurrentPetFormat,
-            pet?.name ?? APCLocalization.text(.appStateNoPet)
-        ))
-    }
-
-    private var previewIdentity: String {
-        [
-            pet?.id ?? "none",
-            pet?.revisionID ?? "legacy",
-            assetWarning?.fingerprint ?? "validated",
-        ].joined(separator: ":")
-    }
-}
-
-private struct BehaviorMessagePreview: View {
-    let behavior: BehaviorSettings
-
-    private var enabledSources: [AgentSource] {
-        BehaviorSettingsCatalog.sources.filter { behavior.sources[$0, default: true] }
-    }
-
-    private var enabledEvents: [AgentEventKind] {
-        BehaviorSettingsCatalog.events.filter { behavior.events[$0, default: true] }
-    }
-
-    private var visibleEvents: [AgentEventKind] {
-        let limit = behavior.groupSessionsByAgent && behavior.sessionGroupDisplay == .stacked
-            ? 1
-            : 3
-        return Array(enabledEvents.prefix(limit))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if enabledSources.isEmpty {
-                ContentUnavailableView(
-                    APCLocalization.text(.configNoSources),
-                    systemImage: "antenna.radiowaves.left.and.right.slash",
-                    description: Text(APCLocalization.text(.configNoSourcesDetail))
-                )
-                .frame(minHeight: 150)
-            } else if visibleEvents.isEmpty {
-                ContentUnavailableView(
-                    APCLocalization.text(.configNoEvents),
-                    systemImage: "bell.slash",
-                    description: Text(APCLocalization.text(.configNoEventsDetail))
-                )
-                .frame(minHeight: 150)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(Array(visibleEvents.enumerated()), id: \.element.id) { index, event in
-                        MessagePreviewRow(
-                            source: enabledSources[index % enabledSources.count],
-                            event: event
-                        )
-                    }
-                }
-            }
-
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("configuration.preview.messages")
-    }
-
-}
-
-private struct MessagePreviewRow: View {
-    let source: AgentSource
-    let event: AgentEventKind
-
-    var body: some View {
-        HStack(spacing: 9) {
-            AgentIconView(source: source, size: 26)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(source.title)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Text(eventDetail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 6)
-
-            Text(APCLocalizedPresentation.eventTitle(event))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(eventColor)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(eventColor.opacity(0.12), in: Capsule())
-        }
-        .padding(9)
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var eventDetail: String {
-        switch event {
-        case .start: APCLocalization.text(.configEventStartDetail)
-        case .thinking: APCLocalization.text(.configEventThinkingDetail)
-        case .plan: APCLocalization.text(.configEventPlanDetail)
-        case .tool: APCLocalization.text(.configEventToolDetail)
-        case .waiting: APCLocalization.text(.configEventWaitingDetail)
-        case .done: APCLocalization.text(.configEventDoneDetail)
-        case .failed: APCLocalization.text(.configEventFailedDetail)
-        }
-    }
-
-    private var eventColor: Color {
-        switch event {
-        case .done: APCDesign.success
-        case .waiting: APCDesign.warning
-        case .failed: APCDesign.destructive
-        case .start, .thinking, .plan, .tool: APCDesign.accent
-        }
     }
 }

@@ -1242,6 +1242,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
     private var visualEnvelopeHandler: ((OverlayPetVisualEnvelope?) -> Void)?
     private var publishedVisualEnvelope: OverlayPetVisualEnvelope?
     private var frameContentHandler: (@MainActor (Bool) -> Void)?
+    private var frameContentHandlerGeneration: UInt64 = 0
     private var publishedFrameContent = false
     private var frameHitTestHandler: (@MainActor (OverlayPetFrameHitTest?) -> Void)?
     private var playbackCompletionHandler: (@MainActor (String, PetPlaybackMode) -> Void)?
@@ -1416,6 +1417,7 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         invalidateFramePresentations(notifyHandler: false)
         cancelLoading(releaseFrames: true)
         frameHitTestHandler = nil
+        frameContentHandlerGeneration &+= 1
         frameContentHandler = nil
         playbackCompletionHandler = nil
     }
@@ -1787,9 +1789,19 @@ final class PetMetalFrameRenderer: NSObject, MTKViewDelegate, PetRendererLifecyc
         _ handler: @escaping @MainActor (Bool) -> Void
     ) {
         frameContentHandler = handler
+        frameContentHandlerGeneration &+= 1
+        let handlerGeneration = frameContentHandlerGeneration
         // SwiftUI may replace this closure without changing renderer assets.
-        // Replay only content that reached a drawable presentation callback.
-        handler(publishedFrameContent)
+        // Replay only content that reached a drawable presentation callback,
+        // and never write through a representable callback while updateNSView
+        // is still on the stack. A newer closure or dismantle invalidates this
+        // scheduled replay before it reaches SwiftUI state.
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.frameContentHandlerGeneration == handlerGeneration
+            else { return }
+            self.frameContentHandler?(self.publishedFrameContent)
+        }
     }
 
     @MainActor

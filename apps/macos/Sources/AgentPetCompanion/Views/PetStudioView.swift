@@ -5,169 +5,15 @@ import UniformTypeIdentifiers
 
 struct AIPetMakerView: View {
     @EnvironmentObject private var store: AppStore
-    @Environment(\.controlCenterShellMode) private var shellMode
-
-    private let identity = ProductComponentIdentity(scope: "maker")
-
-    private var experience: MakerExperiencePresentation {
-        let resultPet = MakerResultPresentation.resultPet(
-            for: store.generationSession,
-            in: store.pets
-        )
-        return MakerExperiencePresentation(
-            session: store.generationSession,
-            resultPetAvailable: resultPet != nil,
-            resultPreviewAvailable: resultPet.map {
-                store.petAssetWarningIndex[$0.id] == nil
-            } ?? false,
-            referenceReselectionCount: store.referenceReselectionCount
-        )
-    }
 
     var body: some View {
-        PageScroll {
-            ProductPageHeader(
-                identity: identity,
-                title: pageTitle,
-                summary: pageSummary
-            )
-
-            if experience.showsCenteredBrief {
-                centeredBrief
-            } else {
-                sessionWorkspace
+        MakerSessionWorkspace()
+            .task {
+                await store.refreshPetStudioCodexAvailability()
+                await store.prepareMakerWorkspace()
             }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                toolbarActions
-            }
-        }
-        .accessibilityIdentifier("maker.page")
-    }
-
-    private var pageTitle: String {
-        store.generationSession.operation == .modify && experience.showsSession
-            ? APCLocalization.text(.studioPageModifySession)
-            : APCLocalization.text(.studioPageTitle)
-    }
-
-    private var pageSummary: String {
-        switch store.generationSession.state {
-        case .idle:
-            APCLocalization.text(.studioDescriptionHeading)
-        case .succeeded:
-            APCLocalization.text(.studioSubtitleSucceeded)
-        case .failed:
-            APCLocalization.text(.studioSubtitleFailed)
-        case .cancelled:
-            APCLocalization.text(.studioSubtitleCancelled)
-        case .starting, .running, .waitingForInput, .cancelling:
-            APCLocalization.text(.studioPreparing)
-        }
-    }
-
-    private var centeredBrief: some View {
-        PrimaryExperienceCard(
-            identity: identity,
-            title: APCLocalization.text(.studioNewPet),
-            summary: APCLocalization.text(.studioWelcomeDetail),
-            primaryAction: ProductActionPresentation(
-                action: experience.primaryAction,
-                title: APCLocalizedPresentation.primaryActionTitle(
-                    experience.primaryAction
-                )
-                    ?? APCLocalization.text(.studioActionStart),
-                systemImage: "sparkles",
-                isEnabled: store.canStartGeneration
-            ),
-            onPrimaryAction: { action in
-                guard action == .createPet else { return }
-                store.startGeneration()
-            }
-        ) {
-            MakerBriefView()
-        }
-        .frame(
-            minWidth: 0,
-            maxWidth: 760,
-            alignment: .topLeading
-        )
-        .frame(maxWidth: .infinity, alignment: .top)
-        .accessibilityIdentifier("maker.layout.describe")
-    }
-
-    @ViewBuilder
-    private var sessionWorkspace: some View {
-        if experience.showsBaselineInspector, shellMode == .allColumns {
-            HStack(alignment: .top, spacing: 0) {
-                GenerationSessionView()
-                    .frame(minWidth: 420, maxWidth: .infinity)
-                    .padding(.trailing, 20)
-                Divider()
-                ValidatedBaselineInspector()
-                    .frame(width: 284)
-                    .padding(.leading, 20)
-            }
-            .accessibilityIdentifier("maker.layout.session-with-baseline")
-        } else {
-            VStack(alignment: .leading, spacing: 20) {
-                if experience.showsBaselineInspector {
-                    ValidatedBaselineInspector()
-                    Divider()
-                }
-                GenerationSessionView()
-            }
-            .frame(maxWidth: 940)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .accessibilityIdentifier("maker.layout.session")
-        }
-    }
-
-    @ViewBuilder
-    private var toolbarActions: some View {
-        if experience.primaryAction == .cancel
-            || experience.secondaryActions.contains(.cancel) {
-            Button {
-                store.cancelGeneration()
-            } label: {
-                Label(
-                    APCLocalization.text(
-                        store.generationSession.state == .cancelling
-                            ? .studioActionCancelling
-                            : .studioActionCancelTask
-                    ),
-                    systemImage: "xmark.circle"
-                )
-                .labelStyle(.iconOnly)
-            }
-            .help(APCLocalization.text(
-                store.generationSession.state == .cancelling
-                    ? .studioActionCancelling
-                    : .studioActionCancelTask
-            ))
-            .disabled(!store.generationSession.canCancel)
-            .accessibilityIdentifier("maker.action.cancel")
-        } else if store.generationSession.state == .idle {
-            Button {
-                store.clearStudioForm()
-            } label: {
-                Label(APCLocalization.text(.commonClear), systemImage: "eraser")
-                    .labelStyle(.iconOnly)
-            }
-            .help(APCLocalization.text(.commonClear))
-            .disabled(!store.canClearStudioForm)
-            .accessibilityIdentifier("maker.action.clear")
-        } else if !store.generationSession.isActive {
-            Button {
-                store.showNewPetDraft()
-            } label: {
-                Label(APCLocalization.text(.studioActionNew), systemImage: "plus")
-                    .labelStyle(.iconOnly)
-            }
-            .help(APCLocalization.text(.studioActionNew))
-            .accessibilityIdentifier("maker.action.new")
-        }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("maker.page")
     }
 }
 
@@ -180,6 +26,10 @@ struct MakerBriefView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            codexAvailabilityNotice
+            if !store.petStudioCodexAvailability.permitsGeneration {
+                Divider()
+            }
             descriptionField
             Divider()
             stylePicker
@@ -189,13 +39,65 @@ struct MakerBriefView: View {
             referenceImages
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("maker.brief")
+    }
+
+    @ViewBuilder
+    private var codexAvailabilityNotice: some View {
+        switch store.petStudioCodexAvailability {
+        case .available:
+            EmptyView()
+        case .checking:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioCodexCheckingTitle),
+                detail: APCLocalization.text(.studioCodexCheckingDetail),
+                systemImage: "hourglass",
+                color: .secondary
+            )
+            .accessibilityIdentifier("maker.codex.checking")
+        case .missing:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioCodexMissingTitle),
+                detail: APCLocalization.text(.studioCodexMissingDetail),
+                systemImage: "exclamationmark.triangle.fill",
+                color: APCDesign.warning
+            )
+            .accessibilityIdentifier("maker.codex.missing")
+        case .unavailable:
+            InlineSessionNotice(
+                title: APCLocalization.text(.studioCodexUnavailableTitle),
+                detail: APCLocalization.text(.studioCodexUnavailableDetail),
+                systemImage: "exclamationmark.triangle.fill",
+                color: APCDesign.warning
+            )
+            .accessibilityIdentifier("maker.codex.unavailable")
+        }
     }
 
     private var descriptionField: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(APCLocalization.text(.studioDescriptionHeading))
                 .font(.headline)
+
+            Text(APCLocalization.text(.studioDescriptionTemplatesTitle))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            FlowLayout(spacing: 7) {
+                ForEach(MakerBriefTemplate.allCases) { template in
+                    Button {
+                        append(template)
+                    } label: {
+                        Label(template.title, systemImage: template.systemImage)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(fieldsAreLocked)
+                    .accessibilityIdentifier("maker.brief.template.\(template.rawValue)")
+                }
+            }
+            .accessibilityIdentifier("maker.brief.templates")
 
             ZStack(alignment: .topLeading) {
                 TextEditor(text: Binding(
@@ -208,6 +110,7 @@ struct MakerBriefView: View {
                 .frame(minHeight: 112)
                 .disabled(fieldsAreLocked)
                 .accessibilityLabel(APCLocalization.text(.studioDescriptionLabel))
+                .accessibilityValue(descriptionCountAccessibilityValue)
                 .accessibilityIdentifier("maker.brief.description")
 
                 if store.descriptionText.isEmpty {
@@ -229,16 +132,18 @@ struct MakerBriefView: View {
                     .allowsHitTesting(false)
             }
 
-            Text("\(GenerationPromptPolicy.scalarCount(store.descriptionText))/\(AIPetMakerDefaults.maximumDescriptionCharacters)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .accessibilityLabel(APCLocalization.format(
-                    .commonValueOfTotalFormat,
-                    APCLocalization.text(.studioDescriptionLabel),
-                    GenerationPromptPolicy.scalarCount(store.descriptionText),
-                    AIPetMakerDefaults.maximumDescriptionCharacters
+            if MakerBriefPresentation.showsDescriptionCount(
+                scalarCount: descriptionCount,
+                maximum: AIPetMakerDefaults.maximumDescriptionCharacters
+            ) {
+                Text(MakerBriefPresentation.descriptionCount(
+                    scalarCount: descriptionCount
                 ))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityHidden(true)
+            }
         }
     }
 
@@ -290,10 +195,7 @@ struct MakerBriefView: View {
     }
 
     private var qualityGuidance: String {
-        APCLocalization.format(
-            .studioQualityContractFormat,
-            APCLocalizedPresentation.qualityDetail(store.selectedQuality)
-        )
+        MakerBriefPresentation.qualityGuidance(store.selectedQuality)
     }
 
     private var referenceImages: some View {
@@ -302,6 +204,26 @@ struct MakerBriefView: View {
                 .font(.headline)
             ReferenceImageDropZone()
         }
+    }
+
+    private var descriptionCount: Int {
+        GenerationPromptPolicy.scalarCount(store.descriptionText)
+    }
+
+    private var descriptionCountAccessibilityValue: String {
+        APCLocalization.format(
+            .commonValueOfTotalFormat,
+            APCLocalization.text(.studioDescriptionLabel),
+            descriptionCount,
+            AIPetMakerDefaults.maximumDescriptionCharacters
+        )
+    }
+
+    private func append(_ template: MakerBriefTemplate) {
+        guard !fieldsAreLocked else { return }
+        let existing = store.descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let separator = existing.isEmpty ? "" : "\n"
+        store.updateGenerationDescription(existing + separator + template.insertionText)
     }
 }
 
@@ -473,6 +395,8 @@ struct GenerationSessionView: View {
     @EnvironmentObject private var store: AppStore
     @FocusState private var replyIsFocused: Bool
     @State private var completedSessionIsExpanded = false
+    @State private var cancelConfirmationPresented = false
+    @State private var restartConfirmationPresented = false
 
     private var experience: MakerExperiencePresentation {
         let resultPet = MakerResultPresentation.resultPet(
@@ -498,6 +422,7 @@ struct GenerationSessionView: View {
                 completedSessionDisclosure
             } else {
                 GenerationProgressView()
+                GenerationRuntimeStatusView()
 
                 if store.generationSession.state.isTerminal
                     || store.generationSession.state == .cancelling
@@ -505,11 +430,7 @@ struct GenerationSessionView: View {
                     terminalAction
                 }
 
-                timelineSurface
-
-                if !store.generationSession.state.isTerminal {
-                    replyComposer
-                }
+                evidenceWorkspace
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -525,6 +446,33 @@ struct GenerationSessionView: View {
             Task { @MainActor in
                 replyIsFocused = true
             }
+        }
+        .confirmationDialog(
+            APCLocalization.text(.studioCancelConfirmTitle),
+            isPresented: $cancelConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button(
+                APCLocalization.text(.studioCancelConfirmAction),
+                role: .destructive
+            ) {
+                store.cancelGeneration()
+            }
+            Button(APCLocalization.text(.commonCancel), role: .cancel) {}
+        } message: {
+            Text(APCLocalization.text(.studioCancelConfirmDetail))
+        }
+        .confirmationDialog(
+            APCLocalization.text(.studioRestartConfirmTitle),
+            isPresented: $restartConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button(APCLocalization.text(.studioRestartConfirmAction)) {
+                store.retryGeneration()
+            }
+            Button(APCLocalization.text(.commonCancel), role: .cancel) {}
+        } message: {
+            Text(APCLocalization.text(.studioRestartConfirmDetail))
         }
         .accessibilityIdentifier("maker.session")
     }
@@ -560,12 +508,31 @@ struct GenerationSessionView: View {
                         for: store.generationSession.state
                     )
             )
+            if experience.primaryAction == .cancel
+                || experience.secondaryActions.contains(.cancel) {
+                Button {
+                    cancelConfirmationPresented = true
+                } label: {
+                    Label(
+                        APCLocalization.text(
+                            store.generationSession.state == .cancelling
+                                ? .studioActionCancelling
+                                : .studioActionCancelTask
+                        ),
+                        systemImage: "xmark.circle.fill"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(APCDesign.destructive)
+                .disabled(!store.generationSession.canCancel)
+                .accessibilityIdentifier("maker.action.cancel")
+            }
         }
     }
 
     private var timelineSurface: some View {
         timeline
-            .frame(maxWidth: .infinity, minHeight: 330, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
@@ -591,8 +558,40 @@ struct GenerationSessionView: View {
             summary: APCLocalization.text(.studioSubmittedBrief),
             isExpanded: $completedSessionIsExpanded
         ) {
-            timelineSurface
+            VStack(alignment: .leading, spacing: 16) {
+                timelineSurface
+                conversationSurface
+            }
         }
+    }
+
+    private var conversationSurface: some View {
+        CodexGenerationConversationView(
+            messages: store.generationSession.messages,
+            messageRevision: store.generationSession.messageRevision,
+            isActive: store.generationSession.isActive
+        )
+    }
+
+    private var progressItems: [MakerHistoryProgressItem] {
+        MakerHistoryProgressPresentation.items(
+            PetStudioPresentation.progressMessages(store.generationSession.messages)
+        )
+    }
+
+    private var evidenceWorkspace: some View {
+        AdaptiveTwoColumnLayout(minimumColumnWidth: 360, spacing: 16) {
+            timelineSurface
+            VStack(alignment: .leading, spacing: 12) {
+                if !store.generationSession.state.isTerminal {
+                    replyComposer
+                }
+                conversationSurface
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("maker.session.evidence-workspace")
     }
 
     private var timeline: some View {
@@ -603,13 +602,11 @@ struct GenerationSessionView: View {
                     Divider()
                 }
 
-                ForEach(PetStudioPresentation.timelineMessages(
-                    store.generationSession.messages
-                )) { message in
-                    GenerationTimelineRow(message: message)
+                ForEach(progressItems) { item in
+                    GenerationTimelineRow(item: item)
                 }
 
-                if store.generationSession.messages.isEmpty {
+                if progressItems.isEmpty {
                     ProgressView(APCLocalization.text(.studioPreparing))
                         .frame(maxWidth: .infinity, minHeight: 160)
                 }
@@ -666,28 +663,48 @@ struct GenerationSessionView: View {
         status: ProductStatusPresentation
     ) -> some View {
         let resolvedRecoveryAction = recoveryAction
-        InlineRecoveryBanner(
-            identity: ProductComponentIdentity(
-                scope: "maker",
-                instance: "session-recovery"
-            ),
-            status: status,
-            primaryAction: resolvedRecoveryAction.map { action in
-                ProductActionPresentation(
-                    action: action,
-                    title: recoveryActionTitle(action),
-                    systemImage: recoveryActionSystemImage(action),
-                    isEnabled: recoveryActionIsEnabled(action)
-                )
-            },
-            onPrimaryAction: performRecoveryAction
-        )
+        VStack(alignment: .leading, spacing: 8) {
+            InlineRecoveryBanner(
+                identity: ProductComponentIdentity(
+                    scope: "maker",
+                    instance: "session-recovery"
+                ),
+                status: status,
+                primaryAction: resolvedRecoveryAction.map { action in
+                    ProductActionPresentation(
+                        action: action,
+                        title: recoveryActionTitle(action),
+                        systemImage: recoveryActionSystemImage(action),
+                        isEnabled: recoveryActionIsEnabled(action)
+                    )
+                },
+                onPrimaryAction: performRecoveryAction
+            )
+
+            if store.generationSession.canRetry {
+                Button {
+                    restartConfirmationPresented = true
+                } label: {
+                    Label(
+                        APCLocalization.text(.studioActionRestart),
+                        systemImage: "plus.rectangle.on.rectangle"
+                    )
+                }
+                .buttonStyle(.borderless)
+                .disabled(!store.canRetryGeneration)
+                .help(APCLocalization.text(.studioRestartConfirmDetail))
+                .accessibilityIdentifier("maker.action.restart")
+            }
+        }
     }
 
     private func recoveryActionTitle(
         _ action: PetMakerPrimaryAction
     ) -> String {
-        APCLocalizedPresentation.primaryActionTitle(action)
+        if action == .retry {
+            return APCLocalization.text(.studioActionResume)
+        }
+        return APCLocalizedPresentation.primaryActionTitle(action)
             ?? APCLocalization.text(.commonRetry)
     }
 
@@ -705,7 +722,7 @@ struct GenerationSessionView: View {
         _ action: PetMakerPrimaryAction
     ) -> Bool {
         switch action {
-        case .retry: store.canRetryGeneration
+        case .retry: store.canResumeGeneration
         case .reselectReferences: true
         default: false
         }
@@ -716,7 +733,7 @@ struct GenerationSessionView: View {
     ) {
         switch action {
         case .retry:
-            store.retryGeneration()
+            store.resumeGeneration()
         case .reselectReferences:
             store.chooseReferenceImages()
         default:
@@ -725,7 +742,10 @@ struct GenerationSessionView: View {
     }
 
     private var recoveryAction: PetMakerPrimaryAction? {
-        switch experience.primaryAction {
+        if store.generationSession.state == .cancelled {
+            return nil
+        }
+        return switch experience.primaryAction {
         case .retry, .reselectReferences:
             experience.primaryAction
         default:
@@ -777,7 +797,9 @@ struct GenerationSessionView: View {
         case .starting, .running: APCLocalization.text(.studioReplyRunning)
         case .cancelling: APCLocalization.text(.studioReplyCancelling)
         case .failed: APCLocalization.text(.studioReplyFailed)
+        case .paused, .recoverableFailed: APCLocalization.text(.studioReplyFailed)
         case .cancelled: APCLocalization.text(.studioReplyCancelled)
+        case .cancelCleanup: APCLocalization.text(.studioReplyCancelling)
         case .idle: APCLocalization.text(.studioReplyIdle)
         }
     }
@@ -806,7 +828,8 @@ struct GenerationProgressView: View {
     private var activeIndex: Int {
         GenerationConversation.activeStepIndex(
             messages: store.generationSession.messages,
-            progress: store.generationSession.progress
+            progress: store.generationSession.progress,
+            operation: store.generationSession.operation
         )
     }
 
@@ -828,7 +851,10 @@ struct GenerationProgressView: View {
             let state = PetStudioPresentation.stageState(
                 at: index,
                 activeIndex: activeIndex,
-                sessionState: store.generationSession.state
+                sessionState: store.generationSession.state,
+                hasRecordedRuntimePhase: GenerationConversation.runtimePhase(
+                    store.generationSession.messages
+                ) != nil
             )
             HStack(spacing: 6) {
                 Image(systemName: state.systemImage)
@@ -849,6 +875,153 @@ struct GenerationProgressView: View {
                     .frame(maxWidth: .infinity)
             }
         }
+    }
+}
+
+private struct GenerationRuntimeStatusView: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label(
+                        APCLocalization.text(.studioRuntimeCurrentAction),
+                        systemImage: "waveform.path.ecg"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                    Text(currentActivity)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) {
+                        runtimeFacts(at: context.date)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        runtimeFacts(at: context.date)
+                    }
+                }
+                .font(.caption)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(APCDesign.stroke, lineWidth: 1)
+            }
+        }
+        .accessibilityIdentifier("maker.session.runtime-status")
+    }
+
+    @ViewBuilder
+    private func runtimeFacts(at now: Date) -> some View {
+        Label(
+            APCLocalization.format(
+                .studioRuntimeCheckpointFormat,
+                GenerationConversation.checkpointCount(store.generationSession.messages)
+            ),
+            systemImage: "arrow.clockwise"
+        )
+        .foregroundStyle(.secondary)
+
+        Label(
+            APCLocalization.format(.studioRuntimeElapsedFormat, elapsedText(at: now)),
+            systemImage: "clock"
+        )
+        .foregroundStyle(.secondary)
+
+        let heartbeat = heartbeatPresentation(at: now)
+        Label(heartbeat.title, systemImage: heartbeat.systemImage)
+            .foregroundStyle(heartbeat.color)
+    }
+
+    private var currentActivity: String {
+        GenerationConversation.currentActivity(store.generationSession.messages)?.content
+            ?? APCLocalization.text(.studioPreparing)
+    }
+
+    private func elapsedText(at now: Date) -> String {
+        guard let value = GenerationConversation.startedMessage(
+            store.generationSession.messages
+        )?.createdAt,
+        let startedAt = PetStudioTimestamp.date(value)
+        else { return "—" }
+        let seconds = max(0, Int(now.timeIntervalSince(startedAt)))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, remainingSeconds)
+    }
+
+    private func heartbeatPresentation(
+        at now: Date
+    ) -> (title: String, systemImage: String, color: Color) {
+        let value = store.generationSession.heartbeatAt
+            ?? GenerationConversation.heartbeatMessage(
+                store.generationSession.messages
+            )?.createdAt
+        guard let value,
+        let heartbeatAt = PetStudioTimestamp.date(value)
+        else {
+            return (
+                APCLocalization.text(.studioRuntimeHeartbeatPending),
+                "heart",
+                .secondary
+            )
+        }
+        let age = max(0, now.timeIntervalSince(heartbeatAt))
+        let relative = PetStudioTimestamp.relative(heartbeatAt, to: now)
+        if !store.generationSession.isActive {
+            return (
+                APCLocalization.format(.studioRuntimeLastUpdateFormat, relative),
+                "clock.badge.checkmark",
+                .secondary
+            )
+        }
+        if age <= 75 {
+            return (
+                APCLocalization.format(.studioRuntimeHeartbeatHealthyFormat, relative),
+                "heart.fill",
+                APCDesign.success
+            )
+        }
+        if age <= 150 {
+            return (
+                APCLocalization.format(.studioRuntimeHeartbeatWaitingFormat, relative),
+                "hourglass",
+                APCDesign.warning
+            )
+        }
+        return (
+            APCLocalization.format(.studioRuntimeHeartbeatStaleFormat, relative),
+            "exclamationmark.triangle.fill",
+            APCDesign.destructive
+        )
+    }
+}
+
+private enum PetStudioTimestamp {
+    static func date(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    static func relative(_ date: Date, to now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: APCLocalization.interfaceLocaleIdentifier)
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 
@@ -907,39 +1080,150 @@ struct SubmittedFormSummary: View {
 }
 
 struct GenerationTimelineRow: View {
-    var message: GenerationMessage
-
-    private var isUser: Bool { message.role == "user" }
+    var item: MakerHistoryProgressItem
 
     var body: some View {
-        if PetStudioPresentation.isProgressMessage(message) {
-            Label(message.content, systemImage: "gearshape.2")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(isUser ? APCLocalization.text(.studioMessageYou) : "AI")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(message.content)
-                    .font(.callout)
-                    .textSelection(.enabled)
-            }
-            .padding(12)
+        Label(item.content, systemImage: "gearshape.2")
+            .font(.callout)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isUser ? APCDesign.accentSoft : Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isUser ? APCDesign.accent.opacity(0.35) : APCDesign.stroke, lineWidth: 1)
+            .padding(.vertical, 6)
+    }
+}
+
+private struct CodexGenerationConversationView: View {
+    let messages: [GenerationMessage]
+    let messageRevision: String
+    let isActive: Bool
+
+    @State private var scrollPosition: String?
+    @State private var followsLatest = true
+
+    private let bottomID = "codex-conversation-bottom"
+
+    private var entries: [CodexGenerationConversationEntry] {
+        PetStudioPresentation.codexConversationEntries(messages)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label(
+                    APCLocalization.text(.studioCodexConversationTitle),
+                    systemImage: "text.bubble"
+                )
+                .font(.headline)
+                Spacer()
+                if !followsLatest, !entries.isEmpty {
+                    Button {
+                        followsLatest = true
+                        scrollPosition = bottomID
+                    } label: {
+                        Label(
+                            APCLocalization.text(.studioCodexConversationLatest),
+                            systemImage: "arrow.down"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(APCLocalization.text(.studioCodexConversationLatest))
+                    .accessibilityIdentifier("maker.session.codex.latest")
+                }
             }
-            .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(entries) { entry in
+                        CodexGenerationConversationRow(entry: entry)
+                            .id(entry.id)
+                    }
+
+                    if entries.isEmpty {
+                        if isActive {
+                            ProgressView(APCLocalization.text(.studioCodexConversationWaiting))
+                        } else {
+                            ContentUnavailableView(
+                                APCLocalization.text(.studioCodexConversationEmpty),
+                                systemImage: "text.bubble"
+                            )
+                        }
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomID)
+                }
+                .scrollTargetLayout()
+                .padding(16)
+            }
+            .scrollPosition(id: $scrollPosition, anchor: .bottom)
+            .scrollIndicators(.visible)
+            .frame(minHeight: 260, idealHeight: 320, maxHeight: 420)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(APCDesign.stroke, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .onAppear {
+                scrollPosition = bottomID
+            }
+            .onChange(of: messageRevision) { _, _ in
+                guard followsLatest else { return }
+                scrollPosition = bottomID
+            }
+            .onChange(of: scrollPosition) { _, newValue in
+                guard let newValue else { return }
+                followsLatest = newValue == bottomID
+            }
+        }
+        .accessibilityIdentifier("maker.session.codex.conversation")
+    }
+}
+
+private struct CodexGenerationConversationRow: View {
+    let entry: CodexGenerationConversationEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(entry.role == .user
+                ? APCLocalization.text(.studioMessageYou)
+                : APCLocalization.text(.studioCodexConversationAgent))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(entry.content)
+                .font(.callout)
+                .textSelection(.enabled)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(entry.role == .user
+                    ? APCDesign.accentSoft
+                    : Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    entry.role == .user ? APCDesign.accent.opacity(0.35) : APCDesign.stroke,
+                    lineWidth: 1
+                )
         }
     }
+}
+
+struct CodexGenerationConversationEntry: Identifiable, Equatable {
+    enum Role: Equatable {
+        case user
+        case codex
+    }
+
+    let id: String
+    let role: Role
+    var content: String
+    fileprivate let streamsCodexMessage: Bool
 }
 
 struct ValidatedBaselineInspector: View {
@@ -1180,6 +1464,8 @@ enum PetStudioPresentation {
         case current
         case upcoming
         case failed
+        case cancelled
+        case unrecorded
 
         var systemImage: String {
             switch self {
@@ -1187,6 +1473,8 @@ enum PetStudioPresentation {
             case .current: "circle.fill"
             case .upcoming: "circle"
             case .failed: "exclamationmark.circle.fill"
+            case .cancelled: "xmark.circle.fill"
+            case .unrecorded: "questionmark.circle"
             }
         }
 
@@ -1196,6 +1484,8 @@ enum PetStudioPresentation {
             case .current: APCDesign.accent
             case .upcoming: .secondary
             case .failed: APCDesign.destructive
+            case .cancelled: .secondary
+            case .unrecorded: .secondary
             }
         }
 
@@ -1205,12 +1495,77 @@ enum PetStudioPresentation {
             case .current: APCLocalization.text(.studioStageCurrent)
             case .upcoming: APCLocalization.text(.studioStageUpcoming)
             case .failed: APCLocalization.text(.studioStageFailed)
+            case .cancelled: APCLocalization.text(.studioCancelledTitle)
+            case .unrecorded: APCLocalization.text(.studioStageUnrecorded)
             }
         }
     }
 
     static func showsModificationWorkspace(for session: GenerationSession) -> Bool {
         session.operation == .modify && session.state != .idle
+    }
+
+    static func historyOperationTitle(_ operation: GenerationOperation) -> String {
+        APCLocalization.text(
+            operation == .modify
+                ? .libraryHistoryOperationModify
+                : .libraryHistoryOperationCreate
+        )
+    }
+
+    static func historyStatusTitle(_ status: GenerationJobHistoryStatus) -> String {
+        let key: APCLocalizationKey = switch status {
+        case .pending: .libraryHistoryStatusPending
+        case .running: .libraryHistoryStatusRunning
+        case .waitingForUser: .libraryHistoryStatusWaiting
+        case .completed: .libraryHistoryStatusCompleted
+        case .failed: .libraryHistoryStatusFailed
+        case .canceled: .libraryHistoryStatusCancelled
+        }
+        return APCLocalization.text(key)
+    }
+
+    static func historyStatusTone(_ status: GenerationJobHistoryStatus) -> StatusBadge.Tone {
+        switch status {
+        case .completed: .good
+        case .failed: .destructive
+        case .pending, .running, .waitingForUser: .accent
+        case .canceled: .neutral
+        }
+    }
+
+    static func historyStyleTitle(_ style: String?) -> String {
+        guard let style = style?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !style.isEmpty
+        else { return "—" }
+        return StylePreset(rawValue: style).map {
+            APCLocalizedPresentation.styleTitle($0)
+        } ?? style
+    }
+
+    static func historySessionDetail(
+        _ availability: GenerationStudioSessionAvailability
+    ) -> String {
+        let key: APCLocalizationKey = switch availability {
+        case .available: .studioHistorySessionAvailable
+        case .archived: .studioHistorySessionArchived
+        case .missing: .studioHistorySessionMissing
+        case .unavailable: .studioHistorySessionUnavailable
+        case .notCreated: .studioHistorySessionNotCreated
+        }
+        return APCLocalization.text(key)
+    }
+
+    static func historySessionSystemImage(
+        _ session: GenerationStudioSessionNavigation
+    ) -> String {
+        switch session.availability {
+        case .available: "arrow.up.forward.app"
+        case .archived: "archivebox"
+        case .missing: "questionmark.folder"
+        case .unavailable: "exclamationmark.triangle"
+        case .notCreated: "bubble.left.and.exclamationmark.bubble.right"
+        }
     }
 
     static func timingSummary(
@@ -1252,8 +1607,54 @@ enum PetStudioPresentation {
         }
     }
 
+    static func progressMessages(_ messages: [GenerationMessage]) -> [GenerationMessage] {
+        messages.filter(isProgressMessage)
+    }
+
+    static func codexConversationEntries(
+        _ messages: [GenerationMessage]
+    ) -> [CodexGenerationConversationEntry] {
+        var entries: [CodexGenerationConversationEntry] = []
+        for message in messages {
+            if message.role == "user", message.kind == nil {
+                entries.append(CodexGenerationConversationEntry(
+                    id: message.id,
+                    role: .user,
+                    content: message.content,
+                    streamsCodexMessage: false
+                ))
+                continue
+            }
+
+            let streamsCodexMessage = message.role == "assistant"
+                && message.kind == "codex_message"
+            let isInputRequest = message.role == "assistant"
+                && message.kind == "input_request"
+            guard streamsCodexMessage || isInputRequest else { continue }
+
+            if streamsCodexMessage,
+               let lastIndex = entries.indices.last,
+               entries[lastIndex].streamsCodexMessage {
+                entries[lastIndex].content += message.content
+            } else {
+                entries.append(CodexGenerationConversationEntry(
+                    id: message.id,
+                    role: .codex,
+                    content: message.content,
+                    streamsCodexMessage: streamsCodexMessage
+                ))
+            }
+        }
+        return entries
+    }
+
     static func isProgressMessage(_ message: GenerationMessage) -> Bool {
-        message.kind == "generation_progress" || message.kind == "generation_started"
+        guard let kind = message.kind else { return false }
+        return kind == "generation_progress"
+            || kind == "generation_started"
+            || kind == "generation_resumed"
+            || kind == "generation_checkpoint"
+            || kind.hasPrefix("generation_activity_")
     }
 
     static func failureDetail(
@@ -1265,6 +1666,12 @@ enum PetStudioPresentation {
         guard maximumSummaryScalars > 0,
               let failure = messages.last(where: { $0.kind == "generation_failed" })
         else { return recovery }
+
+        if failure.content.contains("bounded checkpoint turns")
+            || failure.content.contains("固定续接次数上限")
+        {
+            return APCLocalization.text(.studioLegacyCheckpointFailure)
+        }
 
         let sanitized = AppDiagnosticRedactor.sanitizeLegacyLog(
             failure.content,
@@ -1296,8 +1703,9 @@ enum PetStudioPresentation {
     static func statusTone(for state: GenerationSessionState) -> StatusBadge.Tone {
         switch state {
         case .succeeded: .good
-        case .failed: .warning
-        case .starting, .running, .waitingForInput, .cancelling: .accent
+        case .failed: .destructive
+        case .paused, .recoverableFailed: .warning
+        case .starting, .running, .waitingForInput, .cancelling, .cancelCleanup: .accent
         case .idle, .cancelled: .neutral
         }
     }
@@ -1309,9 +1717,15 @@ enum PetStudioPresentation {
     static func stageState(
         at index: Int,
         activeIndex: Int,
-        sessionState: GenerationSessionState
+        sessionState: GenerationSessionState,
+        hasRecordedRuntimePhase: Bool = true
     ) -> StageState {
+        if !hasRecordedRuntimePhase,
+           sessionState == .failed || sessionState == .cancelled {
+            return .unrecorded
+        }
         if sessionState == .failed, index == activeIndex { return .failed }
+        if sessionState == .cancelled, index == activeIndex { return .cancelled }
         if sessionState == .succeeded || index < activeIndex { return .complete }
         if index == activeIndex, sessionState != .idle { return .current }
         return .upcoming

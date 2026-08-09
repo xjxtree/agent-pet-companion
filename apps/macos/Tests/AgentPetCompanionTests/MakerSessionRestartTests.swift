@@ -363,7 +363,8 @@ struct MakerSessionRestartTests {
                 onReady: { _ in }
             ),
             applicationAppearanceApplier: { _ in },
-            petCoreRequestOverride: request
+            petCoreRequestOverride: request,
+            initialPetStudioCodexAvailability: .available
         )
     }
 

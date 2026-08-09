@@ -130,12 +130,15 @@ let supportedMainWindowTitles: Set<String> = [
     "Agent 连接", "Agent Connections",
     "服务与诊断", "Service & Diagnostics",
 ]
+let controlCenterWindowIdentifier = "dev.agentpet.companion.control-center"
+func isControlCenterWindow(_ window: AXUIElement) -> Bool {
+    string(window, kAXIdentifierAttribute) == controlCenterWindowIdentifier
+        || supportedMainWindowTitles.contains(string(window, kAXTitleAttribute))
+}
 var resolvedMainWindow: AXUIElement?
 for _ in 0..<40 {
     let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []
-    resolvedMainWindow = windows.first(where: {
-        supportedMainWindowTitles.contains(string($0, kAXTitleAttribute))
-    })
+    resolvedMainWindow = windows.first(where: isControlCenterWindow)
     if resolvedMainWindow != nil {
         break
     }
@@ -150,32 +153,48 @@ guard let mainWindow = resolvedMainWindow else {
 // center. Finish that isolated flow through its stable semantic Skip action;
 // the onboarding-specific scene progression is validated separately.
 var onboardingWasPresented = false
+var onboardingSkipAction: AXUIElement?
 for _ in 0..<80 {
     let currentNodes = snapshotNodes(mainWindow)
     if currentNodes.contains(where: {
         $0.identifier == "onboarding.root"
     }) {
         onboardingWasPresented = true
-        guard let skip = currentNodes.first(where: {
+        if let skip = currentNodes.first(where: {
             $0.identifier == "onboarding.skip"
                 && actions($0.element).contains(kAXPressAction as String)
-        }) else {
-            fputs("main window UI validation failed: onboarding has no semantic Skip action\n", stderr)
-            exit(1)
+        }) {
+            onboardingSkipAction = skip.element
+            break
         }
-        let result = AXUIElementPerformAction(
-            skip.element,
-            kAXPressAction as CFString
-        )
-        if result != .success {
-            fputs("main window UI validation failed: onboarding Skip action failed: \(result.rawValue)\n", stderr)
-            exit(1)
-        }
-        break
     }
     usleep(100_000)
 }
 if onboardingWasPresented {
+    guard let onboardingSkipAction else {
+        fputs("main window UI validation failed: onboarding has no enabled semantic Skip action\n", stderr)
+        let onboardingNodes = snapshotNodes(mainWindow)
+            .filter {
+                $0.identifier.hasPrefix("onboarding.")
+                    || $0.strings.contains(where: { $0.localizedCaseInsensitiveContains("skip") })
+            }
+            .map {
+                "\($0.role):\($0.identifier):\($0.strings.joined(separator: "/")):actions=\(actions($0.element).joined(separator: ","))"
+            }
+            .joined(separator: " | ")
+        if !onboardingNodes.isEmpty {
+            fputs("onboarding nodes: \(onboardingNodes)\n", stderr)
+        }
+        exit(1)
+    }
+    let result = AXUIElementPerformAction(
+        onboardingSkipAction,
+        kAXPressAction as CFString
+    )
+    if result != .success {
+        fputs("main window UI validation failed: onboarding Skip action failed: \(result.rawValue)\n", stderr)
+        exit(1)
+    }
     for _ in 0..<40 {
         if !snapshotNodes(mainWindow).contains(where: {
             $0.identifier == "onboarding.root"
@@ -220,12 +239,17 @@ func setMainWindowSize(_ requestedSize: CGSize, context: String) {
 }
 
 // Exercise the real supported minimum before expanding to the all-column
-// structure used to validate navigation order across all five pages.
+// structure used to validate navigation order across all five pages. AXSize
+// measures the whole NSWindow, so its height includes titlebar/toolbar chrome
+// above the 520-point SwiftUI content minimum.
 setMainWindowSize(supportedMinimumSize, context: "supported minimum")
 guard let compactSize = size(mainWindow, kAXSizeAttribute),
       abs(compactSize.width - supportedMinimumSize.width) <= 1,
-      abs(compactSize.height - supportedMinimumSize.height) <= 1 else {
-    fputs("main window UI validation failed: supported minimum size was not applied\n", stderr)
+      compactSize.height >= supportedMinimumSize.height else {
+    let observed = size(mainWindow, kAXSizeAttribute)
+        .map { "\($0.width)x\($0.height)" }
+        ?? "missing"
+    fputs("main window UI validation failed: supported minimum size was not applied; observed \(observed)\n", stderr)
     exit(1)
 }
 
@@ -253,13 +277,20 @@ func containsIdentifier(_ identifier: String, in nodes: [Node]) -> Bool {
     nodes.contains { $0.identifier == identifier }
 }
 
-func mainWindowTitleMatches(_ candidates: [String]) -> Bool {
-    candidates.contains(string(mainWindow, kAXTitleAttribute))
-}
-
 func requireAny(_ candidates: [String], _ context: String) {
     if !containsAny(candidates, in: nodes) {
         fputs("main window UI validation failed: missing \(context): \(candidates.joined(separator: " / "))\n", stderr)
+        if context == "bundled pet" {
+            let visiblePetNodes = nodes
+                .filter { $0.identifier.hasPrefix("pet-library.card.") }
+                .map {
+                    "\($0.role):\($0.identifier):\($0.strings.joined(separator: "/"))"
+                }
+                .joined(separator: " | ")
+            if !visiblePetNodes.isEmpty {
+                fputs("visible pet cards: \(visiblePetNodes)\n", stderr)
+            }
+        }
         exit(1)
     }
 }
@@ -337,13 +368,10 @@ setMainWindowSize(
 )
 for _ in 0..<80 {
     nodes = snapshotNodes(mainWindow)
-    let strings = nodes.flatMap(\.strings)
     let libraryInventoryIsVisible =
         containsIdentifier("pet-library.collection-title", in: nodes)
         && containsIdentifier("pet-library.grid", in: nodes)
-        && ["星雾团子", "Bytebud 字节芽", "桃蕾"].allSatisfy { petName in
-            strings.contains { $0 == petName || $0.contains(petName) }
-        }
+        && containsAny(["全部宠物 · 4", "All Pets · 4"], in: nodes)
     if libraryInventoryIsVisible {
         break
     }
@@ -351,9 +379,60 @@ for _ in 0..<80 {
 }
 requireIdentifier("pet-library.collection-title", "library collection title")
 requireIdentifier("pet-library.grid", "library grid")
+requireIdentifier("sidebar.navigation-list", "sidebar navigation list")
+requireIdentifier("sidebar.configuration-live-preview", "sidebar live preview")
+requireIdentifier("sidebar.current-pet", "sidebar current-pet row")
+requireAny(["全部宠物 · 4", "All Pets · 4"], "seeded and imported pet count")
 requireAny(["星雾团子"], "bundled pet")
-requireAny(["Bytebud 字节芽"], "bundled pet")
-requireAny(["桃蕾"], "bundled pet")
+
+guard let navigationFrame = nodes.first(where: {
+    $0.identifier == "sidebar.navigation-list"
+})?.frame,
+let previewFrame = nodes.first(where: {
+    $0.identifier == "sidebar.configuration-live-preview"
+})?.frame,
+let identityFrame = nodes.first(where: {
+    $0.identifier == "sidebar.current-pet"
+})?.frame,
+navigationFrame.width > 0,
+previewFrame.width > 0,
+previewFrame.height > 0,
+identityFrame.height > 0,
+previewFrame.minX >= navigationFrame.minX - 1,
+previewFrame.maxX <= navigationFrame.maxX + 1,
+previewFrame.maxY <= identityFrame.minY + 1,
+identityFrame.minX >= navigationFrame.minX - 1,
+identityFrame.maxX <= navigationFrame.maxX + 1 else {
+    fputs("main window UI validation failed: sidebar preview is not pinned above its identity row\n", stderr)
+    exit(1)
+}
+
+guard let libraryGrid = nodes.first(where: {
+    $0.identifier == "pet-library.grid"
+}), actions(libraryGrid.element).contains("AXScrollToBottom") else {
+    fputs("main window UI validation failed: pet grid does not expose scroll-to-bottom\n", stderr)
+    exit(1)
+}
+let scrollToBottomResult = AXUIElementPerformAction(
+    libraryGrid.element,
+    "AXScrollToBottom" as CFString
+)
+if scrollToBottomResult != .success {
+    fputs("main window UI validation failed: pet grid could not scroll to bottom: \(scrollToBottomResult.rawValue)\n", stderr)
+    exit(1)
+}
+for _ in 0..<40 {
+    nodes = snapshotNodes(mainWindow)
+    let lastBundledRowIsVisible =
+        containsAny(["Bytebud 字节芽"], in: nodes)
+        && containsAny(["桃蕾"], in: nodes)
+    if lastBundledRowIsVisible {
+        break
+    }
+    usleep(100_000)
+}
+requireAny(["Bytebud 字节芽"], "bottom pet row")
+requireAny(["桃蕾"], "bottom pet row")
 
 let libraryNavigationLabel = resolveVisibleControlLabel(
     ["宠物库", "Pet Library"],
@@ -512,20 +591,19 @@ let buttonRole = kAXButtonRole as String
 pressControl(identifier: "sidebar.navigation.maker")
 waitFor("AI Pet Maker page") { nodes in
     containsIdentifier("maker.page", in: nodes)
-        && containsIdentifier("product.maker.page-header", in: nodes)
-        && containsIdentifier("maker.layout.describe", in: nodes)
+        && containsIdentifier("maker.session-list", in: nodes)
+        && containsIdentifier("maker.session-list.new", in: nodes)
+        && containsIdentifier("maker.session-list.draft", in: nodes)
+        && containsIdentifier("maker.draft", in: nodes)
+        && containsIdentifier("maker.draft.discard", in: nodes)
+        && containsIdentifier("maker.draft.submit", in: nodes)
+        && containsIdentifier("product.maker.draft.page-header", in: nodes)
         && containsIdentifier("maker.brief", in: nodes)
         && containsIdentifier("maker.brief.description", in: nodes)
-        && containsIdentifier("product.maker.primary-experience-card", in: nodes)
-        && containsIdentifier(
-            "product.maker.primary-experience-card.primary-action",
-            in: nodes
-        )
         && containsAny(["新宠物", "New Pet"], in: nodes)
         && containsAny(["参考图（可选）", "Reference Images (Optional)"], in: nodes)
         && containsAny(["开始制作", "Create Pet"], in: nodes)
         && !containsIdentifier("pet-library.page", in: nodes)
-        && mainWindowTitleMatches(["AI宠物制作", "AI Pet Maker"])
 }
 let makerNodes = snapshotNodes(mainWindow)
 let removedStudioTabLabels: Set<String> = ["新建", "New", "宠物库", "Pet Library"]
@@ -540,17 +618,14 @@ if makerNodes.contains(where: { node in
 pressControl(identifier: "sidebar.navigation.configuration")
 waitFor("Pet Configuration page") { nodes in
     containsIdentifier("configuration.root", in: nodes)
-        && containsIdentifier("product.configuration.page-header", in: nodes)
-        && containsIdentifier("configuration.subpage-picker", in: nodes)
-        && containsIdentifier("configuration.page.appearance", in: nodes)
+        && containsIdentifier("configuration.appearance.enabled", in: nodes)
         && containsIdentifier("configuration.appearance.status-bubble", in: nodes)
         && containsIdentifier("configuration.appearance.theme", in: nodes)
         && containsIdentifier("configuration.appearance.pet-size", in: nodes)
-        && (
-            containsIdentifier("configuration.layout.wide", in: nodes)
-                || containsIdentifier("configuration.layout.compact", in: nodes)
+        && containsIdentifier(
+            "product.configuration.appearance.advanced-details-disclosure",
+            in: nodes
         )
-        && mainWindowTitleMatches(["宠物配置", "Pet Configuration"])
 }
 
 pressControl(identifier: "sidebar.navigation.connections")
@@ -558,34 +633,22 @@ waitFor("Agent Connections page") { nodes in
     containsIdentifier("connections.root", in: nodes)
         && containsIdentifier("product.connections.page-header", in: nodes)
         && containsIdentifier("connections.agent-section.codex", in: nodes)
-        && containsIdentifier("product.connections.codex.agent-health-row", in: nodes)
-        && containsIdentifier(
-            "product.connections.codex.advanced-details-disclosure",
-            in: nodes
-        )
-        && mainWindowTitleMatches(["Agent 连接", "Agent Connections"])
+        && containsIdentifier("connections.primary.check-all", in: nodes)
+        && containsIdentifier("connections.secondary.setup-all", in: nodes)
 }
 
 pressControl(identifier: "sidebar.navigation.diagnostics")
 waitFor("Service & Diagnostics page") { nodes in
     containsIdentifier("diagnostics.page", in: nodes)
         && containsIdentifier("diagnostics.layout.single-column", in: nodes)
-        && containsIdentifier("diagnostics.service-summary", in: nodes)
-        && containsIdentifier(
-            "product.diagnostics.service.primary-experience-card",
-            in: nodes
-        )
+        && containsIdentifier("diagnostics.service-details", in: nodes)
         && containsIdentifier(
             "product.diagnostics.service.primary-experience-card.primary-action",
             in: nodes
         )
-        && containsIdentifier("diagnostics.log-package", in: nodes)
-        && containsIdentifier("diagnostics.export", in: nodes)
-        && containsIdentifier("diagnostics.technical-details", in: nodes)
         && containsAny(["服务状态", "Service Status"], in: nodes)
-        && containsAny(["日志打包下载", "Diagnostic Download"], in: nodes)
+        && containsAny(["诊断日志包", "Diagnostic Archive"], in: nodes)
         && containsAny(["打包并下载", "Package and Download"], in: nodes)
-        && mainWindowTitleMatches(["服务与诊断", "Service & Diagnostics"])
 }
 
 pressControl(identifier: "sidebar.navigation.library")
@@ -595,16 +658,12 @@ waitFor("Pet Library page") { nodes in
         && containsIdentifier("pet-library.hero", in: nodes)
         && containsIdentifier("pet-library.grid", in: nodes)
         && contains("星雾团子", in: nodes)
-        && contains("Bytebud 字节芽", in: nodes)
         && (contains("导入", in: nodes) || contains("Import", in: nodes))
-        && mainWindowTitleMatches(["宠物库", "Pet Library"])
 }
 
 func currentMainWindows() -> [AXUIElement] {
     let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []
-    return windows.filter {
-        supportedMainWindowTitles.contains(string($0, kAXTitleAttribute))
-    }
+    return windows.filter(isControlCenterWindow)
 }
 
 guard let closeButtonValue = copy(mainWindow, kAXCloseButtonAttribute as String) else {

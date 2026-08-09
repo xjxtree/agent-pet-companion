@@ -71,6 +71,16 @@ enum SharedProductComponentLayout {
     static let previewMinimumHeight: CGFloat = 220
 }
 
+/// Keeps the one-point rhythm formerly occupied by a separator without
+/// drawing a line or exposing an accessibility element.
+struct LayoutPreservingHorizontalSeparatorGap: View {
+    var body: some View {
+        Color.clear
+            .frame(height: 1)
+            .accessibilityHidden(true)
+    }
+}
+
 /// A closed visual vocabulary. Low-level check strings and arbitrary payloads
 /// never decide status color, progress, or action authority.
 enum ProductStatusAppearance: String, CaseIterable {
@@ -290,6 +300,7 @@ struct PrimaryExperienceCard<Action: Hashable, Content: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             identity.accessibilityIdentifier(for: .primaryExperienceCard)
         )
@@ -546,6 +557,49 @@ extension AgentTaskVerificationState {
 /// Navigation authority and accessibility copy come from the same validated
 /// `OverlaySessionContent`, so exact-session, Agent-host, and unavailable
 /// destinations cannot drift into separate visual and assistive behaviors.
+enum SessionBubbleRowPresentation {
+    case detailed
+    case standaloneSummary
+}
+
+/// A compact, closed status vocabulary for standalone session cards. Running
+/// states stay visually neutral; only terminal or user-attention states add a
+/// symbol, with no accessory button, capsule, or second card boundary.
+enum SessionBubbleRowStateIndicator: String, Equatable {
+    case needsInput
+    case done
+    case failed
+
+    init?(eventType: AgentEventKind?) {
+        switch eventType {
+        case .waiting:
+            self = .needsInput
+        case .done:
+            self = .done
+        case .failed:
+            self = .failed
+        case .start, .thinking, .plan, .tool, nil:
+            return nil
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .needsInput: "exclamationmark.circle.fill"
+        case .done: "checkmark.circle.fill"
+        case .failed: "xmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .needsInput: .orange
+        case .done: .green
+        case .failed: .red
+        }
+    }
+}
+
 struct SessionBubbleRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.overlayBubbleFontScale) private var fontScale
@@ -553,8 +607,8 @@ struct SessionBubbleRow: View {
     var session: OverlaySessionContent
     var action: () -> Void
     var dismissAction: (() -> Void)?
-    var agentIndicatorSource: AgentSource?
-    var agentIndicatorTitle: String?
+    var presentation: SessionBubbleRowPresentation
+    var agentName: String?
     var reservedTrailingAccessoryWidth: CGFloat
     var primaryActionLabel: String?
     @State private var hovered = false
@@ -564,16 +618,16 @@ struct SessionBubbleRow: View {
         session: OverlaySessionContent,
         action: @escaping () -> Void,
         dismissAction: (() -> Void)? = nil,
-        agentIndicatorSource: AgentSource? = nil,
-        agentIndicatorTitle: String? = nil,
+        presentation: SessionBubbleRowPresentation = .detailed,
+        agentName: String? = nil,
         reservedTrailingAccessoryWidth: CGFloat = 0,
         primaryActionLabel: String? = nil
     ) {
         self.session = session
         self.action = action
         self.dismissAction = dismissAction
-        self.agentIndicatorSource = agentIndicatorSource
-        self.agentIndicatorTitle = agentIndicatorTitle
+        self.presentation = presentation
+        self.agentName = agentName
         self.reservedTrailingAccessoryWidth = reservedTrailingAccessoryWidth
         self.primaryActionLabel = primaryActionLabel
     }
@@ -600,40 +654,161 @@ struct SessionBubbleRow: View {
     }
 
     private var rowContent: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if let agentIndicatorSource {
-                AgentIconView(
-                    source: agentIndicatorSource,
-                    size: OverlayBubbleTypography.scaledControlMetric(
-                        18,
-                        scale: fontScale
-                    )
-                )
-                .padding(.top, 1)
-                .accessibilityHidden(true)
+        Group {
+            switch presentation {
+            case .detailed:
+                detailedTextContent
+            case .standaloneSummary:
+                standaloneSummaryContent
             }
-
-            sessionTextContent
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, OverlayGeometry.bubbleSessionHorizontalPadding)
         .padding(.vertical, OverlayGeometry.bubbleSessionVerticalPadding)
-        .padding(.trailing, reservedTrailingAccessoryWidth)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill((statusColor ?? .clear).opacity(0.12))
-
-                if hovered || focused {
+        .background {
+            switch presentation {
+            case .detailed:
+                ZStack {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
+                        .fill((statusColor ?? .clear).opacity(0.12))
+
+                    if hovered || focused {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.primary.opacity(0.05))
+                    }
                 }
+            case .standaloneSummary:
+                // The card already owns one full glass surface. Keeping this
+                // row transparent avoids a second rounded status/hover layer
+                // that reads as nested borders in the flat session tray.
+                Color.clear
             }
-        )
+        }
     }
 
-    private var sessionTextContent: some View {
+    private var standaloneSummaryContent: some View {
+        VStack(alignment: .leading, spacing: OverlayGeometry.bubbleStandaloneMetadataSpacing) {
+            standaloneIdentityLine
+                .padding(.trailing, reservedTrailingAccessoryWidth)
+
+            standaloneSummaryText
+                .lineLimit(
+                    OverlayGeometry.bubbleStandaloneSummaryLineLimit,
+                    reservesSpace: true
+                )
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(
+                    height: OverlayGeometry.bubbleStandaloneSummaryTextHeight(
+                        fontScale: fontScale
+                    ),
+                    alignment: .topLeading
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var standaloneIdentityLine: some View {
+        HStack(alignment: .center, spacing: 5) {
+            if let source = session.source {
+                AgentIconView(
+                    source: source,
+                    size: OverlayGeometry.bubbleHeaderAvatarWidth
+                )
+                .accessibilityHidden(true)
+            }
+
+            if let agentName = resolvedStandaloneAgentName {
+                Text(agentName)
+                    .font(OverlayBubbleTypography.font(
+                        .caption1,
+                        weight: .semibold,
+                        scale: fontScale
+                    ))
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+            }
+
+            if let surfaceLabel = session.surfaceLabel {
+                Text("· \(surfaceLabel)")
+                    .font(OverlayBubbleTypography.font(
+                        .caption2,
+                        weight: .medium,
+                        scale: fontScale
+                    ))
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Spacer(minLength: 8)
+
+            if let stateIndicator {
+                Image(systemName: stateIndicator.systemImage)
+                    .font(OverlayBubbleTypography.font(
+                        .caption1,
+                        weight: .semibold,
+                        scale: fontScale
+                    ))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(stateIndicator.color)
+                    .frame(
+                        width: OverlayBubbleTypography.scaledControlMetric(
+                            15,
+                            scale: fontScale
+                        ),
+                        height: OverlayBubbleTypography.scaledControlMetric(
+                            15,
+                            scale: fontScale
+                        )
+                    )
+                    .help(session.statusText)
+                    .accessibilityHidden(true)
+                    .accessibilityIdentifier(
+                        "overlay.session.status.\(stateIndicator.rawValue)"
+                    )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var resolvedStandaloneAgentName: String? {
+        let resolved = (agentName ?? session.source?.title)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolved?.isEmpty == false ? resolved : nil
+    }
+
+    private var standaloneSummaryText: Text {
+        let title = Text(session.sessionTitle)
+            .font(OverlayBubbleTypography.font(
+                .callout,
+                weight: .semibold,
+                scale: fontScale
+            ))
+            .foregroundColor(.primary)
+        guard !session.standaloneSummaryText.isEmpty else { return title }
+        return title
+            + Text(" · ")
+                .font(OverlayBubbleTypography.font(
+                    .callout,
+                    weight: .medium,
+                    scale: fontScale
+                ))
+                .foregroundColor(.secondary)
+            + Text(session.standaloneSummaryText)
+                .font(OverlayBubbleTypography.font(
+                    .callout,
+                    weight: .regular,
+                    scale: fontScale
+                ))
+                .foregroundColor(.secondary)
+    }
+
+    private var detailedTextContent: some View {
         VStack(alignment: .leading, spacing: OverlayGeometry.bubbleSessionTitleSpacing) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(session.sessionTitle)
@@ -645,24 +820,6 @@ struct SessionBubbleRow: View {
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-
-                if let agentIndicatorTitle {
-                    Text(agentIndicatorTitle)
-                        .font(OverlayBubbleTypography.font(
-                            .caption2,
-                            weight: .semibold,
-                            scale: fontScale
-                        ))
-                        .foregroundStyle(Color.secondary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(
-                            Capsule()
-                                .fill(Color.secondary.opacity(0.12))
-                        )
-                }
 
                 if let surfaceLabel = session.surfaceLabel {
                     Text(surfaceLabel)
@@ -707,31 +864,12 @@ struct SessionBubbleRow: View {
                         }
                 }
 
-                // Every row reserves one trailing affordance slot so status
-                // badges align. Hover/focus reveals either the destination
-                // arrow or an explicit unavailable indicator.
-                Image(systemName: session.canOpen
-                    ? "arrow.up.forward"
-                    : "exclamationmark.circle")
-                    .font(OverlayBubbleTypography.font(
-                        .caption2,
-                        weight: .bold,
-                        scale: fontScale
-                    ))
-                    .foregroundStyle(session.canOpen ? Color.primary : Color.secondary)
-                    .frame(width: OverlayBubbleTypography.scaledControlMetric(
-                        9,
-                        scale: fontScale
-                    ))
-                    .opacity(hovered || focused ? 1 : 0)
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .easeOut(duration: OverlayMotion.controlFadeDuration),
-                        value: hovered || focused
-                    )
-                    .accessibilityHidden(true)
+                destinationIndicator
             }
+            .frame(
+                height: OverlayGeometry.bubbleDetailedHeaderHeight(fontScale: fontScale),
+                alignment: .top
+            )
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(session.primaryDetailText)
@@ -741,9 +879,12 @@ struct SessionBubbleRow: View {
                         scale: fontScale
                     ))
                     .foregroundStyle(Color.primary)
-                    .lineLimit(session.secondaryDetailText == nil
-                        ? OverlayGeometry.bubbleDetailLineLimit
-                        : 1)
+                    .lineLimit(
+                        session.secondaryDetailText == nil
+                            ? OverlayGeometry.bubbleDetailLineLimit
+                            : 1,
+                        reservesSpace: session.secondaryDetailText == nil
+                    )
                     .truncationMode(.tail)
 
                 if let secondaryDetailText = session.secondaryDetailText {
@@ -759,9 +900,39 @@ struct SessionBubbleRow: View {
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
+            .frame(
+                height: OverlayGeometry.bubbleDetailTextHeight(fontScale: fontScale),
+                alignment: .topLeading
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Every row reserves one trailing affordance slot. Hover/focus reveals
+    /// either the destination arrow or an explicit unavailable indicator.
+    private var destinationIndicator: some View {
+        Image(systemName: session.canOpen
+            ? "arrow.up.forward"
+            : "exclamationmark.circle")
+            .font(OverlayBubbleTypography.font(
+                .caption2,
+                weight: .bold,
+                scale: fontScale
+            ))
+            .foregroundStyle(session.canOpen ? Color.primary : Color.secondary)
+            .frame(width: OverlayBubbleTypography.scaledControlMetric(
+                9,
+                scale: fontScale
+            ))
+            .opacity(hovered || focused ? 1 : 0)
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                value: hovered || focused
+            )
+            .accessibilityHidden(true)
     }
 
     private var helpText: String {
@@ -778,12 +949,11 @@ struct SessionBubbleRow: View {
     }
 
     private var statusColor: Color? {
-        switch session.eventType {
-        case .waiting: .orange
-        case .failed: .red
-        case .done: .green
-        case .start, .thinking, .plan, .tool, nil: nil
-        }
+        SessionBubbleRowStateIndicator(eventType: session.eventType)?.color
+    }
+
+    private var stateIndicator: SessionBubbleRowStateIndicator? {
+        SessionBubbleRowStateIndicator(eventType: session.eventType)
     }
 }
 

@@ -120,6 +120,29 @@ struct ControlOverlayPanelTests {
     }
 
     @Test
+    func petSideDisclosureUsesTheSameStepwiseActionAtThePanelBoundary() throws {
+        let controllerSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/PetOverlayController.swift"
+            ),
+            encoding: .utf8
+        )
+        let overlaySource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/OverlayRootView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(controllerSource.contains(
+            "menuPanel.onPrimaryAction = { [weak store] in\n            store?.stepOverlayBubbleDisclosure()"
+        ))
+        #expect(overlaySource.contains(
+            "onPrimaryAction: { store.stepOverlayBubbleDisclosure() }"
+        ))
+    }
+
+    @Test
     func visibleOverlayTransitionsNeverCreateDeadInputWindows() throws {
         let controllerSource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(

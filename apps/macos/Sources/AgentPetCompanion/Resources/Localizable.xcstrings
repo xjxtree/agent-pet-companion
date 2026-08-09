@@ -817,18 +817,18 @@
         }
       }
     },
-    "app.update.convergence.action.retry": {
+    "app.update.convergence.action.check_again": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retry Update"
+            "value": "Check Again"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "重试更新"
+            "value": "重新检查"
           }
         }
       }
@@ -845,6 +845,166 @@
           "stringUnit": {
             "state": "translated",
             "value": "App 未能验证全部随附组件或受管 Agent 集成。你仍可使用现有宠物和数据，然后重试。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.bundled_pets.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This App copy does not contain every verified built-in pet file. Download the official release again, replace the App in Applications, then reopen it; your existing pets and data are preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 App 副本没有包含全部已验证的内置宠物文件。请重新下载官方 Release，替换“应用程序”中的 App 后再打开；现有宠物和数据不会丢失。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.bundled_pets.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bundled Pet Files Are Missing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 缺少内置宠物文件"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.conflict_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The managed location for %@ contains changed or unowned files, so the App left them untouched. Expand the Agent, move or restore the conflicting item, choose Set Up or Repair, then choose Check All."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的受管位置中存在已修改或不属于本 App 的文件，因此 App 为保护内容没有覆盖。请展开对应 Agent，先移走或恢复冲突项，再点击“一键设置或修复”，完成后点击“全部检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.failed_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The App could not update or verify the managed connector for %@. Expand the Agent, choose Set Up or Repair, follow the instructions, then choose Check All."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 无法更新或验证 %@ 的受管连接组件。请展开对应 Agent，点击“一键设置或修复”，按页面提示处理后再点击“全部检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.host_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connector source for %@ was updated, but the Agent command is unavailable, so the active version cannot be verified. Install or update the Agent, fully quit and reopen it, then choose Check All."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的连接组件源已更新，但 Agent 命令当前不可用，无法验证生效版本。请先安装或更新对应 Agent，完全退出并重新打开，再点击“全部检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.mixed_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These Agent connections need different fixes: %@. Expand each one, follow its repair, authorization, or restart guidance, then choose Check All."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这些 Agent 需要分别处理：%@。请逐一展开，按页面提示完成修复、授权或重启，然后点击“全部检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.title_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action Required for %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 连接需要处理"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.connectors.verification_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection files for %@ were updated, but the running Agent has not loaded and verified them. Fully quit and reopen the Agent, then choose Check All."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的连接文件已经更新，但运行中的 Agent 尚未加载并验证它们。请完全退出并重新打开对应 Agent，再点击“全部检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.service.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore did not return a verified current state. Open Service & Diagnostics, choose Recover Service, wait until it is online, then use Check Again on this notice."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore 没有返回已验证的最新状态。请打开“服务与诊断”，点击“恢复服务”，等待服务上线后，再在此提示中点击“重新检查”。"
+          }
+        }
+      }
+    },
+    "app.update.convergence.attention.service.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The Local Service Could Not Be Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证本地服务"
           }
         }
       }
@@ -2454,13 +2614,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Live Preview"
+            "value": "Pet Preview"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "实时预览"
+            "value": "宠物预览"
           }
         }
       }
@@ -2477,38 +2637,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "消息预览"
-          }
-        }
-      }
-    },
-    "config.mouse_passthrough": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Transparent-area Click-through"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "透明区域穿透"
-          }
-        }
-      }
-    },
-    "config.mouse_passthrough.detail": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Empty space around the pet does not block clicks in other apps."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "桌宠周围空白不拦截其他 App 的点击"
           }
         }
       }
@@ -2918,13 +3046,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "80–224 pt · Default 112 pt"
+            "value": "100–300 pt · Default 112 pt"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "80–224 pt · 默认 112 pt"
+            "value": "100–300 pt · 默认 112 pt"
           }
         }
       }
@@ -3750,13 +3878,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Checks whether the detected agent version supports this connector. Update the agent if the version is missing or unsupported."
+            "value": "Reports the detected host version as diagnostic context. Host versions never block compatibility; the managed connector and live runtime/channel checks decide connection health."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "检查当前 Agent 版本是否受连接器支持。若版本缺失或不受支持，请更新 Agent。"
+            "value": "把检测到的宿主版本作为诊断信息展示。宿主版本不会阻断兼容性；连接健康由受管连接器及实时宿主/通道检查决定。"
           }
         }
       }
@@ -3958,13 +4086,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No parseable version was returned; reviewed support is %@. Check the Agent installation, then recheck."
+            "value": "%@ did not return version information. This is non-blocking; use the connector and runtime/channel results."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Agent 未返回可解析版本；已审计支持范围为 %@。请检查 Agent 安装后重新检查。"
+            "value": "%@ 未返回版本信息。此项不阻断连接，请以连接器及宿主/通道检查结果为准。"
           }
         }
       }
@@ -3974,13 +4102,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Detected %@; supported versions: %@."
+            "value": "Detected %@ for %@. This is informational; compatibility is verified by the managed connector and live runtime/channel checks."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "检测到 %@；支持版本：%@。"
+            "value": "检测到 %@（%@）。此项仅供诊断；兼容性由受管连接器及实时宿主/通道检查验证。"
           }
         }
       }
@@ -3990,13 +4118,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Detected %@; reviewed support is %@. Use a supported version or update the App connector, then recheck."
+            "value": "Detected %@ for %@. Version information is non-blocking; use the connector and runtime/channel results."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "检测到 %@；已审计支持范围为 %@。请改用受支持版本或更新 App 连接器后重新检查。"
+            "value": "检测到 %@（%@）。版本信息不阻断连接，请以连接器及宿主/通道检查结果为准。"
           }
         }
       }
@@ -4006,13 +4134,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Detected %@; this connector requires %@. Update %@, then recheck."
+            "value": "Detected %@ for %@. Host versions do not gate compatibility; update %@ only if its own runtime check fails."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "检测到 %@；当前连接器要求 %@。请更新 %@ 后重新检查。"
+            "value": "检测到 %@（%@）。宿主版本不作为兼容性门槛；仅在 %@ 自身运行检查失败时再更新。"
           }
         }
       }
@@ -4214,13 +4342,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "2.1.212–2.1.216"
+            "value": "Informational only; no host-version gate"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "2.1.212–2.1.216"
+            "value": "仅供诊断；没有宿主版本门槛"
           }
         }
       }
@@ -4230,13 +4358,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1"
+            "value": "Informational only; no host-version gate"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "0.144.5 / 0.145.0-alpha.18 / 0.146.0-alpha.3.1"
+            "value": "仅供诊断；没有宿主版本门槛"
           }
         }
       }
@@ -4246,13 +4374,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "1.18.0–1.18.4"
+            "value": "Informational only; no host-version gate"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "1.18.0–1.18.4"
+            "value": "仅供诊断；没有宿主版本门槛"
           }
         }
       }
@@ -4262,13 +4390,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "0.80.10"
+            "value": "Informational only; no host-version gate"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "0.80.10"
+            "value": "仅供诊断；没有宿主版本门槛"
           }
         }
       }
@@ -5254,13 +5382,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Full check required"
+            "value": "Basic check complete"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "待完整检查"
+            "value": "基础检查完成"
           }
         }
       }
@@ -6385,6 +6513,22 @@
         }
       }
     },
+    "connections.summary.light": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Basic checks are complete; waiting for the full runtime check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础检查已完成，正在等待完整运行检测。"
+          }
+        }
+      }
+    },
     "connections.summary.needs_repair": {
       "localizations": {
         "en": {
@@ -6470,13 +6614,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The installed %@ version is not supported."
+            "value": "%@ version information does not block this connection."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前安装的 %@ 版本不受支持。"
+            "value": "%@ 的版本信息不会阻断此连接。"
           }
         }
       }
@@ -7777,6 +7921,22 @@
         }
       }
     },
+    "library.filtered_count.format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d of %d Pets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示 %d / %d 只"
+          }
+        }
+      }
+    },
     "library.animation.accessibility_format": {
       "localizations": {
         "en": {
@@ -7807,6 +7967,74 @@
             "value": "预览动作"
           }
         }
+      }
+    },
+    "library.animation.agent_group": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent State"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 状态"
+          }
+        }
+      }
+    },
+    "library.animation.interaction_group": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Interaction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地互动"
+          }
+        }
+      }
+    },
+    "library.animation.short.done": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Done" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+      }
+    },
+    "library.animation.short.failed": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "失败" } }
+      }
+    },
+    "library.animation.short.idle": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Rest" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "休息" } }
+      }
+    },
+    "library.animation.short.thinking": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Think" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "思考" } }
+      }
+    },
+    "library.animation.short.tool": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "工具" } }
+      }
+    },
+    "library.animation.short.waiting": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wait" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待" } }
       }
     },
     "library.authored_timing_summary.format": {
@@ -9420,7 +9648,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "缺少预览"
+            "value": "预览缺失"
           }
         }
       }
@@ -9494,13 +9722,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Enabled"
+            "value": "In Use"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已启用"
+            "value": "正在使用"
           }
         }
       }
@@ -9709,6 +9937,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "App 内置"
+          }
+        }
+      }
+    },
+    "library.source.all_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Sources"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部来源"
+          }
+        }
+      }
+    },
+    "library.source.filter_label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter by source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按来源筛选"
           }
         }
       }
@@ -13025,6 +13285,38 @@
         }
       }
     },
+    "studio.action.restart": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Over"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新开始"
+          }
+        }
+      }
+    },
+    "studio.action.resume": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续制作"
+          }
+        }
+      }
+    },
     "studio.action.cancelling": {
       "localizations": {
         "en": {
@@ -13430,13 +13722,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Up to 4 PNG or WebP images · 20 MiB each · 40 MiB total · 16 MP each"
+            "value": "Up to 4 PNG, JPG, or WebP images · 20 MiB each · 40 MiB total · 16 MP each"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "最多 4 张 PNG 或 WebP · 单张 20 MiB · 总计 40 MiB · 单张 1600 万像素"
+            "value": "最多 4 张 PNG、JPG 或 WebP · 单张 20 MiB · 总计 40 MiB · 单张 1600 万像素"
           }
         }
       }
@@ -13494,13 +13786,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The file contents do not match a valid PNG or WebP image."
+            "value": "The file contents do not match a valid PNG, JPG, or WebP image."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "文件内容不是有效且格式匹配的 PNG 或 WebP 图片。"
+            "value": "文件内容不是有效且格式匹配的 PNG、JPG 或 WebP 图片。"
           }
         }
       }
@@ -13606,13 +13898,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use a PNG or WebP reference image."
+            "value": "Use a PNG, JPG, or WebP reference image."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请选择 PNG 或 WebP 参考图。"
+            "value": "请选择 PNG、JPG 或 WebP 参考图。"
           }
         }
       }
@@ -13622,13 +13914,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose PNG or WebP images for character appearance or style reference."
+            "value": "Choose PNG, JPG, or WebP images for character appearance or style reference."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择用于角色形象或风格参考的 PNG 或 WebP 图片。"
+            "value": "选择用于角色形象或风格参考的 PNG、JPG 或 WebP 图片。"
           }
         }
       }
@@ -13709,6 +14001,182 @@
           "stringUnit": {
             "state": "translated",
             "value": "已提交"
+          }
+        }
+      }
+    },
+    "studio.codex.checking_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking whether Codex App Server is available. Creation stays disabled until the check completes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查本机 Codex App Server 是否可用；检查完成前不能发起制作。"
+          }
+        }
+      }
+    },
+    "studio.codex.checking_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking Codex"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查 Codex"
+          }
+        }
+      }
+    },
+    "studio.codex.conversation_agent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex"
+          }
+        }
+      }
+    },
+    "studio.codex.conversation_empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Codex conversation content"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无 Codex 会话内容"
+          }
+        }
+      }
+    },
+    "studio.codex.conversation_latest": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jump to latest"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "跳到最新内容"
+          }
+        }
+      }
+    },
+    "studio.codex.conversation_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Conversation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 会话内容"
+          }
+        }
+      }
+    },
+    "studio.codex.conversation_waiting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for Codex conversation content…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待 Codex 会话内容…"
+          }
+        }
+      }
+    },
+    "studio.codex.missing_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install Codex with App Server support, then reopen this page. Pet creation cannot start until Codex is available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请安装支持 App Server 的 Codex 后重新打开此页面；Codex 可用前不能发起宠物制作。"
+          }
+        }
+      }
+    },
+    "studio.codex.missing_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Is Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要安装 Codex"
+          }
+        }
+      }
+    },
+    "studio.codex.unavailable_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex App Server did not respond to its local readiness check. Pet creation remains disabled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex App Server 未通过本地可用性检查，当前不能发起宠物制作。"
+          }
+        }
+      }
+    },
+    "studio.codex.unavailable_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Is Unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 暂不可用"
           }
         }
       }
@@ -14097,6 +14565,310 @@
         }
       }
     },
+    "studio.runtime.checkpoint_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d continuations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已续接 %d 次"
+          }
+        }
+      }
+    },
+    "studio.runtime.current_action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current action"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前动作"
+          }
+        }
+      }
+    },
+    "studio.runtime.elapsed_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Running %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已运行 %@"
+          }
+        }
+      }
+    },
+    "studio.runtime.heartbeat_healthy_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Heartbeat healthy · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "心跳正常 · %@"
+          }
+        }
+      }
+    },
+    "studio.runtime.heartbeat_pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for first heartbeat"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待首个心跳"
+          }
+        }
+      }
+    },
+    "studio.runtime.heartbeat_stale_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No heartbeat for a while · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "长时间无心跳 · %@"
+          }
+        }
+      }
+    },
+    "studio.runtime.heartbeat_waiting_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for Codex update · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待 Codex 更新 · %@"
+          }
+        }
+      }
+    },
+    "studio.runtime.last_update_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last update · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最后更新 · %@"
+          }
+        }
+      }
+    },
+    "studio.session.resume_accepted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continuing from the original task workspace"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已从原任务工作区继续制作"
+          }
+        }
+      }
+    },
+    "studio.session.resume_failed_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t continue: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续制作失败：%@"
+          }
+        }
+      }
+    },
+    "studio.session.resume_starting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restoring the original task and Codex conversation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在恢复原任务与 Codex 会话"
+          }
+        }
+      }
+    },
+    "studio.session.resume_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task can’t be continued"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前任务无法继续制作"
+          }
+        }
+      }
+    },
+    "studio.session.cancel_confirm.action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消任务"
+          }
+        }
+      }
+    },
+    "studio.session.cancel_confirm.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel immediately interrupts the current Codex turn. Files already written to the workspace stay in history, but continuing later requires a new task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消会立即中断当前 Codex turn。已写入工作区的素材会保留，但之后需要重新开始一个新任务。"
+          }
+        }
+      }
+    },
+    "studio.session.cancel_confirm.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel this task?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认取消当前任务？"
+          }
+        }
+      }
+    },
+    "studio.session.legacy_checkpoint_failure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task stopped at the old fixed continuation limit; the Codex App Server connection did not fail. The original job, conversation, assets, and passed QA are preserved. Choose Continue to resume from the existing workspace."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务由旧版固定续接次数上限停止，并非 Codex App Server 连接故障。原 job、Codex 会话、素材和已通过 QA 均已保留；可点击“继续制作”从当前工作区接着运行。"
+          }
+        }
+      }
+    },
+    "studio.session.restart_confirm.action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create New Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建新任务"
+          }
+        }
+      }
+    },
+    "studio.session.restart_confirm.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This creates a new job and Codex conversation. The old task, assets, and QA records remain in history, but are not reused automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这会创建新的 job 和 Codex 会话；旧任务、素材和 QA 记录仍会保留在历史中，但不会自动复用。"
+          }
+        }
+      }
+    },
+    "studio.session.restart_confirm.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start over from scratch?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "从零重新开始？"
+          }
+        }
+      }
+    },
     "studio.session.cancelled_detail": {
       "localizations": {
         "en": {
@@ -14141,6 +14913,422 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前 revision 会保持不变。"
+          }
+        }
+      }
+    },
+    "studio.history.brief": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brief"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作需求"
+          }
+        }
+      }
+    },
+    "studio.history.created": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Created"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建时间"
+          }
+        }
+      }
+    },
+    "studio.history.detail_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务详情"
+          }
+        }
+      }
+    },
+    "studio.history.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No creation tasks yet. New, failed, and cancelled tasks will appear here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无制作任务；新任务、失败任务和已取消任务都会保留在这里。"
+          }
+        }
+      }
+    },
+    "studio.history.latest_codex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latest Codex Excerpt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最新 Codex 摘要"
+          }
+        }
+      }
+    },
+    "studio.history.load_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation history is temporarily unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作记录暂时不可用。"
+          }
+        }
+      }
+    },
+    "studio.history.loading": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading creation history…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载制作记录…"
+          }
+        }
+      }
+    },
+    "studio.history.message_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d recorded message(s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共记录 %d 条消息"
+          }
+        }
+      }
+    },
+    "studio.history.no_codex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No bounded Codex excerpt was recorded for this task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务没有已记录的受限 Codex 摘要。"
+          }
+        }
+      }
+    },
+    "studio.history.open": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View History"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看记录"
+          }
+        }
+      }
+    },
+    "studio.history.open_chatgpt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Full Conversation in ChatGPT"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 ChatGPT 中查看完整会话"
+          }
+        }
+      }
+    },
+    "studio.history.progress": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key Progress"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关键进度"
+          }
+        }
+      }
+    },
+    "studio.history.result": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作结果"
+          }
+        }
+      }
+    },
+    "studio.history.session.archived": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This conversation is archived. Restore it in ChatGPT before opening it here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此会话已归档；请先在 ChatGPT 中恢复后再从这里打开。"
+          }
+        }
+      }
+    },
+    "studio.history.session.available": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The persistent conversation exists and is available to open."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "持久会话存在且当前可以打开。"
+          }
+        }
+      }
+    },
+    "studio.history.session.missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved conversation could not be found."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到已记录的会话。"
+          }
+        }
+      }
+    },
+    "studio.history.session.not_created": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task did not create a ChatGPT conversation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务尚未创建 ChatGPT 会话。"
+          }
+        }
+      }
+    },
+    "studio.history.session.open_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ChatGPT could not open this conversation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ChatGPT 未能打开此会话"
+          }
+        }
+      }
+    },
+    "studio.history.session.opened": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opened the Pet Studio conversation in ChatGPT"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已在 ChatGPT 中打开 Pet Studio 会话"
+          }
+        }
+      }
+    },
+    "studio.history.session.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ChatGPT conversation status could not be verified right now."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前无法校验 ChatGPT 会话状态。"
+          }
+        }
+      }
+    },
+    "studio.history.summary_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d saved task(s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存 %d 个任务"
+          }
+        }
+      }
+    },
+    "studio.history.task_id": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务 ID"
+          }
+        }
+      }
+    },
+    "studio.history.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation History"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作历史"
+          }
+        }
+      }
+    },
+    "studio.history.transcript_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This page keeps the task facts and a bounded excerpt. Open ChatGPT for the complete conversation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本页保留任务必要信息和受限摘要；完整会话请前往 ChatGPT 查看。"
+          }
+        }
+      }
+    },
+    "studio.history.truncated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing the newest saved tasks."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前显示最新保存的任务。"
+          }
+        }
+      }
+    },
+    "studio.history.updated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updated"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新时间"
           }
         }
       }
@@ -14326,13 +15514,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Complete the creation brief to begin."
+            "value": "Complete the creation brief, then start making your pet."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完成左侧创作 brief 后开始制作。"
+            "value": "完成创作 brief 后开始制作。"
           }
         }
       }
@@ -14397,6 +15585,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "未完成"
+          }
+        }
+      }
+    },
+    "studio.stage.unrecorded": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not recorded"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未记录"
           }
         }
       }
@@ -14945,6 +16149,662 @@
         }
       }
     },
+    "studio.brief.description_templates_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brief prompts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "描述提示"
+          }
+        }
+      }
+    },
+    "studio.brief.template.appearance.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外观"
+          }
+        }
+      }
+    },
+    "studio.brief.template.appearance.prompt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance: a small, rounded companion with expressive ears."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外观：小巧圆润，耳朵表情丰富。"
+          }
+        }
+      }
+    },
+    "studio.brief.template.action.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动作"
+          }
+        }
+      }
+    },
+    "studio.brief.template.action.prompt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actions: gentle breathing at idle and focused gestures while working."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动作：待机时轻柔呼吸，工作时有专注手势。"
+          }
+        }
+      }
+    },
+    "studio.brief.template.palette.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colors"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配色"
+          }
+        }
+      }
+    },
+    "studio.brief.template.palette.prompt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colors: warm orange with teal highlights."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配色：暖橙色搭配青绿色点缀。"
+          }
+        }
+      }
+    },
+    "studio.brief.description_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d/%d characters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d/%d 字"
+          }
+        }
+      }
+    },
+    "studio.history.filter.label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filter creation history"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "筛选制作记录"
+          }
+        }
+      }
+    },
+    "studio.history.filter.all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部"
+          }
+        }
+      }
+    },
+    "studio.history.filter.succeeded": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Succeeded"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "成功"
+          }
+        }
+      }
+    },
+    "studio.history.filter.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败"
+          }
+        }
+      }
+    },
+    "studio.history.filter.cancelled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelled"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已取消"
+          }
+        }
+      }
+    },
+    "studio.history.filter.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No tasks match this filter."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此筛选条件下暂无任务。"
+          }
+        }
+      }
+    },
+    "studio.history.style_tag_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Style: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "风格：%@"
+          }
+        }
+      }
+    },
+    "studio.history.quality_tag_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quality: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "画质：%@"
+          }
+        }
+      }
+    },
+    "studio.history.retry_badge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "studio.history.actions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务操作"
+          }
+        }
+      }
+    },
+    "studio.history.copy_brief": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Brief to New Task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制 brief 新建任务"
+          }
+        }
+      }
+    },
+    "studio.history.copy_brief_success": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied the brief into a new task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已将 brief 回填到新任务。"
+          }
+        }
+      }
+    },
+    "studio.history.copy_brief_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the current task before copying this brief."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前任务，再复制此 brief。"
+          }
+        }
+      }
+    },
+    "studio.history.copy_brief_references_notice_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task used %d reference image(s). For privacy, choose them again before starting the new task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务使用了 %d 张参考图。出于隐私保护，新任务开始前请重新选择。"
+          }
+        }
+      }
+    },
+    "studio.history.result_pet_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result Pet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果宠物"
+          }
+        }
+      }
+    },
+    "studio.history.result_pet_missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task succeeded, but its result pet is no longer in the library."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此任务已成功，但结果宠物已不在宠物库中。"
+          }
+        }
+      }
+    },
+    "studio.history.view_pet": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View in Pet Library"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在宠物库中查看"
+          }
+        }
+      }
+    },
+    "studio.history.enable_pet": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use This Pet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用此宠物"
+          }
+        }
+      }
+    },
+    "studio.history.enabling_pet": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabling pet…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启用宠物…"
+          }
+        }
+      }
+    },
+    "studio.history.delete.action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Record"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除记录"
+          }
+        }
+      }
+    },
+    "studio.history.delete.confirm_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this creation record?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除这条制作记录？"
+          }
+        }
+      }
+    },
+    "studio.history.delete.confirm_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved task and its private workspace will be removed. A pet already added to Pet Library is kept. This cannot be undone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的任务及其私有工作区将被移除；已经加入宠物库的宠物会保留。此操作无法撤销。"
+          }
+        }
+      }
+    },
+    "studio.history.delete.confirm_action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Record"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除记录"
+          }
+        }
+      }
+    },
+    "studio.history.context_menu": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation Record Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作记录操作"
+          }
+        }
+      }
+    },
+    "studio.session.start_blocking_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Before You Can Start"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始前还需完成"
+          }
+        }
+      }
+    },
+    "studio.session.start_bottom_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start when the brief and local Codex check are ready."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创作 brief 与本地 Codex 检查就绪后即可开始制作。"
+          }
+        }
+      }
+    },
+    "studio.history.retry_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the current task before retrying this brief."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前任务，再使用此 brief 重试。"
+          }
+        }
+      }
+    },
+    "studio.history.retry_starting.create": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starting a new task from this brief…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在使用此 brief 创建新任务…"
+          }
+        }
+      }
+    },
+    "studio.history.retry_starting.modify": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starting a new revision task from this brief…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在使用此 brief 创建新的修改任务…"
+          }
+        }
+      }
+    },
+    "studio.history.delete.success": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deleted the creation record."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已删除制作记录。"
+          }
+        }
+      }
+    },
+    "studio.history.delete.refresh_warning": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deleted the creation record, but the history list could not be refreshed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制作记录已删除，但未能刷新记录列表。"
+          }
+        }
+      }
+    },
+    "studio.history.delete.failed_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not delete the creation record: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法删除制作记录：%@"
+          }
+        }
+      }
+    },
+    "studio.history.delete.invalid_response": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore did not confirm that the creation record was deleted."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore 未确认制作记录已删除。"
+          }
+        }
+      }
+    },
     "verification_status.verified": {
       "localizations": {
         "en": {
@@ -14957,6 +16817,566 @@
           "stringUnit": {
             "state": "translated",
             "value": "已验证"
+          }
+        }
+      }
+    },
+    "studio.workspace.active_task_blocks_new": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish or cancel the current creation task first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先完成或取消当前制作任务。"
+          }
+        }
+      }
+    },
+    "studio.workspace.draft_subtitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Draft · Timer not started"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草稿 · 尚未计时"
+          }
+        }
+      }
+    },
+    "studio.workspace.load_older": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load Earlier Messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加载更早消息"
+          }
+        }
+      }
+    },
+    "studio.workspace.new_messages": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Messages"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有新消息"
+          }
+        }
+      }
+    },
+    "studio.workspace.user_name": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "你"
+          }
+        }
+      }
+    },
+    "studio.workspace.agent_name": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作"
+          }
+        }
+      }
+    },
+    "studio.workspace.needs_decision": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Decision Is Needed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要你的判断"
+          }
+        }
+      }
+    },
+    "studio.workspace.reply_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your reply continues this same creation task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复后将继续同一制作任务。"
+          }
+        }
+      }
+    },
+    "studio.workspace.resume_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add an optional correction, then continue from the saved checkpoint."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可以补充修正指令，再从已保存的检查点继续。"
+          }
+        }
+      }
+    },
+    "studio.workspace.reply_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter your answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入你的回答"
+          }
+        }
+      }
+    },
+    "studio.workspace.resume_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Optional continuation or correction instructions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入可选的继续或修正指令"
+          }
+        }
+      }
+    },
+    "studio.workspace.send": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送"
+          }
+        }
+      }
+    },
+    "studio.workspace.continue": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "继续"
+          }
+        }
+      }
+    },
+    "studio.workspace.cancel_cleanup": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping execution and archiving its conversation…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在停止执行并归档对应会话…"
+          }
+        }
+      }
+    },
+    "studio.workspace.running_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation is in progress and does not need a reply. You can cancel at any time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前正在制作，无需回复；你可以随时取消任务。"
+          }
+        }
+      }
+    },
+    "studio.workspace.canceled_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task is canceled. Its timer and underlying conversation have stopped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务已取消，计时和底层会话均已终止。"
+          }
+        }
+      }
+    },
+    "studio.workspace.non_resumable_failure_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This failure has no resumable checkpoint, so it cannot continue in the original creation session. Use the actions below the conversation to view the preserved ChatGPT conversation or copy the brief into a new task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这条失败记录没有可恢复检查点，无法在原制作会话中继续。你仍可使用会话下方的操作查看保留的 ChatGPT 会话，或复制 brief 新建任务。"
+          }
+        }
+      }
+    },
+    "studio.workspace.status.cancel_cleanup": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finishing Cancellation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消清理中"
+          }
+        }
+      }
+    },
+    "studio.workspace.status.recoverable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可继续"
+          }
+        }
+      }
+    },
+    "studio.workspace.status.paused": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paused · Can Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中断待继续"
+          }
+        }
+      }
+    },
+    "studio.workspace.status.failed_recoverable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed · Can Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失败，可继续"
+          }
+        }
+      }
+    },
+    "studio.notification.waiting.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker Needs Your Decision"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作需要你的判断"
+          }
+        }
+      }
+    },
+    "studio.notification.waiting.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the creation task and reply to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开制作会话并回复后，任务会继续。"
+          }
+        }
+      }
+    },
+    "studio.notification.paused.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker Was Interrupted"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作已中断"
+          }
+        }
+      }
+    },
+    "studio.notification.paused.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can continue from the saved checkpoint."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可从已保存检查点继续。"
+          }
+        }
+      }
+    },
+    "studio.notification.recoverable.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker Can Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作可继续"
+          }
+        }
+      }
+    },
+    "studio.notification.recoverable.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add correction instructions, then continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可输入修正指令后继续。"
+          }
+        }
+      }
+    },
+    "studio.notification.completed.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker Finished"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作完成"
+          }
+        }
+      }
+    },
+    "studio.notification.completed.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your pet passed validation and is ready to view."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宠物已通过验证，可以查看结果。"
+          }
+        }
+      }
+    },
+    "studio.notification.failed.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Pet Maker Failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI 宠物制作失败"
+          }
+        }
+      }
+    },
+    "studio.notification.failed.body": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This task cannot recover in place; open it for details."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该任务无法原地恢复，可查看详情。"
+          }
+        }
+      }
+    },
+    "studio.workspace.history_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d tasks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共 %d 条"
+          }
+        }
+      }
+    },
+    "studio.workspace.page_subtitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage creation history, progress, and conversation records."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理制作历史，查看进度与会话记录"
+          }
+        }
+      }
+    },
+    "studio.workspace.recent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近"
+          }
+        }
+      }
+    },
+    "studio.workspace.discard_draft": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Draft"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "放弃草稿"
           }
         }
       }

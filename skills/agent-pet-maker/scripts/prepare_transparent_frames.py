@@ -34,7 +34,7 @@ from PIL import (
 
 JOBS_SCHEMA = "apc.transparent-frame-jobs.v1"
 REPORT_SCHEMA = "apc.transparent-frame-report.v1"
-PIPELINE_ID = "apc-spatial-chroma-matte-v2"
+PIPELINE_ID = "apc-spatial-chroma-matte-v3"
 TARGET_TIERS = {
     (192, 208): "low",
     (384, 416): "standard",
@@ -47,6 +47,13 @@ OPAQUE_DISTANCE_THRESHOLD = 220
 KEY_SIMILARITY_THRESHOLD = 0.92
 KEY_DOMINANCE_THRESHOLD = 8.0
 VISIBLE_ALPHA_THRESHOLD = 16
+# A few isolated, barely visible chroma-like samples can be introduced by the
+# one permitted downscale even after the source-resolution matte is clean.
+# Keep this allowance deliberately small and alpha-weighted: it is review
+# evidence, never permission for an opaque pixel or a continuous fringe.
+MINOR_EDGE_FRINGE_MAX_ALPHA = 48
+MINOR_EDGE_FRINGE_MAX_EQUIVALENT_OPAQUE_PIXELS = 0.5
+MINOR_EDGE_FRINGE_MAX_COMPONENT_PIXELS = 2
 JOB_ID = re.compile(r"^[a-z0-9][a-z0-9/_-]{0,127}$")
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 ALLOWED_TOP_LEVEL_KEYS = {"schema_version", "target_size", "key_color", "frames"}
@@ -749,6 +756,62 @@ def enclosed_transparent_components(image: Image.Image) -> list[int]:
     return sorted(components, reverse=True)
 
 
+def largest_connected_component(indices: set[int], width: int) -> int:
+    largest = 0
+    remaining = set(indices)
+    while remaining:
+        seed = remaining.pop()
+        pending = [seed]
+        area = 0
+        while pending:
+            index = pending.pop()
+            area += 1
+            x = index % width
+            for neighbor in (
+                index - 1 if x > 0 else None,
+                index + 1 if x + 1 < width else None,
+                index - width if index >= width else None,
+                index + width,
+            ):
+                if neighbor is not None and neighbor in remaining:
+                    remaining.remove(neighbor)
+                    pending.append(neighbor)
+        largest = max(largest, area)
+    return largest
+
+
+def edge_fringe_report(
+    indices: list[int],
+    pixels: list[tuple[int, int, int, int]],
+    size: tuple[int, int],
+) -> dict[str, Any]:
+    alpha_sum = sum(pixels[index][3] for index in indices)
+    max_alpha = max((pixels[index][3] for index in indices), default=0)
+    max_component = largest_connected_component(set(indices), size[0]) if indices else 0
+    raw_pixel_limit = max(2, round(min(size) / 48))
+    equivalent_opaque_pixels = alpha_sum / 255
+    review_only = bool(indices) and (
+        len(indices) <= raw_pixel_limit
+        and max_alpha <= MINOR_EDGE_FRINGE_MAX_ALPHA
+        and equivalent_opaque_pixels <= MINOR_EDGE_FRINGE_MAX_EQUIVALENT_OPAQUE_PIXELS
+        and max_component <= MINOR_EDGE_FRINGE_MAX_COMPONENT_PIXELS
+    )
+    return {
+        "pixels": len(indices),
+        "alpha_sum": alpha_sum,
+        "equivalent_opaque_pixels": round(equivalent_opaque_pixels, 6),
+        "max_alpha": max_alpha,
+        "max_component_pixels": max_component,
+        "raw_pixel_limit": raw_pixel_limit,
+        "max_alpha_limit": MINOR_EDGE_FRINGE_MAX_ALPHA,
+        "equivalent_opaque_pixel_limit": MINOR_EDGE_FRINGE_MAX_EQUIVALENT_OPAQUE_PIXELS,
+        "max_component_pixel_limit": MINOR_EDGE_FRINGE_MAX_COMPONENT_PIXELS,
+        "disposition": (
+            "review_warning" if review_only else "hard_failure" if indices else "none"
+        ),
+    }
+
+
 def validate_transparent_frame(
     image: Image.Image,
     key: tuple[int, int, int],
@@ -767,18 +830,22 @@ def validate_transparent_frame(
         pixel[3] >= VISIBLE_ALPHA_THRESHOLD and channel_distance(pixel[:3], key) <= 32
         for pixel in pixels
     )
-    edge_fringe = sum(
-        boundary[index]
-        and pixel[3] >= VISIBLE_ALPHA_THRESHOLD
-        and (
-            channel_distance(pixel[:3], key) <= 64
-            or (
-                key_dominance(pixel[:3], key) >= 48
-                and chroma_similarity(pixel[:3], key) >= 0.97
+    edge_fringe_indices = [
+        index
+        for index, pixel in enumerate(pixels)
+        if (
+            boundary[index]
+            and pixel[3] >= VISIBLE_ALPHA_THRESHOLD
+            and (
+                channel_distance(pixel[:3], key) <= 64
+                or (
+                    key_dominance(pixel[:3], key) >= 48
+                    and chroma_similarity(pixel[:3], key) >= 0.97
+                )
             )
         )
-        for index, pixel in enumerate(pixels)
-    )
+    ]
+    edge_fringe = edge_fringe_report(edge_fringe_indices, pixels, image.size)
     holes = enclosed_transparent_components(image)
     errors: list[str] = []
     warnings: list[str] = []
@@ -795,8 +862,13 @@ def validate_transparent_frame(
             "visible pixels close to the chroma key are diagnostic only; "
             "inspect all five preview backgrounds for actual contamination"
         )
-    if edge_fringe:
+    if edge_fringe["disposition"] == "hard_failure":
         errors.append("visible silhouette-edge pixels retain chroma contamination")
+    elif edge_fringe["disposition"] == "review_warning":
+        warnings.append(
+            "isolated low-alpha silhouette-edge chroma evidence is within the bounded "
+            "review allowance; inspect all five preview backgrounds for actual contamination"
+        )
     if holes:
         warnings.append("frame contains enclosed transparent regions that require visual review")
     return (
@@ -806,7 +878,8 @@ def validate_transparent_frame(
             "border_visible_pixels": border_visible,
             "transparent_rgb_residue_pixels": transparent_rgb,
             "visible_key_pixels": visible_key,
-            "edge_chroma_fringe_pixels": edge_fringe,
+            "edge_chroma_fringe_pixels": edge_fringe["pixels"],
+            "edge_chroma_fringe": edge_fringe,
             "enclosed_transparent_component_areas": holes,
         },
         errors,
@@ -964,6 +1037,8 @@ def process_job(
         sure_foreground,
     )
     cleaned, cleanup_report = reconstruct_edge_rgb(matte, key, target_size)
+    if not cleanup_report["alpha_preserved"]:
+        fail("alpha_changed", "source-resolution RGB reconstruction changed Alpha")
 
     source_pixels = image_values(source)
     cleaned_pixels = image_values(cleaned)
@@ -976,8 +1051,55 @@ def process_job(
     if interior_rgb_changes:
         fail("interior_rgb_changed", "pipeline changed opaque RGB outside the alpha edge band")
 
-    runtime = resize_linear_premultiplied(cleaned, target_size)
-    runtime = apply_edge_fallback(runtime, edge_contract, edge_feather)
+    runtime_before_reconstruction = resize_linear_premultiplied(cleaned, target_size)
+    runtime_before_reconstruction = apply_edge_fallback(
+        runtime_before_reconstruction,
+        edge_contract,
+        edge_feather,
+    )
+    runtime_repair_needed = cleaned.size != target_size or bool(edge_contract or edge_feather)
+    if runtime_repair_needed:
+        runtime, runtime_cleanup_report = reconstruct_edge_rgb(
+            runtime_before_reconstruction,
+            key,
+            target_size,
+        )
+        runtime_radius = runtime_cleanup_report.pop("edge_radius_source_px")
+        runtime_cleanup_report.update(
+            {
+                "applied": True,
+                "edge_radius_runtime_px": runtime_radius,
+            }
+        )
+        if not runtime_cleanup_report["alpha_preserved"]:
+            fail("alpha_changed", "runtime-size RGB reconstruction changed Alpha")
+        runtime_boundary = alpha_edge_band(runtime.getchannel("A"), runtime_radius)
+        runtime_interior_rgb_changes = sum(
+            before[:3] != after[:3]
+            for index, (before, after) in enumerate(
+                zip(
+                    image_values(runtime_before_reconstruction),
+                    image_values(runtime),
+                )
+            )
+            if after[3] == 255 and not runtime_boundary[index]
+        )
+    else:
+        runtime = runtime_before_reconstruction
+        runtime_cleanup_report = {
+            "applied": False,
+            "reason": "source_resolution_repair_already_matches_final_size",
+            "edge_radius_runtime_px": 0,
+            "alpha_preserved": True,
+            "reconstructed_translucent_pixels": 0,
+            "reconstructed_opaque_pixels": 0,
+        }
+        runtime_interior_rgb_changes = 0
+    if runtime_interior_rgb_changes:
+        fail(
+            "interior_rgb_changed",
+            "runtime edge repair changed opaque RGB outside the alpha edge band",
+        )
     master_qa, master_errors, master_warnings = validate_transparent_frame(cleaned, key)
     runtime_qa, runtime_errors, runtime_warnings = validate_transparent_frame(runtime, key)
     preview_path = preview_dir / f"{job['id'].replace('/', '__')}.png"
@@ -1019,7 +1141,9 @@ def process_job(
         "key": key_report,
         "matte": matte_report,
         "edge_rgb_reconstruction": cleanup_report,
+        "runtime_edge_rgb_reconstruction": runtime_cleanup_report,
         "interior_opaque_rgb_changed_pixels": interior_rgb_changes,
+        "runtime_interior_opaque_rgb_changed_pixels": runtime_interior_rgb_changes,
         "resize_count": 0 if cleaned.size == target_size else 1,
         "size_normalization": {
             "mode": "exact_copy" if cleaned.size == target_size else "single_downscale",
@@ -1098,7 +1222,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "soft_matte": True,
             "edge_rgb_scope": "alpha_boundary_with_chroma_evidence",
             "alpha_preserved_during_edge_rgb_reconstruction": True,
+            "runtime_edge_rgb_reconstruction": "after_final_resize_and_alpha_fallback",
             "visible_key_pixels": "diagnostic_only_requires_preview_review",
+            "minor_edge_fringe": "bounded_alpha_weighted_review_warning",
             "resize": "linear_light_premultiplied_lanczos_once_or_exact_copy",
             "edge_contract_final_px": args.edge_contract,
             "edge_feather_final_px": args.edge_feather,

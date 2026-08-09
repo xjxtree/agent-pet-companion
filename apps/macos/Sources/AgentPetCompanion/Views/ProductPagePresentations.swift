@@ -57,7 +57,11 @@ struct PetMakerProductPresentation: Equatable {
             phase = .createTogether
             primaryAction = session.canSendReply ? .sendReply : .unavailable
             secondaryActions = session.canCancel ? [.cancel] : []
-        case .cancelling:
+        case .paused, .recoverableFailed:
+            phase = .createTogether
+            primaryAction = session.canResume ? .retry : .unavailable
+            secondaryActions = session.canCancel ? [.cancel] : []
+        case .cancelling, .cancelCleanup:
             phase = .createTogether
             primaryAction = .unavailable
             secondaryActions = []
@@ -91,6 +95,7 @@ struct AgentConnectionProductPresentation: Equatable {
     let technicalItems: [AgentConnectionTechnicalItem]
     let managedComponents: [AgentManagedComponent]
     let hasCurrentTypedSnapshot: Bool
+    let hasCurrentLightSnapshot: Bool
     let canRepairManagedConnector: Bool
     let canManageManagedConnector: Bool
     let canUninstall: Bool
@@ -110,6 +115,7 @@ struct AgentConnectionProductPresentation: Equatable {
             status?.capabilities.managedComponents ?? []
         )
         hasCurrentTypedSnapshot = status.map(Self.hasCurrentTypedSnapshot) ?? false
+        hasCurrentLightSnapshot = status.map(Self.hasCurrentLightSnapshot) ?? false
         canManageManagedConnector = status?.canRepairManagedConnector == true
         canUninstall = status?.canUninstallManagedConnector == true
 
@@ -167,6 +173,11 @@ struct AgentConnectionProductPresentation: Equatable {
             if canRepairManagedConnector {
                 health = .needsRepair
                 primaryAction = status.hasInstalledConnectorArtifacts ? .repair : .connect
+            } else if hasCurrentLightSnapshot,
+                      Self.agentIsUnavailable(in: projectedItems)
+                        || !blockingItems.isEmpty {
+                health = .unavailable
+                primaryAction = .verify
             } else {
                 health = .notChecked
                 primaryAction = .verify
@@ -243,8 +254,24 @@ struct AgentConnectionProductPresentation: Equatable {
     private static func hasCurrentTypedSnapshot(
         _ status: AgentConnectionStatus
     ) -> Bool {
-        status.checkMode == .runtime
-            && status.connectorInstalled != nil
+        status.checkMode == .runtime && hasCompleteTypedSnapshot(status)
+    }
+
+    private static func hasCurrentLightSnapshot(
+        _ status: AgentConnectionStatus
+    ) -> Bool {
+        status.checkMode == .light
+            && hasCompleteTypedSnapshot(status)
+            && !projectedTechnicalItems(
+                status.items,
+                source: status.source
+            ).contains(where: { $0.code == .unknown })
+    }
+
+    private static func hasCompleteTypedSnapshot(
+        _ status: AgentConnectionStatus
+    ) -> Bool {
+        status.connectorInstalled != nil
             && !status.capabilities.contractVersion.isEmpty
             && status.capabilities.repairableConnectorIssue != nil
             && status.capabilities.canRepairManagedConnector != nil
@@ -260,7 +287,7 @@ struct AgentConnectionProductPresentation: Equatable {
         in items: [AgentConnectionTechnicalItem]
     ) -> Bool {
         let agentDependencyUnavailable = items.contains {
-            ($0.code == .agentCLI || $0.code == .agentVersion)
+            $0.code == .agentCLI
                 && ($0.status == .missing || $0.status == .unsupported)
         }
         if agentDependencyUnavailable {
@@ -295,9 +322,12 @@ struct AgentConnectionProductPresentation: Equatable {
         var result: [AgentConnectionTechnicalItem] = []
 
         for item in safeItems {
+            let projectedStatus: CheckStatus = item.code == .agentVersion
+                ? .ok
+                : item.status
             let projected = AgentConnectionTechnicalItem(
                 code: item.code == .hostRuntime ? .hostVerification : item.code,
-                status: item.status,
+                status: projectedStatus,
                 recoveryAction: item.recoveryAction,
                 evidence: safeTechnicalEvidence(for: item, source: source)
             )

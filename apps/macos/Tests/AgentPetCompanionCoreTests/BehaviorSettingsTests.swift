@@ -77,6 +77,33 @@ struct BehaviorSettingsTests {
     }
 
     @Test
+    func transparentAreaPassthroughIsAlwaysEnabledAndCannotEnterAPatch() throws {
+        let decoded = try JSONDecoder().decode(
+            BehaviorSettings.self,
+            from: Data(#"{"mouse_passthrough":false}"#.utf8)
+        )
+        #expect(decoded.mousePassthrough)
+
+        let encoded = try JSONEncoder().encode(decoded)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        #expect(object["mouse_passthrough"] as? Bool == true)
+
+        let legacyPatch = try JSONDecoder().decode(
+            BehaviorSettingsPatch.self,
+            from: Data(#"{"mouse_passthrough":false}"#.utf8)
+        )
+        #expect(legacyPatch.isEmpty)
+        let patchObject = try #require(
+            JSONSerialization.jsonObject(
+                with: try JSONEncoder().encode(legacyPatch)
+            ) as? [String: Any]
+        )
+        #expect(patchObject["mouse_passthrough"] == nil)
+    }
+
+    @Test
     func languageAppearanceAndSessionGroupingRoundTrip() throws {
         let behavior = BehaviorSettings(
             interfaceLanguage: .english,

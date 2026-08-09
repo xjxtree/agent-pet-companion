@@ -38,6 +38,19 @@ enum PetLibraryDensityPolicy {
 enum PetLibraryPreviewActionPolicy {
     static let defaultAction = PetAnimationAction.idle
     static let orderedActions = PetAnimationAction.allCases
+    static let agentActions: [PetAnimationAction] = [
+        .idle,
+        .thinking,
+        .tool,
+        .waiting,
+        .done,
+        .failed,
+    ]
+    static let interactionActions: [PetAnimationAction] = [
+        .acknowledge,
+        .dragLeft,
+        .dragRight,
+    ]
 
     static func accessibilityLabel(
         petName: String,

@@ -796,6 +796,7 @@ fn normalized_source_event(value: &str) -> &'static str {
         "agent_settled" => "agent_settled",
         "agent_end" => "agent_end",
         "session_shutdown" => "session_shutdown",
+        "session.child" => "session.child",
         "session.created" => "session.created",
         "session.deleted" => "session.deleted",
         "session.status" => "session.status",

@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) const CONNECTOR_ROOT_ENV_KEYS: &[&str] = &[
+    "APC_AGENT_CONFIG_HOME",
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     "PI_CODING_AGENT_DIR",
@@ -230,5 +231,10 @@ mod tests {
             .map(|directory| directory.join("pi"))
             .find(|candidate| is_executable_file(candidate));
         assert_eq!(resolved, Some(usable.join("pi")));
+    }
+
+    #[test]
+    fn hermetic_agent_home_is_part_of_connector_identity_and_inheritance() {
+        assert!(CONNECTOR_ROOT_ENV_KEYS.contains(&"APC_AGENT_CONFIG_HOME"));
     }
 }

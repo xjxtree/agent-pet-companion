@@ -62,6 +62,56 @@ struct PetLibraryTests {
     }
 
     @Test
+    func workspaceLayoutKeepsTheCollectionAdaptiveAndTheDetailReadable() {
+        #expect(PetLibraryWorkspacePolicy.usesSplitLayout(
+            availableWidth: 820,
+            shellMode: .allColumns
+        ))
+        #expect(!PetLibraryWorkspacePolicy.usesSplitLayout(
+            availableWidth: 819,
+            shellMode: .allColumns
+        ))
+        #expect(!PetLibraryWorkspacePolicy.usesSplitLayout(
+            availableWidth: 1_200,
+            shellMode: .sidebarAndContent
+        ))
+        #expect(PetLibraryWorkspacePolicy.detailWidth(for: 820) == 320)
+        #expect(PetLibraryWorkspacePolicy.detailWidth(for: 1_200) == 380)
+        #expect(PetLibraryWorkspacePolicy.collectionColumnCount(for: 408) == 3)
+        #expect(PetLibraryWorkspacePolicy.collectionColumnCount(for: 268) == 2)
+        #expect(PetLibraryWorkspacePolicy.collectionColumnCount(for: 200) == 1)
+    }
+
+    @Test
+    func sourceFiltersSeparateBundledGeneratedVerifiedAndImportedPets() {
+        let bundled = makeBundledPet()
+        let verified = makePet(
+            id: "pet_verified",
+            name: "Verified",
+            origin: .verifiedSkillSource
+        )
+        let generated = makePet(
+            id: "pet_generated",
+            name: "Generated",
+            origin: .generatedByPetcoreJob
+        )
+        let external = makePet(
+            id: "pet_external",
+            name: "External",
+            origin: .externalImport
+        )
+        let pets = [bundled, verified, generated, external]
+
+        #expect(pets.allSatisfy(PetLibrarySourceFilter.all.includes))
+        #expect(pets.filter(PetLibrarySourceFilter.bundled.includes) == [bundled])
+        #expect(pets.filter(PetLibrarySourceFilter.verified.includes) == [verified])
+        #expect(pets.filter(PetLibrarySourceFilter.generated.includes) == [generated])
+        #expect(pets.filter(PetLibrarySourceFilter.external.includes) == [external])
+        #expect(PetLibrarySourceFilter.all.title(localeIdentifier: "en") == "All Sources")
+        #expect(PetLibrarySourceFilter.all.title(localeIdentifier: "zh-Hans") == "全部来源")
+    }
+
+    @Test
     func presentationExposesCapabilitiesAndImmutableRevisionContract() {
         let bundled = PetLibraryPresentation(
             pet: makeBundledPet(),
@@ -449,27 +499,66 @@ struct PetLibraryTests {
             stateName: ProductLifecycleState.thinking.rawValue,
             assetWarning: nil
         )
-        var state = PetPreviewContentState()
+        var state = PetPreviewContentState(selectedIdentity: idle)
 
         #expect(!state.hasPresentedContent(for: idle))
         #expect(!state.hasPresentedContent(for: thinking))
 
-        state.receive(hasContent: true, for: idle)
+        let acceptedIdle = state.receive(hasContent: true, for: idle)
+        #expect(acceptedIdle)
         #expect(state.hasPresentedContent(for: idle))
         #expect(!state.hasPresentedContent(for: thinking))
+        let repeatedIdle = state.receive(hasContent: true, for: idle)
+        #expect(!repeatedIdle)
 
-        state.receive(hasContent: true, for: thinking)
-        state.receive(hasContent: false, for: idle)
+        state.select(thinking)
+        #expect(!state.hasPresentedContent(for: idle))
+        #expect(!state.hasPresentedContent(for: thinking))
+
+        let acceptedThinking = state.receive(hasContent: true, for: thinking)
+        let staleIdleClear = state.receive(hasContent: false, for: idle)
+        #expect(acceptedThinking)
+        #expect(!staleIdleClear)
         #expect(!state.hasPresentedContent(for: idle))
         #expect(state.hasPresentedContent(for: thinking))
 
-        // A late positive callback from the replaced renderer must not hide
-        // the current action's fallback or clear its already-presented state.
-        state.receive(hasContent: true, for: idle)
+        // A late callback from the replaced renderer cannot relabel its stale
+        // drawable as the current action's presented content.
+        let staleIdlePresentation = state.receive(hasContent: true, for: idle)
+        #expect(!staleIdlePresentation)
         #expect(state.hasPresentedContent(for: thinking))
-        state.receive(hasContent: false, for: thinking)
+        let acceptedThinkingClear = state.receive(hasContent: false, for: thinking)
+        let repeatedThinkingClear = state.receive(hasContent: false, for: thinking)
+        #expect(acceptedThinkingClear)
+        #expect(!repeatedThinkingClear)
         #expect(!state.hasPresentedContent(for: thinking))
-        #expect(state.hasPresentedContent(for: idle))
+        #expect(!state.hasPresentedContent(for: idle))
+    }
+
+    @Test
+    func finitePreviewPlaybackReturnsOnlyIdleReturningModesToIdle() {
+        #expect(PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: .burstThenIdle))
+        #expect(PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: .onceThenReturn))
+        #expect(!PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: .burstThenSettle))
+        #expect(!PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: .loop))
+        #expect(!PetLibraryPreviewPlaybackPolicy.returnsToIdle(after: .periodic))
+
+        let pet = makePet(
+            id: "pet_preview_duration",
+            name: "Duration",
+            origin: .externalImport
+        )
+        let done = pet.timing(for: PetAnimationAction.done.rawValue)
+        #expect(
+            PetLibraryPreviewPlaybackPolicy.entryDurationMS(for: done)
+                == done.frameDurationsMS.reduce(0, +)
+                    * max(1, done.playback.entryRepeatCount ?? 1)
+        )
+        #expect(
+            PetLibraryPreviewPlaybackPolicy.entryDurationMS(
+                for: pet.timing(for: PetAnimationAction.idle.rawValue)
+            ) == nil
+        )
     }
 
     @Test
@@ -617,7 +706,7 @@ struct PetLibraryTests {
     }
 
     @Test
-    func sourceContractCentersTheMotionHeroAndKeepsCardsSelectionOnly() throws {
+    func sourceContractUsesAScalableMasterDetailLibraryAndKeepsCardsSelectionOnly() throws {
         let source = try String(contentsOf: petLibraryViewURL, encoding: .utf8)
         let animationSource = try String(contentsOf: animationPreviewURL, encoding: .utf8)
         let appStoreSource = try String(contentsOf: appStoreURL, encoding: .utf8)
@@ -633,7 +722,15 @@ struct PetLibraryTests {
         #expect(source.contains("if assetWarning != nil {"))
         #expect(source.contains("PetAssetRecoveryCard("))
         #expect(source.contains(".searchable("))
-        #expect(source.contains("if showsSearch {"))
+        #expect(source.contains("if showsSearch && shellMode != .allColumns"))
+        #expect(source.contains("workspaceLibraryPage"))
+        #expect(source.contains("collectionPane"))
+        #expect(source.contains("pet-library.collection-search"))
+        #expect(source.contains("pet-library.collection-source-filter"))
+        #expect(source.contains("pet-library.collection-scroll"))
+        #expect(source.contains("pet-library.detail-scroll"))
+        #expect(source.contains("PetLibraryWorkspacePolicy.collectionColumns"))
+        #expect(source.contains("PetLibraryHeroLayout"))
         #expect(source.contains("ToolbarItemGroup(placement: .primaryAction)"))
         #expect(!source.contains("ToolbarItemGroup(placement: .secondaryAction)"))
         #expect(source.contains("pet-library.import"))
@@ -645,7 +742,7 @@ struct PetLibraryTests {
         #expect(!source.contains(".inspector(isPresented:"))
         #expect(!source.contains("PetLibraryInspector"))
         #expect(!source.contains("TapGesture(count: 2)"))
-        #expect(!source.contains("onActivate: { store.activatePet(pet) }"))
+        #expect(source.contains("onActivate: { store.activatePet(pet) }"))
         #expect(source.contains("pet-library.hero.customize-copy"))
         #expect(source.contains("pet-library.hero.modify"))
         #expect(source.contains("pet-library.hero.history"))
@@ -656,6 +753,8 @@ struct PetLibraryTests {
             "@State private var selectedPreviewAction = PetLibraryPreviewActionPolicy.defaultAction"
         ))
         #expect(source.contains("PetLibraryPreviewActionPolicy.orderedActions"))
+        #expect(source.contains("PetLibraryPreviewActionPolicy.agentActions"))
+        #expect(source.contains("PetLibraryPreviewActionPolicy.interactionActions"))
         #expect(source.contains("action: selectedPreviewAction"))
         #expect(source.contains(".pickerStyle(.segmented)"))
         #expect(source.contains("presentation.technicalInformation"))
@@ -676,7 +775,13 @@ struct PetLibraryTests {
         #expect(heroSource.contains("appearance: .checking"))
         #expect(heroSource.contains(".libraryPetEnabling"))
         #expect(heroSource.contains("primaryAction: primaryAction"))
-        #expect(occurrences(of: "PetLibrarySourceBadge(", in: heroSource) == 0)
+        #expect(heroSource.contains("private var workspaceHeader: some View"))
+        #expect(heroSource.contains("private var workspaceHeaderAccessory: some View"))
+        #expect(heroSource.contains("workspaceStatusAccessory(status)"))
+        #expect(heroSource.contains("else if let primaryAction"))
+        #expect(heroSource.contains("workspacePrimaryActionButton(primaryAction)"))
+        #expect(heroSource.contains("pet-library.hero.status"))
+        #expect(occurrences(of: "PetLibrarySourceBadge(", in: heroSource) == 1)
         #expect(occurrences(of: "presentation.styleTitle", in: heroSource) == 0)
 
         let importStart = try #require(appStoreSource.range(of: "    func importPetpacks()"))
@@ -721,8 +826,14 @@ struct PetLibraryTests {
         #expect(animationSource.contains("reduceMotion: reduceMotion"))
         #expect(animationSource.contains("static func dismantleNSView"))
         #expect(animationSource.contains("coordinator.suspendPipeline()"))
+        #expect(animationSource.contains("onPlaybackCompleted: onPlaybackCompleted"))
         #expect(animationSource.contains("onFrameContentChanged: onRendererContentChanged"))
-        #expect(!animationSource.contains("rendererHasContent"))
+        #expect(animationSource.contains("guard presentedIdentity != nextIdentity"))
+        #expect(animationSource.contains("if !rendererHasContent"))
+        #expect(animationSource.contains("Color(nsColor: .textBackgroundColor)"))
+        #expect(animationSource.contains("transaction.animation = nil"))
+        #expect(!animationSource.contains(".opacity(rendererHasContent"))
+        #expect(!animationSource.contains("@State private var rendererHasContent"))
         #expect(!animationSource.contains("onChange(of: previewIdentity)"))
         #expect(!animationSource.contains("updateOverlayPetVisualEnvelope"))
 

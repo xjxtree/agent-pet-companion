@@ -74,6 +74,29 @@ struct LocalizationTests {
             == "Pet size")
         #expect(APCLocalization.text(.configDisplayWidthAccessibility, locale: "zh-Hans")
             == "宠物大小")
+        #expect(APCLocalization.text(.configSizeGuidance, locale: "en")
+            == "100–300 pt · Default 112 pt")
+        #expect(APCLocalization.text(.configSizeGuidance, locale: "zh-Hans")
+            == "100–300 pt · 默认 112 pt")
+        #expect(APCLocalization.text(.configLivePreview, locale: "en")
+            == "Pet Preview")
+        #expect(APCLocalization.text(.configLivePreview, locale: "zh-Hans")
+            == "宠物预览")
+        #expect(APCLocalization.text(.studioWorkspacePageSubtitle, locale: "en")
+            == "Manage creation history, progress, and conversation records.")
+        #expect(APCLocalization.text(.studioWorkspacePageSubtitle, locale: "zh-Hans")
+            == "管理制作历史，查看进度与会话记录")
+        #expect(APCLocalization.format(
+            .studioWorkspaceHistoryCountFormat,
+            locale: "en",
+            5
+        ) == "5 tasks")
+        #expect(APCLocalization.format(
+            .studioWorkspaceHistoryCountFormat,
+            locale: "zh-Hans",
+            5
+        ) == "共 5 条")
+        #expect(APCLocalization.text(.studioWorkspaceRecent, locale: "zh-Hans") == "最近")
         #expect(APCLocalization.text(
             .overlaySessionNavigationFailed,
             locale: "en"
@@ -115,6 +138,30 @@ struct LocalizationTests {
         for protocolState in ["idle", "thinking", "tool", "waiting", "done", "failed"] {
             #expect(contract.contains(protocolState))
         }
+
+        #expect(APCLocalization.text(.studioWelcomeDetail, locale: "zh-Hans")
+            == "完成创作 brief 后开始制作。")
+        #expect(APCLocalization.text(.studioHistoryCopyBrief, locale: "en")
+            == "Copy Brief to New Task")
+        #expect(APCLocalization.text(.studioHistoryEnablePet, locale: "zh-Hans")
+            == "启用此宠物")
+        #expect(APCLocalization.text(.studioHistoryFilterSucceeded, locale: "zh-Hans")
+            == "成功")
+        #expect(APCLocalization.text(.studioHistoryRetryUnavailable, locale: "en")
+            == "Finish or cancel the current task before retrying this brief.")
+        #expect(APCLocalization.text(.studioWorkspaceNonResumableFailureHint, locale: "en")
+            .contains("actions below the conversation"))
+        #expect(APCLocalization.text(.studioWorkspaceNonResumableFailureHint, locale: "zh-Hans")
+            .contains("会话下方的操作"))
+        #expect(APCLocalization.text(.studioHistoryDeleteSuccess, locale: "zh-Hans")
+            == "已删除制作记录。")
+        #expect(APCLocalization.format(
+            .studioHistoryDeleteFailedFormat,
+            locale: "en",
+            "permission denied"
+        ) == "Could not delete the creation record: permission denied")
+        #expect(APCLocalization.text(.studioStartBlockingTitle, locale: "en")
+            == "Before You Can Start")
     }
 
     @Test

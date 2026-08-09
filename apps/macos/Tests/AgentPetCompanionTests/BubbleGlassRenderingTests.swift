@@ -9,7 +9,7 @@ import Testing
 struct BubbleGlassRenderingTests {
     @Test @MainActor
     @available(macOS 26.0, *)
-    func nativeLiquidGlassKeepsForegroundAsTheTopSibling() {
+    func nativeLiquidGlassOwnsItsForegroundWithoutASiblingBackingPlate() {
         let size = CGSize(width: 320, height: 112)
         let foreground = APCNativeBubbleGlassConfiguration.makeHostingView(
             rootView: Text("Codex session is running")
@@ -23,14 +23,14 @@ struct BubbleGlassRenderingTests {
         surface.frame = NSRect(origin: .zero, size: size)
         surface.layoutSubtreeIfNeeded()
 
-        #expect(surface.subviews.count == 2)
-        #expect(surface.subviews.first === surface.glassView)
-        #expect(surface.subviews.last === surface.foregroundView)
+        #expect(surface.contentView === foreground)
+        #expect(surface.foregroundView === foreground)
         #expect(surface.foregroundView.frame == surface.bounds)
-        #expect(surface.glassView.frame == surface.bounds)
-        #expect(surface.glassView.style == .regular)
-        #expect(surface.glassView.alphaValue == 1)
-        #expect(surface.glassView.tintColor == nil)
+        #expect(surface.style == .regular)
+        #expect(surface.alphaValue == 1)
+        #expect(surface.tintColor == nil)
+        #expect(!surface.isOpaque)
+        #expect(surface.layer?.isOpaque == false)
     }
 }
 #endif

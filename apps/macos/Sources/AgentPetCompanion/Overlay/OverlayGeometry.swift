@@ -1263,6 +1263,42 @@ enum OverlayGeometry {
     static let bubbleSessionVerticalPadding: CGFloat = 5
     static let bubbleSessionTitleSpacing: CGFloat = 2
     static let bubbleDetailLineLimit = 2
+    static let bubbleStandaloneSummaryLineLimit = 2
+    static let bubbleStandaloneMetadataSpacing: CGFloat = 3
+    static func bubbleDetailTextHeight(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        ceil(
+            lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .caption1,
+                scale: fontScale
+            )) * CGFloat(bubbleDetailLineLimit)
+        )
+    }
+    static func bubbleDetailedHeaderHeight(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        max(
+            ceil(lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .callout,
+                scale: fontScale
+            ))),
+            ceil(lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .caption2,
+                scale: fontScale
+            ))) + 2
+        )
+    }
+    static func bubbleStandaloneSummaryTextHeight(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        ceil(
+            lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .callout,
+                scale: fontScale
+            )) * CGFloat(bubbleStandaloneSummaryLineLimit)
+        )
+    }
     static let bubbleSessionDividerHeight: CGFloat = 1
     static let bubbleHeaderAvatarWidth: CGFloat = 14
     static func bubbleHeaderButtonSize(
@@ -1274,13 +1310,13 @@ enum OverlayGeometry {
         )
     }
     static let bubbleHeaderGap: CGFloat = 5
-    static let bubbleCollapsedStackDepth: CGFloat = 8
     static let bubbleCollapsedStackLayerCount = 2
     static let bubbleCollapsedStackLayerOffset: CGFloat = 4
     static let bubbleCollapsedStackLayerInset: CGFloat = 5
+    static let bubbleStandaloneStackLayerOffset: CGFloat = 10
+    static let bubbleStandaloneStackLayerInset: CGFloat = 10
     static let menuVisualSize = CGSize(width: 24, height: 24)
     static let menuHitSize = CGSize(width: 38, height: 38)
-    static let pointerNearMargin: CGFloat = 12
     static let controlVisibilitySlop: CGFloat = 4
     private static let petStagePadding: CGFloat = 8
     private static let petShadowRadius: CGFloat = 10
@@ -1375,6 +1411,18 @@ enum OverlayGeometry {
         }
     }
 
+    /// Bubble contents always use top-to-bottom reading order. The first card
+    /// is the same priority card shown in the folded foreground, independent
+    /// of whether the composition attaches above or below the pet. Keeping one
+    /// order also ensures SwiftUI rendering, accessibility, and AppKit hit
+    /// routing resolve the same card at every disclosure level.
+    static func visuallyOrderedBubbleContents(
+        _ contents: [OverlayBubbleContent],
+        anchorDirection _: OverlayBubbleAnchorDirection
+    ) -> [OverlayBubbleContent] {
+        contents
+    }
+
     static func bubbleCloseHitRect(
         in bubbleRect: CGRect,
         fontScale: BubbleFontScale = .standard
@@ -1398,7 +1446,9 @@ enum OverlayGeometry {
         content: OverlayBubbleContent,
         fontScale: BubbleFontScale = .standard
     ) -> CGRect {
-        guard content.hasMultipleSessions else { return .zero }
+        guard content.hasMultipleSessions,
+              !content.isStandaloneSessionCard
+        else { return .zero }
         let closeRect = bubbleCloseHitRect(in: bubbleRect, fontScale: fontScale)
         let toggleWidth = bubbleGroupToggleWidth(fontScale: fontScale)
         return CGRect(
@@ -1444,6 +1494,7 @@ enum OverlayGeometry {
             measuredSessionRowHeight(
                 width: bubbleWidth,
                 session: session,
+                isStandaloneSessionCard: content.isStandaloneSessionCard,
                 fontScale: fontScale
             )
         }
@@ -1941,47 +1992,6 @@ enum OverlayGeometry {
         return bounds.insetBy(dx: -panelContentPadding, dy: -panelContentPadding)
     }
 
-    static func pointerNearPetScreenRect(
-        displayWidthPt: CGFloat,
-        petScreenCenter: CGPoint,
-        clickMenuEnabled: Bool,
-        petVisualEnvelope: OverlayPetVisualEnvelope? = nil
-    ) -> CGRect {
-        var rects = [
-            petVisualScreenRect(
-                displayWidthPt: displayWidthPt,
-                petScreenCenter: petScreenCenter,
-                petVisualEnvelope: petVisualEnvelope
-            ),
-            rect(
-                center: petScreenCenter,
-                size: petDragSize(displayWidthPt: displayWidthPt)
-            )
-        ]
-
-        if clickMenuEnabled {
-            rects.append(rect(
-                center: menuScreenCenter(
-                    petScreenCenter: petScreenCenter,
-                    displayWidthPt: displayWidthPt,
-                    petVisualEnvelope: petVisualEnvelope
-                ),
-                size: menuHitSize
-            ))
-        }
-
-        let union = rects.dropFirst().reduce(rects[0]) { partial, rect in
-            partial.union(rect)
-        }
-        return union.insetBy(dx: -pointerNearMargin, dy: -pointerNearMargin)
-    }
-
-    /// The compact controls use a tighter visual hover region than the broad
-    /// activation rectangle above. The activation rectangle deliberately
-    /// includes a margin and the empty corridor between windows so a first
-    /// click cannot fall through; using it for opacity would leave the compact
-    /// control visible after the pointer has left the actual pet/control
-    /// surfaces.
     static func shouldShowControls(
         at screenPoint: CGPoint,
         displayWidthPt: CGFloat,
@@ -2275,7 +2285,6 @@ enum OverlayGeometry {
         screenFrame: CGRect,
         includeBubble: Bool,
         bubbleContent: OverlayBubbleContent = .measurementPlaceholder,
-        mousePassthroughEnabled: Bool = true,
         petFrameHitTest: OverlayPetFrameHitTest? = nil,
         overlayVisible: Bool = true,
         primaryButtonDown: Bool = false,
@@ -2283,8 +2292,6 @@ enum OverlayGeometry {
         maskState: OverlayPointerMaskState? = nil
     ) -> Bool {
         guard overlayVisible else { return false }
-        if !mousePassthroughEnabled { return true }
-
         let rects = interactiveRects(
             in: containerSize,
             displayWidthPt: displayWidthPt,
@@ -2361,25 +2368,32 @@ enum OverlayGeometry {
     private static func measuredSessionRowHeight(
         width _: CGFloat,
         session _: OverlaySessionContent,
+        isStandaloneSessionCard: Bool,
         fontScale: BubbleFontScale
     ) -> CGFloat {
-        let titleHeight = lineHeight(
-            for: OverlayBubbleTypography.measurementFont(.callout, scale: fontScale)
-        )
-        let detailFont = OverlayBubbleTypography.measurementFont(
-            .caption1,
-            scale: fontScale
-        )
-        let detailLineHeight = lineHeight(for: detailFont)
+        if isStandaloneSessionCard {
+            let metadataHeight = max(
+                bubbleHeaderAvatarWidth,
+                lineHeight(for: OverlayBubbleTypography.measurementFont(
+                    .caption1,
+                    scale: fontScale
+                ))
+            )
+            return ceil(
+                bubbleSessionVerticalPadding * 2
+                    + metadataHeight
+                    + bubbleStandaloneMetadataSpacing
+                    + bubbleStandaloneSummaryTextHeight(fontScale: fontScale)
+            )
+        }
         // Reserve the full two-line detail region. Tool activity often changes
         // between one and two lines; allowing that to resize an NSPanel on
         // every hook makes the whole bubble stack visibly jump.
-        let detailHeight = detailLineHeight * CGFloat(bubbleDetailLineLimit)
         return ceil(
             bubbleSessionVerticalPadding * 2
-                + titleHeight
+                + bubbleDetailedHeaderHeight(fontScale: fontScale)
                 + bubbleSessionTitleSpacing
-                + detailHeight
+                + bubbleDetailTextHeight(fontScale: fontScale)
         )
     }
 
@@ -2520,8 +2534,8 @@ enum OverlayBubbleProjection {
             })
             // Direct projection callers may not own App presentation state.
             // Use PetCore's canonical attention/latest-first order as the
-            // fallback, reversed so the newest card occupies the pet end.
-            orderedStates.append(contentsOf: visibleStates.reversed().filter {
+            // fallback so the first expanded card matches the folded card.
+            orderedStates.append(contentsOf: visibleStates.filter {
                 !orderedIDs.contains(OverlaySessionContent.stableID(
                     source: $0.source,
                     sessionID: $0.sessionID ?? $0.event.sessionID,
@@ -2529,14 +2543,14 @@ enum OverlayBubbleProjection {
                     fallbackEventID: $0.event.id
                 ))
             })
-            // The physical stack is authored from its far edge toward the
-            // pet. Higher-attention states therefore occupy the final slots,
-            // while stable presentation order remains intact inside a tone.
+            // The visual list is priority-first. Stable presentation order is
+            // retained inside a tone so ordinary thinking/tool churn cannot
+            // make concurrent cards hop.
             orderedStates = orderedStates.enumerated().sorted { left, right in
                 let leftTone = OverlaySessionGroupTone(eventType: left.element.event.eventType)
                 let rightTone = OverlaySessionGroupTone(eventType: right.element.event.eventType)
                 if leftTone != rightTone {
-                    return leftTone.rawValue < rightTone.rawValue
+                    return leftTone.rawValue > rightTone.rawValue
                 }
                 return left.offset < right.offset
             }.map(\.element)
@@ -2544,7 +2558,7 @@ enum OverlayBubbleProjection {
             let representedSessionCount = orderedStates.count + omittedCount
             if !standaloneStackExpanded,
                representedSessionCount > 1,
-               let primaryState = orderedStates.last
+               let primaryState = orderedStates.first
             {
                 return [OverlayBubbleContent(
                     standaloneState: primaryState,
@@ -2552,18 +2566,18 @@ enum OverlayBubbleProjection {
                     isStackExpanded: false
                 )]
             }
-            var cards = omittedCount > 0
-                ? [OverlayBubbleContent.omittedSummary(count: omittedCount)]
-                : []
-            cards.append(contentsOf: orderedStates.enumerated().map { index, state in
+            var cards = orderedStates.enumerated().map { index, state in
                 OverlayBubbleContent(
                     standaloneState: state,
-                    stackSessionCount: index == orderedStates.count - 1
+                    stackSessionCount: index == 0
                         ? representedSessionCount
                         : 1,
                     isStackExpanded: true
                 )
-            })
+            }
+            if omittedCount > 0 {
+                cards.append(.omittedSummary(count: omittedCount))
+            }
             return cards
         }
 
@@ -2680,6 +2694,9 @@ struct OverlaySessionContent: Equatable, Identifiable {
     }
     var primaryDetailText: String {
         detailCandidates.first ?? ""
+    }
+    var standaloneSummaryText: String {
+        primaryDetailText.isEmpty ? statusText : primaryDetailText
     }
     var detailText: String {
         [primaryDetailText, secondaryDetailText]
@@ -3029,6 +3046,15 @@ struct OverlaySessionContent: Equatable, Identifiable {
 
 }
 
+enum OverlayBubbleSessionPrimaryAction: Equatable {
+    case expandSessions
+    case activateSession
+
+    static func resolve(content: OverlayBubbleContent) -> Self {
+        content.isStacked ? .expandSessions : .activateSession
+    }
+}
+
 struct OverlayBubbleContent: Equatable, Identifiable {
     var id: String
     var source: AgentSource?
@@ -3043,22 +3069,15 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     var dismissalIDs: [String] { canDismiss ? sessions.map(\.id) : [] }
     var visibleSessions: [OverlaySessionContent] {
         guard !sessions.isEmpty, !isOmittedSummary else { return sessions }
-        if !isExpanded {
-            return [
-                sessions.first(where: \.needsUserAttention) ?? sessions[0]
-            ]
-        }
-
-        var ordered = [sessions[0]]
-        let prioritized = sessions.dropFirst().filter(\.needsUserAttention)
-            + sessions.dropFirst().filter { !$0.needsUserAttention }
-        for session in prioritized {
-            guard !ordered.contains(where: { $0.id == session.id }) else {
-                continue
+        let ordered = sessions.enumerated().sorted { left, right in
+            let leftTone = OverlaySessionGroupTone(eventType: left.element.eventType)
+            let rightTone = OverlaySessionGroupTone(eventType: right.element.eventType)
+            if leftTone != rightTone {
+                return leftTone.rawValue > rightTone.rawValue
             }
-            ordered.append(session)
-        }
-        return ordered
+            return left.offset < right.offset
+        }.map(\.element)
+        return isExpanded ? ordered : Array(ordered.prefix(1))
     }
     var sessionCount: Int { sessions.count }
     var representedSessionCount: Int {
@@ -3076,8 +3095,19 @@ struct OverlayBubbleContent: Equatable, Identifiable {
     var canDismiss: Bool { !isOmittedSummary }
     var hasMultipleSessions: Bool { disclosureSessionCount > 1 }
     var isStacked: Bool { hasMultipleSessions && !isExpanded }
+    var stackDecorationLayerCount: Int {
+        guard isStacked else { return 0 }
+        return min(
+            OverlayGeometry.bubbleCollapsedStackLayerCount,
+            max(0, disclosureSessionCount - 1)
+        )
+    }
+    var showsStackDecoration: Bool { stackDecorationLayerCount > 0 }
     var stackDecorationDepth: CGFloat {
-        isStacked ? OverlayGeometry.bubbleCollapsedStackDepth : 0
+        let layerOffset = isStandaloneSessionCard
+            ? OverlayGeometry.bubbleStandaloneStackLayerOffset
+            : OverlayGeometry.bubbleCollapsedStackLayerOffset
+        return CGFloat(stackDecorationLayerCount) * layerOffset
     }
     var statusTone: OverlaySessionGroupTone {
         OverlaySessionGroupTone.aggregate(sessions)

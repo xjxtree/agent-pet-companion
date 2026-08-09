@@ -813,7 +813,7 @@ fn stale_revision_returns_conflict() {
         "method": "behavior.patch",
         "params": {
             "expected_revision": stale_revision,
-            "changes": { "mouse_passthrough": false }
+            "changes": { "auto_hide": true }
         }
     }))
     .unwrap();
@@ -825,7 +825,38 @@ fn stale_revision_returns_conflict() {
         .as_str()
         .unwrap()
         .contains("behavior revision conflict"));
-    assert_eq!(snapshot(&state)["behavior"]["mouse_passthrough"], true);
+    assert_eq!(snapshot(&state)["behavior"]["auto_hide"], false);
+}
+
+#[test]
+fn transparent_area_passthrough_is_not_configurable() {
+    let (_temp, state) = ready();
+    let initial = snapshot(&state);
+    let revision = initial["behavior_revision"].as_str().unwrap().to_string();
+    let encoded = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": "passthrough-invariant",
+        "method": "behavior.patch",
+        "params": {
+            "expected_revision": revision,
+            "changes": { "mouse_passthrough": false }
+        }
+    }))
+    .unwrap();
+    let response: Value =
+        serde_json::from_str(&handle_json_line(&state, &encoded).unwrap()).unwrap();
+
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("always enabled"));
+    let final_snapshot = snapshot(&state);
+    assert_eq!(
+        final_snapshot["behavior_revision"],
+        initial["behavior_revision"]
+    );
+    assert_eq!(final_snapshot["behavior"]["mouse_passthrough"], true);
 }
 
 #[test]

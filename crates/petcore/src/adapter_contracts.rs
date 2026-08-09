@@ -1,4 +1,6 @@
 use crate::{
+    agent_session_filters::AGENT_CHILD_SESSION_SOURCE_EVENT,
+    diagnostics::{AgentParseFailure, AgentParseField, AgentParseWarning},
     event_envelope::{
         MAX_ACTIVITY_CONTENT_BYTES, MAX_PROJECT_LABEL_BYTES, MAX_SESSION_TITLE_BYTES,
     },
@@ -12,8 +14,8 @@ use std::path::Path;
 
 pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9";
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v11";
-pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v13";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v13";
+pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v16";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -78,12 +80,194 @@ pub fn parse_contract_event(source: AgentSource, input: &Value) -> Result<Option
         ));
     }
 
+    if let Some(contract) = child_session_contract(source, input) {
+        return Ok(Some(contract));
+    }
+
     match source {
         AgentSource::Codex => parse_codex(source, input),
         AgentSource::ClaudeCode => parse_claude(source, input),
         AgentSource::Pi => parse_pi(source, input),
         AgentSource::Opencode => parse_opencode(source, input),
     }
+}
+
+/// Returns bounded, content-free warnings for data that reached the adapter
+/// boundary but could not be interpreted. These warnings are reported through
+/// the dedicated diagnostics RPC and are never persisted with Agent events.
+pub fn contract_parse_warnings(input: &Value, contract: &ContractEvent) -> Vec<AgentParseWarning> {
+    const MAX_WARNINGS: usize = 8;
+    let mut warnings = input
+        .get("parse_warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(MAX_WARNINGS)
+        .filter_map(|warning| serde_json::from_value(warning.clone()).ok())
+        .collect::<Vec<AgentParseWarning>>();
+
+    for (paths, field) in [
+        (
+            &[&["session_id"][..], &["sessionId"][..]][..],
+            AgentParseField::SessionId,
+        ),
+        (
+            &[&["session_title"][..], &["sessionTitle"][..]][..],
+            AgentParseField::SessionTitle,
+        ),
+        (
+            &[&["tool_name"][..], &["toolName"][..]][..],
+            AgentParseField::ToolName,
+        ),
+        (
+            &[&["message_content"][..], &["last_assistant_message"][..]][..],
+            AgentParseField::MessageContent,
+        ),
+        (
+            &[&["activity_content"][..]][..],
+            AgentParseField::ActivityContent,
+        ),
+    ] {
+        if paths
+            .iter()
+            .find_map(|path| value_at(input, path))
+            .is_some_and(|value| {
+                !value.is_null() && !matches!(value, Value::String(text) if !text.trim().is_empty())
+            })
+        {
+            push_parse_warning(
+                &mut warnings,
+                AgentParseWarning {
+                    field,
+                    failure: AgentParseFailure::InvalidType,
+                },
+                MAX_WARNINGS,
+            );
+        }
+    }
+
+    if matches!(contract.source, AgentSource::Pi)
+        && matches!(
+            contract.source_event.as_str(),
+            "tool_call" | "tool_execution_start"
+        )
+        && contract.activity_content.is_none()
+        && ["activity_content", "input", "args"]
+            .into_iter()
+            .any(|key| input.get(key).is_some_and(|value| !value.is_null()))
+    {
+        push_parse_warning(
+            &mut warnings,
+            AgentParseWarning {
+                field: AgentParseField::ToolArguments,
+                failure: AgentParseFailure::UnsupportedShape,
+            },
+            MAX_WARNINGS,
+        );
+    }
+
+    warnings
+}
+
+fn push_parse_warning(
+    warnings: &mut Vec<AgentParseWarning>,
+    warning: AgentParseWarning,
+    maximum: usize,
+) {
+    if warnings.len() < maximum && !warnings.contains(&warning) {
+        warnings.push(warning);
+    }
+}
+
+/// Converts only explicit host lineage into a suppression marker. Parent IDs
+/// are correlation data: they are inspected locally but never cross the
+/// normalized event boundary. Title text and display order are never used to
+/// guess that a session is a child.
+fn child_session_contract(source: AgentSource, input: &Value) -> Option<ContractEvent> {
+    let source_event = input
+        .get("type")
+        .or_else(|| input.get("hook_event_name"))
+        .and_then(Value::as_str);
+    let explicit_marker = source_event == Some(AGENT_CHILD_SESSION_SOURCE_EVENT);
+    let has_common_parent_identity = string_at(
+        input,
+        &[
+            &["parent_session_id"],
+            &["parentSessionID"],
+            &["parent_thread_id"],
+            &["parentThreadId"],
+        ],
+    )
+    .is_some();
+    // OpenCode message objects also have a parentID for message-chain
+    // ancestry. Only Session lifecycle payloads carry Session.parentID.
+    let has_opencode_parent_identity = source == AgentSource::Opencode
+        && matches!(
+            source_event,
+            Some("session.created" | "session.updated" | "session.deleted")
+        )
+        && string_at(
+            input,
+            &[
+                &["properties", "parentID"],
+                &["properties", "info", "parentID"],
+                &["event", "properties", "parentID"],
+                &["event", "properties", "info", "parentID"],
+            ],
+        )
+        .is_some();
+    let is_sidechain = bool_at(
+        input,
+        &[
+            &["isSidechain"],
+            &["is_sidechain"],
+            &["properties", "isSidechain"],
+            &["properties", "info", "isSidechain"],
+        ],
+    );
+    if !explicit_marker
+        && !has_common_parent_identity
+        && !has_opencode_parent_identity
+        && !is_sidechain
+    {
+        return None;
+    }
+
+    let session_id = string_at(
+        input,
+        &[
+            &["session_id"],
+            &["sessionId"],
+            &["thread_id"],
+            &["threadId"],
+            &["properties", "sessionID"],
+            &["properties", "info", "id"],
+            &["event", "properties", "sessionID"],
+            &["event", "properties", "info", "id"],
+            &["input", "sessionID"],
+        ],
+    )?;
+    let mut contract = contract_event(
+        source,
+        Some(session_id),
+        AGENT_CHILD_SESSION_SOURCE_EVENT,
+        AgentEventType::Start,
+        None,
+        "suppressed",
+        false,
+    );
+    contract.diagnostic = bool_at(
+        input,
+        &[
+            &["diagnostic"],
+            &["properties", "diagnostic"],
+            &["properties", "info", "diagnostic"],
+        ],
+    );
+    contract.affects_activity = false;
+    contract.session_open = Some(false);
+    assign_opaque_invocation_event_id(&mut contract, input);
+    Some(contract)
 }
 
 fn parse_codex(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
@@ -287,6 +471,10 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
 fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = event_type(input)?;
     let agent_error = bool_at(input, &[&["agent_error"]]);
+    let normalized_activity_content = activity_content(event, input);
+    let explicit_thinking = event == "message_end"
+        && string_at(input, &[&["activity_kind"]]).as_deref() == Some("thinking")
+        && normalized_activity_content.is_some();
     let (kind, outcome, session_active) = match event {
         // Opening or resuming a Pi page does not mean the agent is working.
         "session_start" => return Ok(None),
@@ -303,6 +491,7 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
         "tool_execution_end" => (AgentEventType::Tool, "completed", true),
         // Pi exposes each finalized AgentMessage through message_end. Capturing
         // assistant text here avoids depending on a later lifecycle event.
+        "message_end" if explicit_thinking => (AgentEventType::Thinking, "reasoning", true),
         "message_end" => (AgentEventType::Start, "message", true),
         // agent_end can be followed by an automatic retry, compaction, or a
         // queued continuation. Only agent_settled is a stable terminal edge.
@@ -330,17 +519,18 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
     );
     contract.turn_id = bounded_string_at(input, &[&["turn_id"], &["turnId"]], MAX_IDENTITY_BYTES);
     contract.diagnostic = bool_at(input, &[&["diagnostic"]]);
-    contract.affects_activity = !matches!(
-        event,
-        "connector.probe"
-            | "session_info_changed"
-            | "agent_start"
-            | "turn_start"
-            | "turn_end"
-            | "message_end"
-            | "session_before_compact"
-            | "session_compact"
-    );
+    contract.affects_activity = explicit_thinking
+        || !matches!(
+            event,
+            "connector.probe"
+                | "session_info_changed"
+                | "agent_start"
+                | "turn_start"
+                | "turn_end"
+                | "message_end"
+                | "session_before_compact"
+                | "session_compact"
+        );
     contract.session_title = session_title(input);
     contract.session_open = Some(event != "session_shutdown");
     contract.activity_kind = match event {
@@ -348,9 +538,10 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
             Some(activity_kind_for_tool(contract.tool_name.as_deref()))
         }
         "session_before_compact" => Some("compaction".to_string()),
+        "message_end" if explicit_thinking => Some("thinking".to_string()),
         _ => None,
     };
-    contract.activity_content = activity_content(event, input);
+    contract.activity_content = normalized_activity_content;
     match event {
         "input" | "before_agent_start" => {
             contract.message_role = Some("user".to_string());
@@ -1056,6 +1247,7 @@ fn activity_content(source_event: &str, value: &Value) -> Option<String> {
     const TOOL_INPUT_PATHS: &[&[&str]] = &[
         &["activity_content"],
         &["tool_input"],
+        &["args"],
         &["input", "args"],
         &["output", "args"],
         &["input", "command"],
@@ -1923,6 +2115,94 @@ mod claude_transcript_tests {
             assert_eq!(contract.message_role.as_deref(), Some(role));
             assert_eq!(contract.message_content.as_deref(), Some("bounded text"));
         }
+    }
+
+    #[test]
+    fn explicit_host_lineage_becomes_a_content_free_child_suppression_marker() {
+        let cases = [
+            (
+                AgentSource::Codex,
+                json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "codex-child",
+                    "parentThreadId": "codex-root",
+                    "prompt": "must not cross"
+                }),
+                "codex-child",
+            ),
+            (
+                AgentSource::ClaudeCode,
+                json!({
+                    "hook_event_name": "PreToolUse",
+                    "session_id": "claude-child",
+                    "isSidechain": true,
+                    "tool_name": "Read"
+                }),
+                "claude-child",
+            ),
+            (
+                AgentSource::Pi,
+                json!({
+                    "type": "input",
+                    "session_id": "pi-child",
+                    "parent_session_id": "pi-root",
+                    "text": "must not cross"
+                }),
+                "pi-child",
+            ),
+            (
+                AgentSource::Opencode,
+                json!({
+                    "type": "session.created",
+                    "properties": {
+                        "info": {
+                            "id": "opencode-child",
+                            "parentID": "opencode-root",
+                            "title": "must not cross"
+                        }
+                    }
+                }),
+                "opencode-child",
+            ),
+            (
+                AgentSource::Opencode,
+                json!({
+                    "type": "session.child",
+                    "properties": {"sessionID": "opencode-known-child"}
+                }),
+                "opencode-known-child",
+            ),
+        ];
+
+        for (source, input, expected_session) in cases {
+            let contract = parse_contract_event(source, &input)
+                .expect("parsed")
+                .expect("child marker");
+            assert_eq!(contract.session_id.as_deref(), Some(expected_session));
+            assert_eq!(contract.source_event, AGENT_CHILD_SESSION_SOURCE_EVENT);
+            assert!(!contract.affects_activity);
+            assert!(!contract.session_active);
+            assert_eq!(contract.session_open, Some(false));
+            assert_eq!(contract.message_content, None);
+            assert_eq!(contract.session_title, None);
+            assert_eq!(contract.activity_content, None);
+        }
+    }
+
+    #[test]
+    fn opencode_message_parent_identity_is_not_session_lineage() {
+        let input = json!({
+            "type": "message.updated",
+            "properties": {
+                "info": {
+                    "id": "assistant-message",
+                    "sessionID": "root-session",
+                    "parentID": "user-message",
+                    "role": "assistant"
+                }
+            }
+        });
+        assert!(child_session_contract(AgentSource::Opencode, &input).is_none());
     }
 
     /// Transcript recovery is Claude-scoped on purpose: no other host names a
