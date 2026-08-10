@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import PackageDescription
 
@@ -17,9 +17,8 @@ let package = Package(
         )
     ],
     dependencies: [
-        // Keep the test framework compatible with the Swift 6.1 toolchain on
-        // the macOS 15 CI runner. Newer 6.2/6.3 tags raise their own manifest
-        // tools version and cannot even be resolved by that baseline.
+        // Keep the test framework compatible with the minimum Swift 6.2
+        // toolchain while CI and Release build against the macOS 26 SDK.
         .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.1.3")
     ],
     targets: [

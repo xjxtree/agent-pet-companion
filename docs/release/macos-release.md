@@ -28,7 +28,7 @@ The previous release baseline is the current latest stable GitHub Release, not m
 
 ## Prerequisites and gates / 环境与门禁
 
-Build hosts need macOS 14+, Swift 6 with a macOS SDK, the pinned Rust toolchain and both Apple targets, Python 3 with the pinned visual-validation dependencies, `rg`, `ditto`, `codesign`, `lipo`, and `shasum`.
+Build hosts need Apple Swift 6.2 or newer with the macOS 26 SDK or newer, the pinned Rust toolchain and both Apple targets, Python 3 with the pinned visual-validation dependencies, `rg`, `ditto`, `codesign`, `lipo`, `nm`, `otool`, and `shasum`. The App remains deployed to macOS 14: official App binaries must report `minos 14.0`, an SDK of at least 26, and weak-linked SwiftUI/AppKit Liquid Glass symbols. This lets one archive render native Liquid Glass on macOS 26 while running the authored system-material fallback on macOS 14 and 15. / 构建主机必须提供 Apple Swift 6.2+ 与 macOS 26+ SDK；App 的最低运行版本仍为 macOS 14。正式 App 二进制必须同时证明 `minos 14.0`、SDK 至少为 26，且 SwiftUI/AppKit Liquid Glass 符号保持弱链接，因此同一归档可在 macOS 26 呈现原生液态玻璃，并在 macOS 14、15 运行既定的系统材质回退。
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -100,15 +100,16 @@ Validation rejects missing/extra assets, unsafe or malformed ZIPs, checksum/iden
 
 1. verifies tag, source version, changelog, full commit, and Codex plugin/Skill version discipline;
 2. runs the host-safe source, complete Swift interaction, integration, and explicit stress gates once, then uploads the source-bound interaction proof;
-3. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel from the proven commit and proof;
+3. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and proof;
 4. assembles the exact three-file candidate once and records trusted digests;
-5. validates only the matching ZIP on native arm64 and x86_64 runners, one full packaged acceptance per architecture;
-6. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
-7. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
-8. publishes it as latest stable only after all checks pass; and
-9. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
+5. validates the exact SDK/deployment/weak-link contract in every App archive;
+6. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
+7. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
+8. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
+9. publishes it as latest stable only after all checks pass; and
+10. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
 
-Native validation is a hard dependency; cross-building or testing on the other architecture is not a substitute. Existing Releases are never overwritten. / 原生双架构验收是硬门禁，交叉构建不能替代；已有 Release 不会被覆盖。
+Native compatibility validation on both architectures and packaged macOS 26 validation are hard dependencies; cross-building or static symbol inspection is not a substitute for runtime acceptance. Existing Releases are never overwritten. / 双架构原生兼容验收与 macOS 26 打包产物验收都是硬门禁；交叉构建或静态符号检查不能替代运行时验收，已有 Release 不会被覆盖。
 
 ## User installation contract / 用户安装合同
 

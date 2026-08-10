@@ -164,6 +164,16 @@ if [[ -n "$EXPECTED_ARCH" ]]; then
     --app "$APP_BUNDLE" \
     --architecture "$EXPECTED_ARCH"
 fi
+if [[ "$MODE" == "github-release" ]]; then
+  # One SDK 26 build must retain the macOS 14 deployment target and weak-link
+  # every macOS 26 Liquid Glass entry point. This is the static proof that the
+  # same archive renders native glass on macOS 26 and the authored material
+  # fallback on macOS 14/15.
+  "$ROOT_DIR/script/validate_macos_build_contract.py" artifact \
+    --binary "$APP_BINARY" \
+    --deployment-target 14.0 \
+    --minimum-sdk 26.0
+fi
 
 SIGNATURE_PRESENT=0
 if [[ -e "$APP_CONTENTS/_CodeSignature" ]]; then

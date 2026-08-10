@@ -35,6 +35,7 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/build_app_bundle.sh"
   "$ROOT_DIR/script/validate_app_bundle.sh"
   "$ROOT_DIR/script/validate_macho_architectures.sh"
+  "$ROOT_DIR/script/validate_macos_build_contract.py"
   "$ROOT_DIR/script/validate_release_zip.py"
   "$ROOT_DIR/script/validate_release_identity.py"
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
@@ -98,6 +99,8 @@ if rg -Fq "if: steps.validation_scope.outputs.docs_only != '1'" "$CI_WORKFLOW"; 
   exit 1
 fi
 rg -Fq -- '--validation full' "$CI_WORKFLOW"
+rg -Fq 'runs-on: macos-26' "$CI_WORKFLOW"
+rg -Fq './script/validate_macos_build_contract.py toolchain' "$CI_WORKFLOW"
 if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \
   "$CI_WORKFLOW"; then
   echo 'ordinary CI must not auto-enable live UI or Computer Use' >&2
@@ -196,6 +199,10 @@ rg -q 'validate_github_release_signature_before_runtime' \
   "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -Fq "grep -Fx 'Signature=adhoc'" "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -q 'validate_macho_architectures.sh' "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -Fq 'validate_macos_build_contract.py" artifact' \
+  "$ROOT_DIR/script/validate_app_bundle.sh"
+rg -Fq 'validate_macos_build_contract.py" toolchain' \
+  "$ROOT_DIR/script/build_app_bundle.sh"
 rg -q 'SOURCE_CODEX_PLUGIN_MANIFEST' "$ROOT_DIR/script/validate_app_bundle.sh"
 rg -q 'packaged PetCore emitted a stale Codex plugin manifest' \
   "$ROOT_DIR/script/validate_app_bundle.sh"
@@ -258,9 +265,11 @@ rg -q 'gh release download' "$WORKFLOW"
 rg -q 'persist-credentials: false' "$WORKFLOW"
 rg -q 'git merge-base --is-ancestor "\$commit" refs/remotes/origin/main' \
   "$WORKFLOW"
-rg -q 'needs: \[prepare, assemble, validate_arm64, validate_x86_64\]' "$WORKFLOW"
+rg -q 'needs: \[prepare, assemble, validate_arm64, validate_x86_64, validate_macos26\]' "$WORKFLOW"
+rg -q 'runs-on: macos-26$' "$WORKFLOW"
 rg -q 'runs-on: macos-15$' "$WORKFLOW"
 rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
+rg -Fq './script/validate_macos_build_contract.py toolchain' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
 rg -q 'validate_github_release_api.py' "$WORKFLOW"
 rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
@@ -299,17 +308,19 @@ build_start = source.index("\n  build_archives:")
 assemble_start = source.index("\n  assemble:")
 arm_start = source.index("\n  validate_arm64:")
 x86_start = source.index("\n  validate_x86_64:")
+macos26_start = source.index("\n  validate_macos26:")
 publish_start = source.index("\n  publish:")
 prepare = source[:build_start]
 build = source[build_start:assemble_start]
 assemble = source[assemble_start:arm_start]
 arm = source[arm_start:x86_start]
-x86 = source[x86_start:publish_start]
+x86 = source[x86_start:macos26_start]
+macos26 = source[macos26_start:publish_start]
 publish = source[publish_start:]
 
 if source.count("contents: write") != 1 or "contents: write" not in publish:
     raise SystemExit("only the publish job may have contents: write")
-if any("contents: write" in job for job in (prepare, build, assemble, arm, x86)):
+if any("contents: write" in job for job in (prepare, build, assemble, arm, x86, macos26)):
     raise SystemExit("build and validation jobs must remain read-only")
 if source.count("ref: ${{ needs.prepare.outputs.commit }}") < 5:
     raise SystemExit("every downstream job must check out the proven commit")
@@ -333,6 +344,10 @@ if 'run: test "$(uname -m)" = "arm64"' not in arm:
     raise SystemExit("arm64 validation job does not prove its native architecture")
 if 'run: test "$(uname -m)" = "x86_64"' not in x86:
     raise SystemExit("x86_64 validation job does not prove its native architecture")
+if 'test "$(uname -m)" = "arm64"' not in macos26:
+    raise SystemExit("macOS 26 validation job does not prove its native architecture")
+if "sw_vers -productVersion" not in macos26:
+    raise SystemExit("macOS 26 validation job does not prove its operating system")
 
 download = publish.index('gh release download "$RELEASE_TAG"')
 digest_recheck = publish.index(
@@ -352,6 +367,8 @@ if arm.count("validate_github_release_artifacts.sh") != 1:
     raise SystemExit("arm64 job must run one native packaged validation")
 if x86.count("validate_github_release_artifacts.sh") != 1:
     raise SystemExit("x86_64 job must run one native packaged validation")
+if macos26.count("validate_github_release_artifacts.sh") != 1:
+    raise SystemExit("macOS 26 job must run one native packaged validation")
 
 uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
 if not uses or any(
@@ -364,6 +381,7 @@ PY
 "$ROOT_DIR/script/build_release.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_app_bundle.sh" --help >/dev/null
 "$ROOT_DIR/script/validate_macho_architectures.sh" --help >/dev/null
+"$ROOT_DIR/script/validate_macos_build_contract.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_zip.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_identity.py" --help >/dev/null
 "$ROOT_DIR/script/validate_release_artifact_metadata.py" --help >/dev/null
@@ -381,6 +399,8 @@ PY
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$ROOT_DIR/script/tests/test_macos_build_contract.py"
 
 if [[ "$STATIC_ONLY" == "0" ]]; then
   PYTHONDONTWRITEBYTECODE=1 \

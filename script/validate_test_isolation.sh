@@ -88,6 +88,9 @@ write_executable "$BUILD_ROOT/script/validate_overlay_interaction.sh" \
 write_executable "$BUILD_ROOT/script/validate_interaction_attestation.py" \
   '#!/usr/bin/env bash' \
   'exit 0'
+write_executable "$BUILD_ROOT/script/validate_macos_build_contract.py" \
+  '#!/usr/bin/env bash' \
+  'exit 0'
 write_executable "$BUILD_ROOT/script/validation_fingerprint.py" \
   '#!/usr/bin/env bash' \
   'printf '\''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n'\'''

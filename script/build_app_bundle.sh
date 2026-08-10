@@ -162,6 +162,12 @@ if [[ ! "$BUILD_ID" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]; then
   exit 2
 fi
 
+# The macOS 26 UI contract is compile-time as well as runtime. An older Swift
+# compiler removes the native Liquid Glass branches, while an older SDK links
+# the entire App into the legacy control appearance. Fail before doing any
+# expensive Rust or Swift work so development and Release cannot diverge.
+"$ROOT_DIR/script/validate_macos_build_contract.py" toolchain
+
 SWIFT_DIR="$ROOT_DIR/apps/macos"
 APP_ICON_SOURCE="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
 DIST_DIR="$ROOT_DIR/dist"

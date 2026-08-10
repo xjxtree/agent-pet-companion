@@ -175,6 +175,13 @@ class ValidationScopeTests(unittest.TestCase):
         self.assertTrue(scope.scripts)
         self.assertFalse(scope.bundle)
 
+    def test_macos_build_contract_change_rebuilds_the_app_bundle(self) -> None:
+        scope = validation_scope.classify(
+            ["script/validate_macos_build_contract.py"]
+        )
+        self.assertTrue(scope.scripts)
+        self.assertTrue(scope.bundle)
+
 
 class InteractionProofTests(unittest.TestCase):
     def test_current_proof_can_be_rebound_without_repeating_swift_tests(self) -> None:

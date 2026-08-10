@@ -37,6 +37,7 @@ BUNDLE_SCRIPT_PATHS = {
     "script/prepare_interaction_attestation.sh",
     "script/validate_app_bundle.sh",
     "script/validate_interaction_attestation.py",
+    "script/validate_macos_build_contract.py",
     "script/validate_overlay_interaction.sh",
     "script/validate_overlay_offline.sh",
     "script/validation_helpers.sh",

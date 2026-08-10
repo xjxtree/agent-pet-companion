@@ -705,12 +705,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         assemble_start = self.source.index("\n  assemble:")
         arm_start = self.source.index("\n  validate_arm64:")
         x86_start = self.source.index("\n  validate_x86_64:")
+        macos26_start = self.source.index("\n  validate_macos26:")
         publish_start = self.source.index("\n  publish:")
         self.prepare = self.source[:build_start]
         self.build = self.source[build_start:assemble_start]
         self.assemble = self.source[assemble_start:arm_start]
         self.arm = self.source[arm_start:x86_start]
-        self.x86 = self.source[x86_start:publish_start]
+        self.x86 = self.source[x86_start:macos26_start]
+        self.macos26 = self.source[macos26_start:publish_start]
         self.publish = self.source[publish_start:]
         self.test_all = (ROOT / "script/test_all.sh").read_text(encoding="utf-8")
         self.overlay_interaction = (
@@ -797,6 +799,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn("architecture: [arm64, x86_64]", self.build)
         self.assertIn("fail-fast: false", self.build)
+        self.assertIn("runs-on: macos-26\n", self.prepare)
+        self.assertIn("runs-on: macos-26\n", self.build)
+        self.assertIn(
+            "./script/validate_macos_build_contract.py toolchain", self.prepare
+        )
+        self.assertIn(
+            "./script/validate_macos_build_contract.py toolchain", self.build
+        )
         self.assertIn(
             '"$ROOT_DIR/script/validate_codex_plugin_version.py" \\\n'
             '  --base-ref "$PREVIOUS_RELEASE_TAG"',
@@ -863,6 +873,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("contents: write", self.assemble)
         self.assertNotIn("contents: write", self.arm)
         self.assertNotIn("contents: write", self.x86)
+        self.assertNotIn("contents: write", self.macos26)
         self.assertIn("contents: write", self.publish)
 
     def test_downstream_jobs_use_proven_commit_and_recheck_remote_tag(self) -> None:
@@ -899,6 +910,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn('= "x86_64"', self.arm)
         self.assertIn('run: test "$(uname -m)" = "x86_64"', self.x86)
         self.assertNotIn('= "arm64"', self.x86)
+        self.assertIn("runs-on: macos-26\n", self.macos26)
+        self.assertIn('test "$(uname -m)" = "arm64"', self.macos26)
+        self.assertIn('sw_vers -productVersion', self.macos26)
+        self.assertIn(
+            "needs: [prepare, assemble, validate_arm64, validate_x86_64, validate_macos26]",
+            self.publish,
+        )
 
         release_download = self.publish.index('gh release download "$RELEASE_TAG"')
         digest_recheck = self.publish.index(
@@ -916,8 +934,12 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("validate_github_release_artifacts.sh", self.publish)
         self.assertEqual(self.arm.count("validate_github_release_artifacts.sh"), 1)
         self.assertEqual(self.x86.count("validate_github_release_artifacts.sh"), 1)
+        self.assertEqual(
+            self.macos26.count("validate_github_release_artifacts.sh"), 1
+        )
         self.assertIn("--require-native-architecture arm64", self.arm)
         self.assertIn("--require-native-architecture x86_64", self.x86)
+        self.assertIn("--require-native-architecture arm64", self.macos26)
 
     def test_every_action_is_pinned_to_a_full_commit(self) -> None:
         uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", self.source)

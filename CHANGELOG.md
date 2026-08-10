@@ -14,6 +14,14 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-11
+
+### Fixed / 修复
+
+- Official macOS archives are now built with Apple Swift 6.2 or newer and the macOS 26 SDK while retaining a macOS 14 deployment target. Release validation rejects an old linked SDK, a raised minimum system version, or non-weak Liquid Glass symbols, and runs the same candidate on macOS 15 compatibility hosts and macOS 26. The Control Center and session bubbles therefore use native Liquid Glass on macOS 26 and the authored system-material fallback on macOS 14 and 15.
+
+  正式 macOS 归档现强制使用 Apple Swift 6.2+ 与 macOS 26+ SDK 构建，同时保持 macOS 14 最低运行版本。发布门禁会拒绝旧链接 SDK、被抬高的最低系统版本或非弱链接的 Liquid Glass 符号，并让同一候选产物分别在 macOS 15 兼容主机与 macOS 26 上运行。因此控制中心与会话气泡会在 macOS 26 使用原生液态玻璃，在 macOS 14、15 使用既定的系统材质回退。
+
 ## [0.3.4] - 2026-08-11
 
 ### Changed / 变更

@@ -26,7 +26,7 @@ concurrency:
 jobs:
   prepare:
     name: Prove source once
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 75
     permissions:
       contents: read
@@ -98,8 +98,7 @@ jobs:
       - name: Prepare source validation host
         run: |
           test "$(uname -m)" = "arm64"
-          swift --version
-          test "$(swift --version | awk '/Apple Swift version/{split($4, version, "."); print version[1]}')" -ge 6
+          ./script/validate_macos_build_contract.py toolchain
           rustup show
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
@@ -153,7 +152,7 @@ jobs:
       fail-fast: false
       matrix:
         architecture: [arm64, x86_64]
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     permissions:
       contents: read
@@ -176,9 +175,10 @@ jobs:
 
       - name: Prepare architecture build host
         run: |
+          test "$(uname -m)" = "arm64"
           rustup show
           rustup target add "${{ matrix.architecture == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}"
-          swift --version
+          ./script/validate_macos_build_contract.py toolchain
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
           fi
@@ -282,7 +282,7 @@ jobs:
           path: release-assets
 
   validate_arm64:
-    name: Validate packaged arm64 App on native Apple silicon
+    name: Validate packaged arm64 App on macOS 15 compatibility host
     needs: [prepare, assemble]
     runs-on: macos-15
     timeout-minutes: 30
@@ -319,7 +319,7 @@ jobs:
             --require-native-architecture arm64
 
   validate_x86_64:
-    name: Validate packaged x86_64 App on native Intel
+    name: Validate packaged x86_64 App on macOS 15 Intel compatibility host
     needs: [prepare, assemble]
     runs-on: macos-15-intel
     timeout-minutes: 30
@@ -355,9 +355,48 @@ jobs:
             --commit "${{ needs.prepare.outputs.commit }}" \
             --require-native-architecture x86_64
 
+  validate_macos26:
+    name: Validate packaged Liquid Glass path on macOS 26
+    needs: [prepare, assemble]
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Prove native macOS 26 validation host
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: AgentPetCompanion-${{ needs.prepare.outputs.version }}-github-release
+          path: release-assets
+
+      - name: Compare trusted digests and run packaged macOS 26 validation
+        run: |
+          ./script/verify_release_candidate_digests.sh \
+            --directory release-assets \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
+          ./script/validate_github_release_artifacts.sh \
+            --directory release-assets \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --build "${{ needs.prepare.outputs.build }}" \
+            --commit "${{ needs.prepare.outputs.commit }}" \
+            --require-native-architecture arm64
+
   publish:
     name: Verify and publish GitHub Release
-    needs: [prepare, assemble, validate_arm64, validate_x86_64]
+    needs: [prepare, assemble, validate_arm64, validate_x86_64, validate_macos26]
     runs-on: macos-15
     timeout-minutes: 30
     permissions:

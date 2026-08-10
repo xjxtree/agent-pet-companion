@@ -15,7 +15,7 @@ concurrency:
 jobs:
   quality:
     name: Change-scoped quality and packaging
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       APC_VALIDATE_HOST_UI: "0"
@@ -62,9 +62,8 @@ jobs:
       - name: Verify required toolchains
         if: steps.validation_scope.outputs.bundle == '1' || steps.validation_scope.outputs.rust_mode != 'none' || steps.validation_scope.outputs.swift_mode != 'none'
         run: |
-          swift --version
+          ./script/validate_macos_build_contract.py toolchain
           xcrun --show-sdk-path
-          test "$(swift --version | awk '/Apple Swift version/{split($4, v, "."); print v[1]}')" -ge 6
           rustup show
 
       - name: Prepare pinned Python validation environment
