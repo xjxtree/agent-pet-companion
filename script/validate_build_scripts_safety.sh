@@ -93,6 +93,10 @@ rg -Fq "steps.validation_scope.outputs.producer == '1'" "$CI_WORKFLOW"
 rg -Fq 'Pillow==11.3.0' "$CI_WORKFLOW"
 rg -Fq 'features.check("webp_anim")' "$CI_WORKFLOW"
 rg -Fq 'pet_bytebudcodex|pet_pinklace|pet_xingwutuanzi' "$CI_WORKFLOW"
+if rg -Fq "if: steps.validation_scope.outputs.docs_only != '1'" "$CI_WORKFLOW"; then
+  echo 'script-only CI changes must not restore Rust/Swift build caches' >&2
+  exit 1
+fi
 rg -Fq -- '--validation full' "$CI_WORKFLOW"
 if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \
   "$CI_WORKFLOW"; then

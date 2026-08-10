@@ -946,6 +946,17 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("steps.validation_scope.outputs.producer == '1'", source)
         self.assertIn("Pillow==11.3.0", source)
         self.assertIn('features.check("webp_anim")', source)
+        self.assertNotIn(
+            "if: steps.validation_scope.outputs.docs_only != '1'", source
+        )
+        self.assertGreaterEqual(
+            source.count(
+                "if: steps.validation_scope.outputs.bundle == '1' || "
+                "steps.validation_scope.outputs.rust_mode != 'none' || "
+                "steps.validation_scope.outputs.swift_mode != 'none'"
+            ),
+            2,
+        )
         uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
         self.assertTrue(uses)
         for action in uses:

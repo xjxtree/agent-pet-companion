@@ -81,7 +81,7 @@ jobs:
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
       - name: Cache Rust and Swift build products
-        if: steps.validation_scope.outputs.docs_only != '1'
+        if: steps.validation_scope.outputs.bundle == '1' || steps.validation_scope.outputs.rust_mode != 'none' || steps.validation_scope.outputs.swift_mode != 'none'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
