@@ -44,7 +44,8 @@ cleanup_build_only() {
 }
 
 build_bundle() {
-  "$ROOT_DIR/script/build_app_bundle.sh"
+  local validation_profile="${1:-full}"
+  "$ROOT_DIR/script/build_app_bundle.sh" --validation "$validation_profile"
 }
 
 quit_running_app() {
@@ -197,7 +198,7 @@ wait_for_runtime_sync() {
 
 run_host_bundle() {
   quit_running_app
-  build_bundle
+  build_bundle static
   local expected_build_id
   local cli_build_id
   local cli_manifest_build_id
@@ -251,24 +252,24 @@ case "$MODE" in
     ;;
   --debug|debug)
     quit_running_app
-    build_bundle
+    build_bundle static
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
-    build_bundle
+    build_bundle static
     start_owned_runtime
     trap cleanup_owned_runtime EXIT
     /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
-    build_bundle
+    build_bundle static
     start_owned_runtime
     trap cleanup_owned_runtime EXIT
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"dev.agentpet.companion\""
     ;;
   --verify|verify)
     apc_require_host_ui_opt_in "host UI verification"
-    build_bundle
+    build_bundle full
     start_owned_runtime
     trap cleanup_owned_runtime EXIT
     "$ROOT_DIR/script/validate_overlay_runtime.sh" "$PETCORE_CLI"

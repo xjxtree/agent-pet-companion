@@ -1746,15 +1746,15 @@ struct UIModelTests {
 
     @MainActor
     @Test
-    func pointerMonitorCommitsAndClearsALostDragMouseUp() async throws {
+    func appLocalMouseUpFallbackCommitsAndClearsLostDrag() async throws {
         let store = makeStore()
         let interactionID = UUID()
         store.beginOverlayPetDrag(interactionID: interactionID)
 
-        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 1)
+        store.observeOverlayPrimaryButton(isDown: true)
         #expect(store.overlayPetDragInProgress)
 
-        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        store.observeOverlayPrimaryButton(isDown: false)
         for _ in 0 ..< 100 where store.overlayPetDragInProgress {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -1785,7 +1785,7 @@ struct UIModelTests {
         )
         store.previewOverlayDisplayWidthPt(160)
 
-        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        store.observeOverlayPrimaryButton(isDown: false)
         for _ in 0 ..< 100 where store.overlayPetDragInProgress {
             try await Task.sleep(for: .milliseconds(5))
         }

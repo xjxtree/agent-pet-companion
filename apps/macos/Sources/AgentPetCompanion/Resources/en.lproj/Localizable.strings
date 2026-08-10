@@ -566,6 +566,7 @@
 "connections.component.kind.extension" = "Extension";
 "connections.component.kind.package" = "Package";
 "connections.component.kind.skill" = "Skill";
+"connections.component.kind.hook" = "Hook";
 "connections.component.kind.unknown" = "Component";
 "connections.component.version_mismatch" = "Version mismatch";
 "connections.component.version_mismatch_detail_format" = "Installed %@ · This App requires %@";
@@ -1077,7 +1078,7 @@
 "app.update.convergence.attention.bundled_pets.title" = "Bundled Pet Files Are Missing";
 "app.update.convergence.attention.bundled_pets.detail" = "This App copy does not contain every verified built-in pet file. Download the official release again, replace the App in Applications, then reopen it; your existing pets and data are preserved.";
 "app.update.convergence.attention.connectors.title_format" = "Action Required for %@";
-"app.update.convergence.attention.connectors.conflict_detail_format" = "The managed location for %@ contains changed or unowned files, so the App left them untouched. Expand the Agent, move or restore the conflicting item, choose Set Up or Repair, then choose Check All.";
+"app.update.convergence.attention.connectors.conflict_detail_format" = "The managed location for %@ holds a path the App cannot safely write, and Set Up or Repair skips it while that is true. Expand the Agent to see the exact path in its blocking check, move or restore it, then choose Check Again.";
 "app.update.convergence.attention.connectors.host_detail_format" = "The connector source for %@ was updated, but the Agent command is unavailable, so the active version cannot be verified. Install or update the Agent, fully quit and reopen it, then choose Check All.";
 "app.update.convergence.attention.connectors.verification_detail_format" = "The connection files for %@ were updated, but the running Agent has not loaded and verified them. Fully quit and reopen the Agent, then choose Check All.";
 "app.update.convergence.attention.connectors.failed_detail_format" = "The App could not update or verify the managed connector for %@. Expand the Agent, choose Set Up or Repair, follow the instructions, then choose Check All.";

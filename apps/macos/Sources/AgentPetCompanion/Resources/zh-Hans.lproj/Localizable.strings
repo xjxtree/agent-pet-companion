@@ -566,6 +566,7 @@
 "connections.component.kind.extension" = "扩展";
 "connections.component.kind.package" = "软件包";
 "connections.component.kind.skill" = "技能";
+"connections.component.kind.hook" = "Hook";
 "connections.component.kind.unknown" = "组件";
 "connections.component.version_mismatch" = "版本不匹配";
 "connections.component.version_mismatch_detail_format" = "当前 %@ · 本 App 需要 %@";
@@ -1077,7 +1078,7 @@
 "app.update.convergence.attention.bundled_pets.title" = "App 缺少内置宠物文件";
 "app.update.convergence.attention.bundled_pets.detail" = "当前 App 副本没有包含全部已验证的内置宠物文件。请重新下载官方 Release，替换“应用程序”中的 App 后再打开；现有宠物和数据不会丢失。";
 "app.update.convergence.attention.connectors.title_format" = "%@ 连接需要处理";
-"app.update.convergence.attention.connectors.conflict_detail_format" = "%@ 的受管位置中存在已修改或不属于本 App 的文件，因此 App 为保护内容没有覆盖。请展开对应 Agent，先移走或恢复冲突项，再点击“一键设置或修复”，完成后点击“全部检查”。";
+"app.update.convergence.attention.connectors.conflict_detail_format" = "%@ 的受管位置中有一个本 App 无法安全写入的路径，此状态下“一键设置或修复”不会处理它。请展开对应 Agent 查看阻断检查项中的具体路径，移走或恢复后点击“重新检查”。";
 "app.update.convergence.attention.connectors.host_detail_format" = "%@ 的连接组件源已更新，但 Agent 命令当前不可用，无法验证生效版本。请先安装或更新对应 Agent，完全退出并重新打开，再点击“全部检查”。";
 "app.update.convergence.attention.connectors.verification_detail_format" = "%@ 的连接文件已经更新，但运行中的 Agent 尚未加载并验证它们。请完全退出并重新打开对应 Agent，再点击“全部检查”。";
 "app.update.convergence.attention.connectors.failed_detail_format" = "App 无法更新或验证 %@ 的受管连接组件。请展开对应 Agent，点击“一键设置或修复”，按页面提示处理后再点击“全部检查”。";

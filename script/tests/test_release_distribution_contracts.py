@@ -400,31 +400,14 @@ class CodexPluginVersionTests(unittest.TestCase):
             "plugins/codex/hooks",
             "skills/agent-pet-maker",
             "skills/agent-pet-studio",
-            "crates/petcore/resources",
-            "crates/petcore/tests/fixtures",
         ):
             (self.root / relative).mkdir(parents=True)
         self.manifest = self.root / "plugins/codex/.codex-plugin/plugin.json"
-        self.history = (
-            self.root
-            / "crates/petcore/resources/codex-studio-skill-history.json"
-        )
-        self.retired_v1 = (
-            self.root
-            / "crates/petcore/tests/fixtures/retired-agent-pet-studio-v1.md"
-        )
+        self.hooks = self.root / "plugins/codex/hooks/hooks.json.tpl"
         self.write_manifest("1.2.3")
-        self.write_history(["0" * 64])
-        self.retired_v1.write_text("retired v1\n", encoding="utf-8")
-        (self.root / "plugins/codex/hooks/hooks.json.tpl").write_text(
-            "{}\n", encoding="utf-8"
-        )
-        (self.root / "skills/agent-pet-maker/SKILL.md").write_text(
-            "maker\n", encoding="utf-8"
-        )
-        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
-            "studio\n", encoding="utf-8"
-        )
+        self.write_hooks(plugin_version.HOOKS_VERSION_PLACEHOLDER)
+        for skill in ("agent-pet-maker", "agent-pet-studio"):
+            self.write_skill(skill, "1.2.3")
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(
             ["git", "-C", str(self.root), "config", "user.name", "Release Test"],
@@ -466,123 +449,88 @@ class CodexPluginVersionTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def write_history(self, digests: list[str]) -> None:
-        self.history.parent.mkdir(parents=True, exist_ok=True)
-        self.history.write_text(
-            json.dumps(
-                {
-                    "schema_version": "apc.codex-studio-skill-history.v1",
-                    "retired_sha256": digests,
-                }
-            ),
+    def write_hooks(self, release_version: str) -> None:
+        self.hooks.write_text(
+            json.dumps({"release_version": release_version, "hooks": {}}),
+            encoding="utf-8",
+        )
+
+    def write_skill(self, name: str, version: str | None, body: str = "body\n") -> None:
+        front_matter = f"name: {name}\n"
+        if version is not None:
+            front_matter += f"version: {version}\n"
+        (self.root / f"skills/{name}/SKILL.md").write_text(
+            f"---\n{front_matter}---\n\n{body}",
             encoding="utf-8",
         )
 
     def test_bundle_change_requires_strict_version_increase(self) -> None:
-        (self.root / "skills/agent-pet-maker/SKILL.md").write_text(
-            "changed\n", encoding="utf-8"
-        )
+        self.write_skill("agent-pet-maker", "1.2.3", body="changed\n")
         with self.assertRaises(ValueError):
             plugin_version.validate("HEAD")
 
         self.write_manifest("1.2.4")
+        for skill in ("agent-pet-maker", "agent-pet-studio"):
+            self.write_skill(skill, "1.2.4")
         self.assertEqual(
             plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.4", True, False),
+            ("1.2.3", "1.2.4", True),
         )
 
     def test_unchanged_bundle_passes_and_version_decrease_fails(self) -> None:
         self.assertEqual(
             plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.3", False, False),
+            ("1.2.3", "1.2.3", False),
         )
         self.write_manifest("1.2.2")
         with self.assertRaises(ValueError):
             plugin_version.validate("HEAD")
 
-    def test_studio_change_requires_and_accepts_the_previous_shipped_digest(self) -> None:
-        previous_digest = hashlib.sha256(b"studio\n").hexdigest()
-        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
-            "changed studio\n", encoding="utf-8"
-        )
+    def test_every_skill_must_declare_the_shipped_plugin_version(self) -> None:
+        # A Skill left at a stale marker would report the wrong installed
+        # version forever, which is exactly what the version marker exists to
+        # prevent.
         self.write_manifest("1.2.4")
-
-        with self.assertRaisesRegex(
-            ValueError,
-            f"previous shipped Skill SHA-256 {previous_digest}",
-        ):
+        self.write_skill("agent-pet-studio", "1.2.4")
+        self.write_skill("agent-pet-maker", "1.2.3")
+        with self.assertRaisesRegex(ValueError, "declares version 1.2.3"):
             plugin_version.validate("HEAD")
 
-        self.write_history(sorted(["0" * 64, previous_digest]))
+        self.write_skill("agent-pet-maker", "1.2.4")
         self.assertEqual(
             plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.4", True, True),
+            ("1.2.3", "1.2.4", True),
         )
 
-    def test_studio_history_is_append_only_and_cannot_expand_without_a_change(self) -> None:
-        self.write_history(["1" * 64])
-        with self.assertRaisesRegex(ValueError, "history is append-only"):
-            plugin_version.validate("HEAD")
-
-        self.write_history(sorted(["0" * 64, "1" * 64]))
-        with self.assertRaisesRegex(ValueError, "not the previous shipped Skill"):
-            plugin_version.validate("HEAD")
-
-    def test_studio_history_accepts_only_the_reviewed_app_managed_recovery_digest(self) -> None:
-        recovered = next(iter(plugin_version.RECOVERED_APP_MANAGED_STUDIO_SHA256))
-        self.write_history(sorted(["0" * 64, recovered]))
-        self.assertEqual(
-            plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.3", False, False),
-        )
-
-    def test_studio_history_rejects_unsorted_or_noncanonical_digests(self) -> None:
-        self.write_history(["f" * 64, "a" * 64])
-        with self.assertRaisesRegex(ValueError, "sorted and unique"):
-            plugin_version.validate("HEAD")
-
-        self.write_history(["A" * 64])
-        with self.assertRaisesRegex(ValueError, "invalid SHA-256"):
-            plugin_version.validate("HEAD")
-
-    def test_studio_history_bootstrap_rejects_unrelated_digests(self) -> None:
-        subprocess.run(
-            ["git", "-C", str(self.root), "rm", "-q", str(self.history)],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-qm", "pre-history"],
-            check=True,
-        )
-        previous_digest = hashlib.sha256(b"studio\n").hexdigest()
-        retired_v1_digest = hashlib.sha256(b"retired v1\n").hexdigest()
-        (self.root / "skills/agent-pet-studio/SKILL.md").write_text(
-            "changed studio\n", encoding="utf-8"
-        )
+    def test_skill_without_a_version_marker_is_rejected(self) -> None:
         self.write_manifest("1.2.4")
-        self.write_history(
-            sorted([retired_v1_digest, previous_digest, "1" * 64])
-        )
-
-        with self.assertRaisesRegex(ValueError, "must contain exactly"):
+        self.write_skill("agent-pet-maker", "1.2.4")
+        self.write_skill("agent-pet-studio", None)
+        with self.assertRaisesRegex(ValueError, "exactly one version: line"):
             plugin_version.validate("HEAD")
 
-        self.write_history(
-            sorted(
-                [
-                    retired_v1_digest,
-                    previous_digest,
-                    *plugin_version.RECOVERED_APP_MANAGED_STUDIO_SHA256,
-                ]
-            )
-        )
-        self.assertEqual(
-            plugin_version.validate("HEAD"),
-            ("1.2.3", "1.2.4", True, True),
-        )
+    def test_skill_version_must_come_from_front_matter(self) -> None:
+        self.write_manifest("1.2.4")
+        self.write_skill("agent-pet-maker", "1.2.4")
+        self.write_skill("agent-pet-studio", None, body="version: 9.9.9\n")
+        with self.assertRaisesRegex(ValueError, "exactly one version: line"):
+            plugin_version.validate("HEAD")
+
+    def test_hooks_template_must_carry_the_release_version_placeholder(self) -> None:
+        self.write_manifest("1.2.4")
+        self.write_hooks("1.2.4")
+        with self.assertRaisesRegex(ValueError, "release_version"):
+            plugin_version.validate("HEAD")
 
 
 class ValidationOrderTests(unittest.TestCase):
+    def test_development_build_identity_is_source_stable(self) -> None:
+        build = (ROOT / "script/build_app_bundle.sh").read_text(encoding="utf-8")
+        self.assertIn("--scope runtime", build)
+        self.assertIn("DEVELOPMENT_SOURCE_FINGERPRINT", build)
+        self.assertIn("release bundle builds require an explicit APC_BUILD_ID", build)
+        self.assertNotIn("$(date -u", build)
+
     def test_interaction_attestation_precedes_rust_bundle_build_and_is_consumed(self) -> None:
         build = (ROOT / "script/build_app_bundle.sh").read_text(encoding="utf-8")
         validate = (ROOT / "script/validate_app_bundle.sh").read_text(
@@ -593,7 +541,7 @@ class ValidationOrderTests(unittest.TestCase):
             '    "$INTERACTION_ATTESTATION_SOURCE"'
         )
         generated_attestation = build.index(
-            '"$ROOT_DIR/script/validate_overlay_interaction.sh"'
+            '"$ROOT_DIR/script/prepare_interaction_attestation.sh"'
         )
         rust_build = build.index(
             'if [[ "$UNIVERSAL" == "1" ]]',
@@ -601,8 +549,11 @@ class ValidationOrderTests(unittest.TestCase):
         )
         self.assertLess(reused_attestation, rust_build)
         self.assertLess(generated_attestation, rust_build)
-        self.assertIn('--attestation-out "$INTERACTION_ATTESTATION"', build)
-        self.assertIn('--build-id "$BUILD_ID"', build)
+        self.assertIn('--output "$INTERACTION_ATTESTATION"', build)
+        self.assertIn('APC_BUILD_ID="$BUILD_ID"', build)
+        self.assertIn('APC_APP_VERSION="$RELEASE_VERSION"', build)
+        self.assertIn('APC_APP_BUILD="$RELEASE_BUILD"', build)
+        self.assertIn('APC_RELEASE_CHANNEL="$RELEASE_CHANNEL"', build)
         self.assertGreaterEqual(
             build.count('--expected-build-id "$BUILD_ID"'),
             2,
@@ -750,13 +701,17 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.source = (ROOT / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
-        build_end = self.source.index("\n  validate_arm64:")
-        arm_end = self.source.index("\n  validate_x86_64:")
-        x86_end = self.source.index("\n  publish:")
-        self.build = self.source[:build_end]
-        self.arm = self.source[build_end:arm_end]
-        self.x86 = self.source[arm_end:x86_end]
-        self.publish = self.source[x86_end:]
+        build_start = self.source.index("\n  build_archives:")
+        assemble_start = self.source.index("\n  assemble:")
+        arm_start = self.source.index("\n  validate_arm64:")
+        x86_start = self.source.index("\n  validate_x86_64:")
+        publish_start = self.source.index("\n  publish:")
+        self.prepare = self.source[:build_start]
+        self.build = self.source[build_start:assemble_start]
+        self.assemble = self.source[assemble_start:arm_start]
+        self.arm = self.source[arm_start:x86_start]
+        self.x86 = self.source[x86_start:publish_start]
+        self.publish = self.source[publish_start:]
         self.test_all = (ROOT / "script/test_all.sh").read_text(encoding="utf-8")
         self.overlay_interaction = (
             ROOT / "script/validate_overlay_interaction.sh"
@@ -826,20 +781,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release_builder = (ROOT / "script/build_release.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Prepare pinned Python validation environment", self.build)
-        self.assertIn("Pillow==11.3.0", self.build)
-        self.assertIn('Image.__version__ != "11.3.0"', self.build)
-        self.assertIn('features.check("webp_anim")', self.build)
-        self.assertIn('>>"$GITHUB_PATH"', self.build)
-        self.assertIn("./script/test_all.sh", self.build)
+        self.assertIn("Prepare pinned Python validation environment", self.prepare)
+        self.assertIn("Pillow==11.3.0", self.prepare)
+        self.assertIn('Image.__version__ != "11.3.0"', self.prepare)
+        self.assertIn('features.check("webp_anim")', self.prepare)
+        self.assertIn('>>"$GITHUB_PATH"', self.prepare)
+        self.assertIn("./script/test_all.sh --source-only --include-stress", self.prepare)
         self.assertLess(
-            self.build.index("Prepare pinned Python validation environment"),
-            self.build.index("./script/test_all.sh"),
+            self.prepare.index("Prepare pinned Python validation environment"),
+            self.prepare.index("./script/test_all.sh"),
         )
         self.assertIn(
-            "run: ./script/build_release.sh --github-release --arch all",
+            'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"',
             self.build,
         )
+        self.assertIn("architecture: [arm64, x86_64]", self.build)
+        self.assertIn("fail-fast: false", self.build)
         self.assertIn(
             '"$ROOT_DIR/script/validate_codex_plugin_version.py" \\\n'
             '  --base-ref "$PREVIOUS_RELEASE_TAG"',
@@ -850,41 +807,30 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             release_builder,
         )
         self.assertIn(
-            "APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}",
+            "APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}",
             self.build,
         )
-        stage_index = self.build.index(
-            "- name: Stage exact three-file release candidate"
+        self.assertIn("release-interaction-attestation", self.prepare)
+        self.assertIn("release-interaction-attestation", self.build)
+        self.assertIn("merge-multiple: true", self.assemble)
+        self.assertIn("validate_release_artifact_metadata.py", self.assemble)
+        self.assertIn("Upload exact release candidate", self.assemble)
+        self.assertIn("arm64|x86_64", release_builder)
+        self.assertIn('--validation static', release_builder)
+        self.assertIn(
+            "--source-gate-proven requires APC_INTERACTION_ATTESTATION_PATH",
+            release_builder,
         )
-        revalidate_index = self.build.index(
-            "- name: Revalidate final local artifact set"
-        )
-        self.assertLess(stage_index, revalidate_index)
-        stage_block = self.build[stage_index:revalidate_index]
-        self.assertIn("test ! -e release-assets", stage_block)
-        self.assertEqual(stage_block.count('mv "dist/$asset" "release-assets/$asset"'), 1)
-        self.assertIn("--directory release-assets", self.build)
-        self.assertNotIn("--directory dist", self.build)
-        self.assertIn("validate_github_release_artifacts.sh", self.source)
-        upload_start = self.build.index("- name: Upload release candidate")
-        upload_block = self.build[upload_start:]
-        expected_assets = (
-            "macos-arm64.zip",
-            "macos-x86_64.zip",
-            "SHA256SUMS.txt",
-        )
-        for suffix in expected_assets:
-            self.assertEqual(upload_block.count(suffix), 1)
         self.assertEqual(self.publish.count('"release-assets/AgentPetCompanion-'), 3)
 
     def test_release_source_gate_executes_phase_a_and_t_b4_swift_suites(self) -> None:
         self.assertIn(
-            "Run host-safe source, Phase A/T-B4 interaction, and integration gates",
-            self.build,
+            "Run source, complete Swift interaction, integration, and stress gates",
+            self.prepare,
         )
         self.assertIn(
             "APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}",
-            self.build,
+            self.prepare,
         )
         self.assertIn(
             '"$ROOT_DIR/script/prepare_interaction_attestation.sh"', self.test_all
@@ -893,7 +839,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             '"$ROOT_DIR/script/validate_overlay_interaction.sh"',
             self.test_all_attestation,
         )
-        self.assertIn("swift test", self.overlay_interaction)
+        self.assertIn("validate_swift_tests.sh", self.overlay_interaction)
+        self.assertIn('--swift-scope all', self.test_all)
         self.assertIn("--attestation-out", self.overlay_interaction)
         self.assertIn("interaction-contract-files.txt", self.overlay_interaction)
         self.assertIn(
@@ -911,16 +858,17 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_only_publish_job_can_write_repository_contents(self) -> None:
         self.assertEqual(self.source.count("contents: write"), 1)
+        self.assertNotIn("contents: write", self.prepare)
         self.assertNotIn("contents: write", self.build)
+        self.assertNotIn("contents: write", self.assemble)
         self.assertNotIn("contents: write", self.arm)
         self.assertNotIn("contents: write", self.x86)
         self.assertIn("contents: write", self.publish)
 
     def test_downstream_jobs_use_proven_commit_and_recheck_remote_tag(self) -> None:
-        self.assertNotIn("ref: ${{ needs.build.outputs.tag }}", self.source)
-        self.assertEqual(
-            self.source.count("ref: ${{ needs.build.outputs.commit }}"),
-            3,
+        self.assertNotIn("ref: ${{ needs.prepare.outputs.tag }}", self.source)
+        self.assertGreaterEqual(
+            self.source.count("ref: ${{ needs.prepare.outputs.commit }}"), 5
         )
         self.assertGreaterEqual(
             self.source.count("./script/verify_remote_release_tag.sh"),
@@ -928,20 +876,20 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn(
             'git merge-base --is-ancestor "$commit" refs/remotes/origin/main',
-            self.build,
+            self.prepare,
         )
         self.assertIn(
             "./script/validate_codex_plugin_version.py --base-ref \"$previous_tag\"",
-            self.build,
+            self.prepare,
         )
-        latest_lookup = self.build.index(
+        latest_lookup = self.prepare.index(
             '"repos/$GITHUB_REPOSITORY/releases/latest"'
         )
-        plugin_validation = self.build.index(
+        plugin_validation = self.prepare.index(
             './script/validate_codex_plugin_version.py --base-ref "$previous_tag"'
         )
         self.assertLess(latest_lookup, plugin_validation)
-        self.assertIn('echo "previous_tag=$previous_tag"', self.build)
+        self.assertIn('echo "previous_tag=$previous_tag"', self.prepare)
 
     def test_native_architecture_jobs_and_download_revalidation_are_mandatory(self) -> None:
         self.assertNotIn("self-hosted", self.source)
@@ -956,19 +904,20 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         digest_recheck = self.publish.index(
             "./script/verify_release_candidate_digests.sh", release_download
         )
-        package_recheck = self.publish.index(
-            "./script/validate_github_release_artifacts.sh", digest_recheck
-        )
         tag_recheck = self.publish.index(
-            "./script/verify_remote_release_tag.sh", package_recheck
+            "./script/verify_remote_release_tag.sh", digest_recheck
         )
         publish_release = self.publish.index(
             'gh release edit "$RELEASE_TAG" --draft=false', tag_recheck
         )
         self.assertLess(release_download, digest_recheck)
-        self.assertLess(digest_recheck, package_recheck)
-        self.assertLess(package_recheck, tag_recheck)
+        self.assertLess(digest_recheck, tag_recheck)
         self.assertLess(tag_recheck, publish_release)
+        self.assertNotIn("validate_github_release_artifacts.sh", self.publish)
+        self.assertEqual(self.arm.count("validate_github_release_artifacts.sh"), 1)
+        self.assertEqual(self.x86.count("validate_github_release_artifacts.sh"), 1)
+        self.assertIn("--require-native-architecture arm64", self.arm)
+        self.assertIn("--require-native-architecture x86_64", self.x86)
 
     def test_every_action_is_pinned_to_a_full_commit(self) -> None:
         uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", self.source)
@@ -976,6 +925,20 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         for action in uses:
             with self.subTest(action=action):
                 self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
+
+
+class CIWorkflowContractTests(unittest.TestCase):
+    def test_ci_uses_the_shared_scope_router_and_conditional_bundle(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("./script/validation_scope.py", source)
+        self.assertIn("./script/validate_pre_push.sh", source)
+        self.assertIn("--ci", source)
+        self.assertIn("if: steps.validation_scope.outputs.bundle == '1'", source)
+        self.assertIn("--validation full", source)
+        self.assertIn("Computer Use is recommended", source)
+        self.assertNotIn("APC_VALIDATE_HOST_UI: \"1\"", source)
+        self.assertNotIn("cargo test --workspace", source)
+        self.assertNotIn("working-directory: apps/macos", source)
 
 
 if __name__ == "__main__":

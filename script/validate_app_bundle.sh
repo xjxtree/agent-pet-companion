@@ -5,18 +5,22 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="development"
 EXPECTED_ARCH=""
 APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
+STATIC_ONLY=0
 
 usage() {
   cat <<'EOF'
 usage: validate_app_bundle.sh \
   [--development|--github-release] \
   [--architecture arm64|x86_64] \
+  [--static-only] \
   [APP_BUNDLE]
 
 --development validates a local App with an optional ad-hoc signature.
 --github-release requires the official ad-hoc signature and release identity.
 It does not claim Developer ID identity, Apple notarization, or Gatekeeper trust.
 Architecture is required for every non-development mode.
+--static-only validates structure, signatures, identities, and resources without
+executing packaged App, PetCore, or CLI code.
 EOF
 }
 
@@ -37,6 +41,10 @@ while (($# > 0)); do
       ;;
     --architecture=*)
       EXPECTED_ARCH="${1#--architecture=}"
+      shift
+      ;;
+    --static-only)
+      STATIC_ONLY=1
       shift
       ;;
     -h|--help)
@@ -87,7 +95,10 @@ case "$HOST_ARCH" in
 esac
 RUN_PACKAGED_RUNTIME=1
 RUNTIME_VALIDATION_SCOPE="packaged functionality"
-if [[ -n "$EXPECTED_ARCH" && "$EXPECTED_ARCH" != "$HOST_ARCH" ]]; then
+if [[ "$STATIC_ONLY" == "1" ]]; then
+  RUN_PACKAGED_RUNTIME=0
+  RUNTIME_VALIDATION_SCOPE="static package validation; packaged code not launched"
+elif [[ -n "$EXPECTED_ARCH" && "$EXPECTED_ARCH" != "$HOST_ARCH" ]]; then
   # Launching an Intel App on Apple silicon invokes Rosetta and now presents a
   # system compatibility warning. Cross-architecture release validation stays
   # static; the matching native archive exercises the shared runtime behavior.
@@ -906,7 +917,15 @@ if [[ "$MODE" == "github-release" ]]; then
   printf 'GitHub Release App bundle validation ok (%s, ad-hoc signature, %s)\n' \
     "$EXPECTED_ARCH" "$RUNTIME_VALIDATION_SCOPE"
 elif [[ "$SIGNATURE_PRESENT" == "1" ]]; then
-  echo 'Development app bundle validation ok (signature present and strictly valid)'
+  if [[ "$STATIC_ONLY" == "1" ]]; then
+    echo 'Development app bundle static validation ok (signature present and strictly valid)'
+  else
+    echo 'Development app bundle validation ok (signature present and strictly valid)'
+  fi
 else
-  echo 'Development app bundle validation ok (no outer signature present)'
+  if [[ "$STATIC_ONLY" == "1" ]]; then
+    echo 'Development app bundle static validation ok (no outer signature present)'
+  else
+    echo 'Development app bundle validation ok (no outer signature present)'
+  fi
 fi

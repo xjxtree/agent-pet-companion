@@ -728,6 +728,7 @@ enum APCLocalizationKey: String, CaseIterable, Sendable {
     case connectionsComponentKindExtension = "connections.component.kind.extension"
     case connectionsComponentKindPackage = "connections.component.kind.package"
     case connectionsComponentKindSkill = "connections.component.kind.skill"
+    case connectionsComponentKindHook = "connections.component.kind.hook"
     case connectionsComponentKindUnknown = "connections.component.kind.unknown"
     case connectionsComponentVersionMismatch = "connections.component.version_mismatch"
     case connectionsComponentVersionMismatchDetailFormat = "connections.component.version_mismatch_detail_format"

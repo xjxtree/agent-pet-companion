@@ -1,4 +1,5 @@
 {
+  "release_version": "__APC_CODEX_PLUGIN_VERSION__",
   "hooks": {
     "SessionStart": [{"hooks":[{"type":"command","command":"__APC_CLI__ agent hook --source codex --event-type auto >/dev/null 2>&1"}]}],
     "UserPromptSubmit": [{"hooks":[{"type":"command","command":"__APC_CLI__ agent hook --source codex --event-type auto >/dev/null 2>&1"}]}],

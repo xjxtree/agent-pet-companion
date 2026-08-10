@@ -55,13 +55,25 @@ fi
 grep -F 'official release builds require the explicit --github-release mode' \
   "$TMP_DIR/mode.log" >/dev/null
 
-if "$ROOT_DIR/script/build_release.sh" --github-release --arch arm64 \
+if "$ROOT_DIR/script/build_release.sh" --github-release --arch sparc \
   >"$TMP_DIR/arch.log" 2>&1; then
-  echo 'single-architecture GitHub Release mode unexpectedly passed' >&2
+  echo 'unknown GitHub Release architecture unexpectedly passed' >&2
   exit 1
 fi
-grep -F 'GitHub Release distribution requires --arch all' \
+grep -F -- '--arch must be all, arm64, or x86_64' \
   "$TMP_DIR/arch.log" >/dev/null
+grep -F -- '--arch all|arm64|x86_64' < <(
+  "$ROOT_DIR/script/build_release.sh" --help
+) >/dev/null
+
+if "$ROOT_DIR/script/build_release.sh" \
+  --github-release --source-gate-proven --arch arm64 \
+  >"$TMP_DIR/source-proof.log" 2>&1; then
+  echo 'source-proven release component passed without its attestation' >&2
+  exit 1
+fi
+grep -F -- '--source-gate-proven requires APC_INTERACTION_ATTESTATION_PATH' \
+  "$TMP_DIR/source-proof.log" >/dev/null
 
 for legacy_mode in --preview --public --public-signed; do
   if "$ROOT_DIR/script/build_release.sh" "$legacy_mode" \
@@ -120,5 +132,30 @@ if PATH="$SHIM_DIR:$PATH" \
 fi
 grep -F 'no longer targets the protected candidate commit' \
   "$TMP_DIR/tag-moved.log" >/dev/null
+
+DIGEST_DIR="$TMP_DIR/digest-candidate"
+mkdir -p "$DIGEST_DIR"
+printf 'arm\n' >"$DIGEST_DIR/AgentPetCompanion-1.2.3-macos-arm64.zip"
+printf 'intel\n' >"$DIGEST_DIR/AgentPetCompanion-1.2.3-macos-x86_64.zip"
+printf 'checksums\n' >"$DIGEST_DIR/AgentPetCompanion-1.2.3-SHA256SUMS.txt"
+digest() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+DIGEST_ARGS=(
+  --directory "$DIGEST_DIR"
+  --version 1.2.3
+  --arm64-zip-sha256 "$(digest "$DIGEST_DIR/AgentPetCompanion-1.2.3-macos-arm64.zip")"
+  --x86_64-zip-sha256 "$(digest "$DIGEST_DIR/AgentPetCompanion-1.2.3-macos-x86_64.zip")"
+  --checksum-sha256 "$(digest "$DIGEST_DIR/AgentPetCompanion-1.2.3-SHA256SUMS.txt")"
+)
+"$ROOT_DIR/script/verify_release_candidate_digests.sh" "${DIGEST_ARGS[@]}" \
+  >"$TMP_DIR/digest.log"
+: >"$DIGEST_DIR/unexpected.txt"
+if "$ROOT_DIR/script/verify_release_candidate_digests.sh" "${DIGEST_ARGS[@]}" \
+  >"$TMP_DIR/digest-extra.log" 2>&1; then
+  echo 'trusted digest verifier accepted an extra candidate file' >&2
+  exit 1
+fi
+grep -F 'must contain exactly three files' "$TMP_DIR/digest-extra.log" >/dev/null
 
 echo 'Release shell contract tests ok'

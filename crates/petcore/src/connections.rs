@@ -30,7 +30,6 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -94,9 +93,6 @@ const AGENT_PET_MAKER_EXECUTABLE_FILES: &[&str] = &[
 ];
 const CODEX_PLUGIN_JSON: &str = include_str!("../../../plugins/codex/.codex-plugin/plugin.json");
 const CODEX_HOOKS_TEMPLATE: &str = include_str!("../../../plugins/codex/hooks/hooks.json.tpl");
-const CODEX_STUDIO_SKILL_HISTORY_JSON: &str =
-    include_str!("../resources/codex-studio-skill-history.json");
-const CODEX_STUDIO_SKILL_HISTORY_SCHEMA: &str = "apc.codex-studio-skill-history.v1";
 const CODEX_INSTALL_RESULT_SCHEMA: &str = "apc.codex-install-result.v1";
 const CLAUDE_SETTINGS_TEMPLATE: &str =
     include_str!("../../../plugins/claude-code/settings.fragment.json.tpl");
@@ -105,6 +101,9 @@ const OPENCODE_PLUGIN_TEMPLATE: &str =
     include_str!("../../../plugins/opencode/agent-pet-companion.js.tpl");
 const APP_MANAGED_CONNECTOR_RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CONNECTOR_RELEASE_VERSION_PLACEHOLDER: &str = "__APC_CONNECTOR_RELEASE_VERSION__";
+/// The Codex bundle versions itself from `plugins/codex/.codex-plugin/plugin.json`,
+/// not from the crate version the static connectors use.
+const CODEX_PLUGIN_VERSION_PLACEHOLDER: &str = "__APC_CODEX_PLUGIN_VERSION__";
 const HOST_VERIFICATION_CACHE_TTL_SECONDS: i64 = 5 * 60;
 const HOST_VERIFICATION_FUTURE_SKEW_SECONDS: i64 = 60;
 const PROBE_CWD_ACCESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -143,13 +142,6 @@ enum CodexMarketplaceEntryState {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CodexStudioSkillHistory {
-    schema_version: String,
-    retired_sha256: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct CodexVerifiedInstallResult {
     schema_version: String,
     status: String,
@@ -165,26 +157,6 @@ struct CodexVerifiedInstallResult {
     managed_source_studio_skill_sha256: String,
     active_studio_skill_sha256: String,
 }
-
-static RETIRED_CODEX_STUDIO_SKILL_SHA256: LazyLock<Option<BTreeSet<String>>> =
-    LazyLock::new(|| {
-        let history: CodexStudioSkillHistory =
-            serde_json::from_str(CODEX_STUDIO_SKILL_HISTORY_JSON).ok()?;
-        if history.schema_version != CODEX_STUDIO_SKILL_HISTORY_SCHEMA
-            || history.retired_sha256.is_empty()
-            || !history
-                .retired_sha256
-                .windows(2)
-                .all(|pair| pair[0] < pair[1])
-            || !history
-                .retired_sha256
-                .iter()
-                .all(|digest| is_lowercase_sha256(digest))
-        {
-            return None;
-        }
-        Some(history.retired_sha256.into_iter().collect())
-    });
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -760,15 +732,24 @@ fn check_source_with_runtime_smoke(
     ) = match source {
         AgentSource::Codex => {
             let root_state = codex_managed_root_state(&install_root);
-            let managed_root_state = if root_state == ManagedPathState::Safe
-                && validate_codex_root_repair_ownership(&install_root).is_err()
-            {
+            let ownership_block = if root_state == ManagedPathState::Safe {
+                validate_codex_root_repair_ownership(&install_root)
+                    .err()
+                    .map(managed_root_blocking_detail)
+            } else {
+                None
+            };
+            let managed_root_state = if ownership_block.is_some() {
                 ManagedPathState::Conflict
             } else {
                 root_state
             };
-            let root_check =
-                check_managed_connector_root(&install_root, "连接器目录", managed_root_state);
+            let root_check = check_managed_connector_root(
+                &install_root,
+                "连接器目录",
+                managed_root_state,
+                ownership_block.as_deref(),
+            );
             let manifest_check = check_codex_plugin_manifest(
                 &install_root.join(".codex-plugin/plugin.json"),
                 &install_root,
@@ -863,15 +844,24 @@ fn check_source_with_runtime_smoke(
         }
         AgentSource::ClaudeCode => {
             let root_state = claude_managed_root_state(&install_root);
-            let managed_root_state = if root_state == ManagedPathState::Safe
-                && validate_claude_root_repair_ownership(&install_root, &connector_cli).is_err()
-            {
+            let ownership_block = if root_state == ManagedPathState::Safe {
+                validate_claude_root_repair_ownership(&install_root, &connector_cli)
+                    .err()
+                    .map(managed_root_blocking_detail)
+            } else {
+                None
+            };
+            let managed_root_state = if ownership_block.is_some() {
                 ManagedPathState::Conflict
             } else {
                 root_state
             };
-            let root_check =
-                check_managed_connector_root(&install_root, "连接器目录", managed_root_state);
+            let root_check = check_managed_connector_root(
+                &install_root,
+                "连接器目录",
+                managed_root_state,
+                ownership_block.as_deref(),
+            );
             let fragment_check = check_claude_fragment(
                 &install_root.join("settings.fragment.json"),
                 &connector_cli,
@@ -937,7 +927,7 @@ fn check_source_with_runtime_smoke(
         AgentSource::Pi => {
             let root_state = pi_managed_root_state(&install_root);
             let root_check =
-                check_managed_connector_root(&install_root, "Extension 目录", root_state);
+                check_managed_connector_root(&install_root, "Extension 目录", root_state, None);
             let expected = render_connector_script(PI_EXTENSION_TEMPLATE, &connector_cli);
             let extension_path = install_root.join("agent-pet-companion.ts");
             let extension_ownership =
@@ -983,7 +973,8 @@ fn check_source_with_runtime_smoke(
         }
         AgentSource::Opencode => {
             let root_state = opencode_managed_root_state(&install_root);
-            let root_check = check_managed_connector_root(&install_root, "Plugin 目录", root_state);
+            let root_check =
+                check_managed_connector_root(&install_root, "Plugin 目录", root_state, None);
             let expected = render_connector_script(OPENCODE_PLUGIN_TEMPLATE, &connector_cli);
             let plugin_path = install_root.join("agent-pet-companion.js");
             let plugin_ownership =
@@ -2038,15 +2029,31 @@ fn opencode_managed_root_state(root: &Path) -> ManagedPathState {
     managed_script_root_state(root, AgentSource::Opencode)
 }
 
+/// The ownership finding is shown to the user verbatim, so keep the detail and
+/// drop the machine-facing error prefix.
+fn managed_root_blocking_detail(error: PetCoreError) -> String {
+    match error {
+        PetCoreError::Conflict(detail) => detail,
+        other => other.to_string(),
+    }
+}
+
+/// A conflicting managed root has two unrelated causes, and reporting the
+/// wrong one sends the user looking for a symlink that does not exist. When
+/// the path shape itself is fine, `blocking_detail` carries the exact
+/// ownership finding — including the path that actually blocked the repair —
+/// so the check item states the real reason instead of a generic path shape
+/// message.
 fn check_managed_connector_root(
     root: &Path,
     label: &str,
     state: ManagedPathState,
+    blocking_detail: Option<&str>,
 ) -> ConnectionCheckItem {
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if state == ManagedPathState::Conflict {
-            format!("{label}路径冲突")
+            format!("{label}需要人工处理")
         } else {
             label.to_string()
         },
@@ -2058,9 +2065,16 @@ fn check_managed_connector_root(
         match state {
             ManagedPathState::Safe => format!("管理根为非符号链接目录：{}", root.display()),
             ManagedPathState::Missing => format!("管理根尚未创建：{}", root.display()),
-            ManagedPathState::Conflict => format!(
-                "管理根或受管父目录是符号链接、非目录或不可检查路径；为保护外部内容，一键修复与卸载均被阻止：{}",
-                root.display()
+            ManagedPathState::Conflict => blocking_detail.map_or_else(
+                || {
+                    format!(
+                        "管理根或受管父目录是符号链接、非目录或不可检查路径；为保护外部内容，一键修复与卸载均被阻止：{}",
+                        root.display()
+                    )
+                },
+                |detail| {
+                    format!("{detail}；请移走或恢复该路径后重新检查连接")
+                },
             ),
         },
         Some(if state == ManagedPathState::Conflict {
@@ -2368,6 +2382,53 @@ fn installed_static_connector_release_version(
     }
 }
 
+/// Every App-managed Codex artifact states its own release version, so a stale
+/// component can be named without deriving identity from a sibling file or from
+/// a digest list that has to be maintained by hand.
+fn installed_codex_plugin_manifest_version(root: &Path) -> Option<String> {
+    let path = root.join(".codex-plugin/plugin.json");
+    if !codex_manifest_is_owned(&path, root) {
+        return None;
+    }
+    validated_connector_release_version(read_regular_json_config(&path)?.get("version")?.as_str()?)
+}
+
+fn installed_codex_hooks_version(root: &Path) -> Option<String> {
+    let path = root.join("hooks/hooks.json");
+    if !codex_hooks_are_owned(&path, root) {
+        return None;
+    }
+    validated_connector_release_version(
+        read_regular_json_config(&path)?
+            .get("release_version")?
+            .as_str()?,
+    )
+}
+
+/// Reads `version:` from the Skill's own YAML front matter. Bounded to the
+/// front matter block so an unrelated `version:` line in the body is never
+/// mistaken for the Skill's identity.
+fn skill_front_matter_version(content: &str) -> Option<String> {
+    let body = content.strip_prefix("---\n")?;
+    let (front_matter, _) = body.split_once("\n---")?;
+    front_matter
+        .lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .and_then(|value| validated_connector_release_version(value.trim()))
+}
+
+fn installed_codex_skill_version(root: &Path, skill: &str) -> Option<String> {
+    let path = root.join("skills").join(skill).join("SKILL.md");
+    if managed_regular_file_state(root, &path) != ManagedPathState::Safe {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    if !content.contains(&format!("name: {skill}")) {
+        return None;
+    }
+    skill_front_matter_version(&content)
+}
+
 fn connector_release_version_constant(content: &str, identifier: &str) -> Option<String> {
     let declarations = [
         format!("const {identifier} = \""),
@@ -2433,6 +2494,12 @@ fn codex_managed_components(
         Some(false) => CheckStatus::NeedsFix,
         None => unavailable_active_status,
     };
+    // Each component states its own installed version. The host probe only
+    // knows the plugin Codex actually loaded, so it stays the plugin's active
+    // version and never stands in for a Skill that was written separately.
+    let root = install_root(paths, AgentSource::Codex);
+    let installed_studio_version = installed_codex_skill_version(&root, "agent-pet-studio");
+    let installed_maker_version = installed_codex_skill_version(&root, "agent-pet-maker");
 
     vec![
         AgentManagedComponent {
@@ -2441,7 +2508,18 @@ fn codex_managed_components(
             ownership: AgentExtensionOwnership::AppManaged,
             status: plugin_status,
             expected_version: expected_version.clone(),
-            active_version: active_version.clone(),
+            active_version: active_version
+                .clone()
+                .or_else(|| installed_codex_plugin_manifest_version(&root)),
+            content_matches: active_content_matches,
+        },
+        AgentManagedComponent {
+            kind: AgentExtensionKind::Hook,
+            name: "agent-pet-companion".to_string(),
+            ownership: AgentExtensionOwnership::AppManaged,
+            status: plugin_status,
+            expected_version: expected_version.clone(),
+            active_version: installed_codex_hooks_version(&root),
             content_matches: active_content_matches,
         },
         AgentManagedComponent {
@@ -2450,7 +2528,7 @@ fn codex_managed_components(
             ownership: AgentExtensionOwnership::AppManaged,
             status: skill_status,
             expected_version: expected_version.clone(),
-            active_version: active_version.clone(),
+            active_version: installed_studio_version,
             content_matches: skills_match,
         },
         AgentManagedComponent {
@@ -2459,7 +2537,7 @@ fn codex_managed_components(
             ownership: AgentExtensionOwnership::AppManaged,
             status: skill_status,
             expected_version,
-            active_version,
+            active_version: installed_maker_version,
             content_matches: skills_match,
         },
     ]
@@ -3255,10 +3333,14 @@ fn validate_codex_root_repair_ownership(root: &Path) -> Result<()> {
         }
         ManagedPathState::Safe => {}
     }
-    let owned = codex_manifest_is_owned(&root.join(".codex-plugin/plugin.json"), root)
+    // On-disk evidence that this fixed root holds an install this App wrote.
+    // The marketplace entry alone is not evidence: it can point at a directory
+    // whose contents this App never created.
+    let root_owned_on_disk = codex_manifest_is_owned(&root.join(".codex-plugin/plugin.json"), root)
         || codex_hooks_are_owned(&root.join("hooks/hooks.json"), root)
         || codex_studio_skill_is_owned(&root.join("skills/agent-pet-studio/SKILL.md"), root)
-        || codex_maker_skill_is_owned(root)
+        || codex_maker_skill_is_owned(root);
+    let owned = root_owned_on_disk
         || matches!(
             codex_marketplace_entry_state(&codex_marketplace_path()),
             CodexMarketplaceEntryState::Current | CodexMarketplaceEntryState::OwnedOutdated
@@ -3269,26 +3351,29 @@ fn validate_codex_root_repair_ownership(root: &Path) -> Result<()> {
             root.display()
         )));
     }
-    for (path, path_owned) in [
-        (
-            root.join(".codex-plugin/plugin.json"),
-            codex_manifest_is_owned(&root.join(".codex-plugin/plugin.json"), root),
-        ),
-        (
-            root.join("hooks/hooks.json"),
-            codex_hooks_are_owned(&root.join("hooks/hooks.json"), root),
-        ),
-        (
-            root.join("skills/agent-pet-studio/SKILL.md"),
-            codex_studio_skill_is_owned(&root.join("skills/agent-pet-studio/SKILL.md"), root),
-        ),
+    // Inside a root this App provably wrote, a plain regular file at one of the
+    // App's own fixed paths is this App's file: an unrecognized revision means
+    // it is stale or locally edited, not that it belongs to someone else.
+    // Refusing to rewrite it strands the install with no working repair, so
+    // only a path this App cannot safely write — a symlink, a directory, or an
+    // unreadable entry — still blocks.
+    for path in [
+        root.join(".codex-plugin/plugin.json"),
+        root.join("hooks/hooks.json"),
+        root.join("skills/agent-pet-studio/SKILL.md"),
     ] {
         match managed_regular_file_state(root, &path) {
             ManagedPathState::Missing => {}
-            ManagedPathState::Safe if path_owned => {}
-            ManagedPathState::Safe | ManagedPathState::Conflict => {
+            ManagedPathState::Safe if root_owned_on_disk => {}
+            ManagedPathState::Safe => {
                 return Err(PetCoreError::Conflict(format!(
-                    "Codex connector 固定路径被无法识别的文件或符号链接占用，拒绝覆盖：{}",
+                    "Codex connector 固定路径已有本 App 未写入的文件，拒绝覆盖：{}",
+                    path.display()
+                )));
+            }
+            ManagedPathState::Conflict => {
+                return Err(PetCoreError::Conflict(format!(
+                    "Codex connector 固定路径是符号链接、目录或不可检查项，拒绝覆盖：{}",
                     path.display()
                 )));
             }
@@ -3296,7 +3381,7 @@ fn validate_codex_root_repair_ownership(root: &Path) -> Result<()> {
     }
 
     let maker_root = root.join("skills/agent-pet-maker");
-    let maker_owned = codex_maker_skill_is_owned(root)
+    let maker_owned = root_owned_on_disk
         || AGENT_PET_MAKER_FILES
             .iter()
             .any(|(relative_path, expected)| {
@@ -3340,31 +3425,33 @@ fn validate_claude_root_repair_ownership(root: &Path, connector_cli: &Path) -> R
     }
     let settings_owned = read_regular_json_config(&claude_settings_path())
         .is_some_and(|settings| value_contains_owned_claude_hook(&settings, connector_cli, root));
-    let owned = claude_fragment_is_owned(&root.join("settings.fragment.json"), root)
-        || claude_helper_is_owned(&root.join("agent-pet-companion-hook.sh"), root)
-        || settings_owned;
+    // Only files under the connector root prove this App wrote the root itself;
+    // the host settings file lives outside it.
+    let root_owned_on_disk = claude_fragment_is_owned(&root.join("settings.fragment.json"), root)
+        || claude_helper_is_owned(&root.join("agent-pet-companion-hook.sh"), root);
+    let owned = root_owned_on_disk || settings_owned;
     if !owned && directory_has_entries(root)? {
         return Err(PetCoreError::Conflict(format!(
             "Claude connector 固定管理根已有无法识别为 Agent Pet Companion 的内容，拒绝覆盖：{}",
             root.display()
         )));
     }
-    for (path, path_owned) in [
-        (
-            root.join("settings.fragment.json"),
-            claude_fragment_is_owned(&root.join("settings.fragment.json"), root),
-        ),
-        (
-            root.join("agent-pet-companion-hook.sh"),
-            claude_helper_is_owned(&root.join("agent-pet-companion-hook.sh"), root),
-        ),
+    for path in [
+        root.join("settings.fragment.json"),
+        root.join("agent-pet-companion-hook.sh"),
     ] {
         match managed_regular_file_state(root, &path) {
             ManagedPathState::Missing => {}
-            ManagedPathState::Safe if path_owned => {}
-            ManagedPathState::Safe | ManagedPathState::Conflict => {
+            ManagedPathState::Safe if root_owned_on_disk => {}
+            ManagedPathState::Safe => {
                 return Err(PetCoreError::Conflict(format!(
-                    "Claude connector 固定路径被无法识别的文件或符号链接占用，拒绝覆盖：{}",
+                    "Claude connector 固定路径已有本 App 未写入的文件，拒绝覆盖：{}",
+                    path.display()
+                )));
+            }
+            ManagedPathState::Conflict => {
+                return Err(PetCoreError::Conflict(format!(
+                    "Claude connector 固定路径是符号链接、目录或不可检查项，拒绝覆盖：{}",
                     path.display()
                 )));
             }
@@ -3515,10 +3602,13 @@ fn check_claude_fragment(
             .and_then(|content| serde_json::from_slice::<Value>(&content).ok())
             .zip(expected)
             .is_some_and(|(actual, expected)| actual == expected);
-    let content_conflict = path_state == ManagedPathState::Safe
+    let unrecognized_content = path_state == ManagedPathState::Safe
         && !configured
         && !claude_fragment_is_owned(path, install_root);
-    let conflict = path_state == ManagedPathState::Conflict || content_conflict;
+    // Only a path this App cannot safely write is a conflict. Unrecognized
+    // content at this App's own fixed path is stale or edited, and repair
+    // rewrites it once the root itself is proven to be this App's.
+    let conflict = path_state == ManagedPathState::Conflict;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if conflict {
@@ -3538,6 +3628,11 @@ fn check_claude_fragment(
         } else if conflict {
             format!(
                 "fragment 或受管目录是符号链接/非普通路径；拒绝一键覆盖：{}",
+                path.display()
+            )
+        } else if unrecognized_content {
+            format!(
+                "内容不是本 App 写入的版本，待替换为当前版本 {}",
                 path.display()
             )
         } else if path_state == ManagedPathState::Safe {
@@ -3570,10 +3665,10 @@ fn check_claude_hook(path: &Path, connector_cli: &Path) -> ConnectionCheckItem {
         });
     let configured = is_regular_executable
         && fs::read(path).is_ok_and(|contents| contents == expected.as_bytes());
-    let content_conflict = path_state == ManagedPathState::Safe
+    let unrecognized_content = path_state == ManagedPathState::Safe
         && !configured
         && !claude_helper_is_owned(path, install_root);
-    let conflict = path_state == ManagedPathState::Conflict || content_conflict;
+    let conflict = path_state == ManagedPathState::Conflict;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if conflict {
@@ -3593,6 +3688,11 @@ fn check_claude_hook(path: &Path, connector_cli: &Path) -> ConnectionCheckItem {
         } else if conflict {
             format!(
                 "helper 或受管目录是符号链接/非普通路径；拒绝一键覆盖或 chmod：{}",
+                path.display()
+            )
+        } else if unrecognized_content {
+            format!(
+                "内容不是本 App 写入的版本，待替换为当前版本 {}",
                 path.display()
             )
         } else if metadata.is_some() {
@@ -3620,10 +3720,10 @@ fn check_codex_plugin_manifest(path: &Path, install_root: &Path) -> ConnectionCh
             .and_then(|content| serde_json::from_str::<Value>(&content).ok())
             .zip(expected)
             .is_some_and(|(actual, expected)| actual == expected);
-    let content_conflict = path_state == ManagedPathState::Safe
+    let unrecognized_content = path_state == ManagedPathState::Safe
         && !configured
         && !codex_manifest_is_owned(path, install_root);
-    let conflict = path_state == ManagedPathState::Conflict || content_conflict;
+    let conflict = path_state == ManagedPathState::Conflict;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if conflict {
@@ -3642,7 +3742,12 @@ fn check_codex_plugin_manifest(path: &Path, install_root: &Path) -> ConnectionCh
             "与 App 自带 plugin.json 的操作字段精确一致".to_string()
         } else if conflict {
             format!(
-                "路径是符号链接或非普通受管文件，拒绝覆盖：{}",
+                "路径是符号链接、目录或不可检查项，拒绝覆盖：{}",
+                path.display()
+            )
+        } else if unrecognized_content {
+            format!(
+                "内容不是本 App 写入的版本，待替换为当前版本 {}",
                 path.display()
             )
         } else {
@@ -3669,10 +3774,10 @@ fn check_codex_hooks(
             .and_then(|content| serde_json::from_str::<Value>(&content).ok())
             .zip(expected)
             .is_some_and(|(actual, expected)| actual == expected);
-    let content_conflict = path_state == ManagedPathState::Safe
+    let unrecognized_content = path_state == ManagedPathState::Safe
         && !configured
         && !codex_hooks_are_owned(path, install_root);
-    let conflict = path_state == ManagedPathState::Conflict || content_conflict;
+    let conflict = path_state == ManagedPathState::Conflict;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if conflict {
@@ -3691,7 +3796,12 @@ fn check_codex_hooks(
             "configured: Hook 键、group、command 与当前 App 模板精确一致；failed 不由 hooks 直接宣称".to_string()
         } else if conflict {
             format!(
-                "路径是符号链接或非普通受管文件，拒绝覆盖：{}",
+                "路径是符号链接、目录或不可检查项，拒绝覆盖：{}",
+                path.display()
+            )
+        } else if unrecognized_content {
+            format!(
+                "内容不是本 App 写入的版本，待替换为当前版本 {}",
                 path.display()
             )
         } else {
@@ -3711,7 +3821,13 @@ fn rendered_codex_hooks(connector_cli: &Path) -> Result<Value> {
         "APC_CONNECTOR_CONTRACT_VERSION={} {cli}",
         shell_quote(CODEX_HOOKS_CONTRACT_VERSION)
     );
-    render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &hook_cli)
+    let mut hooks = render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &hook_cli)?;
+    replace_json_string(
+        &mut hooks,
+        CODEX_PLUGIN_VERSION_PLACEHOLDER,
+        &expected_codex_plugin_version()?,
+    );
+    Ok(hooks)
 }
 
 fn rendered_claude_settings_fragment(_connector_cli: &Path, install_root: &Path) -> Result<Value> {
@@ -3757,10 +3873,10 @@ fn check_codex_studio_skill(path: &Path, install_root: &Path) -> ConnectionCheck
     let path_state = managed_regular_file_state(install_root, path);
     let installed = path_state == ManagedPathState::Safe
         && fs::read(path).is_ok_and(|content| content == PET_STUDIO_SKILL_MD.as_bytes());
-    let content_conflict = path_state == ManagedPathState::Safe
+    let unrecognized_content = path_state == ManagedPathState::Safe
         && !installed
         && !codex_studio_skill_is_owned(path, install_root);
-    let conflict = path_state == ManagedPathState::Conflict || content_conflict;
+    let conflict = path_state == ManagedPathState::Conflict;
     ConnectionCheckItem::new(
         CheckCode::ManagedConnector,
         if conflict {
@@ -3779,7 +3895,12 @@ fn check_codex_studio_skill(path: &Path, install_root: &Path) -> ConnectionCheck
             "与当前 App 模板逐字节一致".to_string()
         } else if conflict {
             format!(
-                "路径是符号链接或非普通受管文件，拒绝覆盖：{}",
+                "路径是符号链接、目录或不可检查项，拒绝覆盖：{}",
+                path.display()
+            )
+        } else if unrecognized_content {
+            format!(
+                "内容不是本 App 写入的版本，待替换为当前版本 {}",
                 path.display()
             )
         } else if path_state == ManagedPathState::Safe {
@@ -6124,17 +6245,18 @@ fn verified_codex_install_studio_sha256(root: &Path) -> Option<String> {
     Some(result.expected_studio_skill_sha256)
 }
 
+/// Ownership of the Studio Skill is proven by content this App can derive right
+/// now: the exact current Skill, or the revision named by a verified install
+/// receipt. A list of retired digests would have to be extended on every
+/// release and silently strands installs whenever an entry goes missing, so the
+/// managed root's own manifest and hooks carry the structural ownership proof
+/// instead — see `validate_codex_root_repair_ownership`.
 fn codex_studio_skill_is_owned(path: &Path, root: &Path) -> bool {
     managed_regular_file_state(root, path) == ManagedPathState::Safe
         && fs::read(path).is_ok_and(|content| {
-            if content == PET_STUDIO_SKILL_MD.as_bytes() {
-                return true;
-            }
-            let digest = hex::encode(Sha256::digest(&content));
-            RETIRED_CODEX_STUDIO_SKILL_SHA256
-                .as_ref()
-                .is_some_and(|retired| retired.contains(&digest))
-                || verified_codex_install_studio_sha256(root).as_deref() == Some(digest.as_str())
+            content == PET_STUDIO_SKILL_MD.as_bytes()
+                || verified_codex_install_studio_sha256(root).as_deref()
+                    == Some(hex::encode(Sha256::digest(&content)).as_str())
         })
 }
 
@@ -7120,6 +7242,7 @@ fn value_contains_command(value: &Value, command: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::AgentExtensionKind;
     use super::{
         agent_command_path, backup_json_config, cached_connection_status_is_current,
         capabilities_for_source, check_agent_cli_version, check_claude_hook, check_claude_settings,
@@ -9018,7 +9141,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_repair_upgrades_only_the_recognized_retired_v1_studio_skill() {
+    fn codex_repair_replaces_any_prior_studio_skill_without_a_digest_list() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let agent_home = temp.path().join("agents");
@@ -9031,43 +9154,157 @@ mod tests {
         super::repair_codex(&root, &cli).unwrap();
         let studio = root.join("skills/agent-pet-studio/SKILL.md");
 
-        let retired_v1 =
-            include_bytes!("../tests/fixtures/retired-agent-pet-studio-v1.md").as_slice();
-        let retired_digests = super::RETIRED_CODEX_STUDIO_SKILL_SHA256
-            .as_ref()
-            .expect("retired Studio Skill history must be valid");
+        // Ownership of the root comes from the manifest and hooks, so repair
+        // upgrades whatever revision the Skill file holds. No release has to be
+        // named in advance, which is what a retired-digest list required.
+        for prior in [
+            b"---\nname: agent-pet-studio\nversion: 0.1.0\n---\nan older shipped revision\n"
+                .to_vec(),
+            format!("{}\n## My custom workflow\n", super::PET_STUDIO_SKILL_MD).into_bytes(),
+        ] {
+            std::fs::write(&studio, &prior).unwrap();
+            assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+            super::validate_codex_root_repair_ownership(&root).unwrap();
+            super::repair_codex(&root, &cli).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&studio).unwrap(),
+                super::PET_STUDIO_SKILL_MD
+            );
+        }
+
+        // Uninstall stays conservative: it removes only what it still recognizes.
+        let unrecognized = b"---\nname: agent-pet-studio\n---\nlocally rewritten\n".to_vec();
+        std::fs::write(&studio, &unrecognized).unwrap();
+        super::remove_owned_codex_connector_files(&root).unwrap();
+        assert_eq!(std::fs::read(&studio).unwrap(), unrecognized);
+    }
+
+    #[test]
+    fn every_app_managed_codex_artifact_states_its_own_release_version() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+
+        let expected = super::expected_codex_plugin_version().unwrap();
         assert_eq!(
-            hex::encode(Sha256::digest(retired_v1)),
-            "b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"
+            super::installed_codex_plugin_manifest_version(&root).as_deref(),
+            Some(expected.as_str())
         );
-        assert!(retired_digests
-            .contains("b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc"));
-        std::fs::write(&studio, retired_v1).unwrap();
-        assert!(super::codex_studio_skill_is_owned(&studio, &root));
+        assert_eq!(
+            super::installed_codex_hooks_version(&root).as_deref(),
+            Some(expected.as_str()),
+            "the installed hooks file must carry its own release version"
+        );
+        for skill in ["agent-pet-studio", "agent-pet-maker"] {
+            assert_eq!(
+                super::installed_codex_skill_version(&root, skill).as_deref(),
+                Some(expected.as_str()),
+                "{skill} must carry its own release version"
+            );
+        }
+
+        // A stale component is named by its own version, not by a sibling file.
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+        std::fs::write(
+            &studio,
+            b"---\nname: agent-pet-studio\nversion: 0.4.0\n---\nolder\n".as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::installed_codex_skill_version(&root, "agent-pet-studio").as_deref(),
+            Some("0.4.0")
+        );
+        assert_eq!(
+            super::installed_codex_plugin_manifest_version(&root).as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn skill_front_matter_version_ignores_body_lines_and_invalid_values() {
+        assert_eq!(
+            super::skill_front_matter_version("---\nname: x\nversion: 1.2.3\n---\nbody\n")
+                .as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            super::skill_front_matter_version("---\nname: x\n---\nversion: 9.9.9\n"),
+            None,
+            "a body line must never be read as the Skill version"
+        );
+        assert_eq!(
+            super::skill_front_matter_version("---\nname: x\nversion: not-a-version\n---\n"),
+            None
+        );
+        assert_eq!(super::skill_front_matter_version("version: 1.2.3\n"), None);
+    }
+
+    #[test]
+    fn codex_repair_replaces_an_app_written_studio_skill_that_no_digest_list_names() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+
+        // Reproduces the upgrade that stranded installs whose Studio Skill
+        // revision was dropped from the retired digest history: the manifest and
+        // hooks still prove the root is this App's, so repair must proceed
+        // instead of reporting a managed path conflict.
+        let unlisted = b"---\nname: agent-pet-studio\n---\nApp-written revision no list names\n";
+        std::fs::write(&studio, unlisted.as_slice()).unwrap();
+        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+        assert!(super::codex_manifest_is_owned(
+            &root.join(".codex-plugin/plugin.json"),
+            &root
+        ));
+        super::validate_codex_root_repair_ownership(&root).unwrap();
         super::repair_codex(&root, &cli).unwrap();
         assert_eq!(
             std::fs::read_to_string(&studio).unwrap(),
             super::PET_STUDIO_SKILL_MD
         );
+    }
 
-        let customized_current = format!("{}\n## My custom workflow\n", super::PET_STUDIO_SKILL_MD);
-        std::fs::write(&studio, &customized_current).unwrap();
-        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+    #[test]
+    fn codex_repair_refuses_a_symlinked_managed_path_and_says_why() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+
+        let outside = temp.path().join("outside-skill.md");
+        std::fs::write(&outside, b"outside content\n").unwrap();
+        std::fs::remove_file(&studio).unwrap();
+        std::os::unix::fs::symlink(&outside, &studio).unwrap();
+
+        let error = super::validate_codex_root_repair_ownership(&root)
+            .expect_err("a symlinked managed path must still block repair");
+        let detail = error.to_string();
+        assert!(detail.contains("符号链接"), "{detail}");
+        assert!(detail.contains("agent-pet-studio/SKILL.md"), "{detail}");
         assert!(super::repair_codex(&root, &cli).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&studio).unwrap(),
-            customized_current
-        );
-
-        let mut customized_retired = retired_v1.to_vec();
-        customized_retired.extend_from_slice(b"\n## My custom workflow\n");
-        std::fs::write(&studio, &customized_retired).unwrap();
-        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
-        assert!(super::repair_codex(&root, &cli).is_err());
-        assert_eq!(std::fs::read(&studio).unwrap(), customized_retired);
-
-        super::remove_owned_codex_connector_files(&root).unwrap();
-        assert_eq!(std::fs::read(&studio).unwrap(), customized_retired);
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside content\n");
     }
 
     #[test]
@@ -9140,30 +9377,51 @@ mod tests {
         )
         .unwrap();
         assert!(!super::codex_studio_skill_is_owned(&studio, &root));
-        assert!(super::repair_codex(&root, &cli).is_err());
-        assert_eq!(std::fs::read(&studio).unwrap(), customized);
+        super::repair_codex(&root, &cli).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&studio).unwrap(),
+            super::PET_STUDIO_SKILL_MD
+        );
     }
 
     #[test]
-    fn codex_upgrade_history_includes_exact_retired_skills_but_not_the_current_skill() {
-        let retired = super::RETIRED_CODEX_STUDIO_SKILL_SHA256
-            .as_ref()
-            .expect("retired Studio Skill history must be valid");
-        assert!(
-            retired.contains("76487d8b995dc60adde490f7361cfe418047d5b99befb7a2ecbbf5f1ee647343")
-        );
-        assert!(
-            retired.contains("5150ab91ba5f14567f0a2be0b6053688dffcd564e665a3e281fd5a110f8e852d")
-        );
-        assert!(
-            retired.contains("5611d90ef3aa0b94682915df0135b2b3cae2b3b23360e80625f0bf2a5fc8bafa")
-        );
-        assert!(
-            retired.contains("b845740321e4399586b552cb4ef7c8ef940a6f3197720ad673f58eaa8be3e6bc")
-        );
-        assert!(!retired.contains(&hex::encode(Sha256::digest(
-            super::PET_STUDIO_SKILL_MD.as_bytes()
-        ))));
+    fn studio_skill_ownership_is_derived_not_looked_up_in_a_release_list() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
+        let root = super::codex_plugin_source_root();
+        super::repair_codex(&root, &cli).unwrap();
+        let studio = root.join("skills/agent-pet-studio/SKILL.md");
+
+        // Owned means "this build can derive it": the exact current Skill, or
+        // the revision a verified install receipt names. Every other revision
+        // is simply not owned, and no maintained list of past releases can or
+        // should change that.
+        assert!(super::codex_studio_skill_is_owned(&studio, &root));
+        std::fs::write(
+            &studio,
+            b"---\nname: agent-pet-studio\nversion: 0.3.0\n---\nsome earlier release\n".as_slice(),
+        )
+        .unwrap();
+        assert!(!super::codex_studio_skill_is_owned(&studio, &root));
+
+        // Losing ownership of one Skill file must not block repair, because the
+        // manifest and hooks still prove the root belongs to this App.
+        super::validate_codex_root_repair_ownership(&root).unwrap();
+        assert!(super::codex_manifest_is_owned(
+            &root.join(".codex-plugin/plugin.json"),
+            &root
+        ));
+        assert!(super::codex_hooks_are_owned(
+            &root.join("hooks/hooks.json"),
+            &root
+        ));
+        assert!(super::skill_front_matter_version(super::PET_STUDIO_SKILL_MD).is_some());
     }
 
     #[test]
@@ -9690,10 +9948,18 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
     }
 
     #[test]
-    fn codex_managed_components_report_the_plugin_version_for_bundled_skills() {
+    fn codex_managed_components_report_each_artifacts_own_installed_version() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
+        let agent_home = temp.path().join("agents");
+        let cli = temp.path().join("runtime/current/petcore-cli");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &agent_home);
+        let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &cli);
         let paths = AppPaths::new(temp.path().join("app-home"));
         let version = super::expected_codex_plugin_version().unwrap();
+        super::repair_codex(&super::codex_plugin_source_root(), &cli).unwrap();
         let probe = super::CodexActivePluginProbe {
             expected_version: version.clone(),
             active_version: Some(version.clone()),
@@ -9712,11 +9978,43 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
 
         let components = super::codex_managed_components(&paths, CheckStatus::Ok, Some(&probe));
 
-        assert_eq!(components.len(), 3);
+        // Plugin, hook, and both Skills each report a version read from their
+        // own installed artifact, so a stale one can be named on its own.
+        assert_eq!(
+            components
+                .iter()
+                .map(|component| (component.kind, component.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (AgentExtensionKind::Plugin, "agent-pet-companion"),
+                (AgentExtensionKind::Hook, "agent-pet-companion"),
+                (AgentExtensionKind::Skill, "agent-pet-studio"),
+                (AgentExtensionKind::Skill, "agent-pet-maker"),
+            ]
+        );
         assert!(components.iter().all(|component| {
             component.expected_version.as_deref() == Some(version.as_str())
                 && component.active_version.as_deref() == Some(version.as_str())
         }));
+
+        // A Skill left behind at an older version is reported at that version
+        // while its siblings stay current.
+        std::fs::write(
+            super::codex_plugin_source_root().join("skills/agent-pet-maker/SKILL.md"),
+            b"---\nname: agent-pet-maker\nversion: 0.4.1\n---\nolder\n".as_slice(),
+        )
+        .unwrap();
+        let stale = super::codex_managed_components(&paths, CheckStatus::Ok, Some(&probe));
+        let maker = stale
+            .iter()
+            .find(|component| component.name == "agent-pet-maker")
+            .unwrap();
+        assert_eq!(maker.active_version.as_deref(), Some("0.4.1"));
+        assert_eq!(maker.expected_version.as_deref(), Some(version.as_str()));
+        assert!(stale
+            .iter()
+            .filter(|component| component.name != "agent-pet-maker")
+            .all(|component| component.active_version.as_deref() == Some(version.as_str())));
     }
 
     #[test]

@@ -5,13 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_REF=""
 PLAN_ONLY=0
 FULL=0
+CI_MODE=0
 
 usage() {
   cat <<'EOF'
-usage: validate_pre_push.sh [--base REF] [--plan-only] [--full]
+usage: validate_pre_push.sh [--base REF] [--plan-only] [--full] [--ci]
 
 Runs source-safe, change-scoped checks for an ordinary commit. --full delegates
 to test_all.sh --resume; CI and Release continue to use uncached test_all.sh.
+--ci uses the same path classifier but runs complete script/release contract
+tests when those files changed. It never enables host UI or Computer Use.
 EOF
 }
 
@@ -28,6 +31,10 @@ while (($# > 0)); do
       ;;
     --full)
       FULL=1
+      shift
+      ;;
+    --ci)
+      CI_MODE=1
       shift
       ;;
     -h|--help)
@@ -66,52 +73,11 @@ git -C "$ROOT_DIR" diff --name-only -z "$BASE_REF" -- >"$CHANGED_PATHS"
 git -C "$ROOT_DIR" ls-files --others --exclude-standard -z >"$UNTRACKED_PATHS"
 cat "$UNTRACKED_PATHS" >>"$CHANGED_PATHS"
 
-eval "$(python3 -B - "$CHANGED_PATHS" <<'PY'
-import pathlib
-import shlex
-import sys
-
-raw = pathlib.Path(sys.argv[1]).read_bytes()
-paths = sorted({item.decode("utf-8", errors="surrogateescape") for item in raw.split(b"\0") if item})
-
-def matches(prefixes):
-    return any(path == prefix or path.startswith(prefix.rstrip("/") + "/") for path in paths for prefix in prefixes)
-
-root_rust = any(path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"} for path in paths)
-petcore_types = matches(("crates/petcore-types",))
-petcore = matches(("crates/petcore",))
-petcore_cli = matches(("crates/petcore-cli",))
-schema_inputs = matches(("schemas", "fixtures"))
-swift = matches(("apps/macos",))
-localization = matches(("apps/macos/Sources/AgentPetCompanion/Resources",))
-scripts = matches(("script", ".github"))
-producer = (
-    matches(("skills/agent-pet-maker", "skills/agent-pet-studio"))
-    or any(path.startswith(("schemas/petpack", "fixtures/petpack")) for path in paths)
-)
-connectors = matches(("plugins", "docs/integrations/agent-connectors.md"))
-
-if root_rust or petcore_types or schema_inputs:
-    rust_mode = "workspace"
-elif petcore:
-    rust_mode = "petcore"
-elif petcore_cli:
-    rust_mode = "cli"
-else:
-    rust_mode = "none"
-
-values = {
-    "APC_CHANGED_COUNT": str(len(paths)),
-    "APC_CHANGED_SWIFT": "1" if swift else "0",
-    "APC_CHANGED_LOCALIZATION": "1" if localization else "0",
-    "APC_CHANGED_SCRIPTS": "1" if scripts else "0",
-    "APC_CHANGED_PRODUCER": "1" if producer else "0",
-    "APC_CHANGED_CONNECTORS": "1" if connectors else "0",
-    "APC_RUST_MODE": rust_mode,
-}
-for key, value in values.items():
-    print(f"{key}={shlex.quote(value)}")
-PY
+eval "$(
+  "$ROOT_DIR/script/validation_scope.py" \
+    --root "$ROOT_DIR" \
+    --paths-file "$CHANGED_PATHS" \
+    --format shell
 )"
 
 PLAN=("git diff --check against $BASE_REF" "source syntax and local Markdown links")
@@ -132,8 +98,20 @@ case "$APC_RUST_MODE" in
   petcore) PLAN+=("Rust fmt plus petcore/petcore-cli Clippy/tests") ;;
   cli) PLAN+=("Rust fmt plus petcore-cli Clippy/tests") ;;
 esac
-if [[ "$APC_CHANGED_SWIFT" == "1" ]]; then
-  PLAN+=("complete Swift unit and UI-model tests")
+case "$APC_SWIFT_MODE" in
+  overlay) PLAN+=("focused overlay, frame-pipeline, and interaction Swift tests") ;;
+  full) PLAN+=("complete Swift unit and UI-model tests") ;;
+esac
+if [[ "$APC_CHANGED_PLUGIN_VERSION" == "1" ]]; then
+  PLAN+=("Codex plugin and bundled Skill version discipline")
+fi
+if [[ "$APC_BUILD_BUNDLE" == "1" && "$CI_MODE" == "1" ]]; then
+  PLAN+=("CI packaged development App proof")
+fi
+if [[ "$APC_COMPUTER_USE" == "recommended" ]]; then
+  PLAN+=("Computer Use recommended after automated checks; never run automatically")
+else
+  PLAN+=("Computer Use not required for this change scope")
 fi
 
 echo "Pre-push plan for $APC_CHANGED_COUNT changed path(s):"
@@ -171,7 +149,18 @@ if [[ "$APC_CHANGED_LOCALIZATION" == "1" ]]; then
   run "Localization parity" "$ROOT_DIR/script/validate_localizations.py"
 fi
 if [[ "$APC_CHANGED_SCRIPTS" == "1" ]]; then
-  run "Static build-script safety" "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
+  SCRIPT_SAFETY_ARGS=(--skip-source-syntax)
+  if [[ "$CI_MODE" != "1" ]]; then
+    SCRIPT_SAFETY_ARGS+=(--static-only)
+  fi
+  run "Build and release-script safety" \
+    "$ROOT_DIR/script/validate_build_scripts_safety.sh" \
+    "${SCRIPT_SAFETY_ARGS[@]}"
+fi
+if [[ "$APC_CHANGED_PLUGIN_VERSION" == "1" ]]; then
+  run "Codex plugin and Skill version discipline" \
+    "$ROOT_DIR/script/validate_codex_plugin_version.py" \
+    --base-ref "$BASE_REF"
 fi
 if [[ "$APC_CHANGED_PRODUCER" == "1" ]]; then
   run "Pet Skill contracts" "$ROOT_DIR/script/validate_pet_skills.sh"
@@ -198,8 +187,14 @@ if ((${#RUST_PACKAGE_ARGS[@]} > 0)); then
     "${RUST_PACKAGE_ARGS[@]}" \
     --locked
 fi
-if [[ "$APC_CHANGED_SWIFT" == "1" ]]; then
-  run "Swift tests" "$ROOT_DIR/script/validate_swift_tests.sh"
-fi
+case "$APC_SWIFT_MODE" in
+  overlay)
+    run "Focused overlay Swift tests" \
+      "$ROOT_DIR/script/validate_swift_tests.sh" --scope overlay
+    ;;
+  full)
+    run "Swift tests" "$ROOT_DIR/script/validate_swift_tests.sh"
+    ;;
+esac
 
 echo 'Change-scoped pre-push validation passed. Use --full for the complete local gate.'

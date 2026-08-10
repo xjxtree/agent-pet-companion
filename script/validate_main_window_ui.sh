@@ -298,6 +298,19 @@ func requireAny(_ candidates: [String], _ context: String) {
 func requireIdentifier(_ identifier: String, _ context: String) {
     if !containsIdentifier(identifier, in: nodes) {
         fputs("main window UI validation failed: missing \(context) identifier: \(identifier)\n", stderr)
+        let relatedNodes = nodes
+            .filter {
+                let prefix = identifier.split(separator: ".").first.map(String.init) ?? identifier
+                return $0.identifier.hasPrefix(prefix)
+            }
+            .map {
+                "\($0.role):\($0.identifier):frame=\($0.frame.map(String.init(describing:)) ?? "missing")"
+            }
+            .prefix(40)
+            .joined(separator: " | ")
+        if !relatedNodes.isEmpty {
+            fputs("related nodes: \(relatedNodes)\n", stderr)
+        }
         exit(1)
     }
 }
@@ -369,15 +382,13 @@ setMainWindowSize(
 for _ in 0..<80 {
     nodes = snapshotNodes(mainWindow)
     let libraryInventoryIsVisible =
-        containsIdentifier("pet-library.collection-title", in: nodes)
-        && containsIdentifier("pet-library.grid", in: nodes)
+        containsIdentifier("pet-library.grid", in: nodes)
         && containsAny(["全部宠物 · 4", "All Pets · 4"], in: nodes)
     if libraryInventoryIsVisible {
         break
     }
     usleep(100_000)
 }
-requireIdentifier("pet-library.collection-title", "library collection title")
 requireIdentifier("pet-library.grid", "library grid")
 requireIdentifier("sidebar.navigation-list", "sidebar navigation list")
 requireIdentifier("sidebar.configuration-live-preview", "sidebar live preview")
@@ -586,6 +597,115 @@ func waitFor(_ description: String, _ predicate: ([Node]) -> Bool) {
     exit(1)
 }
 
+func subtreeContainsIdentifier(_ element: AXUIElement, _ identifier: String) -> Bool {
+    if string(element, kAXIdentifierAttribute) == identifier {
+        return true
+    }
+    let children = copy(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+    return children.contains { subtreeContainsIdentifier($0, identifier) }
+}
+
+func requireScrollToBottom(
+    identifier: String,
+    visibleTargetIdentifier: String,
+    context: String
+) {
+    let currentNodes = snapshotNodes(mainWindow)
+    let directScrollNode = currentNodes.first(where: {
+        $0.identifier == identifier
+            && actions($0.element).contains("AXScrollToBottom")
+    })
+    let pagedScrollNode = currentNodes.first(where: {
+        $0.role == kAXScrollAreaRole as String
+            && actions($0.element).contains("AXScrollDownByPage")
+            && subtreeContainsIdentifier($0.element, visibleTargetIdentifier)
+    })
+    guard let scrollNode = directScrollNode ?? pagedScrollNode,
+          let scrollFrame = scrollNode.frame else {
+        fputs("main window UI validation failed: \(context) does not expose scroll-to-bottom\n", stderr)
+        let prefix = identifier.split(separator: ".").first.map(String.init) ?? identifier
+        let relatedNodes = currentNodes
+            .filter { $0.identifier.hasPrefix(prefix) || $0.role == kAXScrollAreaRole as String }
+            .map {
+                "\($0.role):\($0.identifier):frame=\($0.frame.map(String.init(describing:)) ?? "missing"):actions=\(actions($0.element).joined(separator: ","))"
+            }
+            .prefix(48)
+            .joined(separator: " | ")
+        if !relatedNodes.isEmpty {
+            fputs("related scroll nodes: \(relatedNodes)\n", stderr)
+        }
+        exit(1)
+    }
+    let scrollAction = directScrollNode == nil ? "AXScrollDownByPage" : "AXScrollToBottom"
+    let scrollTargetToVisibleAction = "AXScrollToVisible"
+
+    guard let windowFrame = point(mainWindow, kAXPositionAttribute).flatMap({ origin in
+        size(mainWindow, kAXSizeAttribute).map { CGRect(origin: origin, size: $0) }
+    }) else {
+        fputs("main window UI validation failed: control center has no frame during \(context)\n", stderr)
+        exit(1)
+    }
+
+    for _ in 0..<12 {
+        let refreshedNodes = snapshotNodes(mainWindow)
+        let targetNode = refreshedNodes.first(where: {
+            $0.identifier == visibleTargetIdentifier
+        })
+        if let targetFrame = targetNode?.frame,
+           targetFrame.width > 0,
+           targetFrame.height > 0,
+           windowFrame.intersects(targetFrame),
+           scrollFrame.intersects(targetFrame) {
+            return
+        }
+
+        if let targetNode,
+           actions(targetNode.element).contains(scrollTargetToVisibleAction) {
+            let targetResult = AXUIElementPerformAction(
+                targetNode.element,
+                scrollTargetToVisibleAction as CFString
+            )
+            if targetResult == .success {
+                usleep(150_000)
+                continue
+            }
+        }
+
+        let pageResult = AXUIElementPerformAction(
+            scrollNode.element,
+            scrollAction as CFString
+        )
+        if pageResult != .success {
+            if let scrollBarValue = copy(
+                scrollNode.element,
+                kAXVerticalScrollBarAttribute
+            ) {
+                let scrollBar = scrollBarValue as! AXUIElement
+                let setResult = AXUIElementSetAttributeValue(
+                    scrollBar,
+                    kAXValueAttribute as CFString,
+                    NSNumber(value: 1)
+                )
+                if setResult == .success {
+                    usleep(150_000)
+                    continue
+                }
+            }
+            let targetActions = targetNode
+                .map { actions($0.element).joined(separator: ",") }
+                ?? "missing"
+            fputs(
+                "main window UI validation failed: \(context) could not scroll down: \(pageResult.rawValue); target actions: \(targetActions)\n",
+                stderr
+            )
+            exit(1)
+        }
+        usleep(150_000)
+    }
+    fputs("main window UI validation failed: \(context) bottom target remained outside the window\n", stderr)
+    exit(1)
+}
+
 let buttonRole = kAXButtonRole as String
 
 pressControl(identifier: "sidebar.navigation.maker")
@@ -605,6 +725,11 @@ waitFor("AI Pet Maker page") { nodes in
         && containsAny(["开始制作", "Create Pet"], in: nodes)
         && !containsIdentifier("pet-library.page", in: nodes)
 }
+requireScrollToBottom(
+    identifier: "maker.draft",
+    visibleTargetIdentifier: "maker.brief.references.dropzone",
+    context: "AI Pet Maker draft"
+)
 let makerNodes = snapshotNodes(mainWindow)
 let removedStudioTabLabels: Set<String> = ["新建", "New", "宠物库", "Pet Library"]
 if makerNodes.contains(where: { node in
@@ -636,6 +761,11 @@ waitFor("Agent Connections page") { nodes in
         && containsIdentifier("connections.primary.check-all", in: nodes)
         && containsIdentifier("connections.secondary.setup-all", in: nodes)
 }
+requireScrollToBottom(
+    identifier: "connections.root",
+    visibleTargetIdentifier: "connections.agent-section.opencode",
+    context: "Agent Connections"
+)
 
 pressControl(identifier: "sidebar.navigation.diagnostics")
 waitFor("Service & Diagnostics page") { nodes in
@@ -654,12 +784,16 @@ waitFor("Service & Diagnostics page") { nodes in
 pressControl(identifier: "sidebar.navigation.library")
 waitFor("Pet Library page") { nodes in
     containsIdentifier("pet-library.page", in: nodes)
-        && containsIdentifier("product.pet-library.page-header", in: nodes)
         && containsIdentifier("pet-library.hero", in: nodes)
         && containsIdentifier("pet-library.grid", in: nodes)
         && contains("星雾团子", in: nodes)
         && (contains("导入", in: nodes) || contains("Import", in: nodes))
 }
+requireScrollToBottom(
+    identifier: "pet-library.detail-scroll",
+    visibleTargetIdentifier: "pet-library.hero.technical",
+    context: "Pet Library detail"
+)
 
 func currentMainWindows() -> [AXUIElement] {
     let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []

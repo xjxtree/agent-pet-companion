@@ -35,6 +35,27 @@ SCOPES: dict[str, tuple[str, ...]] = {
     "connectors": ("Cargo.toml", "Cargo.lock", "crates", "plugins", "schemas", "fixtures", "script"),
     "security": ("Cargo.toml", "Cargo.lock", "crates", "plugins", "schemas", "fixtures", "script"),
     "bundle": ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "apps/macos", "crates", "plugins", "skills", "schemas", "fixtures", "script"),
+    "runtime": (
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "apps/macos",
+        "crates",
+        "plugins",
+        "skills",
+        "schemas",
+        "fixtures",
+        "script/build_app_bundle.sh",
+        "script/prepare_interaction_attestation.sh",
+        "script/interaction-contract-files.txt",
+        "script/validate_app_bundle.sh",
+        "script/validate_interaction_attestation.py",
+        "script/validate_macho_architectures.sh",
+        "script/validate_overlay_interaction.sh",
+        "script/validate_swift_tests.sh",
+        "script/validation_fingerprint.py",
+        "script/validation_helpers.sh",
+    ),
 }
 
 
@@ -44,7 +65,13 @@ def git_files(root: pathlib.Path, paths: tuple[str, ...]) -> list[pathlib.Path]:
         command.extend(["--", *paths])
     result = subprocess.run(command, cwd=root, check=True, capture_output=True)
     relative_paths = sorted({item for item in result.stdout.split(b"\0") if item})
-    return [root / os.fsdecode(item) for item in relative_paths]
+    # `git ls-files -c` reports tracked deletions. Their absence must change the
+    # fingerprint, not turn an ordinary dirty-worktree validation into ENOENT.
+    return [
+        path
+        for item in relative_paths
+        if os.path.lexists(path := root / os.fsdecode(item))
+    ]
 
 
 def interaction_files(root: pathlib.Path) -> list[pathlib.Path]:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import re
 import stat
@@ -54,11 +55,17 @@ class SkillStructureTests(unittest.TestCase):
             MAKER / "SKILL.md": "agent-pet-maker",
             STUDIO / "SKILL.md": "agent-pet-studio",
         }
+        plugin_version = json.loads(
+            (REPOSITORY / "plugins/codex/.codex-plugin/plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )["version"]
         for path, name in expected.items():
             with self.subTest(skill=name):
                 fields = frontmatter(path)
-                self.assertEqual(set(fields), {"name", "description"})
+                self.assertEqual(set(fields), {"name", "version", "description"})
                 self.assertEqual(fields["name"], name)
+                self.assertEqual(fields["version"], plugin_version)
                 self.assertIn(".petpack V3", fields["description"])
                 self.assertIn("Use", fields["description"])
 

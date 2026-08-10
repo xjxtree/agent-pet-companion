@@ -772,7 +772,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "petcore"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "hex",
  "image",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "petcore-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "petcore",
  "petcore-types",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "petcore-types"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",

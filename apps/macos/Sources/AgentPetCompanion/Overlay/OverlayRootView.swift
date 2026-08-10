@@ -1033,7 +1033,8 @@ struct WindowDragRegion: NSViewRepresentable {
         private func pointerScreenLocation(for event: NSEvent) -> CGPoint {
             guard let location = event.cgEvent?.location,
                   let zeroOriginScreen = NSScreen.screens.first else {
-                return NSEvent.mouseLocation
+                guard let window else { return event.locationInWindow }
+                return window.convertPoint(toScreen: event.locationInWindow)
             }
             return OverlayPointerCoordinateSpace.screenPoint(
                 forGlobalEventLocation: location,

@@ -606,6 +606,7 @@ enum AgentConnectionsPresentation {
         case .hostExtension: .connectionsComponentKindExtension
         case .package: .connectionsComponentKindPackage
         case .skill: .connectionsComponentKindSkill
+        case .hook: .connectionsComponentKindHook
         case .unknown: .connectionsComponentKindUnknown
         }
         return APCLocalization.text(key, locale: locale)
@@ -1537,6 +1538,7 @@ private struct AgentManagedComponentRow: View {
         case .hostExtension: "bolt.horizontal.circle"
         case .package: "shippingbox"
         case .skill: "sparkles.rectangle.stack"
+        case .hook: "point.3.connected.trianglepath.dotted"
         case .unknown: "questionmark.square.dashed"
         }
     }

@@ -377,7 +377,6 @@ struct OverlayGeometryTests {
         let interactionID = UUID()
         let base = OverlayPointerOwnershipInput(
             overlayVisible: true,
-            primaryButtonDown: false,
             activeInteractionID: nil,
             maskState: .valid,
             validMaskPixelIsOpaque: false,
@@ -418,7 +417,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func pointerMonitorPreDispatchesExactMouseDownOwnership() throws {
+    func pointerMonitorUsesOnlyPermissionFreeLocalEventsAndPolling() throws {
         let sourceDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -430,6 +429,24 @@ struct OverlayGeometryTests {
             ),
             encoding: .utf8
         )
+        let appStoreSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "App/AppStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let rootViewSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Overlay/OverlayRootView.swift"
+            ),
+            encoding: .utf8
+        )
+        let behaviorSettingsSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Views/BehaviorSettingsView.swift"
+            ),
+            encoding: .utf8
+        )
         let monitorStart = try #require(controllerSource.range(
             of: "final class OverlayPointerEventMonitor"
         ))
@@ -438,12 +455,24 @@ struct OverlayGeometryTests {
             range: monitorStart.upperBound..<controllerSource.endIndex
         ))
         let monitorSource = controllerSource[monitorStart.lowerBound..<monitorEnd.lowerBound]
-        #expect(monitorSource.contains("CGEvent.tapCreate"))
-        #expect(monitorSource.contains("tap: .cgSessionEventTap"))
-        #expect(monitorSource.contains("place: .headInsertEventTap"))
-        #expect(monitorSource.contains("options: .listenOnly"))
+        #expect(monitorSource.contains("Timer(timeInterval: Self.pollingInterval"))
+        #expect(monitorSource.contains("NSEvent.addLocalMonitorForEvents"))
+        #expect(!monitorSource.contains("CGEvent.tapCreate"))
+        #expect(!monitorSource.contains("NSEvent.addGlobalMonitorForEvents"))
+        #expect(!monitorSource.contains(".keyDown"))
+        #expect(!monitorSource.contains(".keyUp"))
+        #expect(!monitorSource.contains(".flagsChanged"))
         #expect(monitorSource.contains(".leftMouseDown"))
         #expect(!monitorSource.contains("Task { @MainActor"))
+        #expect(!controllerSource.contains("NSEvent.pressedMouseButtons"))
+        #expect(!appStoreSource.contains("NSEvent.pressedMouseButtons"))
+        #expect(!controllerSource.contains("NSEvent.mouseLocation"))
+        #expect(!rootViewSource.contains("NSEvent.mouseLocation"))
+        #expect(!behaviorSettingsSource.contains("NSEvent.modifierFlags"))
+        #expect(controllerSource.contains("mouseLocationOutsideOfEventStream"))
+        #expect(controllerSource.contains(
+            "observeOverlayPrimaryButton(isDown: false)"
+        ))
         #expect(!controllerSource.contains("pointerNearPetScreenRect"))
         #expect(!controllerSource.contains("guard !isKeyWindow"))
         #expect(!controllerSource.contains("behavior.mousePassthrough"))
@@ -461,7 +490,6 @@ struct OverlayGeometryTests {
             let first = OverlayPointerOwnershipPolicy.resolve(
                 OverlayPointerOwnershipInput(
                     overlayVisible: true,
-                    primaryButtonDown: true,
                     activeInteractionID: nil,
                     maskState: initialMask,
                     validMaskPixelIsOpaque: initialMask == .valid,
@@ -475,7 +503,6 @@ struct OverlayGeometryTests {
             let transitioned = OverlayPointerOwnershipPolicy.resolve(
                 OverlayPointerOwnershipInput(
                     overlayVisible: true,
-                    primaryButtonDown: true,
                     activeInteractionID: interactionID,
                     maskState: index.isMultiple(of: 2) ? .valid : .stale,
                     validMaskPixelIsOpaque: false,

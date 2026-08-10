@@ -2727,6 +2727,7 @@ public enum AgentExtensionKind: String, Codable, Hashable, Sendable {
     case hostExtension = "extension"
     case package
     case skill
+    case hook
     case unknown
 
     public init(from decoder: Decoder) throws {

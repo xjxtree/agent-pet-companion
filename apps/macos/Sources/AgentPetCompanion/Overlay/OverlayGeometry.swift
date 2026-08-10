@@ -715,7 +715,6 @@ enum OverlayPointerMaskState: Equatable, Sendable {
 
 struct OverlayPointerOwnershipInput: Equatable, Sendable {
     var overlayVisible: Bool
-    var primaryButtonDown: Bool
     var activeInteractionID: UUID?
     var maskState: OverlayPointerMaskState
     var validMaskPixelIsOpaque: Bool
@@ -2287,7 +2286,6 @@ enum OverlayGeometry {
         bubbleContent: OverlayBubbleContent = .measurementPlaceholder,
         petFrameHitTest: OverlayPetFrameHitTest? = nil,
         overlayVisible: Bool = true,
-        primaryButtonDown: Bool = false,
         activeInteractionID: UUID? = nil,
         maskState: OverlayPointerMaskState? = nil
     ) -> Bool {
@@ -2326,7 +2324,6 @@ enum OverlayGeometry {
         return OverlayPointerOwnershipPolicy.resolve(
             OverlayPointerOwnershipInput(
                 overlayVisible: overlayVisible,
-                primaryButtonDown: primaryButtonDown,
                 activeInteractionID: activeInteractionID,
                 maskState: resolvedMaskState,
                 validMaskPixelIsOpaque: opaque,

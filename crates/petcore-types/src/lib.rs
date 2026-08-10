@@ -1279,6 +1279,7 @@ pub enum AgentExtensionKind {
     Extension,
     Package,
     Skill,
+    Hook,
     #[default]
     #[serde(other)]
     Unknown,

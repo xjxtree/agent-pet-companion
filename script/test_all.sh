@@ -4,13 +4,21 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESUME_VALIDATION="${APC_TEST_ALL_RESUME:-0}"
 CLEAR_VALIDATION_CACHE=0
+SOURCE_ONLY=0
+INCLUDE_STRESS="${APC_TEST_ALL_INCLUDE_STRESS:-0}"
 
 usage() {
   cat <<'EOF'
-usage: test_all.sh [--resume] [--clear-cache]
+usage: test_all.sh [--resume] [--source-only] [--include-stress] [--clear-cache]
 
   --resume       Reuse successful local steps only when their scoped source
                  fingerprint and toolchain context are unchanged.
+  --source-only  Prove source and integration contracts without assembling a
+                 development App; intended for a Release that validates exact
+                 packaged artifacts separately.
+  --include-stress
+                 Include bounded event-storm stress. This is mandatory for the
+                 Release source gate and optional for ordinary local work.
   --clear-cache  Remove this worktree's local validation checkpoints and exit.
 
 The default invocation never consumes checkpoints and remains the CI/Release
@@ -28,6 +36,14 @@ while (($# > 0)); do
       CLEAR_VALIDATION_CACHE=1
       shift
       ;;
+    --source-only)
+      SOURCE_ONLY=1
+      shift
+      ;;
+    --include-stress)
+      INCLUDE_STRESS=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -43,6 +59,11 @@ case "$RESUME_VALIDATION" in
   0|false|FALSE|no|NO) RESUME_VALIDATION=0 ;;
   1|true|TRUE|yes|YES) RESUME_VALIDATION=1 ;;
   *) echo 'APC_TEST_ALL_RESUME must be 0 or 1' >&2; exit 2 ;;
+esac
+case "$INCLUDE_STRESS" in
+  0|false|FALSE|no|NO) INCLUDE_STRESS=0 ;;
+  1|true|TRUE|yes|YES) INCLUDE_STRESS=1 ;;
+  *) echo 'APC_TEST_ALL_INCLUDE_STRESS must be 0 or 1' >&2; exit 2 ;;
 esac
 
 VALIDATION_CACHE_DIR=""
@@ -94,8 +115,8 @@ Validation profiles:
   [macos runtime] real macOS app bundle and overlay runtime checks; environment-gated.
   [real agent connectors] current user Codex/Claude/Pi/OpenCode connector files sending diagnostic events into the current app; environment-gated.
   [real app server] real Codex App Server stdio session; environment-gated.
-  [perf/nightly] bounded stress and budget checks; the default stress size remains part of test_all.
-Default test_all covers deterministic, simulated, security, and bounded stress checks only. Host UI and real-agent checks require explicit opt-in and otherwise print skip reasons.
+  [perf/nightly] bounded stress and budget checks; enabled explicitly with --include-stress.
+Default test_all covers deterministic, simulated, and security checks. Stress, host UI, and real-agent checks require explicit opt-in and otherwise print skip reasons.
 EOF
 }
 
@@ -243,23 +264,35 @@ run_cached_step "fast/core" "localization-parity" "localization" "String Catalog
 if [[ -z "${APC_BUILD_ID:-}" ]]; then
   export APC_BUILD_ID="validation.$(date -u +%Y%m%d%H%M%S).$$"
 fi
-export APC_INTERACTION_ATTESTATION_PATH="$TEST_ALL_TEMP_DIR/interaction-attestation.json"
+if [[ -n "${APC_INTERACTION_ATTESTATION_OUTPUT:-}" ]]; then
+  [[ "$APC_INTERACTION_ATTESTATION_OUTPUT" == /* ]] || {
+    echo 'APC_INTERACTION_ATTESTATION_OUTPUT must be an absolute path' >&2
+    exit 2
+  }
+  export APC_INTERACTION_ATTESTATION_PATH="$APC_INTERACTION_ATTESTATION_OUTPUT"
+  mkdir -p "$(dirname "$APC_INTERACTION_ATTESTATION_PATH")"
+else
+  export APC_INTERACTION_ATTESTATION_PATH="$TEST_ALL_TEMP_DIR/interaction-attestation.json"
+fi
 INTERACTION_PROOF_IN=""
 if [[ "$RESUME_VALIDATION" == "1" ]]; then
   interaction_fingerprint="$(
     "$ROOT_DIR/script/validation_fingerprint.py" --root "$ROOT_DIR" --scope interaction
   )"
-  cached_interaction_proof="$VALIDATION_CACHE_DIR/artifacts/interaction-$interaction_fingerprint-$CACHE_CONTEXT.json"
+  cached_interaction_proof="$VALIDATION_CACHE_DIR/artifacts/interaction-full-swift-$interaction_fingerprint-$CACHE_CONTEXT.json"
   if [[ -f "$cached_interaction_proof" ]] \
     && "$ROOT_DIR/script/validate_interaction_attestation.py" "$cached_interaction_proof" >/dev/null; then
     INTERACTION_PROOF_IN="$cached_interaction_proof"
   fi
 fi
-INTERACTION_PREPARE_ARGS=(--output "$APC_INTERACTION_ATTESTATION_PATH")
+INTERACTION_PREPARE_ARGS=(
+  --output "$APC_INTERACTION_ATTESTATION_PATH"
+  --swift-scope all
+)
 if [[ -n "$INTERACTION_PROOF_IN" ]]; then
   INTERACTION_PREPARE_ARGS+=(--proof-in "$INTERACTION_PROOF_IN")
 fi
-run_step "fast/core" "native Swift Phase A/T-B4 interaction attestation bound to this PetCore build" \
+run_step "fast/core" "complete Swift suite and Phase A/T-B4 interaction attestation bound to this PetCore build" \
   "$ROOT_DIR/script/prepare_interaction_attestation.sh" "${INTERACTION_PREPARE_ARGS[@]}"
 if [[ "$RESUME_VALIDATION" == "1" && -z "$INTERACTION_PROOF_IN" ]]; then
   cp "$APC_INTERACTION_ATTESTATION_PATH" "$cached_interaction_proof"
@@ -271,17 +304,24 @@ run_cached_step "fast/core" "build-script-safety" "scripts" "shell, Python, JSON
 run_cached_step "fast/core" "rust-format" "rust" "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
 run_cached_step "fast/core" "rust-clippy" "rust" "strict Rust linting" cargo clippy --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --all-targets --all-features --locked -- -D warnings
 run_cached_step "fast/core" "rust-tests" "rust" "Rust workspace unit and integration tests" cargo test --manifest-path "$ROOT_DIR/Cargo.toml" --workspace --locked
-run_cached_step "fast/core" "swift-tests" "swift" "complete Swift unit and UI-model test suites" "$ROOT_DIR/script/validate_swift_tests.sh"
 run_cached_step "simulated integration" "connector-runtime" "connectors" "generated connector hook/plugin runtime smoke; not real third-party agent acceptance" "$ROOT_DIR/script/validate_connectors_runtime.sh"
-run_cached_step "perf/nightly" "event-storm" "rust" "bounded event storm stress at APC_EVENT_STORM_COUNT=${APC_EVENT_STORM_COUNT:-180}" "$ROOT_DIR/script/validate_event_storm.sh"
+if [[ "$INCLUDE_STRESS" == "1" ]]; then
+  run_cached_step "perf/nightly" "event-storm" "rust" "bounded event storm stress at APC_EVENT_STORM_COUNT=${APC_EVENT_STORM_COUNT:-180}" "$ROOT_DIR/script/validate_event_storm.sh"
+else
+  log_skip "perf/nightly" "bounded event storm stress" "use --include-stress for Release or explicit stress validation"
+fi
 run_step "fast/core" "offline overlay geometry, scheduler, accessibility, frame-pipeline and pointer contracts" \
   "$ROOT_DIR/script/validate_overlay_offline.sh" \
   --interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"
 run_cached_step "fast/core" "security-boundaries" "security" "security boundary checks with fake sentinel secrets" "$ROOT_DIR/script/validate_security_boundaries.sh"
-run_step "simulated integration" "development app bundle assembly without launch" \
-  "$ROOT_DIR/script/build_app_bundle.sh" \
-  --configuration debug \
-  --interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"
+if [[ "$SOURCE_ONLY" == "1" ]]; then
+  log_skip "simulated integration" "development app bundle assembly without launch" "--source-only defers bundle proof to exact Release artifacts"
+else
+  run_step "simulated integration" "development app bundle assembly without launch" \
+    "$ROOT_DIR/script/build_app_bundle.sh" \
+    --configuration debug \
+    --interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"
+fi
 
 if host_ui_skip_reason_value="$(host_ui_skip_reason)"; then
   log_skip "macos runtime" "real app bundle, overlay layout, display-width persistence, renderer telemetry, and app recovery" "$host_ui_skip_reason_value"

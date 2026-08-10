@@ -85,6 +85,23 @@ write_executable "$BUILD_ROOT/script/validate_app_bundle.sh" \
 write_executable "$BUILD_ROOT/script/validate_overlay_interaction.sh" \
   '#!/usr/bin/env bash' \
   'exit 0'
+write_executable "$BUILD_ROOT/script/validate_interaction_attestation.py" \
+  '#!/usr/bin/env bash' \
+  'exit 0'
+write_executable "$BUILD_ROOT/script/validation_fingerprint.py" \
+  '#!/usr/bin/env bash' \
+  'printf '\''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n'\'''
+write_executable "$BUILD_ROOT/script/prepare_interaction_attestation.sh" \
+  '#!/usr/bin/env bash' \
+  'output=""' \
+  'while (($# > 0)); do' \
+  '  case "$1" in' \
+  '    --output) output="$2"; shift 2 ;;' \
+  '    *) shift ;;' \
+  '  esac' \
+  'done' \
+  'mkdir -p "$(dirname "$output")"' \
+  'printf '\''{}\n'\'' >"$output"'
 for binary in \
   "$BUILD_ROOT/target/debug/petcore" \
   "$BUILD_ROOT/target/debug/petcore-cli" \
@@ -326,7 +343,7 @@ for identifier in \
   sidebar.navigation.connections sidebar.navigation.diagnostics \
   pet-library.page product.pet-library.page-header pet-library.hero \
   product.pet-library.featured.primary-experience-card \
-  product.pet-library.featured.pet-preview-stage pet-library.collection-title pet-library.grid \
+  product.pet-library.featured.pet-preview-stage pet-library.grid \
   maker.page maker.session-list maker.session-list.new \
   maker.session-list.draft maker.draft maker.draft.discard maker.draft.submit product.maker.draft.page-header \
   maker.brief maker.brief.description \

@@ -6371,10 +6371,10 @@ final class AppStore: ObservableObject {
         overlayController.refreshPointerPassthrough()
     }
 
-    func reconcileOverlayPointerInteractions(pressedMouseButtons: Int) {
-        guard pressedMouseButtons == 0,
+    func observeOverlayPrimaryButton(isDown: Bool) {
+        guard !isDown,
               let interactionID = overlayDragInteractionID else {
-            if pressedMouseButtons != 0 {
+            if isDown {
                 overlayLostMouseUpFallbackTask?.cancel()
                 overlayLostMouseUpFallbackTask = nil
             }
@@ -6391,8 +6391,7 @@ final class AppStore: ObservableObject {
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
             self.overlayLostMouseUpFallbackTask = nil
-            guard self.overlayDragInteractionID == interactionID,
-                  NSEvent.pressedMouseButtons == 0 else { return }
+            guard self.overlayDragInteractionID == interactionID else { return }
             OverlayInteractionTelemetry.shared.fallback(
                 .fallbackFired,
                 interactionID: interactionID

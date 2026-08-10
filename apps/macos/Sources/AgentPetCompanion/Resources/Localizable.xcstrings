@@ -886,13 +886,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The managed location for %@ contains changed or unowned files, so the App left them untouched. Expand the Agent, move or restore the conflicting item, choose Set Up or Repair, then choose Check All."
+            "value": "The managed location for %@ holds a path the App cannot safely write, and Set Up or Repair skips it while that is true. Expand the Agent to see the exact path in its blocking check, move or restore it, then choose Check Again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 的受管位置中存在已修改或不属于本 App 的文件，因此 App 为保护内容没有覆盖。请展开对应 Agent，先移走或恢复冲突项，再点击“一键设置或修复”，完成后点击“全部检查”。"
+            "value": "%@ 的受管位置中有一个本 App 无法安全写入的路径，此状态下“一键设置或修复”不会处理它。请展开对应 Agent 查看阻断检查项中的具体路径，移走或恢复后点击“重新检查”。"
           }
         }
       }
@@ -4493,6 +4493,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "插件"
+          }
+        }
+      }
+    },
+    "connections.component.kind.hook": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hook"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hook"
           }
         }
       }

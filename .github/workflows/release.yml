@@ -24,10 +24,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build ad-hoc-signed thin archives
+  prepare:
+    name: Prove source once
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 75
     permissions:
       contents: read
     outputs:
@@ -36,9 +36,6 @@ jobs:
       build: ${{ steps.release_identity.outputs.build }}
       commit: ${{ steps.release_identity.outputs.commit }}
       previous_tag: ${{ steps.release_identity.outputs.previous_tag }}
-      arm64_zip_sha256: ${{ steps.candidate_digests.outputs.arm64_zip_sha256 }}
-      x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
-      checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
     env:
       APC_VALIDATE_HOST_UI: "0"
       APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
@@ -75,9 +72,7 @@ jobs:
           test "$(git rev-list -n 1 "$tag")" = "$commit"
           git rev-parse --verify refs/remotes/origin/main >/dev/null
           git merge-base --is-ancestor "$commit" refs/remotes/origin/main
-          source_version="$(
-            awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml
-          )"
+          source_version="$(awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml)"
           test "$version" = "$source_version"
           grep -q "^## \\[$version\\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" CHANGELOG.md
           previous_tag="$(
@@ -100,16 +95,90 @@ jobs:
             echo "previous_tag=$previous_tag"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Prepare native build host and cross targets
+      - name: Prepare source validation host
         run: |
           test "$(uname -m)" = "arm64"
           swift --version
-          test "$(
-            swift --version \
-              | awk '/Apple Swift version/{split($4, version, "."); print version[1]}'
-          )" -ge 6
+          test "$(swift --version | awk '/Apple Swift version/{split($4, version, "."); print version[1]}')" -ge 6
           rustup show
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
+
+      - name: Prepare pinned Python validation environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/apc-validation-python"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
+            --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" - <<'PY'
+          from PIL import Image, features
+          if Image.__version__ != "11.3.0" or not features.check("webp_anim"):
+              raise SystemExit("pinned Pillow lacks the required animated WebP support")
+          PY
+          echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
+
+      - name: Restore source/build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/macos/.build
+          key: macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-${{ steps.release_identity.outputs.commit }}
+          restore-keys: |
+            macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-
+
+      - name: Run source, complete Swift interaction, integration, and stress gates
+        env:
+          APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}
+          APC_INTERACTION_ATTESTATION_OUTPUT: ${{ runner.temp }}/release-interaction-attestation.json
+        run: |
+          defaults write NSGlobalDomain AppleLanguages -array "zh-Hans" "en"
+          test "$(defaults read NSGlobalDomain AppleLanguages | sed -n '2s/[ ,\"]//gp')" = "zh-Hans"
+          ./script/test_all.sh --source-only --include-stress
+
+      - name: Upload source-bound interaction proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-interaction-attestation
+          if-no-files-found: error
+          retention-days: 3
+          path: ${{ runner.temp }}/release-interaction-attestation.json
+
+  build_archives:
+    name: Build ${{ matrix.architecture }} archive
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [arm64, x86_64]
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      APC_VALIDATE_HOST_UI: "0"
+      APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
+      APC_VALIDATE_REAL_APP_SERVER: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-interaction-attestation
+          path: ${{ runner.temp }}/release-proof
+
+      - name: Prepare architecture build host
+        run: |
+          rustup show
+          rustup target add "${{ matrix.architecture == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}"
+          swift --version
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
           fi
@@ -122,104 +191,103 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/apc-validation-python"
           "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
-            --disable-pip-version-check \
-            --no-deps \
-            --only-binary=:all: \
-            "Pillow==11.3.0"
-          "$RUNNER_TEMP/apc-validation-python/bin/python" - <<'PY'
-          from PIL import Image, features
+            --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
+          echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
-          if Image.__version__ != "11.3.0":
-              raise SystemExit("unexpected Pillow version")
-          if not features.check("webp_anim"):
-              raise SystemExit("Pillow lacks animated WebP support")
-          PY
-          {
-            echo "$RUNNER_TEMP/apc-validation-python/bin"
-          } >>"$GITHUB_PATH"
+      - name: Restore source/build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/macos/.build
+          key: macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-${{ needs.prepare.outputs.commit }}
+          restore-keys: |
+            macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-
 
-      - name: Run host-safe source, Phase A/T-B4 interaction, and integration gates
+      - name: Build one source-proven official component
         env:
-          APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}
+          APC_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          APC_RELEASE_BUILD: ${{ needs.prepare.outputs.build }}
+          APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}
+          APC_INTERACTION_ATTESTATION_PATH: ${{ runner.temp }}/release-proof/release-interaction-attestation.json
+        run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"
+
+      - name: Upload architecture component
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-component-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 3
+          path: dist/AgentPetCompanion-${{ needs.prepare.outputs.version }}-macos-${{ matrix.architecture }}.zip
+
+  assemble:
+    name: Assemble exact release candidate
+    needs: [prepare, build_archives]
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      arm64_zip_sha256: ${{ steps.candidate_digests.outputs.arm64_zip_sha256 }}
+      x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
+      checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-component-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create and validate exact three-file candidate
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          # Some protected historical candidates contain a legacy presentation
-          # assertion that reads the runner's system language. Pin the isolated
-          # release host for deterministic rebuilds; current tests inject locales.
-          defaults write NSGlobalDomain AppleLanguages -array "zh-Hans" "en"
-          test "$(defaults read NSGlobalDomain AppleLanguages | sed -n '2s/[ ,\"]//gp')" = "zh-Hans"
-          ./script/test_all.sh
-
-      - name: Build both official GitHub Release archives
-        env:
-          APC_RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
-          APC_RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
-          APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}
-        run: ./script/build_release.sh --github-release --arch all
-
-      - name: Stage exact three-file release candidate
-        env:
-          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
-        run: |
-          test ! -e release-assets
-          mkdir release-assets
-          assets=(
-            "AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip"
-            "AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip"
-            "AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
+          (
+            cd release-assets
+            shasum -a 256 \
+              "AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip" \
+              "AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip" \
+              >"AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
           )
-          for asset in "${assets[@]}"; do
-            test -f "dist/$asset"
-            mv "dist/$asset" "release-assets/$asset"
-          done
-
-      - name: Revalidate final local artifact set
-        env:
-          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
-          RELEASE_BUILD: ${{ steps.release_identity.outputs.build }}
-          RELEASE_COMMIT: ${{ steps.release_identity.outputs.commit }}
-        run: |
-          ./script/validate_github_release_artifacts.sh \
+          ./script/validate_release_artifact_metadata.py \
             --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --build "$RELEASE_BUILD" \
-            --commit "$RELEASE_COMMIT"
+            --version "$RELEASE_VERSION"
 
       - name: Emit trusted digest for every candidate file
         id: candidate_digests
         env:
-          RELEASE_VERSION: ${{ steps.release_identity.outputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          digest() {
-            shasum -a 256 "$1" | awk '{print $1}'
-          }
+          digest() { shasum -a 256 "$1" | awk '{print $1}'; }
           {
             echo "arm64_zip_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip")"
             echo "x86_64_zip_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-x86_64.zip")"
             echo "checksum_sha256=$(digest "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt")"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Upload release candidate
+      - name: Upload exact release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: AgentPetCompanion-${{ steps.release_identity.outputs.version }}-github-release
+          name: AgentPetCompanion-${{ needs.prepare.outputs.version }}-github-release
           if-no-files-found: error
           retention-days: 14
-          path: |
-            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-arm64.zip
-            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-macos-x86_64.zip
-            release-assets/AgentPetCompanion-${{ steps.release_identity.outputs.version }}-SHA256SUMS.txt
+          path: release-assets
 
   validate_arm64:
     name: Validate packaged arm64 App on native Apple silicon
-    needs: build
+    needs: [prepare, assemble]
     runs-on: macos-15
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      RELEASE_VERSION: ${{ needs.build.outputs.version }}
-      RELEASE_BUILD: ${{ needs.build.outputs.build }}
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
       - name: Prove native validation architecture
         run: test "$(uname -m)" = "arm64"
@@ -228,42 +296,35 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-          ref: ${{ needs.build.outputs.commit }}
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
+          name: AgentPetCompanion-${{ needs.prepare.outputs.version }}-github-release
           path: release-assets
 
-      - name: Compare trusted digests before archive inspection
+      - name: Compare trusted digests and run only native arm64 packaged validation
         run: |
           ./script/verify_release_candidate_digests.sh \
             --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
-            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
-
-      - name: Run native arm64 packaged functional validation
-        run: |
+            --version "${{ needs.prepare.outputs.version }}" \
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
           ./script/validate_github_release_artifacts.sh \
             --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --build "$RELEASE_BUILD" \
-            --commit "$RELEASE_COMMIT" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --build "${{ needs.prepare.outputs.build }}" \
+            --commit "${{ needs.prepare.outputs.commit }}" \
             --require-native-architecture arm64
 
   validate_x86_64:
     name: Validate packaged x86_64 App on native Intel
-    needs: build
+    needs: [prepare, assemble]
     runs-on: macos-15-intel
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      RELEASE_VERSION: ${{ needs.build.outputs.version }}
-      RELEASE_BUILD: ${{ needs.build.outputs.build }}
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
     steps:
       - name: Prove native validation architecture
         run: test "$(uname -m)" = "x86_64"
@@ -272,80 +333,66 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-          ref: ${{ needs.build.outputs.commit }}
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
+          name: AgentPetCompanion-${{ needs.prepare.outputs.version }}-github-release
           path: release-assets
 
-      - name: Compare trusted digests before archive inspection
+      - name: Compare trusted digests and run only native x86_64 packaged validation
         run: |
           ./script/verify_release_candidate_digests.sh \
             --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
-            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
-
-      - name: Run native x86_64 packaged functional validation
-        run: |
+            --version "${{ needs.prepare.outputs.version }}" \
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
           ./script/validate_github_release_artifacts.sh \
             --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --build "$RELEASE_BUILD" \
-            --commit "$RELEASE_COMMIT" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --build "${{ needs.prepare.outputs.build }}" \
+            --commit "${{ needs.prepare.outputs.commit }}" \
             --require-native-architecture x86_64
 
   publish:
-    name: Download, verify, and publish GitHub Release
-    needs: [build, validate_arm64, validate_x86_64]
+    name: Verify and publish GitHub Release
+    needs: [prepare, assemble, validate_arm64, validate_x86_64]
     runs-on: macos-15
     timeout-minutes: 30
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ needs.build.outputs.tag }}
-      RELEASE_VERSION: ${{ needs.build.outputs.version }}
-      RELEASE_BUILD: ${{ needs.build.outputs.build }}
-      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_BUILD: ${{ needs.prepare.outputs.build }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
           persist-credentials: false
-          ref: ${{ needs.build.outputs.commit }}
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: AgentPetCompanion-${{ needs.build.outputs.version }}-github-release
+          name: AgentPetCompanion-${{ needs.prepare.outputs.version }}-github-release
           path: release-assets
 
-      - name: Compare trusted build digests before archive inspection
+      - name: Compare exact inventory and trusted build digests
         run: |
           ./script/verify_release_candidate_digests.sh \
             --directory release-assets \
             --version "$RELEASE_VERSION" \
-            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
-            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
-
-      - name: Revalidate clean downloaded candidate
-        run: |
-          ./script/validate_github_release_artifacts.sh \
-            --directory release-assets \
-            --version "$RELEASE_VERSION" \
-            --build "$RELEASE_BUILD" \
-            --commit "$RELEASE_COMMIT"
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
 
       - name: Prove remote release tag still targets the candidate
-        run: |
-          ./script/verify_remote_release_tag.sh \
-            --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT"
+        run: ./script/verify_remote_release_tag.sh --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
-      - name: Create draft, download exact assets, and publish latest stable Release
+      - name: Create draft, verify downloaded bytes, and publish latest stable Release
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "GitHub Release already exists for $RELEASE_TAG; refusing replacement" >&2
@@ -376,8 +423,7 @@ jobs:
             "release-assets/AgentPetCompanion-$RELEASE_VERSION-SHA256SUMS.txt"
           )
           gh release create "$RELEASE_TAG" "${assets[@]}" \
-            --verify-tag \
-            --draft \
+            --verify-tag --draft \
             --title "Agent Pet Companion $RELEASE_VERSION" \
             --notes-file "$notes_file"
 
@@ -394,46 +440,30 @@ jobs:
           rm -rf "$download_dir"
           mkdir -p "$download_dir"
           gh release download "$RELEASE_TAG" --dir "$download_dir"
-
           ./script/verify_release_candidate_digests.sh \
             --directory "$download_dir" \
             --version "$RELEASE_VERSION" \
-            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
-            --x86_64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
-          ./script/validate_github_release_artifacts.sh \
-            --directory "$download_dir" \
-            --version "$RELEASE_VERSION" \
-            --build "$RELEASE_BUILD" \
-            --commit "$RELEASE_COMMIT"
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86_64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
 
-          ./script/verify_remote_release_tag.sh \
-            --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT"
+          ./script/verify_remote_release_tag.sh --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
           gh release edit "$RELEASE_TAG" --draft=false --latest
           release_published=1
-          ./script/verify_remote_release_tag.sh \
-            --tag "$RELEASE_TAG" \
-            --commit "$RELEASE_COMMIT"
+          ./script/verify_remote_release_tag.sh --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
           published_json="$RUNNER_TEMP/apc-published-release.json"
           latest_json="$RUNNER_TEMP/apc-latest-release.json"
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            >"$published_json"
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/latest" \
-            >"$latest_json"
+          gh api -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >"$published_json"
+          gh api -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/latest" >"$latest_json"
           ./script/validate_github_release_api.py \
             --release-json "$published_json" \
             --latest-json "$latest_json" \
             --repository "$GITHUB_REPOSITORY" \
             --version "$RELEASE_VERSION" \
-            --arm64-zip-sha256 "${{ needs.build.outputs.arm64_zip_sha256 }}" \
-            --x86-64-zip-sha256 "${{ needs.build.outputs.x86_64_zip_sha256 }}" \
-            --checksum-sha256 "${{ needs.build.outputs.checksum_sha256 }}"
+            --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
+            --x86-64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
+            --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"
           release_created=0

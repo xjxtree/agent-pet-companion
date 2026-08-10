@@ -61,6 +61,22 @@ expected=(
   "$CHECKSUM_SHA256"
 )
 
+actual_names=()
+while IFS= read -r -d '' path; do
+  actual_names+=("$(basename "$path")")
+done < <(find "$DIRECTORY" -mindepth 1 -maxdepth 1 -print0)
+if ((${#actual_names[@]} != ${#names[@]})); then
+  echo 'downloaded release candidate must contain exactly three files' >&2
+  exit 1
+fi
+for name in "${names[@]}"; do
+  if [[ ! " ${actual_names[*]} " == *" $name "* ]]; then
+    printf 'downloaded release candidate contains an unexpected inventory; missing %s\n' \
+      "$name" >&2
+    exit 1
+  fi
+done
+
 for index in "${!names[@]}"; do
   path="$DIRECTORY/${names[$index]}"
   [[ -f "$path" && ! -L "$path" ]] || {

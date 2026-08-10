@@ -11,12 +11,13 @@ UNIVERSAL=0
 TARGET_ARCH=""
 OUTPUT_PATH=""
 INTERACTION_ATTESTATION_SOURCE=""
+VALIDATION_PROFILE="full"
 SOURCE_VERSION="$(
   awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/petcore/Cargo.toml"
 )"
 RELEASE_VERSION="${APC_RELEASE_VERSION:-$SOURCE_VERSION}"
 RELEASE_BUILD="${APC_RELEASE_BUILD:-1}"
-BUILD_ID="${APC_BUILD_ID:-${RELEASE_VERSION}.${RELEASE_BUILD}.$(date -u +%Y%m%d%H%M%S).$$}"
+BUILD_ID="${APC_BUILD_ID:-}"
 RELEASE_CHANNEL="${APC_RELEASE_CHANNEL:-develop}"
 SIGN_DEVELOPMENT=1
 CREATE_DEVELOP_ARCHIVE=0
@@ -25,7 +26,7 @@ CARGO_RUSTC=""
 
 usage() {
   cat <<'EOF'
-usage: build_app_bundle.sh [--configuration debug|release] [--arch arm64|x86_64] [--universal] [--archive] [--unsigned] [--output PATH] [--interaction-attestation ABSOLUTE_PATH]
+usage: build_app_bundle.sh [--configuration debug|release] [--arch arm64|x86_64] [--universal] [--archive] [--unsigned] [--output PATH] [--interaction-attestation ABSOLUTE_PATH] [--validation static|full]
 
 Builds an ad-hoc signed development app bundle by default. --archive also
 creates and verifies a `-develop.zip` for informal handoff. --unsigned disables
@@ -74,6 +75,11 @@ while (($# > 0)); do
       INTERACTION_ATTESTATION_SOURCE="$2"
       shift 2
       ;;
+    --validation)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      VALIDATION_PROFILE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -117,6 +123,10 @@ case "$TARGET_ARCH" in
     exit 2
     ;;
 esac
+case "$VALIDATION_PROFILE" in
+  static|full) ;;
+  *) echo '--validation must be static or full' >&2; exit 2 ;;
+esac
 if [[ "$UNIVERSAL" == "1" && "$CONFIGURATION" != "release" ]]; then
   echo '--universal requires --configuration release' >&2
   exit 2
@@ -129,14 +139,28 @@ if [[ ! "$RELEASE_BUILD" =~ ^[1-9][0-9]*$ ]]; then
   echo 'APC_RELEASE_BUILD must be a positive integer' >&2
   exit 2
 fi
-if [[ ! "$BUILD_ID" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]; then
-  echo 'APC_BUILD_ID must be 1-128 ASCII letters, digits, dots, underscores, pluses, or hyphens' >&2
-  exit 2
-fi
 case "$RELEASE_CHANNEL" in
   develop|release) ;;
   *) echo 'APC_RELEASE_CHANNEL must be develop or release' >&2; exit 2 ;;
 esac
+if [[ -z "$BUILD_ID" ]]; then
+  if [[ "$RELEASE_CHANNEL" == "release" ]]; then
+    echo 'release bundle builds require an explicit APC_BUILD_ID' >&2
+    exit 2
+  fi
+  DEVELOPMENT_BUILD_VARIANT="$CONFIGURATION|${TARGET_ARCH:-$(uname -m)}|universal=$UNIVERSAL|signed=$SIGN_DEVELOPMENT"
+  DEVELOPMENT_SOURCE_FINGERPRINT="$(
+    "$ROOT_DIR/script/validation_fingerprint.py" \
+      --root "$ROOT_DIR" \
+      --scope runtime \
+      --extra "$DEVELOPMENT_BUILD_VARIANT"
+  )"
+  BUILD_ID="${RELEASE_VERSION}.${RELEASE_BUILD}.develop.${DEVELOPMENT_SOURCE_FINGERPRINT:0:16}"
+fi
+if [[ ! "$BUILD_ID" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]; then
+  echo 'APC_BUILD_ID must be 1-128 ASCII letters, digits, dots, underscores, pluses, or hyphens' >&2
+  exit 2
+fi
 
 SWIFT_DIR="$ROOT_DIR/apps/macos"
 APP_ICON_SOURCE="$ROOT_DIR/logo/macos/AgentPetCompanionTransparent.icns"
@@ -444,9 +468,16 @@ if [[ -n "$INTERACTION_ATTESTATION_SOURCE" ]]; then
     "$INTERACTION_ATTESTATION" \
     --expected-build-id "$BUILD_ID"
 else
-  "$ROOT_DIR/script/validate_overlay_interaction.sh" \
-    --attestation-out "$INTERACTION_ATTESTATION" \
-    --build-id "$BUILD_ID"
+  INTERACTION_PREPARE_ARGS=(--output "$INTERACTION_ATTESTATION")
+  if [[ "$RELEASE_CHANNEL" == "develop" ]]; then
+    INTERACTION_PREPARE_ARGS+=(--resume)
+  fi
+  APC_BUILD_ID="$BUILD_ID" \
+  APC_APP_VERSION="$RELEASE_VERSION" \
+  APC_APP_BUILD="$RELEASE_BUILD" \
+  APC_RELEASE_CHANNEL="$RELEASE_CHANNEL" \
+    "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
+      "${INTERACTION_PREPARE_ARGS[@]}"
 fi
 
 if [[ "$UNIVERSAL" == "1" ]]; then
@@ -539,9 +570,16 @@ if [[ "$SIGN_DEVELOPMENT" == "1" ]]; then
   codesign --force --sign - --timestamp=none "$STAGED_APP"
 fi
 
-VALIDATE_ARGS=(--development)
+if [[ "$RELEASE_CHANNEL" == "release" ]]; then
+  VALIDATE_ARGS=(--github-release)
+else
+  VALIDATE_ARGS=(--development)
+fi
 if [[ -n "$TARGET_ARCH" ]]; then
   VALIDATE_ARGS+=(--architecture "$TARGET_ARCH")
+fi
+if [[ "$VALIDATION_PROFILE" == "static" ]]; then
+  VALIDATE_ARGS+=(--static-only)
 fi
 "$ROOT_DIR/script/validate_app_bundle.sh" "${VALIDATE_ARGS[@]}" "$STAGED_APP" >/dev/null
 

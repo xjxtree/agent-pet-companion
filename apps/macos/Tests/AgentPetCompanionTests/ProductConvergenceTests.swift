@@ -201,17 +201,22 @@ struct ProductConvergenceTests {
             attention,
             locale: "zh-Hans"
         )
+        // A managed path conflict disables Set Up or Repair for that Agent, so
+        // the notice must not send the user to press it. It names the blocked
+        // path's location and the action that can actually clear the state.
         #expect(chinese.title == "Codex 连接需要处理")
-        #expect(chinese.detail.contains("不属于本 App"))
-        #expect(chinese.detail.contains("全部检查"))
+        #expect(chinese.detail.contains("无法安全写入的路径"))
+        #expect(chinese.detail.contains("阻断检查项"))
+        #expect(chinese.detail.contains("重新检查"))
 
         let english = AppUpdateConvergenceAttentionPresentation.resolve(
             attention,
             locale: "en"
         )
         #expect(english.title == "Action Required for Codex")
-        #expect(english.detail.contains("left them untouched"))
-        #expect(english.detail.contains("Check All"))
+        #expect(english.detail.contains("cannot safely write"))
+        #expect(english.detail.contains("blocking check"))
+        #expect(english.detail.contains("Check Again"))
     }
 
     @Test

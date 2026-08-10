@@ -4,13 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH_SELECTION="all"
 GITHUB_RELEASE=0
+SOURCE_GATE_PROVEN=0
 
 usage() {
   cat <<'EOF'
-usage: build_release.sh --github-release [--arch all]
+usage: build_release.sh --github-release [--arch all|arm64|x86_64] [--source-gate-proven]
 
-Builds the two official thin macOS archives for one clean, tagged GitHub
-Release candidate:
+Builds one or both official thin macOS archives for one clean, tagged GitHub
+Release candidate. --arch all also creates and validates the shared checksum:
 
   AgentPetCompanion-X.Y.Z-macos-arm64.zip
   AgentPetCompanion-X.Y.Z-macos-x86_64.zip
@@ -40,6 +41,10 @@ while (($# > 0)); do
       ARCH_SELECTION="${1#--arch=}"
       shift
       ;;
+    --source-gate-proven)
+      SOURCE_GATE_PROVEN=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -56,11 +61,11 @@ if [[ "$GITHUB_RELEASE" != "1" ]]; then
   echo 'official release builds require the explicit --github-release mode' >&2
   exit 2
 fi
-if [[ "$ARCH_SELECTION" != "all" ]]; then
-  echo 'GitHub Release distribution requires --arch all' >&2
-  exit 2
-fi
-ARCHITECTURES=(arm64 x86_64)
+case "$ARCH_SELECTION" in
+  all) ARCHITECTURES=(arm64 x86_64) ;;
+  arm64|x86_64) ARCHITECTURES=("$ARCH_SELECTION") ;;
+  *) echo '--arch must be all, arm64, or x86_64' >&2; exit 2 ;;
+esac
 
 [[ "$(uname -s)" == "Darwin" ]] || {
   echo 'macOS release builds require Darwin' >&2
@@ -73,7 +78,13 @@ for dependency in cargo codesign ditto lipo python3 shasum swift; do
   }
 done
 
-"$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
+if [[ "$SOURCE_GATE_PROVEN" == "1" && -z "${APC_INTERACTION_ATTESTATION_PATH:-}" ]]; then
+  echo '--source-gate-proven requires APC_INTERACTION_ATTESTATION_PATH from the source gate' >&2
+  exit 2
+fi
+if [[ "$SOURCE_GATE_PROVEN" == "0" ]]; then
+  "$ROOT_DIR/script/validate_build_scripts_safety.sh" --static-only
+fi
 
 SOURCE_VERSION="$(
   awk -F'"' '/^version = / {print $2; exit}' "$ROOT_DIR/crates/petcore/Cargo.toml"
@@ -160,6 +171,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+INTERACTION_ATTESTATION="${APC_INTERACTION_ATTESTATION_PATH:-}"
+if [[ -n "$INTERACTION_ATTESTATION" ]]; then
+  [[ "$INTERACTION_ATTESTATION" == /* ]] || {
+    echo 'APC_INTERACTION_ATTESTATION_PATH must be absolute' >&2
+    exit 2
+  }
+  "$ROOT_DIR/script/validate_interaction_attestation.py" \
+    "$INTERACTION_ATTESTATION" \
+    --expected-build-id "$BUILD_ID"
+else
+  INTERACTION_ATTESTATION="$TMP_DIR/interaction-attestation.json"
+  APC_BUILD_ID="$BUILD_ID" \
+    "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
+      --output "$INTERACTION_ATTESTATION" \
+      --swift-scope all
+fi
+
 build_architecture() {
   local architecture="$1"
   local work_dir="$TMP_DIR/work/$architecture"
@@ -176,12 +204,9 @@ build_architecture() {
     "$ROOT_DIR/script/build_app_bundle.sh" \
       --configuration release \
       --arch "$architecture" \
+      --interaction-attestation "$INTERACTION_ATTESTATION" \
+      --validation static \
       --output "$app_bundle"
-
-  "$ROOT_DIR/script/validate_app_bundle.sh" \
-    --github-release \
-    --architecture "$architecture" \
-    "$app_bundle"
 
   ditto -c -k --norsrc --keepParent "$app_bundle" "$staged_zip"
   "$ROOT_DIR/script/validate_release_zip.py" --archive "$staged_zip"
@@ -193,11 +218,6 @@ build_architecture() {
     --version "$RELEASE_VERSION" \
     --build "$RELEASE_BUILD" \
     --commit "$RELEASE_COMMIT"
-  "$ROOT_DIR/script/validate_app_bundle.sh" \
-    --github-release \
-    --architecture "$architecture" \
-    "$verify_dir/AgentPetCompanion.app"
-
   ARTIFACT_NAMES+=("$artifact_name")
 }
 
@@ -205,21 +225,39 @@ for architecture in "${ARCHITECTURES[@]}"; do
   build_architecture "$architecture"
 done
 
-(
-  cd "$STAGED_ARTIFACT_DIR"
-  shasum -a 256 "${ARTIFACT_NAMES[@]}"
-) >"$STAGED_ARTIFACT_DIR/$CHECKSUM_NAME"
+if [[ "$ARCH_SELECTION" == "all" ]]; then
+  (
+    cd "$STAGED_ARTIFACT_DIR"
+    shasum -a 256 "${ARTIFACT_NAMES[@]}"
+  ) >"$STAGED_ARTIFACT_DIR/$CHECKSUM_NAME"
+  "$ROOT_DIR/script/validate_release_artifact_metadata.py" \
+    --directory "$STAGED_ARTIFACT_DIR" \
+    --version "$RELEASE_VERSION"
 
-"$ROOT_DIR/script/validate_github_release_artifacts.sh" \
-  --directory "$STAGED_ARTIFACT_DIR" \
-  --version "$RELEASE_VERSION" \
-  --build "$RELEASE_BUILD" \
-  --commit "$RELEASE_COMMIT"
+  host_arch="$(uname -m)"
+  case "$host_arch" in
+    aarch64) host_arch="arm64" ;;
+    amd64) host_arch="x86_64" ;;
+  esac
+  if [[ "$host_arch" == "arm64" || "$host_arch" == "x86_64" ]]; then
+    "$ROOT_DIR/script/validate_github_release_artifacts.sh" \
+      --directory "$STAGED_ARTIFACT_DIR" \
+      --version "$RELEASE_VERSION" \
+      --build "$RELEASE_BUILD" \
+      --commit "$RELEASE_COMMIT" \
+      --require-native-architecture "$host_arch"
+  fi
+fi
 
-# Publish into dist only after both architectures and the shared checksum pass.
-# A failed build cannot leave a mixed official artifact set.
+# Publish only validated component files. Complete local mode waits for both
+# architectures and the shared checksum; matrix mode uploads one component to
+# the later exact-inventory assembly job.
 mkdir -p "$DIST_DIR"
-for artifact_name in "${ARTIFACT_NAMES[@]}" "$CHECKSUM_NAME"; do
+PUBLISH_NAMES=("${ARTIFACT_NAMES[@]}")
+if [[ "$ARCH_SELECTION" == "all" ]]; then
+  PUBLISH_NAMES+=("$CHECKSUM_NAME")
+fi
+for artifact_name in "${PUBLISH_NAMES[@]}"; do
   rm -f "$DIST_DIR/$artifact_name"
   mv "$STAGED_ARTIFACT_DIR/$artifact_name" "$DIST_DIR/$artifact_name"
 done
@@ -229,5 +267,9 @@ printf 'GitHub Release archives ready for tag %s, commit %s (build %s):\n' \
 for artifact_name in "${ARTIFACT_NAMES[@]}"; do
   printf '  dist/%s\n' "$artifact_name"
 done
-printf '  dist/%s\n' "$CHECKSUM_NAME"
+if [[ "$ARCH_SELECTION" == "all" ]]; then
+  printf '  dist/%s\n' "$CHECKSUM_NAME"
+else
+  echo 'This is one validated architecture component; assemble both ZIPs and the shared checksum before publication.'
+fi
 echo 'Distribution policy: ad-hoc signed and not notarized; users may need to explicitly allow the first launch.'

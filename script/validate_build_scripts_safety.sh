@@ -3,17 +3,32 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATIC_ONLY=0
+SKIP_SOURCE_SYNTAX=0
 
-if [[ "${1:-}" == "--static-only" ]]; then
-  STATIC_ONLY=1
-  shift
-fi
-if (($# > 0)); then
-  echo 'usage: validate_build_scripts_safety.sh [--static-only]' >&2
-  exit 2
-fi
+while (($# > 0)); do
+  case "$1" in
+    --static-only)
+      STATIC_ONLY=1
+      shift
+      ;;
+    --skip-source-syntax)
+      SKIP_SOURCE_SYNTAX=1
+      shift
+      ;;
+    -h|--help)
+      echo 'usage: validate_build_scripts_safety.sh [--static-only] [--skip-source-syntax]'
+      exit 0
+      ;;
+    *)
+      echo 'usage: validate_build_scripts_safety.sh [--static-only] [--skip-source-syntax]' >&2
+      exit 2
+      ;;
+  esac
+done
 
-"$ROOT_DIR/script/validate_source_syntax.sh"
+if [[ "$SKIP_SOURCE_SYNTAX" == "0" ]]; then
+  "$ROOT_DIR/script/validate_source_syntax.sh"
+fi
 
 RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/build_release.sh"
@@ -31,6 +46,7 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
 )
 WORKFLOW="$ROOT_DIR/.github/workflows/release.yml"
+CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
 TEST_ALL="$ROOT_DIR/script/test_all.sh"
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 PRE_PUSH_VALIDATOR="$ROOT_DIR/script/validate_pre_push.sh"
@@ -67,6 +83,19 @@ if forbidden_workflow="$(rg -n \
   exit 1
 fi
 
+# Local pre-push and ordinary CI share one path classifier. CI may assemble a
+# full development bundle only when that classifier marks runtime inputs.
+rg -Fq './script/validation_scope.py' "$CI_WORKFLOW"
+rg -Fq './script/validate_pre_push.sh' "$CI_WORKFLOW"
+rg -Fq -- '--ci' "$CI_WORKFLOW"
+rg -Fq "if: steps.validation_scope.outputs.bundle == '1'" "$CI_WORKFLOW"
+rg -Fq -- '--validation full' "$CI_WORKFLOW"
+if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \
+  "$CI_WORKFLOW"; then
+  echo 'ordinary CI must not auto-enable live UI or Computer Use' >&2
+  exit 1
+fi
+
 if legacy_mode="$(rg -n -- '--(preview|public|public-signed)([=[:space:]]|$)' \
   "$ROOT_DIR/script/build_release.sh" "$ROOT_DIR/script/validate_app_bundle.sh" || true)" \
   && [[ -n "$legacy_mode" ]]; then
@@ -87,7 +116,9 @@ for interaction_suite in \
   OverlayInteractionTelemetryTests; do
   rg -Fq "$interaction_suite" "$OVERLAY_INTERACTION_VALIDATOR"
 done
-rg -Fq 'swift test' "$OVERLAY_INTERACTION_VALIDATOR"
+rg -Fq '"$ROOT_DIR/script/validate_swift_tests.sh" --scope "$SWIFT_SCOPE"' \
+  "$OVERLAY_INTERACTION_VALIDATOR"
+rg -Fq 'swift "${ARGS[@]}"' "$ROOT_DIR/script/validate_swift_tests.sh"
 rg -Fq -- '--attestation-out' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'interaction-contract-files.txt' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'petpack verify-production-interaction' \
@@ -114,7 +145,7 @@ rust_tests = source.index('"rust-tests"')
 if localization >= rust_tests:
     raise SystemExit("localization parity must run before expensive Rust tests")
 PY
-rg -Fq 'Run host-safe source, Phase A/T-B4 interaction, and integration gates' \
+rg -Fq 'Run source, complete Swift interaction, integration, and stress gates' \
   "$WORKFLOW"
 
 # Local and GitHub Release Apps are ad-hoc signed. The official path is
@@ -125,7 +156,7 @@ rg -q -- '--github-release' "$ROOT_DIR/script/build_release.sh"
 rg -Fq 'ARCHITECTURES=(arm64 x86_64)' "$ROOT_DIR/script/build_release.sh"
 rg -q 'official release builds require the explicit --github-release mode' \
   "$ROOT_DIR/script/build_release.sh"
-rg -q 'GitHub Release distribution requires --arch all' \
+rg -Fq -- '--arch must be all, arm64, or x86_64' \
   "$ROOT_DIR/script/build_release.sh"
 rg -q 'release builds require a clean worktree' "$ROOT_DIR/script/build_release.sh"
 rg -q 'CHANGELOG.md must contain a frozen' "$ROOT_DIR/script/build_release.sh"
@@ -179,7 +210,7 @@ rg -q -- '--commit must be a full lowercase Git commit' \
   "$ROOT_DIR/script/validate_release_identity.py"
 rg -q -- '--commit must be a full lowercase Git commit' \
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
-rg -q 'for architecture in arm64 x86_64' \
+rg -Fq 'for architecture in "${ARCHITECTURES[@]}"' \
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
 rg -q 'validate_release_zip.py' \
   "$ROOT_DIR/script/validate_github_release_artifacts.sh"
@@ -196,6 +227,8 @@ for digest_option in \
   --checksum-sha256; do
   rg -q -- "$digest_option" "$ROOT_DIR/script/verify_release_candidate_digests.sh"
 done
+rg -q 'must contain exactly three files' \
+  "$ROOT_DIR/script/verify_release_candidate_digests.sh"
 if rg -q -- '--(arm64|x86_64)-evidence-sha256' \
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"; then
   echo 'trusted digest contract must not retain notarization evidence files' >&2
@@ -209,22 +242,24 @@ if rg -q 'self-hosted' "$WORKFLOW"; then
   echo 'release workflow must use fresh GitHub-hosted native macOS runners' >&2
   exit 1
 fi
-rg -Fq 'run: ./script/build_release.sh --github-release --arch all' "$WORKFLOW"
+rg -Fq 'architecture: [arm64, x86_64]' "$WORKFLOW"
+rg -Fq 'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"' \
+  "$WORKFLOW"
 rg -q 'validate_github_release_artifacts.sh' "$WORKFLOW"
 rg -q 'gh release download' "$WORKFLOW"
 rg -q 'persist-credentials: false' "$WORKFLOW"
 rg -q 'git merge-base --is-ancestor "\$commit" refs/remotes/origin/main' \
   "$WORKFLOW"
-rg -q 'needs: \[build, validate_arm64, validate_x86_64\]' "$WORKFLOW"
+rg -q 'needs: \[prepare, assemble, validate_arm64, validate_x86_64\]' "$WORKFLOW"
 rg -q 'runs-on: macos-15$' "$WORKFLOW"
 rg -q 'runs-on: macos-15-intel$' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
 rg -q 'validate_github_release_api.py' "$WORKFLOW"
 rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
-rg -Fq 'APC_PREVIOUS_RELEASE_TAG: ${{ steps.release_identity.outputs.previous_tag }}' \
+rg -Fq 'APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}' \
   "$WORKFLOW"
-rg -q 'codex-studio-skill-history.json' \
-  "$ROOT_DIR/script/validate_codex_plugin_version.py"
+rg -q 'VERSIONED_SKILLS' "$ROOT_DIR/script/validate_codex_plugin_version.py"
+rg -q 'HOOKS_VERSION_PLACEHOLDER' "$ROOT_DIR/script/validate_codex_plugin_version.py"
 rg -Fq 'gh release edit "$RELEASE_TAG" --draft=false --latest' "$WORKFLOW"
 rg -Fq '"repos/$GITHUB_REPOSITORY/releases/latest"' "$WORKFLOW"
 if rg -q 'published_immutable|value[.]get[(]"immutable"|immutable-releases' "$WORKFLOW"; then
@@ -252,32 +287,39 @@ import re
 import sys
 
 source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-build_end = source.index("\n  validate_arm64:")
-arm_end = source.index("\n  validate_x86_64:")
-x86_end = source.index("\n  publish:")
-build = source[:build_end]
-arm = source[build_end:arm_end]
-x86 = source[arm_end:x86_end]
-publish = source[x86_end:]
+build_start = source.index("\n  build_archives:")
+assemble_start = source.index("\n  assemble:")
+arm_start = source.index("\n  validate_arm64:")
+x86_start = source.index("\n  validate_x86_64:")
+publish_start = source.index("\n  publish:")
+prepare = source[:build_start]
+build = source[build_start:assemble_start]
+assemble = source[assemble_start:arm_start]
+arm = source[arm_start:x86_start]
+x86 = source[x86_start:publish_start]
+publish = source[publish_start:]
 
 if source.count("contents: write") != 1 or "contents: write" not in publish:
     raise SystemExit("only the publish job may have contents: write")
-if any("contents: write" in job for job in (build, arm, x86)):
+if any("contents: write" in job for job in (prepare, build, assemble, arm, x86)):
     raise SystemExit("build and validation jobs must remain read-only")
-if source.count("ref: ${{ needs.build.outputs.commit }}") != 3:
+if source.count("ref: ${{ needs.prepare.outputs.commit }}") < 5:
     raise SystemExit("every downstream job must check out the proven commit")
 if source.count("./script/verify_remote_release_tag.sh") < 3:
     raise SystemExit("remote tag identity must be rechecked before and after publication")
 
-source_gate = build.index("./script/test_all.sh")
+source_gate = prepare.index("./script/test_all.sh --source-only --include-stress")
+proof_upload = prepare.index("Upload source-bound interaction proof", source_gate)
 official_build = build.index(
-    "run: ./script/build_release.sh --github-release --arch all"
+    'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"'
 )
-local_revalidation = build.index("Revalidate final local artifact set")
-digest_emission = build.index("Emit trusted digest for every candidate file")
-upload = build.index("Upload release candidate")
-if not source_gate < official_build < local_revalidation < digest_emission < upload:
-    raise SystemExit("release build, revalidation, digest, and upload order is unsafe")
+metadata = assemble.index("validate_release_artifact_metadata.py")
+digest_emission = assemble.index("Emit trusted digest for every candidate file", metadata)
+upload = assemble.index("Upload exact release candidate", digest_emission)
+if not source_gate < proof_upload or not metadata < digest_emission < upload:
+    raise SystemExit("release source proof, assembly, digest, and upload order is unsafe")
+if "architecture: [arm64, x86_64]" not in build or official_build < 0:
+    raise SystemExit("official architectures must build as a parallel matrix")
 
 if 'run: test "$(uname -m)" = "arm64"' not in arm:
     raise SystemExit("arm64 validation job does not prove its native architecture")
@@ -288,17 +330,20 @@ download = publish.index('gh release download "$RELEASE_TAG"')
 digest_recheck = publish.index(
     "./script/verify_release_candidate_digests.sh", download
 )
-package_recheck = publish.index(
-    "./script/validate_github_release_artifacts.sh", digest_recheck
-)
 tag_recheck = publish.index(
-    "./script/verify_remote_release_tag.sh", package_recheck
+    "./script/verify_remote_release_tag.sh", digest_recheck
 )
 go_live = publish.index(
     'gh release edit "$RELEASE_TAG" --draft=false', tag_recheck
 )
-if not download < digest_recheck < package_recheck < tag_recheck < go_live:
-    raise SystemExit("downloaded GitHub Release candidate is not revalidated before publish")
+if not download < digest_recheck < tag_recheck < go_live:
+    raise SystemExit("downloaded GitHub Release bytes are not verified before publish")
+if "validate_github_release_artifacts.sh" in publish:
+    raise SystemExit("publish must not repeat native packaged execution")
+if arm.count("validate_github_release_artifacts.sh") != 1:
+    raise SystemExit("arm64 job must run one native packaged validation")
+if x86.count("validate_github_release_artifacts.sh") != 1:
+    raise SystemExit("x86_64 job must run one native packaged validation")
 
 uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
 if not uses or any(
@@ -324,6 +369,7 @@ PY
 "$ROOT_DIR/script/validate_localizations.py" --help >/dev/null
 "$ROOT_DIR/script/validation_fingerprint.py" --help >/dev/null
 "$ROOT_DIR/script/validate_interaction_attestation.py" --help >/dev/null
+"$ROOT_DIR/script/validation_scope.py" --help >/dev/null
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"

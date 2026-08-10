@@ -192,6 +192,23 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func detailPagesReceiveAFiniteViewportInsteadOfTheirIdealContentHeight() throws {
+        let contentSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent(
+                "Views/ContentView.swift"
+            ),
+            encoding: .utf8
+        )
+
+        #expect(contentSource.contains("ControlCenterDetailViewport {"))
+        #expect(contentSource.contains("width: geometry.size.width"))
+        #expect(contentSource.contains("height: geometry.size.height"))
+        #expect(contentSource.contains("ControlCenterDetailViewport {\n                        VStack(spacing: 0)"))
+        #expect(contentSource.contains("mainContent\n                                .frame("))
+        #expect(contentSource.contains(".layoutPriority(1)"))
+    }
+
+    @Test
     func petPreviewIsGlobalAndAboveTheSidebarIdentityRow() throws {
         let sidebarSource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(

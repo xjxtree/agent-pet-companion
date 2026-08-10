@@ -13,7 +13,9 @@ final class MakerNotificationCoordinator: NSObject, UNUserNotificationCenterDele
         self.route = route
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        Task { @MainActor in
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
+        }
     }
 
     func notify(jobID: String, state: GenerationSessionState, title: String, body: String) {

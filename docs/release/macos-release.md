@@ -22,7 +22,7 @@ Choose semantic version `X.Y.Z` and a positive build number. The exact release c
 
 The runtime build ID is `X.Y.Z.BUILD.FULL_40_CHARACTER_COMMIT`. App, PetCore, CLI, manifest, and both archives must agree. One version maps to one tag, one changelog section, and one GitHub Release. / 版本、tag、CHANGELOG、完整 commit、build ID 与两个架构产物必须一一对应。
 
-The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. A Studio change also requires the previous shipped Skill digest in the append-only retired-Skill history. If an App-managed pre-release Skill reached local installations without a Git release baseline, its recovery digest must be pinned explicitly in the release validator; arbitrary additional history digests remain invalid.
+The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. Every bundled Skill front matter must declare that same version, while the hooks template retains the runtime release-version placeholder. / Codex 插件独立版本必须递增；所有内置 Skill 的 front matter 必须声明同一版本，hooks 模板保留运行时版本占位符。
 
 The previous release baseline is the current latest stable GitHub Release, not merely the nearest semantic-version Git tag. A protected candidate tag whose workflow fails before publication remains an immutable audit marker, but it is not a shipped upgrade or retired-Skill ownership baseline. The next candidate uses a new semantic version and continues from the actual latest stable Release. / 上一版本基线取 GitHub 当前 latest stable Release，而不是距离最近的语义版本 Git tag。若受保护的候选标签在公开发布前失败，该标签会作为不可变审计标记保留，但不会成为已发布升级或退役 Skill 所有权基线；下一候选使用新的语义版本，并继续以实际 latest stable Release 为基线。
 
@@ -42,12 +42,12 @@ Run the host-safe source gate on the exact candidate commit:
 APC_VALIDATE_HOST_UI=0 \
 APC_VALIDATE_REAL_AGENT_CONNECTORS=0 \
 APC_VALIDATE_REAL_APP_SERVER=0 \
-./script/test_all.sh
+./script/test_all.sh --source-only --include-stress
 ```
 
 Then run the environment-dependent connector, App Server, visible-UI, renderer, and profiling gates required by [Validation profiles](../development/validation.md). The executing Agent selects a suitable live-App inspection method. A gate not run is skipped, never passed. / 随后按发布范围运行环境门禁；可见 App 的验收方法由执行 Agent 选择，未运行的门禁只能标记为 skipped。
 
-The overlay suites generate a build-bound interaction attestation. Bundle validation requires the final App to contain and successfully consume the attestation for its own build ID.
+The complete Swift run generates a build-bound interaction attestation in the same invocation. Bundle validation requires the final App to contain and successfully consume the attestation for its own build ID. GitHub automation persists that proof once and supplies it to both architecture builds. / 完整 Swift 测试在同一次调用中生成交互证明；自动化只生成一次，并复用于两个架构构建。
 
 ## Development artifacts / 开发产物
 
@@ -70,7 +70,7 @@ export APC_RELEASE_BUILD='1'
 
 Normally the previous baseline is inferred from Git history for local builds. If an intervening protected candidate tag never became a GitHub Release, set `APC_PREVIOUS_RELEASE_TAG` to the actual latest stable Release tag; GitHub automation resolves and supplies this value from `/releases/latest` automatically. / 本地构建通常从 Git 历史推断上一基线；若中间存在从未成为 GitHub Release 的受保护失败候选标签，请将 `APC_PREVIOUS_RELEASE_TAG` 设为实际 latest stable Release 标签。GitHub 自动化会从 `/releases/latest` 解析并传入该值。
 
-Official mode accepts only `--arch all`, applies ad-hoc signatures, and produces exactly:
+Local complete mode uses `--arch all`, applies ad-hoc signatures, performs native packaged acceptance for the host architecture, and produces exactly:
 
 ```text
 dist/AgentPetCompanion-X.Y.Z-macos-arm64.zip
@@ -79,6 +79,8 @@ dist/AgentPetCompanion-X.Y.Z-SHA256SUMS.txt
 ```
 
 `SHA256SUMS.txt` contains exactly the two ZIP entries. No signature or notarization sidecar belongs in the asset set.
+
+The GitHub workflow instead runs `--arch arm64` and `--arch x86_64` in parallel. It adds the internal `--source-gate-proven` handoff only after the required source job succeeded and supplied its attestation, avoiding two repeated script-contract passes. Each command produces one source-proven ZIP component; neither component is publishable alone. The assemble job downloads both, creates the shared checksum, rejects any extra file, and emits the three trusted digests. / GitHub workflow 在源码任务成功并提供证明后，使用内部 `--source-gate-proven` 交接并行构建两个架构，避免重复两次脚本契约门禁；单件不可单独发布。
 
 Validate a clean local or downloaded three-file directory with:
 
@@ -97,12 +99,12 @@ Validation rejects missing/extra assets, unsafe or malformed ZIPs, checksum/iden
 `.github/workflows/release.yml` runs from a protected `vX.Y.Z` tag or explicit dispatch of an existing tag. In order it:
 
 1. verifies tag, source version, changelog, full commit, and Codex plugin/Skill version discipline;
-2. runs the host-safe source gate and builds the exact three assets;
-3. records trusted digests before artifact upload;
-4. validates the matching archive on native arm64 and x86_64 runners;
-5. revalidates all three assets in a clean publish job and rechecks the protected tag;
-6. creates a non-prerelease draft with bilingual installation and first-open guidance;
-7. downloads and revalidates the draft assets;
+2. runs the host-safe source, complete Swift interaction, integration, and explicit stress gates once, then uploads the source-bound interaction proof;
+3. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel from the proven commit and proof;
+4. assembles the exact three-file candidate once and records trusted digests;
+5. validates only the matching ZIP on native arm64 and x86_64 runners, one full packaged acceptance per architecture;
+6. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
+7. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
 8. publishes it as latest stable only after all checks pass; and
 9. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
 

@@ -1038,15 +1038,23 @@ struct PetFramePipelineTests {
 
     @MainActor
     @Test
-    func testPointerTrackingPreDispatchesMouseDownWithoutEagerPolling() {
+    func testPointerTrackingPollsOnlyWhileActiveWithoutGlobalInputAccess() {
         let monitor = OverlayPointerEventMonitor()
 
         #expect(!monitor.usesPolling)
+        #expect(!monitor.isRunning)
+        #expect(OverlayPointerEventMonitor.pollingInterval == 1.0 / 120.0)
         #expect(OverlayPointerEventMonitor.eventMask.contains(.mouseMoved))
         #expect(OverlayPointerEventMonitor.eventMask.contains(.leftMouseDown))
         #expect(OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp))
-        #expect(OverlayPointerEventMonitor.preDispatchEventTypes.contains(.leftMouseDown))
         #expect(!OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged))
+
+        monitor.start {}
+        #expect(monitor.usesPolling)
+        #expect(monitor.isRunning)
+
+        monitor.stop()
+        #expect(!monitor.usesPolling)
         #expect(!monitor.isRunning)
     }
 

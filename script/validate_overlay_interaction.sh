@@ -2,13 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MACOS_DIR="$ROOT_DIR/apps/macos"
 ATTESTATION_OUT=""
 BUILD_ID=""
 PROOF_IN=""
+SWIFT_SCOPE="interaction"
 
 usage() {
-  echo 'usage: validate_overlay_interaction.sh [--attestation-out ABSOLUTE_PATH --build-id BUILD_ID] [--proof-in ABSOLUTE_PATH]'
+  echo 'usage: validate_overlay_interaction.sh [--attestation-out ABSOLUTE_PATH --build-id BUILD_ID] [--proof-in ABSOLUTE_PATH] [--swift-scope interaction|all]'
 }
 
 while (($# > 0)); do
@@ -28,6 +28,11 @@ while (($# > 0)); do
       PROOF_IN="$2"
       shift 2
       ;;
+    --swift-scope)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      SWIFT_SCOPE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -38,6 +43,11 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+case "$SWIFT_SCOPE" in
+  interaction|all) ;;
+  *) usage >&2; exit 2 ;;
+esac
 
 if [[ -n "$ATTESTATION_OUT" || -n "$BUILD_ID" ]]; then
   [[ "$ATTESTATION_OUT" == /* ]] || {
@@ -66,18 +76,7 @@ fi
 # separate live-UI step. This script locks the same interaction invariants with
 # deterministic tests that are safe to run unattended.
 if [[ -z "$PROOF_IN" ]]; then
-  for suite in \
-    OverlayPlacementAuthorityTests \
-    AppStoreOverlaySnapshotTests \
-    OverlayGeometryTests \
-    OverlayDisplayWidthTests \
-    OverlayInteractionTelemetryTests; do
-    swift test \
-      --package-path "$MACOS_DIR" \
-      --filter "$suite" \
-      -Xswiftc -strict-concurrency=complete \
-      -Xswiftc -warnings-as-errors
-  done
+  "$ROOT_DIR/script/validate_swift_tests.sh" --scope "$SWIFT_SCOPE"
 fi
 
 if [[ -n "$ATTESTATION_OUT" ]]; then

@@ -46,7 +46,7 @@ public enum AgentPetCompanionUIValidationContract {
         passed.append("renderer.actor-lru-eager-ready-handoff")
 
         try await validatePointerMonitor()
-        passed.append("pointer.event-driven-monitor")
+        passed.append("pointer.permission-free-monitor")
 
         return passed
     }
@@ -677,23 +677,38 @@ public enum AgentPetCompanionUIValidationContract {
     private static func validatePointerMonitor() async throws {
         let result = await MainActor.run {
             let monitor = OverlayPointerEventMonitor()
+            let idleUsesPolling = monitor.usesPolling
+            let idleIsRunning = monitor.isRunning
+            monitor.start {}
+            let activeUsesPolling = monitor.usesPolling
+            let activeIsRunning = monitor.isRunning
+            monitor.stop()
             return (
-                usesPolling: monitor.usesPolling,
-                isRunning: monitor.isRunning,
+                idleUsesPolling: idleUsesPolling,
+                idleIsRunning: idleIsRunning,
+                activeUsesPolling: activeUsesPolling,
+                activeIsRunning: activeIsRunning,
+                stoppedIsRunning: monitor.isRunning,
+                pollingInterval: OverlayPointerEventMonitor.pollingInterval,
                 hasMouseMoved: OverlayPointerEventMonitor.eventMask.contains(.mouseMoved),
                 hasMouseDown: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDown),
                 hasMouseUp: OverlayPointerEventMonitor.eventMask.contains(.leftMouseUp),
-                hasDrag: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged),
-                hasPreDispatchMouseDown: OverlayPointerEventMonitor.preDispatchEventTypes
-                    .contains(.leftMouseDown)
+                hasDrag: OverlayPointerEventMonitor.eventMask.contains(.leftMouseDragged)
             )
         }
-        try require(!result.usesPolling, "idle pointer monitor unexpectedly uses fallback polling")
-        try require(!result.isRunning, "pointer monitor starts while not needed")
+        try require(!result.idleUsesPolling, "idle pointer monitor unexpectedly polls")
+        try require(!result.idleIsRunning, "pointer monitor starts while not needed")
+        try require(result.activeUsesPolling, "active pointer monitor does not poll")
+        try require(result.activeIsRunning, "active pointer monitor is not running")
+        try require(!result.stoppedIsRunning, "stopped pointer monitor is still running")
+        try require(
+            result.pollingInterval == 1.0 / 120.0,
+            "pointer monitor does not use the authored permission-free sampling interval"
+        )
         try require(
             result.hasMouseMoved && result.hasMouseDown && result.hasMouseUp
-                && result.hasPreDispatchMouseDown && !result.hasDrag,
-            "pointer event masks must pre-dispatch mouse-down and track hover/release without duplicating drag delivery"
+                && !result.hasDrag,
+            "local pointer mask must track hover/press/release without duplicating drag delivery"
         )
     }
 

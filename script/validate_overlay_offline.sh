@@ -63,13 +63,12 @@ if [[ -z "$INTERACTION_ATTESTATION" ]]; then
     "${SUITES[@]}"
   )
 fi
-for suite in "${SUITES[@]}"; do
-  swift test \
-    --package-path "$MACOS_DIR" \
-    --filter "$suite" \
-    -Xswiftc -strict-concurrency=complete \
-    -Xswiftc -warnings-as-errors
-done
+suite_filter="$(IFS='|'; printf '%s' "${SUITES[*]}")"
+swift test \
+  --package-path "$MACOS_DIR" \
+  --filter "$suite_filter" \
+  -Xswiftc -strict-concurrency=complete \
+  -Xswiftc -warnings-as-errors
 
 if rg -n 'Timer\.publish|pointerTimer|1\.0 / (24|30)\.0' \
   "$MACOS_DIR/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift" \

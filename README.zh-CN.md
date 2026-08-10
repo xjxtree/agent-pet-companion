@@ -6,42 +6,85 @@
 
 简体中文 | [English](README.md)
 
-Agent Pet Companion 是一款面向编码 Agent 用户的 macOS 原生桌宠 App。本地桌宠会提示 Agent 正在工作、等待你处理或已经完成；存在已校验路由时，还可以从消息气泡回到相关会话。
+**不用一直盯着终端，也能知道 AI 编码助手进行到哪一步。**
 
-## 核心亮点
+Agent Pet Companion 是一款 macOS 原生桌宠 App，适合同时使用一个或多个编码 Agent 的用户。它会用桌宠动作和消息气泡告诉你：Agent 正在思考、使用工具、等待你处理，还是已经完成任务。需要你回来时，可用的会话入口也会直接出现在气泡里。
 
-- **开箱即用**：内置 `星雾团子`、`Bytebud 字节芽` 和 `桃蕾`，均包含完整的制作动画。
-- **AI 宠物制作**：提供持久化左右分栏工作台、本地不计时草稿、全局单制作任务、可分页时间线、App 内 Codex 问题回复、睡眠或重启后的检查点继续、严格取消和由后端冻结的实际时长；可通过 Codex 创建或修改标清 192×208、标准 384×416 宠物，可移植 V3 格式还支持由外部高分辨率流程制作的高清 576×624 宠物包。
-- **多 Agent 会话**：支持 Codex、Claude Code、Pi Coding Agent 和 OpenCode 的跨项目会话。气泡可以按 Agent 聚合，也可以显示为稳定的跨 Agent 会话卡列表，不会因每次思考或工具事件频繁重排。
-- **原生桌面体验**：桌宠、菜单和液态玻璃会话气泡作为一个悬浮组合移动；桌宠尺寸、气泡字号、提醒行为和聚合方式统一在“宠物配置”中调整。
-- **本地优先**：宠物、设置、有界会话上下文与诊断信息留在 Mac 上，只有明确导出时才生成外部文件；App 不读取 Agent 凭据、Token、Cookie 或 API Key。
+[下载最新版本](https://github.com/xjxtree/agent-pet-companion/releases) · 支持 macOS 14 及以上版本 · Apple 芯片与 Intel Mac
 
-## 产品入口
+## 它能帮你做什么
 
-控制中心包含五个页面：宠物库、AI 宠物制作、宠物配置、Agent 连接、服务与诊断。首次启动使用可恢复的三幕设置流程，不会增加第六个导航页面。
+- **少一些来回切换**：在桌面上直接看到 Agent 的工作状态，不必反复打开终端或 Agent App。
+- **不错过需要处理的任务**：等待输入、执行完成或失败时，桌宠会给出清晰反馈。
+- **同时关注多个 Agent**：统一查看 Codex、Claude Code、Pi Coding Agent 和 OpenCode 的任务动态。
+- **快速回到工作现场**：路由可用时，从气泡打开对应会话、Agent App 或终端。
+- **拥有自己的桌宠**：使用三个内置宠物，导入 `.petpack`，或通过 AI 宠物制作创建和修改专属宠物。
+- **数据以本机为中心**：宠物、设置、有限的会话摘要和诊断信息保存在 Mac 上；App 不读取 Agent 的凭据、Token、Cookie 或 API Key。
 
-关闭控制中心后，桌宠仍可继续运行。点击桌宠可展开或收起气泡，拖动会移动整个悬浮组合，点击具体会话行才会打开已校验的目标。内置宠物是只读资源；自定义和导入宠物按 V3 能力在宠物库中管理。
+## 三步开始使用
+
+1. 从 [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases) 下载并安装 App。
+2. 按首次启动引导选择桌宠，并为你正在使用的 Agent 完成连接设置。
+3. 像平常一样在 Agent 中开始任务；桌宠会自动展示任务状态和可用的返回入口。
+
+首次启动时可以选择 `星雾团子`、`Bytebud 字节芽` 或 `桃蕾`。完成设置后，即使关闭控制中心，桌宠也会继续留在桌面上。
+
+## 日常使用
+
+| 你想做什么 | 在哪里操作 |
+|---|---|
+| 查看任务、展开或收起消息 | 点击桌宠 |
+| 移动桌宠和气泡 | 拖动桌宠 |
+| 切换、导入或导出宠物 | 宠物库 |
+| 创建或修改自己的宠物 | AI 宠物制作 |
+| 调整桌宠大小、气泡文字和提醒方式 | 宠物配置 |
+| 检查、安装或修复 Agent 集成 | Agent 连接 |
+| 查看运行状态或排查问题 | 服务与诊断 |
+
+Agent 连接按 Agent 和会话组织，不要求你逐个配置项目目录。App 只管理自己安装的连接组件，不会改动无法确认归属的自定义配置。
+
+## 创建自己的桌宠
+
+在 **AI 宠物制作** 中描述外形、风格和你希望保留的特征，App 会通过本机可用的 Codex 能力创建新宠物，也可以基于现有宠物进行修改。
+
+- App 内支持低分辨率和标准分辨率制作。
+- 制作任务会保留进度；遇到需要确认的问题时，可以直接在 App 内回复。
+- 也可以导入符合 `.petpack` V3 规范的宠物包，包括由外部流程制作的高清宠物包。
+- 三个内置宠物是只读默认资源；修改它们时会创建一个新的自定义宠物，不会覆盖原版。
 
 ## 安装正式版本
 
 1. 打开 [GitHub Releases](https://github.com/xjxtree/agent-pet-companion/releases)。
-2. 下载适合 Mac 的 ZIP（Apple 芯片选择 `macos-arm64`，Intel 选择 `macos-x86_64`）以及同版本的 `SHA256SUMS.txt`。
-3. 校验 ZIP，例如：
+2. 下载适合你的 ZIP：
+   - Apple 芯片 Mac：`macos-arm64`
+   - Intel Mac：`macos-x86_64`
+3. 解压 ZIP，并将 App 移入 `/Applications`。
+4. 首次启动时，在 Finder 中按住 Control 点击或右键点击 App，选择 **打开**；也可以前往 **系统设置 → 隐私与安全性 → 仍要打开**。
 
-   ```bash
-   grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -
-   ```
+正式版本目前采用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证，因此 macOS 会要求你确认首次打开。这不需要关闭 Gatekeeper，也不需要运行命令移除 quarantine。
 
-4. 解压并将 App 移入 `/Applications`。
-5. 首次启动时，在 Finder 中按住 Control 点击或右键选择**打开**；也可以前往**系统设置 → 隐私与安全性 → 仍要打开**。
+<details>
+<summary>可选：校验下载文件</summary>
 
-正式归档采用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证，因此 macOS 会要求上述首次打开确认。安装不需要源码工具链，也不需要关闭 Gatekeeper 或通过命令行移除 quarantine。
+同时下载对应版本的 `SHA256SUMS.txt`，然后运行：
 
-App 会在健康启动后检查 latest stable GitHub Release，每 24 小时至多一次。它只提示可用更新，不会自动下载或安装；请校验新 ZIP、退出旧版、替换 `/Applications` 中的 App，再打开新版。
+```bash
+grep 'macos-arm64.zip' AgentPetCompanion-*-SHA256SUMS.txt | shasum -a 256 -c -
+```
 
-## 从源码构建
+Intel 版本请将命令中的 `macos-arm64.zip` 改为 `macos-x86_64.zip`。
 
-需要 macOS 14+、包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。完整 Xcode 可选。
+</details>
+
+App 在健康启动后每天最多检查一次最新稳定版本。发现更新时只会提醒，不会自动下载或安装；退出旧版并替换 `/Applications` 中的 App 即可更新。
+
+## 隐私说明
+
+日常状态展示只接收经过限制的任务状态、标题和消息摘要，不会复制完整对话或读取 Agent 的登录凭据。使用 AI 宠物制作时，你提交的描述和参考图会交给本机可用的 Codex 流程完成生成；普通 Agent 状态展示和 AI 制作是两条独立流程。
+
+## 面向开发者
+
+从源码构建需要 macOS 14+、包含 Swift 6 与 macOS SDK 的 Apple Command Line Tools、`rust-toolchain.toml` 固定的 Rust 工具链，以及 Python 3。完整 Xcode 可选。
 
 ```bash
 git clone https://github.com/xjxtree/agent-pet-companion.git
@@ -49,15 +92,13 @@ cd agent-pet-companion
 ./script/build_app_bundle.sh
 ```
 
-开发 App 会写入 `dist/`。开发过程中需要重新构建、启动并核对 App/PetCore 构建身份时使用：
+开发 App 会写入 `dist/`。重新构建并启动 App：
 
 ```bash
 ./script/build_and_run.sh --run
 ```
 
-## 架构与文档
-
-SwiftUI/AppKit App 负责控制中心、菜单栏、悬浮层与渲染；Rust PetCore 是宠物、设置、归一化 Agent 事件、连接器、制作任务和诊断的状态权威。两者通过本地 JSON-RPC 通信，受管 Agent 集成通过 `petcore-cli` 或令牌保护的本地入口提交有界事件。
+SwiftUI/AppKit App 负责控制中心、菜单栏、桌面悬浮层与渲染；Rust PetCore 负责宠物、设置、Agent 事件、连接、制作任务和诊断。两者通过本地 JSON-RPC 通信。
 
 - [文档索引](docs/README.md)
 - [`.petpack` V3 规范](docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md)

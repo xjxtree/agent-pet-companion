@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import pathlib
 import re
@@ -15,24 +14,16 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = pathlib.PurePosixPath("plugins/codex/.codex-plugin/plugin.json")
-STUDIO_SKILL = pathlib.PurePosixPath("skills/agent-pet-studio/SKILL.md")
-STUDIO_SKILL_HISTORY = pathlib.PurePosixPath(
-    "crates/petcore/resources/codex-studio-skill-history.json"
+HOOKS_TEMPLATE = pathlib.PurePosixPath("plugins/codex/hooks/hooks.json.tpl")
+# Every App-managed Codex artifact states its own release version. Ownership and
+# staleness are read from these markers, so no list of past release digests has
+# to be maintained; a missing entry in such a list stranded real installs.
+VERSIONED_SKILLS = (
+    pathlib.PurePosixPath("skills/agent-pet-studio/SKILL.md"),
+    pathlib.PurePosixPath("skills/agent-pet-maker/SKILL.md"),
 )
-RETIRED_V1_STUDIO_SKILL = pathlib.PurePosixPath(
-    "crates/petcore/tests/fixtures/retired-agent-pet-studio-v1.md"
-)
-STUDIO_SKILL_HISTORY_SCHEMA = "apc.codex-studio-skill-history.v1"
-# The App-managed 0.4.6 development bundle reached local installations before
-# its Studio Skill revision was represented by a Git release baseline. Keep the
-# exception exact so release validation can recover those installations without
-# accepting arbitrary historical content.
-RECOVERED_APP_MANAGED_STUDIO_SHA256 = frozenset(
-    {
-        "5150ab91ba5f14567f0a2be0b6053688dffcd564e665a3e281fd5a110f8e852d",
-        "5611d90ef3aa0b94682915df0135b2b3cae2b3b23360e80625f0bf2a5fc8bafa",
-    }
-)
+HOOKS_VERSION_PLACEHOLDER = "__APC_CODEX_PLUGIN_VERSION__"
+SKILL_VERSION_PATTERN = re.compile(r"^version:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 PLUGIN_BUNDLE_PATHS = (
     "plugins/codex",
     "skills/agent-pet-maker",
@@ -105,49 +96,34 @@ def read_base_file(
     return result.stdout
 
 
-def read_optional_base_file(
-    commit: str,
-    path: pathlib.PurePosixPath,
-) -> bytes | None:
-    result = git("show", f"{commit}:{path.as_posix()}", check=False)
-    return result.stdout if result.returncode == 0 else None
+def skill_front_matter_version(data: bytes, *, source: str) -> tuple[int, int, int]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{source} Skill is not valid UTF-8") from error
+    if not text.startswith("---\n"):
+        raise ValueError(f"{source} Skill must start with YAML front matter")
+    front_matter, separator, _ = text[4:].partition("\n---")
+    if not separator:
+        raise ValueError(f"{source} Skill front matter is not terminated")
+    matches = SKILL_VERSION_PATTERN.findall(front_matter)
+    if len(matches) != 1:
+        raise ValueError(
+            f"{source} Skill front matter must declare exactly one version: line"
+        )
+    return parse_version(matches[0], source=f"{source} Skill")
 
 
-def load_studio_skill_history(data: bytes, *, source: str) -> frozenset[str]:
+def hooks_template_declares_version(data: bytes, *, source: str) -> None:
     try:
         value = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{source} hooks template is not valid UTF-8 JSON") from error
+    if not isinstance(value, dict) or value.get("release_version") != HOOKS_VERSION_PLACEHOLDER:
         raise ValueError(
-            f"{source} Studio Skill history is not valid UTF-8 JSON"
-        ) from error
-    if not isinstance(value, dict) or set(value) != {
-        "schema_version",
-        "retired_sha256",
-    }:
-        raise ValueError(
-            f"{source} Studio Skill history must contain only schema_version "
-            "and retired_sha256"
+            f"{source} hooks template must carry "
+            f'"release_version": "{HOOKS_VERSION_PLACEHOLDER}"'
         )
-    if value.get("schema_version") != STUDIO_SKILL_HISTORY_SCHEMA:
-        raise ValueError(f"{source} Studio Skill history has the wrong schema")
-    retired = value.get("retired_sha256")
-    if not isinstance(retired, list) or not retired:
-        raise ValueError(
-            f"{source} Studio Skill history must contain retired SHA-256 values"
-        )
-    if any(
-        not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        for digest in retired
-    ):
-        raise ValueError(
-            f"{source} Studio Skill history contains an invalid SHA-256"
-        )
-    if retired != sorted(set(retired)):
-        raise ValueError(
-            f"{source} Studio Skill history must be sorted and unique"
-        )
-    return frozenset(retired)
 
 
 def bundle_changed(commit: str) -> bool:
@@ -164,31 +140,12 @@ def bundle_changed(commit: str) -> bool:
     return result.returncode == 1
 
 
-def validate(base_reference: str) -> tuple[str, str, bool, bool]:
+def validate(base_reference: str) -> tuple[str, str, bool]:
     current_path = ROOT / MANIFEST
     current = load_manifest_bytes(current_path.read_bytes(), source="current")
     commit = resolve_commit(base_reference)
     previous = load_manifest_bytes(read_base_manifest(commit), source="base")
     changed = bundle_changed(commit)
-    current_studio = (ROOT / STUDIO_SKILL).read_bytes()
-    base_studio = read_base_file(
-        commit,
-        STUDIO_SKILL,
-        description="agent-pet-studio Skill",
-    )
-    studio_changed = current_studio != base_studio
-    current_studio_digest = hashlib.sha256(current_studio).hexdigest()
-    base_studio_digest = hashlib.sha256(base_studio).hexdigest()
-    current_history = load_studio_skill_history(
-        (ROOT / STUDIO_SKILL_HISTORY).read_bytes(),
-        source="current",
-    )
-    base_history_bytes = read_optional_base_file(commit, STUDIO_SKILL_HISTORY)
-    base_history = (
-        load_studio_skill_history(base_history_bytes, source="base")
-        if base_history_bytes is not None
-        else None
-    )
 
     if current < previous:
         raise ValueError(
@@ -200,52 +157,30 @@ def validate(base_reference: str) -> tuple[str, str, bool, bool]:
             "Codex plugin, agent-pet-maker, or agent-pet-studio content changed "
             "without increasing plugins/codex/.codex-plugin/plugin.json version"
         )
-    if current_studio_digest in current_history:
-        raise ValueError(
-            "current agent-pet-studio Skill SHA-256 must not be listed as retired"
+
+    # Ownership and staleness are read from each artifact's own version marker,
+    # so every App-managed artifact must carry one and they must agree. A Skill
+    # left at a stale marker would be reported as the wrong version forever.
+    hooks_template_declares_version(
+        (ROOT / HOOKS_TEMPLATE).read_bytes(),
+        source="current",
+    )
+    for skill in VERSIONED_SKILLS:
+        skill_version = skill_front_matter_version(
+            (ROOT / skill).read_bytes(),
+            source=skill.as_posix(),
         )
-    if base_history is not None:
-        removed = base_history - current_history
-        if removed:
+        if skill_version != current:
             raise ValueError(
-                "Studio Skill history is append-only; retired SHA-256 values were removed: "
-                + ", ".join(sorted(removed))
+                f"{skill.as_posix()} declares version "
+                f"{'.'.join(map(str, skill_version))} but the Codex plugin ships "
+                f"{'.'.join(map(str, current))}"
             )
-        permitted_additions = set(RECOVERED_APP_MANAGED_STUDIO_SHA256)
-        if studio_changed:
-            permitted_additions.add(base_studio_digest)
-        unexpected = (current_history - base_history) - permitted_additions
-        if unexpected:
-            raise ValueError(
-                "Studio Skill history added SHA-256 values that are not the previous "
-                "shipped Skill or a reviewed App-managed recovery digest: "
-                + ", ".join(sorted(unexpected))
-            )
-    else:
-        retired_v1_digest = hashlib.sha256(
-            (ROOT / RETIRED_V1_STUDIO_SKILL).read_bytes()
-        ).hexdigest()
-        expected_bootstrap = {
-            retired_v1_digest,
-            *RECOVERED_APP_MANAGED_STUDIO_SHA256,
-        }
-        if studio_changed:
-            expected_bootstrap.add(base_studio_digest)
-        if current_history != expected_bootstrap:
-            raise ValueError(
-                "initial Studio Skill history must contain exactly the retired V1 "
-                "Skill and, when Studio changed, the previous shipped Skill"
-            )
-    if studio_changed and base_studio_digest not in current_history:
-        raise ValueError(
-            "agent-pet-studio changed without preserving the previous shipped Skill "
-            f"SHA-256 {base_studio_digest} in {STUDIO_SKILL_HISTORY.as_posix()}"
-        )
+
     return (
         ".".join(map(str, previous)),
         ".".join(map(str, current)),
         changed,
-        studio_changed,
     )
 
 
@@ -254,14 +189,13 @@ def main() -> int:
     parser.add_argument("--base-ref", required=True)
     arguments = parser.parse_args()
     try:
-        previous, current, changed, studio_changed = validate(arguments.base_ref)
+        previous, current, changed = validate(arguments.base_ref)
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(f"Codex plugin version validation failed: {error}", file=sys.stderr)
         return 1
     state = "changed with a required version increase" if changed else "unchanged"
     print(f"Codex plugin bundle {state}: {previous} -> {current}")
-    if studio_changed:
-        print("Previous shipped Studio Skill ownership digest is preserved")
+    print(f"Plugin, hooks, and both Skills declare version {current}")
     return 0
 
 

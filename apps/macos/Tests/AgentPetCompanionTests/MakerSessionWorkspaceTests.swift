@@ -201,6 +201,8 @@ struct MakerSessionWorkspaceTests {
 
         #expect(coordinator.contains(#"content.userInfo = ["generation_job_id": jobID]"#))
         #expect(coordinator.contains("self?.route?(jobID)"))
+        #expect(coordinator.contains("try? await center.requestAuthorization"))
+        #expect(!coordinator.contains("requestAuthorization(options: [.alert, .sound]) {"))
         #expect(store.contains("NSApp.isActive"))
         #expect(store.contains("selectedGenerationHistoryJobID == jobID"))
         #expect(!store.contains("case .running:\n            ("))

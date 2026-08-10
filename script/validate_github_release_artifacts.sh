@@ -117,7 +117,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for architecture in arm64 x86_64; do
+if [[ -n "$REQUIRE_NATIVE_ARCHITECTURE" ]]; then
+  ARCHITECTURES=("$REQUIRE_NATIVE_ARCHITECTURE")
+else
+  ARCHITECTURES=(arm64 x86_64)
+fi
+
+for architecture in "${ARCHITECTURES[@]}"; do
   archive_name="AgentPetCompanion-$VERSION-macos-$architecture.zip"
   archive="$ARTIFACT_DIR/$archive_name"
   extract_dir="$TMP_DIR/$architecture"
@@ -145,4 +151,9 @@ for architecture in arm64 x86_64; do
     "$extracted_app"
 done
 
-echo 'GitHub Release artifacts validated for both architectures and one exact identity'
+if [[ -n "$REQUIRE_NATIVE_ARCHITECTURE" ]]; then
+  printf 'GitHub Release exact inventory and native %s artifact validated for one exact identity\n' \
+    "$REQUIRE_NATIVE_ARCHITECTURE"
+else
+  echo 'GitHub Release artifacts validated for both architectures and one exact identity'
+fi

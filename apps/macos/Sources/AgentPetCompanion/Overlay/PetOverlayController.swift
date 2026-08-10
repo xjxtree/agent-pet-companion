@@ -1092,8 +1092,8 @@ final class BubbleOverlayPanel: NSPanel {
             refreshPointerPassthrough()
             return
         }
-        pointerMonitor.start { [weak self] screenPoint in
-            self?.refreshPointerPassthrough(at: screenPoint)
+        pointerMonitor.start { [weak self] in
+            self?.refreshPointerPassthrough()
         }
         refreshPointerPassthrough()
     }
@@ -1105,7 +1105,9 @@ final class BubbleOverlayPanel: NSPanel {
     }
 
     func refreshPointerPassthrough() {
-        refreshPointerPassthrough(at: NSEvent.mouseLocation)
+        refreshPointerPassthrough(at: convertPoint(
+            toScreen: mouseLocationOutsideOfEventStream
+        ))
     }
 
     private func refreshPointerPassthrough(at screenPoint: NSPoint) {
@@ -1519,8 +1521,8 @@ private final class OverlayPanel: NSPanel {
             refreshPointerPassthrough()
             return
         }
-        pointerMonitor.start { [weak self] screenPoint in
-            self?.refreshPointerPassthrough(at: screenPoint)
+        pointerMonitor.start { [weak self] in
+            self?.refreshPointerPassthrough()
         }
         refreshPointerPassthrough()
     }
@@ -1533,16 +1535,15 @@ private final class OverlayPanel: NSPanel {
     }
 
     func refreshPointerPassthrough() {
-        refreshPointerPassthrough(at: NSEvent.mouseLocation)
+        refreshPointerPassthrough(at: convertPoint(
+            toScreen: mouseLocationOutsideOfEventStream
+        ))
     }
 
     private func refreshPointerPassthrough(at mouseLocation: NSPoint) {
         guard pointerMonitor.isRunning else { return }
         var overlayOwnsPointer = false
         if let overlayStore {
-            overlayStore.reconcileOverlayPointerInteractions(
-                pressedMouseButtons: NSEvent.pressedMouseButtons
-            )
             overlayOwnsPointer = shouldHandleMouse(screenPoint: mouseLocation)
             overlayStore.setOverlayPointerNearPet(OverlayGeometry.shouldShowControls(
                 at: mouseLocation,
@@ -1557,13 +1558,26 @@ private final class OverlayPanel: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        case .leftMouseDown:
+            overlayStore?.observeOverlayPrimaryButton(isDown: true)
             let shouldHandle = shouldHandleMouse(localPoint: event.locationInWindow)
             if !shouldHandle {
                 setIgnoresMouseEventsIfNeeded(true)
                 return
             }
             setIgnoresMouseEventsIfNeeded(false)
+        case .rightMouseDown, .otherMouseDown:
+            let shouldHandle = shouldHandleMouse(localPoint: event.locationInWindow)
+            if !shouldHandle {
+                setIgnoresMouseEventsIfNeeded(true)
+                return
+            }
+            setIgnoresMouseEventsIfNeeded(false)
+        case .leftMouseUp:
+            // Arm the defensive release fallback from an event that AppKit
+            // already delivered to this App. DragView normally finalizes in
+            // `super.sendEvent`; the yielded fallback only runs if it does not.
+            overlayStore?.observeOverlayPrimaryButton(isDown: false)
         default:
             break
         }
@@ -1613,7 +1627,6 @@ private final class OverlayPanel: NSPanel {
             includeBubble: false,
             petFrameHitTest: overlayStore.overlayPetFrameHitTest,
             overlayVisible: overlayStore.overlayVisible,
-            primaryButtonDown: NSEvent.pressedMouseButtons & 1 != 0,
             activeInteractionID: overlayStore.overlayActivePointerInteractionID,
             maskState: overlayStore.overlayPetPointerMaskState
         )
@@ -1628,6 +1641,8 @@ private final class OverlayPanel: NSPanel {
 
 @MainActor
 final class OverlayPointerEventMonitor {
+    static let pollingInterval: TimeInterval = 1.0 / 120.0
+
     static let eventMask: NSEvent.EventTypeMask = [
         .mouseMoved,
         .leftMouseDown,
@@ -1638,126 +1653,48 @@ final class OverlayPointerEventMonitor {
         .otherMouseUp
     ]
 
-    static let preDispatchEventTypes: [CGEventType] = [
-        CGEventType.mouseMoved,
-        .leftMouseDown,
-        .rightMouseDown,
-        .otherMouseDown,
-        .leftMouseUp,
-        .rightMouseUp,
-        .otherMouseUp
-    ]
-
-    static let preDispatchEventMask: CGEventMask = preDispatchEventTypes.reduce(
-        CGEventMask(0)
-    ) { mask, type in
-        mask | (CGEventMask(1) << type.rawValue)
-    }
-
     private var localMonitor: Any?
-    private var globalMonitor: Any?
-    private var eventTap: CFMachPort?
-    private var eventTapSource: CFRunLoopSource?
-    private var fallbackTimer: Timer?
-    private var handler: ((NSPoint) -> Void)?
+    private var pollingTimer: Timer?
+    private var handler: (() -> Void)?
 
     var isRunning: Bool {
-        eventTap != nil || localMonitor != nil || globalMonitor != nil || fallbackTimer != nil
+        localMonitor != nil || pollingTimer != nil
     }
-    var usesPolling: Bool { fallbackTimer != nil }
+    var usesPolling: Bool { pollingTimer != nil }
 
-    func start(handler: @escaping (NSPoint) -> Void) {
+    func start(handler: @escaping () -> Void) {
         self.handler = handler
         guard !isRunning else { return }
 
-        if let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: Self.preDispatchEventMask,
-            callback: Self.eventTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) {
-            eventTap = tap
-            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-            eventTapSource = source
-            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-            CGEvent.tapEnable(tap: tap, enable: true)
-        } else {
-            // A listen-only mouse tap normally needs no user permission. If
-            // macOS still refuses it (for example during a transient secure
-            // input transition), retain exact ownership without reintroducing
-            // a broad activation rectangle. The timer is fallback-only.
-            let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) {
-                [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.handler?(NSEvent.mouseLocation)
-                }
+        // Ask each owning panel to sample its window-local cursor position.
+        // This deliberately avoids system event taps, global cursor APIs, and
+        // cross-application event monitors, all of which can make macOS
+        // request Input Monitoring access even though the App needs no keys.
+        let timer = Timer(timeInterval: Self.pollingInterval, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handler?()
             }
-            fallbackTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
         }
+        pollingTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.eventMask) {
             [weak self] event in
             MainActor.assumeIsolated {
-                self?.handler?(NSEvent.mouseLocation)
+                self?.handler?()
             }
             return event
         }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: Self.eventMask) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.handler?(NSEvent.mouseLocation)
-            }
-        }
-    }
-
-    private static let eventTapCallback: CGEventTapCallBack = {
-        _, type, event, userInfo in
-        guard let userInfo else { return Unmanaged.passUnretained(event) }
-        let monitor = Unmanaged<OverlayPointerEventMonitor>
-            .fromOpaque(userInfo)
-            .takeUnretainedValue()
-        let eventLocation = event.location
-        MainActor.assumeIsolated {
-            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                if let tap = monitor.eventTap {
-                    CGEvent.tapEnable(tap: tap, enable: true)
-                }
-            } else {
-                let zeroOriginFrame = NSScreen.screens.first(where: {
-                    $0.frame.origin == .zero
-                })?.frame ?? NSScreen.main?.frame ?? .zero
-                let screenPoint = OverlayPointerCoordinateSpace.screenPoint(
-                    forGlobalEventLocation: eventLocation,
-                    zeroOriginScreenFrame: zeroOriginFrame
-                )
-                monitor.handler?(screenPoint)
-            }
-        }
-        return Unmanaged.passUnretained(event)
     }
 
     func stop() {
         if let localMonitor {
             NSEvent.removeMonitor(localMonitor)
         }
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-        }
-        fallbackTimer?.invalidate()
-        if let eventTapSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
-        }
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-            CFMachPortInvalidate(eventTap)
-        }
+        pollingTimer?.invalidate()
         localMonitor = nil
-        globalMonitor = nil
-        eventTap = nil
-        eventTapSource = nil
-        fallbackTimer = nil
+        pollingTimer = nil
         handler = nil
     }
 }
@@ -1815,7 +1752,6 @@ private final class PassthroughOverlayHostingView<Content: View>: NSHostingView<
             includeBubble: includeBubble,
             petFrameHitTest: store.overlayPetFrameHitTest,
             overlayVisible: store.overlayVisible,
-            primaryButtonDown: NSEvent.pressedMouseButtons & 1 != 0,
             activeInteractionID: store.overlayActivePointerInteractionID,
             maskState: store.overlayPetPointerMaskState
         )

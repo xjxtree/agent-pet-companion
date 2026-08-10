@@ -422,12 +422,11 @@ struct BehaviorSettingsView: View {
                 adjustDisplayWidth(by: delta)
             }
             .onMoveCommand { direction in
-                let step = NSEvent.modifierFlags.contains(.option) ? 10.0 : 1.0
                 switch direction {
                 case .left, .down:
-                    adjustDisplayWidth(by: -step)
+                    adjustDisplayWidth(by: -1)
                 case .right, .up:
-                    adjustDisplayWidth(by: step)
+                    adjustDisplayWidth(by: 1)
                 default:
                     break
                 }

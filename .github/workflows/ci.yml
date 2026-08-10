@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Rust, Swift, schemas and packaging
+    name: Change-scoped quality and packaging
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -27,23 +27,48 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify Apple Command Line Tools and Swift baseline
+      - name: Resolve validation base
+        id: validation_base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
         run: |
-          swift --version
-          xcrun --show-sdk-path
-          test "$(swift --version | awk '/Apple Swift version/{split($4, v, "."); print v[1]}')" -ge 6
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE"
+          else
+            base="$PUSH_BASE"
+          fi
+          if [[ "$base" == "0000000000000000000000000000000000000000" ]]; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          git rev-parse --verify "$base^{commit}" >/dev/null
+          echo "base=$base" >>"$GITHUB_OUTPUT"
 
-      - name: Install pinned Rust toolchain
-        run: rustup show
+      - name: Classify changed paths once
+        id: validation_scope
+        run: |
+          ./script/validation_scope.py \
+            --base-ref "${{ steps.validation_base.outputs.base }}" \
+            --format github >>"$GITHUB_OUTPUT"
 
-      - name: Install CI tooling
+      - name: Install common validation tooling
         run: |
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
           fi
           rg --version
 
+      - name: Verify required toolchains
+        if: steps.validation_scope.outputs.bundle == '1' || steps.validation_scope.outputs.rust_mode != 'none' || steps.validation_scope.outputs.swift_mode != 'none'
+        run: |
+          swift --version
+          xcrun --show-sdk-path
+          test "$(swift --version | awk '/Apple Swift version/{split($4, v, "."); print v[1]}')" -ge 6
+          rustup show
+
       - name: Cache Rust and Swift build products
+        if: steps.validation_scope.outputs.docs_only != '1'
         uses: actions/cache@v6
         with:
           path: |
@@ -55,40 +80,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-apc-
 
-      - name: Validate default test isolation
-        run: TMPDIR="$RUNNER_TEMP/" /bin/bash ./script/validate_test_isolation.sh
-
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run strict Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Run Rust tests
-        run: cargo test --workspace --locked
-
-      - name: Run Swift tests
-        working-directory: apps/macos
-        run: swift test
-
-      - name: Validate JSON Schema fixtures
-        run: ./script/validate_schema_fixtures.sh
-
-      - name: Check shell and Python syntax
-        run: ./script/validate_source_syntax.sh
-
-      - name: Require a Codex plugin version bump for bundled content changes
-        env:
-          BASE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: ./script/validate_codex_plugin_version.py --base-ref "$BASE_COMMIT"
-
-      - name: Build and validate development app bundle
-        run: ./script/build_app_bundle.sh --configuration debug
-
-      - name: Validate build-script safety and bundle
+      - name: Run unified change-scoped validation
         run: |
-          ./script/validate_build_scripts_safety.sh
-          ./script/validate_app_bundle.sh --development
+          ./script/validate_pre_push.sh \
+            --base "${{ steps.validation_base.outputs.base }}" \
+            --ci
+
+      - name: Build and fully validate development App when runtime inputs changed
+        if: steps.validation_scope.outputs.bundle == '1'
+        run: ./script/build_app_bundle.sh --configuration debug --validation full
+
+      - name: Record live UI validation routing
+        run: |
+          if [[ "${{ steps.validation_scope.outputs.computer_use }}" == "recommended" ]]; then
+            echo 'UI source changed: Computer Use is recommended for a human-owned acceptance session, but is never auto-run in CI.' >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No live UI or Computer Use validation is required for this change scope.' >>"$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Reject tracked build output and caches
         run: |

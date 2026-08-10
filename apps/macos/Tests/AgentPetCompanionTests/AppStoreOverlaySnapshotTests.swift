@@ -1127,7 +1127,7 @@ struct AppStoreOverlaySnapshotTests {
             visibleFrame: screen.visibleFrame,
             interactionID: interactionID
         )
-        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        store.observeOverlayPrimaryButton(isDown: false)
         for _ in 0 ..< 100 where requestCount == 0 {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -1179,7 +1179,7 @@ struct AppStoreOverlaySnapshotTests {
             visibleFrame: screen.visibleFrame,
             interactionID: interactionID
         )
-        store.reconcileOverlayPointerInteractions(pressedMouseButtons: 0)
+        store.observeOverlayPrimaryButton(isDown: false)
         store.commitOverlayPetDrag(
             at: presented,
             visibleFrame: screen.visibleFrame,

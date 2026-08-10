@@ -3,11 +3,55 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWIFT_DIR="$ROOT_DIR/apps/macos"
+SCOPE="all"
 DEVELOPER_BIN="/Library/Developer/CommandLineTools/usr/bin"
 INTEROP_DIR="/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
 CPP_INCLUDE="${CPLUS_INCLUDE_PATH:-}"
 SDK=""
 ARGS=(test --disable-sandbox)
+
+usage() {
+  echo 'usage: validate_swift_tests.sh [--scope all|overlay|interaction]' >&2
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --scope)
+      (($# >= 2)) || { usage; exit 2; }
+      SCOPE="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+case "$SCOPE" in
+  all)
+    ;;
+  overlay)
+    ARGS+=(
+      --filter
+      'OverlayPlacementAuthorityTests|AppStoreOverlaySnapshotTests|OverlayGeometryTests|OverlayDisplayWidthTests|OverlayInteractionTelemetryTests|FrameTimelineTests|PetFramePipelineTests'
+    )
+    ;;
+  interaction)
+    ARGS+=(
+      --filter
+      'OverlayPlacementAuthorityTests|AppStoreOverlaySnapshotTests|OverlayGeometryTests|OverlayDisplayWidthTests|OverlayInteractionTelemetryTests'
+    )
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
 
 if command -v xcrun >/dev/null 2>&1; then
   SDK="$(xcrun --show-sdk-path 2>/dev/null || true)"

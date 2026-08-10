@@ -23,44 +23,50 @@ struct ContentView: View {
                             max: ControlCenterShellPolicy.primarySidebarMaximumWidth
                         )
                 } detail: {
-                    VStack(spacing: 0) {
-                        AppUpdateConvergenceBanner()
-                            .padding(.horizontal, 24)
-                            .padding(.top, 14)
-                        AppUpdateAvailableBanner(updater: store.appUpdater) {
-                            store.appUpdater.presentAvailableUpdate()
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 14)
-                        if let recoveryBanner,
-                           store.selection != .diagnostics
-                        {
-                            InlineRecoveryBanner(
-                                identity: ProductComponentIdentity(
-                                    scope: "shell",
-                                    instance: "service"
-                                ),
-                                status: recoveryBanner.status,
-                                primaryAction: recoveryBanner.primaryAction
-                            ) { action in
-                                switch action {
-                                case .openDiagnostics:
-                                    store.selection = .diagnostics
-                                }
+                    ControlCenterDetailViewport {
+                        VStack(spacing: 0) {
+                            AppUpdateConvergenceBanner()
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                            AppUpdateAvailableBanner(updater: store.appUpdater) {
+                                store.appUpdater.presentAvailableUpdate()
                             }
                             .padding(.horizontal, 24)
                             .padding(.top, 14)
+                            if let recoveryBanner,
+                               store.selection != .diagnostics
+                            {
+                                InlineRecoveryBanner(
+                                    identity: ProductComponentIdentity(
+                                        scope: "shell",
+                                        instance: "service"
+                                    ),
+                                    status: recoveryBanner.status,
+                                    primaryAction: recoveryBanner.primaryAction
+                                ) { action in
+                                    switch action {
+                                    case .openDiagnostics:
+                                        store.selection = .diagnostics
+                                    }
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                            }
+                            mainContent
+                                .frame(
+                                    maxWidth: .infinity,
+                                    maxHeight: .infinity,
+                                    alignment: .topLeading
+                                )
+                                .layoutPriority(1)
                         }
-                        mainContent
-                            .frame(
-                                maxWidth: .infinity,
-                                maxHeight: .infinity,
-                                alignment: .topLeading
-                            )
-                            .layoutPriority(1)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                        .navigationTitle("")
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .navigationTitle("")
                 }
                 .navigationSplitViewStyle(.balanced)
                 .environment(\.controlCenterShellMode, policy.mode)
@@ -168,6 +174,29 @@ struct ContentView: View {
         ControlCenterRecoveryBannerPresentation.resolve(
             for: store.petCoreOperationalState
         )
+    }
+}
+
+/// Gives the complete detail column the finite viewport owned by its split view.
+///
+/// Several pages own nested or independent scroll regions. Letting the shell's
+/// banner stack participate with its ideal height can expand those regions
+/// beyond the visible window, after which AppKit clips the page instead of
+/// finding overflow inside the scroll view. The viewport fixes the whole column
+/// before it divides the available height between banners and page content.
+struct ControlCenterDetailViewport<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        GeometryReader { geometry in
+            content
+                .frame(
+                    width: geometry.size.width,
+                    height: geometry.size.height,
+                    alignment: .topLeading
+                )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
