@@ -14,6 +14,8 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-08-11
+
 ### Changed / 变更
 
 - New installations now show pet-bubble sessions in one cross-Agent flat stack by default; grouping sessions by Agent remains available in Pet Configuration.
