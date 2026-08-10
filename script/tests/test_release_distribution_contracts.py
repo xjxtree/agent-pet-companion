@@ -926,6 +926,24 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
 
+    def test_artifact_actions_use_node24_releases(self) -> None:
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            self.source,
+        )
+        self.assertIn(
+            "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            self.source,
+        )
+        self.assertNotIn(
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            self.source,
+        )
+        self.assertNotIn(
+            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            self.source,
+        )
+
 
 class CIWorkflowContractTests(unittest.TestCase):
     def test_ci_uses_the_shared_scope_router_and_conditional_bundle(self) -> None:
