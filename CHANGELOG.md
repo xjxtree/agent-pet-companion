@@ -14,7 +14,7 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-08-10
+## [0.3.3] - 2026-08-10
 
 ### Changed / 变更
 

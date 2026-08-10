@@ -23,7 +23,7 @@ jobs:
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -67,9 +67,22 @@ jobs:
           test "$(swift --version | awk '/Apple Swift version/{split($4, v, "."); print v[1]}')" -ge 6
           rustup show
 
+      - name: Prepare pinned Python validation environment
+        if: steps.validation_scope.outputs.producer == '1' || steps.validation_scope.outputs.bundle == '1'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/apc-validation-python"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
+            --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" - <<'PY'
+          from PIL import Image, features
+          if Image.__version__ != "11.3.0" or not features.check("webp_anim"):
+              raise SystemExit("pinned Pillow lacks the required animated WebP support")
+          PY
+          echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
+
       - name: Cache Rust and Swift build products
         if: steps.validation_scope.outputs.docs_only != '1'
-        uses: actions/cache@v6
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry

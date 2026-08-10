@@ -940,6 +940,18 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("cargo test --workspace", source)
         self.assertNotIn("working-directory: apps/macos", source)
 
+    def test_ci_prepares_producer_image_dependencies_and_pins_actions(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("Prepare pinned Python validation environment", source)
+        self.assertIn("steps.validation_scope.outputs.producer == '1'", source)
+        self.assertIn("Pillow==11.3.0", source)
+        self.assertIn('features.check("webp_anim")', source)
+        uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
+        self.assertTrue(uses)
+        for action in uses:
+            with self.subTest(action=action):
+                self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
+
 
 if __name__ == "__main__":
     unittest.main()

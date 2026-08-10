@@ -89,6 +89,9 @@ rg -Fq './script/validation_scope.py' "$CI_WORKFLOW"
 rg -Fq './script/validate_pre_push.sh' "$CI_WORKFLOW"
 rg -Fq -- '--ci' "$CI_WORKFLOW"
 rg -Fq "if: steps.validation_scope.outputs.bundle == '1'" "$CI_WORKFLOW"
+rg -Fq "steps.validation_scope.outputs.producer == '1'" "$CI_WORKFLOW"
+rg -Fq 'Pillow==11.3.0' "$CI_WORKFLOW"
+rg -Fq 'features.check("webp_anim")' "$CI_WORKFLOW"
 rg -Fq -- '--validation full' "$CI_WORKFLOW"
 if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \
   "$CI_WORKFLOW"; then
