@@ -952,6 +952,35 @@ class CIWorkflowContractTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertRegex(action, r"^[^@]+@[0-9a-f]{40}$")
 
+    def test_ci_allows_only_the_three_approved_tracked_petpacks(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        whitelist = re.search(
+            r"grep -Ev '([^']*BuiltInPets[^']*)'", source
+        )
+        self.assertIsNotNone(whitelist)
+        pattern = whitelist.group(1)
+        for petpack in (
+            "pet_bytebudcodex",
+            "pet_pinklace",
+            "pet_xingwutuanzi",
+        ):
+            self.assertIn(petpack, pattern)
+        tracked = sorted(
+            path.name
+            for path in (
+                ROOT
+                / "apps/macos/Sources/AgentPetCompanion/Resources/BuiltInPets"
+            ).glob("*.petpack")
+        )
+        self.assertEqual(
+            tracked,
+            [
+                "pet_bytebudcodex.petpack",
+                "pet_pinklace.petpack",
+                "pet_xingwutuanzi.petpack",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

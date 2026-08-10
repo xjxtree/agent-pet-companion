@@ -43,7 +43,7 @@ jobs:
       CARGO_TERM_COLOR: always
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -118,7 +118,7 @@ jobs:
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
       - name: Restore source/build cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -163,7 +163,7 @@ jobs:
       APC_VALIDATE_REAL_APP_SERVER: "0"
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -195,7 +195,7 @@ jobs:
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
       - name: Restore source/build cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -234,7 +234,7 @@ jobs:
       x86_64_zip_sha256: ${{ steps.candidate_digests.outputs.x86_64_zip_sha256 }}
       checksum_sha256: ${{ steps.candidate_digests.outputs.checksum_sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -292,7 +292,7 @@ jobs:
       - name: Prove native validation architecture
         run: test "$(uname -m)" = "arm64"
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -329,7 +329,7 @@ jobs:
       - name: Prove native validation architecture
         run: test "$(uname -m)" = "x86_64"
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -369,7 +369,7 @@ jobs:
       RELEASE_BUILD: ${{ needs.prepare.outputs.build }}
       RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
