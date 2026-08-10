@@ -40,7 +40,7 @@ The App and overlay share one UI process. PetCore is a separate per-user service
 - First run is a resumable three-scene root presentation. Pet choice and Agent setup reuse normal product operations; the demo remains View-local and never creates Agent events or diagnostics.
 - Connections and bubbles use `Agent → session`, never project directories as user-facing identity.
 - A session title, latest user message, current-turn Agent message, and normalized activity detail are separate bounded fields. PetCore supplies them; Swift does not reconstruct host payloads.
-- Bubbles can group sessions per Agent or show one cross-Agent card list. The flat list keeps stable slots while a turn alternates between thinking, planning, and tools; only a new activation or attention-state transition may move a card.
+- Bubbles default to one cross-Agent session-card list; users may opt into grouping sessions per Agent. The flat list keeps stable slots while a turn alternates between thinking, planning, and tools; only a new activation or attention-state transition may move a card.
 - Clicking the pet toggles the bubble. Only a concrete session row can open a validated exact-session or host-level destination.
 - On macOS 26, session bubbles use one untinted native Regular Liquid Glass surface plus a paired sub-point light/dark optical rim that preserves the rounded boundary across mixed bright and dark backdrops without adding a fill, tint, shadow, or second material. Compact floating controls may use Clear glass. Older systems use the system material fallback; accessibility settings can replace or strengthen the optical treatment.
 - Bundled pets are read-only defaults. Same-name pets coexist because identity is the manifest ID, not the display name.

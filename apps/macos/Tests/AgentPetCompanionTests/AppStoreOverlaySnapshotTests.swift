@@ -86,7 +86,10 @@ struct AppStoreOverlaySnapshotTests {
         try store.applyStateSnapshot([
             "revision": "multi-source-overlay-1",
             "overlay_placement_revision": "0",
-            "behavior": try jsonObject(BehaviorSettings(sessionGroupDisplay: .stacked)),
+            "behavior": try jsonObject(BehaviorSettings(
+                groupSessionsByAgent: true,
+                sessionGroupDisplay: .stacked
+            )),
             "behavior_revision": "1",
             "pets": [],
             "active_agent_sessions": try jsonArray(states),

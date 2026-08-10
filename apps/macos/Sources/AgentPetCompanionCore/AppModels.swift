@@ -487,7 +487,7 @@ public struct BehaviorSettings: Codable, Equatable, Sendable {
         clickMenu: Bool = true,
         autoHide: Bool = false,
         sessionMessageTimeoutMinutes: Int = 15,
-        groupSessionsByAgent: Bool = true,
+        groupSessionsByAgent: Bool = false,
         sessionGroupDisplay: SessionGroupDisplay = .stacked,
         sources: [AgentSource: Bool] = Dictionary(uniqueKeysWithValues: AgentSource.allCases.map { ($0, true) }),
         events: [AgentEventKind: Bool] = Dictionary(uniqueKeysWithValues: AgentEventKind.allCases.map { ($0, true) })

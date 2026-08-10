@@ -159,7 +159,10 @@ func agentWindows() -> [WindowInfo] {
 }
 
 var windows: [WindowInfo] = []
-for _ in 0..<40 {
+// A genuinely empty home validates and seeds all three bundled petpacks before
+// the first overlay can exist. Keep this bound above that measured cold path;
+// later assertions still fail immediately when the App process exits.
+for _ in 0..<120 {
     windows = agentWindows()
     let floatingWindows = windows.filter { $0.layer != 0 }
     if expectsBubble {
@@ -200,6 +203,14 @@ func isBubblePanel(_ window: WindowInfo) -> Bool {
         && window.height <= 720
 }
 
+func isControlPanel(_ window: WindowInfo) -> Bool {
+    // The pet-side disclosure control is an independently attached 38 pt panel.
+    // Keep the tolerance narrow so a larger unexpected input-owning window still
+    // fails the desktop-blocking assertion below.
+    abs(window.width - 38) <= 1
+        && abs(window.height - 38) <= 1
+}
+
 let petPanels = floating.filter(isPetPanel)
 if petPanels.isEmpty {
     fputs("overlay runtime validation failed: no compact pet panel found\n", stderr)
@@ -218,7 +229,9 @@ if expectsBubble && bubblePanels.isEmpty {
     exit(1)
 }
 
-let unexpected = floating.filter { !isPetPanel($0) && !isBubblePanel($0) }
+let unexpected = floating.filter {
+    !isPetPanel($0) && !isBubblePanel($0) && !isControlPanel($0)
+}
 if !unexpected.isEmpty {
     fputs("overlay runtime validation failed: unexpected floating window size may block desktop input:\n", stderr)
     for window in unexpected {

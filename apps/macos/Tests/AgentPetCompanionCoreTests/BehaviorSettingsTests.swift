@@ -11,6 +11,7 @@ struct BehaviorSettingsTests {
         #expect(AgentSource.allCases.allSatisfy {
             defaults.sources[$0] == true
         })
+        #expect(!defaults.groupSessionsByAgent)
 
         let legacy = try JSONDecoder().decode(
             BehaviorSettings.self,
@@ -24,7 +25,8 @@ struct BehaviorSettingsTests {
 
     @Test
     func patchContainsOnlyChangedScalarAndMapEntries() throws {
-        let previous = BehaviorSettings()
+        var previous = BehaviorSettings()
+        previous.groupSessionsByAgent = true
         var next = previous
         next.autoHide = true
         next.interfaceLanguage = .simplifiedChinese
@@ -71,7 +73,7 @@ struct BehaviorSettingsTests {
 
         #expect(decoded.interfaceLanguage == .system)
         #expect(decoded.appearanceTheme == .system)
-        #expect(decoded.groupSessionsByAgent)
+        #expect(!decoded.groupSessionsByAgent)
         #expect(decoded.sessionGroupDisplay == .stacked)
         #expect(object["bubble_transparency"] == nil)
     }
@@ -108,7 +110,7 @@ struct BehaviorSettingsTests {
         let behavior = BehaviorSettings(
             interfaceLanguage: .english,
             appearanceTheme: .light,
-            groupSessionsByAgent: false,
+            groupSessionsByAgent: true,
             sessionGroupDisplay: .expanded
         )
         let data = try JSONEncoder().encode(behavior)
@@ -116,7 +118,7 @@ struct BehaviorSettingsTests {
 
         #expect(decoded.interfaceLanguage == .english)
         #expect(decoded.appearanceTheme == .light)
-        #expect(!decoded.groupSessionsByAgent)
+        #expect(decoded.groupSessionsByAgent)
         #expect(decoded.sessionGroupDisplay == .expanded)
         #expect(SessionGroupDisplay.allCases.map(\.title) == ["堆叠", "展开"])
     }

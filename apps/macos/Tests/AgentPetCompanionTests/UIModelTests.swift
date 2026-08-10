@@ -1697,6 +1697,7 @@ struct UIModelTests {
     @Test
     func agentGroupUsesTheConfiguredDefaultAndAllowsATemporaryOverride() {
         let store = makeStore()
+        store.behavior.groupSessionsByAgent = true
         store.behavior.sessionGroupDisplay = .stacked
         #expect(!store.overlayAgentGroupIsExpanded(.codex))
 
@@ -1704,6 +1705,7 @@ struct UIModelTests {
         #expect(store.overlayAgentGroupIsExpanded(.codex))
 
         let expandedStore = makeStore()
+        expandedStore.behavior.groupSessionsByAgent = true
         expandedStore.behavior.sessionGroupDisplay = .expanded
         #expect(expandedStore.overlayAgentGroupIsExpanded(.opencode))
     }

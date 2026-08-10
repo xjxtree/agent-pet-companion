@@ -231,7 +231,7 @@ struct BehaviorSettingsViewTests {
     }
 
     @Test
-    func sidebarPreviewUsesTheDefaultAgentGroupAndFoldedMultiSessionPreference() throws {
+    func sidebarPreviewUsesTheDefaultFlatFoldedSessionStack() throws {
         let presentation = SidebarConfigurationPreviewPresentation(
             behavior: BehaviorSettings(),
             localeIdentifier: "en"
@@ -241,18 +241,20 @@ struct BehaviorSettingsViewTests {
         #expect(presentation.contents.count == 1)
         #expect(presentation.emptyReason == nil)
         #expect(content.source == .codex)
-        #expect(!content.isStandaloneSessionCard)
-        #expect(content.sessions.count == 2)
+        #expect(content.isStandaloneSessionCard)
+        #expect(content.sessions.count == 1)
         #expect(content.visibleSessions.count == 1)
+        #expect(content.disclosureSessionCount == 2)
         #expect(content.isStacked)
         #expect(content.showsStackDecoration)
-        #expect(content.sessions.map(\.eventType) == [.waiting, .failed])
+        #expect(content.sessions.map(\.eventType) == [.waiting])
         #expect(presentation.petAction == .waiting)
     }
 
     @Test
     func sidebarPreviewExpandsAgentSessionsAndPreservesTheirStateMessages() throws {
         var behavior = BehaviorSettings()
+        behavior.groupSessionsByAgent = true
         behavior.sessionGroupDisplay = .expanded
         let presentation = SidebarConfigurationPreviewPresentation(
             behavior: behavior,
@@ -349,8 +351,9 @@ struct BehaviorSettingsViewTests {
         let content = try #require(presentation.contents.first)
 
         #expect(content.source == .pi)
-        #expect(content.sessions.map(\.source) == [.pi, .pi])
-        #expect(content.sessions.map(\.eventType) == [.done, .done])
+        #expect(content.sessions.map(\.source) == [.pi])
+        #expect(content.sessions.map(\.eventType) == [.done])
+        #expect(content.disclosureSessionCount == 2)
         #expect(content.sessions.allSatisfy { $0.statusText == "Completed" })
         #expect(presentation.petAction == .done)
     }

@@ -304,7 +304,10 @@ struct ReferenceImageDropZone: View {
         var accepted = false
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             accepted = true
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+            provider.loadItem(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                options: nil
+            ) { @Sendable item, _ in
                 guard let url = ReferenceImageDropItem.fileURL(from: item) else { return }
                 Task { @MainActor in
                     store.addReferenceImageURLs([url])

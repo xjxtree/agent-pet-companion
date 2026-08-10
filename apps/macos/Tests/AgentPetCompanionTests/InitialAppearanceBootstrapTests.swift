@@ -185,6 +185,65 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
+    func initialActivationRefreshJoinsBootstrapBeforeReadingSnapshot() async throws {
+        let startupGate = InitialAppearanceReadyGate()
+        let behavior = BehaviorSettings(appearanceTheme: .dark)
+        let snapshot = try Self.stateSnapshotPayload(
+            behavior: behavior,
+            behaviorRevision: "1",
+            pets: []
+        )
+        var snapshotRequests = 0
+        var historyRequests = 0
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: {
+                    await startupGate.waitForRelease()
+                    return .started
+                },
+                recover: { .started },
+                fetchInitialBehavior: { _ in
+                    try Self.versionedBehaviorPayload(behavior, revision: "1")
+                },
+                refreshSnapshot: { store in
+                    snapshotRequests += 1
+                    try store.applyStateSnapshot(snapshot)
+                },
+                onReady: { _ in }
+            ),
+            applicationAppearanceApplier: { _ in },
+            overlayPresenter: { _, _ in },
+            petCoreRequestOverride: { method, _, _ in
+                guard method == "generation.history.list" else {
+                    throw PetCoreClientError.invalidResponse
+                }
+                historyRequests += 1
+                return ["ok": true, "jobs": [], "truncated": false]
+            },
+            productConvergenceManifest: nil
+        )
+
+        let lifecycleRefresh = Task { @MainActor in
+            await store.refreshMakerAfterLifecycleEvent()
+        }
+        await startupGate.waitUntilStarted()
+        await Task.yield()
+
+        #expect(snapshotRequests == 0)
+        #expect(historyRequests == 0)
+        #expect(store.petCoreOperationalState == .checking)
+
+        await startupGate.release()
+        await lifecycleRefresh.value
+
+        #expect(snapshotRequests == 1)
+        #expect(historyRequests == 1)
+        #expect(store.hasLoadedStateSnapshot)
+        #expect(store.petCoreOperationalState == .online)
+    }
+
+    @MainActor
+    @Test
     func managedRuntimeUpgradeUsesTheBrandedBlockingStateFromBootstrapStart() async {
         let startupGate = InitialAppearanceReadyGate()
         let defaults = UserDefaults(

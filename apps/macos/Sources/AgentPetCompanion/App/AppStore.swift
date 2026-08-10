@@ -1780,7 +1780,7 @@ final class AppStore: ObservableObject {
             workspace.openApplication(
                 at: applicationURL,
                 configuration: configuration
-            ) { application, error in
+            ) { @Sendable application, error in
                 continuation.resume(returning:
                     application != nil && error == nil
                         ? .openedAgentHost
@@ -4047,6 +4047,14 @@ final class AppStore: ObservableObject {
     }
 
     func refreshMakerAfterLifecycleEvent() async {
+        // didBecomeActive is also delivered during the first launch, before a
+        // clean-home PetCore has necessarily finished staging its runtime and
+        // seeding bundled pets. Join that single bootstrap pipeline instead of
+        // issuing an early snapshot request that briefly marks the service
+        // offline and starts a duplicate recovery path.
+        guard await runRuntimeBootstrapIfNeeded(startMode: .ensureRunning) else {
+            return
+        }
         _ = await refresh()
         await refreshGenerationHistory()
         guard let jobID = selectedGenerationHistoryJobID,

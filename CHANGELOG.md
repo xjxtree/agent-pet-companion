@@ -14,6 +14,26 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- New installations now show pet-bubble sessions in one cross-Agent flat stack by default; grouping sessions by Agent remains available in Pet Configuration.
+
+  全新安装的宠物气泡现在默认将所有 Agent 会话放入同一个平铺堆栈；仍可在“宠物配置”中开启按 Agent 聚合。
+
+- The English and Chinese READMEs now share three privacy-safe product screenshots covering the desktop-pet status experience, the five-area control center, and AI Pet Maker.
+
+  中英文 README 现在共用三张不含隐私信息的产品截图，分别展示桌宠状态体验、包含五个功能区域的控制中心，以及 AI 宠物制作。
+
+### Fixed / 修复
+
+- Fixed a macOS 26 crash when Metal completed a desktop-pet frame on its background completion queue while the callback was incorrectly isolated to the main actor.
+
+  修复 macOS 26 上 Metal 在后台完成队列结束桌宠帧渲染时，回调被错误隔离到主 Actor 而导致的闪退。
+
+- Cold startup now joins the single PetCore bootstrap before handling the App's initial activation refresh, avoiding a transient offline state and duplicate recovery while a new installation validates and seeds its bundled pets.
+
+  冷启动处理 App 首次激活刷新前，现在会先汇入唯一的 PetCore 启动流程，避免全新安装校验并种入内置宠物期间短暂误报离线及重复触发恢复。
+
 ## [0.3.3] - 2026-08-10
 
 ### Changed / 变更

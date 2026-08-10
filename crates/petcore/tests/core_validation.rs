@@ -1417,10 +1417,10 @@ fn agent_event_ingest_accepts_payload_json_alias() {
 }
 
 #[test]
-fn behavior_settings_default_serializes_system_language_and_stacked_session_group_display() {
+fn behavior_settings_default_serializes_flat_stacked_sessions() {
     let behavior = BehaviorSettings::default();
     assert_eq!(behavior.interface_language, InterfaceLanguage::System);
-    assert!(behavior.group_sessions_by_agent);
+    assert!(!behavior.group_sessions_by_agent);
     assert_eq!(behavior.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(
         serde_json::to_value(&behavior).unwrap()["interface_language"],
@@ -1459,7 +1459,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
         petcore_types::AppearanceTheme::System
     );
     assert_eq!(decoded.interface_language, InterfaceLanguage::System);
-    assert!(decoded.group_sessions_by_agent);
+    assert!(!decoded.group_sessions_by_agent);
     assert!(decoded.status_bubble);
     assert!(decoded.click_menu);
     assert!(decoded.mouse_passthrough);
@@ -1487,7 +1487,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
         petcore_types::AppearanceTheme::System
     );
     assert_eq!(stored.interface_language, InterfaceLanguage::System);
-    assert!(stored.group_sessions_by_agent);
+    assert!(!stored.group_sessions_by_agent);
     assert!(stored.mouse_passthrough);
     assert_eq!(stored.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(stored.sources.get(&AgentSource::Codex), Some(&false));

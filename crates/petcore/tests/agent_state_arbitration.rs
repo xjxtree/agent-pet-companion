@@ -3873,7 +3873,7 @@ fn interface_language_patch_is_typed_and_persisted() {
 fn session_group_display_patch_is_typed_and_persisted() {
     let (_temp, state) = ready();
     let initial = snapshot(&state);
-    assert_eq!(initial["behavior"]["group_sessions_by_agent"], true);
+    assert_eq!(initial["behavior"]["group_sessions_by_agent"], false);
     assert_eq!(initial["behavior"]["session_group_display"], "stacked");
 
     let revision = initial["behavior_revision"].as_str().unwrap();
@@ -3881,16 +3881,16 @@ fn session_group_display_patch_is_typed_and_persisted() {
         &state,
         revision,
         json!({
-            "group_sessions_by_agent": false,
+            "group_sessions_by_agent": true,
             "session_group_display": "expanded"
         }),
     )
     .unwrap();
-    assert_eq!(updated["behavior"]["group_sessions_by_agent"], false);
+    assert_eq!(updated["behavior"]["group_sessions_by_agent"], true);
     assert_eq!(updated["behavior"]["session_group_display"], "expanded");
     assert_eq!(
         snapshot(&state)["behavior"]["group_sessions_by_agent"],
-        false
+        true
     );
     assert_eq!(
         snapshot(&state)["behavior"]["session_group_display"],

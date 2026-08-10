@@ -700,7 +700,7 @@ impl Default for BehaviorSettings {
             click_menu: true,
             mouse_passthrough: true,
             auto_hide: false,
-            group_sessions_by_agent: true,
+            group_sessions_by_agent: false,
             session_group_display: SessionGroupDisplay::Stacked,
             session_message_timeout_minutes: DEFAULT_SESSION_MESSAGE_TIMEOUT_MINUTES,
             sources,

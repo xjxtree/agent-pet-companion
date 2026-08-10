@@ -12,6 +12,10 @@ Agent Pet Companion 是一款 macOS 原生桌宠 App，适合同时使用一个�
 
 [下载最新版本](https://github.com/xjxtree/agent-pet-companion/releases) · 支持 macOS 14 及以上版本 · Apple 芯片与 Intel Mac
 
+<p align="center">
+  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion 桌宠与 OpenCode、Pi Coding Agent、Claude Code 实时状态气泡">
+</p>
+
 ## 它能帮你做什么
 
 - **少一些来回切换**：在桌面上直接看到 Agent 的工作状态，不必反复打开终端或 Agent App。
@@ -20,6 +24,10 @@ Agent Pet Companion 是一款 macOS 原生桌宠 App，适合同时使用一个�
 - **快速回到工作现场**：路由可用时，从气泡打开对应会话、Agent App 或终端。
 - **拥有自己的桌宠**：使用三个内置宠物，导入 `.petpack`，或通过 AI 宠物制作创建和修改专属宠物。
 - **数据以本机为中心**：宠物、设置、有限的会话摘要和诊断信息保存在 Mac 上；App 不读取 Agent 的凭据、Token、Cookie 或 API Key。
+
+<p align="center">
+  <img src="docs/assets/screenshots/control-center.png" width="1120" alt="包含五个导航区域和宠物库的 Agent Pet Companion 控制中心">
+</p>
 
 ## 三步开始使用
 
@@ -46,6 +54,10 @@ Agent 连接按 Agent 和会话组织，不要求你逐个配置项目目录。A
 ## 创建自己的桌宠
 
 在 **AI 宠物制作** 中描述外形、风格和你希望保留的特征，App 会通过本机可用的 Codex 能力创建新宠物，也可以基于现有宠物进行修改。
+
+<p align="center">
+  <img src="docs/assets/screenshots/ai-pet-maker.png" width="1120" alt="Agent Pet Companion 的 AI 宠物制作工作区">
+</p>
 
 - App 内支持低分辨率和标准分辨率制作。
 - 制作任务会保留进度；遇到需要确认的问题时，可以直接在 App 内回复。

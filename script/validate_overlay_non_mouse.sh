@@ -92,7 +92,11 @@ ORIGINAL_BEHAVIOR_JSON="$(SNAPSHOT="$SNAPSHOT" python3 - <<'PY'
 import json
 import os
 
-print(json.dumps(json.loads(os.environ["SNAPSHOT"])["behavior"], ensure_ascii=False))
+behavior = dict(json.loads(os.environ["SNAPSHOT"])["behavior"])
+# The snapshot keeps this legacy read-only field for mixed-version clients, but
+# current behavior patches must omit it because pointer passthrough is invariant.
+behavior.pop("mouse_passthrough", None)
+print(json.dumps(behavior, ensure_ascii=False))
 PY
 )"
 ORIGINAL_PLACEMENT_JSON="$(SNAPSHOT="$SNAPSHOT" python3 - <<'PY'
@@ -109,11 +113,12 @@ import os
 
 data = json.loads(os.environ["SNAPSHOT"])
 behavior = dict(data["behavior"])
+behavior.pop("mouse_passthrough", None)
 behavior["enabled"] = True
 behavior["status_bubble"] = True
 behavior["click_menu"] = True
-behavior["mouse_passthrough"] = True
 behavior["auto_hide"] = False
+behavior["group_sessions_by_agent"] = True
 for key in ["codex", "claude_code", "pi", "opencode"]:
     behavior.setdefault("sources", {})[key] = True
 for key in ["start", "thinking", "plan", "tool", "waiting", "done", "failed"]:
@@ -396,7 +401,7 @@ wait_for_overlay_ax() {
   local attempt
   local log_path="$TMP_DIR/overlay-ax-${expected_vertical_relation}.log"
 
-  for attempt in {1..40}; do
+  for attempt in {1..120}; do
     if validate_overlay_ax "$expected_vertical_relation" >"$log_path" 2>&1; then
       cat "$log_path"
       return 0
@@ -594,7 +599,7 @@ wait_for_single_compact_bubble() {
   local attempt
   local log_path="$TMP_DIR/overlay-ax-compact.log"
 
-  for attempt in {1..40}; do
+  for attempt in {1..120}; do
     if validate_single_compact_bubble >"$log_path" 2>&1; then
       cat "$log_path"
       return 0
@@ -628,6 +633,7 @@ import os
 
 data = json.loads(os.environ["SNAPSHOT"])
 behavior = dict(data["behavior"])
+behavior.pop("mouse_passthrough", None)
 for key in ["codex", "claude_code", "pi", "opencode"]:
     behavior.setdefault("sources", {})[key] = key == "codex"
 print(json.dumps(behavior, ensure_ascii=False))

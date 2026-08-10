@@ -2492,7 +2492,7 @@ enum OverlayBubbleProjection {
         states: [ActiveAgentState],
         omittedCount: Int,
         dismissedSessionIDs: Set<String>,
-        groupSessionsByAgent: Bool = true,
+        groupSessionsByAgent: Bool = false,
         standaloneSessionOrder: [String] = [],
         standaloneStackExpanded: Bool = true,
         isExpanded: (AgentSource) -> Bool

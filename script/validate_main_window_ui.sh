@@ -154,7 +154,10 @@ guard let mainWindow = resolvedMainWindow else {
 // the onboarding-specific scene progression is validated separately.
 var onboardingWasPresented = false
 var onboardingSkipAction: AXUIElement?
-for _ in 0..<80 {
+// Clean-home bootstrap validates and seeds the complete bundled inventory
+// before onboarding becomes authoritative. Do not mistake that bounded loading
+// state for a returning user whose onboarding was already completed.
+for _ in 0..<240 {
     let currentNodes = snapshotNodes(mainWindow)
     if currentNodes.contains(where: {
         $0.identifier == "onboarding.root"

@@ -12,6 +12,10 @@ Agent Pet Companion is a native macOS desktop pet for people who work with one o
 
 [Download the latest release](https://github.com/xjxtree/agent-pet-companion/releases) · macOS 14 or later · Apple silicon and Intel Macs
 
+<p align="center">
+  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion showing a desktop pet with live OpenCode, Pi Coding Agent, and Claude Code status bubbles">
+</p>
+
 ## What it does for you
 
 - **Switch windows less often** — see Agent activity on your desktop without repeatedly opening a terminal or Agent app.
@@ -20,6 +24,10 @@ Agent Pet Companion is a native macOS desktop pet for people who work with one o
 - **Get back to work quickly** — when routing is available, open the relevant session, Agent app, or terminal from the bubble.
 - **Make the pet yours** — use one of three bundled pets, import a `.petpack`, or create and edit your own pet with AI Pet Maker.
 - **Keep data centered on your Mac** — pets, settings, limited session summaries, and diagnostics remain local. The App does not read Agent credentials, tokens, cookies, or API keys.
+
+<p align="center">
+  <img src="docs/assets/screenshots/control-center.png" width="1120" alt="Agent Pet Companion control center with its five navigation areas and the Pet Library">
+</p>
 
 ## Get started in three steps
 
@@ -46,6 +54,10 @@ Agent Connections is organized by Agent and session, so you do not need to confi
 ## Create your own pet
 
 In **AI Pet Maker**, describe the appearance, style, and important traits you want to keep. The App uses locally available Codex capabilities to create a new pet or edit an existing one.
+
+<p align="center">
+  <img src="docs/assets/screenshots/ai-pet-maker.png" width="1120" alt="AI Pet Maker creation workspace in Agent Pet Companion">
+</p>
 
 - In-App creation supports low and standard resolution.
 - Creation progress is retained, and you can answer questions inside the App when a task needs your input.
