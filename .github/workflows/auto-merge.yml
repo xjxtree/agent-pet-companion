@@ -56,8 +56,7 @@ jobs:
               '[.[] | select(
                 ((.state == "open" and .draft == false) or
                  (.state == "closed" and
-                  (.merged_at | type) == "string" and
-                  (.merge_commit_sha | type) == "string")) and
+                  (.merged_at | type) == "string")) and
                 .head.repo.full_name == $repository and
                 .head.ref == $branch and
                 .head.sha == $head_sha and
@@ -75,6 +74,21 @@ jobs:
           [[ "$base_commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$pr_state" == "open" || "$pr_state" == "closed" ]]
           if [[ "$pr_state" == "closed" ]]; then
+            resolved_pull="$(
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$GITHUB_REPOSITORY/pulls/$pr_number"
+            )"
+            test "$(jq -er '.state' <<<"$resolved_pull")" = "closed"
+            test "$(jq -er '.merged' <<<"$resolved_pull")" = "true"
+            test "$(jq -er '.base.ref' <<<"$resolved_pull")" = "$base_branch"
+            test "$(jq -er '.base.sha' <<<"$resolved_pull")" = "$base_commit"
+            test "$(jq -er '.head.repo.full_name' <<<"$resolved_pull")" = "$GITHUB_REPOSITORY"
+            test "$(jq -er '.head.ref' <<<"$resolved_pull")" = "$HEAD_BRANCH"
+            test "$(jq -er '.head.sha' <<<"$resolved_pull")" = "$HEAD_SHA"
+            test "$(jq -er '.merged_at | type' <<<"$resolved_pull")" = "string"
+            merge_commit="$(jq -er '.merge_commit_sha' <<<"$resolved_pull")"
             [[ "$merge_commit" =~ ^[0-9a-f]{40}$ ]]
           fi
 
