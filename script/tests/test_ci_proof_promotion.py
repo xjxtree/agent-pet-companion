@@ -337,6 +337,8 @@ class MergedHeadCleanupTests(unittest.TestCase):
             ci_proof, "require_origin_repository"
         ), mock.patch.object(
             ci_proof, "remote_ref_sha", return_value="c" * 40
+        ), mock.patch.object(
+            ci_proof.subprocess, "run"
         ), self.assertRaisesRegex(ValueError, "advanced or was reused"):
             ci_proof.delete_merged_head(self.args())
 
