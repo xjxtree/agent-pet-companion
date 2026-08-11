@@ -166,6 +166,8 @@ rg -Fq '.context == "Required CI"' "$AUTO_MERGE_WORKFLOW"
 rg -Fq -- '--squash --match-head-commit "$HEAD_SHA"' "$AUTO_MERGE_WORKFLOW"
 rg -Fq './script/ci_proof_promotion.py verify-merge-source' "$AUTO_MERGE_WORKFLOW"
 rg -Fq './script/ci_proof_promotion.py delete-merged-head' "$AUTO_MERGE_WORKFLOW"
+rg -Fq -- '--allow-delete "$ALLOW_DELETE"' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'newly_merged=$newly_merged' "$AUTO_MERGE_WORKFLOW"
 rg -Fq 'f"--force-with-lease={full_ref}:{args.head_commit}"' \
   "$ROOT_DIR/script/ci_proof_promotion.py"
 rg -Fq 'ref: main' "$AUTO_MERGE_WORKFLOW"

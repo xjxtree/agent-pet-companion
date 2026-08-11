@@ -240,13 +240,14 @@ class PromotionSelectionTests(unittest.TestCase):
 
 
 class MergedHeadCleanupTests(unittest.TestCase):
-    def args(self) -> Namespace:
+    def args(self, *, allow_delete: bool = True) -> Namespace:
         return Namespace(
             root=ROOT,
             repository="owner/repo",
             pull_request_number=17,
             head_ref="gd-ops/task/17-small",
             head_commit="b" * 40,
+            allow_delete=allow_delete,
         )
 
     def merged_pull(self) -> dict[str, object]:
@@ -262,12 +263,22 @@ class MergedHeadCleanupTests(unittest.TestCase):
 
     def test_deletes_only_the_exact_verified_merged_head_with_an_atomic_lease(self) -> None:
         observed = iter(["b" * 40, None])
+
+        def observe_remote(*_args):
+            self.assertEqual(
+                run_process.call_args_list[0],
+                mock.call(["gh", "auth", "setup-git"], check=True),
+            )
+            return next(observed)
+
         with mock.patch.object(
             ci_proof, "api_json", return_value=self.merged_pull()
         ), mock.patch.object(
             ci_proof, "require_origin_repository"
         ), mock.patch.object(
-            ci_proof, "remote_ref_sha", side_effect=lambda *_args: next(observed)
+            ci_proof,
+            "remote_ref_sha",
+            side_effect=observe_remote,
         ), mock.patch.object(ci_proof.subprocess, "run") as run_process:
             result = ci_proof.delete_merged_head(self.args())
 
@@ -305,9 +316,20 @@ class MergedHeadCleanupTests(unittest.TestCase):
         ), mock.patch.object(
             ci_proof, "remote_ref_sha", return_value=None
         ), mock.patch.object(ci_proof.subprocess, "run") as run_process:
-            result = ci_proof.delete_merged_head(self.args())
+            result = ci_proof.delete_merged_head(self.args(allow_delete=False))
         self.assertFalse(result["deleted"])
-        run_process.assert_not_called()
+        run_process.assert_called_once_with(["gh", "auth", "setup-git"], check=True)
+
+        with mock.patch.object(
+            ci_proof, "api_json", return_value=self.merged_pull()
+        ), mock.patch.object(
+            ci_proof, "require_origin_repository"
+        ), mock.patch.object(
+            ci_proof, "remote_ref_sha", return_value="b" * 40
+        ), mock.patch.object(
+            ci_proof.subprocess, "run"
+        ), self.assertRaisesRegex(ValueError, "replay.*refusing deletion"):
+            ci_proof.delete_merged_head(self.args(allow_delete=False))
 
         with mock.patch.object(
             ci_proof, "api_json", return_value=self.merged_pull()

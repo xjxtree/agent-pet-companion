@@ -173,7 +173,11 @@ fn status_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
             && tree_matches_bundle(&target).unwrap_or(false)
             && tree_contains_only_bundle(&target).unwrap_or(false)
     });
-    let installed_version = installed_version(&target).or_else(|| match &receipt_state {
+    let target_installed_version = target_metadata
+        .as_ref()
+        .filter(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        .and_then(|_| installed_version(&target));
+    let installed_version = target_installed_version.or_else(|| match &receipt_state {
         ReceiptState::Valid(receipt) => Some(receipt.installed_version.clone()),
         ReceiptState::Missing | ReceiptState::Invalid => None,
     });
@@ -195,14 +199,6 @@ fn status_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
         ReceiptState::Invalid => (PortableSkillState::Conflict, false),
         ReceiptState::Missing if !parent_safe => (PortableSkillState::Conflict, false),
         ReceiptState::Missing if !target_exists => (PortableSkillState::Missing, false),
-        ReceiptState::Missing
-            if target_metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.is_dir())
-                && directory_is_empty(&target).unwrap_or(false) =>
-        {
-            (PortableSkillState::Missing, false)
-        }
         ReceiptState::Missing if expected_matches && tree_contains_only_bundle(&target)? => {
             (PortableSkillState::UnmanagedCurrent, false)
         }
@@ -527,10 +523,6 @@ fn tree_contains_only_bundle(target: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn directory_is_empty(path: &Path) -> Result<bool> {
-    Ok(fs::read_dir(path)?.next().transpose()?.is_none())
-}
-
 fn read_receipt(path: &Path) -> Result<ReceiptState> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -710,6 +702,48 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join("foreign.txt")).unwrap(),
             "keep me"
+        );
+    }
+
+    #[test]
+    fn empty_unmanaged_target_is_preserved_as_a_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_home = temp.path().join("app-home");
+        let home = temp.path().join("user-home");
+        let target = target_path(&home);
+        fs::create_dir_all(&app_home).unwrap();
+        fs::create_dir_all(&target).unwrap();
+
+        let status = status_at(&app_home, &home).unwrap();
+        assert_eq!(status.state, PortableSkillState::Conflict);
+        assert!(!status.can_install);
+        assert!(install_at(&app_home, &home).is_err());
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn unmanaged_root_symlink_is_not_followed_for_version_or_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_home = temp.path().join("app-home");
+        let home = temp.path().join("user-home");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&app_home).unwrap();
+        fs::create_dir_all(home.join("agent/skills")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("SKILL.md"),
+            "---\nversion: 99.99.99\n---\nexternal\n",
+        )
+        .unwrap();
+        symlink(&outside, target_path(&home)).unwrap();
+
+        let status = status_at(&app_home, &home).unwrap();
+        assert_eq!(status.state, PortableSkillState::Conflict);
+        assert_eq!(status.installed_version, None);
+        assert!(install_at(&app_home, &home).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+            "---\nversion: 99.99.99\n---\nexternal\n"
         );
     }
 

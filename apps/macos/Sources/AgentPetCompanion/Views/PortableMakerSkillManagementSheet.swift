@@ -169,11 +169,12 @@ struct PortableMakerSkillManagementSheet: View {
                 color: .secondary
             )
         } else if let status {
+            let presentation = status.state.presentation
             PortableSkillNotice(
-                title: stateTitle(status.state),
-                detail: stateDetail(status.state),
-                systemImage: stateIcon(status.state),
-                color: stateColor(status.state)
+                title: APCLocalization.text(presentation.titleKey),
+                detail: APCLocalization.text(presentation.detailKey),
+                systemImage: presentation.systemImage,
+                color: presentation.color
             )
         }
     }
@@ -262,9 +263,12 @@ struct PortableMakerSkillManagementSheet: View {
     private var statusPill: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(status.map { stateColor($0.state) } ?? Color.secondary)
+                .fill(status?.state.presentation.color ?? Color.secondary)
                 .frame(width: 7, height: 7)
-            Text(status.map { stateTitle($0.state) } ?? APCLocalization.text(.studioPortableSkillChecking))
+            Text(
+                status.map { APCLocalization.text($0.state.presentation.titleKey) }
+                    ?? APCLocalization.text(.studioPortableSkillChecking)
+            )
                 .font(.caption.weight(.semibold))
         }
         .padding(.horizontal, 10)
@@ -274,75 +278,12 @@ struct PortableMakerSkillManagementSheet: View {
     }
 
     private var primaryActionTitle: String? {
-        guard let status else { return nil }
-        return switch status.state {
-        case .missing:
-            APCLocalization.text(.studioPortableSkillActionInstall)
-        case .unmanagedCurrent:
-            APCLocalization.text(.studioPortableSkillActionManage)
-        case .updateAvailable:
-            APCLocalization.text(.studioPortableSkillActionUpdate)
-        case .needsReinstall, .current:
-            APCLocalization.text(.studioPortableSkillActionReinstall)
-        case .conflict:
-            nil
-        }
+        guard let key = status?.state.presentation.primaryActionKey else { return nil }
+        return APCLocalization.text(key)
     }
 
     private var primaryActionIcon: String {
-        switch status?.state {
-        case .updateAvailable:
-            "arrow.down.circle"
-        case .needsReinstall, .current:
-            "arrow.clockwise"
-        default:
-            "square.and.arrow.down"
-        }
-    }
-
-    private func stateTitle(_ state: PortableMakerSkillState) -> String {
-        let key: APCLocalizationKey = switch state {
-        case .missing: .studioPortableSkillStateMissing
-        case .current: .studioPortableSkillStateCurrent
-        case .updateAvailable: .studioPortableSkillStateUpdateAvailable
-        case .needsReinstall: .studioPortableSkillStateNeedsReinstall
-        case .unmanagedCurrent: .studioPortableSkillStateUnmanagedCurrent
-        case .conflict: .studioPortableSkillStateConflict
-        }
-        return APCLocalization.text(key)
-    }
-
-    private func stateDetail(_ state: PortableMakerSkillState) -> String {
-        let key: APCLocalizationKey = switch state {
-        case .missing: .studioPortableSkillStateMissingDetail
-        case .current: .studioPortableSkillStateCurrentDetail
-        case .updateAvailable: .studioPortableSkillStateUpdateAvailableDetail
-        case .needsReinstall: .studioPortableSkillStateNeedsReinstallDetail
-        case .unmanagedCurrent: .studioPortableSkillStateUnmanagedCurrentDetail
-        case .conflict: .studioPortableSkillStateConflictDetail
-        }
-        return APCLocalization.text(key)
-    }
-
-    private func stateIcon(_ state: PortableMakerSkillState) -> String {
-        switch state {
-        case .missing: "shippingbox"
-        case .current: "checkmark.circle.fill"
-        case .updateAvailable: "arrow.down.circle.fill"
-        case .needsReinstall: "wrench.and.screwdriver.fill"
-        case .unmanagedCurrent: "checkmark.shield"
-        case .conflict: "exclamationmark.triangle.fill"
-        }
-    }
-
-    private func stateColor(_ state: PortableMakerSkillState) -> Color {
-        switch state {
-        case .current: APCDesign.success
-        case .updateAvailable, .unmanagedCurrent: .blue
-        case .needsReinstall: APCDesign.warning
-        case .conflict: APCDesign.destructive
-        case .missing: .secondary
-        }
+        status?.state.presentation.primaryActionIcon ?? "square.and.arrow.down"
     }
 
     private func failureDetail(_ failure: PortableMakerSkillFailure) -> String {
@@ -360,6 +301,76 @@ struct PortableMakerSkillManagementSheet: View {
             .appendingPathComponent("skills", isDirectory: true)
             .appendingPathComponent("agent-pet-maker", isDirectory: true)
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct PortableSkillStatePresentation {
+    let titleKey: APCLocalizationKey
+    let detailKey: APCLocalizationKey
+    let systemImage: String
+    let color: Color
+    let primaryActionKey: APCLocalizationKey?
+    let primaryActionIcon: String
+}
+
+private extension PortableMakerSkillState {
+    var presentation: PortableSkillStatePresentation {
+        switch self {
+        case .missing:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateMissing,
+                detailKey: .studioPortableSkillStateMissingDetail,
+                systemImage: "shippingbox",
+                color: .secondary,
+                primaryActionKey: .studioPortableSkillActionInstall,
+                primaryActionIcon: "square.and.arrow.down"
+            )
+        case .current:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateCurrent,
+                detailKey: .studioPortableSkillStateCurrentDetail,
+                systemImage: "checkmark.circle.fill",
+                color: APCDesign.success,
+                primaryActionKey: .studioPortableSkillActionReinstall,
+                primaryActionIcon: "arrow.clockwise"
+            )
+        case .updateAvailable:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateUpdateAvailable,
+                detailKey: .studioPortableSkillStateUpdateAvailableDetail,
+                systemImage: "arrow.down.circle.fill",
+                color: .blue,
+                primaryActionKey: .studioPortableSkillActionUpdate,
+                primaryActionIcon: "arrow.down.circle"
+            )
+        case .needsReinstall:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateNeedsReinstall,
+                detailKey: .studioPortableSkillStateNeedsReinstallDetail,
+                systemImage: "wrench.and.screwdriver.fill",
+                color: APCDesign.warning,
+                primaryActionKey: .studioPortableSkillActionReinstall,
+                primaryActionIcon: "arrow.clockwise"
+            )
+        case .unmanagedCurrent:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateUnmanagedCurrent,
+                detailKey: .studioPortableSkillStateUnmanagedCurrentDetail,
+                systemImage: "checkmark.shield",
+                color: .blue,
+                primaryActionKey: .studioPortableSkillActionManage,
+                primaryActionIcon: "square.and.arrow.down"
+            )
+        case .conflict:
+            PortableSkillStatePresentation(
+                titleKey: .studioPortableSkillStateConflict,
+                detailKey: .studioPortableSkillStateConflictDetail,
+                systemImage: "exclamationmark.triangle.fill",
+                color: APCDesign.destructive,
+                primaryActionKey: nil,
+                primaryActionIcon: "square.and.arrow.down"
+            )
+        }
     }
 }
 

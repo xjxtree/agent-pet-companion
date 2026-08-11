@@ -192,6 +192,9 @@ def delete_merged_head(args: Namespace) -> dict[str, bool | str]:
     ):
         raise ValueError("merged-head cleanup is not bound to the exact merged pull request")
     require_origin_repository(root, args.repository)
+    if not isinstance(args.allow_delete, bool):
+        raise ValueError("merged-head cleanup mode is invalid")
+    subprocess.run(["gh", "auth", "setup-git"], check=True)
     observed = remote_ref_sha(root, args.head_ref)
     result: dict[str, bool | str] = {
         "deleted": False,
@@ -200,10 +203,13 @@ def delete_merged_head(args: Namespace) -> dict[str, bool | str]:
     }
     if observed is None:
         return result
+    if not args.allow_delete:
+        raise ValueError(
+            "merged-head replay found an existing source ref; refusing deletion"
+        )
     if observed != args.head_commit:
         raise ValueError("merged source branch advanced or was reused; refusing deletion")
     full_ref = f"refs/heads/{args.head_ref}"
-    subprocess.run(["gh", "auth", "setup-git"], check=True)
     subprocess.run(
         [
             "git",
@@ -1150,6 +1156,7 @@ def main() -> int:
     cleanup_parser.add_argument("--pull-request-number", required=True, type=int)
     cleanup_parser.add_argument("--head-ref", required=True)
     cleanup_parser.add_argument("--head-commit", required=True)
+    cleanup_parser.add_argument("--allow-delete", required=True, choices=("0", "1"))
     promote_parser = subparsers.add_parser("promote")
     promote_parser.add_argument("--repository", required=True)
     promote_parser.add_argument("--main-commit", required=True)
@@ -1166,6 +1173,7 @@ def main() -> int:
         elif args.command == "verify-merge-source":
             print(json.dumps(verify_merge_source(args), sort_keys=True))
         elif args.command == "delete-merged-head":
+            args.allow_delete = args.allow_delete == "1"
             print(json.dumps(delete_merged_head(args), sort_keys=True))
         else:
             promote(args)
