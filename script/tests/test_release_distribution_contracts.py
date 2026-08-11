@@ -1026,18 +1026,35 @@ class CIWorkflowContractTests(unittest.TestCase):
             r"github\.event_name == 'pull_request'.*needs\.scope\.outputs\.full_candidate == '1'",
         )
 
-    def test_ready_protected_prs_enable_auto_merge_without_running_pr_code(self) -> None:
+    def test_ci_accepts_only_an_exact_main_commit_dispatch(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]", source)
+        self.assertIn("expected_sha:", source)
+        self.assertIn('elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]', source)
+        self.assertIn('"$GITHUB_SHA" != "$EXPECTED_SHA"', source)
+        self.assertIn("MAIN_PARENT: ${{ needs.scope.outputs.base }}", source)
+
+    def test_successful_protected_pr_ci_merges_and_dispatches_main_without_pr_code(self) -> None:
         source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("pull_request_target:", source)
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", source)
-        self.assertIn("startsWith(github.head_ref, 'gd-ops/')", source)
+        self.assertIn("workflow_run:", source)
+        self.assertIn("workflows: [CI]", source)
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", source)
+        self.assertIn("github.event.workflow_run.path == '.github/workflows/ci.yml'", source)
+        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", source)
+        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'gd-ops/')", source)
         self.assertIn('repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base', source)
         self.assertIn('.context == "Required CI"', source)
         self.assertIn("gh pr merge", source)
-        self.assertIn("--auto --squash", source)
-        self.assertNotIn("actions/checkout", source)
+        self.assertIn('--squash --match-head-commit "$HEAD_SHA"', source)
+        self.assertIn("./script/ci_proof_promotion.py verify-merge-source", source)
+        self.assertIn('gh workflow run ci.yml --ref main -f "expected_sha=$merge_commit"', source)
+        development_flow = (ROOT / "script/development_flow.py").read_text(encoding="utf-8")
+        self.assertNotIn('"--auto"', development_flow)
+        self.assertIn("ref: main", source)
+        self.assertIn("persist-credentials: false", source)
         self.assertNotRegex(source, r"(?m)^\s*run:\s*[.]/")
 
     def test_ci_prepares_producer_image_dependencies_and_pins_actions(self) -> None:

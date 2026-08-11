@@ -373,6 +373,9 @@ class MainBranchRulesetTests(unittest.TestCase):
         main_branch_ruleset.validate_workflow_run(
             trusted, "owner/repo", "main", commit
         )
+        main_branch_ruleset.validate_workflow_run(
+            dict(trusted, event="workflow_dispatch"), "owner/repo", "main", commit
+        )
         with self.assertRaisesRegex(ValueError, "does not belong"):
             main_branch_ruleset.validate_workflow_run(
                 dict(trusted, event="pull_request"), "owner/repo", "main", commit
@@ -501,7 +504,7 @@ class ChangelogFragmentTests(unittest.TestCase):
             )
 
 class ReleaseSourceProofResolutionTests(unittest.TestCase):
-    def test_selects_only_successful_main_push_from_same_repository(self) -> None:
+    def test_selects_only_successful_main_validation_from_same_repository(self) -> None:
         commit = "a" * 40
         trusted = {
             "id": 42,
@@ -513,11 +516,15 @@ class ReleaseSourceProofResolutionTests(unittest.TestCase):
             "path": ".github/workflows/ci.yml",
             "head_repository": {"full_name": "owner/repo"},
         }
+        dispatched = dict(trusted, id=43, run_attempt=1, event="workflow_dispatch")
         rejected = dict(trusted, id=99, event="pull_request")
         selected = resolve_source_proof.select_run(
-            {"workflow_runs": [rejected, trusted]}, "owner/repo", commit
+            {"workflow_runs": [rejected, trusted, dispatched]}, "owner/repo", commit
         )
-        self.assertEqual(selected, {"run_id": 42, "run_attempt": 2})
+        self.assertEqual(
+            selected,
+            {"run_id": 43, "run_attempt": 1, "workflow_event": "workflow_dispatch"},
+        )
 
     def test_rejects_missing_or_duplicate_source_proof_artifact(self) -> None:
         valid = {
@@ -584,6 +591,7 @@ class ReleaseSourceProofTests(unittest.TestCase):
                 previous_release_tag="v1.2.3",
                 run_id=42,
                 run_attempt=2,
+                workflow_event="workflow_dispatch",
                 validation_mode="promoted",
                 validation_commit="c" * 40,
                 validation_run_id=41,
@@ -612,6 +620,7 @@ class ReleaseSourceProofTests(unittest.TestCase):
                 proof_payload = json.loads(output.read_text(encoding="utf-8"))
                 self.assertEqual(proof_payload["gates"], release_source_proof.EXPECTED_GATES)
                 self.assertIn("bundle", proof_payload["gates"])
+                self.assertEqual(proof_payload["workflow_event"], "workflow_dispatch")
                 self.assertEqual(
                     proof_payload["validation"],
                     {

@@ -88,7 +88,7 @@ def select_required_check(
     if not candidates:
         fail(
             f"remote default-branch commit has no successful {REQUIRED_CHECK!r} "
-            "check from GitHub Actions; push the workflow and wait for CI first"
+            "check from GitHub Actions; run trusted main CI first"
         )
     candidates.sort(
         key=lambda item: (item[0].get("completed_at") or "", item[0].get("id") or 0)
@@ -108,7 +108,7 @@ def validate_workflow_run(
     head_repository = payload.get("head_repository") or {}
     if not (
         payload.get("path") == REQUIRED_WORKFLOW
-        and payload.get("event") == "push"
+        and payload.get("event") in {"push", "workflow_dispatch"}
         and payload.get("head_branch") == default_branch
         and payload.get("head_sha") == commit
         and payload.get("status") == "completed"
@@ -117,7 +117,7 @@ def validate_workflow_run(
     ):
         fail(
             f"{REQUIRED_CHECK!r} does not belong to a successful trusted "
-            f"{REQUIRED_WORKFLOW} push for the exact default-branch commit"
+            f"{REQUIRED_WORKFLOW} main validation for the exact default-branch commit"
         )
 
 

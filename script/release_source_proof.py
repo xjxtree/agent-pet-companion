@@ -16,8 +16,9 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = "apc.release-source-proof.v2"
+SCHEMA_VERSION = "apc.release-source-proof.v3"
 WORKFLOW_PATH = ".github/workflows/ci.yml"
+MAIN_WORKFLOW_EVENTS = {"push", "workflow_dispatch"}
 EXPECTED_GATES = [
     "bundle",
     "contracts",
@@ -156,6 +157,8 @@ def create(args: argparse.Namespace) -> None:
     require_identity(args.repository, args.commit, args.previous_release_tag)
     if args.run_id <= 0 or args.run_attempt <= 0:
         raise ValueError("run id and run attempt must be positive")
+    if args.workflow_event not in MAIN_WORKFLOW_EVENTS:
+        raise ValueError("workflow event must be push or workflow_dispatch")
     if run(root, "git", "rev-parse", "HEAD") != args.commit:
         raise ValueError("proof checkout does not match the requested commit")
     if run(root, "git", "status", "--porcelain", "--untracked-files=no"):
@@ -184,8 +187,8 @@ def create(args: argparse.Namespace) -> None:
             or validation_ref != "refs/heads/main"
             or validation_proof_sha256 is not None
         ):
-            raise ValueError("full validation must be the current main-push run")
-        validation_event = "push"
+            raise ValueError("full validation must be the current main validation run")
+        validation_event = args.workflow_event
     else:
         if (
             validation_commit == args.commit
@@ -203,7 +206,7 @@ def create(args: argparse.Namespace) -> None:
         "source_tree": source_tree,
         "previous_release_tag": args.previous_release_tag,
         "workflow_path": WORKFLOW_PATH,
-        "workflow_event": "push",
+        "workflow_event": args.workflow_event,
         "workflow_ref": "refs/heads/main",
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
@@ -236,6 +239,8 @@ def validate(args: argparse.Namespace) -> None:
         raise ValueError("proof validation checkout does not match the requested commit")
     if run(root, "git", "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("proof validation checkout contains tracked modifications")
+    if args.workflow_event not in MAIN_WORKFLOW_EVENTS:
+        raise ValueError("workflow event must be push or workflow_dispatch")
     proof = read_json_regular(args.proof.resolve())
     expected_keys = {
         "schema_version",
@@ -265,7 +270,7 @@ def validate(args: argparse.Namespace) -> None:
         "source_tree": run(root, "git", "rev-parse", "HEAD^{tree}"),
         "previous_release_tag": args.previous_release_tag,
         "workflow_path": WORKFLOW_PATH,
-        "workflow_event": "push",
+        "workflow_event": args.workflow_event,
         "workflow_ref": "refs/heads/main",
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
@@ -297,7 +302,7 @@ def validate(args: argparse.Namespace) -> None:
             "mode": "full",
             "commit": args.commit,
             "source_tree": checks["source_tree"],
-            "workflow_event": "push",
+            "workflow_event": args.workflow_event,
             "workflow_ref": "refs/heads/main",
             "run_id": args.run_id,
             "run_attempt": args.run_attempt,
@@ -367,6 +372,9 @@ def main() -> int:
         command.add_argument("--previous-release-tag", required=True)
         command.add_argument("--run-id", required=True, type=int)
         command.add_argument("--run-attempt", required=True, type=int)
+        command.add_argument(
+            "--workflow-event", required=True, choices=sorted(MAIN_WORKFLOW_EVENTS)
+        )
         command.add_argument("--attestation", required=True, type=pathlib.Path)
         if name == "create":
             command.add_argument("--output", required=True, type=pathlib.Path)

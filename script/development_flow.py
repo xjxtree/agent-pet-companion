@@ -414,11 +414,6 @@ def pr_open(args: argparse.Namespace, root: pathlib.Path) -> None:
     created = run(commands[1], cwd=root).stdout.strip()
     if not created.startswith("https://github.com/"):
         fail("gh did not return a pull request URL")
-    if args.ready:
-        run(
-            ["gh", "pr", "merge", "--repo", repository, "--auto", "--squash", created],
-            cwd=root,
-        )
     print(json.dumps({"url": created, "branch": branch, "base": base}, sort_keys=True))
 
 

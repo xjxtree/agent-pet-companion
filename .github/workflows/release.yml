@@ -120,7 +120,7 @@ jobs:
           gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=${{ steps.release_identity.outputs.commit }}&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&status=success&head_sha=${{ steps.release_identity.outputs.commit }}&per_page=100" \
             >"$runs_json"
           selection="$(
             ./script/resolve_release_source_proof.py run \
@@ -130,8 +130,10 @@ jobs:
           )"
           run_id="$(jq -r '.run_id' <<<"$selection")"
           run_attempt="$(jq -r '.run_attempt' <<<"$selection")"
+          workflow_event="$(jq -r '.workflow_event' <<<"$selection")"
           [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          [[ "$workflow_event" == "push" || "$workflow_event" == "workflow_dispatch" ]]
 
           artifacts_json="$RUNNER_TEMP/apc-ci-artifacts.json"
           gh api \
@@ -147,6 +149,7 @@ jobs:
           {
             echo "run_id=$run_id"
             echo "run_attempt=$run_attempt"
+            echo "workflow_event=$workflow_event"
             echo "artifact_name=$artifact_name"
           } >>"$GITHUB_OUTPUT"
 
@@ -169,6 +172,7 @@ jobs:
             --previous-release-tag "${{ steps.release_identity.outputs.previous_tag }}" \
             --run-id "${{ steps.source_proof_run.outputs.run_id }}" \
             --run-attempt "${{ steps.source_proof_run.outputs.run_attempt }}" \
+            --workflow-event "${{ steps.source_proof_run.outputs.workflow_event }}" \
             --proof "$RUNNER_TEMP/source-proof/source-proof.json" \
             --attestation "$RUNNER_TEMP/source-proof/interaction-attestation.json"
           ./script/prepare_interaction_attestation.sh \
