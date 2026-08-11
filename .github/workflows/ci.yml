@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
@@ -12,16 +13,33 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  APC_VALIDATE_HOST_UI: "0"
+  APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
+  APC_VALIDATE_REAL_APP_SERVER: "0"
+  CARGO_TERM_COLOR: always
+
 jobs:
-  quality:
-    name: Change-scoped quality and packaging
+  scope:
+    name: Classify change once
     runs-on: macos-26
-    timeout-minutes: 45
-    env:
-      APC_VALIDATE_HOST_UI: "0"
-      APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
-      APC_VALIDATE_REAL_APP_SERVER: "0"
-      CARGO_TERM_COLOR: always
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.validation_base.outputs.base }}
+      docs_only: ${{ steps.validation_scope.outputs.docs_only }}
+      localization: ${{ steps.validation_scope.outputs.localization }}
+      scripts: ${{ steps.validation_scope.outputs.scripts }}
+      producer: ${{ steps.validation_scope.outputs.producer }}
+      connectors: ${{ steps.validation_scope.outputs.connectors }}
+      schemas: ${{ steps.validation_scope.outputs.schemas }}
+      plugin_version: ${{ steps.validation_scope.outputs.plugin_version }}
+      rust_mode: ${{ steps.validation_scope.outputs.rust_mode }}
+      swift_mode: ${{ steps.validation_scope.outputs.swift_mode }}
+      bundle: ${{ steps.validation_scope.outputs.bundle }}
+      computer_use: ${{ steps.validation_scope.outputs.computer_use }}
+      lane: ${{ steps.development_context.outputs.lane }}
+      full_candidate: ${{ steps.development_context.outputs.full_candidate }}
+      release_source: ${{ steps.development_context.outputs.release_source }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -45,29 +63,98 @@ jobs:
           git rev-parse --verify "$base^{commit}" >/dev/null
           echo "base=$base" >>"$GITHUB_OUTPUT"
 
-      - name: Classify changed paths once
+      - name: Classify changed paths
         id: validation_scope
         run: |
           ./script/validation_scope.py \
             --base-ref "${{ steps.validation_base.outputs.base }}" \
             --format github >>"$GITHUB_OUTPUT"
 
+      - name: Resolve direct, train, and main validation lane
+        id: development_context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_BRANCH: ${{ github.base_ref }}
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            ./script/development_flow.py ci-context \
+              --event pull_request \
+              --base "$PR_BASE_BRANCH" \
+              --head "$PR_HEAD_BRANCH" \
+              --draft "${PR_DRAFT:-false}" \
+              --format github >>"$GITHUB_OUTPUT"
+          else
+            ./script/development_flow.py ci-context \
+              --event push \
+              --base main \
+              --format github >>"$GITHUB_OUTPUT"
+          fi
+
+  static:
+    name: Static source contracts
+    needs: scope
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
       - name: Install common validation tooling
         run: |
           if ! command -v rg >/dev/null 2>&1; then
             brew install ripgrep
           fi
-          rg --version
 
-      - name: Verify required toolchains
-        if: steps.validation_scope.outputs.bundle == '1' || steps.validation_scope.outputs.rust_mode != 'none' || steps.validation_scope.outputs.swift_mode != 'none'
+      - name: Diff and source syntax
         run: |
-          ./script/validate_macos_build_contract.py toolchain
-          xcrun --show-sdk-path
-          rustup show
+          git diff --check "${{ needs.scope.outputs.base }}" --
+          ./script/validate_source_syntax.sh
+
+      - name: Localization parity
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.localization == '1'
+        run: ./script/validate_localizations.py
+
+      - name: Static workflow and build-script contracts
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.scripts == '1'
+        run: ./script/validate_build_scripts_safety.sh --skip-source-syntax --static-only
+
+      - name: Validate parallel changelog fragments
+        run: ./script/changelog_fragments.py validate
+
+      - name: Require main-bound changelog consolidation
+        if: >-
+          needs.scope.outputs.full_candidate == '1' &&
+          needs.scope.outputs.lane != 'task-to-train'
+        run: ./script/changelog_fragments.py require-consumed
+
+      - name: Codex plugin and Skill version discipline for this change
+        if: needs.scope.outputs.plugin_version == '1'
+        run: ./script/validate_codex_plugin_version.py --base-ref "${{ needs.scope.outputs.base }}"
+
+  contracts:
+    name: Source and integration contracts
+    needs: scope
+    if: >-
+      needs.scope.outputs.full_candidate == '1' ||
+      needs.scope.outputs.docs_only != '1'
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install common validation tooling
+        run: |
+          if ! command -v rg >/dev/null 2>&1; then
+            brew install ripgrep
+          fi
 
       - name: Prepare pinned Python validation environment
-        if: steps.validation_scope.outputs.producer == '1' || steps.validation_scope.outputs.bundle == '1'
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.producer == '1' || needs.scope.outputs.bundle == '1'
         run: |
           python3 -m venv "$RUNNER_TEMP/apc-validation-python"
           "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
@@ -79,32 +166,382 @@ jobs:
           PY
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
-      - name: Cache Rust and Swift build products
-        if: steps.validation_scope.outputs.bundle == '1' || steps.validation_scope.outputs.rust_mode != 'none' || steps.validation_scope.outputs.swift_mode != 'none'
+      - name: Restore contract build products
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-            apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-contracts-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-
+            ${{ runner.os }}-${{ runner.arch }}-apc-contracts-
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
 
-      - name: Run unified change-scoped validation
+      - name: Complete build and workflow contracts
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.scripts == '1'
+        run: ./script/validate_build_scripts_safety.sh --skip-source-syntax
+
+      - name: App lifecycle contract
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.swift_mode != 'none'
+        run: ./script/validate_app_lifecycle_contract.sh
+
+      - name: Schema contracts
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.schemas == '1' || needs.scope.outputs.producer == '1'
         run: |
-          ./script/validate_pre_push.sh \
-            --base "${{ steps.validation_base.outputs.base }}" \
-            --ci
+          ./script/validate_schema_fixtures.sh
+          ./script/validate_petpack_spec_schemas.sh
 
-      - name: Build and fully validate development App when runtime inputs changed
-        if: steps.validation_scope.outputs.bundle == '1'
-        run: ./script/build_app_bundle.sh --configuration debug --validation full
+      - name: Portable producer contracts
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.producer == '1'
+        run: |
+          ./script/validate_pet_skills.sh
+          ./script/validate_portable_pet_maker.sh
+
+      - name: Generated connector runtime
+        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.connectors == '1'
+        run: ./script/validate_connectors_runtime.sh
+
+      - name: Security boundaries
+        if: >-
+          needs.scope.outputs.full_candidate == '1' ||
+          needs.scope.outputs.rust_mode != 'none' ||
+          needs.scope.outputs.schemas == '1' ||
+          needs.scope.outputs.producer == '1' ||
+          needs.scope.outputs.connectors == '1'
+        run: ./script/validate_security_boundaries.sh
+
+  rust_lint:
+    name: Rust formatting and linting
+    needs: scope
+    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none'
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify Rust toolchain
+        run: rustup show
+
+      - name: Restore Rust lint cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-lint-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Strict Rust linting
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  rust_tests:
+    name: Rust tests (${{ matrix.shard }})
+    needs: scope
+    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, integration-a, integration-b, integration-c, integration-d]
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify Rust toolchain
+        run: rustup show
+
+      - name: Restore Rust test cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-${{ matrix.shard }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-${{ matrix.shard }}-
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+
+      - name: Run inventory-checked Rust shard
+        run: ./script/validate_rust_test_shards.py --shard "${{ matrix.shard }}"
+
+  swift_interaction:
+    name: Swift and interaction proof
+    needs: scope
+    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none'
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify App build toolchain
+        run: ./script/validate_macos_build_contract.py toolchain
+
+      - name: Restore Swift build products
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
+
+      - name: Run complete Swift suite and create source interaction proof
+        env:
+          APC_BUILD_ID: source.${{ github.sha }}
+        run: |
+          ./script/prepare_interaction_attestation.sh \
+            --output "$RUNNER_TEMP/interaction-attestation.json" \
+            --swift-scope all
+
+      - name: Upload source interaction proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-interaction-attestation-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 3
+          path: ${{ runner.temp }}/interaction-attestation.json
+
+  stress:
+    name: Bounded event-storm stress
+    needs: scope
+    if: needs.scope.outputs.full_candidate == '1'
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Restore Rust stress cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-stress-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+
+      - name: Run release-grade bounded event storm
+        run: ./script/validate_event_storm.sh
+
+  overlay:
+    name: Offline overlay contracts
+    needs: [scope, swift_interaction]
+    if: >-
+      always() &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none') &&
+      needs.swift_interaction.result == 'success'
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-interaction-attestation-${{ github.sha }}
+          path: ${{ runner.temp }}/interaction-proof
+
+      - name: Restore Swift build products
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
+
+      - name: Run offline overlay geometry, scheduler, accessibility, frame, and pointer contracts
+        run: |
+          ./script/validate_overlay_offline.sh \
+            --interaction-attestation "$RUNNER_TEMP/interaction-proof/interaction-attestation.json"
+
+  bundle:
+    name: Packaged development App proof
+    needs: [scope, contracts, rust_lint, rust_tests, swift_interaction, overlay]
+    if: >-
+      always() &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1')
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Require successful source dependencies
+        env:
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          SWIFT_RESULT: ${{ needs.swift_interaction.result }}
+          OVERLAY_RESULT: ${{ needs.overlay.result }}
+        run: |
+          for result in "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$OVERLAY_RESULT"; do
+            [[ "$result" == "success" || "$result" == "skipped" ]]
+          done
+          [[ "$SWIFT_RESULT" == "success" ]]
+          [[ "$OVERLAY_RESULT" == "success" ]]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-interaction-attestation-${{ github.sha }}
+          path: ${{ runner.temp }}/interaction-proof
+
+      - name: Prepare pinned Python validation environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/apc-validation-python"
+          "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
+            --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
+          echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
+
+      - name: Restore Rust build products
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-bundle-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+
+      - name: Restore Swift build products
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
+
+      - name: Build and fully validate development App from the proven interaction contract
+        run: |
+          ./script/build_app_bundle.sh \
+            --configuration debug \
+            --interaction-attestation "$RUNNER_TEMP/interaction-proof/interaction-attestation.json" \
+            --validation full
+
+  source_proof:
+    name: Bind release source proof to main commit
+    needs: [scope, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle]
+    if: always() && needs.scope.outputs.release_source == '1'
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require every release source gate
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          SWIFT_RESULT: ${{ needs.swift_interaction.result }}
+          STRESS_RESULT: ${{ needs.stress.result }}
+          OVERLAY_RESULT: ${{ needs.overlay.result }}
+          BUNDLE_RESULT: ${{ needs.bundle.result }}
+        run: |
+          for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+            test "$result" = "success"
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-interaction-attestation-${{ github.sha }}
+          path: ${{ runner.temp }}/interaction-proof
+
+      - name: Verify and record proof-host toolchains
+        run: ./script/validate_macos_build_contract.py toolchain
+
+      - name: Resolve latest stable release baseline
+        id: release_baseline
+        run: |
+          previous_tag="$(
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/releases/latest" \
+              --jq '.tag_name'
+          )"
+          [[ "$previous_tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+          echo "previous_tag=$previous_tag" >>"$GITHUB_OUTPUT"
+
+      - name: Recheck Codex plugin and bundled Skill version discipline
+        run: ./script/validate_codex_plugin_version.py --base-ref "${{ steps.release_baseline.outputs.previous_tag }}"
+
+      - name: Create exact-commit source proof
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-source-proof"
+          cp "$RUNNER_TEMP/interaction-proof/interaction-attestation.json" \
+            "$RUNNER_TEMP/release-source-proof/interaction-attestation.json"
+          ./script/release_source_proof.py create \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --previous-release-tag "${{ steps.release_baseline.outputs.previous_tag }}" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attestation "$RUNNER_TEMP/release-source-proof/interaction-attestation.json" \
+            --output "$RUNNER_TEMP/release-source-proof/source-proof.json"
+
+      - name: Upload exact-commit release source proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-source-proof-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ${{ runner.temp }}/release-source-proof
+
+  required:
+    name: Required CI
+    needs: [scope, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, source_proof]
+    if: always()
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Require every scheduled job
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          STATIC_RESULT: ${{ needs.static.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          SWIFT_RESULT: ${{ needs.swift_interaction.result }}
+          STRESS_RESULT: ${{ needs.stress.result }}
+          OVERLAY_RESULT: ${{ needs.overlay.result }}
+          BUNDLE_RESULT: ${{ needs.bundle.result }}
+          SOURCE_PROOF_RESULT: ${{ needs.source_proof.result }}
+        run: |
+          for result in \
+            "$SCOPE_RESULT" "$STATIC_RESULT" "$CONTRACTS_RESULT" \
+            "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" \
+            "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$SOURCE_PROOF_RESULT"; do
+            [[ "$result" == "success" || "$result" == "skipped" ]]
+          done
+          if [[ "${{ needs.scope.outputs.release_source }}" == "1" ]]; then
+            test "$SOURCE_PROOF_RESULT" = "success"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Record live UI validation routing
+        env:
+          DEVELOPMENT_LANE: ${{ needs.scope.outputs.lane }}
         run: |
-          if [[ "${{ steps.validation_scope.outputs.computer_use }}" == "recommended" ]]; then
+          printf 'Development lane: %s.\n' "$DEVELOPMENT_LANE" >>"$GITHUB_STEP_SUMMARY"
+          if [[ "${{ needs.scope.outputs.full_candidate }}" == "1" ]]; then
+            echo 'This is a complete main-bound candidate gate.' >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'This is a change-scoped task-to-train or draft gate.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "${{ needs.scope.outputs.computer_use }}" == "recommended" ]]; then
             echo 'UI source changed: Computer Use is recommended for a human-owned acceptance session, but is never auto-run in CI.' >>"$GITHUB_STEP_SUMMARY"
           else
             echo 'No live UI or Computer Use validation is required for this change scope.' >>"$GITHUB_STEP_SUMMARY"

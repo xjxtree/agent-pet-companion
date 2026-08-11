@@ -14,6 +14,12 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+### Changed / 变更
+
+- Local pre-push validation is now a bounded formatting, syntax, contract, and compile gate, while required GitHub CI runs complete source checks in parallel across Rust shards, Swift interaction proof, integration contracts, overlay validation, stress, and App assembly. Agents choose either a direct hotfix/small PR to protected `main` or coordinated task PRs to one shared train followed by a final train PR; repository-owned ready PRs use squash auto-merge only after `Required CI`. A successful trusted `main` push emits an exact-commit source proof that GitHub Release reuses before dual-architecture packaging, and an explicit Release dispatch can bind a missing tag only after that proof succeeds. Fail-closed ruleset automation protects both `main` and integration trains after the new required check is proven remotely.
+
+  本地预推送验证现收敛为有界的格式、语法、合同与编译门禁；必选 GitHub CI 则通过 Rust 分片、Swift 交互证明、集成合同、悬浮层验证、压力与 App 组装并行完成全量源码检查。Agent 会在热修复/小范围 direct PR 与“多个任务 PR 汇入共享 train、再由 train PR 至 main”之间选择；仓库内 ready PR 仅在 `Required CI` 成功后 squash 自动合并。受信任的 `main` push 会生成绑定精确 commit 的源码证明，GitHub Release 在双架构打包前复用该证明，显式 Release dispatch 也只有在证明成功后才能绑定缺失 tag。fail-closed ruleset 自动化会在新必选检查已由远端证明后保护 `main` 与集成 train。
+
 ## [0.3.6] - 2026-08-11
 
 ### Changed / 变更

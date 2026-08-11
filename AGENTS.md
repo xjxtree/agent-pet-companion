@@ -43,6 +43,9 @@ docs/
 ## Development Guidelines
 
 - Keep changes scoped to the user's request, the product baseline, and the architecture already present in the repo.
+- Treat local `main` as read-only. Choose either a direct PR to `main` for a hotfix/small isolated change or a task PR to the main Agent's shared `gd-ops/train/*` for parallel/cross-component work; the train then opens one final PR to `main`. Follow [parallel development](docs/development/parallel-development.md).
+- Give every Agent/session an independent `gd-ops/task/*` or `gd-ops/fix/*` branch and worktree. One Agent owns each write path; sub-Agents hand work off by PR and never write directly into the train or another Agent's branch.
+- The main Agent coordinates a shared train, shared schemas/manifests/version files, changelog-fragment consolidation, dependency order, and the final train PR. Train tasks record user-visible changes under `changes/unreleased/`; direct and final train PRs consume them into root `CHANGELOG.md`.
 - Prefer typed schemas and structured parsers over ad hoc string parsing.
 - Keep user-facing text bilingual when it belongs in public documentation or product onboarding.
 - Record user-visible changes under `[Unreleased]` in root `CHANGELOG.md`; every GitHub Release, tag, and changelog version must match one-to-one.

@@ -41,6 +41,12 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
   "$ROOT_DIR/script/validate_github_release_api.py"
   "$ROOT_DIR/script/validate_codex_plugin_version.py"
+  "$ROOT_DIR/script/release_source_proof.py"
+  "$ROOT_DIR/script/resolve_release_source_proof.py"
+  "$ROOT_DIR/script/validate_rust_test_shards.py"
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+  "$ROOT_DIR/script/development_flow.py"
+  "$ROOT_DIR/script/changelog_fragments.py"
   "$ROOT_DIR/script/validate_overlay_interaction.sh"
   "$ROOT_DIR/script/prepare_interaction_attestation.sh"
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"
@@ -48,6 +54,7 @@ RELEASE_SCRIPTS=(
 )
 WORKFLOW="$ROOT_DIR/.github/workflows/release.yml"
 CI_WORKFLOW="$ROOT_DIR/.github/workflows/ci.yml"
+AUTO_MERGE_WORKFLOW="$ROOT_DIR/.github/workflows/auto-merge.yml"
 TEST_ALL="$ROOT_DIR/script/test_all.sh"
 OVERLAY_INTERACTION_VALIDATOR="$ROOT_DIR/script/validate_overlay_interaction.sh"
 PRE_PUSH_VALIDATOR="$ROOT_DIR/script/validate_pre_push.sh"
@@ -84,13 +91,20 @@ if forbidden_workflow="$(rg -n \
   exit 1
 fi
 
-# Local pre-push and ordinary CI share one path classifier. CI may assemble a
-# full development bundle only when that classifier marks runtime inputs.
+# Local pre-push and CI share only the path classifier. The local gate stays
+# compile-only, while CI owns complete tests, source proof, and App assembly.
 rg -Fq './script/validation_scope.py' "$CI_WORKFLOW"
-rg -Fq './script/validate_pre_push.sh' "$CI_WORKFLOW"
-rg -Fq -- '--ci' "$CI_WORKFLOW"
-rg -Fq "if: steps.validation_scope.outputs.bundle == '1'" "$CI_WORKFLOW"
-rg -Fq "steps.validation_scope.outputs.producer == '1'" "$CI_WORKFLOW"
+rg -Fq './script/development_flow.py ci-context' "$CI_WORKFLOW"
+rg -Fq './script/changelog_fragments.py validate' "$CI_WORKFLOW"
+rg -Fq './script/changelog_fragments.py require-consumed' "$CI_WORKFLOW"
+rg -Fq "needs.scope.outputs.full_candidate == '1'" "$CI_WORKFLOW"
+rg -Fq "needs.scope.outputs.release_source == '1'" "$CI_WORKFLOW"
+if rg -Fq './script/validate_pre_push.sh' "$CI_WORKFLOW"; then
+  echo 'CI must not couple its authoritative gates to the local fast gate' >&2
+  exit 1
+fi
+rg -Fq "needs.scope.outputs.bundle == '1'" "$CI_WORKFLOW"
+rg -Fq "needs.scope.outputs.producer == '1'" "$CI_WORKFLOW"
 rg -Fq 'Pillow==11.3.0' "$CI_WORKFLOW"
 rg -Fq 'features.check("webp_anim")' "$CI_WORKFLOW"
 rg -Fq 'pet_bytebudcodex|pet_pinklace|pet_xingwutuanzi' "$CI_WORKFLOW"
@@ -99,8 +113,39 @@ if rg -Fq "if: steps.validation_scope.outputs.docs_only != '1'" "$CI_WORKFLOW"; 
   exit 1
 fi
 rg -Fq -- '--validation full' "$CI_WORKFLOW"
+rg -Fq -- '--interaction-attestation' "$CI_WORKFLOW"
+rg -Fq 'validate_rust_test_shards.py --shard' "$CI_WORKFLOW"
+rg -Fq 'shard: [core, integration-a, integration-b, integration-c, integration-d]' "$CI_WORKFLOW"
+rg -Fq 'name: Required CI' "$CI_WORKFLOW"
+rg -Fq 'release-source-proof-${{ github.sha }}' "$CI_WORKFLOW"
+rg -Fq './script/release_source_proof.py create' "$CI_WORKFLOW"
+rg -Fq './script/validate_event_storm.sh' "$CI_WORKFLOW"
 rg -Fq 'runs-on: macos-26' "$CI_WORKFLOW"
 rg -Fq './script/validate_macos_build_contract.py toolchain' "$CI_WORKFLOW"
+rg -Fq 'RULESET_NAME = "Protected default branch"' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq 'REQUIRED_CHECK = "Required CI"' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq 'TRAIN_RULESET_NAME = "Protected integration trains"' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq '"allow_auto_merge": True' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq '"allow_merge_commit": False' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq '"allow_rebase_merge": False' \
+  "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq 'if not args.apply:' "$ROOT_DIR/script/configure_main_branch_ruleset.py"
+rg -Fq 'pull_request_target:' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'github.event.pull_request.head.repo.full_name == github.repository' \
+  "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base' \
+  "$AUTO_MERGE_WORKFLOW"
+rg -Fq '.context == "Required CI"' "$AUTO_MERGE_WORKFLOW"
+rg -Fq -- '--auto --squash' "$AUTO_MERGE_WORKFLOW"
+if rg -q 'actions/checkout|^[[:space:]]*run:[[:space:]]*[.]/' "$AUTO_MERGE_WORKFLOW"; then
+  echo 'pull_request_target auto-merge must never check out or execute PR code' >&2
+  exit 1
+fi
 if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \
   "$CI_WORKFLOW"; then
   echo 'ordinary CI must not auto-enable live UI or Computer Use' >&2
@@ -141,9 +186,13 @@ rg -Fq 'validate_interaction_attestation.py' "$ROOT_DIR/script/validate_overlay_
 rg -Fq 'validate_localizations.py' "$TEST_ALL"
 rg -Fq 'validation_fingerprint.py' "$TEST_ALL"
 rg -Fq -- '--resume' "$TEST_ALL"
-rg -Fq 'test_all.sh" --resume' "$PRE_PUSH_VALIDATOR"
-if rg -Fq 'test_all.sh --resume' "$WORKFLOW"; then
-  echo 'GitHub Release must not consume local validation checkpoints' >&2
+if rg -q 'test_all[.]sh|cargo test|cargo clippy|validate_swift_tests|build_app_bundle|validate_portable_pet_maker|validate_connectors_runtime' \
+  "$PRE_PUSH_VALIDATOR"; then
+  echo 'local fast gate must not duplicate authoritative CI tests or App assembly' >&2
+  exit 1
+fi
+if rg -Fq 'test_all.sh' "$WORKFLOW"; then
+  echo 'GitHub Release must reuse the exact main source proof instead of repeating test_all' >&2
   exit 1
 fi
 python3 - "$TEST_ALL" <<'PY'
@@ -156,8 +205,15 @@ rust_tests = source.index('"rust-tests"')
 if localization >= rust_tests:
     raise SystemExit("localization parity must run before expensive Rust tests")
 PY
-rg -Fq 'Run source, complete Swift interaction, integration, and stress gates' \
-  "$WORKFLOW"
+rg -Fq 'Reuse exact main source proof' "$WORKFLOW"
+rg -Fq './script/resolve_release_source_proof.py run' "$WORKFLOW"
+rg -Fq './script/release_source_proof.py validate' "$WORKFLOW"
+rg -Fq 'github-token: ${{ github.token }}' "$WORKFLOW"
+rg -Fq 'run-id: ${{ steps.source_proof_run.outputs.run_id }}' "$WORKFLOW"
+rg -Fq "inputs.commit || 'main'" "$WORKFLOW"
+rg -Fq 'if: env.TAG_EXISTS != '\''1'\''' "$WORKFLOW"
+rg -Fq '"repos/$GITHUB_REPOSITORY/git/refs"' "$WORKFLOW"
+rg -Fq 'needs: [prepare, ensure_tag]' "$WORKFLOW"
 
 # Local and GitHub Release Apps are ad-hoc signed. The official path is
 # explicit, dual-architecture, protected-source-bound, and three-file-only.
@@ -273,6 +329,7 @@ rg -Fq './script/validate_macos_build_contract.py toolchain' "$WORKFLOW"
 rg -q 'verify_release_candidate_digests.sh' "$WORKFLOW"
 rg -q 'validate_github_release_api.py' "$WORKFLOW"
 rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
+rg -q 'actions: read' "$WORKFLOW"
 rg -Fq 'APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}' \
   "$WORKFLOW"
 rg -q 'VERSIONED_SKILLS' "$ROOT_DIR/script/validate_codex_plugin_version.py"
@@ -304,13 +361,15 @@ import re
 import sys
 
 source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+ensure_tag_start = source.index("\n  ensure_tag:")
 build_start = source.index("\n  build_archives:")
 assemble_start = source.index("\n  assemble:")
 arm_start = source.index("\n  validate_arm64:")
 x86_start = source.index("\n  validate_x86_64:")
 macos26_start = source.index("\n  validate_macos26:")
 publish_start = source.index("\n  publish:")
-prepare = source[:build_start]
+prepare = source[:ensure_tag_start]
+ensure_tag = source[ensure_tag_start:build_start]
 build = source[build_start:assemble_start]
 assemble = source[assemble_start:arm_start]
 arm = source[arm_start:x86_start]
@@ -318,8 +377,10 @@ x86 = source[x86_start:macos26_start]
 macos26 = source[macos26_start:publish_start]
 publish = source[publish_start:]
 
-if source.count("contents: write") != 1 or "contents: write" not in publish:
-    raise SystemExit("only the publish job may have contents: write")
+if source.count("contents: write") != 2:
+    raise SystemExit("only tag binding and publish may have contents: write")
+if "contents: write" not in ensure_tag or "contents: write" not in publish:
+    raise SystemExit("tag binding and publish need explicit contents write permission")
 if any("contents: write" in job for job in (prepare, build, assemble, arm, x86, macos26)):
     raise SystemExit("build and validation jobs must remain read-only")
 if source.count("ref: ${{ needs.prepare.outputs.commit }}") < 5:
@@ -327,15 +388,19 @@ if source.count("ref: ${{ needs.prepare.outputs.commit }}") < 5:
 if source.count("./script/verify_remote_release_tag.sh") < 3:
     raise SystemExit("remote tag identity must be rechecked before and after publication")
 
-source_gate = prepare.index("./script/test_all.sh --source-only --include-stress")
-proof_upload = prepare.index("Upload source-bound interaction proof", source_gate)
+proof_resolve = prepare.index("Resolve successful trusted main CI run")
+proof_download = prepare.index("Download exact-commit source proof", proof_resolve)
+proof_validation = prepare.index("./script/release_source_proof.py validate", proof_download)
+proof_upload = prepare.index("Upload release-bound interaction proof", proof_validation)
+tag_create = ensure_tag.index("Create missing lightweight tag after source proof succeeds")
+tag_verify = ensure_tag.index("./script/verify_remote_release_tag.sh", tag_create)
 official_build = build.index(
     'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"'
 )
 metadata = assemble.index("validate_release_artifact_metadata.py")
 digest_emission = assemble.index("Emit trusted digest for every candidate file", metadata)
 upload = assemble.index("Upload exact release candidate", digest_emission)
-if not source_gate < proof_upload or not metadata < digest_emission < upload:
+if not proof_resolve < proof_download < proof_validation < proof_upload or not tag_create < tag_verify or not metadata < digest_emission < upload:
     raise SystemExit("release source proof, assembly, digest, and upload order is unsafe")
 if "architecture: [arm64, x86_64]" not in build or official_build < 0:
     raise SystemExit("official architectures must build as a parallel matrix")
@@ -396,6 +461,12 @@ PY
 "$ROOT_DIR/script/validation_fingerprint.py" --help >/dev/null
 "$ROOT_DIR/script/validate_interaction_attestation.py" --help >/dev/null
 "$ROOT_DIR/script/validation_scope.py" --help >/dev/null
+"$ROOT_DIR/script/release_source_proof.py" --help >/dev/null
+"$ROOT_DIR/script/resolve_release_source_proof.py" --help >/dev/null
+"$ROOT_DIR/script/validate_rust_test_shards.py" --help >/dev/null
+"$ROOT_DIR/script/configure_main_branch_ruleset.py" --help >/dev/null
+"$ROOT_DIR/script/development_flow.py" --help >/dev/null
+"$ROOT_DIR/script/changelog_fragments.py" --help >/dev/null
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"

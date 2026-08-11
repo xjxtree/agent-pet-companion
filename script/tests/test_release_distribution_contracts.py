@@ -700,19 +700,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.source = (ROOT / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
+        ensure_tag_start = self.source.index("\n  ensure_tag:")
         build_start = self.source.index("\n  build_archives:")
         assemble_start = self.source.index("\n  assemble:")
         arm_start = self.source.index("\n  validate_arm64:")
         x86_start = self.source.index("\n  validate_x86_64:")
         macos26_start = self.source.index("\n  validate_macos26:")
         publish_start = self.source.index("\n  publish:")
-        self.prepare = self.source[:build_start]
+        self.prepare = self.source[:ensure_tag_start]
+        self.ensure_tag = self.source[ensure_tag_start:build_start]
         self.build = self.source[build_start:assemble_start]
         self.assemble = self.source[assemble_start:arm_start]
         self.arm = self.source[arm_start:x86_start]
         self.x86 = self.source[x86_start:macos26_start]
         self.macos26 = self.source[macos26_start:publish_start]
         self.publish = self.source[publish_start:]
+        self.ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.test_all = (ROOT / "script/test_all.sh").read_text(encoding="utf-8")
         self.overlay_interaction = (
             ROOT / "script/validate_overlay_interaction.sh"
@@ -782,16 +785,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release_builder = (ROOT / "script/build_release.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Prepare pinned Python validation environment", self.prepare)
-        self.assertIn("Pillow==11.3.0", self.prepare)
-        self.assertIn('Image.__version__ != "11.3.0"', self.prepare)
-        self.assertIn('features.check("webp_anim")', self.prepare)
-        self.assertIn('>>"$GITHUB_PATH"', self.prepare)
-        self.assertIn("./script/test_all.sh --source-only --include-stress", self.prepare)
-        self.assertLess(
-            self.prepare.index("Prepare pinned Python validation environment"),
-            self.prepare.index("./script/test_all.sh"),
-        )
+        self.assertIn("Prepare pinned Python validation environment", self.build)
+        self.assertIn("Pillow==11.3.0", self.build)
+        self.assertIn('>>"$GITHUB_PATH"', self.build)
+        self.assertIn("Reuse exact main source proof", self.prepare)
+        self.assertIn("./script/release_source_proof.py validate", self.prepare)
+        self.assertIn("./script/resolve_release_source_proof.py run", self.prepare)
+        self.assertNotIn("./script/test_all.sh", self.prepare)
         self.assertIn(
             'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"',
             self.build,
@@ -819,6 +819,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             "APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}",
             self.build,
         )
+        self.assertIn("release-source-proof-", self.prepare)
         self.assertIn("release-interaction-attestation", self.prepare)
         self.assertIn("release-interaction-attestation", self.build)
         self.assertIn("merge-multiple: true", self.assemble)
@@ -834,13 +835,18 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_release_source_gate_executes_phase_a_and_t_b4_swift_suites(self) -> None:
         self.assertIn(
-            "Run source, complete Swift interaction, integration, and stress gates",
-            self.prepare,
+            "Run complete Swift suite and create source interaction proof",
+            self.ci,
         )
         self.assertIn(
-            "APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}",
-            self.prepare,
+            "APC_BUILD_ID: source.${{ github.sha }}",
+            self.ci,
         )
+        self.assertIn("Run release-grade bounded event storm", self.ci)
+        self.assertIn("./script/validate_event_storm.sh", self.ci)
+        self.assertIn("./script/validate_overlay_offline.sh", self.ci)
+        self.assertIn("Upload exact-commit release source proof", self.ci)
+        self.assertIn("--proof-in \"$RUNNER_TEMP/source-proof/interaction-attestation.json\"", self.prepare)
         self.assertIn(
             '"$ROOT_DIR/script/prepare_interaction_attestation.sh"', self.test_all
         )
@@ -865,15 +871,29 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             with self.subTest(suite=suite):
                 self.assertIn(suite, self.overlay_interaction)
 
-    def test_only_publish_job_can_write_repository_contents(self) -> None:
-        self.assertEqual(self.source.count("contents: write"), 1)
+    def test_only_tag_binding_and_publish_can_write_repository_contents(self) -> None:
+        self.assertEqual(self.source.count("contents: write"), 2)
         self.assertNotIn("contents: write", self.prepare)
+        self.assertIn("contents: write", self.ensure_tag)
         self.assertNotIn("contents: write", self.build)
         self.assertNotIn("contents: write", self.assemble)
         self.assertNotIn("contents: write", self.arm)
         self.assertNotIn("contents: write", self.x86)
         self.assertNotIn("contents: write", self.macos26)
         self.assertIn("contents: write", self.publish)
+
+    def test_dispatch_promotes_a_proven_main_commit_and_creates_only_a_missing_tag(self) -> None:
+        self.assertIn("Successful main commit to promote", self.prepare)
+        self.assertIn("inputs.commit || 'main'", self.prepare)
+        self.assertIn('echo "tag_exists=$tag_exists"', self.prepare)
+        proof_validation = self.prepare.index("./script/release_source_proof.py validate")
+        self.assertGreater(proof_validation, self.prepare.index("Resolve successful trusted main CI run"))
+        self.assertIn("needs: prepare", self.ensure_tag)
+        self.assertIn("if: env.TAG_EXISTS != '1'", self.ensure_tag)
+        self.assertIn('"repos/$GITHUB_REPOSITORY/git/refs"', self.ensure_tag)
+        self.assertIn('-f "ref=refs/tags/$RELEASE_TAG"', self.ensure_tag)
+        self.assertIn("needs: [prepare, ensure_tag]", self.build)
+        self.assertNotIn("cargo test", self.ensure_tag)
 
     def test_downstream_jobs_use_proven_commit_and_recheck_remote_tag(self) -> None:
         self.assertNotIn("ref: ${{ needs.prepare.outputs.tag }}", self.source)
@@ -970,32 +990,43 @@ class CIWorkflowContractTests(unittest.TestCase):
     def test_ci_uses_the_shared_scope_router_and_conditional_bundle(self) -> None:
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("./script/validation_scope.py", source)
-        self.assertIn("./script/validate_pre_push.sh", source)
-        self.assertIn("--ci", source)
-        self.assertIn("if: steps.validation_scope.outputs.bundle == '1'", source)
+        self.assertNotIn("./script/validate_pre_push.sh", source)
+        self.assertIn("needs.scope.outputs.bundle == '1'", source)
         self.assertIn("--validation full", source)
+        self.assertIn("--interaction-attestation", source)
+        self.assertIn("shard: [core, integration-a, integration-b, integration-c, integration-d]", source)
+        self.assertIn("name: Required CI", source)
+        self.assertIn("release-source-proof-${{ github.sha }}", source)
         self.assertIn("Computer Use is recommended", source)
         self.assertNotIn("APC_VALIDATE_HOST_UI: \"1\"", source)
         self.assertNotIn("cargo test --workspace", source)
         self.assertNotIn("working-directory: apps/macos", source)
 
+    def test_ready_protected_prs_enable_auto_merge_without_running_pr_code(self) -> None:
+        source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pull_request_target:", source)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", source)
+        self.assertIn("startsWith(github.head_ref, 'gd-ops/')", source)
+        self.assertIn('repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base', source)
+        self.assertIn('.context == "Required CI"', source)
+        self.assertIn("gh pr merge", source)
+        self.assertIn("--auto --squash", source)
+        self.assertNotIn("actions/checkout", source)
+        self.assertNotRegex(source, r"(?m)^\s*run:\s*[.]/")
+
     def test_ci_prepares_producer_image_dependencies_and_pins_actions(self) -> None:
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("Prepare pinned Python validation environment", source)
-        self.assertIn("steps.validation_scope.outputs.producer == '1'", source)
+        self.assertIn("needs.scope.outputs.producer == '1'", source)
         self.assertIn("Pillow==11.3.0", source)
         self.assertIn('features.check("webp_anim")', source)
         self.assertNotIn(
             "if: steps.validation_scope.outputs.docs_only != '1'", source
         )
-        self.assertGreaterEqual(
-            source.count(
-                "if: steps.validation_scope.outputs.bundle == '1' || "
-                "steps.validation_scope.outputs.rust_mode != 'none' || "
-                "steps.validation_scope.outputs.swift_mode != 'none'"
-            ),
-            2,
-        )
+        self.assertIn("needs.scope.outputs.full_candidate == '1'", source)
+        self.assertIn("needs.scope.outputs.release_source", source)
         uses = re.findall(r"(?m)^\s*-\s+uses:\s+([^#\s]+)", source)
         self.assertTrue(uses)
         for action in uses:
