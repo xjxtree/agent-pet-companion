@@ -14,6 +14,8 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-12
+
 ### Added / 新增
 
 - AI Pet Maker now includes a Universal Pet Maker Skill manager for the provider-neutral `agent-pet-maker` workflow. Users can inspect its requirements and versions, install or adopt it only at `~/agent/skills/agent-pet-maker`, update or reinstall the complete App-managed directory, reveal it in Finder, and explicitly uninstall it. The App does not infer whether an Agent discovers that directory and preserves unowned conflicting content.
