@@ -6,7 +6,8 @@ Commands listed here define proof boundaries; they do not prove that a commit pa
 
 | Profile / 层级 | Main entrypoints / 入口 | Proves / 能证明 | Does not prove / 不能证明 |
 |---|---|---|---|
-| Fast/core | Rust fmt/Clippy/tests, `validate_swift_tests.sh`, schema/security/overlay validators | Deterministic logic, schemas, Swift models, native overlay interaction contracts / 确定性逻辑、schema、Swift 模型与悬浮层交互契约 | Visible UI, real Agents, real App Server generation / 可见 UI、真实 Agent、真实 App Server 制作 |
+| Local fast | `validate_pre_push.sh` | Diff hygiene, source syntax, lightweight contracts, formatting, and compilation of touched Rust/Swift inputs / diff、语法、轻量合同、格式与受影响 Rust/Swift 编译 | Complete tests, App assembly, visible UI, real Agents / 全量测试、App 组装、可见 UI 与真实 Agent |
+| CI fast/core | parallel Rust lint/test shards, complete Swift interaction proof, schema/security/overlay validators | Deterministic logic, schemas, Swift models, native overlay interaction contracts, and packaged development App / 确定性逻辑、schema、Swift 模型、悬浮层交互合同与开发版 App | Visible UI, real Agents, real App Server generation / 可见 UI、真实 Agent、真实 App Server 制作 |
 | Simulated integration | `validate_portable_pet_maker.sh`, `validate_connectors_runtime.sh` | Isolated package production, QA freshness, connector generation/normalization, library flows / 隔离宠物制作、QA 新鲜度、连接器与宠物库流程 | Artistic quality or a real provider task / 艺术质量或真实服务任务 |
 | macOS runtime | `build_and_run.sh --verify`, bundle/overlay/window/renderer/recovery validators | The packaged App/runtime, clean-home bundled pets, persistence, rendering, and exercised recovery / 打包 App、运行时、内置宠物、持久化、渲染与恢复 | Unobserved UI behavior, real provider behavior, full profiling / 未直接观察的 UI、真实服务与完整性能结论 |
 | Real connectors | `validate_real_agent_connectors.sh` | Current managed adapters can emit through the local runtime without reading credentials / 当前受管适配器可通过本地运行时发送事件 | Authentication, model execution, complete user task / 认证、模型执行、完整任务 |
@@ -16,23 +17,14 @@ Commands listed here define proof boundaries; they do not prove that a commit pa
 
 Build and validation are separate profiles. `build_and_run.sh --run` and the environment Run button assemble, statically inspect, and launch a development App; they do not execute the packaged runtime acceptance suite first. Development build identity is a stable fingerprint of runtime inputs and build variant, so an unchanged second Run keeps Cargo/Swift incremental products instead of recompiling because of a timestamp-only ID. Use `build_and_run.sh --verify` for full packaged runtime proof. `build_app_bundle.sh --validation static|full` exposes the same boundary for automation. / 构建与验证是两个层级。日常 Run 只组装并静态检查开发 App 后启动；开发 build ID 绑定运行时源码与构建变体，源码不变的再次 Run 不会因时间戳变化重编译。完整打包运行时证明使用 `--verify`。
 
-## Default gate / 默认门禁
-
-```bash
-APC_VALIDATE_HOST_UI=0 \
-APC_VALIDATE_REAL_AGENT_CONNECTORS=0 \
-APC_VALIDATE_REAL_APP_SERVER=0 \
-./script/test_all.sh
-```
-
-The default gate uses isolated homes and must not launch the GUI, mutate user LaunchAgents, invoke real Agents, or read credentials. Bounded event-storm stress is opt-in with `--include-stress`; Release always enables it. Run a focused component check first when diagnosing a failure. / 默认门禁使用隔离 home，不启动 GUI、不修改用户 LaunchAgent、不调用真实 Agent，也不读取凭据。事件风暴压力测试通过 `--include-stress` 按需启用，Release 必须启用；排错时先运行最小相关检查。
-
-For an ordinary local commit, start with the change-scoped pre-push gate. It always checks the diff and source syntax, then selects localization parity, Rust packages, Swift tests, connector smoke, or pet-production checks from the changed paths. `--plan-only` shows the selection without running it, and `--full` moves to the complete local gate. / 普通本地提交应先运行变更范围预推送门禁。它始终检查 diff 与源码语法，再根据变更路径选择本地化一致性、Rust package、Swift 测试、连接器 smoke 或宠物制作检查；`--plan-only` 仅显示计划，`--full` 转入完整本地门禁。
+## Local default gate / 本地默认门禁
 
 ```bash
 ./script/validate_pre_push.sh --plan-only
 ./script/validate_pre_push.sh
 ```
+
+The local default is deliberately bounded: it checks diff and source syntax, localization and lightweight Skill/workflow contracts when touched, Rust formatting plus `cargo check`, and `swift build`. It does not run complete Rust or Swift tests, simulated connector/producer roundtrips, App assembly, stress, or release artifact validation. Those duplicate proofs belong to required GitHub CI. The local gate never launches the GUI, mutates user LaunchAgents, invokes real Agents, or reads credentials. / 本地默认门禁刻意保持轻量：检查 diff 与源码语法，并按改动运行本地化、轻量 Skill/workflow 合同、Rust 格式与 `cargo check`、`swift build`；它不再重复全量 Rust/Swift 测试、连接器或制作 roundtrip、App 组装、压力与发布产物验证，这些由 GitHub 必选 CI 负责。本地门禁不会启动 GUI、修改用户 LaunchAgent、调用真实 Agent 或读取凭据。
 
 `validation_scope.py` is the single path classifier used by local pre-push and CI. The routing contract is: / 本地预推送与 CI 共用 `validation_scope.py`，范围合同如下：
 
@@ -40,20 +32,34 @@ For an ordinary local commit, start with the change-scoped pre-push gate. It alw
 |---|---|---|
 | Documentation only / 仅文档 | links, syntax, diff hygiene / 链接、语法、diff | Rust, Swift, App build, Computer Use |
 | Localization resources / 本地化资源 | localization parity / 本地化一致性 | full Swift, App build, Computer Use |
-| Overlay-only Swift / 仅悬浮层 Swift | seven focused overlay/frame suites plus CI bundle proof / 7 组聚焦测试与 CI bundle | unrelated Swift suites; live UI is only recommended |
-| Other Swift / 其他 Swift | full Swift plus CI bundle proof / 全量 Swift 与 CI bundle | Computer Use unless visible behavior needs observation |
-| Rust package / Rust package | affected package or workspace boundary, plus CI bundle when runtime inputs changed / 对应 package 或 workspace，运行时输入变化时再构建 bundle | unrelated component tests |
+| Overlay-only Swift / 仅悬浮层 Swift | local compile; CI complete Swift interaction proof, offline overlay proof, and bundle / 本地编译；CI 全量 Swift 交互证明、离线悬浮层证明与 bundle | live UI is only recommended / 可见 UI 仅按需建议 |
+| Other Swift / 其他 Swift | local compile; CI complete Swift plus bundle proof / 本地编译；CI 全量 Swift 与 bundle | Computer Use unless visible behavior needs observation |
+| Rust package / Rust package | local format/compile; CI strict lint plus inventory-checked parallel core and integration shards / 本地格式与编译；CI 严格 lint 及带清单校验的并行核心/集成分片 | unrelated live UI / 无关可见 UI |
 | Scripts/workflows / 脚本与 workflow | syntax and release-contract tests; bundle only for bundle-owning scripts / 语法与发布契约；仅 bundle 相关脚本触发 bundle | product UI acceptance |
 | Release / 发布 | Swift 6.2+/SDK 26+ source gate, explicit stress, parallel thin builds, SDK 26 + macOS 14 deployment + weak-link inspection, native macOS 15 acceptance for both architectures, and packaged macOS 26 acceptance / Swift 6.2+/SDK 26+ 源码门禁、显式压力测试、双架构并行构建、SDK 26 + macOS 14 部署目标 + 弱链接检查、双架构 macOS 15 原生验收及 macOS 26 打包验收 | repeated package execution after trusted digest equality |
 
-During local full-gate diagnosis, `test_all.sh --resume` stores successful step checkpoints under this worktree's Git directory, and every executed step reports its wall-clock duration. Every checkpoint includes a source-scope fingerprint, command, workload settings, and local toolchain identity; a relevant source or toolchain change reruns that step, while unrelated successful steps can be reused. Interaction evidence is content-bound to `interaction-contract-files.txt`; the same proven suites may be rebound to the current validation build and reused by offline overlay and App assembly only after the source digest is rechecked. App assembly itself always reruns because it produces the final bundle. Clear local checkpoints explicitly with `test_all.sh --clear-cache`. / 本地完整门禁排错时，`test_all.sh --resume` 会把成功步骤的检查点写入当前 worktree 的 Git 目录，每个实际执行的步骤也会报告墙钟耗时。每个检查点都绑定源码作用域指纹、命令、负载设置与本机工具链；相关源码或工具链变化会重跑该步骤，无关的已通过步骤可以复用。交互证据按 `interaction-contract-files.txt` 内容绑定；只有重新核对源码摘要后，已证明的同组测试才能绑定到当前验证 build，并供离线悬浮层与 App 组装复用。最终 App 组装始终重跑，因为它负责产出最终 bundle。可用 `test_all.sh --clear-cache` 显式清除本地检查点。
+`test_all.sh --resume` remains an explicit local diagnosis tool, not a pre-push requirement. It stores successful step checkpoints under this worktree's Git directory and reports wall-clock duration. Use it only to reproduce a remote failure or investigate a complete gate locally. / `test_all.sh --resume` 仍可用于本地完整门禁排错，但不再是推送前要求；它会在当前 worktree 的 Git 目录保存成功步骤检查点并报告耗时，仅应在复现远端失败或本地排查完整门禁时使用。
 
 ```bash
 ./script/test_all.sh --resume
 ./script/test_all.sh --clear-cache
 ```
 
-Authoritative CI never consumes local checkpoints. Ordinary CI runs `validate_pre_push.sh --ci` with the shared classifier and builds a fully validated App only when runtime inputs changed. Release runs `test_all.sh --source-only --include-stress`, emits one source-bound interaction proof, and validates the exact packaged artifacts separately. Its complete Swift run also produces the interaction proof, so the five interaction suites are not run a second time. The String Catalog/`.strings` parity check remains ahead of expensive suites. / 权威 CI 不消费本地检查点。普通 CI 按变更范围运行，并只在运行时输入变化时构建完整验证的 App；Release 使用 `--source-only --include-stress`，一次完整 Swift 运行同时生成交互证明，再单独验证精确发布产物，避免重复运行 5 组交互测试。
+Authoritative CI never consumes local checkpoints or calls the local fast gate. One classifier fans work out into static contracts, integration contracts, Rust lint, five inventory-checked Rust test shards, complete Swift interaction proof, bounded stress, offline overlay proof, and App assembly. Ready direct or train PRs to `main` run that complete set before auto-merge; task PRs to `gd-ops/train/*` remain path-scoped. Every post-merge `main` push runs the complete release-grade set again for the exact immutable main commit. A stable `Required CI` job fails unless every scheduled dependency succeeded. / 权威 CI 不消费本地检查点，也不调用本地快速门禁。统一分类结果会并行路由到静态合同、集成合同、Rust lint、5 个带清单校验的 Rust 测试分片、完整 Swift 交互证明、压力、离线悬浮层证明与 App 组装。ready 的 direct/train → `main` PR 在自动合并前运行完整集合；task → train PR 保持按路径验证。合并后的每次 `main` push 会针对精确且不可变的 main commit 再运行完整 Release 级门禁。稳定的 `Required CI` job 仅在所有计划任务成功时通过。
+
+After a successful `main` push, CI uploads exactly `source-proof.json` and `interaction-attestation.json` as `release-source-proof-FULL_COMMIT`. The proof binds repository, full commit and tree, latest stable baseline, trusted push run ID/attempt, gate inventory, toolchain-contract digest, observed toolchains, and interaction bytes. Release accepts only a successful `push` run of `.github/workflows/ci.yml` on `main` from the same repository and exact commit; missing, expired, duplicate, malformed, or mismatched proof fails closed. The Release rebinds the proven interaction contract to its final build ID without repeating the complete source suites. / `main` push 成功后，CI 会以 `release-source-proof-FULL_COMMIT` 上传且仅上传 `source-proof.json` 与 `interaction-attestation.json`。证明绑定仓库、完整 commit/tree、latest stable 基线、受信任 push run ID/attempt、门禁清单、工具链合同摘要、已观察工具链与交互证明字节。Release 只接受同仓库、同 commit、`main` 上成功的 `.github/workflows/ci.yml` push run；缺失、过期、重复、格式错误或不匹配均 fail closed，并只将已证明交互合同重新绑定到最终 build ID，不再重复全量源码测试。
+
+Protected delivery is owned by the repository's idempotent ruleset applicator. `Protected default branch` requires pull requests, squash-only linear history, resolved conversations, current-base `Required CI`, and blocks force-push/deletion. `Protected integration trains` applies the PR, squash, and `Required CI` contract to `gd-ops/train/*`, but uses non-strict status checks and permits deletion after the final train PR. Repository settings enable auto-merge, update-branch support, automatic merged-branch deletion, and disable merge/rebase commits. The separate auto-merge workflow handles only same-repository ready `gd-ops/*` PRs, verifies the base's active rules through GitHub's API, and never checks out PR code. / 受保护交付由幂等 ruleset 配置器负责。默认分支要求 PR、仅 squash 的线性历史、讨论已解决、基于最新基线的 `Required CI`，并禁止强推与删除；train 规则对 `gd-ops/train/*` 要求 PR、squash 与 `Required CI`，但采用 non-strict 检查并允许最终合并后删除。仓库设置启用自动合并、更新分支与合并后自动删分支，并关闭 merge/rebase commit。自动合并 workflow 只处理同仓库 ready 的 `gd-ops/*` PR，会经 GitHub API 校验目标规则，且绝不 checkout PR 代码。
+
+During the initial migration, reversible repository settings may be applied first. Push the workflows and wait for the new exact `main` `Required CI` to succeed before applying either ruleset. Full apply fails closed until that trusted check exists. / 首次迁移可先应用可逆仓库设置；必须先推送 workflow 并等待新的精确 `main` `Required CI` 成功，才能应用两个 ruleset。完整 apply 在该受信任检查存在前会 fail closed。
+
+```bash
+./script/configure_main_branch_ruleset.py --settings-only --apply
+./script/configure_main_branch_ruleset.py
+./script/configure_main_branch_ruleset.py --apply
+```
+
+Branch/worktree ownership and direct/train PR coordination are defined by [Parallel development](parallel-development.md). / 分支、worktree 所有权及 direct/train PR 协调见并行开发文档。
 
 ## Environment-dependent gates / 环境门禁
 

@@ -4,17 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_REF=""
 PLAN_ONLY=0
-FULL=0
-CI_MODE=0
 
 usage() {
   cat <<'EOF'
-usage: validate_pre_push.sh [--base REF] [--plan-only] [--full] [--ci]
+usage: validate_pre_push.sh [--base REF] [--plan-only]
 
-Runs source-safe, change-scoped checks for an ordinary commit. --full delegates
-to test_all.sh --resume; CI and Release continue to use uncached test_all.sh.
---ci uses the same path classifier but runs complete script/release contract
-tests when those files changed. It never enables host UI or Computer Use.
+Runs the bounded local fast gate: diff hygiene, source syntax, lightweight
+contracts, formatting, and compilation for touched languages. Complete tests,
+App assembly, stress, and artifact validation are authoritative remote gates.
 EOF
 }
 
@@ -29,14 +26,6 @@ while (($# > 0)); do
       PLAN_ONLY=1
       shift
       ;;
-    --full)
-      FULL=1
-      shift
-      ;;
-    --ci)
-      CI_MODE=1
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -47,14 +36,6 @@ while (($# > 0)); do
       ;;
   esac
 done
-
-if [[ "$FULL" == "1" ]]; then
-  if [[ "$PLAN_ONLY" == "1" ]]; then
-    echo './script/test_all.sh --resume'
-    exit 0
-  fi
-  exec "$ROOT_DIR/script/test_all.sh" --resume
-fi
 
 if [[ -z "$BASE_REF" ]]; then
   if upstream="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
@@ -85,28 +66,21 @@ if [[ "$APC_CHANGED_LOCALIZATION" == "1" ]]; then
   PLAN+=("String Catalog/.strings parity")
 fi
 if [[ "$APC_CHANGED_SCRIPTS" == "1" ]]; then
-  PLAN+=("static build and release-script safety")
+  PLAN+=("static build and workflow contract safety")
 fi
 if [[ "$APC_CHANGED_PRODUCER" == "1" ]]; then
-  PLAN+=("pet Skill contracts and portable maker roundtrip")
-fi
-if [[ "$APC_CHANGED_CONNECTORS" == "1" ]]; then
-  PLAN+=("generated connector runtime smoke")
+  PLAN+=("pet Skill structure contracts")
 fi
 case "$APC_RUST_MODE" in
-  workspace) PLAN+=("Rust fmt plus workspace Clippy/tests") ;;
-  petcore) PLAN+=("Rust fmt plus petcore/petcore-cli Clippy/tests") ;;
-  cli) PLAN+=("Rust fmt plus petcore-cli Clippy/tests") ;;
+  workspace) PLAN+=("Rust format plus workspace compile check") ;;
+  petcore) PLAN+=("Rust format plus petcore/petcore-cli compile check") ;;
+  cli) PLAN+=("Rust format plus petcore-cli compile check") ;;
 esac
 case "$APC_SWIFT_MODE" in
-  overlay) PLAN+=("focused overlay, frame-pipeline, and interaction Swift tests") ;;
-  full) PLAN+=("complete Swift unit and UI-model tests") ;;
+  overlay|full) PLAN+=("Swift package compile check") ;;
 esac
 if [[ "$APC_CHANGED_PLUGIN_VERSION" == "1" ]]; then
   PLAN+=("Codex plugin and bundled Skill version discipline")
-fi
-if [[ "$APC_BUILD_BUNDLE" == "1" && "$CI_MODE" == "1" ]]; then
-  PLAN+=("CI packaged development App proof")
 fi
 if [[ "$APC_COMPUTER_USE" == "recommended" ]]; then
   PLAN+=("Computer Use recommended after automated checks; never run automatically")
@@ -149,13 +123,9 @@ if [[ "$APC_CHANGED_LOCALIZATION" == "1" ]]; then
   run "Localization parity" "$ROOT_DIR/script/validate_localizations.py"
 fi
 if [[ "$APC_CHANGED_SCRIPTS" == "1" ]]; then
-  SCRIPT_SAFETY_ARGS=(--skip-source-syntax)
-  if [[ "$CI_MODE" != "1" ]]; then
-    SCRIPT_SAFETY_ARGS+=(--static-only)
-  fi
   run "Build and release-script safety" \
     "$ROOT_DIR/script/validate_build_scripts_safety.sh" \
-    "${SCRIPT_SAFETY_ARGS[@]}"
+    --skip-source-syntax --static-only
 fi
 if [[ "$APC_CHANGED_PLUGIN_VERSION" == "1" ]]; then
   run "Codex plugin and Skill version discipline" \
@@ -164,10 +134,6 @@ if [[ "$APC_CHANGED_PLUGIN_VERSION" == "1" ]]; then
 fi
 if [[ "$APC_CHANGED_PRODUCER" == "1" ]]; then
   run "Pet Skill contracts" "$ROOT_DIR/script/validate_pet_skills.sh"
-  run "Portable pet maker" "$ROOT_DIR/script/validate_portable_pet_maker.sh"
-fi
-if [[ "$APC_CHANGED_CONNECTORS" == "1" ]]; then
-  run "Connector runtime" "$ROOT_DIR/script/validate_connectors_runtime.sh"
 fi
 
 RUST_PACKAGE_ARGS=()
@@ -178,23 +144,15 @@ case "$APC_RUST_MODE" in
 esac
 if ((${#RUST_PACKAGE_ARGS[@]} > 0)); then
   run "Rust formatting" cargo fmt --all --manifest-path "$ROOT_DIR/Cargo.toml" -- --check
-  run "Scoped Rust linting" cargo clippy \
-    --manifest-path "$ROOT_DIR/Cargo.toml" \
-    "${RUST_PACKAGE_ARGS[@]}" \
-    --all-targets --all-features --locked -- -D warnings
-  run "Scoped Rust tests" cargo test \
+  run "Scoped Rust compile check" cargo check \
     --manifest-path "$ROOT_DIR/Cargo.toml" \
     "${RUST_PACKAGE_ARGS[@]}" \
     --locked
 fi
 case "$APC_SWIFT_MODE" in
-  overlay)
-    run "Focused overlay Swift tests" \
-      "$ROOT_DIR/script/validate_swift_tests.sh" --scope overlay
-    ;;
-  full)
-    run "Swift tests" "$ROOT_DIR/script/validate_swift_tests.sh"
+  overlay|full)
+    run "Swift compile check" swift build --package-path "$ROOT_DIR/apps/macos"
     ;;
 esac
 
-echo 'Change-scoped pre-push validation passed. Use --full for the complete local gate.'
+echo 'Local fast gate passed. GitHub CI remains authoritative for complete tests and App assembly.'

@@ -170,7 +170,10 @@ def classify(paths: list[str]) -> ValidationScope:
         "AGENTS.md",
     )
     docs_only = bool(normalized) and all(
-        path.startswith("docs/") or path in documentation_paths for path in normalized
+        path.startswith("docs/")
+        or path.startswith("changes/")
+        or path in documentation_paths
+        for path in normalized
     ) and not connectors
 
     computer_use = (

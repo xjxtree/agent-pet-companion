@@ -36,7 +36,9 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 No Apple account, certificate, private key, notarization profile, release Variable, or release Secret is used.
 
-Run the host-safe source gate on the exact candidate commit:
+Merge the exact candidate commit to protected `main` and wait for the post-merge required CI check. The main-bound PR has already passed the complete gate before auto-merge; the trusted `main` push binds the same release-grade inventory to the exact immutable main commit and uploads its source proof. A manual dispatch may create the release tag only after validating that proof. The one-time ruleset migration procedure is owned by [Validation profiles](../development/validation.md). / 将精确候选 commit 合并到受保护的 `main` 并等待合并后的必选 CI。面向 main 的 PR 已在自动合并前通过完整门禁；受信任的 `main` push 会将同一 Release 级清单绑定到精确且不可变的 main commit 并上传源码证明。手动 dispatch 只有在验证该证明后才能创建发布 tag。一次性 ruleset 迁移步骤由验证文档维护。
+
+The complete local command remains available only for diagnosis; it is not a release prerequisite when the exact remote proof exists:
 
 ```bash
 APC_VALIDATE_HOST_UI=0 \
@@ -47,7 +49,7 @@ APC_VALIDATE_REAL_APP_SERVER=0 \
 
 Then run the environment-dependent connector, App Server, visible-UI, renderer, and profiling gates required by [Validation profiles](../development/validation.md). The executing Agent selects a suitable live-App inspection method. A gate not run is skipped, never passed. / 随后按发布范围运行环境门禁；可见 App 的验收方法由执行 Agent 选择，未运行的门禁只能标记为 skipped。
 
-The complete Swift run generates a build-bound interaction attestation in the same invocation. Bundle validation requires the final App to contain and successfully consume the attestation for its own build ID. GitHub automation persists that proof once and supplies it to both architecture builds. / 完整 Swift 测试在同一次调用中生成交互证明；自动化只生成一次，并复用于两个架构构建。
+The complete Swift CI shard generates a source-build interaction attestation. `source-proof.json` binds its bytes to the repository, full commit/tree, latest stable baseline, trusted `main` push run, complete gate inventory, and toolchain contract. Release downloads it only from the successful exact-commit CI run, validates it, and rebinds the interaction attestation to the final release build ID before supplying it to both architecture builds. / 完整 Swift CI 分片会生成源码 build 的交互证明；`source-proof.json` 将其字节绑定到仓库、完整 commit/tree、latest stable 基线、受信任 `main` push run、完整门禁清单与工具链合同。Release 只从成功的同 commit CI run 下载并校验，再将交互证明重新绑定到最终发布 build ID，供两个架构构建复用。
 
 ## Development artifacts / 开发产物
 
@@ -80,7 +82,7 @@ dist/AgentPetCompanion-X.Y.Z-SHA256SUMS.txt
 
 `SHA256SUMS.txt` contains exactly the two ZIP entries. No signature or notarization sidecar belongs in the asset set.
 
-The GitHub workflow instead runs `--arch arm64` and `--arch x86_64` in parallel. It adds the internal `--source-gate-proven` handoff only after the required source job succeeded and supplied its attestation, avoiding two repeated script-contract passes. Each command produces one source-proven ZIP component; neither component is publishable alone. The assemble job downloads both, creates the shared checksum, rejects any extra file, and emits the three trusted digests. / GitHub workflow 在源码任务成功并提供证明后，使用内部 `--source-gate-proven` 交接并行构建两个架构，避免重复两次脚本契约门禁；单件不可单独发布。
+The GitHub workflow runs `--arch arm64` and `--arch x86_64` in parallel. It adds the internal `--source-gate-proven` handoff only after reusing and validating the successful exact-commit main proof. Each command produces one source-proven ZIP component; neither component is publishable alone. The assemble job downloads both, creates the shared checksum, rejects any extra file, and emits the three trusted digests. / GitHub workflow 仅在复用并校验成功的同 commit main 证明后，才使用内部 `--source-gate-proven` 交接并行构建两个架构；单件不可单独发布。
 
 Validate a clean local or downloaded three-file directory with:
 
@@ -96,18 +98,30 @@ Validation rejects missing/extra assets, unsafe or malformed ZIPs, checksum/iden
 
 ## GitHub automation / GitHub 自动化
 
-`.github/workflows/release.yml` runs from a protected `vX.Y.Z` tag or explicit dispatch of an existing tag. In order it:
+`.github/workflows/release.yml` runs from a protected `vX.Y.Z` tag or an explicit dispatch that promotes a successful main commit. The fast path is: / `.github/workflows/release.yml` 可由受保护 `vX.Y.Z` tag 或显式 dispatch 晋级一个成功的 main commit。快速路径如下：
 
-1. verifies tag, source version, changelog, full commit, and Codex plugin/Skill version discipline;
-2. runs the host-safe source, complete Swift interaction, integration, and explicit stress gates once, then uploads the source-bound interaction proof;
-3. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and proof;
-4. assembles the exact three-file candidate once and records trusted digests;
-5. validates the exact SDK/deployment/weak-link contract in every App archive;
-6. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
-7. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
-8. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
-9. publishes it as latest stable only after all checks pass; and
-10. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
+```bash
+gh workflow run release.yml \
+  -f tag=vX.Y.Z \
+  -f build=BUILD_NUMBER \
+  -f commit=FULL_40_CHARACTER_MAIN_COMMIT
+```
+
+Omit `commit` to use current `main`. Dispatch verifies source version, changelog, ancestry, latest stable baseline, and the successful exact-commit main proof before it creates a missing lightweight tag through GitHub's API. An existing tag must already target the same commit. Tag creation cannot make an unproven commit releasable, and any later job rechecks the remote identity. / 省略 `commit` 时使用当前 `main`。dispatch 会先验证源码版本、CHANGELOG、祖先关系、latest stable 基线及同 commit 的成功 main 证明，再通过 GitHub API 创建缺失的轻量 tag；已有 tag 必须已指向同一 commit。创建 tag 不能让未经证明的 commit 进入发布，后续任务仍会复核远端身份。
+
+In order the workflow:
+
+1. verifies source version, changelog, full main commit, latest stable baseline, and Codex plugin/Skill version discipline;
+2. resolves the successful trusted `main` push CI run for that exact commit, rejects PR/fork/failed or ambiguous runs and artifacts, validates the two-file source proof, then rebinds its interaction attestation to the final release build ID;
+3. creates a missing tag only after proof validation, or verifies the existing tag, then rechecks its remote commit;
+4. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and rebound proof;
+5. assembles the exact three-file candidate once and records trusted digests;
+6. validates the exact SDK/deployment/weak-link contract in every App archive;
+7. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
+8. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
+9. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
+10. publishes it as latest stable only after all checks pass; and
+11. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
 
 Native compatibility validation on both architectures and packaged macOS 26 validation are hard dependencies; cross-building or static symbol inspection is not a substitute for runtime acceptance. Existing Releases are never overwritten. / 双架构原生兼容验收与 macOS 26 打包产物验收都是硬门禁；交叉构建或静态符号检查不能替代运行时验收，已有 Release 不会被覆盖。
 

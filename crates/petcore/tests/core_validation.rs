@@ -142,15 +142,31 @@ fn assert_matches_petpack_metadata_schema(schema_name: &str, instance: &serde_js
 }
 
 fn write_fake_app_server_script(path: &Path, thread_id: &str) {
+    write_fake_app_server_script_with_marker(path, thread_id, None);
+}
+
+fn write_fake_app_server_script_with_marker(
+    path: &Path,
+    thread_id: &str,
+    process_file: Option<&Path>,
+) {
+    // Keep process evidence bound to this fixture script. A process-global
+    // marker variable can be inherited by an older asynchronous test worker
+    // after the next test has already replaced the environment.
+    let process_marker = process_file.map_or_else(String::new, |process_file| {
+        let quoted_path = format!(
+            "'{}'",
+            process_file.display().to_string().replace('\'', "'\\''")
+        );
+        format!(
+            "app_server_pgid=\"$(ps -o pgid= -p \"$$\")\"\nset -- $app_server_pgid\nprintf '%s %s\\n' \"$$\" \"$1\" > {quoted_path}"
+        )
+    });
     let mut file = std::fs::File::create(path).unwrap();
     writeln!(
         file,
         r#"#!/bin/sh
-if [ -n "${{APC_FAKE_APP_SERVER_PROCESS_FILE:-}}" ]; then
-  app_server_pgid="$(ps -o pgid= -p "$$")"
-  set -- $app_server_pgid
-  printf '%s %s\n' "$$" "$1" > "$APC_FAKE_APP_SERVER_PROCESS_FILE"
-fi
+{process_marker}
 while IFS= read -r request; do
   case "$request" in
     *initialize*)
@@ -3701,12 +3717,12 @@ fn generation_fails_when_all_reference_images_are_unusable() {
     let temp = tempfile::tempdir().unwrap();
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let app_server_process_file = temp.path().join("app-server-must-not-start");
-    write_fake_app_server_script(&fake_app_server, "thread_fake_unusable_reference");
-    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
-    let _process_file = EnvVarGuard::set(
-        "APC_FAKE_APP_SERVER_PROCESS_FILE",
-        app_server_process_file.as_os_str(),
+    write_fake_app_server_script_with_marker(
+        &fake_app_server,
+        "thread_fake_unusable_reference",
+        Some(&app_server_process_file),
     );
+    let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();
@@ -3900,11 +3916,13 @@ fn generation_reply_is_rejected_while_job_is_running() {
     let fake_app_server = temp.path().join("fake_app_server.sh");
     let wait_file = temp.path().join("allow-app-server-complete");
     let process_file = temp.path().join("fake-app-server-process");
-    write_fake_app_server_script(&fake_app_server, "thread_fake_running_reply");
+    write_fake_app_server_script_with_marker(
+        &fake_app_server,
+        "thread_fake_running_reply",
+        Some(&process_file),
+    );
     let _app_server = EnvVarGuard::set("CODEX_APP_SERVER_CMD", fake_app_server.as_os_str());
     let _wait_file = EnvVarGuard::set("APC_FAKE_APP_SERVER_WAIT_FILE", wait_file.as_os_str());
-    let _process_file =
-        EnvVarGuard::set("APC_FAKE_APP_SERVER_PROCESS_FILE", process_file.as_os_str());
     let paths = AppPaths::new(temp.path().to_path_buf());
     let state = CoreState::new(paths);
     state.ensure_ready().unwrap();

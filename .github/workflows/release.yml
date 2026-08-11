@@ -7,13 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag to publish
+        description: vX.Y.Z tag to create or reuse
         required: true
         type: string
       build:
         description: Positive CFBundleVersion
         required: true
         default: "1"
+        type: string
+      commit:
+        description: Successful main commit to promote (blank uses current main)
+        required: false
         type: string
 
 permissions:
@@ -25,10 +29,11 @@ concurrency:
 
 jobs:
   prepare:
-    name: Prove source once
+    name: Reuse exact main source proof
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 20
     permissions:
+      actions: read
       contents: read
     outputs:
       tag: ${{ steps.release_identity.outputs.tag }}
@@ -36,18 +41,18 @@ jobs:
       build: ${{ steps.release_identity.outputs.build }}
       commit: ${{ steps.release_identity.outputs.commit }}
       previous_tag: ${{ steps.release_identity.outputs.previous_tag }}
+      tag_exists: ${{ steps.release_identity.outputs.tag_exists }}
     env:
       APC_VALIDATE_HOST_UI: "0"
       APC_VALIDATE_REAL_AGENT_CONNECTORS: "0"
       APC_VALIDATE_REAL_APP_SERVER: "0"
-      CARGO_TERM_COLOR: always
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.commit || 'main') || github.ref }}
 
       - name: Resolve release identity
         id: release_identity
@@ -69,9 +74,16 @@ jobs:
           [[ "$build" =~ ^[1-9][0-9]*$ ]]
           version="${tag#v}"
           commit="$(git rev-parse HEAD)"
-          test "$(git rev-list -n 1 "$tag")" = "$commit"
           git rev-parse --verify refs/remotes/origin/main >/dev/null
           git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          tag_exists=0
+          if git rev-parse --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$commit"
+            tag_exists=1
+          elif [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "tag push did not resolve to a local tag" >&2
+            exit 1
+          fi
           source_version="$(awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml)"
           test "$version" = "$source_version"
           grep -q "^## \\[$version\\] - [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" CHANGELOG.md
@@ -93,51 +105,77 @@ jobs:
             echo "build=$build"
             echo "commit=$commit"
             echo "previous_tag=$previous_tag"
+            echo "tag_exists=$tag_exists"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Prepare source validation host
+      - name: Prepare source-proof verification host
         run: |
           test "$(uname -m)" = "arm64"
           ./script/validate_macos_build_contract.py toolchain
-          rustup show
-          if ! command -v rg >/dev/null 2>&1; then
-            brew install ripgrep
-          fi
 
-      - name: Prepare pinned Python validation environment
+      - name: Resolve successful trusted main CI run
+        id: source_proof_run
         run: |
-          python3 -m venv "$RUNNER_TEMP/apc-validation-python"
-          "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
-            --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
-          "$RUNNER_TEMP/apc-validation-python/bin/python" - <<'PY'
-          from PIL import Image, features
-          if Image.__version__ != "11.3.0" or not features.check("webp_anim"):
-              raise SystemExit("pinned Pillow lacks the required animated WebP support")
-          PY
-          echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
+          runs_json="$RUNNER_TEMP/apc-ci-runs.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=${{ steps.release_identity.outputs.commit }}&per_page=100" \
+            >"$runs_json"
+          selection="$(
+            ./script/resolve_release_source_proof.py run \
+              --runs-json "$runs_json" \
+              --repository "$GITHUB_REPOSITORY" \
+              --commit "${{ steps.release_identity.outputs.commit }}"
+          )"
+          run_id="$(jq -r '.run_id' <<<"$selection")"
+          run_attempt="$(jq -r '.run_attempt' <<<"$selection")"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]
 
-      - name: Restore source/build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+          artifacts_json="$RUNNER_TEMP/apc-ci-artifacts.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+            >"$artifacts_json"
+          artifact_name="release-source-proof-${{ steps.release_identity.outputs.commit }}"
+          ./script/resolve_release_source_proof.py artifact \
+            --artifacts-json "$artifacts_json" \
+            --run-id "$run_id" \
+            --artifact-name "$artifact_name" >/dev/null
+          {
+            echo "run_id=$run_id"
+            echo "run_attempt=$run_attempt"
+            echo "artifact_name=$artifact_name"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Download exact-commit source proof from trusted CI run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-            apps/macos/.build
-          key: macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-${{ steps.release_identity.outputs.commit }}
-          restore-keys: |
-            macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-
+          name: ${{ steps.source_proof_run.outputs.artifact_name }}
+          path: ${{ runner.temp }}/source-proof
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source_proof_run.outputs.run_id }}
 
-      - name: Run source, complete Swift interaction, integration, and stress gates
+      - name: Verify exact-commit source proof and rebind interaction attestation
         env:
           APC_BUILD_ID: ${{ steps.release_identity.outputs.version }}.${{ steps.release_identity.outputs.build }}.${{ steps.release_identity.outputs.commit }}
-          APC_INTERACTION_ATTESTATION_OUTPUT: ${{ runner.temp }}/release-interaction-attestation.json
         run: |
-          defaults write NSGlobalDomain AppleLanguages -array "zh-Hans" "en"
-          test "$(defaults read NSGlobalDomain AppleLanguages | sed -n '2s/[ ,\"]//gp')" = "zh-Hans"
-          ./script/test_all.sh --source-only --include-stress
+          ./script/release_source_proof.py validate \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "${{ steps.release_identity.outputs.commit }}" \
+            --previous-release-tag "${{ steps.release_identity.outputs.previous_tag }}" \
+            --run-id "${{ steps.source_proof_run.outputs.run_id }}" \
+            --run-attempt "${{ steps.source_proof_run.outputs.run_attempt }}" \
+            --proof "$RUNNER_TEMP/source-proof/source-proof.json" \
+            --attestation "$RUNNER_TEMP/source-proof/interaction-attestation.json"
+          ./script/prepare_interaction_attestation.sh \
+            --output "$RUNNER_TEMP/release-interaction-attestation.json" \
+            --proof-in "$RUNNER_TEMP/source-proof/interaction-attestation.json"
 
-      - name: Upload source-bound interaction proof
+      - name: Upload release-bound interaction proof
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-interaction-attestation
@@ -145,9 +183,41 @@ jobs:
           retention-days: 3
           path: ${{ runner.temp }}/release-interaction-attestation.json
 
+  ensure_tag:
+    name: Bind release tag to proven main commit
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      TAG_EXISTS: ${{ needs.prepare.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Create missing lightweight tag after source proof succeeds
+        if: env.TAG_EXISTS != '1'
+        run: |
+          gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" \
+            -f "sha=$RELEASE_COMMIT" >/dev/null
+
+      - name: Verify immutable release identity
+        run: ./script/verify_remote_release_tag.sh --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+
   build_archives:
     name: Build ${{ matrix.architecture }} archive
-    needs: prepare
+    needs: [prepare, ensure_tag]
     strategy:
       fail-fast: false
       matrix:
@@ -450,7 +520,9 @@ jobs:
             printf '3. 从“应用程序”打开新版。\n\n'
             printf 'Your pets, settings, history, and active work stay on this Mac and are preserved.\n\n'
             printf '你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。\n\n'
+            # shellcheck disable=SC2016
             printf 'Apple silicon uses `macos-arm64`; Intel uses `macos-x86_64`. Download `SHA256SUMS.txt` with the ZIP and verify the selected archive before replacing the App.\n\n'
+            # shellcheck disable=SC2016
             printf 'Apple 芯片使用 `macos-arm64`，Intel 使用 `macos-x86_64`。请同时下载 `SHA256SUMS.txt`，并在替换 App 前核对所选归档。\n\n'
             printf '**First launch:** these Apps are ad-hoc signed, are not Developer ID signed, and are not Apple-notarized. If macOS blocks the App, Control-click it in Finder and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**. Only continue if you downloaded it from this GitHub Release and its SHA-256 matches the published checksum.\n\n'
             printf '**首次打开：** 当前 App 使用 ad-hoc 签名，没有 Developer ID 签名，也未经过 Apple 公证。如果 macOS 阻止打开，请在 Finder 中按住 Control 点按 App 并选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。仅在文件来自本 GitHub Release 且 SHA-256 与校验和一致时继续。\n'

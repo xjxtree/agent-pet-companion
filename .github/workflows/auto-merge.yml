@@ -1,0 +1,44 @@
+name: Enable protected PR auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  enable:
+    name: Enable squash auto-merge
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'gd-ops/') &&
+      (github.base_ref == 'main' || startsWith(github.base_ref, 'gd-ops/train/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      BASE_BRANCH: ${{ github.base_ref }}
+    steps:
+      - name: Require active PR and Required CI rules before enabling auto-merge
+        run: |
+          encoded_base="$(jq -rn --arg value "$BASE_BRANCH" '$value|@uri')"
+          rules="$(
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base"
+          )"
+          jq -e 'any(.[]; .type == "pull_request")' <<<"$rules" >/dev/null
+          jq -e '
+            any(.[].parameters.required_status_checks[]?;
+              .context == "Required CI")
+          ' <<<"$rules" >/dev/null
+
+      - name: Enable squash auto-merge after required checks
+        run: gh pr merge --repo "$GITHUB_REPOSITORY" --auto --squash "$PR_URL"
