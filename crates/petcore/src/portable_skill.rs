@@ -427,7 +427,7 @@ fn parse_skill_version(content: &str) -> Option<String> {
 }
 
 fn bundled_content_sha256() -> String {
-    let mut files = BUNDLED_SKILL_FILES.iter().copied().collect::<Vec<_>>();
+    let mut files = BUNDLED_SKILL_FILES.to_vec();
     files.sort_by_key(|file| file.relative_path);
     let mut hasher = Sha256::new();
     hasher.update(b"agent-pet-companion/portable-skill/v1\0");
@@ -445,7 +445,7 @@ fn bundled_content_sha256() -> String {
 fn entry_identity(metadata: &rustix::fs::Stat) -> EntryIdentity {
     EntryIdentity {
         dev: metadata.st_dev as u64,
-        ino: metadata.st_ino as u64,
+        ino: metadata.st_ino,
         mode: metadata.st_mode,
     }
 }
