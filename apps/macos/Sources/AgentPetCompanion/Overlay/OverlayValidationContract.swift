@@ -542,10 +542,9 @@ public enum AgentPetCompanionUIValidationContract {
                 "Session exact",
                 APCLocalizedPresentation.lifecycleTitle(.waiting),
                 "A response is required",
-                APCLocalization.text(.overlayDetailNeedsInput),
                 exact.actionLabel,
             ],
-            "VoiceOver order was not Agent, surface, session, status, message, activity, action"
+            "VoiceOver order was not Agent, surface, session, status, visible message, action"
         )
     }
 
