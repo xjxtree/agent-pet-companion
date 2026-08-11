@@ -40,9 +40,38 @@ The coordinator starts one shared train and task worktrees from explicit remote 
 
 For direct work, pass `--hotfix` or `--small`; for an explicit train, pass `--lane train --train gd-ops/train/<name>`. The tool rejects missing train coordination, branch collisions, dirty PR worktrees, and unmanaged PR heads. / direct 工作使用 `--hotfix` 或 `--small`；显式 train 使用 `--lane train --train ...`。工具会拒绝缺少 train 协调、分支冲突、PR worktree 不干净及非受管 PR head。
 
+## Commit, push, and PR checklist / 提交、推送与 PR 检查清单
+
+Every direct, task-to-train, and final train handoff uses the same explicit lifecycle. A changed file is not delivered merely because it exists in a worktree: it must be intentionally staged, committed, observed in a clean worktree, pushed, and represented by the expected PR head/base. / direct、task→train 与最终 train 的每次交付都必须执行同一套显式生命周期。文件只存在于 worktree 中不等于已经交付；它必须被明确暂存、提交，在干净 worktree 中复核，推送，并由预期 head/base 的 PR 承载。
+
+1. Confirm that the current branch, recorded base, owned paths, and changelog mode match the chosen lane. Inspect `git status --short` and the complete diff; do not mix another Agent's paths, generated output, credentials, `.env`, DerivedData, or temporary assets. / 确认当前分支、记录的 base、所属路径与 changelog 模式符合所选通道；检查完整状态与 diff，不混入其他 Agent 路径、生成物、凭据或临时文件。
+2. Run `git diff --check` and `./script/validate_pre_push.sh`. The fast local gate is required; the larger remote matrix remains authoritative. / 运行空白检查与本地快速门禁；本地快速门禁是必选项，远端大矩阵仍是权威结果。
+3. Stage only the intended paths with an explicit `git add -- <paths...>`. `git add -A` is permitted only after the whole worktree has been deliberately confirmed as one scope. Audit the index with `git diff --cached --check`, `git diff --cached --stat`, and, when needed, the full cached diff. / 使用显式路径只暂存本次范围；仅在已明确确认整个 worktree 都属于同一范围时才可使用 `git add -A`，随后检查 index 的空白、统计与完整 diff。
+4. Commit the staged change, then require `git status --short` to be empty. A successful commit with remaining modified or untracked files is an incomplete handoff and must not be pushed as complete. / 提交后必须确认 `git status --short` 为空；commit 成功但仍有修改或未跟踪文件，仍属于不完整交付，不能按已完成状态推送。
+5. Use `development_flow.py pr-open ... --apply` (or an equivalent explicit push plus PR operation), then verify the remote branch SHA, PR head/base, draft/ready state, and CI run. The helper refuses a dirty PR worktree. / 使用辅助命令（或等价的显式 push + PR 操作），并复核远端 SHA、PR head/base、draft/ready 状态与 CI；辅助命令会拒绝脏 worktree。
+
+```bash
+git status --short
+git diff --check
+./script/validate_pre_push.sh
+git add -- path/to/owned-file another/owned-file
+git diff --cached --check
+git diff --cached --stat
+git commit -m "Describe the delivered change"
+test -z "$(git status --porcelain)"
+
+./script/development_flow.py pr-open \
+  --worktree /absolute/path/to/owned-worktree \
+  --title "Describe the delivered change" \
+  --ready \
+  --apply
+```
+
 ## PR lifecycle and CI / PR 生命周期与 CI
 
 Task PRs start as drafts unless the Agent explicitly marks them ready. A ready PR created by the helper is pushed and opened against its recorded base. After its CI workflow succeeds, the trusted post-CI merger independently resolves the exact same-repository PR and head commit, verifies its run/attempt-bound merge ticket, tested merge parents, lane proof, and active PR/`Required CI` rules, then squash-merges. It checks out only the trusted `main` verifier, never pull-request code. / 任务 PR 默认以 draft 创建。Agent 显式标记 ready 后，辅助工具会推送并按记录基线创建 PR。其 CI workflow 成功后，受信任的 CI 后合并器会独立解析精确的同仓库 PR 与 head commit，校验绑定 run/attempt 的 merge ticket、测试合并父提交、通道证明以及有效的 PR/`Required CI` 规则，再执行 squash 合并；它只 checkout 受信任的 `main` 验证器，绝不 checkout 或执行 PR 代码。
+
+After it verifies the merged PR response, the trusted merger also removes the source ref for direct, task-to-train, and final train PRs. Repository automatic deletion remains enabled as the first convenience layer, but the workflow provides deterministic cleanup: an already-absent ref is a replay-safe success, an existing ref is deleted with an atomic force-with-lease bound to the verified PR head SHA, and an advanced or reused branch fails closed instead of being deleted. Dispatch failure after cleanup is recoverable because the closed PR record and source CI run remain the replay identity. / 受信任合并器确认 PR 已合并后，还会清理 direct、task→train 与最终 train PR 的源 ref。仓库自动删除开关仍作为第一层便利机制；workflow 则提供确定性清理：ref 已不存在时幂等成功，ref 仍存在时仅用绑定已验证 PR head SHA 的原子 force-with-lease 删除，分支若已推进或被复用则 fail closed 而不删除。清理后即使派发失败，也可依靠已关闭 PR 记录与源 CI run 安全重放。
 
 PRs that change the CI/Release/merge/proof/ruleset control-plane inventory are intentionally excluded from privileged auto-merge because their own workflow cannot be allowed to prove itself. They still run PR CI, but require a trusted manual squash merge; that human-authored merge produces the ordinary protected `main` push CI. / 修改 CI、Release、合并器、证明或 ruleset 控制面清单的 PR 会被明确排除在特权自动合并之外，因为不能允许 PR 自己修改并证明自身 workflow。此类 PR 仍运行 PR CI，但需要受信任人工执行 squash 合并；该人工合并会产生普通的受保护 `main` push CI。
 
@@ -76,7 +105,37 @@ A train task PR adds one `changes/unreleased/*.json` fragment per user-visible c
 ./script/validate_pre_push.sh
 ```
 
-After the train PR merges, the coordinator clears the active state with `train-clear --train ... --apply` and prunes only its owned worktrees. Branch deletion is performed by GitHub after merge. / train PR 合并后，协调者使用 `train-clear` 清除活动状态，并只清理自己拥有的 worktree；分支由 GitHub 在合并后删除。
+## Post-merge repository audit / 合并后的仓库清场审计
+
+Automatic remote-branch deletion does not clean local worktrees or prove that every local change was delivered. After each direct merge, and once more after a train closes, the coordinator performs a repository-wide audit: / 远端自动删分支不会清理本地 worktree，也不能证明全部本地改动已经交付。每次 direct 合并后，以及 train 收口后，协调者都必须执行全仓审计：
+
+1. Run `git fetch origin --prune`, verify the merged PR and exact `main` SHA, and confirm the remote source ref is absent. / 拉取并 prune，核验已合并 PR 与精确 main SHA，并确认远端源 ref 已不存在。
+2. Enumerate every linked worktree with `git worktree list --porcelain`, then run `git status --short` in each path. Any modified or untracked path is unresolved work: preserve it, assign an owner, and deliver it through a PR; never remove or reset that worktree as cleanup. / 枚举每个 worktree 并逐一检查状态；存在修改或未跟踪文件即代表未解决工作，必须保留、分配 owner 并通过 PR 交付，不能以清理名义删除或 reset。
+3. Inventory every local branch and open PR. For branches with an upstream, inspect unpushed commits; for branches whose remote was deleted after squash, use the merged PR record as the authority because the task commit is not an ancestor of the squash commit. A branch with no matching merged PR remains unresolved even if its worktree is clean. / 盘点全部本地分支与 open PR；有 upstream 的分支检查未推送 commit，squash 后远端已删的分支以 merged PR 记录为权威，因为任务 commit 不会成为 squash commit 的祖先；没有对应 merged PR 的分支即使 worktree 干净也仍未解决。
+4. In one dedicated, clean main worktree only, fast-forward local `main` with `git merge --ff-only origin/main`. Never switch, reset, or overwrite a dirty feature worktree to update main. / 仅在专用且干净的 main worktree 中以 fast-forward 更新本地主分支；不得切换、reset 或覆盖脏的功能 worktree。
+5. Remove only owned, clean worktrees whose PR is verified merged and whose remote source ref is absent; then remove their local ephemeral branches. After a train PR merges, also run `train-clear --train ... --apply`. Finish by repeating the all-worktree status, branch, PR, and remote-ref inventory. / 仅清理由本人拥有、状态干净、PR 已确认合并且远端 ref 已删除的 worktree，再删除对应本地临时分支；train 合并后还需清除活动 train 状态，最后再次盘点所有 worktree、分支、PR 与远端 ref。
+
+```bash
+git fetch origin --prune
+git worktree list --porcelain
+git branch -vv
+gh pr list --state open --limit 100
+gh pr view PR_NUMBER --json state,mergedAt,headRefName,baseRefName,mergeCommit
+
+# Repeat for every path reported above.
+git -C /absolute/path/to/worktree status --short
+
+# Run only in a dedicated clean main worktree.
+git switch main
+git merge --ff-only origin/main
+
+# Run only after the PR/ref/worktree checks above succeed.
+git worktree remove /absolute/path/to/owned-clean-worktree
+git branch -D gd-ops/task/verified-squash-merged-branch
+./script/development_flow.py train-clear \
+  --train gd-ops/train/feature-set \
+  --apply
+```
 
 ## Protected branch activation / 受保护分支激活
 

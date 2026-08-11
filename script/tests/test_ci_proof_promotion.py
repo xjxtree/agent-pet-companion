@@ -239,6 +239,86 @@ class PromotionSelectionTests(unittest.TestCase):
             ci_proof.require_no_control_plane_change("owner/repo", 17)
 
 
+class MergedHeadCleanupTests(unittest.TestCase):
+    def args(self) -> Namespace:
+        return Namespace(
+            root=ROOT,
+            repository="owner/repo",
+            pull_request_number=17,
+            head_ref="gd-ops/task/17-small",
+            head_commit="b" * 40,
+        )
+
+    def merged_pull(self) -> dict[str, object]:
+        return {
+            "number": 17,
+            "merged": True,
+            "head": {
+                "ref": "gd-ops/task/17-small",
+                "sha": "b" * 40,
+                "repo": {"full_name": "owner/repo"},
+            },
+        }
+
+    def test_deletes_only_the_exact_verified_merged_head_with_an_atomic_lease(self) -> None:
+        observed = iter(["b" * 40, None])
+        with mock.patch.object(
+            ci_proof, "api_json", return_value=self.merged_pull()
+        ), mock.patch.object(
+            ci_proof, "require_origin_repository"
+        ), mock.patch.object(
+            ci_proof, "remote_ref_sha", side_effect=lambda *_args: next(observed)
+        ), mock.patch.object(ci_proof.subprocess, "run") as run_process:
+            result = ci_proof.delete_merged_head(self.args())
+
+        self.assertEqual(
+            result,
+            {
+                "deleted": True,
+                "head_ref": "gd-ops/task/17-small",
+                "head_commit": "b" * 40,
+            },
+        )
+        run_process.assert_has_calls(
+            [
+                mock.call(["gh", "auth", "setup-git"], check=True),
+                mock.call(
+                    [
+                        "git",
+                        "push",
+                        "--force-with-lease=refs/heads/gd-ops/task/17-small:"
+                        + "b" * 40,
+                        "origin",
+                        ":refs/heads/gd-ops/task/17-small",
+                    ],
+                    cwd=ROOT,
+                    check=True,
+                ),
+            ]
+        )
+
+    def test_replay_accepts_an_absent_head_but_rejects_a_reused_branch(self) -> None:
+        with mock.patch.object(
+            ci_proof, "api_json", return_value=self.merged_pull()
+        ), mock.patch.object(
+            ci_proof, "require_origin_repository"
+        ), mock.patch.object(
+            ci_proof, "remote_ref_sha", return_value=None
+        ), mock.patch.object(ci_proof.subprocess, "run") as run_process:
+            result = ci_proof.delete_merged_head(self.args())
+        self.assertFalse(result["deleted"])
+        run_process.assert_not_called()
+
+        with mock.patch.object(
+            ci_proof, "api_json", return_value=self.merged_pull()
+        ), mock.patch.object(
+            ci_proof, "require_origin_repository"
+        ), mock.patch.object(
+            ci_proof, "remote_ref_sha", return_value="c" * 40
+        ), self.assertRaisesRegex(ValueError, "advanced or was reused"):
+            ci_proof.delete_merged_head(self.args())
+
+
 class CandidateProofTests(unittest.TestCase):
     def git(self, root: pathlib.Path, *args: str) -> str:
         return subprocess.check_output(["git", *args], cwd=root, text=True).strip()

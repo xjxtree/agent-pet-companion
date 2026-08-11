@@ -150,6 +150,16 @@ jobs:
           fi
           echo "commit=$merge_commit" >>"$GITHUB_OUTPUT"
 
+      - name: Delete only the exact merged source branch
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+        run: |
+          ./script/ci_proof_promotion.py delete-merged-head \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-request-number "$PR_NUMBER" \
+            --head-ref "$HEAD_BRANCH" \
+            --head-commit "$HEAD_SHA"
+
       - name: Dispatch exact merged main commit validation
         if: steps.pull_request.outputs.base == 'main'
         env:

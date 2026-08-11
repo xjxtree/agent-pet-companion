@@ -36,7 +36,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 No Apple account, certificate, private key, notarization profile, release Variable, or release Secret is used.
 
-Merge the exact candidate commit to protected `main` and wait for the post-merge required CI check. The main-bound PR has already passed the complete gate before auto-merge; the trusted `main` push binds the same release-grade inventory to the exact immutable main commit and uploads its source proof. A manual dispatch may create the release tag only after validating that proof. The one-time ruleset migration procedure is owned by [Validation profiles](../development/validation.md). / 将精确候选 commit 合并到受保护的 `main` 并等待合并后的必选 CI。面向 main 的 PR 已在自动合并前通过完整门禁；受信任的 `main` push 会将同一 Release 级清单绑定到精确且不可变的 main commit 并上传源码证明。手动 dispatch 只有在验证该证明后才能创建发布 tag。一次性 ruleset 迁移步骤由验证文档维护。
+Merge the exact candidate commit to protected `main` and wait for the post-merge required CI check. The main-bound PR has already passed the complete gate before auto-merge; a successful same-repository `.github/workflows/ci.yml` run on the exact immutable `main` commit—either a protected `push` or an exact-SHA `workflow_dispatch`—binds the release-grade inventory and uploads its source proof. The trusted post-CI merger uses the dispatch form because GitHub suppresses ordinary follow-on workflow events created with `GITHUB_TOKEN`. A manual Release dispatch may create the release tag only after validating that proof. The one-time ruleset migration procedure is owned by [Validation profiles](../development/validation.md). / 将精确候选 commit 合并到受保护的 `main` 并等待合并后的必选 CI。面向 main 的 PR 已在自动合并前通过完整门禁；同仓库 `.github/workflows/ci.yml` 在精确且不可变的 main commit 上成功执行的受信任验证——受保护 `push` 或精确 SHA 的 `workflow_dispatch`——会绑定 Release 级清单并上传源码证明。CI 后合并器使用显式派发，因为 GitHub 会抑制由 `GITHUB_TOKEN` 产生的普通后续 workflow 事件。Release 手动派发只有在验证该证明后才能创建发布 tag。一次性 ruleset 迁移步骤由验证文档维护。
 
 The complete local command remains available only for diagnosis; it is not a release prerequisite when the exact remote proof exists:
 
@@ -49,7 +49,7 @@ APC_VALIDATE_REAL_APP_SERVER=0 \
 
 Then run the environment-dependent connector, App Server, visible-UI, renderer, and profiling gates required by [Validation profiles](../development/validation.md). The executing Agent selects a suitable live-App inspection method. A gate not run is skipped, never passed. / 随后按发布范围运行环境门禁；可见 App 的验收方法由执行 Agent 选择，未运行的门禁只能标记为 skipped。
 
-The complete Swift CI shard generates a source-build interaction attestation. `source-proof.json` binds its bytes to the repository, full commit/tree, latest stable baseline, trusted `main` push run, complete gate inventory, and toolchain contract. Release downloads it only from the successful exact-commit CI run, validates it, and rebinds the interaction attestation to the final release build ID before supplying it to both architecture builds. / 完整 Swift CI 分片会生成源码 build 的交互证明；`source-proof.json` 将其字节绑定到仓库、完整 commit/tree、latest stable 基线、受信任 `main` push run、完整门禁清单与工具链合同。Release 只从成功的同 commit CI run 下载并校验，再将交互证明重新绑定到最终发布 build ID，供两个架构构建复用。
+The complete Swift CI shard generates a source-build interaction attestation. `source-proof.json` binds its bytes to the repository, full commit/tree, latest stable baseline, trusted exact-commit `main` issuer run (`push` or `workflow_dispatch`), complete gate inventory, and toolchain contract. Release downloads it only from that successful exact-commit CI run, validates it, and rebinds the interaction attestation to the final release build ID before supplying it to both architecture builds. / 完整 Swift CI 分片会生成源码 build 的交互证明；`source-proof.json` 将其字节绑定到仓库、完整 commit/tree、latest stable 基线、受信任的同 commit `main` 签发 run（`push` 或 `workflow_dispatch`）、完整门禁清单与工具链合同。Release 只从该成功的同 commit CI run 下载并校验，再将交互证明重新绑定到最终发布 build ID，供两个架构构建复用。
 
 ## Development artifacts / 开发产物
 
@@ -112,7 +112,7 @@ Omit `commit` to use current `main`. Dispatch verifies source version, changelog
 In order the workflow:
 
 1. verifies source version, changelog, full main commit, latest stable baseline, and Codex plugin/Skill version discipline;
-2. resolves the successful trusted `main` push CI run for that exact commit, rejects PR/fork/failed or ambiguous runs and artifacts, validates the two-file source proof, then rebinds its interaction attestation to the final release build ID;
+2. resolves the successful same-repository `main` CI `push` or exact-SHA `workflow_dispatch` run for that exact commit, rejects PR/fork/failed or ambiguous runs and artifacts, validates the two-file source proof, then rebinds its interaction attestation to the final release build ID;
 3. creates a missing tag only after proof validation, or verifies the existing tag, then rechecks its remote commit;
 4. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and rebound proof;
 5. assembles the exact three-file candidate once and records trusted digests;

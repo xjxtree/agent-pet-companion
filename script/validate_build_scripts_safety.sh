@@ -165,6 +165,9 @@ rg -Fq 'repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base' \
 rg -Fq '.context == "Required CI"' "$AUTO_MERGE_WORKFLOW"
 rg -Fq -- '--squash --match-head-commit "$HEAD_SHA"' "$AUTO_MERGE_WORKFLOW"
 rg -Fq './script/ci_proof_promotion.py verify-merge-source' "$AUTO_MERGE_WORKFLOW"
+rg -Fq './script/ci_proof_promotion.py delete-merged-head' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'f"--force-with-lease={full_ref}:{args.head_commit}"' \
+  "$ROOT_DIR/script/ci_proof_promotion.py"
 rg -Fq 'ref: main' "$AUTO_MERGE_WORKFLOW"
 rg -Fq 'persist-credentials: false' "$AUTO_MERGE_WORKFLOW"
 rg -Fq 'gh workflow run ci.yml --ref main -f "expected_sha=$merge_commit"' \

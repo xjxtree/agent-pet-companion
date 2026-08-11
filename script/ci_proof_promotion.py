@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and promote trusted PR CI proofs to an identical main source tree."""
+"""Manage trusted PR merge proofs and exact merged-head cleanup."""
 
 from __future__ import annotations
 
@@ -139,6 +139,86 @@ def require_identity(repository: str, commits: dict[str, str]) -> None:
         raise ValueError("repository must be owner/name")
     for name, value in commits.items():
         require_commit(value, name)
+
+
+def require_origin_repository(root: pathlib.Path, repository: str) -> None:
+    remote = run(root, "git", "remote", "get-url", "origin")
+    accepted = {
+        f"https://github.com/{repository}",
+        f"https://github.com/{repository}.git",
+        f"git@github.com:{repository}.git",
+        f"ssh://git@github.com/{repository}.git",
+    }
+    if remote not in accepted:
+        raise ValueError("origin does not match the verified pull-request repository")
+
+
+def remote_ref_sha(root: pathlib.Path, head_ref: str) -> str | None:
+    full_ref = f"refs/heads/{head_ref}"
+    response = run(root, "git", "ls-remote", "--refs", "origin", full_ref)
+    if not response:
+        return None
+    lines = response.splitlines()
+    if len(lines) != 1:
+        raise ValueError("remote head lookup is ambiguous")
+    fields = lines[0].split("\t")
+    if len(fields) != 2 or fields[1] != full_ref:
+        raise ValueError("remote head lookup returned an invalid ref")
+    require_commit(fields[0], "remote head commit")
+    return fields[0]
+
+
+def delete_merged_head(args: Namespace) -> dict[str, bool | str]:
+    root = args.root.resolve()
+    require_identity(args.repository, {"head commit": args.head_commit})
+    if args.pull_request_number <= 0:
+        raise ValueError("merged-head PR identity must be positive")
+    if HEAD_PATTERN.fullmatch(args.head_ref) is None:
+        raise ValueError("merged head is not a managed development branch")
+    pull = api_json(
+        f"repos/{args.repository}/pulls/{args.pull_request_number}"
+    )
+    head = pull.get("head") if isinstance(pull, dict) else None
+    head_repository = head.get("repo") if isinstance(head, dict) else None
+    if not (
+        isinstance(pull, dict)
+        and pull.get("number") == args.pull_request_number
+        and pull.get("merged") is True
+        and isinstance(head, dict)
+        and head.get("ref") == args.head_ref
+        and head.get("sha") == args.head_commit
+        and isinstance(head_repository, dict)
+        and head_repository.get("full_name") == args.repository
+    ):
+        raise ValueError("merged-head cleanup is not bound to the exact merged pull request")
+    require_origin_repository(root, args.repository)
+    observed = remote_ref_sha(root, args.head_ref)
+    result: dict[str, bool | str] = {
+        "deleted": False,
+        "head_ref": args.head_ref,
+        "head_commit": args.head_commit,
+    }
+    if observed is None:
+        return result
+    if observed != args.head_commit:
+        raise ValueError("merged source branch advanced or was reused; refusing deletion")
+    full_ref = f"refs/heads/{args.head_ref}"
+    subprocess.run(["gh", "auth", "setup-git"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "push",
+            f"--force-with-lease={full_ref}:{args.head_commit}",
+            "origin",
+            f":{full_ref}",
+        ],
+        cwd=root,
+        check=True,
+    )
+    if remote_ref_sha(root, args.head_ref) is not None:
+        raise ValueError("merged source branch still exists after deletion")
+    result["deleted"] = True
+    return result
 
 
 def require_unchanged_control_plane(
@@ -1065,6 +1145,11 @@ def main() -> int:
     verify_parser.add_argument("--head-commit", required=True)
     verify_parser.add_argument("--run-id", required=True, type=int)
     verify_parser.add_argument("--run-attempt", required=True, type=int)
+    cleanup_parser = subparsers.add_parser("delete-merged-head")
+    cleanup_parser.add_argument("--repository", required=True)
+    cleanup_parser.add_argument("--pull-request-number", required=True, type=int)
+    cleanup_parser.add_argument("--head-ref", required=True)
+    cleanup_parser.add_argument("--head-commit", required=True)
     promote_parser = subparsers.add_parser("promote")
     promote_parser.add_argument("--repository", required=True)
     promote_parser.add_argument("--main-commit", required=True)
@@ -1080,6 +1165,8 @@ def main() -> int:
             create_merge_ticket(args)
         elif args.command == "verify-merge-source":
             print(json.dumps(verify_merge_source(args), sort_keys=True))
+        elif args.command == "delete-merged-head":
+            print(json.dumps(delete_merged_head(args), sort_keys=True))
         else:
             promote(args)
     except (
