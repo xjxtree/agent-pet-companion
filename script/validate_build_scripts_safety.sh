@@ -41,6 +41,7 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_release_artifact_metadata.py"
   "$ROOT_DIR/script/validate_github_release_api.py"
   "$ROOT_DIR/script/validate_codex_plugin_version.py"
+  "$ROOT_DIR/script/ci_proof_promotion.py"
   "$ROOT_DIR/script/release_source_proof.py"
   "$ROOT_DIR/script/resolve_release_source_proof.py"
   "$ROOT_DIR/script/validate_rust_test_shards.py"
@@ -118,6 +119,10 @@ rg -Fq 'validate_rust_test_shards.py --shard' "$CI_WORKFLOW"
 rg -Fq 'shard: [core, integration-a, integration-b, integration-c, integration-d]' "$CI_WORKFLOW"
 rg -Fq 'name: Required CI' "$CI_WORKFLOW"
 rg -Fq 'release-source-proof-${{ github.sha }}' "$CI_WORKFLOW"
+rg -Fq 'ci-candidate-proof-${{ github.sha }}' "$CI_WORKFLOW"
+rg -Fq './script/ci_proof_promotion.py create-candidate' "$CI_WORKFLOW"
+rg -Fq './script/ci_proof_promotion.py promote' "$CI_WORKFLOW"
+rg -Fq "needs.promotion.outputs.promoted != '1'" "$CI_WORKFLOW"
 rg -Fq './script/release_source_proof.py create' "$CI_WORKFLOW"
 rg -Fq './script/validate_event_storm.sh' "$CI_WORKFLOW"
 rg -Fq 'runs-on: macos-26' "$CI_WORKFLOW"
@@ -470,6 +475,7 @@ PY
 "$ROOT_DIR/script/validation_fingerprint.py" --help >/dev/null
 "$ROOT_DIR/script/validate_interaction_attestation.py" --help >/dev/null
 "$ROOT_DIR/script/validation_scope.py" --help >/dev/null
+"$ROOT_DIR/script/ci_proof_promotion.py" --help >/dev/null
 "$ROOT_DIR/script/release_source_proof.py" --help >/dev/null
 "$ROOT_DIR/script/resolve_release_source_proof.py" --help >/dev/null
 "$ROOT_DIR/script/validate_rust_test_shards.py" --help >/dev/null
@@ -479,6 +485,8 @@ PY
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$ROOT_DIR/script/tests/test_ci_proof_promotion.py"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_macos_build_contract.py"
 

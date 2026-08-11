@@ -54,7 +54,8 @@ Task PRs start as drafts unless the Agent explicitly marks them ready. A ready P
 
 - Ready direct and train PRs to `main` run the complete source, integration, Rust, Swift, stress, bundle, and stable `Required CI` gate. They auto-merge only after every required result succeeds and the branch remains mergeable. / 所有 ready 的 direct/train → `main` PR 均运行完整门禁，仅在全部必选结果成功且仍可合并时自动合并。
 - Task PRs to a train run path-scoped CI and auto-merge independently. Train status checks are intentionally non-strict so unrelated completed task PRs do not continuously invalidate each other. / task → train PR 按路径运行 CI 并独立自动合并；train 检查刻意使用 non-strict，避免无关任务互相持续失效。
-- The post-merge `main` push reruns the release-grade set for the exact immutable main commit and emits its Release source proof. / 合并后的 `main` push 会针对精确且不可变的 main commit 再运行 Release 级门禁并生成发布源码证明。
+- A successful direct or final train PR records a bounded candidate proof for its tested merge tree. The post-merge `main` push reuses that proof only when the same-repository PR, successful `Required CI`, merge parents, artifact, and exact Git tree all match; it then issues the main-bound Release proof without repeating the complete suites. Any missing, expired, ambiguous, or mismatched evidence automatically falls back to the complete main CI. / direct PR 或最终 train PR 成功后会为其已测试合并树记录有界候选证明。合并后的 `main` push 只有在同仓库 PR、成功的 `Required CI`、合并父提交、artifact 与精确 Git tree 全部匹配时才复用该证明，并直接签发绑定 main 的 Release 证明而不重复全量测试；任何缺失、过期、歧义或不匹配都会自动回退完整 main CI。
+- A task PR merged into a train has no post-merge train-push CI and emits no Release candidate proof. The final train → `main` PR is the single complete integrated candidate, so train development remains path-scoped without weakening the final proof. / task PR 合入 train 后不触发 train push CI，也不生成 Release 候选证明；最终 train → `main` PR 才是唯一完整的集成候选，因此 train 开发保持按路径验证，同时不削弱最终证明。
 
 ## Changelog and final train integration / 变更日志与 train 收口
 

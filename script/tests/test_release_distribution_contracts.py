@@ -1009,6 +1009,23 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn('FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}', source)
         self.assertIn("complete main-bound job did not succeed", source)
 
+    def test_ci_promotes_exact_tree_pr_proofs_and_falls_back_to_full_main_ci(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("name: Promote trusted PR proof to main", source)
+        self.assertIn("./script/ci_proof_promotion.py promote", source)
+        self.assertIn("./script/ci_proof_promotion.py create-candidate", source)
+        self.assertIn("ci-candidate-proof-${{ github.sha }}", source)
+        self.assertIn("promoted-interaction-attestation-${{ github.sha }}", source)
+        self.assertIn("needs.promotion.outputs.promoted != '1'", source)
+        self.assertIn("PROMOTED: ${{ needs.promotion.outputs.promoted }}", source)
+        self.assertIn("validation_mode=promoted", source)
+        self.assertIn("for attempt in 1 2 3", source)
+        self.assertIn("This main commit reused the exact-tree PR candidate proof", source)
+        self.assertRegex(
+            source,
+            r"github\.event_name == 'pull_request'.*needs\.scope\.outputs\.full_candidate == '1'",
+        )
+
     def test_ready_protected_prs_enable_auto_merge_without_running_pr_code(self) -> None:
         source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
             encoding="utf-8"
