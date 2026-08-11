@@ -14,7 +14,7 @@ use std::path::Path;
 
 pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9";
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
-pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v13";
+pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v15";
 pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v16";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
@@ -471,6 +471,9 @@ fn parse_claude(source: AgentSource, input: &Value) -> Result<Option<ContractEve
 fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>> {
     let event = event_type(input)?;
     let agent_error = bool_at(input, &[&["agent_error"]]);
+    let model_unavailable = event == "input"
+        && agent_error
+        && string_at(input, &[&["reason"]]).as_deref() == Some("model_unavailable");
     let normalized_activity_content = activity_content(event, input);
     let explicit_thinking = event == "message_end"
         && string_at(input, &[&["activity_kind"]]).as_deref() == Some("thinking")
@@ -478,6 +481,7 @@ fn parse_pi(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>>
     let (kind, outcome, session_active) = match event {
         // Opening or resuming a Pi page does not mean the agent is working.
         "session_start" => return Ok(None),
+        "input" if model_unavailable => (AgentEventType::Failed, "model_unavailable", false),
         "input" | "before_agent_start" | "agent_start" | "turn_start" => {
             (AgentEventType::Start, "started", true)
         }
@@ -2071,6 +2075,25 @@ mod claude_transcript_tests {
             pi_user.message_content.as_deref(),
             Some("检查下代码工程质量")
         );
+
+        let pi_missing_model = parse_contract_event(
+            AgentSource::Pi,
+            &json!({
+                "type": "input",
+                "session_id": "pi-no-model",
+                "text": "检查下代码工程质量",
+                "agent_error": true,
+                "reason": "model_unavailable"
+            }),
+        )
+        .expect("parsed")
+        .expect("contract");
+        assert_eq!(pi_missing_model.kind, AgentEventType::Failed);
+        assert_eq!(
+            pi_missing_model.outcome.as_deref(),
+            Some("model_unavailable")
+        );
+        assert!(!pi_missing_model.session_active);
 
         let pi_agent = parse_contract_event(
             AgentSource::Pi,

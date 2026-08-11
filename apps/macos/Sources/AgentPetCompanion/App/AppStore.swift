@@ -743,6 +743,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var petLibraryNotice: PetLibraryNotice?
     @Published private(set) var diagnosticsExportState = DiagnosticsExportState.idle
     @Published private(set) var connectionOperationState = AgentConnectionOperationState.idle
+    @Published private(set) var portableMakerSkillStatus: PortableMakerSkillStatus?
+    @Published private(set) var portableMakerSkillOperation = PortableMakerSkillOperation.idle
+    @Published private(set) var portableMakerSkillFailure: PortableMakerSkillFailure?
     @Published private(set) var manualAppInstallationRequest: AppManualInstallationRequest?
     @Published private(set) var appUpdateConvergenceState = AppUpdateConvergenceState.idle
 
@@ -5466,6 +5469,66 @@ final class AppStore: ObservableObject {
         launchConnectionOperation(.init(kind: .repair, sources: [source]))
     }
 
+    func refreshPortableMakerSkillStatus() async {
+        guard !portableMakerSkillOperation.isBusy else { return }
+        portableMakerSkillOperation = .checking
+        portableMakerSkillFailure = nil
+        defer { portableMakerSkillOperation = .idle }
+        do {
+            portableMakerSkillStatus = try await requestPortableMakerSkill(
+                method: "portable_skill.status"
+            )
+        } catch {
+            portableMakerSkillFailure = .load
+        }
+    }
+
+    func installPortableMakerSkill() async {
+        guard !portableMakerSkillOperation.isBusy else { return }
+        portableMakerSkillOperation = .installing
+        portableMakerSkillFailure = nil
+        defer { portableMakerSkillOperation = .idle }
+        do {
+            portableMakerSkillStatus = try await requestPortableMakerSkill(
+                method: "portable_skill.install"
+            )
+        } catch {
+            portableMakerSkillFailure = .install
+        }
+    }
+
+    func uninstallPortableMakerSkill() async {
+        guard !portableMakerSkillOperation.isBusy else { return }
+        portableMakerSkillOperation = .uninstalling
+        portableMakerSkillFailure = nil
+        defer { portableMakerSkillOperation = .idle }
+        do {
+            portableMakerSkillStatus = try await requestPortableMakerSkill(
+                method: "portable_skill.uninstall"
+            )
+        } catch {
+            portableMakerSkillFailure = .uninstall
+        }
+    }
+
+    private func requestPortableMakerSkill(
+        method: String
+    ) async throws -> PortableMakerSkillStatus {
+        let result = try await requestPetCore(
+            method: method,
+            timeout: .seconds(180)
+        )
+        let data = try JSONSerialization.data(withJSONObject: result)
+        let status = try JSONDecoder().decode(PortableMakerSkillStatus.self, from: data)
+        guard status.schemaVersion == "apc.portable-skill-status.v1",
+              status.name == "agent-pet-maker",
+              status.targetDisplayPath == "~/agent/skills/agent-pet-maker"
+        else {
+            throw PetCoreClientError.invalidResponse
+        }
+        return status
+    }
+
     func repairConnections(_ sources: [AgentSource]) {
         launchConnectionOperation(.init(kind: .repair, sources: sources))
     }
@@ -7184,6 +7247,8 @@ final class AppStore: ObservableObject {
             || method.hasPrefix("pet.")
             || method.hasPrefix("petpack.")
             || method.hasPrefix("connections.")
+            || method == "portable_skill.install"
+            || method == "portable_skill.uninstall"
             || method == "behavior.patch"
             || method == "onboarding.update"
             || method == "overlay.placement.update"
@@ -7213,6 +7278,8 @@ final class AppStore: ObservableObject {
              "connections.repair",
              "connections.uninstall",
              "connections.refresh_installed",
+             "portable_skill.install",
+             "portable_skill.uninstall",
              "product.convergence.update":
             true
         default:

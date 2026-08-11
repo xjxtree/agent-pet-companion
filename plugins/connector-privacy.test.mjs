@@ -55,7 +55,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
 
   try {
     const pi = await importTemplate("./pi/agent-pet-companion.ts.tpl");
-    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-events-v13");
+    assert.equal(pi.APC_PI_CONTRACT_VERSION, "pi-extension-0.80.10-events-v15");
     assert.equal(pi.APC_PI_EVENT_INVENTORY.length, 33);
     const piActivity = await importTemplate(
       "./pi/agent-pet-companion.ts.tpl",
@@ -323,6 +323,7 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
         getSessionId: () => "pi-session",
         getSessionName: () => "Visible Pi session",
       },
+      model: { provider: "fixture", id: "fixture-model" },
       cwd: "/secret/project",
     };
     await piHandlers.get("context")(
@@ -470,6 +471,26 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       && payload.message_content === undefined
     )));
 
+    const piNoModelStart = captured.length;
+    const piNoModelContext = {
+      sessionManager: {
+        getSessionId: () => "pi-no-model-session",
+        getSessionName: () => "No model session",
+      },
+      model: undefined,
+    };
+    await piHandlers.get("input")(
+      { type: "input", text: "Prompt without a selected model" },
+      piNoModelContext,
+    );
+    const piNoModelPayloads = captured
+      .slice(piNoModelStart)
+      .filter((item) => item.source === "pi")
+      .map((item) => item.payload);
+    assert.deepEqual(piNoModelPayloads.map((payload) => payload.type), ["input"]);
+    assert.equal(piNoModelPayloads[0].agent_error, true);
+    assert.equal(piNoModelPayloads[0].reason, "model_unavailable");
+
     const piChildStart = captured.length;
     const piChildContext = {
       sessionManager: {
@@ -495,6 +516,33 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     assert.equal(piChildPayloads[0].session_id, "pi-child-session");
     assert.equal(JSON.stringify(piChildPayloads).includes("/private/root-session.jsonl"), false);
     assert.equal(JSON.stringify(piChildPayloads).includes("must-not-cross"), false);
+
+    const piReservedChildStart = captured.length;
+    const piReservedChildContext = {
+      sessionManager: {
+        getSessionId: () => "pi-reserved-child-session",
+        getSessionName: () => "subagent-reviewer-security",
+        getHeader: () => ({}),
+      },
+      model: { provider: "fixture", id: "fixture-model" },
+    };
+    await piHandlers.get("input")(
+      { type: "input", text: "must-not-cross-reserved-child-prompt" },
+      piReservedChildContext,
+    );
+    await piHandlers.get("tool_call")(
+      { type: "tool_call", toolName: "bash", input: { command: "must-not-cross-reserved-child-tool" } },
+      piReservedChildContext,
+    );
+    const piReservedChildPayloads = captured
+      .slice(piReservedChildStart)
+      .filter((item) => item.source === "pi")
+      .map((item) => item.payload);
+    assert.equal(piReservedChildPayloads.length, 1);
+    assert.equal(piReservedChildPayloads[0].type, "session.child");
+    assert.equal(piReservedChildPayloads[0].session_id, "pi-reserved-child-session");
+    assert.equal(JSON.stringify(piReservedChildPayloads).includes("subagent-reviewer"), false);
+    assert.equal(JSON.stringify(piReservedChildPayloads).includes("must-not-cross"), false);
 
     const productionOpenCode = await importTemplate(
       "./opencode/agent-pet-companion.js.tpl",
@@ -1286,6 +1334,13 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
     const piProbe = await importTemplate("./pi/agent-pet-companion.ts.tpl", "probe");
     const piProbeHandlers = new Map();
     piProbe.default({ on: (name, handler) => piProbeHandlers.set(name, handler) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(captured.some((item) => (
+      item.source === "pi"
+      && item.payload.type === "connector.probe"
+      && item.payload.diagnostic === true
+      && item.payload.session_id === process.env.APC_CONNECTOR_PROBE_ID
+    )), "Pi must emit its load canary before model validation can end the host");
     await piProbeHandlers.get("session_start")(
       { type: "session_start" },
       { sessionManager: { getSessionId: () => "pi-probe-session" } },

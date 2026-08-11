@@ -446,7 +446,7 @@ R13_TEST_FILES=(
 )
 R13_TEST_NAMES=(
   "overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination"
-  "voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic"
+  "voiceOverReadingOrderUsesOnlyTheVisibleRetainedBodyMessage"
   "appStoreFocusActionsGuardDisabledRoutesAndDispatchTypedEnabledActions"
   "bubblePanelRestoresPassiveFocusStateWhenKeyboardNavigationEnds"
   "reducedMotionPinsPlaybackToRepresentativeFrameAndStopsScheduling"

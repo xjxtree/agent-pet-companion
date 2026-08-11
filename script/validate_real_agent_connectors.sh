@@ -220,7 +220,7 @@ if opencode_server.get("status") != "not_required":
 expected_contracts = {
     "codex": "codex-hooks-2026-08-01-events-v9",
     "claude_code": "claude-hooks-2026-08-01-events-v9",
-    "pi": "pi-extension-0.80.10-events-v13",
+    "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
 }
 expected_capability_counts = {
@@ -291,7 +291,7 @@ entries = json.loads(os.environ["RECEIPTS"])
 contracts = {
     "codex": "codex-hooks-2026-08-01-events-v9",
     "claude_code": "claude-hooks-2026-08-01-events-v9",
-    "pi": "pi-extension-0.80.10-events-v13",
+    "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
 }
 task_events = {

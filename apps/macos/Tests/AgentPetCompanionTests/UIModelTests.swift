@@ -632,11 +632,7 @@ struct UIModelTests {
         #expect(session.activityText == "正在验证活动摘要同步")
         #expect(session.messageText == "已恢复气泡消息内容。")
         #expect(session.primaryDetailText == "已恢复气泡消息内容。")
-        #expect(session.secondaryDetailText == "正在验证活动摘要同步")
-        #expect(session.detailText == [
-            "已恢复气泡消息内容。",
-            "正在验证活动摘要同步",
-        ].joined(separator: "\n"))
+        #expect(session.detailText == "已恢复气泡消息内容。")
         #expect(session.statusText == APCLocalizedPresentation.overlayEventTitle(.thinking))
         #expect(content.agentName == "Codex")
         #expect(session.sessionTitle == "保持会话消息持续显示")
@@ -652,6 +648,26 @@ struct UIModelTests {
                 sessionID: session.navigation.routableSessionID
             )?.absoluteString == "codex://threads/019f5b0f-88ff-7413-8953-29de4ed0951c"
         )
+
+        let flat = OverlayBubbleProjection.contents(
+            states: [state],
+            omittedCount: 0,
+            dismissedSessionIDs: [],
+            groupSessionsByAgent: false,
+            isExpanded: { _ in true }
+        )
+        let grouped = OverlayBubbleProjection.contents(
+            states: [state],
+            omittedCount: 0,
+            dismissedSessionIDs: [],
+            groupSessionsByAgent: true,
+            isExpanded: { _ in true }
+        )
+        let flatSession = try #require(flat.first?.sessions.first)
+        let groupedSession = try #require(grouped.first?.sessions.first)
+        #expect(flatSession == groupedSession)
+        #expect(flatSession.primaryDetailText == "已恢复气泡消息内容。")
+        #expect(flatSession.standaloneSummaryText == "已恢复气泡消息内容。")
     }
 
     @Test
@@ -1240,7 +1256,7 @@ struct UIModelTests {
 
         var statusOnly = session
         statusOnly.messageText = ""
-        #expect(statusOnly.standaloneSummaryText == "Using Tools")
+        #expect(statusOnly.standaloneSummaryText.isEmpty)
 
         for expanded in [false, true] {
             let trayCard = OverlayBubbleContent(

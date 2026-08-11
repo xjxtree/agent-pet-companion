@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_PI_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-events-v13";
+export const APC_PI_CONTRACT_VERSION = "pi-extension-0.80.10-events-v15";
 export const APC_PI_WAITING_CAPABILITY = "structured-extension-events";
 
 // Pi 0.80.10 ExtensionAPI event inventory. Every official event is registered
@@ -87,9 +87,20 @@ function sessionTitle(ctx, event) {
   return title ?? ctx?.sessionManager?.getSessionName?.() ?? ctx?.sessionManager?.sessionName;
 }
 
-function isChildSession(ctx) {
-  const parentSession = ctx?.sessionManager?.getHeader?.()?.parentSession;
-  return typeof parentSession === "string" && parentSession.trim().length > 0;
+function isReservedSubagentSessionName(value) {
+  if (typeof value !== "string") return false;
+  const name = value.trim();
+  return name.length <= 96 && /^subagent-[a-z0-9][a-z0-9._-]*$/i.test(name);
+}
+
+function isChildSession(ctx, event) {
+  const header = ctx?.sessionManager?.getHeader?.();
+  const parentSession = header?.parentSession ?? header?.parentSessionId;
+  if (typeof parentSession === "string" && parentSession.trim().length > 0) return true;
+  // Pi's parallel subagent runner currently creates sibling session files
+  // without populating header.parentSession. Its reserved `subagent-*` session
+  // name is the only stable lineage marker exposed through ExtensionContext.
+  return isReservedSubagentSessionName(sessionTitle(ctx, event));
 }
 
 function messageText(message) {
@@ -396,7 +407,7 @@ function sendEvent(payload) {
 
 async function forward(event, ctx) {
   const id = sessionId(ctx);
-  if (id && isChildSession(ctx)) {
+  if (id && isChildSession(ctx, event)) {
     if (!childSessionMarkers.has(id)) {
       remember(childSessionMarkers, id, true);
       await sendEvent({
@@ -442,7 +453,14 @@ async function forward(event, ctx) {
   // its final message/error only; agent_settled is the sole terminal event.
   if (event?.type === "agent_end") return;
 
-  const agentError = event?.type === "agent_settled" && finalAgentErrors.get(id) === true;
+  // Pi publishes input before validating that an interactive session has a
+  // selected model. That validation failure happens before the Agent loop, so
+  // no later agent_settled event exists for the connector to observe. The
+  // public ExtensionContext model field is enough to close this exact failure
+  // without inspecting provider credentials or auth storage.
+  const modelUnavailable = event?.type === "input" && ctx?.model == null;
+  const agentError = modelUnavailable
+    || (event?.type === "agent_settled" && finalAgentErrors.get(id) === true);
   const message = displayMessage(event, id, includeBeforeAgentPrompt);
   const activity = activityText(event);
   const parse_warnings = parseWarnings(event, message, activity);
@@ -457,7 +475,9 @@ async function forward(event, ctx) {
     tool_call_id: event?.toolCallId,
     is_error: event?.isError === true,
     agent_error: agentError,
-    reason: typeof event?.reason === "string" ? event.reason : undefined,
+    reason: modelUnavailable
+      ? "model_unavailable"
+      : typeof event?.reason === "string" ? event.reason : undefined,
     diagnostic: connectorDiagnostic || event?.diagnostic === true,
     message_role: message?.role,
     message_content: message?.content,
@@ -468,7 +488,9 @@ async function forward(event, ctx) {
   try {
     await sendEvent(allowlisted);
   } finally {
-    if (event?.type === "agent_settled" || event?.type === "session_shutdown") {
+    if (modelUnavailable
+      || event?.type === "agent_settled"
+      || event?.type === "session_shutdown") {
       forgetSession(id);
     }
   }
@@ -492,6 +514,13 @@ async function sendConnectorProbeOnce() {
 
 export default function agentPetCompanion(pi) {
   if (!pi?.on) return;
+
+  // Pi may reject a non-interactive host for missing model configuration
+  // before session_start is emitted. The factory itself is the earliest
+  // authoritative proof that the real host executed this exact Extension.
+  // sendEvent starts its bounded child synchronously, and the session_start
+  // handler below remains an idempotent fallback for newer host lifecycles.
+  void sendConnectorProbeOnce();
 
   // Returning undecided observes project-trust capability without changing the
   // host's own trust decision.

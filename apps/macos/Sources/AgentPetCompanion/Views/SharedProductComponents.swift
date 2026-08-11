@@ -747,39 +747,60 @@ struct SessionBubbleRow: View {
 
             Spacer(minLength: 8)
 
-            if let stateIndicator {
-                Image(systemName: stateIndicator.systemImage)
-                    .font(OverlayBubbleTypography.font(
-                        .caption1,
-                        weight: .semibold,
-                        scale: fontScale
-                    ))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(stateIndicator.color)
-                    .frame(
-                        width: OverlayBubbleTypography.scaledControlMetric(
-                            15,
-                            scale: fontScale
-                        ),
-                        height: OverlayBubbleTypography.scaledControlMetric(
-                            15,
-                            scale: fontScale
-                        )
-                    )
-                    .help(session.statusText)
-                    .accessibilityHidden(true)
-                    .accessibilityIdentifier(
-                        "overlay.session.status.\(stateIndicator.rawValue)"
-                    )
+            if !session.statusText.isEmpty {
+                HStack(spacing: 3) {
+                    if let stateIndicator {
+                        Image(systemName: stateIndicator.systemImage)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(stateIndicator.color)
+                    }
+
+                    Text(session.statusText)
+                        .foregroundStyle(Color.primary)
+                }
+                .font(OverlayBubbleTypography.font(
+                    .caption2,
+                    weight: .semibold,
+                    scale: fontScale
+                ))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(
+                    Capsule()
+                        .fill((statusColor ?? .clear).opacity(0.24))
+                )
+                .overlay {
+                    Capsule()
+                        .stroke((statusColor ?? .clear).opacity(0.62), lineWidth: 0.75)
+                        .allowsHitTesting(false)
+                }
+                .help(session.statusText)
+                .accessibilityHidden(true)
+                .accessibilityIdentifier(standaloneStatusIdentifier)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: OverlayGeometry.bubbleStandaloneMetadataHeight(
+                fontScale: fontScale
+            ),
+            maxHeight: OverlayGeometry.bubbleStandaloneMetadataHeight(
+                fontScale: fontScale
+            ),
+            alignment: .leading
+        )
     }
 
     private var resolvedStandaloneAgentName: String? {
         let resolved = (agentName ?? session.source?.title)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return resolved?.isEmpty == false ? resolved : nil
+    }
+
+    private var standaloneStatusIdentifier: String {
+        "overlay.session.status.\(stateIndicator?.rawValue ?? "running")"
     }
 
     private var standaloneSummaryText: Text {
@@ -871,40 +892,21 @@ struct SessionBubbleRow: View {
                 alignment: .top
             )
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(session.primaryDetailText)
-                    .font(OverlayBubbleTypography.font(
-                        .caption1,
-                        weight: .semibold,
-                        scale: fontScale
-                    ))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(
-                        session.secondaryDetailText == nil
-                            ? OverlayGeometry.bubbleDetailLineLimit
-                            : 1,
-                        reservesSpace: session.secondaryDetailText == nil
-                    )
-                    .truncationMode(.tail)
-
-                if let secondaryDetailText = session.secondaryDetailText {
-                    Text(secondaryDetailText)
-                        .font(OverlayBubbleTypography.font(
-                            .caption1,
-                            weight: .medium,
-                            scale: fontScale
-                        ))
-                        .foregroundStyle(Color.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(
-                height: OverlayGeometry.bubbleDetailTextHeight(fontScale: fontScale),
-                alignment: .topLeading
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(session.primaryDetailText)
+                .font(OverlayBubbleTypography.font(
+                    .caption1,
+                    weight: .semibold,
+                    scale: fontScale
+                ))
+                .foregroundStyle(Color.primary)
+                .lineLimit(OverlayGeometry.bubbleDetailLineLimit, reservesSpace: true)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(
+                    height: OverlayGeometry.bubbleDetailTextHeight(fontScale: fontScale),
+                    alignment: .topLeading
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

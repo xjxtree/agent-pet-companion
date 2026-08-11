@@ -827,7 +827,9 @@ fn client_response_timeout(method: &str) -> Duration {
         "connections.check"
         | "connections.repair"
         | "connections.refresh_installed"
-        | "connections.uninstall" => UDS_CONNECTIONS_RESPONSE_DEADLINE,
+        | "connections.uninstall"
+        | "portable_skill.install"
+        | "portable_skill.uninstall" => UDS_CONNECTIONS_RESPONSE_DEADLINE,
         "diagnostics.export" => UDS_DIAGNOSTICS_RESPONSE_DEADLINE,
         _ => UDS_IO_DEADLINE,
     }
@@ -1033,6 +1035,14 @@ mod tests {
         );
         assert_eq!(
             client_response_timeout("connections.refresh_installed"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("portable_skill.install"),
+            UDS_CONNECTIONS_RESPONSE_DEADLINE
+        );
+        assert_eq!(
+            client_response_timeout("portable_skill.uninstall"),
             UDS_CONNECTIONS_RESPONSE_DEADLINE
         );
         assert_eq!(

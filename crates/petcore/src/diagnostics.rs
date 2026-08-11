@@ -721,6 +721,9 @@ fn safe_rpc_method(method: &str) -> &'static str {
         "connections.refresh_installed" => "connections.refresh_installed",
         "connections.uninstall" => "connections.uninstall",
         "connections.test" => "connections.test",
+        "portable_skill.status" => "portable_skill.status",
+        "portable_skill.install" => "portable_skill.install",
+        "portable_skill.uninstall" => "portable_skill.uninstall",
         "product.convergence.get" => "product.convergence.get",
         "product.convergence.update" => "product.convergence.update",
         "product.convergence.preflight" => "product.convergence.preflight",
@@ -758,6 +761,8 @@ fn rpc_success_is_diagnostic(method: &str) -> bool {
             | "connections.refresh_installed"
             | "connections.uninstall"
             | "connections.test"
+            | "portable_skill.install"
+            | "portable_skill.uninstall"
             | "product.convergence.update"
             | "diagnostics.export"
     )

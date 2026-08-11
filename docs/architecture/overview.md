@@ -39,7 +39,7 @@ The App and overlay share one UI process. PetCore is a separate per-user service
 - The desktop pet and session bubble are the daily surface. Pet Library, AI Pet Maker, Pet Configuration, Agent Connections, and Service & Diagnostics are the management surface.
 - First run is a resumable three-scene root presentation. Pet choice and Agent setup reuse normal product operations; the demo remains View-local and never creates Agent events or diagnostics.
 - Connections and bubbles use `Agent → session`, never project directories as user-facing identity.
-- A session title, latest user message, current-turn Agent message, and normalized activity detail are separate bounded fields. PetCore supplies them; Swift does not reconstruct host payloads.
+- A session title and latest user message remain separate bounded context. PetCore selects exactly one retained bubble-body message from the session's Agent replies and explicit thinking/plan text, ordered by persisted event sequence; user, tool, and lifecycle activity update their own context or the separate status indicator without entering or replacing that message. Grouped and flat Swift presentations consume the same selected body, render it in at most two lines, and do not reconstruct host payloads. Navigation notices keep their existing priority over ordinary body copy.
 - Bubbles default to one cross-Agent session-card list; users may opt into grouping sessions per Agent. The flat list keeps stable slots while a turn alternates between thinking, planning, and tools; only a new activation or attention-state transition may move a card.
 - Clicking the pet toggles the bubble. Only a concrete session row can open a validated exact-session or host-level destination.
 - On macOS 26, session bubbles use one untinted native Regular Liquid Glass surface plus a paired sub-point light/dark optical rim that preserves the rounded boundary across mixed bright and dark backdrops without adding a fill, tint, shadow, or second material. Compact floating controls may use Clear glass. Older systems use the system material fallback; accessibility settings can replace or strengthen the optical treatment.
@@ -88,6 +88,8 @@ Task duration is derived only from PetCore's `started_at` and `ended_at`. Waitin
 
 The App accepts bounded, content-verified PNG, JPG/JPEG, and WebP references. User messages and bounded visible Codex `agentMessage` text are written to the private per-job message stream so the creation page can refresh and scroll the live conversation; tool payloads, hidden reasoning, credentials, and arbitrary server objects do not enter that stream. App creation supports `low` and `standard`; portable workflows may produce `high` when the untouched source pixels satisfy the V3 contract. Generated output is untrusted until the shared package and production validators pass.
 
+The AI Pet Maker header also exposes the provider-neutral `agent-pet-maker` Skill manager. PetCore installs the complete bundled Skill only at `~/agent/skills/agent-pet-maker`; the App does not probe whether any Agent discovers that directory. Explicit install establishes an App-private ownership receipt. Once owned, an explicit update, reinstall, or uninstall replaces or removes the complete managed target, including local changes inside it. A same-name external directory without that receipt remains untouched unless its complete contents exactly match the bundled Skill and the user explicitly adopts it.
+
 Imports and successful jobs stage a new immutable revision, atomically update the active revision pointer, and commit the database row. Failure restores the previous pointer. A damaged local runtime projection can be rebuilt from the immutable package. Exact package, timing, production, and privacy requirements live in the [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md).
 
 ## Repository map
@@ -114,6 +116,6 @@ docs/                 Durable technical and release documentation
 - Session projections contain only bounded display context and validated navigation capabilities. Closed sessions leave the active bubble immediately; acknowledged open completions stay hidden until a genuine new activity epoch.
 - Pet mutations are ID-based, serialized, immutable, and recoverable.
 - Official V1 distribution is two architecture-specific ad-hoc-signed GitHub Release archives plus one checksum file. The App reports updates but does not download or install them.
-- Managed integrations are attributable to Agent Pet Companion. User-managed extensions and Skills are neither listed nor modified.
+- Managed integrations are attributable to Agent Pet Companion. User-managed extensions and Skills are neither listed nor modified. The portable Maker Skill is the explicit exception: it has one fixed external target and an App-private ownership receipt, and user-triggered operations may replace or delete that complete App-managed target. Unrelated Agent Skill locations and unowned content are never scanned or modified.
 
 When an invariant changes, update its implementation, tests, typed version or schema when required, and the single owning document in the same change.

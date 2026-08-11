@@ -35,7 +35,7 @@ struct SharedProductComponentsTests {
     }
 
     @Test
-    func standaloneSessionIndicatorsCoverOnlyAttentionAndTerminalStates() {
+    func standaloneSessionIconsCoverOnlyAttentionAndTerminalStates() {
         let eventTypes: [AgentEventKind?] = [
             nil, .start, .thinking, .plan, .tool, .waiting, .done, .failed,
         ]
@@ -259,10 +259,15 @@ struct SharedProductComponentsTests {
         #expect(standaloneSource.contains(
             ".padding(.trailing, reservedTrailingAccessoryWidth)"
         ))
+        #expect(standaloneSource.contains("if !session.statusText.isEmpty"))
+        #expect(standaloneSource.contains("Text(session.statusText)"))
         #expect(standaloneSource.contains("if let stateIndicator"))
         #expect(standaloneSource.contains(".help(session.statusText)"))
         #expect(standaloneSource.contains(
-            "\"overlay.session.status.\\(stateIndicator.rawValue)\""
+            ".accessibilityIdentifier(standaloneStatusIdentifier)"
+        ))
+        #expect(sharedSource.contains(
+            "\"overlay.session.status.\\(stateIndicator?.rawValue ?? \"running\")\""
         ))
         #expect(!sharedSource.contains("if session.canOpen {"))
         #expect(sharedSource.contains(".focused($focused)"))
@@ -279,7 +284,7 @@ struct SharedProductComponentsTests {
         #expect(sharedSource.contains("return nil"))
         #expect(!sharedSource.contains("case .start, .tool: .blue"))
         #expect(sharedSource.contains(
-            "reservesSpace: session.secondaryDetailText == nil"
+            ".lineLimit(OverlayGeometry.bubbleDetailLineLimit, reservesSpace: true)"
         ))
         #expect(sharedSource.contains(
             "openLabel: primaryActionLabel ?? session.actionLabel"

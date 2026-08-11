@@ -81,9 +81,9 @@ pub struct ActiveAgentState {
 
 /// Closed structural projection consumed by the desktop overlay. The
 /// separately hydrated, bounded session title, user/assistant messages, and
-/// provider-visible activity summary intentionally carry the two-line context
-/// rendered in the local bubble; arbitrary raw event fields are not duplicated
-/// into this projection.
+/// provider-visible activity summary supply the single retained bubble body
+/// message and its independent status. Arbitrary raw event fields are not
+/// duplicated into this projection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OverlaySessionDisplay {
     pub summary_kind: OverlaySummaryKind,
@@ -609,7 +609,9 @@ fn active_state_from_candidate(
         session_title: None,
         session_message: None,
         session_user_message: None,
-        session_activity: event_activity(event),
+        // Display copy is hydrated from persisted session history so a tool
+        // or lifecycle event cannot evict the latest Agent/thinking message.
+        session_activity: None,
         overlay_display,
     }
 }
@@ -952,6 +954,18 @@ fn event_activity(event: &AgentEvent) -> Option<SessionActivity> {
         kind: kind.to_string(),
         content,
     })
+}
+
+pub(crate) fn event_narrative_activity(event: &AgentEvent) -> Option<SessionActivity> {
+    if !matches!(
+        event.event_type,
+        AgentEventType::Thinking | AgentEventType::Plan
+    ) {
+        return None;
+    }
+    let activity = event_activity(event)?;
+    activity.content.as_ref()?;
+    Some(activity)
 }
 
 fn event_lease_seconds_for_behavior(behavior: &BehaviorSettings, event: &AgentEvent) -> i64 {

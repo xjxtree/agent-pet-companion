@@ -632,7 +632,7 @@ done
 }
 
 #[test]
-fn thread_display_does_not_reuse_reply_from_before_latest_user_message() {
+fn thread_display_retains_reply_until_new_agent_or_thinking_content_arrives() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let script = temp.path().join("thread-display-turn-boundary.sh");
@@ -656,7 +656,7 @@ done
     let _command = EnvGuard::set("CODEX_APP_SERVER_CMD", script.as_os_str());
 
     let display = read_codex_thread_display("019f5a6f-0c52-75e1-b652-004d4487c4ae").unwrap();
-    assert!(display.latest_message.is_none());
+    assert_eq!(display.latest_message.unwrap().content, "Previous reply");
     assert_eq!(display.latest_user_message.unwrap().content, "New prompt");
 }
 
