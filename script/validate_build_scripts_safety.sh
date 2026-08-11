@@ -122,6 +122,15 @@ rg -Fq './script/release_source_proof.py create' "$CI_WORKFLOW"
 rg -Fq './script/validate_event_storm.sh' "$CI_WORKFLOW"
 rg -Fq 'runs-on: macos-26' "$CI_WORKFLOW"
 rg -Fq './script/validate_macos_build_contract.py toolchain' "$CI_WORKFLOW"
+rg -Fq 'Rebind source interaction proof to the development build identity' "$CI_WORKFLOW"
+rg -Fq -- '--proof-in "$RUNNER_TEMP/interaction-proof/interaction-attestation.json"' "$CI_WORKFLOW"
+rg -Fq 'APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}' "$CI_WORKFLOW"
+rg -Fq 'development-attestation.json' "$CI_WORKFLOW"
+rg -Fq 'FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}' "$CI_WORKFLOW"
+if [[ "$(rg -c 'exit 1 ;;' "$CI_WORKFLOW")" -lt 4 ]]; then
+  echo 'CI result aggregation must fail explicitly instead of relying on shell loop status' >&2
+  exit 1
+fi
 rg -Fq 'RULESET_NAME = "Protected default branch"' \
   "$ROOT_DIR/script/configure_main_branch_ruleset.py"
 rg -Fq 'REQUIRED_CHECK = "Required CI"' \

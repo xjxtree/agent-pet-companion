@@ -378,10 +378,13 @@ jobs:
           OVERLAY_RESULT: ${{ needs.overlay.result }}
         run: |
           for result in "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$OVERLAY_RESULT"; do
-            [[ "$result" == "success" || "$result" == "skipped" ]]
+            case "$result" in
+              success|skipped) ;;
+              *) echo "bundle dependency did not succeed: $result" >&2; exit 1 ;;
+            esac
           done
-          [[ "$SWIFT_RESULT" == "success" ]]
-          [[ "$OVERLAY_RESULT" == "success" ]]
+          test "$SWIFT_RESULT" = "success"
+          test "$OVERLAY_RESULT" = "success"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -389,6 +392,24 @@ jobs:
         with:
           name: ci-interaction-attestation-${{ github.sha }}
           path: ${{ runner.temp }}/interaction-proof
+
+      - name: Rebind source interaction proof to the development build identity
+        id: development_identity
+        run: |
+          version="$(awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml)"
+          variant="debug|$(uname -m)|universal=0|signed=1"
+          fingerprint="$(
+            ./script/validation_fingerprint.py \
+              --root "$GITHUB_WORKSPACE" \
+              --scope runtime \
+              --extra "$variant"
+          )"
+          build_id="$version.1.develop.${fingerprint:0:16}"
+          APC_BUILD_ID="$build_id" \
+            ./script/prepare_interaction_attestation.sh \
+              --output "$RUNNER_TEMP/interaction-proof/development-attestation.json" \
+              --proof-in "$RUNNER_TEMP/interaction-proof/interaction-attestation.json"
+          echo "build_id=$build_id" >>"$GITHUB_OUTPUT"
 
       - name: Prepare pinned Python validation environment
         run: |
@@ -417,10 +438,12 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-apc-swift-
 
       - name: Build and fully validate development App from the proven interaction contract
+        env:
+          APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}
         run: |
           ./script/build_app_bundle.sh \
             --configuration debug \
-            --interaction-attestation "$RUNNER_TEMP/interaction-proof/interaction-attestation.json" \
+            --interaction-attestation "$RUNNER_TEMP/interaction-proof/development-attestation.json" \
             --validation full
 
   source_proof:
@@ -446,7 +469,10 @@ jobs:
           BUNDLE_RESULT: ${{ needs.bundle.result }}
         run: |
           for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
-            test "$result" = "success"
+            case "$result" in
+              success) ;;
+              *) echo "release source dependency did not succeed: $result" >&2; exit 1 ;;
+            esac
           done
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -518,14 +544,30 @@ jobs:
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
           SOURCE_PROOF_RESULT: ${{ needs.source_proof.result }}
+          FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}
+          RELEASE_SOURCE: ${{ needs.scope.outputs.release_source }}
         run: |
           for result in \
             "$SCOPE_RESULT" "$STATIC_RESULT" "$CONTRACTS_RESULT" \
             "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" \
             "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$SOURCE_PROOF_RESULT"; do
-            [[ "$result" == "success" || "$result" == "skipped" ]]
+            case "$result" in
+              success|skipped) ;;
+              *) echo "scheduled CI job did not succeed: $result" >&2; exit 1 ;;
+            esac
           done
-          if [[ "${{ needs.scope.outputs.release_source }}" == "1" ]]; then
+          if [[ "$FULL_CANDIDATE" == "1" ]]; then
+            for result in \
+              "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
+              "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+              case "$result" in
+                success) ;;
+                *) echo "complete main-bound job did not succeed: $result" >&2; exit 1 ;;
+              esac
+            done
+          fi
+          if [[ "$RELEASE_SOURCE" == "1" ]]; then
             test "$SOURCE_PROOF_RESULT" = "success"
           fi
 

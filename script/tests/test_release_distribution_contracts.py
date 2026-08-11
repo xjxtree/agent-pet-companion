@@ -1001,6 +1001,13 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("APC_VALIDATE_HOST_UI: \"1\"", source)
         self.assertNotIn("cargo test --workspace", source)
         self.assertNotIn("working-directory: apps/macos", source)
+        self.assertIn("Rebind source interaction proof to the development build identity", source)
+        self.assertIn("--proof-in \"$RUNNER_TEMP/interaction-proof/interaction-attestation.json\"", source)
+        self.assertIn("APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}", source)
+        self.assertIn("development-attestation.json", source)
+        self.assertGreaterEqual(source.count("exit 1 ;;"), 4)
+        self.assertIn('FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}', source)
+        self.assertIn("complete main-bound job did not succeed", source)
 
     def test_ready_protected_prs_enable_auto_merge_without_running_pr_code(self) -> None:
         source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
