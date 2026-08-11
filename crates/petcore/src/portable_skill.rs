@@ -3,8 +3,9 @@ use crate::{PetCoreError, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
@@ -14,6 +15,7 @@ const RECEIPT_SCHEMA: &str = "apc.portable-skill-install.v1";
 const STATUS_SCHEMA: &str = "apc.portable-skill-status.v1";
 const RECEIPT_FILE_NAME: &str = "agent-pet-maker.json";
 const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
+const MAX_MANAGED_REMOVAL_ENTRIES: usize = 4096;
 
 #[derive(Clone, Copy)]
 struct BundledSkillFile {
@@ -138,6 +140,25 @@ enum ReceiptState {
     Invalid,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EntryIdentity {
+    dev: u64,
+    ino: u64,
+    mode: rustix::fs::RawMode,
+}
+
+struct StatusInspection {
+    status: PortableSkillStatus,
+    skills_identity: Option<EntryIdentity>,
+    target_identity: Option<EntryIdentity>,
+}
+
+enum DirectoryState {
+    Missing,
+    Unsafe,
+    Ready(File),
+}
+
 pub fn status(paths: &AppPaths) -> Result<PortableSkillStatus> {
     let home = user_home()?;
     status_at(&paths.home, &home)
@@ -162,21 +183,42 @@ fn user_home() -> Result<PathBuf> {
 }
 
 fn status_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
-    let target = target_path(home);
+    Ok(inspect_status_at(app_home, home)?.status)
+}
+
+fn inspect_status_at(app_home: &Path, home: &Path) -> Result<StatusInspection> {
     let receipt_state = read_receipt(&receipt_path(app_home))?;
-    let target_metadata = fs::symlink_metadata(&target).ok();
-    let target_exists = target_metadata.is_some();
-    let parent_safe = managed_parent_is_safe(home)?;
     let expected_version = bundled_version()?;
-    let expected_matches = target_metadata.as_ref().is_some_and(|metadata| {
-        metadata.is_dir()
-            && tree_matches_bundle(&target).unwrap_or(false)
-            && tree_contains_only_bundle(&target).unwrap_or(false)
-    });
-    let target_installed_version = target_metadata
-        .as_ref()
-        .filter(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-        .and_then(|_| installed_version(&target));
+    let (parent_safe, skills_identity, target_identity, expected_matches, target_installed_version) =
+        match inspect_managed_parent(home)? {
+            DirectoryState::Missing => (true, None, None, false, None),
+            DirectoryState::Unsafe => (false, None, None, false, None),
+            DirectoryState::Ready(skills) => {
+                let skills_identity =
+                    entry_identity(&rustix::fs::fstat(&skills).map_err(std::io::Error::from)?);
+                let target_identity = entry_identity_at(&skills, Path::new(SKILL_NAME))?;
+                let mut expected_matches = false;
+                let mut observed_version = None;
+                if let Some(identity) = target_identity {
+                    if rustix::fs::FileType::from_raw_mode(identity.mode).is_dir() {
+                        if let Some(target) =
+                            open_directory_at(&skills, Path::new(SKILL_NAME), Some(identity))?
+                        {
+                            expected_matches = bundle_tree_matches_root(&target).unwrap_or(false);
+                            observed_version = installed_version(&target);
+                        }
+                    }
+                }
+                (
+                    true,
+                    Some(skills_identity),
+                    target_identity,
+                    expected_matches,
+                    observed_version,
+                )
+            }
+        };
+    let target_exists = target_identity.is_some();
     let installed_version = target_installed_version.or_else(|| match &receipt_state {
         ReceiptState::Valid(receipt) => Some(receipt.installed_version.clone()),
         ReceiptState::Missing | ReceiptState::Invalid => None,
@@ -199,109 +241,139 @@ fn status_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
         ReceiptState::Invalid => (PortableSkillState::Conflict, false),
         ReceiptState::Missing if !parent_safe => (PortableSkillState::Conflict, false),
         ReceiptState::Missing if !target_exists => (PortableSkillState::Missing, false),
-        ReceiptState::Missing if expected_matches && tree_contains_only_bundle(&target)? => {
-            (PortableSkillState::UnmanagedCurrent, false)
-        }
+        ReceiptState::Missing if expected_matches => (PortableSkillState::UnmanagedCurrent, false),
         ReceiptState::Missing => (PortableSkillState::Conflict, false),
     };
 
-    Ok(PortableSkillStatus {
-        schema_version: STATUS_SCHEMA.to_string(),
-        name: SKILL_NAME.to_string(),
-        state,
-        target_display_path: SKILL_DISPLAY_PATH.to_string(),
-        expected_version,
-        installed_version,
-        managed,
-        target_exists,
-        can_install: matches!(
+    Ok(StatusInspection {
+        status: PortableSkillStatus {
+            schema_version: STATUS_SCHEMA.to_string(),
+            name: SKILL_NAME.to_string(),
             state,
-            PortableSkillState::Missing | PortableSkillState::UnmanagedCurrent
-        ),
-        can_update: state == PortableSkillState::UpdateAvailable,
-        can_reinstall: matches!(
-            state,
-            PortableSkillState::Current | PortableSkillState::NeedsReinstall
-        ),
-        can_uninstall: managed && state != PortableSkillState::Conflict,
+            target_display_path: SKILL_DISPLAY_PATH.to_string(),
+            expected_version,
+            installed_version,
+            managed,
+            target_exists,
+            can_install: matches!(
+                state,
+                PortableSkillState::Missing | PortableSkillState::UnmanagedCurrent
+            ),
+            can_update: state == PortableSkillState::UpdateAvailable,
+            can_reinstall: matches!(
+                state,
+                PortableSkillState::Current | PortableSkillState::NeedsReinstall
+            ),
+            can_uninstall: managed && state != PortableSkillState::Conflict,
+        },
+        skills_identity,
+        target_identity,
     })
 }
 
 fn install_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
-    let current = status_at(app_home, home)?;
-    if current.state == PortableSkillState::Conflict {
+    let inspection = inspect_status_at(app_home, home)?;
+    if inspection.status.state == PortableSkillState::Conflict {
         return Err(PetCoreError::Conflict(
             "the portable skill target is not managed by Agent Pet Companion".to_string(),
         ));
     }
 
-    let target = target_path(home);
-    let skills_root = target.parent().ok_or_else(|| {
-        PetCoreError::Validation("portable skill target has no parent".to_string())
-    })?;
-    ensure_managed_parent(home)?;
+    let skills = ensure_managed_parent(home)?;
+    let current_skills_identity =
+        entry_identity(&rustix::fs::fstat(&skills).map_err(std::io::Error::from)?);
+    if inspection
+        .skills_identity
+        .is_some_and(|expected| expected != current_skills_identity)
+        || entry_identity_at(&skills, Path::new(SKILL_NAME))? != inspection.target_identity
+    {
+        return Err(PetCoreError::Conflict(
+            "the portable skill target changed while it was being inspected".to_string(),
+        ));
+    }
 
-    // User-triggered installation establishes App ownership before replacement.
-    // If a later filesystem write fails, the next explicit repair may still
-    // replace the exact target instead of stranding a partial App installation.
-    write_receipt(
-        &receipt_path(app_home),
-        &ManagedSkillReceipt {
-            schema_version: RECEIPT_SCHEMA.to_string(),
-            name: SKILL_NAME.to_string(),
-            target_display_path: SKILL_DISPLAY_PATH.to_string(),
-            installed_version: bundled_version()?,
-            content_sha256: bundled_content_sha256(),
-        },
-    )?;
+    let receipt = ManagedSkillReceipt {
+        schema_version: RECEIPT_SCHEMA.to_string(),
+        name: SKILL_NAME.to_string(),
+        target_display_path: SKILL_DISPLAY_PATH.to_string(),
+        installed_version: bundled_version()?,
+        content_sha256: bundled_content_sha256(),
+    };
+    if inspection.status.state == PortableSkillState::UnmanagedCurrent {
+        let expected = inspection.target_identity.ok_or_else(|| {
+            PetCoreError::Conflict("the portable skill target disappeared".to_string())
+        })?;
+        let Some(target) = open_directory_at(&skills, Path::new(SKILL_NAME), Some(expected))?
+        else {
+            return Err(PetCoreError::Conflict(
+                "the portable skill target changed before adoption".to_string(),
+            ));
+        };
+        if !bundle_tree_matches_root(&target)? {
+            return Err(PetCoreError::Conflict(
+                "the portable skill target changed before adoption".to_string(),
+            ));
+        }
+        write_receipt(&receipt_path(app_home), &receipt)?;
+        return status_at(app_home, home);
+    }
 
-    let staging = skills_root.join(format!(
+    let staging_name = format!(
         ".agent-pet-maker.apc-stage-{}",
         uuid::Uuid::now_v7().simple()
-    ));
-    fs::create_dir(&staging)?;
-    fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))?;
-    if let Err(error) = write_skill_tree(&staging) {
-        let _ = remove_entry(&staging);
+    );
+    rustix::fs::mkdirat(
+        &skills,
+        Path::new(&staging_name),
+        rustix::fs::Mode::from_bits_truncate(0o700),
+    )
+    .map_err(std::io::Error::from)?;
+    let staging = open_directory_at(&skills, Path::new(&staging_name), None)?.ok_or_else(|| {
+        PetCoreError::Conflict("portable skill staging directory is unsafe".to_string())
+    })?;
+    if let Err(error) = write_skill_tree_at(&staging) {
+        let _ = remove_entry_at(&skills, Path::new(&staging_name));
         return Err(error);
     }
-
-    let backup = skills_root.join(format!(
-        ".agent-pet-maker.apc-backup-{}",
-        uuid::Uuid::now_v7().simple()
-    ));
-    let had_target = fs::symlink_metadata(&target).is_ok();
-    if had_target {
-        if let Err(error) = fs::rename(&target, &backup) {
-            let _ = remove_entry(&staging);
-            return Err(error.into());
-        }
-    }
-    if let Err(error) = fs::rename(&staging, &target) {
-        if had_target {
-            let _ = fs::rename(&backup, &target);
-        }
-        let _ = remove_entry(&staging);
-        return Err(error.into());
-    }
-    if had_target {
-        let _ = remove_entry(&backup);
+    drop(staging);
+    if let Err(error) = commit_staged_install(
+        &skills,
+        Path::new(&staging_name),
+        inspection.target_identity,
+        &receipt_path(app_home),
+        &receipt,
+    ) {
+        let _ = remove_entry_at(&skills, Path::new(&staging_name));
+        return Err(error);
     }
 
     status_at(app_home, home)
 }
 
 fn uninstall_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
-    let current = status_at(app_home, home)?;
-    if !current.managed || current.state == PortableSkillState::Conflict {
+    let inspection = inspect_status_at(app_home, home)?;
+    if !inspection.status.managed || inspection.status.state == PortableSkillState::Conflict {
         return Err(PetCoreError::Conflict(
             "the portable skill target is not managed by Agent Pet Companion".to_string(),
         ));
     }
 
-    let target = target_path(home);
-    if fs::symlink_metadata(&target).is_ok() {
-        remove_entry(&target)?;
+    let DirectoryState::Ready(skills) = inspect_managed_parent(home)? else {
+        return Err(PetCoreError::Conflict(
+            "the portable skill parent changed while it was being inspected".to_string(),
+        ));
+    };
+    let current_skills_identity =
+        entry_identity(&rustix::fs::fstat(&skills).map_err(std::io::Error::from)?);
+    if inspection.skills_identity != Some(current_skills_identity)
+        || entry_identity_at(&skills, Path::new(SKILL_NAME))? != inspection.target_identity
+    {
+        return Err(PetCoreError::Conflict(
+            "the portable skill target changed while it was being inspected".to_string(),
+        ));
+    }
+    if let Some(expected) = inspection.target_identity {
+        quarantine_and_remove_target_at(&skills, expected)?;
     }
     let receipt = receipt_path(app_home);
     match fs::remove_file(receipt) {
@@ -312,6 +384,7 @@ fn uninstall_at(app_home: &Path, home: &Path) -> Result<PortableSkillStatus> {
     status_at(app_home, home)
 }
 
+#[cfg(test)]
 fn target_path(home: &Path) -> PathBuf {
     home.join("agent").join("skills").join(SKILL_NAME)
 }
@@ -369,63 +442,288 @@ fn bundled_content_sha256() -> String {
     hex::encode(hasher.finalize())
 }
 
-fn installed_version(target: &Path) -> Option<String> {
-    let path = target.join("SKILL.md");
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 64 * 1024 {
-        return None;
+fn entry_identity(metadata: &rustix::fs::Stat) -> EntryIdentity {
+    EntryIdentity {
+        dev: metadata.st_dev as u64,
+        ino: metadata.st_ino as u64,
+        mode: metadata.st_mode,
     }
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| parse_skill_version(&content))
 }
 
-fn managed_parent_is_safe(home: &Path) -> Result<bool> {
-    if !plain_directory(home)? {
-        return Ok(false);
+fn entry_identity_at(parent: &File, name: &Path) -> Result<Option<EntryIdentity>> {
+    match rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(metadata) => Ok(Some(entry_identity(&metadata))),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(std::io::Error::from(error).into()),
     }
-    for path in [home.join("agent"), home.join("agent").join("skills")] {
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => return Ok(false),
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(true),
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(true)
 }
 
-fn ensure_managed_parent(home: &Path) -> Result<()> {
-    if !plain_directory(home)? {
+fn open_directory_at(
+    parent: &File,
+    name: &Path,
+    expected: Option<EntryIdentity>,
+) -> Result<Option<File>> {
+    let Some(observed) = entry_identity_at(parent, name)? else {
+        return Ok(None);
+    };
+    if expected.is_some_and(|expected| expected != observed)
+        || !rustix::fs::FileType::from_raw_mode(observed.mode).is_dir()
+    {
+        return Ok(None);
+    }
+    let descriptor = match rustix::fs::openat(
+        parent,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(None),
+    };
+    let opened = entry_identity(&rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?);
+    if opened != observed || !rustix::fs::FileType::from_raw_mode(opened.mode).is_dir() {
+        return Ok(None);
+    }
+    Ok(Some(File::from(descriptor)))
+}
+
+fn read_bounded_regular_file_at(
+    parent: &File,
+    name: &Path,
+    maximum_bytes: u64,
+) -> Result<Option<Vec<u8>>> {
+    let Some(observed) = entry_identity_at(parent, name)? else {
+        return Ok(None);
+    };
+    let observed_stat = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(std::io::Error::from)?;
+    if entry_identity(&observed_stat) != observed
+        || !rustix::fs::FileType::from_raw_mode(observed.mode).is_file()
+        || observed_stat.st_size < 0
+        || u64::try_from(observed_stat.st_size).unwrap_or(u64::MAX) > maximum_bytes
+    {
+        return Ok(None);
+    }
+    let descriptor = match rustix::fs::openat(
+        parent,
+        name,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(None),
+    };
+    let opened_stat = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
+    if entry_identity(&opened_stat) != observed
+        || opened_stat.st_size != observed_stat.st_size
+        || opened_stat.st_size < 0
+        || u64::try_from(opened_stat.st_size).unwrap_or(u64::MAX) > maximum_bytes
+    {
+        return Ok(None);
+    }
+    let mut handle = File::from(descriptor);
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(opened_stat.st_size)
+            .unwrap_or(0)
+            .min(maximum_bytes as usize),
+    );
+    (&mut handle)
+        .take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let final_stat = rustix::fs::fstat(&handle).map_err(std::io::Error::from)?;
+    if bytes.len() as u64 > maximum_bytes
+        || entry_identity(&final_stat) != observed
+        || final_stat.st_size != opened_stat.st_size
+    {
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
+fn replace_target_at(
+    skills: &File,
+    staging_name: &Path,
+    expected_target: Option<EntryIdentity>,
+) -> Result<()> {
+    if expected_target.is_none() {
+        return rustix::fs::renameat_with(
+            skills,
+            staging_name,
+            skills,
+            Path::new(SKILL_NAME),
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(std::io::Error::from)
+        .map_err(Into::into);
+    }
+    let expected_target = expected_target.unwrap();
+    let backup_name = format!(
+        ".agent-pet-maker.apc-backup-{}",
+        uuid::Uuid::now_v7().simple()
+    );
+    rustix::fs::renameat_with(
+        skills,
+        Path::new(SKILL_NAME),
+        skills,
+        Path::new(&backup_name),
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(std::io::Error::from)?;
+    if entry_identity_at(skills, Path::new(&backup_name))? != Some(expected_target) {
+        let _ = rustix::fs::renameat_with(
+            skills,
+            Path::new(&backup_name),
+            skills,
+            Path::new(SKILL_NAME),
+            rustix::fs::RenameFlags::NOREPLACE,
+        );
         return Err(PetCoreError::Conflict(
-            "the user home is not a safe directory".to_string(),
+            "the portable skill target changed before replacement".to_string(),
         ));
     }
-    for path in [home.join("agent"), home.join("agent").join("skills")] {
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => {
-                return Err(PetCoreError::Conflict(
-                    "the portable skill parent is not a safe directory".to_string(),
-                ));
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                fs::create_dir(&path)?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-            }
-            Err(error) => return Err(error.into()),
-        }
+    if let Err(error) = rustix::fs::renameat_with(
+        skills,
+        staging_name,
+        skills,
+        Path::new(SKILL_NAME),
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        let _ = rustix::fs::renameat_with(
+            skills,
+            Path::new(&backup_name),
+            skills,
+            Path::new(SKILL_NAME),
+            rustix::fs::RenameFlags::NOREPLACE,
+        );
+        return Err(std::io::Error::from(error).into());
     }
+    let _ = remove_entry_at_checked(skills, Path::new(&backup_name), expected_target);
     Ok(())
 }
 
-fn plain_directory(path: &Path) -> Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.is_dir() && !metadata.file_type().is_symlink()),
-        Err(error) => Err(error.into()),
-    }
+fn commit_staged_install(
+    skills: &File,
+    staging_name: &Path,
+    expected_target: Option<EntryIdentity>,
+    receipt_path: &Path,
+    receipt: &ManagedSkillReceipt,
+) -> Result<()> {
+    replace_target_at(skills, staging_name, expected_target)?;
+    write_receipt(receipt_path, receipt)
 }
 
+fn quarantine_and_remove_target_at(skills: &File, expected_target: EntryIdentity) -> Result<()> {
+    let quarantine_name = format!(
+        ".agent-pet-maker.apc-remove-{}",
+        uuid::Uuid::now_v7().simple()
+    );
+    rustix::fs::renameat_with(
+        skills,
+        Path::new(SKILL_NAME),
+        skills,
+        Path::new(&quarantine_name),
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(std::io::Error::from)?;
+    if entry_identity_at(skills, Path::new(&quarantine_name))? != Some(expected_target) {
+        let _ = rustix::fs::renameat_with(
+            skills,
+            Path::new(&quarantine_name),
+            skills,
+            Path::new(SKILL_NAME),
+            rustix::fs::RenameFlags::NOREPLACE,
+        );
+        return Err(PetCoreError::Conflict(
+            "the portable skill target changed before removal".to_string(),
+        ));
+    }
+    remove_entry_at_checked(skills, Path::new(&quarantine_name), expected_target)
+}
+
+fn installed_version(target: &File) -> Option<String> {
+    read_bounded_regular_file_at(target, Path::new("SKILL.md"), 64 * 1024)
+        .ok()
+        .flatten()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|content| parse_skill_version(&content))
+}
+
+fn inspect_managed_parent(home: &Path) -> Result<DirectoryState> {
+    let descriptor = match rustix::fs::open(
+        home,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(DirectoryState::Unsafe),
+    };
+    let mut directory = File::from(descriptor);
+    for component in ["agent", "skills"] {
+        let Some(identity) = entry_identity_at(&directory, Path::new(component))? else {
+            return Ok(DirectoryState::Missing);
+        };
+        if !rustix::fs::FileType::from_raw_mode(identity.mode).is_dir() {
+            return Ok(DirectoryState::Unsafe);
+        }
+        let Some(child) = open_directory_at(&directory, Path::new(component), Some(identity))?
+        else {
+            return Ok(DirectoryState::Unsafe);
+        };
+        directory = child;
+    }
+    Ok(DirectoryState::Ready(directory))
+}
+
+fn ensure_managed_parent(home: &Path) -> Result<File> {
+    let descriptor = rustix::fs::open(
+        home,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| PetCoreError::Conflict("the user home is not a safe directory".to_string()))?;
+    let mut directory = File::from(descriptor);
+    for component in ["agent", "skills"] {
+        let component = Path::new(component);
+        if entry_identity_at(&directory, component)?.is_none() {
+            match rustix::fs::mkdirat(
+                &directory,
+                component,
+                rustix::fs::Mode::from_bits_truncate(0o700),
+            ) {
+                Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                Err(error) => return Err(std::io::Error::from(error).into()),
+            }
+        }
+        let Some(identity) = entry_identity_at(&directory, component)? else {
+            return Err(PetCoreError::Conflict(
+                "the portable skill parent changed while it was being created".to_string(),
+            ));
+        };
+        if !rustix::fs::FileType::from_raw_mode(identity.mode).is_dir() {
+            return Err(PetCoreError::Conflict(
+                "the portable skill parent is not a safe directory".to_string(),
+            ));
+        }
+        let Some(child) = open_directory_at(&directory, component, Some(identity))? else {
+            return Err(PetCoreError::Conflict(
+                "the portable skill parent changed while it was being opened".to_string(),
+            ));
+        };
+        directory = child;
+    }
+    Ok(directory)
+}
+
+#[cfg(test)]
 fn write_skill_tree(root: &Path) -> Result<()> {
     for file in BUNDLED_SKILL_FILES {
         let destination = safe_join(root, file.relative_path)?;
@@ -445,6 +743,73 @@ fn write_skill_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn write_skill_tree_at(root: &File) -> Result<()> {
+    for bundled in BUNDLED_SKILL_FILES {
+        let relative = Path::new(bundled.relative_path);
+        let leaf = relative.file_name().ok_or_else(|| {
+            PetCoreError::Validation("portable skill contains an empty managed path".to_string())
+        })?;
+        let mut directory = root.try_clone()?;
+        if let Some(parent) = relative.parent() {
+            for component in parent.components() {
+                let Component::Normal(name) = component else {
+                    return Err(PetCoreError::Validation(
+                        "portable skill contains an invalid managed path".to_string(),
+                    ));
+                };
+                let name = Path::new(name);
+                if entry_identity_at(&directory, name)?.is_none() {
+                    match rustix::fs::mkdirat(
+                        &directory,
+                        name,
+                        rustix::fs::Mode::from_bits_truncate(0o700),
+                    ) {
+                        Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                        Err(error) => return Err(std::io::Error::from(error).into()),
+                    }
+                }
+                let Some(identity) = entry_identity_at(&directory, name)? else {
+                    return Err(PetCoreError::Conflict(
+                        "portable skill staging directory changed".to_string(),
+                    ));
+                };
+                if !rustix::fs::FileType::from_raw_mode(identity.mode).is_dir() {
+                    return Err(PetCoreError::Conflict(
+                        "portable skill staging path is unsafe".to_string(),
+                    ));
+                }
+                let Some(child) = open_directory_at(&directory, name, Some(identity))? else {
+                    return Err(PetCoreError::Conflict(
+                        "portable skill staging directory changed".to_string(),
+                    ));
+                };
+                directory = child;
+            }
+        }
+        let descriptor = rustix::fs::openat(
+            &directory,
+            Path::new(leaf),
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_bits_truncate(bundled.mode as rustix::fs::RawMode),
+        )
+        .map_err(std::io::Error::from)?;
+        let mut handle = File::from(descriptor);
+        handle.write_all(bundled.content.as_bytes())?;
+        handle.sync_all()?;
+        rustix::fs::fchmod(
+            &handle,
+            rustix::fs::Mode::from_bits_truncate(bundled.mode as rustix::fs::RawMode),
+        )
+        .map_err(std::io::Error::from)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
     let relative = Path::new(relative);
     if relative.is_absolute()
@@ -459,63 +824,215 @@ fn safe_join(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(root.join(relative))
 }
 
-fn tree_matches_bundle(target: &Path) -> Result<bool> {
+#[cfg(test)]
+fn bundle_tree_matches(target: &Path) -> Result<bool> {
+    let descriptor = match rustix::fs::open(
+        target,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(false),
+    };
+    let root = File::from(descriptor);
+    bundle_tree_matches_root(&root)
+}
+
+fn bundle_tree_matches_root(root: &File) -> Result<bool> {
+    let opened = rustix::fs::fstat(root).map_err(std::io::Error::from)?;
+    if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
+        || !tree_contains_only_bundle(root)?
+    {
+        return Ok(false);
+    }
+    tree_matches_bundle(root)
+}
+
+fn tree_matches_bundle(root: &File) -> Result<bool> {
     for file in BUNDLED_SKILL_FILES {
-        let path = safe_join(target, file.relative_path)?;
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.into()),
-        };
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Ok(false);
-        }
-        let executable = metadata.permissions().mode() & 0o111 != 0;
-        if executable != (file.mode & 0o111 != 0) || fs::read(path)? != file.content.as_bytes() {
+        if !regular_file_matches(
+            root,
+            file.relative_path,
+            file.content.as_bytes(),
+            file.mode & 0o111 != 0,
+        )? {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-fn tree_contains_only_bundle(target: &Path) -> Result<bool> {
+fn regular_file_matches(
+    root: &File,
+    relative: &str,
+    expected: &[u8],
+    expected_executable: bool,
+) -> Result<bool> {
+    let components = Path::new(relative)
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name.to_os_string()),
+            _ => Err(PetCoreError::Validation(
+                "portable skill contains an invalid managed path".to_string(),
+            )),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let Some((leaf, parents)) = components.split_last() else {
+        return Err(PetCoreError::Validation(
+            "portable skill contains an empty managed path".to_string(),
+        ));
+    };
+    let mut directory = root.try_clone()?;
+    for component in parents {
+        let observed = match rustix::fs::statat(
+            &directory,
+            Path::new(component),
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Ok(observed) => observed,
+            Err(_) => return Ok(false),
+        };
+        if !rustix::fs::FileType::from_raw_mode(observed.st_mode).is_dir() {
+            return Ok(false);
+        }
+        let descriptor = match rustix::fs::openat(
+            &directory,
+            Path::new(component),
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        ) {
+            Ok(descriptor) => descriptor,
+            Err(_) => return Ok(false),
+        };
+        let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
+        if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
+            || observed.st_dev != opened.st_dev
+            || observed.st_ino != opened.st_ino
+        {
+            return Ok(false);
+        }
+        directory = File::from(descriptor);
+    }
+
+    let observed = match rustix::fs::statat(
+        &directory,
+        Path::new(leaf),
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(observed) => observed,
+        Err(_) => return Ok(false),
+    };
+    if !rustix::fs::FileType::from_raw_mode(observed.st_mode).is_file()
+        || u64::try_from(observed.st_size).unwrap_or(u64::MAX) != expected.len() as u64
+        || (observed.st_mode & 0o111 != 0) != expected_executable
+    {
+        return Ok(false);
+    }
+    let descriptor = match rustix::fs::openat(
+        &directory,
+        Path::new(leaf),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(false),
+    };
+    let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
+    if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_file()
+        || observed.st_dev != opened.st_dev
+        || observed.st_ino != opened.st_ino
+        || observed.st_size != opened.st_size
+        || u64::try_from(opened.st_size).unwrap_or(u64::MAX) != expected.len() as u64
+        || (opened.st_mode & 0o111 != 0) != expected_executable
+    {
+        return Ok(false);
+    }
+    let mut handle = File::from(descriptor);
+    let mut observed = Vec::with_capacity(expected.len().saturating_add(1));
+    (&mut handle)
+        .take(expected.len() as u64 + 1)
+        .read_to_end(&mut observed)?;
+    let final_metadata = rustix::fs::fstat(&handle).map_err(std::io::Error::from)?;
+    Ok(observed == expected
+        && final_metadata.st_dev == opened.st_dev
+        && final_metadata.st_ino == opened.st_ino
+        && final_metadata.st_size == opened.st_size
+        && final_metadata.st_mode == opened.st_mode)
+}
+
+fn tree_contains_only_bundle(root: &File) -> Result<bool> {
     let allowed_files = BUNDLED_SKILL_FILES
         .iter()
-        .map(|file| file.relative_path.to_string())
+        .map(|file| PathBuf::from(file.relative_path))
         .collect::<BTreeSet<_>>();
     let mut allowed_directories = BTreeSet::new();
     for file in BUNDLED_SKILL_FILES {
         let mut parent = Path::new(file.relative_path).parent();
         while let Some(path) = parent {
             if !path.as_os_str().is_empty() {
-                allowed_directories.insert(path.to_string_lossy().to_string());
+                allowed_directories.insert(path.to_path_buf());
             }
             parent = path.parent();
         }
     }
 
-    let mut pending = vec![target.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)? {
-            let entry = entry?;
-            let path = entry.path();
-            let relative = path
-                .strip_prefix(target)
-                .map_err(|_| {
-                    PetCoreError::Validation("portable skill path escaped its root".to_string())
-                })?
-                .to_string_lossy()
-                .to_string();
-            let metadata = fs::symlink_metadata(&path)?;
-            if metadata.file_type().is_symlink() {
+    let entry_limit = allowed_files.len() + allowed_directories.len();
+    let mut entry_count = 0usize;
+    let mut pending = vec![(PathBuf::new(), root.try_clone()?)];
+    while let Some((relative_parent, directory)) = pending.pop() {
+        let mut entries = rustix::fs::Dir::read_from(&directory).map_err(std::io::Error::from)?;
+        while let Some(entry) = entries.read() {
+            let entry = entry.map_err(std::io::Error::from)?;
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            entry_count = entry_count.saturating_add(1);
+            if entry_count > entry_limit {
                 return Ok(false);
             }
-            if metadata.is_dir() {
+            let name_path = Path::new(std::ffi::OsStr::from_bytes(name.to_bytes()));
+            let relative = relative_parent.join(name_path);
+            let observed = match rustix::fs::statat(
+                &directory,
+                name_path,
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(observed) => observed,
+                Err(_) => return Ok(false),
+            };
+            let file_type = rustix::fs::FileType::from_raw_mode(observed.st_mode);
+            if file_type.is_dir() {
                 if !allowed_directories.contains(&relative) {
                     return Ok(false);
                 }
-                pending.push(path);
-            } else if !metadata.is_file() || !allowed_files.contains(&relative) {
+                let descriptor = match rustix::fs::openat(
+                    &directory,
+                    name_path,
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::DIRECTORY
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                ) {
+                    Ok(descriptor) => descriptor,
+                    Err(_) => return Ok(false),
+                };
+                let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
+                if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_dir()
+                    || observed.st_dev != opened.st_dev
+                    || observed.st_ino != opened.st_ino
+                {
+                    return Ok(false);
+                }
+                pending.push((relative, File::from(descriptor)));
+            } else if !file_type.is_file() || !allowed_files.contains(&relative) {
                 return Ok(false);
             }
         }
@@ -524,22 +1041,37 @@ fn tree_contains_only_bundle(target: &Path) -> Result<bool> {
 }
 
 fn read_receipt(path: &Path) -> Result<ReceiptState> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(ReceiptState::Missing),
-        Err(error) => return Err(error.into()),
+    let descriptor = match rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(ReceiptState::Missing),
+        Err(_) => return Ok(ReceiptState::Invalid),
     };
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() == 0
-        || metadata.len() > MAX_RECEIPT_BYTES
+    let opened = rustix::fs::fstat(&descriptor).map_err(std::io::Error::from)?;
+    if !rustix::fs::FileType::from_raw_mode(opened.st_mode).is_file()
+        || opened.st_size <= 0
+        || u64::try_from(opened.st_size).unwrap_or(u64::MAX) > MAX_RECEIPT_BYTES
     {
         return Ok(ReceiptState::Invalid);
     }
-    let receipt = match fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ManagedSkillReceipt>(&bytes).ok())
+    let mut handle = File::from(descriptor);
+    let mut bytes = Vec::with_capacity(usize::try_from(opened.st_size).unwrap_or(0));
+    (&mut handle)
+        .take(MAX_RECEIPT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    let final_metadata = rustix::fs::fstat(&handle).map_err(std::io::Error::from)?;
+    if bytes.len() as u64 > MAX_RECEIPT_BYTES
+        || final_metadata.st_dev != opened.st_dev
+        || final_metadata.st_ino != opened.st_ino
+        || final_metadata.st_size != opened.st_size
+        || final_metadata.st_mode != opened.st_mode
     {
+        return Ok(ReceiptState::Invalid);
+    }
+    let receipt = match serde_json::from_slice::<ManagedSkillReceipt>(&bytes).ok() {
         Some(receipt) => receipt,
         None => return Ok(ReceiptState::Invalid),
     };
@@ -601,16 +1133,64 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn remove_entry(path: &Path) -> Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
+fn remove_entry_at(parent: &File, name: &Path) -> Result<()> {
+    let Some(expected) = entry_identity_at(parent, name)? else {
+        return Ok(());
     };
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path)?;
+    remove_entry_at_checked(parent, name, expected)
+}
+
+fn remove_entry_at_checked(parent: &File, name: &Path, expected: EntryIdentity) -> Result<()> {
+    let mut budget = MAX_MANAGED_REMOVAL_ENTRIES;
+    remove_entry_at_checked_with_budget(parent, name, expected, &mut budget)
+}
+
+fn remove_entry_at_checked_with_budget(
+    parent: &File,
+    name: &Path,
+    expected: EntryIdentity,
+    budget: &mut usize,
+) -> Result<()> {
+    if *budget == 0 {
+        return Err(PetCoreError::Conflict(
+            "portable skill removal exceeded its bounded entry budget".to_string(),
+        ));
+    }
+    *budget -= 1;
+    if entry_identity_at(parent, name)? != Some(expected) {
+        return Err(PetCoreError::Conflict(
+            "portable skill content changed during removal".to_string(),
+        ));
+    }
+    if rustix::fs::FileType::from_raw_mode(expected.mode).is_dir() {
+        let Some(directory) = open_directory_at(parent, name, Some(expected))? else {
+            return Err(PetCoreError::Conflict(
+                "portable skill directory changed during removal".to_string(),
+            ));
+        };
+        let mut entries = rustix::fs::Dir::read_from(&directory).map_err(std::io::Error::from)?;
+        while let Some(entry) = entries.read() {
+            let entry = entry.map_err(std::io::Error::from)?;
+            let entry_name = entry.file_name();
+            if matches!(entry_name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            let entry_path = Path::new(std::ffi::OsStr::from_bytes(entry_name.to_bytes()));
+            let Some(child_identity) = entry_identity_at(&directory, entry_path)? else {
+                continue;
+            };
+            remove_entry_at_checked_with_budget(&directory, entry_path, child_identity, budget)?;
+        }
+        if entry_identity_at(parent, name)? != Some(expected) {
+            return Err(PetCoreError::Conflict(
+                "portable skill directory changed before final removal".to_string(),
+            ));
+        }
+        rustix::fs::unlinkat(parent, name, rustix::fs::AtFlags::REMOVEDIR)
+            .map_err(std::io::Error::from)?;
     } else {
-        fs::remove_file(path)?;
+        rustix::fs::unlinkat(parent, name, rustix::fs::AtFlags::empty())
+            .map_err(std::io::Error::from)?;
     }
     Ok(())
 }
@@ -645,7 +1225,7 @@ mod tests {
 
         let repaired = install_at(&app_home, &home).unwrap();
         assert_eq!(repaired.state, PortableSkillState::Current);
-        assert!(tree_matches_bundle(&target_path(&home)).unwrap());
+        assert!(bundle_tree_matches(&target_path(&home)).unwrap());
         assert!(!target_path(&home).join("local-note.txt").exists());
 
         fs::write(
@@ -745,6 +1325,183 @@ mod tests {
             fs::read_to_string(outside.join("SKILL.md")).unwrap(),
             "---\nversion: 99.99.99\n---\nexternal\n"
         );
+    }
+
+    #[test]
+    fn unmanaged_adoption_rejects_a_wrong_length_before_reading_file_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("agent-pet-maker");
+        fs::create_dir_all(&target).unwrap();
+        let skill = target.join("SKILL.md");
+        fs::write(&skill, "x").unwrap();
+        fs::set_permissions(&skill, fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert!(!bundle_tree_matches(&target).unwrap());
+    }
+
+    #[test]
+    fn unmanaged_adoption_never_follows_a_nested_directory_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("agent-pet-maker");
+        let outside = temp.path().join("outside-references");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let bundled = BUNDLED_SKILL_FILES
+            .iter()
+            .find(|file| file.relative_path == "references/security.md")
+            .unwrap();
+        fs::write(outside.join("security.md"), bundled.content).unwrap();
+        symlink(&outside, target.join("references")).unwrap();
+
+        let descriptor = rustix::fs::open(
+            &target,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let root = File::from(descriptor);
+        assert!(!regular_file_matches(
+            &root,
+            bundled.relative_path,
+            bundled.content.as_bytes(),
+            false,
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn installed_version_never_follows_a_replaced_skill_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("agent-pet-maker");
+        let outside = temp.path().join("outside-skill.md");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&outside, "---\nversion: 99.99.99\n---\nexternal\n").unwrap();
+        symlink(&outside, target.join("SKILL.md")).unwrap();
+        let descriptor = rustix::fs::open(
+            &target,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+
+        assert_eq!(installed_version(&File::from(descriptor)), None);
+    }
+
+    #[test]
+    fn replacement_preserves_a_target_whose_identity_changed_after_inspection() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_path = temp.path().join("skills");
+        fs::create_dir_all(skills_path.join(SKILL_NAME)).unwrap();
+        fs::create_dir(skills_path.join("stage")).unwrap();
+        let descriptor = rustix::fs::open(
+            &skills_path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let skills = File::from(descriptor);
+        let expected = entry_identity_at(&skills, Path::new(SKILL_NAME))
+            .unwrap()
+            .unwrap();
+        fs::rename(
+            skills_path.join(SKILL_NAME),
+            skills_path.join("original-target"),
+        )
+        .unwrap();
+        fs::create_dir(skills_path.join(SKILL_NAME)).unwrap();
+        fs::write(skills_path.join(SKILL_NAME).join("keep.txt"), "foreign").unwrap();
+
+        assert!(replace_target_at(&skills, Path::new("stage"), Some(expected)).is_err());
+        assert_eq!(
+            fs::read_to_string(skills_path.join(SKILL_NAME).join("keep.txt")).unwrap(),
+            "foreign"
+        );
+        assert!(skills_path.join("original-target").is_dir());
+        assert!(skills_path.join("stage").is_dir());
+    }
+
+    #[test]
+    fn failed_missing_install_never_leaves_an_ownership_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_path = temp.path().join("skills");
+        fs::create_dir_all(&skills_path).unwrap();
+        fs::create_dir(skills_path.join("stage")).unwrap();
+        fs::create_dir(skills_path.join(SKILL_NAME)).unwrap();
+        fs::write(skills_path.join(SKILL_NAME).join("keep.txt"), "foreign").unwrap();
+        let descriptor = rustix::fs::open(
+            &skills_path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let receipt = temp.path().join("receipts/agent-pet-maker.json");
+        let managed_receipt = ManagedSkillReceipt {
+            schema_version: RECEIPT_SCHEMA.to_string(),
+            name: SKILL_NAME.to_string(),
+            target_display_path: SKILL_DISPLAY_PATH.to_string(),
+            installed_version: bundled_version().unwrap(),
+            content_sha256: bundled_content_sha256(),
+        };
+
+        assert!(commit_staged_install(
+            &File::from(descriptor),
+            Path::new("stage"),
+            None,
+            &receipt,
+            &managed_receipt,
+        )
+        .is_err());
+        assert!(!receipt.exists());
+        assert_eq!(
+            fs::read_to_string(skills_path.join(SKILL_NAME).join("keep.txt")).unwrap(),
+            "foreign"
+        );
+    }
+
+    #[test]
+    fn removal_preserves_a_target_whose_identity_changed_after_inspection() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills_path = temp.path().join("skills");
+        fs::create_dir_all(skills_path.join(SKILL_NAME)).unwrap();
+        let descriptor = rustix::fs::open(
+            &skills_path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap();
+        let skills = File::from(descriptor);
+        let expected = entry_identity_at(&skills, Path::new(SKILL_NAME))
+            .unwrap()
+            .unwrap();
+        fs::rename(
+            skills_path.join(SKILL_NAME),
+            skills_path.join("original-target"),
+        )
+        .unwrap();
+        fs::create_dir(skills_path.join(SKILL_NAME)).unwrap();
+        fs::write(skills_path.join(SKILL_NAME).join("keep.txt"), "foreign").unwrap();
+
+        assert!(quarantine_and_remove_target_at(&skills, expected).is_err());
+        assert_eq!(
+            fs::read_to_string(skills_path.join(SKILL_NAME).join("keep.txt")).unwrap(),
+            "foreign"
+        );
+        assert!(skills_path.join("original-target").is_dir());
     }
 
     #[test]
