@@ -1067,6 +1067,37 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", source)
         self.assertNotRegex(source, r"(?m)^\s*run:\s*[.]/")
 
+    def test_closed_pr_replay_resolves_merge_identity_from_the_authoritative_pr(self) -> None:
+        source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
+            encoding="utf-8"
+        )
+        candidate_filter = source[
+            source.index('candidate="$(') : source.index(
+                'pr_number="$(jq -er', source.index('candidate="$(')
+            )
+        ]
+        self.assertNotIn(".merge_commit_sha", candidate_filter)
+
+        closed_replay = source[
+            source.index('if [[ "$pr_state" == "closed" ]]') : source.index(
+                'encoded_base="$(jq -rn',
+                source.index('if [[ "$pr_state" == "closed" ]]'),
+            )
+        ]
+        self.assertIn('"repos/$GITHUB_REPOSITORY/pulls/$pr_number"', closed_replay)
+        self.assertIn(
+            'test "$(jq -er \'.merged\' <<<"$resolved_pull")" = "true"',
+            closed_replay,
+        )
+        self.assertIn(
+            'test "$(jq -er \'.head.sha\' <<<"$resolved_pull")" = "$HEAD_SHA"',
+            closed_replay,
+        )
+        self.assertIn(
+            'merge_commit="$(jq -er \'.merge_commit_sha\' <<<"$resolved_pull")"',
+            closed_replay,
+        )
+
     def test_ci_prepares_producer_image_dependencies_and_pins_actions(self) -> None:
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("Prepare pinned Python validation environment", source)
