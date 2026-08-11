@@ -284,6 +284,39 @@ class RustTestShardTests(unittest.TestCase):
                 self.assertTrue(all(command[:2] == ["cargo", "test"] for command in commands))
                 self.assertTrue(all("--locked" in command for command in commands))
 
+    def test_completion_proof_requires_every_exact_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            for shard in rust_test_shards.ALL_SHARDS:
+                rust_test_shards.write_completion(proof_dir, shard)
+
+            rust_test_shards.validate_completions(proof_dir)
+
+    def test_completion_proof_rejects_a_missing_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            for shard in rust_test_shards.ALL_SHARDS[:-1]:
+                rust_test_shards.write_completion(proof_dir, shard)
+
+            with self.assertRaisesRegex(ValueError, "completion set mismatch"):
+                rust_test_shards.validate_completions(proof_dir)
+
+    def test_completion_proof_rejects_extra_or_malformed_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proof_dir = pathlib.Path(temp_dir)
+            for shard in rust_test_shards.ALL_SHARDS:
+                rust_test_shards.write_completion(proof_dir, shard)
+            (proof_dir / "unexpected.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "completion set mismatch"):
+                rust_test_shards.validate_completions(proof_dir)
+
+            (proof_dir / "unexpected.json").unlink()
+            marker = proof_dir / f"{rust_test_shards.ALL_SHARDS[0]}.json"
+            marker.write_text('{"schema_version":"wrong"}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid Rust shard completion"):
+                rust_test_shards.validate_completions(proof_dir)
+
 
 class MainBranchRulesetTests(unittest.TestCase):
     def test_ruleset_requires_pull_requests_and_the_github_actions_check(self) -> None:

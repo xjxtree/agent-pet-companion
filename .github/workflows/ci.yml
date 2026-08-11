@@ -382,7 +382,41 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-apc-rust-
 
       - name: Run inventory-checked Rust shard
-        run: ./script/validate_rust_test_shards.py --shard "${{ matrix.shard }}"
+        run: |
+          ./script/validate_rust_test_shards.py \
+            --shard "${{ matrix.shard }}" \
+            --completion-dir "$RUNNER_TEMP/rust-shard-proof"
+
+      - name: Upload exact Rust shard completion
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-rust-shard-proof-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 3
+          path: ${{ runner.temp }}/rust-shard-proof/${{ matrix.shard }}.json
+
+  rust_test_proof:
+    name: Verify every Rust test shard
+    needs: [scope, promotion, rust_tests]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download this attempt's Rust shard completions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ci-rust-shard-proof-${{ github.run_id }}-${{ github.run_attempt }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/rust-shard-proof
+
+      - name: Require the exact Rust shard completion set
+        run: ./script/validate_rust_test_shards.py --verify-completion-dir "$RUNNER_TEMP/rust-shard-proof"
 
   swift_interaction:
     name: Swift and interaction proof
@@ -573,7 +607,7 @@ jobs:
 
   candidate_proof:
     name: Create promotable PR source proof
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle]
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle]
     if: always() && github.event_name == 'pull_request' && needs.scope.outputs.full_candidate == '1'
     runs-on: macos-26
     timeout-minutes: 10
@@ -584,12 +618,13 @@ jobs:
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
         run: |
-          for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+          for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
             case "$result" in
               success) ;;
               *) echo "candidate source dependency did not succeed: $result" >&2; exit 1 ;;
@@ -638,7 +673,7 @@ jobs:
 
   source_proof:
     name: Bind release source proof to main commit
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, candidate_proof]
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle, candidate_proof]
     if: always() && needs.scope.outputs.release_source == '1'
     runs-on: macos-26
     timeout-minutes: 15
@@ -654,20 +689,21 @@ jobs:
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
         run: |
           if [[ "$PROMOTED" == "1" ]]; then
-            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 skipped) ;;
                 *) echo "promoted main CI unexpectedly scheduled a complete gate: $result" >&2; exit 1 ;;
               esac
             done
           else
-            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 success) ;;
                 *) echo "release source dependency did not succeed: $result" >&2; exit 1 ;;
@@ -763,7 +799,7 @@ jobs:
 
   required:
     name: Required CI
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, candidate_proof, source_proof]
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle, candidate_proof, source_proof]
     if: always()
     runs-on: macos-26
     timeout-minutes: 10
@@ -775,6 +811,7 @@ jobs:
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
@@ -787,7 +824,7 @@ jobs:
         run: |
           for result in \
             "$SCOPE_RESULT" "$STATIC_RESULT" "$CONTRACTS_RESULT" \
-            "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" \
+            "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" \
             "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" \
             "$CANDIDATE_PROOF_RESULT" "$SOURCE_PROOF_RESULT"; do
             case "$result" in
@@ -798,7 +835,7 @@ jobs:
           if [[ "$FULL_CANDIDATE" == "1" && "$PROMOTED" != "1" ]]; then
             for result in \
               "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
-              "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
               "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 success) ;;
@@ -813,7 +850,7 @@ jobs:
             test "$RELEASE_SOURCE" = "1"
             for result in \
               "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
-              "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
               "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$CANDIDATE_PROOF_RESULT"; do
               test "$result" = "skipped"
             done
