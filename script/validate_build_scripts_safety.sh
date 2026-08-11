@@ -149,15 +149,26 @@ rg -Fq '"allow_merge_commit": False' \
 rg -Fq '"allow_rebase_merge": False' \
   "$ROOT_DIR/script/configure_main_branch_ruleset.py"
 rg -Fq 'if not args.apply:' "$ROOT_DIR/script/configure_main_branch_ruleset.py"
-rg -Fq 'pull_request_target:' "$AUTO_MERGE_WORKFLOW"
-rg -Fq 'github.event.pull_request.head.repo.full_name == github.repository' \
+rg -Fq 'workflow_run:' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'github.event.workflow_run.head_repository.full_name == github.repository' \
+  "$AUTO_MERGE_WORKFLOW"
+rg -Fq "github.event.workflow_run.event == 'pull_request'" "$AUTO_MERGE_WORKFLOW"
+rg -Fq "github.event.workflow_run.path == '.github/workflows/ci.yml'" \
   "$AUTO_MERGE_WORKFLOW"
 rg -Fq 'repos/$GITHUB_REPOSITORY/rules/branches/$encoded_base' \
   "$AUTO_MERGE_WORKFLOW"
 rg -Fq '.context == "Required CI"' "$AUTO_MERGE_WORKFLOW"
-rg -Fq -- '--auto --squash' "$AUTO_MERGE_WORKFLOW"
-if rg -q 'actions/checkout|^[[:space:]]*run:[[:space:]]*[.]/' "$AUTO_MERGE_WORKFLOW"; then
-  echo 'pull_request_target auto-merge must never check out or execute PR code' >&2
+rg -Fq -- '--squash --match-head-commit "$HEAD_SHA"' "$AUTO_MERGE_WORKFLOW"
+rg -Fq './script/ci_proof_promotion.py verify-merge-source' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'ref: main' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'persist-credentials: false' "$AUTO_MERGE_WORKFLOW"
+rg -Fq 'gh workflow run ci.yml --ref main -f "expected_sha=$merge_commit"' \
+  "$AUTO_MERGE_WORKFLOW"
+rg -Fq './script/ci_proof_promotion.py create-merge-ticket' "$CI_WORKFLOW"
+rg -Fq 'ci-merge-ticket-${{ github.run_id }}-${{ github.run_attempt }}' "$CI_WORKFLOW"
+if rg -q 'ref:[[:space:]]*\$\{\{[[:space:]]*github\.event\.workflow_run\.(head_sha|head_branch)' \
+  "$AUTO_MERGE_WORKFLOW"; then
+  echo 'workflow-run merger must never check out pull-request code' >&2
   exit 1
 fi
 if rg -q 'APC_VALIDATE_HOST_UI:[[:space:]]+"1"|computer-use|Computer Use.*run:' \

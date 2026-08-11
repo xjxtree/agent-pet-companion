@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from argparse import Namespace
 from unittest import mock
 
@@ -118,6 +120,124 @@ class PromotionSelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "exactly one"):
                     ci_proof.select_candidate_artifact({"artifacts": artifacts}, 42)
 
+    def test_candidate_artifact_presence_must_match_the_current_base_lane(self) -> None:
+        artifact = {
+            "id": 7,
+            "name": f"ci-candidate-proof-{'d' * 40}",
+            "expired": False,
+            "size_in_bytes": 4096,
+            "workflow_run": {"id": 42},
+        }
+        selected = ci_proof.require_candidate_lane(
+            {"artifacts": [artifact]}, 42, "main"
+        )
+        self.assertEqual(selected["id"], 7)
+        self.assertIsNone(
+            ci_proof.require_candidate_lane({"artifacts": []}, 42, "gd-ops/train/august")
+        )
+        with self.assertRaisesRegex(ValueError, "train run must not contain"):
+            ci_proof.require_candidate_lane(
+                {"artifacts": [artifact]}, 42, "gd-ops/train/august"
+            )
+
+    def test_train_merge_source_binds_run_ticket_and_tested_parents(self) -> None:
+        base = "a" * 40
+        head = "b" * 40
+        tested = "d" * 40
+        ticket = {
+            "schema_version": ci_proof.MERGE_TICKET_SCHEMA_VERSION,
+            "repository": "owner/repo",
+            "pull_request_number": 17,
+            "base_ref": "gd-ops/train/august",
+            "base_commit": base,
+            "head_ref": "gd-ops/task/17-small",
+            "head_commit": head,
+            "tested_commit": tested,
+            "workflow_path": ci_proof.WORKFLOW_PATH,
+            "workflow_event": "pull_request",
+            "workflow_ref": "refs/pull/17/merge",
+            "run_id": 42,
+            "run_attempt": 2,
+            "lane": "task-to-train",
+            "full_candidate": False,
+            "ok": True,
+        }
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("merge-ticket.json", json.dumps(ticket))
+        run_payload = {
+            "id": 42,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "pull_request",
+            "head_sha": head,
+            "head_branch": "gd-ops/task/17-small",
+            "path": ci_proof.WORKFLOW_PATH,
+            "head_repository": {"full_name": "owner/repo"},
+        }
+        jobs_payload = {"jobs": [{"name": "Required CI", "conclusion": "success"}]}
+        artifacts_payload = {
+            "artifacts": [
+                {
+                    "id": 9,
+                    "name": "ci-merge-ticket-42-2",
+                    "expired": False,
+                    "size_in_bytes": len(archive_buffer.getvalue()),
+                    "workflow_run": {"id": 42},
+                }
+            ]
+        }
+        tested_payload = {
+            "sha": tested,
+            "tree": {"sha": "e" * 40},
+            "parents": [{"sha": base}, {"sha": head}],
+        }
+
+        def api_fixture(endpoint: str, **_fields: str):
+            if endpoint.endswith("/pulls/17/files"):
+                return []
+            if endpoint.endswith("/actions/runs/42"):
+                return run_payload
+            if endpoint.endswith("/actions/runs/42/jobs"):
+                return jobs_payload
+            if endpoint.endswith("/actions/runs/42/artifacts"):
+                return artifacts_payload
+            if endpoint.endswith(f"/git/commits/{tested}"):
+                return tested_payload
+            raise AssertionError(endpoint)
+
+        args = Namespace(
+            repository="owner/repo",
+            pull_request_number=17,
+            base_ref="gd-ops/train/august",
+            base_commit=base,
+            head_ref="gd-ops/task/17-small",
+            head_commit=head,
+            run_id=42,
+            run_attempt=2,
+        )
+        with mock.patch.object(ci_proof, "api_json", side_effect=api_fixture), mock.patch.object(
+            ci_proof, "api_bytes", return_value=archive_buffer.getvalue()
+        ):
+            verified = ci_proof.verify_merge_source(args)
+            self.assertEqual(verified["lane"], "task-to-train")
+            tested_payload["parents"] = [{"sha": "f" * 40}, {"sha": head}]
+            with self.assertRaisesRegex(ValueError, "bind current base and head"):
+                ci_proof.verify_merge_source(args)
+
+        with mock.patch.object(
+            ci_proof,
+            "api_json",
+            return_value=[
+                {
+                    "filename": ".github/workflows/renamed-ci.yml",
+                    "previous_filename": ".github/workflows/ci.yml",
+                }
+            ],
+        ), self.assertRaisesRegex(ValueError, "trusted manual merge"):
+            ci_proof.require_no_control_plane_change("owner/repo", 17)
+
 
 class CandidateProofTests(unittest.TestCase):
     def git(self, root: pathlib.Path, *args: str) -> str:
@@ -205,6 +325,113 @@ class CandidateProofTests(unittest.TestCase):
                 ci_proof, "validate_attestation", return_value=attestation_payload
             ), mock.patch.object(ci_proof, "observed_toolchains", return_value=toolchains):
                 ci_proof.create_candidate(create_args)
+
+            ticket_dir = temporary / "ticket"
+            ticket_dir.mkdir()
+            ticket_path = ticket_dir / "merge-ticket.json"
+            ci_proof.create_merge_ticket(
+                Namespace(
+                    root=root,
+                    repository="owner/repo",
+                    pull_request_number=17,
+                    base_ref="main",
+                    base_commit=history["base"],
+                    head_ref="gd-ops/task/17-small",
+                    head_commit=history["head"],
+                    tested_commit=history["tested"],
+                    run_id=42,
+                    run_attempt=2,
+                    lane="direct-to-main",
+                    full_candidate=True,
+                    output=ticket_path,
+                )
+            )
+            ticket = ci_proof.validate_merge_ticket(
+                Namespace(
+                    repository="owner/repo",
+                    pull_request_number=17,
+                    base_ref="main",
+                    base_commit=history["base"],
+                    head_ref="gd-ops/task/17-small",
+                    head_commit=history["head"],
+                    run_id=42,
+                    run_attempt=2,
+                    ticket=ticket_path,
+                )
+            )
+            self.assertEqual(ticket["tested_commit"], history["tested"])
+            draft_ticket_path = ticket_dir / "draft-merge-ticket.json"
+            ci_proof.create_merge_ticket(
+                Namespace(
+                    root=root,
+                    repository="owner/repo",
+                    pull_request_number=17,
+                    base_ref="main",
+                    base_commit=history["base"],
+                    head_ref="gd-ops/task/17-small",
+                    head_commit=history["head"],
+                    tested_commit=history["tested"],
+                    run_id=43,
+                    run_attempt=1,
+                    lane="direct-to-main",
+                    full_candidate=False,
+                    output=draft_ticket_path,
+                )
+            )
+            self.assertFalse(
+                json.loads(draft_ticket_path.read_text(encoding="utf-8"))["full_candidate"]
+            )
+            with self.assertRaisesRegex(ValueError, "base_commit"):
+                ci_proof.validate_merge_ticket(
+                    Namespace(
+                        repository="owner/repo",
+                        pull_request_number=17,
+                        base_ref="main",
+                        base_commit="f" * 40,
+                        head_ref="gd-ops/task/17-small",
+                        head_commit=history["head"],
+                        run_id=42,
+                        run_attempt=2,
+                        ticket=ticket_path,
+                    )
+                )
+
+            tested_payload = {
+                "sha": history["tested"],
+                "tree": {"sha": history["tree"]},
+                "parents": [
+                    {"sha": history["base"]},
+                    {"sha": history["head"]},
+                ],
+            }
+            merge_metadata = ci_proof.validate_merge_candidate(
+                Namespace(
+                    repository="owner/repo",
+                    pull_request_number=17,
+                    base_commit=history["base"],
+                    head_commit=history["head"],
+                    run_id=42,
+                    run_attempt=2,
+                    tested_payload=tested_payload,
+                    attestation=attestation,
+                    proof=proof,
+                )
+            )
+            self.assertEqual(merge_metadata["tested_commit"], history["tested"])
+            with self.assertRaisesRegex(ValueError, "pull_request_number"):
+                ci_proof.validate_merge_candidate(
+                    Namespace(
+                        repository="owner/repo",
+                        pull_request_number=18,
+                        base_commit=history["base"],
+                        head_commit=history["head"],
+                        run_id=42,
+                        run_attempt=2,
+                        tested_payload=tested_payload,
+                        attestation=attestation,
+                        proof=proof,
+                    )
+                )
 
             subprocess.run(["git", "checkout", "-q", history["main"]], cwd=root, check=True)
             tested_commit = temporary / "tested-commit.json"

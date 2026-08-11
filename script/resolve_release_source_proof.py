@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the trusted main-push run and source-proof artifact for a release."""
+"""Select the trusted main validation run and source-proof artifact for a release."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 WORKFLOW_PATH = ".github/workflows/ci.yml"
+MAIN_WORKFLOW_EVENTS = {"push", "workflow_dispatch"}
 
 
 def read_json_regular(path: pathlib.Path) -> dict[str, Any]:
@@ -54,7 +55,7 @@ def select_run(payload: dict[str, Any], repository: str, commit: str) -> dict[st
         head_name = head_repository.get("full_name") if isinstance(head_repository, dict) else None
         if (
             run.get("head_sha") == commit
-            and run.get("event") == "push"
+            and run.get("event") in MAIN_WORKFLOW_EVENTS
             and run.get("head_branch") == "main"
             and run.get("conclusion") == "success"
             and run.get("path") == WORKFLOW_PATH
@@ -64,9 +65,13 @@ def select_run(payload: dict[str, Any], repository: str, commit: str) -> dict[st
         ):
             matches.append(run)
     if not matches:
-        raise ValueError("no successful trusted main-push CI run exists for the release commit")
+        raise ValueError("no successful trusted main CI run exists for the release commit")
     selected = max(matches, key=lambda value: (value["id"], value["run_attempt"]))
-    return {"run_id": selected["id"], "run_attempt": selected["run_attempt"]}
+    return {
+        "run_id": selected["id"],
+        "run_attempt": selected["run_attempt"],
+        "workflow_event": selected["event"],
+    }
 
 
 def select_artifact(payload: dict[str, Any], run_id: int, artifact_name: str) -> dict[str, int | str]:

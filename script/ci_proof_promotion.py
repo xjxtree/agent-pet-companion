@@ -21,6 +21,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "apc.ci-candidate-proof.v1"
+MERGE_TICKET_SCHEMA_VERSION = "apc.ci-merge-ticket.v1"
 WORKFLOW_PATH = ".github/workflows/ci.yml"
 EXPECTED_GATES = [
     "bundle",
@@ -40,9 +41,11 @@ TOOLCHAIN_CONTRACT_FILES = [
     "script/validate_macos_build_contract.py",
 ]
 CONTROL_PLANE_FILES = [
+    ".github/workflows/auto-merge.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     "script/ci_proof_promotion.py",
+    "script/configure_main_branch_ruleset.py",
     "script/development_flow.py",
     "script/interaction-contract-files.txt",
     "script/prepare_interaction_attestation.sh",
@@ -59,6 +62,10 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HEAD_PATTERN = re.compile(r"gd-ops/(?:task|fix|train)/[A-Za-z0-9._-]+")
 ARTIFACT_PATTERN = re.compile(r"ci-candidate-proof-([0-9a-f]{40})")
+MERGE_TICKET_ARTIFACT_PATTERN = re.compile(
+    r"ci-merge-ticket-([1-9][0-9]*)-([1-9][0-9]*)"
+)
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def run(root: pathlib.Path, *command: str) -> str:
@@ -323,6 +330,178 @@ def select_candidate_artifact(
     }
 
 
+def candidate_artifacts(payload: dict[str, Any], run_id: int) -> list[dict[str, Any]]:
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("artifact response is missing artifacts")
+    matches = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        workflow_run = artifact.get("workflow_run")
+        artifact_run_id = workflow_run.get("id") if isinstance(workflow_run, dict) else run_id
+        name = artifact.get("name")
+        if (
+            isinstance(name, str)
+            and ARTIFACT_PATTERN.fullmatch(name) is not None
+            and artifact.get("expired") is False
+            and artifact_run_id == run_id
+            and isinstance(artifact.get("id"), int)
+            and isinstance(artifact.get("size_in_bytes"), int)
+            and 0 < artifact["size_in_bytes"] <= 1024 * 1024
+        ):
+            matches.append(artifact)
+    return matches
+
+
+def require_candidate_lane(
+    payload: dict[str, Any], run_id: int, base_ref: str
+) -> dict[str, int | str] | None:
+    if base_ref == "main":
+        return select_candidate_artifact(payload, run_id)
+    if re.fullmatch(r"gd-ops/train/[A-Za-z0-9._-]+", base_ref) is None:
+        raise ValueError("merge base is not main or a managed train")
+    if candidate_artifacts(payload, run_id):
+        raise ValueError("task-to-train run must not contain a Release candidate artifact")
+    return None
+
+
+def select_merge_ticket_artifact(
+    payload: dict[str, Any], run_id: int, run_attempt: int
+) -> dict[str, int | str]:
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("artifact response is missing artifacts")
+    expected_name = f"ci-merge-ticket-{run_id}-{run_attempt}"
+    matches = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        workflow_run = artifact.get("workflow_run")
+        artifact_run_id = workflow_run.get("id") if isinstance(workflow_run, dict) else run_id
+        if (
+            artifact.get("name") == expected_name
+            and artifact.get("expired") is False
+            and artifact_run_id == run_id
+            and isinstance(artifact.get("id"), int)
+            and isinstance(artifact.get("size_in_bytes"), int)
+            and 0 < artifact["size_in_bytes"] <= 256 * 1024
+        ):
+            matches.append(artifact)
+    if len(matches) != 1:
+        raise ValueError("trusted PR run must contain exactly one current merge ticket")
+    selected = matches[0]
+    return {
+        "id": selected["id"],
+        "name": expected_name,
+        "size_in_bytes": selected["size_in_bytes"],
+    }
+
+
+def create_merge_ticket(args: Namespace) -> None:
+    root = args.root.resolve()
+    require_identity(
+        args.repository,
+        {
+            "base commit": args.base_commit,
+            "head commit": args.head_commit,
+            "tested commit": args.tested_commit,
+        },
+    )
+    if args.pull_request_number <= 0 or args.run_id <= 0 or args.run_attempt <= 0:
+        raise ValueError("merge-ticket PR and run identities must be positive")
+    if HEAD_PATTERN.fullmatch(args.head_ref) is None:
+        raise ValueError("merge-ticket head is not a managed development branch")
+    expected_lane = (
+        "train-to-main"
+        if args.base_ref == "main" and args.head_ref.startswith("gd-ops/train/")
+        else "direct-to-main"
+        if args.base_ref == "main"
+        else "task-to-train"
+        if re.fullmatch(r"gd-ops/train/[A-Za-z0-9._-]+", args.base_ref)
+        else None
+    )
+    if expected_lane is None or args.lane != expected_lane:
+        raise ValueError("merge-ticket lane does not match its base and head")
+    if args.base_ref != "main" and args.full_candidate:
+        raise ValueError("task-to-train merge ticket cannot be a full candidate")
+    if run(root, "git", "rev-parse", "HEAD") != args.tested_commit:
+        raise ValueError("merge-ticket checkout does not match the tested commit")
+    payload = {
+        "schema_version": MERGE_TICKET_SCHEMA_VERSION,
+        "repository": args.repository,
+        "pull_request_number": args.pull_request_number,
+        "base_ref": args.base_ref,
+        "base_commit": args.base_commit,
+        "head_ref": args.head_ref,
+        "head_commit": args.head_commit,
+        "tested_commit": args.tested_commit,
+        "workflow_path": WORKFLOW_PATH,
+        "workflow_event": "pull_request",
+        "workflow_ref": f"refs/pull/{args.pull_request_number}/merge",
+        "run_id": args.run_id,
+        "run_attempt": args.run_attempt,
+        "lane": args.lane,
+        "full_candidate": args.full_candidate,
+        "ok": True,
+    }
+    atomic_write_json(args.output.resolve(), payload)
+
+
+def validate_merge_ticket(args: Namespace) -> dict[str, Any]:
+    require_identity(
+        args.repository,
+        {"base commit": args.base_commit, "head commit": args.head_commit},
+    )
+    ticket = read_json_regular(args.ticket.resolve(), limit=256 * 1024)
+    if HEAD_PATTERN.fullmatch(args.head_ref) is None:
+        raise ValueError("merge-ticket head is not a managed development branch")
+    if args.base_ref != "main" and re.fullmatch(
+        r"gd-ops/train/[A-Za-z0-9._-]+", args.base_ref
+    ) is None:
+        raise ValueError("merge-ticket base is not main or a managed train")
+    expected_keys = {
+        "schema_version", "repository", "pull_request_number", "base_ref",
+        "base_commit", "head_ref", "head_commit", "tested_commit",
+        "workflow_path", "workflow_event", "workflow_ref", "run_id",
+        "run_attempt", "lane", "full_candidate", "ok",
+    }
+    if not isinstance(ticket, dict) or set(ticket) != expected_keys:
+        raise ValueError("merge ticket field inventory is invalid")
+    expected_lane = (
+        "train-to-main"
+        if args.base_ref == "main" and args.head_ref.startswith("gd-ops/train/")
+        else "direct-to-main"
+        if args.base_ref == "main"
+        else "task-to-train"
+    )
+    checks = {
+        "schema_version": MERGE_TICKET_SCHEMA_VERSION,
+        "repository": args.repository,
+        "pull_request_number": args.pull_request_number,
+        "base_ref": args.base_ref,
+        "base_commit": args.base_commit,
+        "head_ref": args.head_ref,
+        "head_commit": args.head_commit,
+        "workflow_path": WORKFLOW_PATH,
+        "workflow_event": "pull_request",
+        "workflow_ref": f"refs/pull/{args.pull_request_number}/merge",
+        "run_id": args.run_id,
+        "run_attempt": args.run_attempt,
+        "lane": expected_lane,
+        "full_candidate": args.base_ref == "main",
+        "ok": True,
+    }
+    for key, expected in checks.items():
+        if ticket.get(key) != expected:
+            raise ValueError(f"merge ticket {key} does not match the current PR")
+    tested_commit = ticket.get("tested_commit")
+    if not isinstance(tested_commit, str):
+        raise ValueError("merge ticket tested commit is invalid")
+    require_commit(tested_commit, "merge-ticket tested commit")
+    return ticket
+
+
 def create_candidate(args: Namespace) -> None:
     root = args.root.resolve()
     commits = {
@@ -372,6 +551,95 @@ def create_candidate(args: Namespace) -> None:
     if inventory != ["candidate-proof.json", "interaction-attestation.json"]:
         output.unlink(missing_ok=True)
         raise ValueError("candidate proof artifact must contain exactly two files")
+
+
+def validate_merge_candidate(args: Namespace) -> dict[str, str]:
+    require_identity(
+        args.repository,
+        {"base commit": args.base_commit, "head commit": args.head_commit},
+    )
+    proof_path = args.proof.resolve()
+    attestation_path = args.attestation.resolve()
+    if proof_path.parent != attestation_path.parent:
+        raise ValueError("candidate proof files must share one artifact directory")
+    inventory = []
+    for child in proof_path.parent.iterdir():
+        metadata = child.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or child.is_symlink():
+            raise ValueError("candidate proof artifact contains a non-regular entry")
+        inventory.append(child.name)
+    if sorted(inventory) != ["candidate-proof.json", "interaction-attestation.json"]:
+        raise ValueError("candidate proof artifact must contain exactly two files")
+    proof = read_json_regular(proof_path)
+    expected_keys = {
+        "schema_version", "repository", "pull_request_number", "base_commit",
+        "head_commit", "tested_commit", "source_tree", "workflow_path",
+        "workflow_event", "workflow_ref", "run_id", "run_attempt", "gates",
+        "toolchain_contract_digest", "observed_toolchains",
+        "interaction_attestation_sha256", "interaction_contract_digest", "ok",
+    }
+    if not isinstance(proof, dict) or set(proof) != expected_keys:
+        raise ValueError("candidate proof field inventory is invalid")
+    checks = {
+        "schema_version": SCHEMA_VERSION,
+        "repository": args.repository,
+        "pull_request_number": args.pull_request_number,
+        "base_commit": args.base_commit,
+        "head_commit": args.head_commit,
+        "workflow_path": WORKFLOW_PATH,
+        "workflow_event": "pull_request",
+        "workflow_ref": f"refs/pull/{args.pull_request_number}/merge",
+        "run_id": args.run_id,
+        "run_attempt": args.run_attempt,
+        "gates": EXPECTED_GATES,
+        "ok": True,
+    }
+    for key, expected in checks.items():
+        if proof.get(key) != expected:
+            raise ValueError(f"candidate proof {key} does not match the merge request")
+    tested_commit = proof.get("tested_commit")
+    source_tree = proof.get("source_tree")
+    if not isinstance(tested_commit, str) or not isinstance(source_tree, str):
+        raise ValueError("candidate proof commit or tree is invalid")
+    require_commit(tested_commit, "candidate tested commit")
+    require_commit(source_tree, "candidate source tree")
+    tested_payload = args.tested_payload
+    if not isinstance(tested_payload, dict):
+        raise ValueError("tested commit API response must contain one object")
+    parents = tested_payload.get("parents")
+    parent_shas = [parent.get("sha") for parent in parents if isinstance(parent, dict)] \
+        if isinstance(parents, list) else []
+    tree = tested_payload.get("tree")
+    if tested_payload.get("sha") != tested_commit:
+        raise ValueError("tested merge commit does not match the candidate proof")
+    if parent_shas != [args.base_commit, args.head_commit]:
+        raise ValueError("tested merge parents do not match the current PR")
+    if not isinstance(tree, dict) or tree.get("sha") != source_tree:
+        raise ValueError("tested merge tree does not match the candidate proof")
+    if (
+        not isinstance(proof.get("toolchain_contract_digest"), str)
+        or DIGEST_PATTERN.fullmatch(proof["toolchain_contract_digest"]) is None
+        or not isinstance(proof.get("interaction_contract_digest"), str)
+        or DIGEST_PATTERN.fullmatch(proof["interaction_contract_digest"]) is None
+    ):
+        raise ValueError("candidate proof contract digest is invalid")
+    observed = proof.get("observed_toolchains")
+    if not isinstance(observed, dict) or set(observed) != {"rustc", "swift", "python", "sdk"}:
+        raise ValueError("candidate proof observed toolchain inventory is invalid")
+    if any(not isinstance(value, str) or not value or len(value) > 4096 for value in observed.values()):
+        raise ValueError("candidate proof contains an invalid observed toolchain identity")
+    attestation = read_json_regular(attestation_path)
+    if not isinstance(attestation, dict):
+        raise ValueError("candidate interaction attestation is invalid")
+    if proof.get("interaction_attestation_sha256") != sha256(attestation_path):
+        raise ValueError("candidate interaction attestation digest is invalid")
+    if (
+        attestation.get("build_id") != f"source.{tested_commit}"
+        or attestation.get("interaction_contract_digest")
+        != proof.get("interaction_contract_digest")
+    ):
+        raise ValueError("candidate interaction attestation identity is invalid")
+    return {"tested_commit": tested_commit, "source_tree": source_tree}
 
 
 def validate_candidate(args: Namespace) -> dict[str, int | str]:
@@ -510,15 +778,16 @@ def api_bytes(endpoint: str, expected_size: int) -> bytes:
     return result.stdout
 
 
-def extract_candidate_archive(data: bytes, destination: pathlib.Path) -> None:
+def extract_archive(
+    data: bytes, destination: pathlib.Path, expected: set[str], limit: int
+) -> None:
     destination.mkdir(parents=True, exist_ok=False)
-    expected = {"candidate-proof.json", "interaction-attestation.json"}
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         entries = archive.infolist()
-        if {entry.filename for entry in entries} != expected or len(entries) != 2:
-            raise ValueError("candidate artifact archive inventory is invalid")
-        if sum(entry.file_size for entry in entries) > 1024 * 1024:
-            raise ValueError("candidate artifact archive expands beyond its limit")
+        if {entry.filename for entry in entries} != expected or len(entries) != len(expected):
+            raise ValueError("proof artifact archive inventory is invalid")
+        if sum(entry.file_size for entry in entries) > limit:
+            raise ValueError("proof artifact archive expands beyond its limit")
         for entry in entries:
             mode = entry.external_attr >> 16
             if entry.is_dir() or (stat.S_IFMT(mode) not in (0, stat.S_IFREG)):
@@ -526,6 +795,168 @@ def extract_candidate_archive(data: bytes, destination: pathlib.Path) -> None:
             output = destination / entry.filename
             output.write_bytes(archive.read(entry))
             output.chmod(0o644)
+
+
+def extract_candidate_archive(data: bytes, destination: pathlib.Path) -> None:
+    extract_archive(
+        data,
+        destination,
+        {"candidate-proof.json", "interaction-attestation.json"},
+        1024 * 1024,
+    )
+
+
+def require_source_run(args: Namespace) -> None:
+    run_payload = api_json(f"repos/{args.repository}/actions/runs/{args.run_id}")
+    head_repository = run_payload.get("head_repository")
+    if not (
+        run_payload.get("id") == args.run_id
+        and run_payload.get("run_attempt") == args.run_attempt
+        and run_payload.get("status") == "completed"
+        and run_payload.get("conclusion") == "success"
+        and run_payload.get("event") == "pull_request"
+        and run_payload.get("head_sha") == args.head_commit
+        and run_payload.get("head_branch") == args.head_ref
+        and run_payload.get("path") == WORKFLOW_PATH
+        and isinstance(head_repository, dict)
+        and head_repository.get("full_name") == args.repository
+    ):
+        raise ValueError("merge source is not the exact successful trusted PR CI run")
+    require_required_gate(
+        api_json(
+            f"repos/{args.repository}/actions/runs/{args.run_id}/jobs",
+            filter="latest",
+            per_page="100",
+        )
+    )
+
+
+def require_no_control_plane_change(repository: str, pull_request_number: int) -> None:
+    if REPOSITORY_PATTERN.fullmatch(repository) is None or pull_request_number <= 0:
+        raise ValueError("control-plane PR identity is invalid")
+    if CONTROL_PLANE_FILES != sorted(set(CONTROL_PLANE_FILES)):
+        raise ValueError("CI proof control-plane inventory is invalid")
+    changed = []
+    for page in range(1, 11):
+        payload = api_json(
+            f"repos/{repository}/pulls/{pull_request_number}/files",
+            per_page="100",
+            page=str(page),
+        )
+        if not isinstance(payload, list):
+            raise ValueError("pull-request files response must contain one list")
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("filename", "previous_filename"):
+                filename = entry.get(key)
+                if isinstance(filename, str) and filename in CONTROL_PLANE_FILES:
+                    changed.append(filename)
+        if len(payload) < 100:
+            break
+    else:
+        raise ValueError("pull request file inventory exceeds the trusted merge limit")
+    if changed:
+        raise ValueError(
+            "CI proof control plane changes require trusted manual merge: "
+            + ", ".join(sorted(set(changed)))
+        )
+
+
+def verify_merge_source(args: Namespace) -> dict[str, Any]:
+    require_identity(
+        args.repository,
+        {"base commit": args.base_commit, "head commit": args.head_commit},
+    )
+    if args.pull_request_number <= 0 or args.run_id <= 0 or args.run_attempt <= 0:
+        raise ValueError("merge source PR and run identities must be positive")
+    if HEAD_PATTERN.fullmatch(args.head_ref) is None:
+        raise ValueError("merge source head is not a managed development branch")
+    if args.base_ref != "main" and re.fullmatch(
+        r"gd-ops/train/[A-Za-z0-9._-]+", args.base_ref
+    ) is None:
+        raise ValueError("merge source base is not main or a managed train")
+    require_no_control_plane_change(args.repository, args.pull_request_number)
+    require_source_run(args)
+    artifacts_payload = api_json(
+        f"repos/{args.repository}/actions/runs/{args.run_id}/artifacts",
+        per_page="100",
+    )
+    ticket_artifact = select_merge_ticket_artifact(
+        artifacts_payload, args.run_id, args.run_attempt
+    )
+    candidate_artifact = require_candidate_lane(
+        artifacts_payload, args.run_id, args.base_ref
+    )
+    with tempfile.TemporaryDirectory(prefix="apc-ci-merge-source-") as directory:
+        temporary = pathlib.Path(directory)
+        ticket_dir = temporary / "ticket"
+        extract_archive(
+            api_bytes(
+                f"repos/{args.repository}/actions/artifacts/{ticket_artifact['id']}/zip",
+                int(ticket_artifact["size_in_bytes"]),
+            ),
+            ticket_dir,
+            {"merge-ticket.json"},
+            256 * 1024,
+        )
+        ticket = validate_merge_ticket(
+            Namespace(
+                repository=args.repository,
+                pull_request_number=args.pull_request_number,
+                base_ref=args.base_ref,
+                base_commit=args.base_commit,
+                head_ref=args.head_ref,
+                head_commit=args.head_commit,
+                run_id=args.run_id,
+                run_attempt=args.run_attempt,
+                ticket=ticket_dir / "merge-ticket.json",
+            )
+        )
+        ticket_tested_payload = api_json(
+            f"repos/{args.repository}/git/commits/{ticket['tested_commit']}"
+        )
+        ticket_parents = ticket_tested_payload.get("parents")
+        ticket_parent_shas = [
+            parent.get("sha") for parent in ticket_parents if isinstance(parent, dict)
+        ] if isinstance(ticket_parents, list) else []
+        if (
+            ticket_tested_payload.get("sha") != ticket["tested_commit"]
+            or ticket_parent_shas != [args.base_commit, args.head_commit]
+        ):
+            raise ValueError("merge-ticket tested commit does not bind current base and head")
+        if candidate_artifact is not None:
+            candidate_dir = temporary / "candidate"
+            extract_candidate_archive(
+                api_bytes(
+                    f"repos/{args.repository}/actions/artifacts/{candidate_artifact['id']}/zip",
+                    int(candidate_artifact["size_in_bytes"]),
+                ),
+                candidate_dir,
+            )
+            tested_payload = api_json(
+                f"repos/{args.repository}/git/commits/{candidate_artifact['tested_commit']}"
+            )
+            candidate = validate_merge_candidate(
+                Namespace(
+                    repository=args.repository,
+                    pull_request_number=args.pull_request_number,
+                    base_commit=args.base_commit,
+                    head_commit=args.head_commit,
+                    run_id=args.run_id,
+                    run_attempt=args.run_attempt,
+                    tested_payload=tested_payload,
+                    attestation=candidate_dir / "interaction-attestation.json",
+                    proof=candidate_dir / "candidate-proof.json",
+                )
+            )
+            if ticket["tested_commit"] != candidate["tested_commit"]:
+                raise ValueError("merge ticket and candidate proof tested commits differ")
+    return {
+        "lane": ticket["lane"],
+        "tested_commit": ticket["tested_commit"],
+        "full_candidate": ticket["full_candidate"],
+    }
 
 
 def promote(args: Namespace) -> dict[str, int | str]:
@@ -609,6 +1040,31 @@ def main() -> int:
     create_parser.add_argument("--run-attempt", required=True, type=int)
     create_parser.add_argument("--attestation", required=True, type=pathlib.Path)
     create_parser.add_argument("--output", required=True, type=pathlib.Path)
+    ticket_parser = subparsers.add_parser("create-merge-ticket")
+    ticket_parser.add_argument("--repository", required=True)
+    ticket_parser.add_argument("--pull-request-number", required=True, type=int)
+    ticket_parser.add_argument("--base-ref", required=True)
+    ticket_parser.add_argument("--base-commit", required=True)
+    ticket_parser.add_argument("--head-ref", required=True)
+    ticket_parser.add_argument("--head-commit", required=True)
+    ticket_parser.add_argument("--tested-commit", required=True)
+    ticket_parser.add_argument("--run-id", required=True, type=int)
+    ticket_parser.add_argument("--run-attempt", required=True, type=int)
+    ticket_parser.add_argument(
+        "--lane", required=True,
+        choices=("direct-to-main", "task-to-train", "train-to-main"),
+    )
+    ticket_parser.add_argument("--full-candidate", required=True, choices=("0", "1"))
+    ticket_parser.add_argument("--output", required=True, type=pathlib.Path)
+    verify_parser = subparsers.add_parser("verify-merge-source")
+    verify_parser.add_argument("--repository", required=True)
+    verify_parser.add_argument("--pull-request-number", required=True, type=int)
+    verify_parser.add_argument("--base-ref", required=True)
+    verify_parser.add_argument("--base-commit", required=True)
+    verify_parser.add_argument("--head-ref", required=True)
+    verify_parser.add_argument("--head-commit", required=True)
+    verify_parser.add_argument("--run-id", required=True, type=int)
+    verify_parser.add_argument("--run-attempt", required=True, type=int)
     promote_parser = subparsers.add_parser("promote")
     promote_parser.add_argument("--repository", required=True)
     promote_parser.add_argument("--main-commit", required=True)
@@ -619,6 +1075,11 @@ def main() -> int:
     try:
         if args.command == "create-candidate":
             create_candidate(args)
+        elif args.command == "create-merge-ticket":
+            args.full_candidate = args.full_candidate == "1"
+            create_merge_ticket(args)
+        elif args.command == "verify-merge-source":
+            print(json.dumps(verify_merge_source(args), sort_keys=True))
         else:
             promote(args)
     except (

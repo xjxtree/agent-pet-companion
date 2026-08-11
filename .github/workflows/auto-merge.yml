@@ -1,33 +1,84 @@
-name: Enable protected PR auto-merge
+name: Merge protected PR after CI
 
 on:
-  pull_request_target:
-    types: [opened, reopened, ready_for_review]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: read
 
+concurrency:
+  group: protected-pr-merge-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 jobs:
-  enable:
-    name: Enable squash auto-merge
+  merge:
+    name: Squash verified PR and dispatch main CI
     if: >-
-      !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'gd-ops/') &&
-      (github.base_ref == 'main' || startsWith(github.base_ref, 'gd-ops/train/'))
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'gd-ops/')
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
-      PR_URL: ${{ github.event.pull_request.html_url }}
-      BASE_BRANCH: ${{ github.base_ref }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+      SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
     steps:
-      - name: Require active PR and Required CI rules before enabling auto-merge
+      - name: Resolve one exact same-repository managed PR and its protected base
+        id: pull_request
         run: |
-          encoded_base="$(jq -rn --arg value "$BASE_BRANCH" '$value|@uri')"
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          owner="${GITHUB_REPOSITORY%%/*}"
+          pulls="$(
+            gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=all \
+              -f "head=$owner:$HEAD_BRANCH" \
+              -f per_page=100
+          )"
+          candidate="$(
+            jq -cer \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg branch "$HEAD_BRANCH" \
+              --arg head_sha "$HEAD_SHA" \
+              '[.[] | select(
+                ((.state == "open" and .draft == false) or
+                 (.state == "closed" and
+                  (.merged_at | type) == "string" and
+                  (.merge_commit_sha | type) == "string")) and
+                .head.repo.full_name == $repository and
+                .head.ref == $branch and
+                .head.sha == $head_sha and
+                (.base.ref == "main" or (.base.ref | startswith("gd-ops/train/")))
+              )] | if length == 1 then .[0] else error("expected exactly one managed open or merged PR") end' \
+              <<<"$pulls"
+          )"
+          pr_number="$(jq -er '.number' <<<"$candidate")"
+          pr_url="$(jq -er '.html_url' <<<"$candidate")"
+          base_branch="$(jq -er '.base.ref' <<<"$candidate")"
+          base_commit="$(jq -er '.base.sha' <<<"$candidate")"
+          pr_state="$(jq -er '.state' <<<"$candidate")"
+          merge_commit="$(jq -r '.merge_commit_sha // ""' <<<"$candidate")"
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
+          [[ "$base_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$pr_state" == "open" || "$pr_state" == "closed" ]]
+          if [[ "$pr_state" == "closed" ]]; then
+            [[ "$merge_commit" =~ ^[0-9a-f]{40}$ ]]
+          fi
+
+          encoded_base="$(jq -rn --arg value "$base_branch" '$value|@uri')"
           rules="$(
             gh api \
               -H 'Accept: application/vnd.github+json' \
@@ -39,6 +90,113 @@ jobs:
             any(.[].parameters.required_status_checks[]?;
               .context == "Required CI")
           ' <<<"$rules" >/dev/null
+          {
+            echo "number=$pr_number"
+            echo "url=$pr_url"
+            echo "base=$base_branch"
+            echo "base_commit=$base_commit"
+            echo "state=$pr_state"
+            echo "merge_commit=$merge_commit"
+          } >>"$GITHUB_OUTPUT"
 
-      - name: Enable squash auto-merge after required checks
-        run: gh pr merge --repo "$GITHUB_REPOSITORY" --auto --squash "$PR_URL"
+      - name: Check out only the trusted default-branch verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the source run ticket, Required CI, and exact lane proof
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+          BASE_REF: ${{ steps.pull_request.outputs.base }}
+          BASE_COMMIT: ${{ steps.pull_request.outputs.base_commit }}
+        run: |
+          ./script/ci_proof_promotion.py verify-merge-source \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-request-number "$PR_NUMBER" \
+            --base-ref "$BASE_REF" \
+            --base-commit "$BASE_COMMIT" \
+            --head-ref "$HEAD_BRANCH" \
+            --head-commit "$HEAD_SHA" \
+            --run-id "$SOURCE_RUN_ID" \
+            --run-attempt "$SOURCE_RUN_ATTEMPT"
+
+      - name: Squash or recover only the PR proven by the completed CI run
+        id: merge
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+          PR_URL: ${{ steps.pull_request.outputs.url }}
+          BASE_BRANCH: ${{ steps.pull_request.outputs.base }}
+          PR_STATE: ${{ steps.pull_request.outputs.state }}
+          RECOVERED_COMMIT: ${{ steps.pull_request.outputs.merge_commit }}
+        run: |
+          if [[ "$PR_STATE" == "open" ]]; then
+            gh pr merge --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+          fi
+          pull="$(
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"
+          )"
+          test "$(jq -er '.merged' <<<"$pull")" = "true"
+          test "$(jq -er '.base.ref' <<<"$pull")" = "$BASE_BRANCH"
+          test "$(jq -er '.head.sha' <<<"$pull")" = "$HEAD_SHA"
+          merge_commit="$(jq -er '.merge_commit_sha' <<<"$pull")"
+          [[ "$merge_commit" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$PR_STATE" == "closed" ]]; then
+            test "$merge_commit" = "$RECOVERED_COMMIT"
+          fi
+          echo "commit=$merge_commit" >>"$GITHUB_OUTPUT"
+
+      - name: Dispatch exact merged main commit validation
+        if: steps.pull_request.outputs.base == 'main'
+        env:
+          MERGE_COMMIT: ${{ steps.merge.outputs.commit }}
+        run: |
+          merge_commit="$(
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+              --jq '.object.sha'
+          )"
+          test "$merge_commit" = "$MERGE_COMMIT"
+          existing="$(
+            gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f branch=main \
+              -f "head_sha=$merge_commit" \
+              -f per_page=100 \
+              --jq '[.workflow_runs[] | select(
+                (.event == "push" or .event == "workflow_dispatch") and
+                (.status == "queued" or .status == "in_progress" or
+                 (.status == "completed" and .conclusion == "success"))
+              )] | length'
+          )"
+          if [[ "$existing" == "0" ]]; then
+            dispatched=0
+            for attempt in 1 2 3; do
+              if gh workflow run ci.yml --ref main -f "expected_sha=$merge_commit"; then
+                dispatched=1
+                break
+              fi
+              if ((attempt < 3)); then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            test "$dispatched" = "1"
+          fi
+          printf 'Merged PR after CI run %s and dispatched main validation for %s.\n' \
+            "$SOURCE_RUN_ID" "$merge_commit" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Record task-to-train completion without duplicate train CI
+        if: steps.pull_request.outputs.base != 'main'
+        env:
+          BASE_BRANCH: ${{ steps.pull_request.outputs.base }}
+        run: |
+          printf 'Merged the task PR into %s; no post-merge train CI was dispatched.\n' \
+            "$BASE_BRANCH" >>"$GITHUB_STEP_SUMMARY"
