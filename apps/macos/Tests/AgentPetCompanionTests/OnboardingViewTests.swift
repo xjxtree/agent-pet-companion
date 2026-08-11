@@ -102,9 +102,19 @@ struct OnboardingViewTests {
             "PetLibraryPreviewPolicy.canRender("
         ))
         #expect(viewSource.contains("assetWarning: assetWarning"))
-        #expect(viewSource.contains("@State private var contentState = PetPreviewContentState()"))
+        #expect(viewSource.contains(
+            "_contentState = State(initialValue: PetPreviewContentState("
+        ))
+        #expect(viewSource.contains("selectedIdentity:"))
+        #expect(viewSource.contains("contentState.select(nextIdentity)"))
+        #expect(viewSource.contains("if !rendererHasContent"))
+        #expect(viewSource.contains("Color(nsColor: .textBackgroundColor)"))
+        #expect(viewSource.contains("transaction.animation = nil"))
         #expect(viewSource.contains("onFrameContentChanged: onRendererContentChanged"))
-        #expect(!viewSource.contains("rendererHasContent"))
+        #expect(!viewSource.contains("@State private var rendererHasContent"))
+        #expect(!viewSource.contains(
+            ".opacity(contentState.hasPresentedContent(for: identity) ? 0 : 1)"
+        ))
     }
 
     @Test

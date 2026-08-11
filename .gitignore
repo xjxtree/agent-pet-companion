@@ -44,3 +44,6 @@ generation-jobs/
 .agent-pet-companion/
 tmp/
 temp/
+
+# Local subagent artifacts
+.pi-subagents/

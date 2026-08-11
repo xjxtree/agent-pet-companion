@@ -387,6 +387,7 @@ pub(crate) enum OverlayPlacementWriteResult {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionMessageProjection {
     pub(crate) latest_assistant: Option<SequencedAgentEvent>,
+    pub(crate) latest_narrative_activity: Option<SequencedAgentEvent>,
     pub(crate) latest_user: Option<SequencedAgentEvent>,
     pub(crate) first_user: Option<AgentEvent>,
     pub(crate) latest_title: Option<AgentEvent>,
@@ -3770,10 +3771,10 @@ impl Database {
             .map(|sequenced| sequenced.event))
     }
 
-    /// Atomically projects the three persisted messages needed to hydrate a
+    /// Atomically projects the persisted display records needed to hydrate a
     /// session bubble. A single ordered scan supplies the latest assistant,
-    /// latest user, and first user records when (and only when) the caller's
-    /// event revision is still current.
+    /// latest narrative activity, latest user, and first user records when
+    /// (and only when) the caller's event revision is still current.
     pub(crate) fn session_message_projection_at_revision(
         &self,
         expected_state_revision: u64,
@@ -5420,6 +5421,15 @@ fn session_message_projection_in_connection(
             && event_has_nonempty_payload_text(&sequenced.event, "session_title")
         {
             projection.latest_title = Some(sequenced.event.clone());
+        }
+        if projection.latest_narrative_activity.is_none()
+            && matches!(
+                sequenced.event.event_type,
+                AgentEventType::Thinking | AgentEventType::Plan
+            )
+            && event_has_nonempty_payload_text(&sequenced.event, "activity_content")
+        {
+            projection.latest_narrative_activity = Some(sequenced.clone());
         }
         if !event_has_nonempty_message_content(&sequenced.event) {
             continue;

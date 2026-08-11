@@ -131,8 +131,10 @@ jobs:
           PR_STATE: ${{ steps.pull_request.outputs.state }}
           RECOVERED_COMMIT: ${{ steps.pull_request.outputs.merge_commit }}
         run: |
+          newly_merged=0
           if [[ "$PR_STATE" == "open" ]]; then
             gh pr merge --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
+            newly_merged=1
           fi
           pull="$(
             gh api \
@@ -149,6 +151,7 @@ jobs:
             test "$merge_commit" = "$RECOVERED_COMMIT"
           fi
           echo "commit=$merge_commit" >>"$GITHUB_OUTPUT"
+          echo "newly_merged=$newly_merged" >>"$GITHUB_OUTPUT"
 
       - name: Dispatch exact merged main commit validation
         if: steps.pull_request.outputs.base == 'main'
@@ -200,3 +203,15 @@ jobs:
         run: |
           printf 'Merged the task PR into %s; no post-merge train CI was dispatched.\n' \
             "$BASE_BRANCH" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Delete only the exact newly merged source branch
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+          ALLOW_DELETE: ${{ steps.merge.outputs.newly_merged }}
+        run: |
+          ./script/ci_proof_promotion.py delete-merged-head \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-request-number "$PR_NUMBER" \
+            --head-ref "$HEAD_BRANCH" \
+            --head-commit "$HEAD_SHA" \
+            --allow-delete "$ALLOW_DELETE"

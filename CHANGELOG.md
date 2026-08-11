@@ -14,7 +14,17 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+### Added / 新增
+
+- AI Pet Maker now includes a Universal Pet Maker Skill manager for the provider-neutral `agent-pet-maker` workflow. Users can inspect its requirements and versions, install or adopt it only at `~/agent/skills/agent-pet-maker`, update or reinstall the complete App-managed directory, reveal it in Finder, and explicitly uninstall it. The App does not infer whether an Agent discovers that directory and preserves unowned conflicting content.
+
+  AI 宠物制作现新增面向通用 `agent-pet-maker` 工作流的“通用宠物制作技能”管理器。用户可以查看技能依赖与版本，仅在 `~/agent/skills/agent-pet-maker` 安装或纳入管理，更新或重新安装完整受管目录，在 Finder 中打开目录，并明确卸载；App 不推断 Agent 是否识别该目录，也不会覆盖存在冲突的非受管内容。
+
 ### Changed / 变更
+
+- Protected PR delivery now dispatches exact-main validation before bounded source cleanup, then removes a newly merged direct, task, or train source branch with an exact-head atomic lease. Closed-PR replay never deletes a recreated ref, even at the old SHA. Agent guidance now requires an explicit stage, cached-diff audit, commit, clean-worktree, push/PR lifecycle and a repository-wide post-merge worktree/branch audit; Release guidance also recognizes both trusted exact-commit main `push` and `workflow_dispatch` proofs.
+
+  受保护 PR 交付现在会先派发精确 main 验证，再通过绑定精确 head 的原子 lease 有界清理本次新合并的 direct、task 或 train 源分支；closed PR replay 即使遇到旧 SHA 重建的 ref 也绝不删除。Agent 规范现要求显式暂存、cached diff 审计、提交、clean worktree、推送/PR 的完整生命周期，以及合并后的全仓 worktree/分支审计；Release 规范也统一认可受信任的同 commit main `push` 与 `workflow_dispatch` 证明。
 
 - Local pre-push validation is now a bounded formatting, syntax, contract, and compile gate, while required GitHub CI runs complete source checks in parallel across Rust shards, Swift interaction proof, integration contracts, overlay validation, stress, and App assembly. Agents choose either a direct hotfix/small PR to protected `main` or coordinated task PRs to one shared train followed by a final train PR; repository-owned ready PRs are squash-merged by a trusted workflow only after `Required CI`. A successful trusted `main` validation emits an exact-commit source proof that GitHub Release reuses before dual-architecture packaging, and an explicit Release dispatch can bind a missing tag only after that proof succeeds. Fail-closed ruleset automation protects both `main` and integration trains after the new required check is proven remotely.
 
@@ -23,6 +33,28 @@ Keep each user-visible change in its own bullet. Write the English text first, t
   本地预推送验证现收敛为有界的格式、语法、合同与编译门禁；必选 GitHub CI 则通过 Rust 分片、Swift 交互证明、集成合同、悬浮层验证、压力与 App 组装并行完成全量源码检查。Agent 会在热修复/小范围 direct PR 与“多个任务 PR 汇入共享 train、再由 train PR 至 main”之间选择；仓库内 ready PR 仅在 `Required CI` 成功后由受信任 workflow 执行 squash 合并。受信任的 `main` 验证会生成绑定精确 commit 的源码证明，GitHub Release 在双架构打包前复用该证明，显式 Release dispatch 也只有在证明成功后才能绑定缺失 tag。fail-closed ruleset 自动化会在新必选检查已由远端证明后保护 `main` 与集成 train。
 
   direct PR 与最终 train PR 的完整证明现可在仓库、PR run、有序父提交、artifact 与精确 Git tree 全部匹配时晋升到 squash 合并后的 `main` commit。绑定 run/attempt 的 merge ticket 会阻止 PR 更换 base 或通道后复用旧检查。每个 Rust 分片现会分别生成绑定 run/attempt 的完成标记，独立的精确集合门禁会在 GitHub 矩阵汇总遗漏任一分片时阻止候选、main 与 `Required CI` 证明签发。可重放恢复的 CI 后合并器会为精确 main SHA 显式派发验证，从而避开 GitHub 对 `GITHUB_TOKEN` 所产生普通事件的抑制；控制面 PR 会 fail closed 转为受信任人工合并，不能重写并自证门禁。此机制删除合并后重复的 Rust、Swift、集成、压力、悬浮层与 App 组装任务，同时保留绑定 main commit 的 Release 证明；晋升存在任何不确定性时都会自动回退完整 main CI，合入 train 的 task PR 仍只运行按路径检查。
+
+- Grouped and flat desktop session bubbles now retain exactly one body message: the newest Agent reply or explicit thinking/plan text, shown in at most two lines. Tool and other lifecycle activity continue to update the separate top-right status indicator without entering or replacing the body, while navigation notices keep their existing priority.
+
+  按 Agent 聚合与平铺展示的桌面会话气泡现在都只保留一条正文消息：最近的 Agent 回复或明确的思考/计划文本，最多展示两行。工具及其他生命周期活动仍会更新右上角独立状态标识，但不会进入或替换正文；导航提示继续保持原有优先级。
+
+### Fixed / 修复
+
+- The first-run demo now hands each pet action to Metal without retaining or cross-fading the prior action's drawable, preventing stalled-looking playback and multiple action frames from appearing together.
+
+  首次运行演示现在会在各宠物动作之间正确交接 Metal 渲染内容，不再保留或交叉淡化上一动作的 drawable，避免播放看似卡帧及多个动作帧同时出现。
+
+- Child and sub-Agent sessions are now consistently excluded from desktop bubbles, including Pi parallel-review sessions whose reserved `subagent-*` identity lacks a `parentSession` header.
+
+  子会话和子 Agent 会话现在会被一致地排除在桌面气泡之外，包括缺少 `parentSession` 头、但使用保留 `subagent-*` 标识的 Pi parallel-review 会话。
+
+- Pi connection checks now accept the current diagnostic canary as proof that the managed Extension loaded, even when the probe process later exits because no model is configured, so the App no longer keeps asking for an irrelevant restart.
+
+  Pi 连接检查现在会将当前诊断 canary 视为受管 Extension 已加载的证据；即使探针进程随后因未配置模型而退出，App 也不会继续提示无关的重启操作。
+
+- A Pi prompt submitted without a selected model now reaches the desktop bubble as an immediate failed state instead of remaining indefinitely at session started; the connector uses Pi's public model-presence context without reading provider credentials.
+
+  Pi 未选择模型时提交的消息现在会立即把桌面气泡更新为失败状态，不再无限停留在“会话已开始”；连接器仅使用 Pi 公开的模型存在状态，不读取任何提供商凭据。
 
 ## [0.3.6] - 2026-08-11
 

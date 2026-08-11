@@ -18,6 +18,7 @@ AgentPetCompanion/
 ├── pets/<pet-id>/revisions/<revision-id>/
 ├── generation-jobs/<job-id>/
 ├── connectors/
+├── managed-skills/             App-private portable-Skill ownership receipts
 ├── logs/
 └── diagnostic-exports/
 ```
@@ -100,7 +101,7 @@ The [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3
 
 Supported sources are `codex`, `claude_code`, `pi`, and `opencode`. Persisted events are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and `failed`. The event title is canonical audit data; localized UI labels and pet-action mapping are separate.
 
-`apc.agent-event.v1` accepts only bounded fields needed for identity, ordering, navigation, and display. Session title, first/latest user message, current-turn Agent message, and selected scalar activity detail are distinct fields. Activity normalization may retain bounded reasoning, commands, tool input/output, and errors, but never stringifies arbitrary host objects or exports credential-shaped containers, headers, complete environments, or transcripts. String ceilings are enforced as UTF-8 bytes by both schema and PetCore.
+`apc.agent-event.v1` accepts only bounded fields needed for identity, ordering, navigation, and display. Session title, first/latest user message, Agent message, and selected scalar activity detail are distinct stored fields. The bubble-body projection chooses the newest Agent message or explicit thinking/plan content and retains it across user, tool, and lifecycle events; those other events continue to own context, semantic state, and the status indicator but never replace body copy. Activity normalization may retain bounded reasoning, commands, tool input/output, and errors, but never stringifies arbitrary host objects or exports credential-shaped containers, headers, complete environments, or transcripts. String ceilings are enforced as UTF-8 bytes by both schema and PetCore.
 
 `state.snapshot` exposes opaque domain-separated identities, bounded session fields, closed summary kind, animation identity, completion acknowledgement identity, and validated navigation capability. Only a routable Codex App UUID may cross separately for exact ChatGPT/Codex navigation. Unknown or mismatched targets fail closed.
 

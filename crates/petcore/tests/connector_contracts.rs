@@ -1260,7 +1260,7 @@ fn versioned_templates_only_claim_supported_contracts() {
     }
     assert!(pi.contains("pi.on(\"agent_settled\""));
     assert!(pi.contains("pi.on(\"message_end\""));
-    assert!(pi.contains("pi-extension-0.80.10-events-v13"));
+    assert!(pi.contains("pi-extension-0.80.10-events-v15"));
     assert!(pi.contains("APC_PI_CONNECTOR_RELEASE_VERSION = \"__APC_CONNECTOR_RELEASE_VERSION__\""));
     assert!(pi.contains("APC_PI_EVENT_INVENTORY"));
     assert!(pi.contains("pi.on(\"project_trust\""));

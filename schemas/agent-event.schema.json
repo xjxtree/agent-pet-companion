@@ -85,7 +85,7 @@
             "api_failure", "settled", "created", "idle", "busy", "retry",
             "permission_replied", "permission_replied_once", "permission_replied_always",
             "permission_replied_allow", "permission_replied_deny", "permission_replied_reject",
-            "started_without_args", "session_failure", "session_closed", "input_requested", "observed", "auto_denied",
+            "started_without_args", "session_failure", "model_unavailable", "session_closed", "input_requested", "observed", "auto_denied",
             "background_active", "agent_completed", "message", "continued", "prompt_admitted", "unknown", null
           ]
         },

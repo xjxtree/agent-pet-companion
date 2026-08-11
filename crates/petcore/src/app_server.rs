@@ -168,6 +168,10 @@ pub struct CodexThreadDisplay {
     pub title: Option<String>,
     pub latest_message: Option<CodexThreadDisplayMessage>,
     pub latest_user_message: Option<CodexThreadDisplayMessage>,
+    /// The newest displayable reasoning/plan entry when it follows the newest
+    /// retained assistant message. Tool activity is intentionally excluded so
+    /// it can update status without replacing bubble copy.
+    pub latest_narrative_activity: Option<CodexThreadDisplayActivity>,
     pub latest_activity: Option<CodexThreadDisplayActivity>,
     /// Safe, display-only marker used to distinguish a newly persisted item
     /// from an updated thread whose current live item was intentionally omitted
@@ -1172,20 +1176,35 @@ fn parse_codex_thread_display(response: &Value) -> Result<CodexThreadDisplay> {
         .filter_map(|turn| turn.get("items").and_then(Value::as_array))
         .flatten()
         .collect::<Vec<_>>();
-    let display_messages = items
-        .iter()
-        .copied()
-        .filter_map(codex_display_message)
-        .collect::<Vec<_>>();
-    let latest_message = display_messages
-        .last()
-        .filter(|message| message.role == "assistant")
-        .cloned();
-    let latest_user_message = display_messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .cloned();
+    let latest_user = items.iter().enumerate().rev().find_map(|(index, item)| {
+        codex_display_message(item)
+            .filter(|message| message.role == "user")
+            .map(|message| (index, message))
+    });
+    let latest_user_message = latest_user.as_ref().map(|(_, message)| message.clone());
+    let latest_assistant = items.iter().enumerate().rev().find_map(|(index, item)| {
+        codex_display_message(item)
+            .filter(|message| message.role == "assistant")
+            .map(|message| (index, message))
+    });
+    let latest_message = latest_assistant
+        .as_ref()
+        .map(|(_, message)| message.clone());
+    let latest_narrative_activity = items.iter().enumerate().rev().find_map(|(index, item)| {
+        let follows_latest_assistant = latest_assistant
+            .as_ref()
+            .is_none_or(|(message_index, _)| index > *message_index);
+        follows_latest_assistant
+            .then(|| codex_display_activity(item))
+            .flatten()
+            .filter(|activity| {
+                matches!(activity.kind.as_str(), "thinking" | "plan")
+                    && activity
+                        .content
+                        .as_deref()
+                        .is_some_and(|content| !content.trim().is_empty())
+            })
+    });
     let latest_message_index = items.iter().rposition(|item| {
         matches!(
             item.get("type").and_then(Value::as_str),
@@ -1206,6 +1225,7 @@ fn parse_codex_thread_display(response: &Value) -> Result<CodexThreadDisplay> {
         title,
         latest_message,
         latest_user_message,
+        latest_narrative_activity,
         latest_activity,
         display_revision,
     })
@@ -1453,6 +1473,25 @@ mod codex_display_tests {
         assert_eq!(activity.kind, "file_change");
         assert!(!activity.is_current);
         assert_eq!(activity.content, None);
+        assert_eq!(
+            display
+                .latest_narrative_activity
+                .and_then(|activity| activity.content),
+            Some("旧思考信息".to_string()),
+            "tool status must not evict the latest displayable reasoning"
+        );
+
+        let agent_reply = parse_codex_thread_display(&thread_response(vec![
+            json!({"id":"reasoning-1","type":"reasoning","summary":["旧思考信息"]}),
+            json!({"id":"message-1","type":"agentMessage","text":"更新后的 Agent 消息"}),
+            json!({"id":"patch-1","type":"fileChange","status":"completed","changes":[]}),
+        ]))
+        .expect("Agent reply display");
+        assert_eq!(
+            agent_reply.latest_message.map(|message| message.content),
+            Some("更新后的 Agent 消息".to_string())
+        );
+        assert_eq!(agent_reply.latest_narrative_activity, None);
     }
 
     #[test]

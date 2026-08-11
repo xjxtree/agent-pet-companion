@@ -272,9 +272,15 @@ public enum AgentPetCompanionUIValidationContract {
             "active bubble did not render the bounded current activity detail"
         )
         try require(
-            session.detailText.contains(session.activityText)
-                && session.detailText.contains(session.messageText),
-            "active bubble did not keep activity and assistant message together"
+            session.detailText == session.messageText,
+            "active bubble rendered more than one body message"
+        )
+        var navigationFailure = session
+        navigationFailure.navigationNotice = .failed
+        try require(
+            navigationFailure.detailText
+                == APCLocalization.text(.overlaySessionNavigationFailed),
+            "navigation feedback no longer replaced ordinary bubble body copy"
         )
         try require(
             content.agentName == "Codex",
@@ -536,10 +542,9 @@ public enum AgentPetCompanionUIValidationContract {
                 "Session exact",
                 APCLocalizedPresentation.lifecycleTitle(.waiting),
                 "A response is required",
-                APCLocalization.text(.overlayDetailNeedsInput),
                 exact.actionLabel,
             ],
-            "VoiceOver order was not Agent, surface, session, status, message, activity, action"
+            "VoiceOver order was not Agent, surface, session, status, visible message, action"
         )
     }
 

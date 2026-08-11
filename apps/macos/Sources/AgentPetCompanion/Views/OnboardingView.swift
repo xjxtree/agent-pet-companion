@@ -858,7 +858,24 @@ private struct OnboardingPetAnimationPreview: View {
     let assetWarning: PetAssetWarning?
     let lifecycle: ProductLifecycleState
 
-    @State private var contentState = PetPreviewContentState()
+    @State private var contentState: PetPreviewContentState
+
+    init(
+        pet: PetSummary,
+        assetWarning: PetAssetWarning?,
+        lifecycle: ProductLifecycleState
+    ) {
+        self.pet = pet
+        self.assetWarning = assetWarning
+        self.lifecycle = lifecycle
+        _contentState = State(initialValue: PetPreviewContentState(
+            selectedIdentity: PetPreviewRenderIdentity(
+                pet: pet,
+                stateName: lifecycle.rawValue,
+                assetWarning: assetWarning
+            )
+        ))
+    }
 
     var body: some View {
         let identity = PetPreviewRenderIdentity(
@@ -866,14 +883,8 @@ private struct OnboardingPetAnimationPreview: View {
             stateName: lifecycle.rawValue,
             assetWarning: assetWarning
         )
+        let rendererHasContent = contentState.hasPresentedContent(for: identity)
         ZStack {
-            PetActionFallbackImage(
-                pet: pet,
-                stateName: lifecycle.rawValue,
-                assetWarning: assetWarning,
-                fallbackScale: 0.44
-            )
-                .opacity(contentState.hasPresentedContent(for: identity) ? 0 : 1)
             if PetLibraryPreviewPolicy.canRender(
                 assetWarning: assetWarning
             ) {
@@ -885,9 +896,27 @@ private struct OnboardingPetAnimationPreview: View {
                 }
                 .id(identity)
             }
+
+            if !rendererHasContent {
+                Color(nsColor: .textBackgroundColor)
+                    .overlay {
+                        PetActionFallbackImage(
+                            pet: pet,
+                            stateName: lifecycle.rawValue,
+                            assetWarning: assetWarning,
+                            fallbackScale: 0.44
+                        )
+                    }
+            }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
         }
         .clipped()
         .allowsHitTesting(false)
+        .onChange(of: identity) { _, nextIdentity in
+            contentState.select(nextIdentity)
+        }
     }
 }
 

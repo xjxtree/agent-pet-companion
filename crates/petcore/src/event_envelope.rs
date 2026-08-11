@@ -869,6 +869,7 @@ fn normalized_outcome(value: &str) -> String {
         | "permission_replied_reject"
         | "started_without_args"
         | "session_failure"
+        | "model_unavailable"
         | "observed"
         | "auto_denied"
         | "background_active"

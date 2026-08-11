@@ -169,6 +169,40 @@ fn blocked_attention_state_keeps_priority_over_newer_running_work() {
 }
 
 #[test]
+fn pi_model_unavailable_input_projects_an_immediate_failed_bubble() {
+    let (_temp, state) = ready();
+    ingest_source_payload(
+        &state,
+        "pi",
+        "pi-model-unavailable",
+        "pi-no-model-session",
+        "failed",
+        &timestamp(1),
+        json!({
+            "source_event": "input",
+            "outcome": "model_unavailable",
+            "affects_activity": true,
+            "session_active": false,
+            "session_open": true,
+            "message_role": "user",
+            "message_content": "Prompt without a selected model"
+        }),
+    );
+
+    let current_snapshot = snapshot(&state);
+    assert_eq!(current_snapshot["active_agent_state"]["source"], "pi");
+    assert_eq!(current_snapshot["active_agent_state"]["state"], "failed");
+    assert_eq!(
+        current_snapshot["active_agent_state"]["official_status"],
+        "blocked"
+    );
+    assert_eq!(
+        current_snapshot["active_agent_state"]["overlay_display"]["summary_kind"],
+        "failed"
+    );
+}
+
+#[test]
 fn stale_event_does_not_override_current_state() {
     let (_temp, state) = ready();
     let current_time = timestamp(1);
@@ -1813,7 +1847,7 @@ fn overlay_projection_allows_display_messages_but_excludes_private_event_fields(
     assert!(tool["session_id"].as_str().unwrap().starts_with("ses-"));
     assert_eq!(
         tool["session_activity"],
-        json!({"kind": "command", "content": command}),
+        Value::Null,
         "tool projection: {tool:#}"
     );
     assert_eq!(tool["overlay_display"]["summary_kind"], "command");
@@ -2188,7 +2222,7 @@ fn waiting_without_session_active_persists_beyond_the_activity_lease() {
 }
 
 #[test]
-fn new_user_activation_hides_previous_turn_reply_until_agent_responds() {
+fn new_user_activation_retains_previous_reply_until_agent_responds() {
     let (_temp, state) = ready();
     let ingest_message =
         |id: &str, event_type: &str, role: &str, content: &str, seconds_ago: i64| {
@@ -2225,6 +2259,10 @@ fn new_user_activation_hides_previous_turn_reply_until_agent_responds() {
         .find(|session| session["session_id"] == projected_session_id("turn-boundary"))
         .unwrap();
     assert_eq!(session["overlay_display"]["summary_kind"], "start");
+    assert_eq!(
+        session["session_message"],
+        json!({"role": "assistant", "content": "上一轮回复"})
+    );
 
     ingest_message("new-reply", "done", "assistant", "本轮回复", 0);
     let responded = snapshot(&state);
@@ -2236,6 +2274,188 @@ fn new_user_activation_hides_previous_turn_reply_until_agent_responds() {
         .unwrap();
     assert_eq!(session["event"]["id"], projected_event_id("new-reply"));
     assert_eq!(session["overlay_display"]["summary_kind"], "done");
+}
+
+#[test]
+fn every_agent_keeps_only_the_latest_agent_or_thinking_message_across_tool_activity() {
+    let (_temp, state) = ready();
+
+    for source in ["codex", "claude_code", "pi", "opencode"] {
+        let session_id = format!("{source}-single-bubble-message");
+        let event_id = |suffix: &str| format!("{session_id}-{suffix}");
+        let session = || {
+            let current = snapshot(&state);
+            current["active_agent_sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["session_id"] == projected_session_id(&session_id))
+                .unwrap()
+                .clone()
+        };
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("prompt"),
+            &session_id,
+            "start",
+            &timestamp(50),
+            json!({
+                "source_event": "user.prompt",
+                "session_active": true,
+                "message_role": "user",
+                "message_content": "检查当前工作"
+            }),
+        );
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("agent-message"),
+            &session_id,
+            "start",
+            &timestamp(40),
+            json!({
+                "source_event": "agent.message",
+                "session_active": true,
+                "message_role": "assistant",
+                "message_content": "我先检查工作树。"
+            }),
+        );
+        let agent_message = session();
+        assert_eq!(
+            agent_message["session_message"],
+            json!({"role": "assistant", "content": "我先检查工作树。"}),
+            "source={source}"
+        );
+        assert_eq!(
+            agent_message["session_activity"],
+            Value::Null,
+            "source={source}"
+        );
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("tool-after-message"),
+            &session_id,
+            "tool",
+            &timestamp(30),
+            json!({
+                "source_event": "tool.started",
+                "session_active": true,
+                "activity_kind": "command",
+                "activity_content": "git status --short"
+            }),
+        );
+        let tool_after_message = session();
+        assert_eq!(tool_after_message["event"]["event_type"], "tool");
+        assert_eq!(
+            tool_after_message["session_message"],
+            json!({"role": "assistant", "content": "我先检查工作树。"}),
+            "source={source}"
+        );
+        assert_eq!(
+            tool_after_message["session_activity"],
+            Value::Null,
+            "tool activity must not become bubble body copy for source={source}"
+        );
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("thinking"),
+            &session_id,
+            "thinking",
+            &timestamp(20),
+            json!({
+                "source_event": "agent.thinking",
+                "session_active": true,
+                "activity_kind": "thinking",
+                "activity_content": "工作树干净，接下来核对最近提交。"
+            }),
+        );
+        let thinking = session();
+        assert_eq!(
+            thinking["session_message"],
+            Value::Null,
+            "newer thinking must replace the older Agent message for source={source}"
+        );
+        assert_eq!(
+            thinking["session_activity"],
+            json!({"kind": "thinking", "content": "工作树干净，接下来核对最近提交。"}),
+            "source={source}"
+        );
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("tool-after-thinking"),
+            &session_id,
+            "tool",
+            &timestamp(10),
+            json!({
+                "source_event": "tool.completed",
+                "session_active": true
+            }),
+        );
+        let tool_after_thinking = session();
+        assert_eq!(tool_after_thinking["event"]["event_type"], "tool");
+        assert_eq!(tool_after_thinking["session_message"], Value::Null);
+        assert_eq!(
+            tool_after_thinking["session_activity"],
+            json!({"kind": "thinking", "content": "工作树干净，接下来核对最近提交。"}),
+            "tool churn must retain the latest thinking for source={source}"
+        );
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("next-user"),
+            &session_id,
+            "start",
+            &timestamp(5),
+            json!({
+                "source_event": "user.prompt",
+                "session_active": true,
+                "message_role": "user",
+                "message_content": "继续"
+            }),
+        );
+        let user_after_thinking = session();
+        assert_eq!(user_after_thinking["session_message"], Value::Null);
+        assert_eq!(
+            user_after_thinking["session_activity"],
+            json!({"kind": "thinking", "content": "工作树干净，接下来核对最近提交。"}),
+            "user and lifecycle events must retain the latest thinking for source={source}"
+        );
+
+        ingest_source_payload(
+            &state,
+            source,
+            &event_id("new-agent-message"),
+            &session_id,
+            "start",
+            &timestamp(0),
+            json!({
+                "source_event": "agent.message",
+                "session_active": true,
+                "message_role": "assistant",
+                "message_content": "最近提交包含连接器调整。"
+            }),
+        );
+        let newest_agent_message = session();
+        assert_eq!(
+            newest_agent_message["session_message"],
+            json!({"role": "assistant", "content": "最近提交包含连接器调整。"}),
+            "source={source}"
+        );
+        assert_eq!(
+            newest_agent_message["session_activity"],
+            Value::Null,
+            "newer Agent message must replace the older thinking for source={source}"
+        );
+    }
 }
 
 #[test]
@@ -2331,7 +2551,10 @@ fn equal_timestamp_messages_follow_persisted_arrival_order() {
         reactivated_session["session_user_message"],
         json!({"role": "user", "content": "后到的新问题"})
     );
-    assert_eq!(reactivated_session["session_message"], Value::Null);
+    assert_eq!(
+        reactivated_session["session_message"],
+        json!({"role": "assistant", "content": "上一轮旧回复"})
+    );
 }
 
 #[test]
@@ -3348,7 +3571,11 @@ fn every_agent_refreshes_reply_completion_and_next_user_turn() {
             "source={source}"
         );
         assert_eq!(session["session_title"], "第一条问题", "source={source}");
-        assert_eq!(session["session_message"], Value::Null, "source={source}");
+        assert_eq!(
+            session["session_message"],
+            json!({"role": "assistant", "content": "第一条完整回复"}),
+            "source={source}"
+        );
     }
 }
 
@@ -3578,13 +3805,7 @@ fn legacy_claude_display_projection_sanitizes_attachment_title_and_tool_envelope
             "content": "以上文档是针对本项目宠物相关调研、优化方案。"
         })
     );
-    assert_eq!(
-        session["session_activity"],
-        json!({
-            "kind": "thinking",
-            "content": "=== PetAnimationContract / Quality checks passed ==="
-        })
-    );
+    assert_eq!(session["session_activity"], Value::Null);
 
     let serialized = serde_json::to_string(session).unwrap();
     for forbidden in [
@@ -3594,6 +3815,7 @@ fn legacy_claude_display_projection_sanitizes_attachment_title_and_tool_envelope
         "\"noOutputExpected\"",
         "\"stderr\"",
         "\"stdout\"",
+        "PetAnimationContract",
     ] {
         assert!(
             !serialized.contains(forbidden),
@@ -3603,7 +3825,7 @@ fn legacy_claude_display_projection_sanitizes_attachment_title_and_tool_envelope
 }
 
 #[test]
-fn legacy_structured_activity_rows_project_only_readable_scalars_for_every_agent() {
+fn legacy_structured_tool_activity_rows_never_enter_bubble_copy_for_any_agent() {
     let (_temp, state) = ready();
     let cases = [
         (
@@ -3743,9 +3965,8 @@ fn legacy_structured_activity_rows_project_only_readable_scalars_for_every_agent
             .iter()
             .find(|session| session["session_id"] == projected_session_id(&session_id))
             .unwrap();
-        assert_eq!(session["session_activity"]["content"], expected);
-        let content = session["session_activity"]["content"].as_str().unwrap();
-        assert!(!content.contains('{') && !content.contains('}'));
+        assert_eq!(session["session_activity"], Value::Null);
+        assert!(!serde_json::to_string(session).unwrap().contains(expected));
     }
     for index in 0..3 {
         let session_id = format!("legacy-sensitive-{index}");

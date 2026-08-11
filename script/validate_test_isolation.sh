@@ -43,7 +43,10 @@ done
 
 write_executable "$SHIM_DIR/uname" \
   '#!/usr/bin/env bash' \
-  'printf '\''Darwin\n'\'''
+  'case "${1:-}" in' \
+  '  -m) printf '\''arm64\n'\'' ;;' \
+  '  *) printf '\''Darwin\n'\'' ;;' \
+  'esac'
 write_executable "$SHIM_DIR/cargo" \
   '#!/usr/bin/env bash' \
   'if [[ -n "${APC_BUILD_ENV_LOG:-}" ]]; then' \
@@ -59,11 +62,19 @@ write_executable "$SHIM_DIR/swift" \
   '  printf '\''%s\n'\'' "$APC_FAKE_SWIFT_BIN"' \
   'fi' \
   'exit 0'
+write_executable "$SHIM_DIR/rustc" \
+  '#!/usr/bin/env bash' \
+  'printf '\''%s\n'\'' "$APC_FAKE_RUST_LIBDIR"' \
+  'exit 0'
+write_executable "$SHIM_DIR/rustup" \
+  '#!/usr/bin/env bash' \
+  'exit 0'
 
 # Exercise build-only against a complete throwaway workspace. This catches
 # commands executed before argument parsing without compiling the real project.
 BUILD_ROOT="$TMP_DIR/build-workspace"
 FAKE_SWIFT_BIN="$TMP_DIR/fake-swift-bin"
+FAKE_RUST_LIBDIR="$TMP_DIR/fake-rust-libdir"
 mkdir -p \
   "$BUILD_ROOT/script" \
   "$BUILD_ROOT/apps/macos" \
@@ -73,7 +84,8 @@ mkdir -p \
   "$BUILD_ROOT/target/aarch64-apple-darwin/debug" \
   "$BUILD_ROOT/skills/agent-pet-maker/scripts/__pycache__" \
   "$BUILD_ROOT/skills/agent-pet-studio" \
-  "$FAKE_SWIFT_BIN"
+  "$FAKE_SWIFT_BIN" \
+  "$FAKE_RUST_LIBDIR"
 cp "$ROOT_DIR/script/build_and_run.sh" "$BUILD_ROOT/script/build_and_run.sh"
 cp "$ROOT_DIR/script/validation_helpers.sh" "$BUILD_ROOT/script/validation_helpers.sh"
 if [[ -f "$ROOT_DIR/script/build_app_bundle.sh" ]]; then
@@ -446,7 +458,7 @@ R13_TEST_FILES=(
 )
 R13_TEST_NAMES=(
   "overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination"
-  "voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic"
+  "voiceOverReadingOrderUsesOnlyTheVisibleRetainedBodyMessage"
   "appStoreFocusActionsGuardDisabledRoutesAndDispatchTypedEnabledActions"
   "bubblePanelRestoresPassiveFocusStateWhenKeyboardNavigationEnds"
   "reducedMotionPinsPlaybackToRepresentativeFrameAndStopsScheduling"
@@ -839,12 +851,15 @@ else
     "$BUILD_ROOT/script/build_app_bundle.sh" --archive --unsigned >/dev/null 2>&1; then
     record_failure 'build_app_bundle.sh accepted incompatible --archive and --unsigned options'
   fi
+  ARCH_BUILD_LOG="$TMP_DIR/isolated-arm64-build.log"
   if ! PATH="$SHIM_DIR:$PATH" \
     APC_ISOLATION_FORBIDDEN_LOG="$FORBIDDEN_LOG" \
     APC_FAKE_SWIFT_BIN="$FAKE_SWIFT_BIN" \
+    APC_FAKE_RUST_LIBDIR="$FAKE_RUST_LIBDIR" \
     "$BUILD_ROOT/script/build_app_bundle.sh" \
       --arch arm64 \
-      --output "$BUILD_ROOT/dist/AgentPetCompanion-arm64.app" >/dev/null 2>&1; then
+      --output "$BUILD_ROOT/dist/AgentPetCompanion-arm64.app" >"$ARCH_BUILD_LOG" 2>&1; then
+    cat "$ARCH_BUILD_LOG" >&2
     record_failure 'build_app_bundle.sh --arch arm64 did not complete in the isolated fixture'
   elif [[ ! -d "$BUILD_ROOT/dist/AgentPetCompanion-arm64.app" ]]; then
     record_failure 'architecture-specific app bundle build did not create its App'

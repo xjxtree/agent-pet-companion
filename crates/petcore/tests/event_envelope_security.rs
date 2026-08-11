@@ -138,6 +138,30 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
 }
 
 #[test]
+fn pi_model_unavailable_outcome_survives_the_envelope_vocabularies() {
+    let event = NormalizedAgentEvent::from_external(
+        AgentSource::Pi,
+        json!({
+            "id": "pi-model-unavailable-outcome",
+            "session_id": "pi-model-unavailable-session",
+            "event_type": "failed",
+            "payload": {
+                "source_event": "input",
+                "outcome": "model_unavailable",
+                "session_active": false,
+                "message_role": "user",
+                "message_content": "触发缺少模型错误",
+                "diagnostic": false
+            }
+        }),
+        received_at(),
+    )
+    .unwrap();
+
+    assert_eq!(event.payload_json["outcome"], "model_unavailable");
+}
+
+#[test]
 fn activity_ingress_never_recurses_through_credential_containers() {
     let sources = [
         (AgentSource::Codex, "PostToolUse"),

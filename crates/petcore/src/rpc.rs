@@ -22,6 +22,7 @@ use crate::metrics;
 use crate::paths::AppPaths;
 use crate::pet_revision;
 use crate::petpack;
+use crate::portable_skill;
 use crate::runtime_manifest::RuntimeReleaseManifest;
 use crate::{app_server, enum_from_name, enum_name, new_id, now_rfc3339, PetCoreError, Result};
 use petcore_types::{
@@ -191,6 +192,7 @@ struct SessionDisplayCacheKey {
 #[derive(Debug, Clone, Default)]
 struct PersistedSessionDisplay {
     latest_message: Option<agent_state::SequencedAgentEvent>,
+    latest_narrative_activity: Option<agent_state::SequencedAgentEvent>,
     latest_user_message: Option<agent_state::SequencedAgentEvent>,
     first_user_message: Option<AgentEvent>,
     latest_title: Option<AgentEvent>,
@@ -266,6 +268,7 @@ impl SnapshotPersistedDisplayCache {
                 value,
             } if matched_revision == state_revision => PersistedSessionDisplay {
                 latest_message: value.latest_assistant,
+                latest_narrative_activity: value.latest_narrative_activity,
                 latest_user_message: value.latest_user,
                 first_user_message: value.first_user,
                 latest_title: value.latest_title,
@@ -1538,6 +1541,9 @@ fn known_rpc_method(method: &str) -> bool {
             | "connections.refresh_installed"
             | "connections.uninstall"
             | "connections.test"
+            | "portable_skill.status"
+            | "portable_skill.install"
+            | "portable_skill.uninstall"
             | "product.convergence.get"
             | "product.convergence.update"
             | "product.convergence.preflight"
@@ -1559,6 +1565,9 @@ fn validate_method_params(method: &str, params: &Value) -> Result<()> {
         | "codex.app_server.probe"
         | "connections.receipts"
         | "connections.refresh_installed"
+        | "portable_skill.status"
+        | "portable_skill.install"
+        | "portable_skill.uninstall"
         | "product.convergence.get"
         | "product.convergence.preflight" => &[],
         "petcore.shutdown" => &["expected_instance_id"],
@@ -2622,6 +2631,17 @@ fn handle_request_inner(state: &CoreState, request: RpcRequest) -> Result<Value>
             persisted?;
             Ok(json!(status))
         }
+        "portable_skill.status" => Ok(json!(portable_skill::status(&state.paths)?)),
+        "portable_skill.install" => {
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            Ok(json!(portable_skill::install(&state.paths)?))
+        }
+        "portable_skill.uninstall" => {
+            let _operation = state.begin_connection_operation()?;
+            let _host_guard = state.agent_host_process_guard();
+            Ok(json!(portable_skill::uninstall(&state.paths)?))
+        }
         "connections.test" => {
             let source = required_source(&request.params)?;
             let _operation = state.begin_connection_operation()?;
@@ -3002,28 +3022,34 @@ fn hydrate_agent_session_display(
         return Ok(false);
     };
     let latest_message = persisted.latest_message;
+    let latest_narrative_activity = persisted.latest_narrative_activity;
     let latest_user_message = persisted.latest_user_message;
     let first_user_message = persisted.first_user_message;
     let latest_title = persisted.latest_title;
-    let latest_message = latest_message.filter(|message| {
-        if let Some(user) = latest_user_message.as_ref() {
-            sequenced_event_happened_after(message, user)
-        } else if let Some(cutoff) = active.session_activated_at.as_deref() {
-            event_happened_after(&message.event.created_at, cutoff)
-        } else {
-            true
-        }
-    });
-    active.latest_message = latest_message.map(|sequenced| sequenced.event);
+    active.latest_message = latest_message
+        .as_ref()
+        .map(|sequenced| sequenced.event.clone());
     active.latest_user_message = latest_user_message.map(|sequenced| sequenced.event);
     active.session_title = latest_title
         .as_ref()
         .and_then(projected_session_title)
         .or_else(|| first_user_message.as_ref().and_then(fallback_session_title));
-    active.session_message = active
-        .latest_message
-        .as_ref()
-        .and_then(event_display_message);
+    active.session_message = None;
+    active.session_activity = None;
+    let narrative_activity_is_latest = latest_narrative_activity.as_ref().is_some_and(|activity| {
+        latest_message
+            .as_ref()
+            .is_none_or(|message| sequenced_event_happened_after(activity, message))
+    });
+    if narrative_activity_is_latest {
+        active.session_activity = latest_narrative_activity
+            .as_ref()
+            .and_then(|activity| agent_state::event_narrative_activity(&activity.event));
+    } else {
+        active.session_message = latest_message
+            .as_ref()
+            .and_then(|message| event_display_message(&message.event));
+    }
     active.session_user_message = active
         .latest_user_message
         .as_ref()
@@ -3068,6 +3094,7 @@ fn hydrate_agent_session_display(
             role: message.role,
             content: message.content,
         });
+        active.session_activity = None;
     }
     if let Some(message) = display.latest_user_message {
         active.session_user_message = Some(agent_state::SessionDisplayMessage {
@@ -3079,24 +3106,28 @@ fn hydrate_agent_session_display(
         .latest_activity
         .filter(|activity| activity.is_current)
     {
-        if should_replace_hydrated_codex_activity(active.session_activity.as_ref(), &activity) {
-            if matches!(
-                active.event.event_type,
-                AgentEventType::Start
-                    | AgentEventType::Thinking
-                    | AgentEventType::Plan
-                    | AgentEventType::Tool
-            ) {
-                if let Some(summary_kind) =
-                    agent_state::overlay_activity_summary_kind(&activity.kind)
-                {
-                    active.overlay_display.summary_kind = summary_kind;
-                }
+        if matches!(
+            active.event.event_type,
+            AgentEventType::Start
+                | AgentEventType::Thinking
+                | AgentEventType::Plan
+                | AgentEventType::Tool
+        ) {
+            if let Some(summary_kind) = agent_state::overlay_activity_summary_kind(&activity.kind) {
+                active.overlay_display.summary_kind = summary_kind;
             }
+        }
+    }
+    if let Some(activity) = display
+        .latest_narrative_activity
+        .filter(|activity| activity.is_current)
+    {
+        if should_replace_hydrated_codex_activity(active.session_activity.as_ref(), &activity) {
             active.session_activity = Some(agent_state::SessionActivity {
                 kind: activity.kind,
                 content: activity.content,
             });
+            active.session_message = None;
         }
     }
     Ok(true)
@@ -3176,12 +3207,6 @@ fn fallback_session_title(event: &AgentEvent) -> Option<String> {
     }
     shortened.push(ellipsis);
     Some(shortened)
-}
-
-fn event_happened_after(candidate: &str, cutoff: &str) -> bool {
-    let candidate = OffsetDateTime::parse(candidate, &Rfc3339);
-    let cutoff = OffsetDateTime::parse(cutoff, &Rfc3339);
-    matches!((candidate, cutoff), (Ok(candidate), Ok(cutoff)) if candidate > cutoff)
 }
 
 fn sequenced_event_happened_after(
@@ -5248,5 +5273,18 @@ done
             disappeared_codex_activity_events(&observations, &listed_threads, 1_752_409_600);
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn portable_skill_methods_are_closed_no_parameter_rpc_contracts() {
+        for method in [
+            "portable_skill.status",
+            "portable_skill.install",
+            "portable_skill.uninstall",
+        ] {
+            assert!(known_rpc_method(method));
+            assert!(validate_method_params(method, &json!({})).is_ok());
+            assert!(validate_method_params(method, &json!({ "path": "/tmp/foreign" })).is_err());
+        }
     }
 }

@@ -63,6 +63,7 @@ private struct MakerSplitDividerAnchorKey: PreferenceKey {
 
 private struct MakerWorkspaceHeader: View {
     @EnvironmentObject private var store: AppStore
+    @State private var portableSkillManagerPresented = false
 
     private var unfinishedJob: GenerationStudioHistoryRecord? {
         store.generationHistorySnapshot.jobs.first(where: MakerSessionPolicy.isUnfinished)
@@ -75,6 +76,19 @@ private struct MakerWorkspaceHeader: View {
                 title: APCLocalization.text(.studioPageTitle),
                 summary: APCLocalization.text(.studioWorkspacePageSubtitle)
             )
+
+            Button {
+                portableSkillManagerPresented = true
+            } label: {
+                Label(
+                    APCLocalization.text(.studioPortableSkillAction),
+                    systemImage: "wand.and.stars"
+                )
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help(APCLocalization.text(.studioPortableSkillSubtitle))
+            .accessibilityIdentifier("maker.portable-skill.open")
 
             Button {
                 store.beginMakerDraft()
@@ -92,6 +106,10 @@ private struct MakerWorkspaceHeader: View {
         .padding(.bottom, 16)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("maker.workspace.header")
+        .sheet(isPresented: $portableSkillManagerPresented) {
+            PortableMakerSkillManagementSheet()
+                .environmentObject(store)
+        }
     }
 
     private var newTaskHelp: String {

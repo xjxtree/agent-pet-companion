@@ -1264,6 +1264,21 @@ enum OverlayGeometry {
     static let bubbleDetailLineLimit = 2
     static let bubbleStandaloneSummaryLineLimit = 2
     static let bubbleStandaloneMetadataSpacing: CGFloat = 3
+    static func bubbleStandaloneMetadataHeight(
+        fontScale: BubbleFontScale = .standard
+    ) -> CGFloat {
+        max(
+            bubbleHeaderAvatarWidth,
+            ceil(lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .caption1,
+                scale: fontScale
+            ))),
+            ceil(lineHeight(for: OverlayBubbleTypography.measurementFont(
+                .caption2,
+                scale: fontScale
+            ))) + 2
+        )
+    }
     static func bubbleDetailTextHeight(
         fontScale: BubbleFontScale = .standard
     ) -> CGFloat {
@@ -2369,16 +2384,9 @@ enum OverlayGeometry {
         fontScale: BubbleFontScale
     ) -> CGFloat {
         if isStandaloneSessionCard {
-            let metadataHeight = max(
-                bubbleHeaderAvatarWidth,
-                lineHeight(for: OverlayBubbleTypography.measurementFont(
-                    .caption1,
-                    scale: fontScale
-                ))
-            )
             return ceil(
                 bubbleSessionVerticalPadding * 2
-                    + metadataHeight
+                    + bubbleStandaloneMetadataHeight(fontScale: fontScale)
                     + bubbleStandaloneMetadataSpacing
                     + bubbleStandaloneSummaryTextHeight(fontScale: fontScale)
             )
@@ -2682,23 +2690,14 @@ struct OverlaySessionContent: Equatable, Identifiable {
             APCLocalizedPresentation.sessionSurfaceTitle($0, locale: locale)
         }
     }
-    var secondaryDetailText: String? {
-        let details = detailCandidates
-        guard let primary = details.first else { return nil }
-        return details.dropFirst().first {
-            Self.normalizedText($0) != Self.normalizedText(primary)
-        }
-    }
     var primaryDetailText: String {
         detailCandidates.first ?? ""
     }
     var standaloneSummaryText: String {
-        primaryDetailText.isEmpty ? statusText : primaryDetailText
+        primaryDetailText
     }
     var detailText: String {
-        [primaryDetailText, secondaryDetailText]
-            .compactMap { $0 }
-            .joined(separator: "\n")
+        primaryDetailText
     }
     var accessibilityReadingOrder: [String] {
         [
@@ -2707,7 +2706,6 @@ struct OverlaySessionContent: Equatable, Identifiable {
             sessionTitle,
             statusText,
             primaryDetailText,
-            secondaryDetailText,
             accessibilityFallbackDetailText,
             actionLabel,
         ]
@@ -2717,11 +2715,16 @@ struct OverlaySessionContent: Equatable, Identifiable {
         accessibilityReadingOrder.joined(separator: ", ")
     }
     private var detailCandidates: [String] {
-        [
-            navigationNotice?.localizedText(),
-            Self.compactMessage(messageText),
-            Self.compactMessage(activityText),
-        ].compactMap { $0 }
+        if let navigationNotice {
+            return [navigationNotice.localizedText()]
+        }
+        if let message = Self.compactMessage(messageText) {
+            return [message]
+        }
+        if let activity = Self.compactMessage(activityText) {
+            return [activity]
+        }
+        return []
     }
     /// Preserves a complete VoiceOver state-to-action reading order when
     /// PetCore intentionally omits displayable session copy. This text is

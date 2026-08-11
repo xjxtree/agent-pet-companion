@@ -106,7 +106,13 @@ fn send_raw_request(port: u16, request: &[u8]) -> (u16, Value) {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     stream.write_all(request).unwrap();
-    stream.shutdown(Shutdown::Write).unwrap();
+    if let Err(error) = stream.shutdown(Shutdown::Write) {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotConnected,
+            "unexpected request shutdown error: {error}"
+        );
+    }
 
     let mut response = String::new();
     if let Err(error) = stream.read_to_string(&mut response) {

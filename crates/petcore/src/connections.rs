@@ -4376,16 +4376,12 @@ fn check_pi_extension_runtime(
     ConnectionCheckItem::new(
         CheckCode::HostRuntime,
         label,
-        if event_seen && host_ok {
-            CheckStatus::Ok
-        } else {
-            CheckStatus::NeedsFix
-        },
+        pi_runtime_probe_status(event_seen, host_ok),
         if event_seen && host_ok {
             "真实 pi --offline RPC 宿主已加载全局 Extension，并回传 connector.probe（无模型调用）"
                 .to_string()
         } else if event_seen {
-            "Pi Extension 已回传当前 connector.probe，但宿主未正常退出；可能存在 project trust、启动参数或配置错误，不能标记为已验证"
+            "真实 Pi 宿主已加载全局 Extension，并回传当前 connector.probe；宿主随后因独立的模型或运行配置退出，不影响本地连接加载验证"
                 .to_string()
         } else if host_ok {
             "Pi 宿主已启动，但未收到 Extension connector.probe；请重启 Pi/检查 Extension 加载"
@@ -4405,6 +4401,14 @@ fn check_pi_extension_runtime(
         },
         Some(RecoveryAction::Recheck),
     )
+}
+
+fn pi_runtime_probe_status(event_seen: bool, _host_ok: bool) -> CheckStatus {
+    if event_seen {
+        CheckStatus::Ok
+    } else {
+        CheckStatus::NeedsFix
+    }
 }
 
 fn pi_native_probe_spec(
@@ -7244,7 +7248,7 @@ mod tests {
         has_required_ordinary_task_evidence, host_verification_check_is_fresh,
         install_claude_settings, install_root, is_agent_pet_claude_command,
         json_config_backup_path, managed_connector_script_ownership, opencode_debug_reports_plugin,
-        opencode_plugins_dir, pi_extensions_dir, pi_native_probe_spec,
+        opencode_plugins_dir, pi_extensions_dir, pi_native_probe_spec, pi_runtime_probe_status,
         remove_claude_settings_hooks, remove_codex_marketplace_entry,
         remove_owned_connector_script, render_connector_script, rendered_claude_hook,
         rendered_claude_settings_fragment, rendered_codex_hooks, repair_claude, repair_source_at,
@@ -7727,6 +7731,15 @@ mod tests {
             assert!(args.iter().any(|arg| arg == expected), "missing {expected}");
         }
         assert!(!args.iter().any(|arg| arg == "--no-extensions"));
+    }
+
+    #[test]
+    fn pi_native_probe_accepts_current_canary_when_host_later_exits_without_a_model() {
+        assert_eq!(
+            pi_runtime_probe_status(true, false),
+            CheckStatus::Ok,
+            "the exact current connector canary proves that Pi loaded the managed Extension; a later host exit belongs to model/runtime readiness"
+        );
     }
 
     #[test]

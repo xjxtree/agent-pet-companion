@@ -102,7 +102,9 @@ public struct PetCoreClient: Sendable {
         case "connections.check",
              "connections.repair",
              "connections.refresh_installed",
-             "connections.uninstall":
+             "connections.uninstall",
+             "portable_skill.install",
+             "portable_skill.uninstall":
             .seconds(180)
         default:
             .seconds(5)

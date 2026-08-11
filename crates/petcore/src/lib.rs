@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod paths;
 pub mod pet_revision;
 pub mod petpack;
+pub mod portable_skill;
 pub mod process_runner;
 pub mod reference_images;
 pub mod rollback_checkpoint;

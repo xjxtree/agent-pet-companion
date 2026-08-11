@@ -2046,9 +2046,8 @@ struct OverlayGeometryTests {
         #expect(content.activityText == displayActivity)
         #expect(content.messageText == displayReply)
         #expect(content.primaryDetailText == displayReply)
-        #expect(content.secondaryDetailText == displayActivity)
-        #expect(content.detailText == [displayReply, displayActivity].joined(separator: "\n"))
-        #expect(content.detailText.contains(displayActivity))
+        #expect(content.detailText == displayReply)
+        #expect(!content.detailText.contains(displayActivity))
         #expect(content.detailText.contains(displayReply))
         #expect(content.navigation.sessionOpen == true)
         #expect(!content.sessionTitle.contains(rawPrompt))
@@ -2069,7 +2068,6 @@ struct OverlayGeometryTests {
         #expect(content.activityText.isEmpty)
         #expect(content.messageText == "正在检查构建结果。")
         #expect(content.primaryDetailText == "正在检查构建结果。")
-        #expect(content.secondaryDetailText == nil)
         #expect(!content.detailText.contains("{"))
         #expect(!content.detailText.contains("RAW_DO_NOT_RENDER"))
         #expect(content.statusText == APCLocalizedPresentation.overlayEventTitle(.command))
@@ -2085,7 +2083,6 @@ struct OverlayGeometryTests {
 
         #expect(content.activityText.isEmpty)
         #expect(content.messageText.isEmpty)
-        #expect(content.secondaryDetailText == nil)
         #expect(content.sessionTitle == APCLocalization.format(.overlaySessionTitleFormat, "Pi"))
         #expect(content.accessibilityReadingOrder.contains(
             APCLocalization.text(.overlayDetailCompleted)
@@ -2118,7 +2115,6 @@ struct OverlayGeometryTests {
             )
 
             #expect(session.primaryDetailText.isEmpty)
-            #expect(session.secondaryDetailText == nil)
             #expect(session.accessibilityReadingOrder == [
                 "Codex",
                 "Codex session",
@@ -2200,7 +2196,7 @@ struct OverlayGeometryTests {
     }
 
     @Test
-    func voiceOverReadingOrderKeepsLongEnglishAndChineseSessionCopySemantic() {
+    func voiceOverReadingOrderUsesOnlyTheVisibleRetainedBodyMessage() {
         let fixtures = [
             (
                 session: "A longer session title that still identifies the active work",
@@ -2239,7 +2235,6 @@ struct OverlayGeometryTests {
                 fixture.session,
                 fixture.status,
                 fixture.message,
-                fixture.activity,
                 session.actionLabel,
             ])
             #expect(
