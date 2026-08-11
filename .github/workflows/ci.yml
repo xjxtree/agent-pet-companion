@@ -92,9 +92,96 @@ jobs:
               --format github >>"$GITHUB_OUTPUT"
           fi
 
+  promotion:
+    name: Promote trusted PR proof to main
+    needs: scope
+    if: needs.scope.outputs.release_source == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      promoted: ${{ steps.finalize.outputs.promoted }}
+      validation_commit: ${{ steps.finalize.outputs.validation_commit }}
+      validation_run_id: ${{ steps.finalize.outputs.validation_run_id }}
+      validation_run_attempt: ${{ steps.finalize.outputs.validation_run_attempt }}
+      validation_ref: ${{ steps.finalize.outputs.validation_ref }}
+      validation_proof_sha256: ${{ steps.finalize.outputs.validation_proof_sha256 }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Attempt exact-tree PR proof promotion
+        id: prepare
+        env:
+          MAIN_PARENT: ${{ github.event.before }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/promoted-interaction"
+          promotion_ready=0
+          for attempt in 1 2 3; do
+            if ./script/ci_proof_promotion.py promote \
+              --repository "$GITHUB_REPOSITORY" \
+              --main-commit "$GITHUB_SHA" \
+              --main-parent "$MAIN_PARENT" \
+              --candidate-attestation "$RUNNER_TEMP/candidate-interaction-attestation.json" \
+              --metadata "$RUNNER_TEMP/promotion-metadata.json"; then
+              promotion_ready=1
+              break
+            fi
+            if ((attempt < 3)); then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          if [[ "$promotion_ready" == "1" ]]; then
+            if ./script/validate_overlay_interaction.sh \
+              --attestation-out "$RUNNER_TEMP/promoted-interaction/interaction-attestation.json" \
+              --build-id "source.$GITHUB_SHA" \
+              --proof-in "$RUNNER_TEMP/candidate-interaction-attestation.json"; then
+              echo "candidate=1" >>"$GITHUB_OUTPUT"
+            else
+              echo "candidate=0" >>"$GITHUB_OUTPUT"
+              echo 'Interaction proof rebinding failed; running complete main CI.' >>"$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "candidate=0" >>"$GITHUB_OUTPUT"
+            echo 'No exact-tree trusted PR proof was promotable; running complete main CI.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload main-bound promoted interaction proof
+        if: steps.prepare.outputs.candidate == '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: promoted-interaction-attestation-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 3
+          path: ${{ runner.temp }}/promoted-interaction/interaction-attestation.json
+
+      - name: Publish promotion routing
+        id: finalize
+        if: steps.prepare.outputs.candidate == '1'
+        run: |
+          echo "promoted=1" >>"$GITHUB_OUTPUT"
+          for key in validation_commit validation_run_id validation_run_attempt validation_ref candidate_proof_sha256; do
+            value="$(jq -er --arg key "$key" '.[$key]' "$RUNNER_TEMP/promotion-metadata.json")"
+            if [[ "$key" == "candidate_proof_sha256" ]]; then
+              key="validation_proof_sha256"
+            fi
+            echo "$key=$value" >>"$GITHUB_OUTPUT"
+          done
+          echo 'This main commit reused the exact-tree PR candidate proof.' >>"$GITHUB_STEP_SUMMARY"
+
   static:
     name: Static source contracts
-    needs: scope
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1'
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -136,10 +223,13 @@ jobs:
 
   contracts:
     name: Source and integration contracts
-    needs: scope
+    needs: [scope, promotion]
     if: >-
-      needs.scope.outputs.full_candidate == '1' ||
-      needs.scope.outputs.docs_only != '1'
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' ||
+      needs.scope.outputs.docs_only != '1')
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -213,8 +303,12 @@ jobs:
 
   rust_lint:
     name: Rust formatting and linting
-    needs: scope
-    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none'
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
     runs-on: macos-26
     timeout-minutes: 20
     steps:
@@ -242,8 +336,12 @@ jobs:
 
   rust_tests:
     name: Rust tests (${{ matrix.shard }})
-    needs: scope
-    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none'
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
     strategy:
       fail-fast: false
       matrix:
@@ -273,8 +371,12 @@ jobs:
 
   swift_interaction:
     name: Swift and interaction proof
-    needs: scope
-    if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none'
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none')
     runs-on: macos-26
     timeout-minutes: 25
     steps:
@@ -309,8 +411,12 @@ jobs:
 
   stress:
     name: Bounded event-storm stress
-    needs: scope
-    if: needs.scope.outputs.full_candidate == '1'
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
+      needs.scope.outputs.full_candidate == '1'
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -332,9 +438,11 @@ jobs:
 
   overlay:
     name: Offline overlay contracts
-    needs: [scope, swift_interaction]
+    needs: [scope, promotion, swift_interaction]
     if: >-
       always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none') &&
       needs.swift_interaction.result == 'success'
     runs-on: macos-26
@@ -362,9 +470,11 @@ jobs:
 
   bundle:
     name: Packaged development App proof
-    needs: [scope, contracts, rust_lint, rust_tests, swift_interaction, overlay]
+    needs: [scope, promotion, contracts, rust_lint, rust_tests, swift_interaction, overlay]
     if: >-
       always() &&
+      needs.scope.result == 'success' &&
+      needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1')
     runs-on: macos-26
     timeout-minutes: 30
@@ -446,18 +556,14 @@ jobs:
             --interaction-attestation "$RUNNER_TEMP/interaction-proof/development-attestation.json" \
             --validation full
 
-  source_proof:
-    name: Bind release source proof to main commit
-    needs: [scope, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle]
-    if: always() && needs.scope.outputs.release_source == '1'
+  candidate_proof:
+    name: Create promotable PR source proof
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle]
+    if: always() && github.event_name == 'pull_request' && needs.scope.outputs.full_candidate == '1'
     runs-on: macos-26
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 10
     steps:
-      - name: Require every release source gate
+      - name: Require every candidate source gate
         env:
           STATIC_RESULT: ${{ needs.static.result }}
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
@@ -471,7 +577,7 @@ jobs:
           for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
             case "$result" in
               success) ;;
-              *) echo "release source dependency did not succeed: $result" >&2; exit 1 ;;
+              *) echo "candidate source dependency did not succeed: $result" >&2; exit 1 ;;
             esac
           done
 
@@ -482,6 +588,85 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ci-interaction-attestation-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate-source
+
+      - name: Verify and record candidate toolchains
+        run: ./script/validate_macos_build_contract.py toolchain
+
+      - name: Bind complete PR gates to the tested merge tree
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/candidate-proof"
+          mv "$RUNNER_TEMP/candidate-source/interaction-attestation.json" \
+            "$RUNNER_TEMP/candidate-proof/interaction-attestation.json"
+          ./script/ci_proof_promotion.py create-candidate \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-request-number "$PR_NUMBER" \
+            --base-commit "$PR_BASE_COMMIT" \
+            --head-commit "$PR_HEAD_COMMIT" \
+            --tested-commit "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --attestation "$RUNNER_TEMP/candidate-proof/interaction-attestation.json" \
+            --output "$RUNNER_TEMP/candidate-proof/candidate-proof.json"
+
+      - name: Upload promotable PR source proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-candidate-proof-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 3
+          path: ${{ runner.temp }}/candidate-proof
+
+  source_proof:
+    name: Bind release source proof to main commit
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, candidate_proof]
+    if: always() && needs.scope.outputs.release_source == '1'
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require every release source gate
+        env:
+          PROMOTED: ${{ needs.promotion.outputs.promoted }}
+          STATIC_RESULT: ${{ needs.static.result }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
+          SWIFT_RESULT: ${{ needs.swift_interaction.result }}
+          STRESS_RESULT: ${{ needs.stress.result }}
+          OVERLAY_RESULT: ${{ needs.overlay.result }}
+          BUNDLE_RESULT: ${{ needs.bundle.result }}
+        run: |
+          if [[ "$PROMOTED" == "1" ]]; then
+            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+              case "$result" in
+                skipped) ;;
+                *) echo "promoted main CI unexpectedly scheduled a complete gate: $result" >&2; exit 1 ;;
+              esac
+            done
+          else
+            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+              case "$result" in
+                success) ;;
+                *) echo "release source dependency did not succeed: $result" >&2; exit 1 ;;
+              esac
+            done
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.promotion.outputs.promoted == '1' && format('promoted-interaction-attestation-{0}', github.sha) || format('ci-interaction-attestation-{0}', github.sha) }}
           path: ${{ runner.temp }}/interaction-proof
 
       - name: Verify and record proof-host toolchains
@@ -503,6 +688,35 @@ jobs:
       - name: Recheck Codex plugin and bundled Skill version discipline
         run: ./script/validate_codex_plugin_version.py --base-ref "${{ steps.release_baseline.outputs.previous_tag }}"
 
+      - name: Resolve validation provenance
+        id: validation_provenance
+        env:
+          PROMOTED: ${{ needs.promotion.outputs.promoted }}
+          PROMOTED_COMMIT: ${{ needs.promotion.outputs.validation_commit }}
+          PROMOTED_RUN_ID: ${{ needs.promotion.outputs.validation_run_id }}
+          PROMOTED_RUN_ATTEMPT: ${{ needs.promotion.outputs.validation_run_attempt }}
+          PROMOTED_REF: ${{ needs.promotion.outputs.validation_ref }}
+          PROMOTED_PROOF_SHA256: ${{ needs.promotion.outputs.validation_proof_sha256 }}
+        run: |
+          if [[ "$PROMOTED" == "1" ]]; then
+            {
+              echo "validation_mode=promoted"
+              echo "validation_commit=$PROMOTED_COMMIT"
+              echo "validation_run_id=$PROMOTED_RUN_ID"
+              echo "validation_run_attempt=$PROMOTED_RUN_ATTEMPT"
+              echo "validation_ref=$PROMOTED_REF"
+              echo "validation_proof_sha256=$PROMOTED_PROOF_SHA256"
+            } >>"$GITHUB_OUTPUT"
+          else
+            {
+              echo "validation_mode=full"
+              echo "validation_commit=$GITHUB_SHA"
+              echo "validation_run_id=$GITHUB_RUN_ID"
+              echo "validation_run_attempt=$GITHUB_RUN_ATTEMPT"
+              echo "validation_ref=refs/heads/main"
+            } >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Create exact-commit source proof
         run: |
           mkdir -p "$RUNNER_TEMP/release-source-proof"
@@ -514,6 +728,12 @@ jobs:
             --previous-release-tag "${{ steps.release_baseline.outputs.previous_tag }}" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --validation-mode "${{ steps.validation_provenance.outputs.validation_mode }}" \
+            --validation-commit "${{ steps.validation_provenance.outputs.validation_commit }}" \
+            --validation-run-id "${{ steps.validation_provenance.outputs.validation_run_id }}" \
+            --validation-run-attempt "${{ steps.validation_provenance.outputs.validation_run_attempt }}" \
+            --validation-ref "${{ steps.validation_provenance.outputs.validation_ref }}" \
+            --validation-proof-sha256 "${{ steps.validation_provenance.outputs.validation_proof_sha256 }}" \
             --attestation "$RUNNER_TEMP/release-source-proof/interaction-attestation.json" \
             --output "$RUNNER_TEMP/release-source-proof/source-proof.json"
 
@@ -527,7 +747,7 @@ jobs:
 
   required:
     name: Required CI
-    needs: [scope, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, source_proof]
+    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, swift_interaction, stress, overlay, bundle, candidate_proof, source_proof]
     if: always()
     runs-on: macos-26
     timeout-minutes: 10
@@ -543,20 +763,23 @@ jobs:
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
+          CANDIDATE_PROOF_RESULT: ${{ needs.candidate_proof.result }}
           SOURCE_PROOF_RESULT: ${{ needs.source_proof.result }}
           FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}
           RELEASE_SOURCE: ${{ needs.scope.outputs.release_source }}
+          PROMOTED: ${{ needs.promotion.outputs.promoted }}
         run: |
           for result in \
             "$SCOPE_RESULT" "$STATIC_RESULT" "$CONTRACTS_RESULT" \
             "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" \
-            "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$SOURCE_PROOF_RESULT"; do
+            "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" \
+            "$CANDIDATE_PROOF_RESULT" "$SOURCE_PROOF_RESULT"; do
             case "$result" in
               success|skipped) ;;
               *) echo "scheduled CI job did not succeed: $result" >&2; exit 1 ;;
             esac
           done
-          if [[ "$FULL_CANDIDATE" == "1" ]]; then
+          if [[ "$FULL_CANDIDATE" == "1" && "$PROMOTED" != "1" ]]; then
             for result in \
               "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
               "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
@@ -565,6 +788,18 @@ jobs:
                 success) ;;
                 *) echo "complete main-bound job did not succeed: $result" >&2; exit 1 ;;
               esac
+            done
+          fi
+          if [[ "$FULL_CANDIDATE" == "1" && "$RELEASE_SOURCE" != "1" ]]; then
+            test "$CANDIDATE_PROOF_RESULT" = "success"
+          fi
+          if [[ "$PROMOTED" == "1" ]]; then
+            test "$RELEASE_SOURCE" = "1"
+            for result in \
+              "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
+              "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$CANDIDATE_PROOF_RESULT"; do
+              test "$result" = "skipped"
             done
           fi
           if [[ "$RELEASE_SOURCE" == "1" ]]; then
@@ -576,9 +811,12 @@ jobs:
       - name: Record live UI validation routing
         env:
           DEVELOPMENT_LANE: ${{ needs.scope.outputs.lane }}
+          PROMOTED: ${{ needs.promotion.outputs.promoted }}
         run: |
           printf 'Development lane: %s.\n' "$DEVELOPMENT_LANE" >>"$GITHUB_STEP_SUMMARY"
-          if [[ "${{ needs.scope.outputs.full_candidate }}" == "1" ]]; then
+          if [[ "$PROMOTED" == "1" ]]; then
+            echo 'This exact main tree reused the complete direct/train PR proof; only main-bound proof issuance ran after merge.' >>"$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ needs.scope.outputs.full_candidate }}" == "1" ]]; then
             echo 'This is a complete main-bound candidate gate.' >>"$GITHUB_STEP_SUMMARY"
           else
             echo 'This is a change-scoped task-to-train or draft gate.' >>"$GITHUB_STEP_SUMMARY"

@@ -18,7 +18,11 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 - Local pre-push validation is now a bounded formatting, syntax, contract, and compile gate, while required GitHub CI runs complete source checks in parallel across Rust shards, Swift interaction proof, integration contracts, overlay validation, stress, and App assembly. Agents choose either a direct hotfix/small PR to protected `main` or coordinated task PRs to one shared train followed by a final train PR; repository-owned ready PRs use squash auto-merge only after `Required CI`. A successful trusted `main` push emits an exact-commit source proof that GitHub Release reuses before dual-architecture packaging, and an explicit Release dispatch can bind a missing tag only after that proof succeeds. Fail-closed ruleset automation protects both `main` and integration trains after the new required check is proven remotely.
 
+  Complete direct and final train PR proofs are now promoted to the squash-merged `main` commit when their repository, PR run, ordered parents, artifact, and exact Git tree all match. This removes the duplicate post-merge Rust, Swift, integration, stress, overlay, and App-assembly run while preserving a main-commit-bound Release proof; promotion uncertainty automatically falls back to complete main CI, and task PRs merged into a train still run only their path-scoped checks.
+
   本地预推送验证现收敛为有界的格式、语法、合同与编译门禁；必选 GitHub CI 则通过 Rust 分片、Swift 交互证明、集成合同、悬浮层验证、压力与 App 组装并行完成全量源码检查。Agent 会在热修复/小范围 direct PR 与“多个任务 PR 汇入共享 train、再由 train PR 至 main”之间选择；仓库内 ready PR 仅在 `Required CI` 成功后 squash 自动合并。受信任的 `main` push 会生成绑定精确 commit 的源码证明，GitHub Release 在双架构打包前复用该证明，显式 Release dispatch 也只有在证明成功后才能绑定缺失 tag。fail-closed ruleset 自动化会在新必选检查已由远端证明后保护 `main` 与集成 train。
+
+  direct PR 与最终 train PR 的完整证明现可在仓库、PR run、有序父提交、artifact 与精确 Git tree 全部匹配时晋升到 squash 合并后的 `main` commit，从而删除合并后重复的 Rust、Swift、集成、压力、悬浮层与 App 组装任务，同时保留绑定 main commit 的 Release 证明；晋升存在任何不确定性时都会自动回退完整 main CI，合入 train 的 task PR 仍只运行按路径检查。
 
 ## [0.3.6] - 2026-08-11
 

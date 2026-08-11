@@ -16,7 +16,7 @@ import tempfile
 from typing import Any
 
 
-SCHEMA_VERSION = "apc.release-source-proof.v1"
+SCHEMA_VERSION = "apc.release-source-proof.v2"
 WORKFLOW_PATH = ".github/workflows/ci.yml"
 EXPECTED_GATES = [
     "bundle",
@@ -36,8 +36,10 @@ TOOLCHAIN_CONTRACT_FILES = [
     "script/validate_macos_build_contract.py",
 ]
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TAG_PATTERN = re.compile(r"v[0-9]+[.][0-9]+[.][0-9]+")
+PULL_REQUEST_REF_PATTERN = re.compile(r"refs/pull/[1-9][0-9]*/merge")
 
 
 def run(root: pathlib.Path, *command: str) -> str:
@@ -160,11 +162,45 @@ def create(args: argparse.Namespace) -> None:
         raise ValueError("proof checkout contains tracked modifications")
     attestation = args.attestation.resolve()
     attestation_payload = validate_attestation(root, attestation, args.commit)
+    validation_mode = getattr(args, "validation_mode", "full")
+    validation_commit = getattr(args, "validation_commit", None) or args.commit
+    validation_run_id = getattr(args, "validation_run_id", None) or args.run_id
+    validation_run_attempt = (
+        getattr(args, "validation_run_attempt", None) or args.run_attempt
+    )
+    validation_ref = getattr(args, "validation_ref", None) or "refs/heads/main"
+    validation_proof_sha256 = getattr(args, "validation_proof_sha256", None) or None
+    if validation_mode not in {"full", "promoted"}:
+        raise ValueError("validation mode must be full or promoted")
+    if COMMIT_PATTERN.fullmatch(validation_commit) is None:
+        raise ValueError("validation commit must be a full lowercase Git commit")
+    if validation_run_id <= 0 or validation_run_attempt <= 0:
+        raise ValueError("validation run id and attempt must be positive")
+    if validation_mode == "full":
+        if (
+            validation_commit != args.commit
+            or validation_run_id != args.run_id
+            or validation_run_attempt != args.run_attempt
+            or validation_ref != "refs/heads/main"
+            or validation_proof_sha256 is not None
+        ):
+            raise ValueError("full validation must be the current main-push run")
+        validation_event = "push"
+    else:
+        if (
+            validation_commit == args.commit
+            or PULL_REQUEST_REF_PATTERN.fullmatch(validation_ref) is None
+            or not isinstance(validation_proof_sha256, str)
+            or DIGEST_PATTERN.fullmatch(validation_proof_sha256) is None
+        ):
+            raise ValueError("promoted validation must identify a PR merge commit")
+        validation_event = "pull_request"
+    source_tree = run(root, "git", "rev-parse", "HEAD^{tree}")
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "repository": args.repository,
         "commit": args.commit,
-        "source_tree": run(root, "git", "rev-parse", "HEAD^{tree}"),
+        "source_tree": source_tree,
         "previous_release_tag": args.previous_release_tag,
         "workflow_path": WORKFLOW_PATH,
         "workflow_event": "push",
@@ -172,6 +208,16 @@ def create(args: argparse.Namespace) -> None:
         "run_id": args.run_id,
         "run_attempt": args.run_attempt,
         "gates": EXPECTED_GATES,
+        "validation": {
+            "mode": validation_mode,
+            "commit": validation_commit,
+            "source_tree": source_tree,
+            "workflow_event": validation_event,
+            "workflow_ref": validation_ref,
+            "run_id": validation_run_id,
+            "run_attempt": validation_run_attempt,
+            "proof_sha256": validation_proof_sha256,
+        },
         "toolchain_contract_digest": contract_digest(root),
         "observed_toolchains": observed_toolchains(root),
         "interaction_attestation_sha256": sha256(attestation),
@@ -203,6 +249,7 @@ def validate(args: argparse.Namespace) -> None:
         "run_id",
         "run_attempt",
         "gates",
+        "validation",
         "toolchain_contract_digest",
         "observed_toolchains",
         "interaction_attestation_sha256",
@@ -229,6 +276,58 @@ def validate(args: argparse.Namespace) -> None:
     for key, expected in checks.items():
         if proof.get(key) != expected:
             raise ValueError(f"source proof {key} does not match the release request")
+    validation = proof.get("validation")
+    validation_keys = {
+        "mode",
+        "commit",
+        "source_tree",
+        "workflow_event",
+        "workflow_ref",
+        "run_id",
+        "run_attempt",
+        "proof_sha256",
+    }
+    if not isinstance(validation, dict) or set(validation) != validation_keys:
+        raise ValueError("source proof validation provenance is invalid")
+    mode = validation.get("mode")
+    if validation.get("source_tree") != checks["source_tree"]:
+        raise ValueError("source proof validation tree does not match the release tree")
+    if mode == "full":
+        expected_validation = {
+            "mode": "full",
+            "commit": args.commit,
+            "source_tree": checks["source_tree"],
+            "workflow_event": "push",
+            "workflow_ref": "refs/heads/main",
+            "run_id": args.run_id,
+            "run_attempt": args.run_attempt,
+            "proof_sha256": None,
+        }
+        if validation != expected_validation:
+            raise ValueError("full source validation provenance is invalid")
+    elif mode == "promoted":
+        validation_commit = validation.get("commit")
+        validation_run_id = validation.get("run_id")
+        validation_run_attempt = validation.get("run_attempt")
+        validation_ref = validation.get("workflow_ref")
+        validation_proof_sha256 = validation.get("proof_sha256")
+        if (
+            not isinstance(validation_commit, str)
+            or COMMIT_PATTERN.fullmatch(validation_commit) is None
+            or validation_commit == args.commit
+            or validation.get("workflow_event") != "pull_request"
+            or not isinstance(validation_ref, str)
+            or PULL_REQUEST_REF_PATTERN.fullmatch(validation_ref) is None
+            or not isinstance(validation_run_id, int)
+            or validation_run_id <= 0
+            or not isinstance(validation_run_attempt, int)
+            or validation_run_attempt <= 0
+            or not isinstance(validation_proof_sha256, str)
+            or DIGEST_PATTERN.fullmatch(validation_proof_sha256) is None
+        ):
+            raise ValueError("promoted source validation provenance is invalid")
+    else:
+        raise ValueError("source proof validation mode is invalid")
     observed = proof.get("observed_toolchains")
     if not isinstance(observed, dict) or set(observed) != {"rustc", "swift", "python", "sdk"}:
         raise ValueError("source proof observed toolchain inventory is invalid")
@@ -271,6 +370,14 @@ def main() -> int:
         command.add_argument("--attestation", required=True, type=pathlib.Path)
         if name == "create":
             command.add_argument("--output", required=True, type=pathlib.Path)
+            command.add_argument(
+                "--validation-mode", choices=("full", "promoted"), default="full"
+            )
+            command.add_argument("--validation-commit")
+            command.add_argument("--validation-run-id", type=int)
+            command.add_argument("--validation-run-attempt", type=int)
+            command.add_argument("--validation-ref")
+            command.add_argument("--validation-proof-sha256")
         else:
             command.add_argument("--proof", required=True, type=pathlib.Path)
     args = parser.parse_args()

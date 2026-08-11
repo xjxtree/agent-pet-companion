@@ -584,6 +584,12 @@ class ReleaseSourceProofTests(unittest.TestCase):
                 previous_release_tag="v1.2.3",
                 run_id=42,
                 run_attempt=2,
+                validation_mode="promoted",
+                validation_commit="c" * 40,
+                validation_run_id=41,
+                validation_run_attempt=3,
+                validation_ref="refs/pull/17/merge",
+                validation_proof_sha256="d" * 64,
                 attestation=attestation,
             )
             attestation_payload = json.loads(attestation.read_text(encoding="utf-8"))
@@ -606,6 +612,19 @@ class ReleaseSourceProofTests(unittest.TestCase):
                 proof_payload = json.loads(output.read_text(encoding="utf-8"))
                 self.assertEqual(proof_payload["gates"], release_source_proof.EXPECTED_GATES)
                 self.assertIn("bundle", proof_payload["gates"])
+                self.assertEqual(
+                    proof_payload["validation"],
+                    {
+                        "commit": "c" * 40,
+                        "mode": "promoted",
+                        "run_attempt": 3,
+                        "run_id": 41,
+                        "source_tree": proof_payload["source_tree"],
+                        "proof_sha256": "d" * 64,
+                        "workflow_event": "pull_request",
+                        "workflow_ref": "refs/pull/17/merge",
+                    },
+                )
                 attestation.write_text(attestation.read_text(encoding="utf-8") + " ", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "attestation digest"):
                     release_source_proof.validate(Namespace(**common, proof=output))
