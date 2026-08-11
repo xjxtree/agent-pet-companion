@@ -1227,10 +1227,10 @@ fn versioned_templates_only_claim_supported_contracts() {
         .as_object()
         .unwrap()
         .keys()
-        .all(|key| matches!(key.as_str(), "description" | "hooks" | "release_version")));
-    // The installed hooks file states its own release version, so a stale hook
-    // can be named without inferring its identity from a sibling artifact.
-    assert!(codex.contains("\"release_version\": \"__APC_CODEX_PLUGIN_VERSION__\""));
+        .all(|key| matches!(key.as_str(), "description" | "hooks")));
+    // Codex rejects unknown top-level Hook fields. The Hook revision is bound
+    // by the versioned plugin manifest and the exact bundle-content digest.
+    assert!(!codex.contains("release_version"));
     assert!(!codex.contains("StopFailure"));
     assert!(!codex.contains("--event-type review"));
 

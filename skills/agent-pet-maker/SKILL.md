@@ -1,6 +1,6 @@
 ---
 name: agent-pet-maker
-version: 0.5.5
+version: 0.5.6
 description: Create or revise portable Agent Pet Companion .petpack V3 pets at low, standard, or high resolution from text and optional reference images. Use for new pets, exported-package revisions, action or timing edits, provider-aware image production, motion QA, packaging, or an explicitly requested install.
 ---
 

@@ -405,7 +405,7 @@ class CodexPluginVersionTests(unittest.TestCase):
         self.manifest = self.root / "plugins/codex/.codex-plugin/plugin.json"
         self.hooks = self.root / "plugins/codex/hooks/hooks.json.tpl"
         self.write_manifest("1.2.3")
-        self.write_hooks(plugin_version.HOOKS_VERSION_PLACEHOLDER)
+        self.write_hooks()
         for skill in ("agent-pet-maker", "agent-pet-studio"):
             self.write_skill(skill, "1.2.3")
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
@@ -449,11 +449,10 @@ class CodexPluginVersionTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def write_hooks(self, release_version: str) -> None:
-        self.hooks.write_text(
-            json.dumps({"release_version": release_version, "hooks": {}}),
-            encoding="utf-8",
-        )
+    def write_hooks(self, extra: dict[str, object] | None = None) -> None:
+        value: dict[str, object] = {"hooks": {}}
+        value.update(extra or {})
+        self.hooks.write_text(json.dumps(value), encoding="utf-8")
 
     def write_skill(self, name: str, version: str | None, body: str = "body\n") -> None:
         front_matter = f"name: {name}\n"
@@ -516,10 +515,10 @@ class CodexPluginVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one version: line"):
             plugin_version.validate("HEAD")
 
-    def test_hooks_template_must_carry_the_release_version_placeholder(self) -> None:
+    def test_hooks_template_rejects_unknown_top_level_fields(self) -> None:
         self.write_manifest("1.2.4")
-        self.write_hooks("1.2.4")
-        with self.assertRaisesRegex(ValueError, "release_version"):
+        self.write_hooks({"release_version": "1.2.4"})
+        with self.assertRaisesRegex(ValueError, "unsupported top-level fields"):
             plugin_version.validate("HEAD")
 
 

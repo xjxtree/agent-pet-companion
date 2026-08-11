@@ -14,6 +14,20 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-11
+
+### Changed / 变更
+
+- The README desktop hero now shows all three bundled pets alongside collapsed, expanded, and Agent-grouped expanded session bubbles captured from isolated test sessions, preserving the native Liquid Glass backdrop treatment alongside longer message, activity, and mixed runtime-state examples.
+
+  README 桌面主视觉现横向展示三个内置宠物，以及从隔离测试会话实机截取的折叠、展开和按 Agent 聚合展开气泡；原生液态玻璃背景效果得到保留，并补充了更长的消息、活动内容与混合运行状态。
+
+### Fixed / 修复
+
+- Fixed the App-managed Codex Hook file being rejected because it contained an unsupported `release_version` field. Hook versions are now bound through the plugin manifest and exact content verification, and a Hook loading failure is shown as requiring investigation or repair instead of incorrectly promising that restarting Codex will fix it.
+
+  修复 App 管理的 Codex Hook 文件因包含不受支持的 `release_version` 字段而被拒绝的问题。Hook 版本现在通过插件清单与精确内容校验绑定；Hook 加载失败会提示需要检查或修复，不再错误地承诺重启 Codex 即可解决。
+
 ## [0.3.5] - 2026-08-11
 
 ### Fixed / 修复

@@ -13,7 +13,7 @@ Agent Pet Companion is a native macOS desktop pet for people who work with one o
 [Download the latest release](https://github.com/xjxtree/agent-pet-companion/releases) · macOS 14 or later · Apple silicon and Intel Macs
 
 <p align="center">
-  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion showing a desktop pet with live OpenCode, Pi Coding Agent, and Claude Code status bubbles">
+  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion showing three bundled pets with collapsed, expanded, and Agent-grouped session bubbles">
 </p>
 
 ## What it does for you

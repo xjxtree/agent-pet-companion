@@ -525,6 +525,41 @@ struct AgentConnectionsTests {
     }
 
     @Test
+    func codexHookLoadingFailureDoesNotClaimRestartWillFixIt() throws {
+        let presentation = product(currentStatus(
+            source: .codex,
+            items: [
+                item(
+                    .needsFix,
+                    code: .hostVerification,
+                    detail: "当前 Codex 宿主未发现 Agent Pet Companion Hooks；请修复插件并重新加载宿主"
+                ),
+            ]
+        ))
+
+        #expect(presentation.health == .unavailable)
+        #expect(
+            AgentConnectionsPresentation.healthTitle(
+                for: presentation,
+                locale: "zh-Hans"
+            ) == "需要处理"
+        )
+        #expect(
+            AgentConnectionsPresentation.healthSummary(
+                for: presentation,
+                operationState: .idle,
+                locale: "zh-Hans"
+            ) == "此连接需要完成处理后才能使用。"
+        )
+        #expect(
+            AgentConnectionsPresentation.userGuidance(
+                for: presentation,
+                locale: "zh-Hans"
+            ) == "请查看下方的阻断检查项，完成对应处理后重新检查连接。"
+        )
+    }
+
+    @Test
     func unavailableReasonsGiveSpecificStatusAndNextAction() throws {
         let informationalVersion = product(currentStatus(
             source: .pi,

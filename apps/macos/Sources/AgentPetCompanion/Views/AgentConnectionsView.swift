@@ -314,8 +314,10 @@ enum AgentConnectionsPresentation {
         }
         if items.contains(where: {
             switch $0.code {
-            case .hostRuntime, .hostVerification, .appServer, .hostServer:
+            case .hostRuntime, .appServer, .hostServer:
                 $0.status.isBlocking
+            case .hostVerification:
+                presentation.source != .codex && $0.status.isBlocking
             default:
                 false
             }

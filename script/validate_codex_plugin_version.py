@@ -15,14 +15,11 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = pathlib.PurePosixPath("plugins/codex/.codex-plugin/plugin.json")
 HOOKS_TEMPLATE = pathlib.PurePosixPath("plugins/codex/hooks/hooks.json.tpl")
-# Every App-managed Codex artifact states its own release version. Ownership and
-# staleness are read from these markers, so no list of past release digests has
-# to be maintained; a missing entry in such a list stranded real installs.
 VERSIONED_SKILLS = (
     pathlib.PurePosixPath("skills/agent-pet-studio/SKILL.md"),
     pathlib.PurePosixPath("skills/agent-pet-maker/SKILL.md"),
 )
-HOOKS_VERSION_PLACEHOLDER = "__APC_CODEX_PLUGIN_VERSION__"
+HOOKS_ALLOWED_TOP_LEVEL_FIELDS = frozenset(("description", "hooks"))
 SKILL_VERSION_PATTERN = re.compile(r"^version:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 PLUGIN_BUNDLE_PATHS = (
     "plugins/codex",
@@ -114,15 +111,18 @@ def skill_front_matter_version(data: bytes, *, source: str) -> tuple[int, int, i
     return parse_version(matches[0], source=f"{source} Skill")
 
 
-def hooks_template_declares_version(data: bytes, *, source: str) -> None:
+def hooks_template_uses_supported_schema(data: bytes, *, source: str) -> None:
     try:
         value = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(f"{source} hooks template is not valid UTF-8 JSON") from error
-    if not isinstance(value, dict) or value.get("release_version") != HOOKS_VERSION_PLACEHOLDER:
+    if not isinstance(value, dict) or not isinstance(value.get("hooks"), dict):
+        raise ValueError(f"{source} hooks template must contain a hooks object")
+    unsupported = sorted(set(value) - HOOKS_ALLOWED_TOP_LEVEL_FIELDS)
+    if unsupported:
         raise ValueError(
-            f"{source} hooks template must carry "
-            f'"release_version": "{HOOKS_VERSION_PLACEHOLDER}"'
+            f"{source} hooks template contains unsupported top-level fields: "
+            f"{', '.join(unsupported)}"
         )
 
 
@@ -158,10 +158,10 @@ def validate(base_reference: str) -> tuple[str, str, bool]:
             "without increasing plugins/codex/.codex-plugin/plugin.json version"
         )
 
-    # Ownership and staleness are read from each artifact's own version marker,
-    # so every App-managed artifact must carry one and they must agree. A Skill
-    # left at a stale marker would be reported as the wrong version forever.
-    hooks_template_declares_version(
+    # Codex rejects unknown top-level Hook metadata. Hook staleness is therefore
+    # bound by the plugin manifest plus exact bundle-content verification, while
+    # separately parsed Skills keep their own matching version markers.
+    hooks_template_uses_supported_schema(
         (ROOT / HOOKS_TEMPLATE).read_bytes(),
         source="current",
     )
@@ -195,7 +195,10 @@ def main() -> int:
         return 1
     state = "changed with a required version increase" if changed else "unchanged"
     print(f"Codex plugin bundle {state}: {previous} -> {current}")
-    print(f"Plugin, hooks, and both Skills declare version {current}")
+    print(
+        f"Plugin and both Skills declare version {current}; "
+        "hooks use the supported top-level schema"
+    )
     return 0
 
 

@@ -276,7 +276,7 @@ rg -q 'validate_codex_plugin_version.py' "$WORKFLOW"
 rg -Fq 'APC_PREVIOUS_RELEASE_TAG: ${{ needs.prepare.outputs.previous_tag }}' \
   "$WORKFLOW"
 rg -q 'VERSIONED_SKILLS' "$ROOT_DIR/script/validate_codex_plugin_version.py"
-rg -q 'HOOKS_VERSION_PLACEHOLDER' "$ROOT_DIR/script/validate_codex_plugin_version.py"
+rg -q 'HOOKS_ALLOWED_TOP_LEVEL_FIELDS' "$ROOT_DIR/script/validate_codex_plugin_version.py"
 rg -Fq 'gh release edit "$RELEASE_TAG" --draft=false --latest' "$WORKFLOW"
 rg -Fq '"repos/$GITHUB_REPOSITORY/releases/latest"' "$WORKFLOW"
 if rg -q 'published_immutable|value[.]get[(]"immutable"|immutable-releases' "$WORKFLOW"; then

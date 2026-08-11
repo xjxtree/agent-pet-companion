@@ -1,6 +1,6 @@
 ---
 name: agent-pet-studio
-version: 0.5.5
+version: 0.5.6
 description: Generate or revise low- or standard-resolution Agent Pet Companion .petpack V3 assets from an in-app Studio job, using real image production when external full source is required and a portable Maker handoff for high resolution. Use only inside Agent Pet Companion Studio generation jobs.
 ---
 

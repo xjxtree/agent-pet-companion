@@ -101,9 +101,6 @@ const OPENCODE_PLUGIN_TEMPLATE: &str =
     include_str!("../../../plugins/opencode/agent-pet-companion.js.tpl");
 const APP_MANAGED_CONNECTOR_RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CONNECTOR_RELEASE_VERSION_PLACEHOLDER: &str = "__APC_CONNECTOR_RELEASE_VERSION__";
-/// The Codex bundle versions itself from `plugins/codex/.codex-plugin/plugin.json`,
-/// not from the crate version the static connectors use.
-const CODEX_PLUGIN_VERSION_PLACEHOLDER: &str = "__APC_CODEX_PLUGIN_VERSION__";
 const HOST_VERIFICATION_CACHE_TTL_SECONDS: i64 = 5 * 60;
 const HOST_VERIFICATION_FUTURE_SKEW_SECONDS: i64 = 60;
 const PROBE_CWD_ACCESS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -2382,9 +2379,6 @@ fn installed_static_connector_release_version(
     }
 }
 
-/// Every App-managed Codex artifact states its own release version, so a stale
-/// component can be named without deriving identity from a sibling file or from
-/// a digest list that has to be maintained by hand.
 fn installed_codex_plugin_manifest_version(root: &Path) -> Option<String> {
     let path = root.join(".codex-plugin/plugin.json");
     if !codex_manifest_is_owned(&path, root) {
@@ -2393,16 +2387,14 @@ fn installed_codex_plugin_manifest_version(root: &Path) -> Option<String> {
     validated_connector_release_version(read_regular_json_config(&path)?.get("version")?.as_str()?)
 }
 
-fn installed_codex_hooks_version(root: &Path) -> Option<String> {
-    let path = root.join("hooks/hooks.json");
-    if !codex_hooks_are_owned(&path, root) {
-        return None;
-    }
-    validated_connector_release_version(
-        read_regular_json_config(&path)?
-            .get("release_version")?
-            .as_str()?,
-    )
+/// Codex Hook configuration has a closed top-level schema and rejects custom
+/// version fields. Bind an exact Hook file to the enclosing plugin manifest
+/// only after its complete operational content matches the current template.
+fn installed_codex_hooks_bundle_version(root: &Path, connector_cli: &Path) -> Option<String> {
+    (check_codex_hooks(&root.join("hooks/hooks.json"), connector_cli, root).status
+        == CheckStatus::Ok)
+        .then(|| installed_codex_plugin_manifest_version(root))
+        .flatten()
 }
 
 /// Reads `version:` from the Skill's own YAML front matter. Bounded to the
@@ -2494,10 +2486,12 @@ fn codex_managed_components(
         Some(false) => CheckStatus::NeedsFix,
         None => unavailable_active_status,
     };
-    // Each component states its own installed version. The host probe only
-    // knows the plugin Codex actually loaded, so it stays the plugin's active
-    // version and never stands in for a Skill that was written separately.
+    // Skills state their own installed versions. Codex rejects custom Hook
+    // metadata, so an exact Hook is bound to the enclosing plugin version only
+    // after the complete Hook template matches.
     let root = install_root(paths, AgentSource::Codex);
+    let installed_hook_bundle_version =
+        installed_codex_hooks_bundle_version(&root, &connector_cli_path(paths));
     let installed_studio_version = installed_codex_skill_version(&root, "agent-pet-studio");
     let installed_maker_version = installed_codex_skill_version(&root, "agent-pet-maker");
 
@@ -2519,7 +2513,7 @@ fn codex_managed_components(
             ownership: AgentExtensionOwnership::AppManaged,
             status: plugin_status,
             expected_version: expected_version.clone(),
-            active_version: installed_codex_hooks_version(&root),
+            active_version: installed_hook_bundle_version,
             content_matches: active_content_matches,
         },
         AgentManagedComponent {
@@ -3821,13 +3815,7 @@ fn rendered_codex_hooks(connector_cli: &Path) -> Result<Value> {
         "APC_CONNECTOR_CONTRACT_VERSION={} {cli}",
         shell_quote(CODEX_HOOKS_CONTRACT_VERSION)
     );
-    let mut hooks = render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &hook_cli)?;
-    replace_json_string(
-        &mut hooks,
-        CODEX_PLUGIN_VERSION_PLACEHOLDER,
-        &expected_codex_plugin_version()?,
-    );
-    Ok(hooks)
+    render_json_template(CODEX_HOOKS_TEMPLATE, "__APC_CLI__", &hook_cli)
 }
 
 fn rendered_claude_settings_fragment(_connector_cli: &Path, install_root: &Path) -> Result<Value> {
@@ -9180,7 +9168,7 @@ mod tests {
     }
 
     #[test]
-    fn every_app_managed_codex_artifact_states_its_own_release_version() {
+    fn codex_hooks_use_host_schema_and_bind_exact_content_to_plugin_version() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let agent_home = temp.path().join("agents");
@@ -9197,10 +9185,31 @@ mod tests {
             super::installed_codex_plugin_manifest_version(&root).as_deref(),
             Some(expected.as_str())
         );
+        let hooks = super::read_regular_json_config(&root.join("hooks/hooks.json")).unwrap();
+        assert!(hooks.get("release_version").is_none());
         assert_eq!(
-            super::installed_codex_hooks_version(&root).as_deref(),
+            super::installed_codex_hooks_bundle_version(&root, &cli).as_deref(),
             Some(expected.as_str()),
-            "the installed hooks file must carry its own release version"
+            "an exact Hook file must inherit only the enclosing plugin bundle version"
+        );
+        let mut invalid_hooks = hooks;
+        invalid_hooks["release_version"] = serde_json::json!(expected);
+        std::fs::write(
+            root.join("hooks/hooks.json"),
+            serde_json::to_vec_pretty(&invalid_hooks).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::installed_codex_hooks_bundle_version(&root, &cli),
+            None,
+            "unsupported Hook metadata must never inherit a trusted bundle version"
+        );
+        super::validate_codex_root_repair_ownership(&root).unwrap();
+        super::repair_codex(&root, &cli).unwrap();
+        assert_eq!(
+            super::installed_codex_hooks_bundle_version(&root, &cli).as_deref(),
+            Some(expected.as_str()),
+            "a stale App-owned Hook must repair without a historical digest registry"
         );
         for skill in ["agent-pet-studio", "agent-pet-maker"] {
             assert_eq!(
@@ -9948,7 +9957,7 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
     }
 
     #[test]
-    fn codex_managed_components_report_each_artifacts_own_installed_version() {
+    fn codex_managed_components_bind_exact_hook_and_read_skill_versions() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let agent_home = temp.path().join("agents");
@@ -9978,8 +9987,9 @@ browser@openai-bundled        installed, enabled  1.0 /tmp/browser
 
         let components = super::codex_managed_components(&paths, CheckStatus::Ok, Some(&probe));
 
-        // Plugin, hook, and both Skills each report a version read from their
-        // own installed artifact, so a stale one can be named on its own.
+        // The plugin reports its manifest version, the exact Hook binds to that
+        // bundle version, and both separately parsed Skills report their own
+        // front-matter version.
         assert_eq!(
             components
                 .iter()

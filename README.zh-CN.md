@@ -13,7 +13,7 @@ Agent Pet Companion 是一款 macOS 原生桌宠 App，适合同时使用一个�
 [下载最新版本](https://github.com/xjxtree/agent-pet-companion/releases) · 支持 macOS 14 及以上版本 · Apple 芯片与 Intel Mac
 
 <p align="center">
-  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion 桌宠与 OpenCode、Pi Coding Agent、Claude Code 实时状态气泡">
+  <img src="docs/assets/screenshots/desktop-hero.png" width="1120" alt="Agent Pet Companion 横向展示三个内置桌宠，以及折叠、展开和按 Agent 聚合展开的会话气泡">
 </p>
 
 ## 它能帮你做什么

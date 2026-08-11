@@ -89,6 +89,6 @@ The App's Codex-backed Studio and the built-in ChatGPT/Codex image path are qual
 
 Official V1 distribution uses the explicit fail-closed `build_release.sh --github-release` path. Local complete candidates use `--arch all`; automation uses `--arch arm64|x86_64` as parallel components and assembles the checksum only after both pass. Development Apps and handoff archives are not official artifacts. Native arm64 and x86_64 packaged validation plus exact downloaded-byte equality are mandatory publication dependencies. The [release procedure](../release/macos-release.md) owns commands and asset contracts.
 
-Codex plugin/Skill changes also run `validate_codex_plugin_version.py` against the intended release base. It proves plugin/Skill version-marker and hook-template discipline, not convergence of a particular user's active cache.
+Codex plugin/Skill changes also run `validate_codex_plugin_version.py` against the intended release base. It proves plugin/Skill version-marker discipline and rejects unsupported Hook-template top-level fields; it does not prove convergence of a particular user's active cache.
 
 Do not paste validation results into this file. / 不要把某次验证结果粘贴到本文。
