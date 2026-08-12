@@ -40,6 +40,7 @@ PET_SOURCE="$TMP_DIR/library-pet"
 APP_NAME="$APP_NAME" APP_PID="$APC_OWNED_APP_PID" swift - <<'SWIFT'
 import AppKit
 import ApplicationServices
+import CoreGraphics
 import Foundation
 
 let appName = ProcessInfo.processInfo.environment["APP_NAME"] ?? "AgentPetCompanion"
@@ -135,6 +136,37 @@ func isControlCenterWindow(_ window: AXUIElement) -> Bool {
     string(window, kAXIdentifierAttribute) == controlCenterWindowIdentifier
         || supportedMainWindowTitles.contains(string(window, kAXTitleAttribute))
 }
+
+func controlCenterIsVisiblyPresented() -> Bool {
+    let options = CGWindowListOption(
+        arrayLiteral: .optionOnScreenOnly,
+        .excludeDesktopElements
+    )
+    let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+        as? [[String: Any]] ?? []
+    return windows.contains { window in
+        guard
+            (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == appPID,
+            (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+            (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0 > 0,
+            let bounds = window[kCGWindowBounds as String] as? [String: Any]
+        else {
+            return false
+        }
+        let width = (bounds["Width"] as? NSNumber)?.doubleValue ?? 0
+        let height = (bounds["Height"] as? NSNumber)?.doubleValue ?? 0
+        return width >= 800 && height >= 500
+    }
+}
+
+func waitForVisibleControlCenter() -> Bool {
+    for _ in 0..<40 {
+        if controlCenterIsVisiblyPresented() { return true }
+        usleep(100_000)
+    }
+    return false
+}
+
 var resolvedMainWindow: AXUIElement?
 for _ in 0..<40 {
     let windows = copy(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? []
@@ -146,6 +178,10 @@ for _ in 0..<40 {
 }
 guard let mainWindow = resolvedMainWindow else {
     fputs("main window UI validation failed: main window was not found\n", stderr)
+    exit(1)
+}
+guard waitForVisibleControlCenter() else {
+    fputs("main window UI validation failed: control center stayed transparent or off screen\n", stderr)
     exit(1)
 }
 
@@ -845,6 +881,10 @@ for _ in 0..<40 {
 }
 guard reopenedWindows.count == 1, !app.isTerminated else {
     fputs("main window UI validation failed: activation did not reopen exactly one control center\n", stderr)
+    exit(1)
+}
+guard waitForVisibleControlCenter() else {
+    fputs("main window UI validation failed: reopened control center stayed transparent or off screen\n", stderr)
     exit(1)
 }
 

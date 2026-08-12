@@ -14,6 +14,18 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-12
+
+### Fixed / 修复
+
+- Control Center appearance gating is now owned by the NSWindow rather than a transient SwiftUI bridge, so host-view removal, replacement, or duplication cannot leave the App transparent or non-interactive after launch.
+
+  控制中心的外观门禁现由 NSWindow 统一持有，不再依赖短生命周期的 SwiftUI 桥接视图，因此视图被移除、替换或重复创建时，都不会让 App 在启动后持续透明或无法交互。
+
+- The desktop visibility policy no longer mistakes a temporarily concealed Control Center for Show Desktop, preventing the pet from disappearing as a secondary effect of window presentation.
+
+  桌面可见性策略不再把短暂隐藏的控制中心误判为“显示桌面”，避免窗口呈现过程中连带导致桌宠消失。
+
 ## [0.4.1] - 2026-08-12
 
 ### Fixed / 修复

@@ -65,15 +65,109 @@ struct InitialAppearanceBootstrapTests {
         #expect(contentView.displayPasses == 0)
         #expect(window.alphaValue == 0)
 
+        await waitForNextMainQueueTurn()
+
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+        #expect(gate.hasRevealed)
+    }
+
+    @MainActor
+    @Test
+    func windowGateRevealSurvivesHostRemovalBeforeDeferredTurn() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentLayoutRect)
+        var gate: InitialAppearanceWindowGateHostView? =
+            InitialAppearanceWindowGateHostView(
+                readiness: .pending,
+                theme: .system
+            )
+        window.contentView = contentView
+        contentView.addSubview(gate!)
+
+        #expect(window.alphaValue == 0)
+        gate?.update(readiness: .authoritative, theme: .dark)
+        gate?.removeFromSuperview()
+        gate = nil
+
+        await waitForNextMainQueueTurn()
+
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+    }
+
+    @MainActor
+    @Test
+    func windowGateReplacementCannotRecordConcealedStateAsOriginal() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentLayoutRect)
+        let firstGate = InitialAppearanceWindowGateHostView(
+            readiness: .pending,
+            theme: .system
+        )
+        let replacementGate = InitialAppearanceWindowGateHostView(
+            readiness: .pending,
+            theme: .system
+        )
+        window.contentView = contentView
+        contentView.addSubview(firstGate)
+        contentView.addSubview(replacementGate)
+
+        #expect(window.alphaValue == 0)
+        #expect(window.ignoresMouseEvents)
+        replacementGate.update(readiness: .authoritative, theme: .light)
+
+        await waitForNextMainQueueTurn()
+
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+        #expect(firstGate.hasRevealed)
+        #expect(replacementGate.hasRevealed)
+    }
+
+    @MainActor
+    @Test
+    func pendingWindowGateFailsOpenWhenItsLastHostIsDismantled() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = NSView(frame: window.contentLayoutRect)
+        let gate = InitialAppearanceWindowGateHostView(
+            readiness: .pending,
+            theme: .system
+        )
+        window.contentView = contentView
+        contentView.addSubview(gate)
+
+        #expect(window.alphaValue == 0)
+        gate.detachFromWindow()
+
+        await waitForNextMainQueueTurn()
+
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+    }
+
+    @MainActor
+    private func waitForNextMainQueueTurn() async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async {
                 continuation.resume()
             }
         }
-
-        #expect(window.alphaValue == 1)
-        #expect(!window.ignoresMouseEvents)
-        #expect(gate.hasRevealed)
     }
 
     @MainActor
