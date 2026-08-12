@@ -5949,14 +5949,13 @@ fn codex_app_server_probe_reports_structured_stdio_errors() {
     writeln!(
         file,
         r#"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *initialize*)
-      printf '%s\n' 'fatal initialize diagnostic' >&2
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"initialize boom"}}}}'
-      ;;
-  esac
-done
+IFS= read -r request || exit 2
+case "$request" in
+  *'"method":"initialize"'*) ;;
+  *) printf '%s\n' 'unexpected request' >&2; exit 3 ;;
+esac
+printf '%s\n' 'fatal initialize diagnostic' >&2
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"initialize boom"}}}}'
 "#
     )
     .unwrap();
