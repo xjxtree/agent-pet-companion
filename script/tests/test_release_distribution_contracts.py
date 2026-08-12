@@ -1040,10 +1040,12 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("Rebind source interaction proof to the development build identity", source)
         self.assertIn("Restore or write the one strict Swift debug cache", source)
         self.assertIn("swift-strict-debug-v2-", source)
+        self.assertIn("steps.swift_toolchain_identity.outputs.digest", source)
         self.assertIn("SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}", source)
         self.assertIn('--cache-observation "swift-strict=', source)
         self.assertIn("--pull-request-json", source)
         self.assertIn("pull-request-timeline.json", source)
+        self.assertIn("gh api --paginate --slurp", source)
         bundle = source[source.index("  bundle:") : source.index("  candidate_proof:")]
         self.assertLess(
             bundle.index("Restore or write the exact development-bundle Rust target cache"),

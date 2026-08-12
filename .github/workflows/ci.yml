@@ -612,12 +612,23 @@ jobs:
       - name: Verify App build toolchain
         run: ./script/validate_macos_build_contract.py toolchain
 
+      - name: Resolve exact Swift toolchain identity
+        id: swift_toolchain_identity
+        run: |
+          {
+            swift --version
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+          } >"$RUNNER_TEMP/swift-toolchain-identity.txt"
+          digest="$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain-identity.txt" | awk '{print $1}')"
+          printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+
       - name: Restore or write the one strict Swift debug cache
         id: swift_strict_cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v2-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved', 'script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v2-${{ steps.swift_toolchain_identity.outputs.digest }}-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved', 'script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
 
       - name: Run complete Swift suite and create source interaction proof
         env:
@@ -1111,9 +1122,10 @@ jobs:
           if [[ -n "$pr_number" ]]; then
             gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
               >"$RUNNER_TEMP/engineering-metrics/pull-request.json"
-            gh api \
+            gh api --paginate --slurp \
               -H 'Accept: application/vnd.github+json' \
               "repos/$GITHUB_REPOSITORY/issues/$pr_number/timeline?per_page=100" \
+              | jq 'add // []' \
               >"$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
             pr_inputs=(
               --pull-request-json "$RUNNER_TEMP/engineering-metrics/pull-request.json"
