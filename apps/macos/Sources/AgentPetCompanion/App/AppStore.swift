@@ -651,7 +651,6 @@ final class AppStore: ObservableObject {
     @Published private(set) var petAssetWarningIndex = PetAssetWarningIndex()
     @Published var events: [AgentEvent] = []
     @Published var recentEvents: [AgentEvent] = []
-    @Published var connections: [AgentConnectionStatus] = []
     @Published private(set) var onboarding: VersionedOnboardingProgress?
     @Published private(set) var onboardingMutationInFlight = false
     @Published private(set) var onboardingDismissedForCurrentLaunch = false
@@ -742,12 +741,19 @@ final class AppStore: ObservableObject {
     @Published private(set) var petpackImportProgress: PetLibraryImportProgress?
     @Published private(set) var petLibraryNotice: PetLibraryNotice?
     @Published private(set) var diagnosticsExportState = DiagnosticsExportState.idle
-    @Published private(set) var connectionOperationState = AgentConnectionOperationState.idle
     @Published private(set) var portableMakerSkillStatus: PortableMakerSkillStatus?
     @Published private(set) var portableMakerSkillOperation = PortableMakerSkillOperation.idle
     @Published private(set) var portableMakerSkillFailure: PortableMakerSkillFailure?
     @Published private(set) var manualAppInstallationRequest: AppManualInstallationRequest?
-    @Published private(set) var appUpdateConvergenceState = AppUpdateConvergenceState.idle
+    @Published private(set) var appUpdateConvergenceState = AppUpdateConvergenceState.idle {
+        didSet {
+            if case let .needsAttention(attention) = appUpdateConvergenceState {
+                connectionsModel.applyUpdateAttention(attention)
+            } else {
+                connectionsModel.applyUpdateAttention(nil)
+            }
+        }
+    }
 
     private let client: PetCoreClient
     private let overlayController: PetOverlayController
@@ -765,6 +771,7 @@ final class AppStore: ObservableObject {
     private let overlayPresenter: OverlayPresenter
     private let overlayKeyboardFocusHandler: OverlayKeyboardFocusHandler
     private let petCoreRequestOverride: PetCoreRequestOverride?
+    let connectionsModel = ConnectionsModel()
     let appUpdater: AppUpdateController
     private let productConvergenceSleeper: ProductConvergenceSleeper
     private let productConvergenceNoticePreferences: ProductConvergenceNoticePreferences
@@ -799,6 +806,7 @@ final class AppStore: ObservableObject {
     private var mainWindowPresenter: (() -> Void)?
     private weak var controlCenterWindow: NSWindow?
     private var controlCenterCloseObserver: AnyCancellable?
+    private var connectionsModelObservation: AnyCancellable?
     private(set) var controlCenterIsOpen = false
     private var pendingMainWindowPresentation = false
     private var pendingMainWindowPresentationChecksRuntimeHandoff = true
@@ -827,9 +835,6 @@ final class AppStore: ObservableObject {
     private var initialAppearanceFallbackTask: Task<Void, Never>?
     private var recoverySequence: UInt64 = 0
     private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
-    private var connectionOperationGate = AgentConnectionOperationGate()
-    private var automaticConnectionCheckRequested = false
-    private var automaticConnectionCheckTask: Task<Void, Never>?
     private var hasPresentedOverlay = false
     private var productConvergenceTask: Task<Void, Never>?
     private var productConvergenceVisibilityTask: Task<Void, Never>?
@@ -916,6 +921,7 @@ final class AppStore: ObservableObject {
             onReady: { store in await store.completeRuntimeBootstrap() },
             requiresAuthoritativeSnapshotOnReady: true
         )
+        configureConnectionsModel()
     }
 
     init(
@@ -990,6 +996,62 @@ final class AppStore: ObservableObject {
         self.productConvergenceNoticePreferences = productConvergenceNoticePreferences
         self.productConvergenceManifest = productConvergenceManifest
         self.productConvergenceUpgradeEvidence = productConvergenceUpgradeEvidence
+        configureConnectionsModel()
+    }
+
+    private func configureConnectionsModel() {
+        connectionsModel.configure(
+            request: { [weak self] method, params, timeout in
+                guard let self else {
+                    throw AgentConnectionOperationExecutionError(.transportUnavailable)
+                }
+                return try await self.requestPetCore(
+                    method: method,
+                    params: params,
+                    timeout: timeout
+                )
+            },
+            operationIsAvailable: { [weak self] in
+                guard let self else { return false }
+                return self.productConvergenceTask == nil
+            },
+            statusSink: { [weak self] status in
+                self?.statusText = status
+            },
+            failureSink: { [weak self] operation, reason in
+                self?.diagnostics.log(
+                    .error,
+                    category: "connections",
+                    event: "connection_operation_failed",
+                    metadata: [
+                        "operation": .string(operation.kind.rawValue),
+                        "reason": .string(reason.rawValue),
+                        "source_count": .integer(Int64(operation.sources.count)),
+                    ]
+                )
+            },
+            checkedSink: { [weak self] sources in
+                self?.reconcileProductConvergenceConnectorAttention(
+                    afterChecking: sources
+                )
+            },
+            refreshAfterMutationFailure: { [weak self] in
+                _ = await self?.refresh()
+            }
+        )
+        connectionsModelObservation = connectionsModel.objectWillChange.sink {
+            [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    var connections: [AgentConnectionStatus] {
+        get { connectionsModel.connections }
+        set { connectionsModel.replaceConnections(newValue) }
+    }
+
+    var connectionOperationState: AgentConnectionOperationState {
+        connectionsModel.operationState
     }
 
     var activePet: PetSummary? {
@@ -1076,11 +1138,11 @@ final class AppStore: ObservableObject {
     /// Compatibility projection for older callers. The typed operation state
     /// remains the single source of truth for serialization and failure UI.
     var connectionOperationSources: Set<AgentSource> {
-        Set(connectionOperationState.runningOperation?.sources ?? [])
+        connectionsModel.operationSources
     }
 
     var canStartConnectionOperation: Bool {
-        !connectionOperationState.isRunning && productConvergenceTask == nil
+        connectionsModel.canStartOperation
     }
 
     var activeOverlayEvent: AgentEvent? {
@@ -5466,7 +5528,7 @@ final class AppStore: ObservableObject {
     }
 
     func repairConnection(_ source: AgentSource) {
-        launchConnectionOperation(.init(kind: .repair, sources: [source]))
+        connectionsModel.repair(source)
     }
 
     func refreshPortableMakerSkillStatus() async {
@@ -5530,296 +5592,55 @@ final class AppStore: ObservableObject {
     }
 
     func repairConnections(_ sources: [AgentSource]) {
-        launchConnectionOperation(.init(kind: .repair, sources: sources))
+        connectionsModel.repair(sources)
     }
 
     func uninstallConnection(_ source: AgentSource) {
-        launchConnectionOperation(.init(kind: .uninstall, sources: [source]))
+        connectionsModel.uninstall(source)
     }
 
     func uninstallConnections(_ sources: [AgentSource]) {
-        launchConnectionOperation(.init(kind: .uninstall, sources: sources))
+        connectionsModel.uninstall(sources)
     }
 
     func checkConnection(_ source: AgentSource) {
-        launchConnectionOperation(.init(kind: .check, sources: [source]))
+        connectionsModel.check(source)
     }
 
     func checkConnections(_ sources: [AgentSource]) {
-        launchConnectionOperation(.init(kind: .check, sources: sources))
+        connectionsModel.check(sources)
     }
 
     func checkAllConnections() {
-        launchConnectionOperation(.init(kind: .check, sources: AgentSource.allCases))
+        connectionsModel.checkAll()
     }
 
-    /// Requests one full four-Agent runtime check for this App session.
-    ///
-    /// The Connections page may appear before the authoritative startup
-    /// snapshot or release connector convergence has finished. Keep the UI
-    /// responsive, publish the startup light projection immediately, and
-    /// begin the heavier host probes only after all four sources are loaded
-    /// and the serialized connection-operation gate is available.
     func requestAutomaticConnectionCheckOnFirstPresentation() {
-        guard !automaticConnectionCheckRequested else { return }
-        automaticConnectionCheckRequested = true
-
-        automaticConnectionCheckTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard self != nil else { return }
-
-                if self?.hasLoadedAllConnectionSources == true,
-                   self?.canStartConnectionOperation == true {
-                    let alreadyCurrent = self?.hasCurrentRuntimeConnectionStatusForEverySource
-                        == true
-                    self?.automaticConnectionCheckTask = nil
-                    if !alreadyCurrent {
-                        self?.checkAllConnections()
-                    }
-                    return
-                }
-
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            self?.automaticConnectionCheckTask = nil
-        }
-    }
-
-    private var hasLoadedAllConnectionSources: Bool {
-        AgentSource.allCases.allSatisfy { source in
-            connections.contains(where: { $0.source == source })
-        }
-    }
-
-    private var hasCurrentRuntimeConnectionStatusForEverySource: Bool {
-        AgentSource.allCases.allSatisfy { source in
-            connections.first(where: { $0.source == source })?.checkMode == .runtime
-        }
+        connectionsModel.requestAutomaticCheckOnFirstPresentation()
     }
 
     static func connectionOperationParameters(
         source: AgentSource? = nil
     ) -> [String: String] {
-        var params: [String: String] = [:]
-        if let source {
-            params["source"] = source.rawValue
-        }
-        return params
+        ConnectionsModel.operationParameters(source: source)
     }
 
     func sendConnectionTestEvent(_ source: AgentSource) {
-        launchConnectionOperation(.init(kind: .test, sources: [source]))
+        connectionsModel.sendTestEvent(source)
     }
 
     func retryConnectionOperation() {
-        guard let failure = connectionOperationState.failedOperation else { return }
-        launchConnectionOperation(failure.operation)
+        connectionsModel.retry()
     }
 
     func dismissConnectionOperationNotice() {
-        guard !connectionOperationState.isRunning else { return }
-        connectionOperationState = .idle
-    }
-
-    private func launchConnectionOperation(_ operation: AgentConnectionOperation) {
-        guard productConvergenceTask == nil else { return }
-        guard let permit = connectionOperationGate.begin(operation) else { return }
-        connectionOperationState = .running(operation)
-        statusText = connectionOperationStartedStatus(operation)
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let completion = try await self.performConnectionOperation(operation)
-                self.connectionOperationGate.finish(permit)
-                self.connectionOperationState = .succeeded(operation)
-                self.statusText = completion
-            } catch {
-                self.connectionOperationGate.finish(permit)
-                let reason = Self.connectionOperationFailureReason(for: error)
-                self.diagnostics.log(
-                    .error,
-                    category: "connections",
-                    event: "connection_operation_failed",
-                    metadata: [
-                        "operation": .string(operation.kind.rawValue),
-                        "reason": .string(reason.rawValue),
-                        "source_count": .integer(Int64(operation.sources.count))
-                    ]
-                )
-                self.connectionOperationState = .failed(.init(
-                    operation: operation,
-                    reason: reason
-                ))
-                self.statusText = self.connectionOperationFailurePrefix(operation)
-                if operation.kind == .repair || operation.kind == .uninstall {
-                    _ = await self.refresh()
-                }
-            }
-        }
-    }
-
-    private func performConnectionOperation(
-        _ operation: AgentConnectionOperation
-    ) async throws -> String {
-        switch operation.kind {
-        case .check:
-            return try await performConnectionCheck(operation.sources)
-        case .test:
-            guard let source = operation.sources.first else {
-                throw AgentConnectionOperationExecutionError(.invalidRequest)
-            }
-            let result = try await requestPetCore(
-                method: "connections.test",
-                params: ["source": source.rawValue],
-                timeout: .seconds(3)
-            )
-            guard (result as? [String: Any])?["ok"] as? Bool == true else {
-                throw AgentConnectionOperationExecutionError(.rejected)
-            }
-            // The diagnostic event is intentionally excluded from ordinary
-            // snapshots and connection evidence. Waiting for a full refresh
-            // here adds no state and can turn a lightweight test into a
-            // service-recovery operation that makes the UI appear stuck.
-            return "\(source.title) 本地连接测试通过"
-        case .repair:
-            return try await performConnectionRepair(operation.sources)
-        case .uninstall:
-            return try await performConnectionUninstall(operation.sources)
-        }
-    }
-
-    private func performConnectionCheck(_ sources: [AgentSource]) async throws -> String {
-        if sources == AgentSource.allCases {
-            let result = try await requestPetCore(
-                method: "connections.check",
-                params: Self.connectionOperationParameters()
-            )
-            let data = try JSONSerialization.data(withJSONObject: result)
-            connections = try JSONDecoder().decode([AgentConnectionStatus].self, from: data)
-            sortConnections()
-            reconcileProductConvergenceConnectorAttention(
-                afterChecking: Set(sources)
-            )
-            return "连接检查完成"
-        }
-
-        for source in sources {
-            let result = try await requestPetCore(
-                method: "connections.check",
-                params: Self.connectionOperationParameters(source: source)
-            )
-            try updateConnectionStatus(from: result)
-        }
-        reconcileProductConvergenceConnectorAttention(
-            afterChecking: Set(sources)
-        )
-        return sources.count == 1
-            ? "\(sources[0].title) 检查完成"
-            : "\(sources.count) 个 Agent 连接检查完成"
-    }
-
-    private func performConnectionRepair(_ sources: [AgentSource]) async throws -> String {
-        var repaired: [String] = []
-        var pending: [String] = []
-        var failed: [String] = []
-        for source in sources {
-            do {
-                let result = try await requestPetCore(
-                    method: "connections.repair",
-                    params: Self.connectionOperationParameters(source: source)
-                )
-                let status = try updateConnectionStatus(from: result)
-                if unresolvedConnectionItemCount(status) == 0 {
-                    repaired.append(source.shortTitle)
-                } else {
-                    pending.append(source.shortTitle)
-                }
-            } catch {
-                failed.append(source.shortTitle)
-            }
-        }
-        sortConnections()
-        if !failed.isEmpty {
-            throw AgentConnectionOperationExecutionError(.partialFailure)
-        }
-        return pending.isEmpty
-            ? "连接修复完成：\(repaired.joined(separator: "、"))"
-            : "修复已执行，仍需处理：\(pending.joined(separator: "、"))"
-    }
-
-    private func performConnectionUninstall(_ sources: [AgentSource]) async throws -> String {
-        var uninstalled: [String] = []
-        var pending: [String] = []
-        var failed: [String] = []
-        for source in sources {
-            do {
-                let result = try await requestPetCore(
-                    method: "connections.uninstall",
-                    params: ["source": source.rawValue]
-                )
-                let status = try updateConnectionStatus(from: result)
-                if status.hasInstalledConnectorArtifacts {
-                    pending.append(source.shortTitle)
-                } else {
-                    uninstalled.append(source.shortTitle)
-                }
-            } catch {
-                failed.append(source.shortTitle)
-            }
-        }
-        sortConnections()
-        if !failed.isEmpty {
-            throw AgentConnectionOperationExecutionError(.partialFailure)
-        }
-        return pending.isEmpty
-            ? "连接卸载完成：\(uninstalled.joined(separator: "、"))"
-            : "卸载已执行，仍需处理：\(pending.joined(separator: "、"))"
-    }
-
-    private func connectionOperationStartedStatus(
-        _ operation: AgentConnectionOperation
-    ) -> String {
-        let names = operation.sources.map(\.shortTitle).joined(separator: "、")
-        return switch operation.kind {
-        case .check: "正在检查 \(names)"
-        case .test: "正在测试 \(names) 的 PetCore 通道"
-        case .repair: "正在修复 \(names)"
-        case .uninstall: "正在卸载 \(names)"
-        }
-    }
-
-    private func connectionOperationFailurePrefix(
-        _ operation: AgentConnectionOperation
-    ) -> String {
-        switch operation.kind {
-        case .check: "连接检查失败"
-        case .test: "通道自检失败"
-        case .repair: "连接修复失败"
-        case .uninstall: "连接卸载失败"
-        }
+        connectionsModel.dismissNotice()
     }
 
     static func connectionOperationFailureReason(
         for error: Error
     ) -> AgentConnectionOperationFailureReason {
-        if let error = error as? AgentConnectionOperationExecutionError {
-            return error.reason
-        }
-        if let error = error as? PetCoreClientError {
-            return switch error {
-            case .socketPathTooLong, .connectFailed, .writeFailed:
-                .transportUnavailable
-            case .invalidResponse:
-                .invalidResponse
-            case .rpcError, .rpcErrorResponse:
-                .rejected
-            }
-        }
-        if error is PetCoreTransportError {
-            return .transportUnavailable
-        }
-        return .unknown
+        ConnectionsModel.failureReason(for: error)
     }
 
     func toggleOverlay() {
@@ -7064,20 +6885,6 @@ final class AppStore: ObservableObject {
         )
     }
 
-    @discardableResult
-    private func updateConnectionStatus(from result: Any) throws -> AgentConnectionStatus {
-        let data = try JSONSerialization.data(withJSONObject: result)
-        let status = try JSONDecoder().decode(AgentConnectionStatus.self, from: data)
-        connections.removeAll { $0.source == status.source }
-        connections.append(status)
-        sortConnections()
-        return status
-    }
-
-    private func unresolvedConnectionItemCount(_ status: AgentConnectionStatus) -> Int {
-        status.blockingItems.count
-    }
-
     private func reconcileProductConvergenceConnectorAttention(
         afterChecking checkedSources: Set<AgentSource>
     ) {
@@ -7123,23 +6930,8 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func sortConnections() {
-        connections.sort {
-            let lhs = AgentSource.allCases.firstIndex(of: $0.source) ?? 0
-            let rhs = AgentSource.allCases.firstIndex(of: $1.source) ?? 0
-            return lhs < rhs
-        }
-    }
-
     func applyAuthoritativeConnectionSnapshot(_ snapshotConnections: [AgentConnectionStatus]) {
-        let sorted = snapshotConnections.sorted {
-            let lhs = AgentSource.allCases.firstIndex(of: $0.source) ?? 0
-            let rhs = AgentSource.allCases.firstIndex(of: $1.source) ?? 0
-            return lhs < rhs
-        }
-        if connections != sorted {
-            connections = sorted
-        }
+        connectionsModel.replaceConnections(snapshotConnections)
     }
 
     private func currentOverlayPlacement() -> OverlayPlacement {

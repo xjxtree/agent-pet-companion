@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "engineering",
+  "summary_en": "Development work now uses typed domain claims, focused local validation, lower-cost CI, and modular Rust and Swift ownership boundaries.",
+  "summary_zh": "开发流程现采用类型化领域声明、聚焦本地验证、更低成本的 CI，以及模块化的 Rust 与 Swift 所有权边界。"
+}

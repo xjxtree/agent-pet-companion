@@ -27,9 +27,7 @@ OVERLAY_SWIFT_FILES = {
     "apps/macos/Tests/AgentPetCompanionTests/PetFramePipelineTests.swift",
 }
 LOCALIZATION_PREFIX = (
-    "apps/macos/Sources/AgentPetCompanion/Resources/Localizable.xcstrings",
-    "apps/macos/Sources/AgentPetCompanion/Resources/en.lproj/",
-    "apps/macos/Sources/AgentPetCompanion/Resources/zh-Hans.lproj/",
+    "apps/macos/Sources/AgentPetCompanion/Resources/Localization/",
 )
 BUNDLE_SCRIPT_PATHS = {
     "script/build_and_run.sh",
@@ -49,7 +47,9 @@ def has_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def is_localization(path: str) -> bool:
-    return has_prefix(path, LOCALIZATION_PREFIX)
+    return has_prefix(path, LOCALIZATION_PREFIX) or path.endswith(
+        "LocalizationKeys.swift"
+    )
 
 
 def is_overlay_swift(path: str) -> bool:
@@ -112,7 +112,7 @@ def classify(paths: list[str]) -> ValidationScope:
     swift_inputs = [
         path
         for path in normalized
-        if path.endswith(".swift")
+        if (path.endswith(".swift") and not is_localization(path))
         or path in {"apps/macos/Package.swift", "apps/macos/Package.resolved"}
     ]
     if not swift_inputs:

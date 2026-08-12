@@ -464,6 +464,7 @@ private struct MainWindowContent: View {
             } else {
                 ContentView()
                     .environmentObject(store)
+                    .environmentObject(store.connectionsModel)
                     .sheet(isPresented: appModalSheetIsPresented) {
                         if let request = store.manualAppInstallationRequest {
                             AppManualInstallationGuideView(request: request) {

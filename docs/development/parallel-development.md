@@ -18,6 +18,19 @@
 - The main Agent owns train creation, dependency order, shared schemas/manifests/version files, changelog consolidation, the final train PR, and conflict resolution. / 主 Agent 负责 train 创建、依赖顺序、共享 schema/manifest/版本文件、变更日志汇总、最终 train PR 与冲突处理。
 - Sub-Agents never commit directly into another Agent's branch or the train branch. Their unit of handoff is a task PR. / 子 Agent 不直接写入其他 Agent 分支或 train 分支；任务 PR 是唯一交接单元。
 
+`development/domains.json` is the typed ownership source for domain paths, dependencies, focused tests, CI flags, shared-path risk, and parallel sub-claims. Register the exact domain/claim before editing. Amber paths require explicit approval; Red paths additionally require the control-plane owner. `development_flow.py conflicts` compares active claims and merge trees so overlap is rejected before handoff instead of discovered during train integration. / `development/domains.json` 是领域路径、依赖、聚焦测试、CI 标记、共享路径风险和并行子声明的类型化所有权来源。编辑前必须登记精确 domain/claim；Amber 路径需显式批准，Red 路径还要求控制面 owner。冲突命令同时比较活动声明与 merge tree，使冲突在交接前被拒绝。
+
+```bash
+./script/development_domains.py validate
+./script/development_flow.py branch-claim \
+  --worktree /absolute/path/to/worktree \
+  --domain agent-connections \
+  --claim pi-adapter \
+  --apply
+./script/development_flow.py conflicts
+./script/validate_local_tests.sh --plan-only
+```
+
 The coordinator starts one shared train and task worktrees from explicit remote bases. Commands are plans unless `--apply` is present; shared state lives under Git's common directory so all worktrees see the same active train. / 协调者从明确的远端基线创建一个共享 train 和各任务 worktree。未给出 `--apply` 时命令只输出计划；共享状态位于 Git common directory，因此全部 worktree 能看到同一活动 train。
 
 ```bash
@@ -44,7 +57,7 @@ For direct work, pass `--hotfix` or `--small`; for an explicit train, pass `--la
 
 Every direct, task-to-train, and final train handoff uses the same explicit lifecycle. A changed file is not delivered merely because it exists in a worktree: it must be intentionally staged, committed, observed in a clean worktree, pushed, and represented by the expected PR head/base. / direct、task→train 与最终 train 的每次交付都必须执行同一套显式生命周期。文件只存在于 worktree 中不等于已经交付；它必须被明确暂存、提交，在干净 worktree 中复核，推送，并由预期 head/base 的 PR 承载。
 
-1. Confirm that the current branch, recorded base, owned paths, and changelog mode match the chosen lane. Inspect `git status --short` and the complete diff; do not mix another Agent's paths, generated output, credentials, `.env`, DerivedData, or temporary assets. / 确认当前分支、记录的 base、所属路径与 changelog 模式符合所选通道；检查完整状态与 diff，不混入其他 Agent 路径、生成物、凭据或临时文件。
+1. Confirm that the current branch, recorded base, domain claim, approved shared paths, and changelog mode match the chosen lane. Inspect `git status --short` and the complete diff; do not mix another Agent's paths, generated output, credentials, `.env`, DerivedData, or temporary assets. / 确认当前分支、基线、领域声明、获批共享路径与变更日志模式符合通道；检查完整状态与 diff，不混入其他 Agent 路径、生成物、凭据或临时文件。
 2. Run `git diff --check` and `./script/validate_pre_push.sh`. The fast local gate is required; the larger remote matrix remains authoritative. / 运行空白检查与本地快速门禁；本地快速门禁是必选项，远端大矩阵仍是权威结果。
 3. Stage only the intended paths with an explicit `git add -- <paths...>`. `git add -A` is permitted only after the whole worktree has been deliberately confirmed as one scope. Audit the index with `git diff --cached --check`, `git diff --cached --stat`, and, when needed, the full cached diff. / 使用显式路径只暂存本次范围；仅在已明确确认整个 worktree 都属于同一范围时才可使用 `git add -A`，随后检查 index 的空白、统计与完整 diff。
 4. Commit the staged change, then require `git status --short` to be empty. A successful commit with remaining modified or untracked files is an incomplete handoff and must not be pushed as complete. / 提交后必须确认 `git status --short` 为空；commit 成功但仍有修改或未跟踪文件，仍属于不完整交付，不能按已完成状态推送。
@@ -90,7 +103,7 @@ PRs that change the CI/Release/merge/proof/ruleset control-plane inventory are i
 
 ## Changelog and final train integration / 变更日志与 train 收口
 
-A train task PR adds one `changes/unreleased/*.json` fragment per user-visible change instead of editing the shared root changelog. Before the final train PR becomes ready, the coordinator consumes every fragment, resolves shared-file conflicts, and runs the local fast gate. Direct PRs update `[Unreleased]` directly and leave no fragments. / train 任务 PR 为每项用户可见变化添加一个 JSON 片段，不直接修改共享根变更日志。最终 train PR ready 前，协调者汇总所有片段、解决共享文件冲突并运行本地快速门禁；direct PR 直接更新 `[Unreleased]` 且不得遗留片段。
+Every development lane adds one globally unique `changes/unreleased/*.json` fragment per user-visible change and leaves root `CHANGELOG.md` untouched. CI rejects duplicate IDs, malformed fragments, direct root-changelog edits, and development-time consumption. An explicit release-preparation branch freezes the complete fragment set, consumes it once, verifies the release section, and leaves no unconsumed fragment. / 所有开发通道均为每项用户可见变化添加全局唯一 JSON 片段，且不修改根变更日志。CI 会拒绝重复 ID、错误格式、开发阶段直接改根日志或提前汇总。显式 release-preparation 分支会冻结完整片段集、一次性汇总并验证版本段，最终不得残留未汇总片段。
 
 ```bash
 ./script/changelog_fragments.py create \
@@ -101,6 +114,11 @@ A train task PR adds one `changes/unreleased/*.json` fragment per user-visible c
   --summary-zh "Pi 气泡保留最新的 Agent 回复。" \
   --apply
 
+./script/changelog_fragments.py policy \
+  --base-ref origin/main \
+  --release-preparation false
+
+# Release-preparation branch only, after the fragment freeze:
 ./script/changelog_fragments.py consume --apply
 ./script/validate_pre_push.sh
 ```

@@ -45,11 +45,11 @@ docs/
 - Keep changes scoped to the user's request, the product baseline, and the architecture already present in the repo.
 - Treat local `main` as read-only. Choose either a direct PR to `main` for a hotfix/small isolated change or a task PR to the main Agent's shared `gd-ops/train/*` for parallel/cross-component work; the train then opens one final PR to `main`. Follow [parallel development](docs/development/parallel-development.md).
 - Give every Agent/session an independent `gd-ops/task/*` or `gd-ops/fix/*` branch and worktree. One Agent owns each write path; sub-Agents hand work off by PR and never write directly into the train or another Agent's branch.
-- The main Agent coordinates a shared train, shared schemas/manifests/version files, changelog-fragment consolidation, dependency order, and the final train PR. Train tasks record user-visible changes under `changes/unreleased/`; direct and final train PRs consume them into root `CHANGELOG.md`.
+- The main Agent coordinates a shared train, shared schemas/manifests/version files, changelog-fragment consolidation, dependency order, and the final train PR. Every development lane records user-visible changes under `changes/unreleased/`; only an explicit release-preparation branch may consume fragments into root `CHANGELOG.md`.
 - Before any handoff, explicitly stage the intended paths, audit the cached diff, commit, require a clean worktree, then push/open and verify the PR. After merge, the coordinator audits every worktree and local branch, fast-forwards local `main` only in a dedicated clean worktree, and removes only owned clean branches whose merged PR and deleted remote ref are proven. Follow the complete [commit and cleanup checklist](docs/development/parallel-development.md).
 - Prefer typed schemas and structured parsers over ad hoc string parsing.
 - Keep user-facing text bilingual when it belongs in public documentation or product onboarding.
-- Record user-visible changes under `[Unreleased]` in root `CHANGELOG.md`; every GitHub Release, tag, and changelog version must match one-to-one.
+- Record user-visible development changes as globally unique typed fragments under `changes/unreleased/`. Release preparation freezes the fragment set, consumes it into root `CHANGELOG.md`, and preserves the one-to-one GitHub Release/tag/changelog version contract.
 - Avoid committing generated build output, local credentials, `.env` files, DerivedData, or temporary pet assets.
 - Do not read agent auth, token, cookie, API key, or secret files. The app should only consume explicit local event channels and capability tokens designed for this project.
 - When adding code, include the smallest useful tests or validation steps for the changed behavior.

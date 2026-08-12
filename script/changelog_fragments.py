@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -17,6 +18,10 @@ from typing import Any, NoReturn
 SCHEMA_VERSION = "apc.changelog-fragment.v1"
 CATEGORIES = ("Added", "Changed", "Fixed", "Deprecated", "Removed", "Security")
 FRAGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}[.]json")
+FRAGMENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+FRAGMENT_MARKER = re.compile(r"<!--[ ]apc-fragment:([A-Za-z0-9][A-Za-z0-9._-]{0,79})[ ]-->")
+VERSION = re.compile(r"[0-9]+[.][0-9]+[.][0-9]+")
+RELEASE_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 SCOPE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 HEADINGS = {
     "Added": "### Added / 新增",
@@ -40,8 +45,15 @@ class Fragment:
     summary_en: str
     summary_zh: str
 
+    @property
+    def id(self) -> str:
+        return self.path.stem
+
     def markdown(self) -> str:
-        return f"- {self.summary_en}\n\n  {self.summary_zh}\n"
+        return (
+            f"<!-- apc-fragment:{self.id} -->\n"
+            f"- {self.summary_en}\n\n  {self.summary_zh}\n"
+        )
 
 
 def bounded_sentence(value: Any, field: str) -> str:
@@ -86,11 +98,26 @@ def parse_fragment(path: pathlib.Path) -> Fragment:
     )
 
 
+def consumed_fragment_ids(root: pathlib.Path) -> set[str]:
+    changelog = root / "CHANGELOG.md"
+    if not changelog.is_file() or changelog.is_symlink() or changelog.stat().st_size > 4 * 1024 * 1024:
+        fail("CHANGELOG.md must be a bounded regular file")
+    ids = FRAGMENT_MARKER.findall(changelog.read_text(encoding="utf-8"))
+    if len(ids) != len(set(ids)):
+        fail("CHANGELOG.md contains duplicate changelog fragment ids")
+    return set(ids)
+
+
 def fragments(root: pathlib.Path) -> list[Fragment]:
     directory = root / "changes/unreleased"
     if not directory.is_dir():
         fail("changes/unreleased directory is missing")
-    return [parse_fragment(path) for path in sorted(directory.glob("*.json"))]
+    items = [parse_fragment(path) for path in sorted(directory.glob("*.json"))]
+    consumed = consumed_fragment_ids(root)
+    duplicate = sorted(item.id for item in items if item.id in consumed)
+    if duplicate:
+        fail("changelog fragment id was already consumed: " + ", ".join(duplicate))
+    return items
 
 
 def render(items: list[Fragment]) -> str:
@@ -140,6 +167,93 @@ def insert_fragments(changelog: str, items: list[Fragment]) -> str:
     return changelog[:unreleased] + section.rstrip() + "\n" + changelog[next_version:]
 
 
+def freeze_release(changelog: str, version: str, release_date: str) -> str:
+    if VERSION.fullmatch(version) is None:
+        fail("release version must be semantic X.Y.Z")
+    if RELEASE_DATE.fullmatch(release_date) is None:
+        fail("release date must be YYYY-MM-DD")
+    if f"## [{version}] - " in changelog:
+        fail(f"CHANGELOG already contains release version {version}")
+    heading = "## [Unreleased]"
+    start = changelog.find(heading)
+    if start < 0:
+        fail("CHANGELOG is missing [Unreleased]")
+    body_start = start + len(heading)
+    next_version = changelog.find("\n## [", body_start)
+    if next_version < 0:
+        next_version = len(changelog)
+    body = changelog[body_start:next_version].strip()
+    if not body:
+        fail("release preparation cannot freeze an empty [Unreleased] section")
+    released = f"## [{version}] - {release_date}\n\n{body}"
+    return (
+        changelog[:start]
+        + "## [Unreleased]\n\n"
+        + released
+        + changelog[next_version:]
+    )
+
+
+def git_changed_paths(root: pathlib.Path, base_ref: str) -> set[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "-z", base_ref, "HEAD", "--"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    return {
+        os.fsdecode(item)
+        for item in result.stdout.split(b"\0")
+        if item
+    }
+
+
+def validate_pr_policy(
+    root: pathlib.Path,
+    *,
+    base_ref: str,
+    release_preparation: bool,
+) -> None:
+    items = fragments(root)
+    changed = git_changed_paths(root, base_ref)
+    root_changed = "CHANGELOG.md" in changed
+    fragment_changes = sorted(
+        path for path in changed if path.startswith("changes/unreleased/") and path.endswith(".json")
+    )
+    deleted_fragments = []
+    if fragment_changes:
+        result = subprocess.run(
+            ["git", "diff", "--name-status", "-z", base_ref, "HEAD", "--", "changes/unreleased"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+        fields = [os.fsdecode(item) for item in result.stdout.split(b"\0") if item]
+        deleted_fragments = [fields[index + 1] for index in range(0, len(fields) - 1, 2) if fields[index].startswith("D")]
+
+    if release_preparation:
+        if not root_changed:
+            fail("release preparation must update CHANGELOG.md")
+        if items:
+            fail("release preparation must consume every unreleased fragment")
+        version_sections = re.findall(
+            r"^## \[([0-9]+[.][0-9]+[.][0-9]+)\] - ([0-9]{4}-[0-9]{2}-[0-9]{2})$",
+            (root / "CHANGELOG.md").read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        if not version_sections:
+            fail("release preparation must contain one versioned changelog section")
+        return
+
+    if root_changed:
+        fail(
+            "ordinary development PRs must not edit CHANGELOG.md; create a fragment with "
+            "./script/changelog_fragments.py create ... --apply"
+        )
+    if deleted_fragments:
+        fail("only a release preparation PR may consume changelog fragments")
+
+
 def atomic_write(path: pathlib.Path, content: str) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -164,6 +278,10 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("render")
     subparsers.add_parser("require-consumed")
 
+    policy = subparsers.add_parser("policy")
+    policy.add_argument("--base-ref", required=True)
+    policy.add_argument("--release-preparation", choices=("true", "false"), required=True)
+
     create = subparsers.add_parser("create")
     create.add_argument("--id", required=True)
     create.add_argument("--kind", choices=CATEGORIES, required=True)
@@ -173,6 +291,9 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--apply", action="store_true")
 
     consume = subparsers.add_parser("consume")
+    consume.add_argument("--release-preparation", action="store_true")
+    consume.add_argument("--version")
+    consume.add_argument("--date")
     consume.add_argument("--apply", action="store_true")
     return parser.parse_args()
 
@@ -201,6 +322,8 @@ def main() -> int:
             return 0
         if target.exists():
             fail(f"fragment already exists: {target.name}")
+        if args.id in consumed_fragment_ids(root):
+            fail(f"fragment id was already consumed: {args.id}")
         atomic_write(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         parse_fragment(target)
         print(target)
@@ -214,19 +337,31 @@ def main() -> int:
     elif args.command == "require-consumed":
         if items:
             fail("main-bound changes must consume all changelog fragments: " + ", ".join(item.path.name for item in items))
+    elif args.command == "policy":
+        validate_pr_policy(
+            root,
+            base_ref=args.base_ref,
+            release_preparation=args.release_preparation == "true",
+        )
+        print("Changelog PR policy ok")
     elif args.command == "consume":
+        if not args.release_preparation:
+            fail("consume is restricted to an explicit release preparation")
+        if not args.version or not args.date:
+            fail("release preparation consume requires --version and --date")
         if not args.apply:
             print(render(items), end="")
             return 0
-        if not items:
-            print("Consumed 0 changelog fragment(s) into CHANGELOG.md")
-            return 0
         changelog = root / "CHANGELOG.md"
         updated = insert_fragments(changelog.read_text(encoding="utf-8"), items)
+        updated = freeze_release(updated, args.version, args.date)
         atomic_write(changelog, updated)
         for item in items:
             item.path.unlink()
-        print(f"Consumed {len(items)} changelog fragment(s) into CHANGELOG.md")
+        print(
+            f"Consumed {len(items)} changelog fragment(s) into "
+            f"CHANGELOG.md release {args.version}"
+        )
     return 0
 
 

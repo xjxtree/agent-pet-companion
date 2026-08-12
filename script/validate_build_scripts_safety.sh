@@ -47,7 +47,11 @@ RELEASE_SCRIPTS=(
   "$ROOT_DIR/script/validate_rust_test_shards.py"
   "$ROOT_DIR/script/configure_main_branch_ruleset.py"
   "$ROOT_DIR/script/development_flow.py"
+  "$ROOT_DIR/script/development_domains.py"
+  "$ROOT_DIR/script/engineering_metrics.py"
   "$ROOT_DIR/script/changelog_fragments.py"
+  "$ROOT_DIR/script/swift_build_artifact.py"
+  "$ROOT_DIR/script/validate_local_tests.py"
   "$ROOT_DIR/script/validate_overlay_interaction.sh"
   "$ROOT_DIR/script/prepare_interaction_attestation.sh"
   "$ROOT_DIR/script/verify_release_candidate_digests.sh"
@@ -96,8 +100,9 @@ fi
 # compile-only, while CI owns complete tests, source proof, and App assembly.
 rg -Fq './script/validation_scope.py' "$CI_WORKFLOW"
 rg -Fq './script/development_flow.py ci-context' "$CI_WORKFLOW"
-rg -Fq './script/changelog_fragments.py validate' "$CI_WORKFLOW"
-rg -Fq './script/changelog_fragments.py require-consumed' "$CI_WORKFLOW"
+rg -Fq './script/changelog_fragments.py policy' "$CI_WORKFLOW"
+rg -Fq -- '--release-preparation "${{ needs.scope.outputs.release_preparation }}"' "$CI_WORKFLOW"
+rg -Fq 'needs.scope.outputs.actionable' "$CI_WORKFLOW"
 rg -Fq "needs.scope.outputs.full_candidate == '1'" "$CI_WORKFLOW"
 rg -Fq "needs.scope.outputs.release_source == '1'" "$CI_WORKFLOW"
 if rg -Fq './script/validate_pre_push.sh' "$CI_WORKFLOW"; then
@@ -131,7 +136,14 @@ rg -Fq "needs.promotion.outputs.promoted != '1'" "$CI_WORKFLOW"
 rg -Fq './script/release_source_proof.py create' "$CI_WORKFLOW"
 rg -Fq './script/validate_event_storm.sh' "$CI_WORKFLOW"
 rg -Fq 'runs-on: macos-26' "$CI_WORKFLOW"
+rg -Fq 'runs-on: ubuntu-24.04' "$CI_WORKFLOW"
 rg -Fq './script/validate_macos_build_contract.py toolchain' "$CI_WORKFLOW"
+rg -Fq 'cargo test -p petcore --test integration_c process_runner:: --locked' "$CI_WORKFLOW"
+rg -Fq 'cargo test -p petcore-cli --test integration petpack_build_metadata:: --locked' "$CI_WORKFLOW"
+rg -Fq 'cargo test -p petcore --test integration_d daemon_lifecycle:: --locked' "$CI_WORKFLOW"
+rg -Fq 'ci-swift-debug-products-${{ github.sha }}' "$CI_WORKFLOW"
+rg -Fq './script/swift_build_artifact.py restore' "$CI_WORKFLOW"
+rg -Fq './script/engineering_metrics.py' "$CI_WORKFLOW"
 rg -Fq 'Rebind source interaction proof to the development build identity' "$CI_WORKFLOW"
 rg -Fq -- '--proof-in "$RUNNER_TEMP/interaction-proof/interaction-attestation.json"' "$CI_WORKFLOW"
 rg -Fq 'APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}' "$CI_WORKFLOW"
@@ -141,6 +153,42 @@ if [[ "$(rg -c 'exit 1 ;;' "$CI_WORKFLOW")" -lt 4 ]]; then
   echo 'CI result aggregation must fail explicitly instead of relying on shell loop status' >&2
   exit 1
 fi
+python3 - "$CI_WORKFLOW" "$WORKFLOW" <<'PY'
+import pathlib
+import re
+import sys
+
+ci = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+release = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+
+def job(source: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-zA-Z0-9_]+:\n|\Z)", source
+    )
+    if match is None:
+        raise SystemExit(f"workflow job is missing: {name}")
+    return match.group(1)
+
+for portable in ("scope", "static", "portable_contracts", "cargo_source", "rust_lint", "rust_test_build", "rust_tests", "rust_test_proof", "stress", "required"):
+    if "runs-on: ubuntu-24.04" not in job(ci, portable):
+        raise SystemExit(f"portable job must run on Ubuntu: {portable}")
+for native in ("macos_contracts", "macos_platform", "swift_interaction", "overlay", "bundle", "candidate_proof", "source_proof"):
+    if "runs-on: macos-26" not in job(ci, native):
+        raise SystemExit(f"platform/proof job must run on macOS 26: {native}")
+bundle = job(ci, "bundle")
+overlay = job(ci, "overlay")
+swift = job(ci, "swift_interaction")
+if "needs: [scope, promotion, swift_interaction]" not in bundle or "overlay" in bundle.split("if:", 1)[0]:
+    raise SystemExit("bundle must consume Swift proof in parallel with overlay")
+if "swift_build_artifact.py restore" not in bundle or "swift_build_artifact.py restore" not in overlay:
+    raise SystemExit("both Swift consumers must restore the exact build artifact")
+if "swift_build_artifact.py create" not in swift:
+    raise SystemExit("Swift interaction must be the only exact artifact producer")
+if "restore-keys:" in ci or "restore-keys:" in release:
+    raise SystemExit("CI/Release caches must not use cross-identity prefix fallbacks")
+if "matrix.architecture" not in job(release, "build_archives"):
+    raise SystemExit("Release build cache identity must include architecture")
+PY
 rg -Fq 'RULESET_NAME = "Protected default branch"' \
   "$ROOT_DIR/script/configure_main_branch_ruleset.py"
 rg -Fq 'REQUIRED_CHECK = "Required CI"' \
@@ -210,6 +258,8 @@ done
 rg -Fq '"$ROOT_DIR/script/validate_swift_tests.sh" --scope "$SWIFT_SCOPE"' \
   "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'swift "${ARGS[@]}"' "$ROOT_DIR/script/validate_swift_tests.sh"
+rg -Fq -- '-Xswiftc -strict-concurrency=complete' "$ROOT_DIR/script/validate_swift_tests.sh"
+rg -Fq -- '-Xswiftc -warnings-as-errors' "$ROOT_DIR/script/validate_swift_tests.sh"
 rg -Fq -- '--attestation-out' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'interaction-contract-files.txt' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'petpack verify-production-interaction' \
@@ -355,6 +405,7 @@ if rg -q 'self-hosted' "$WORKFLOW"; then
   exit 1
 fi
 rg -Fq 'architecture: [arm64, x86_64]' "$WORKFLOW"
+rg -Fq '${{ matrix.architecture == '\''arm64'\'' && '\''aarch64-apple-darwin'\'' || '\''x86_64-apple-darwin'\'' }}-release-' "$WORKFLOW"
 rg -Fq 'run: ./script/build_release.sh --github-release --source-gate-proven --arch "${{ matrix.architecture }}"' \
   "$WORKFLOW"
 rg -q 'validate_github_release_artifacts.sh' "$WORKFLOW"
@@ -508,7 +559,11 @@ PY
 "$ROOT_DIR/script/validate_rust_test_shards.py" --help >/dev/null
 "$ROOT_DIR/script/configure_main_branch_ruleset.py" --help >/dev/null
 "$ROOT_DIR/script/development_flow.py" --help >/dev/null
+"$ROOT_DIR/script/development_domains.py" --help >/dev/null
+"$ROOT_DIR/script/engineering_metrics.py" --help >/dev/null
 "$ROOT_DIR/script/changelog_fragments.py" --help >/dev/null
+"$ROOT_DIR/script/swift_build_artifact.py" --help >/dev/null
+"$ROOT_DIR/script/validate_local_tests.py" --help >/dev/null
 
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$ROOT_DIR/script/tests/test_validation_tooling.py"

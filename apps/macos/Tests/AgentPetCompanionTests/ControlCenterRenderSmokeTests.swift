@@ -76,6 +76,7 @@ struct ControlCenterRenderSmokeTests {
     ) throws -> NSBitmapImageRep {
         let root = view
             .environmentObject(store)
+            .environmentObject(store.connectionsModel)
             .environment(\.controlCenterShellMode, .allColumns)
             .frame(width: size.width, height: size.height)
             .environment(\.colorScheme, .dark)

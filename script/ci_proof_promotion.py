@@ -25,9 +25,13 @@ MERGE_TICKET_SCHEMA_VERSION = "apc.ci-merge-ticket.v1"
 WORKFLOW_PATH = ".github/workflows/ci.yml"
 EXPECTED_GATES = [
     "bundle",
-    "contracts",
+    "macos-contracts",
+    "macos-platform",
     "overlay",
+    "portable-contracts",
     "rust-lint",
+    "rust-test-build",
+    "rust-test-proof",
     "rust-tests",
     "static",
     "stress",
@@ -44,9 +48,13 @@ CONTROL_PLANE_FILES = [
     ".github/workflows/auto-merge.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
+    "development/domains.json",
+    "script/changelog_fragments.py",
     "script/ci_proof_promotion.py",
     "script/configure_main_branch_ruleset.py",
+    "script/development_domains.py",
     "script/development_flow.py",
+    "script/engineering_metrics.py",
     "script/interaction-contract-files.txt",
     "script/prepare_interaction_attestation.sh",
     "script/release_source_proof.py",
@@ -60,7 +68,7 @@ CONTROL_PLANE_FILES = [
 ]
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
-HEAD_PATTERN = re.compile(r"gd-ops/(?:task|fix|train)/[A-Za-z0-9._-]+")
+HEAD_PATTERN = re.compile(r"gd-ops/(?:task|fix|train|release)/[A-Za-z0-9._-]+")
 ARTIFACT_PATTERN = re.compile(r"ci-candidate-proof-([0-9a-f]{40})")
 MERGE_TICKET_ARTIFACT_PATTERN = re.compile(
     r"ci-merge-ticket-([1-9][0-9]*)-([1-9][0-9]*)"
@@ -501,6 +509,8 @@ def create_merge_ticket(args: Namespace) -> None:
     expected_lane = (
         "train-to-main"
         if args.base_ref == "main" and args.head_ref.startswith("gd-ops/train/")
+        else "release-preparation-to-main"
+        if args.base_ref == "main" and args.head_ref.startswith("gd-ops/release/")
         else "direct-to-main"
         if args.base_ref == "main"
         else "task-to-train"
@@ -557,6 +567,8 @@ def validate_merge_ticket(args: Namespace) -> dict[str, Any]:
     expected_lane = (
         "train-to-main"
         if args.base_ref == "main" and args.head_ref.startswith("gd-ops/train/")
+        else "release-preparation-to-main"
+        if args.base_ref == "main" and args.head_ref.startswith("gd-ops/release/")
         else "direct-to-main"
         if args.base_ref == "main"
         else "task-to-train"
@@ -1110,6 +1122,22 @@ def promote(args: Namespace) -> dict[str, int | str]:
     return metadata
 
 
+def promotion_failure_category(error: BaseException) -> str:
+    """Map promotion failures to a closed, non-sensitive observability category."""
+    message = str(error).lower()
+    if "control plane changed" in message:
+        return "control-plane-change"
+    if "expired" in message:
+        return "expired"
+    if "ambiguous" in message or "exactly one" in message or "multiple" in message:
+        return "ambiguous"
+    if any(token in message for token in ("tree", "parents", "does not match", "mismatch")):
+        return "tree-mismatch"
+    if any(token in message for token in ("artifact", "proof", "attestation")):
+        return "missing-artifact"
+    return "unavailable"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1138,7 +1166,12 @@ def main() -> int:
     ticket_parser.add_argument("--run-attempt", required=True, type=int)
     ticket_parser.add_argument(
         "--lane", required=True,
-        choices=("direct-to-main", "task-to-train", "train-to-main"),
+        choices=(
+            "direct-to-main",
+            "task-to-train",
+            "train-to-main",
+            "release-preparation-to-main",
+        ),
     )
     ticket_parser.add_argument("--full-candidate", required=True, choices=("0", "1"))
     ticket_parser.add_argument("--output", required=True, type=pathlib.Path)
@@ -1163,6 +1196,7 @@ def main() -> int:
     promote_parser.add_argument("--main-parent", required=True)
     promote_parser.add_argument("--candidate-attestation", required=True, type=pathlib.Path)
     promote_parser.add_argument("--metadata", required=True, type=pathlib.Path)
+    promote_parser.add_argument("--failure-metadata", type=pathlib.Path)
     args = parser.parse_args()
     try:
         if args.command == "create-candidate":
@@ -1184,6 +1218,11 @@ def main() -> int:
         subprocess.CalledProcessError,
         zipfile.BadZipFile,
     ) as error:
+        if args.command == "promote" and args.failure_metadata is not None:
+            atomic_write_json(
+                args.failure_metadata.resolve(),
+                {"category": promotion_failure_category(error), "promoted": 0},
+            )
         print(f"CI proof promotion unavailable: {error}", file=sys.stderr)
         return 1
     return 0

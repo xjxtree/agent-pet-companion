@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate exact parity between the String Catalog and shipped .strings files."""
+"""Validate feature-owned localization tables, typed keys, and locale parity."""
 
 from __future__ import annotations
 
@@ -8,6 +8,31 @@ import json
 import pathlib
 import re
 import sys
+
+
+TABLE_KEY_FILES = {
+    "Common": "apps/macos/Sources/AgentPetCompanion/App/LocalizationKeys/CommonLocalizationKeys.swift",
+    "PetLibrary": "apps/macos/Sources/AgentPetCompanion/Features/PetLibrary/PetLibraryLocalizationKeys.swift",
+    "Maker": "apps/macos/Sources/AgentPetCompanion/Features/Maker/MakerLocalizationKeys.swift",
+    "Connections": "apps/macos/Sources/AgentPetCompanion/Features/Connections/ConnectionsLocalizationKeys.swift",
+    "Overlay": "apps/macos/Sources/AgentPetCompanion/Overlay/OverlayLocalizationKeys.swift",
+    "Settings": "apps/macos/Sources/AgentPetCompanion/Features/Settings/SettingsLocalizationKeys.swift",
+    "Diagnostics": "apps/macos/Sources/AgentPetCompanion/Features/Diagnostics/DiagnosticsLocalizationKeys.swift",
+}
+TABLE_CASES = {
+    "Common": "common",
+    "PetLibrary": "petLibrary",
+    "Maker": "maker",
+    "Connections": "connections",
+    "Overlay": "overlay",
+    "Settings": "settings",
+    "Diagnostics": "diagnostics",
+}
+TYPED_KEY = re.compile(
+    r'^\s*static let [A-Za-z0-9_]+ = APCLocalizationKey\('
+    r'"(?P<key>[^"]+)", table: \.(?P<table>[A-Za-z0-9_]+)\)\s*$',
+    re.MULTILINE,
+)
 
 
 TOKEN = re.compile(
@@ -98,26 +123,84 @@ def compare(label: str, expected: dict[str, str], actual: dict[str, str]) -> lis
     return errors
 
 
+def typed_keys(path: pathlib.Path, table_case: str) -> set[str]:
+    source = path.read_text(encoding="utf-8")
+    keys: set[str] = set()
+    for match in TYPED_KEY.finditer(source):
+        if match.group("table") != table_case:
+            raise ValueError(
+                f"{path}: key {match.group('key')!r} declares the wrong table "
+                f"{match.group('table')!r}"
+            )
+        key = match.group("key")
+        if key in keys:
+            raise ValueError(f"{path}: duplicate typed localization key {key!r}")
+        keys.add(key)
+    return keys
+
+
 def validate(root: pathlib.Path) -> list[str]:
     resources = root / "apps/macos/Sources/AgentPetCompanion/Resources"
-    catalog_path = resources / "Localizable.xcstrings"
-    english_path = resources / "en.lproj/Localizable.strings"
-    chinese_path = resources / "zh-Hans.lproj/Localizable.strings"
+    localization = resources / "Localization"
+    legacy = (
+        resources / "Localizable.xcstrings",
+        resources / "en.lproj",
+        resources / "zh-Hans.lproj",
+    )
+    if any(path.exists() or path.is_symlink() for path in legacy):
+        raise ValueError("legacy global localization resources must not coexist with feature tables")
+    observed_tables = {
+        path.name for path in localization.iterdir() if path.is_dir() and not path.is_symlink()
+    }
+    if observed_tables != set(TABLE_KEY_FILES):
+        raise ValueError(
+            "localization table inventory differs: "
+            f"expected {sorted(TABLE_KEY_FILES)}, observed {sorted(observed_tables)}"
+        )
 
-    english = parse_strings(english_path)
-    chinese = parse_strings(chinese_path)
-    catalog_english = catalog_values(catalog_path, "en")
-    catalog_chinese = catalog_values(catalog_path, "zh-Hans")
-
-    errors = compare("English catalog parity", english, catalog_english)
-    errors.extend(compare("Simplified Chinese catalog parity", chinese, catalog_chinese))
-    if english.keys() != chinese.keys():
-        missing_chinese = sorted(english.keys() - chinese.keys())
-        missing_english = sorted(chinese.keys() - english.keys())
-        if missing_chinese:
-            errors.append(f"Simplified Chinese .strings missing keys: {', '.join(missing_chinese)}")
-        if missing_english:
-            errors.append(f"English .strings missing keys: {', '.join(missing_english)}")
+    errors: list[str] = []
+    all_keys: dict[str, str] = {}
+    for table, relative_key_file in TABLE_KEY_FILES.items():
+        directory = localization / table
+        expected_files = {
+            f"{table}.xcstrings",
+            f"en.lproj/{table}.strings",
+            f"zh-Hans.lproj/{table}.strings",
+        }
+        observed_files = {
+            path.relative_to(directory).as_posix()
+            for path in directory.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        if observed_files != expected_files:
+            errors.append(
+                f"{table}: resource inventory differs: expected {sorted(expected_files)}, "
+                f"observed {sorted(observed_files)}"
+            )
+            continue
+        catalog_path = directory / f"{table}.xcstrings"
+        english = parse_strings(directory / f"en.lproj/{table}.strings")
+        chinese = parse_strings(directory / f"zh-Hans.lproj/{table}.strings")
+        catalog_english = catalog_values(catalog_path, "en")
+        catalog_chinese = catalog_values(catalog_path, "zh-Hans")
+        errors.extend(compare(f"{table} English catalog parity", english, catalog_english))
+        errors.extend(
+            compare(f"{table} Simplified Chinese catalog parity", chinese, catalog_chinese)
+        )
+        if english.keys() != chinese.keys():
+            errors.append(f"{table}: English and Simplified Chinese key sets differ")
+        typed = typed_keys(root / relative_key_file, TABLE_CASES[table])
+        if typed != set(english):
+            missing = sorted(set(english) - typed)
+            extra = sorted(typed - set(english))
+            errors.append(
+                f"{table}: typed key inventory differs; missing={missing}, extra={extra}"
+            )
+        for key in english:
+            previous = all_keys.get(key)
+            if previous is not None:
+                errors.append(f"localization key {key!r} is owned by both {previous} and {table}")
+            all_keys[key] = table
     return errors
 
 
@@ -140,7 +223,7 @@ def main() -> int:
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
-    print("Localization String Catalog and .strings parity ok")
+    print("Feature localization tables, typed keys, and locale parity ok")
     return 0
 
 

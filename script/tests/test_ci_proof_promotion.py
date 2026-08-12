@@ -31,6 +31,23 @@ def load_module():
 ci_proof = load_module()
 
 
+class PromotionObservabilityTests(unittest.TestCase):
+    def test_failure_categories_are_closed_and_content_free(self) -> None:
+        fixtures = {
+            "CI proof control plane changed: ci.yml": "control-plane-change",
+            "artifact expired": "expired",
+            "expected exactly one proof": "ambiguous",
+            "tested merge tree mismatch": "tree-mismatch",
+            "candidate artifact unavailable": "missing-artifact",
+            "network unavailable": "unavailable",
+        }
+        for message, expected in fixtures.items():
+            with self.subTest(message=message):
+                self.assertEqual(
+                    ci_proof.promotion_failure_category(ValueError(message)), expected
+                )
+
+
 class PromotionSelectionTests(unittest.TestCase):
     def merged_pull(self, head_ref: str) -> dict[str, object]:
         return {

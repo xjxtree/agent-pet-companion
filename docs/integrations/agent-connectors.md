@@ -11,7 +11,7 @@ Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode t
 | Pi Coding Agent | Managed TypeScript extension | Activity only |
 | OpenCode | Managed JavaScript plugin | Activity only |
 
-Templates live in [plugins](../../plugins/); installation and verification live in [connections.rs](../../crates/petcore/src/connections.rs).
+Templates live in [plugins](../../plugins/); the stable check/repair/refresh/uninstall interface and shared managed-tree engine live in [connections](../../crates/petcore/src/connections/), while each host's audited constants and templates are isolated under `connections/adapters/`.
 
 ```mermaid
 flowchart LR

@@ -405,7 +405,7 @@ struct UIModelTests {
             )
         ]
         var publications = 0
-        let observation = store.$connections.dropFirst().sink { _ in
+        let observation = store.connectionsModel.$connections.dropFirst().sink { _ in
             publications += 1
         }
 

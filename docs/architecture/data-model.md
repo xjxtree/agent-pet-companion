@@ -46,7 +46,7 @@ The current schema is version 6. PetCore enables WAL, foreign keys, secure delet
 | `product_convergence_receipt` | Exact-build typed four-Agent convergence receipt |
 | `state_revision` | Monotonic revision advanced by durable state mutations |
 
-The exact schema and migrations are in [db.rs](../../crates/petcore/src/db.rs); do not duplicate SQL in prose.
+The exact schema and ordered migrations are in [storage/migrations.rs](../../crates/petcore/src/storage/migrations.rs). [storage/mod.rs](../../crates/petcore/src/storage/mod.rs) retains the single `Database`, connection policy, busy retry, and shared transaction helpers; settings, connection, Agent/event, generation, and pet queries are crate-private domain modules. Do not duplicate SQL in prose or introduce App/CLI SQLite access.
 
 ## Settings and first run
 
@@ -115,7 +115,7 @@ Group disclosure, flat-list stable slots, manual bubble hiding, and transient na
 |---|---|---|
 | Runtime set | `apc.runtime-manifest.v1` | Rust/Swift runtime manifests |
 | PetCore RPC | `apc.petcore-rpc.v2` | Rust server and Swift client |
-| SQLite | schema `6` | `db.rs` |
+| SQLite | schema `6` | `storage/migrations.rs` |
 | Product convergence | `apc.product-convergence-receipt.v1` | database and RPC |
 | Onboarding | `apc.onboarding-progress.v1` | Rust type and Swift mirror |
 | Agent event | `apc.agent-event.v1` | event envelope and schema |
