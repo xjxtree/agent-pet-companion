@@ -5546,6 +5546,25 @@ fn connection_check_reports_event_channel_when_socket_is_reachable() {
 #[test]
 fn snapshot_and_inexact_manual_check_do_not_spawn_codex_app_server_probe() {
     let _env_lock = lock_env();
+    const ISOLATED_TEST_ENV: &str = "APC_ISOLATED_SNAPSHOT_PROBE_TEST";
+    if std::env::var_os(ISOLATED_TEST_ENV).is_none() {
+        // This negative assertion installs process-wide command markers. Run its
+        // body alone so unrelated background work cannot inherit those markers.
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "core_validation::snapshot_and_inexact_manual_check_do_not_spawn_codex_app_server_probe",
+                "--nocapture",
+            ])
+            .env(ISOLATED_TEST_ENV, "1")
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "isolated snapshot/App Server negative probe failed: {status}"
+        );
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let fake_home = temp.path().join("user-home");
     std::fs::create_dir_all(&fake_home).unwrap();
