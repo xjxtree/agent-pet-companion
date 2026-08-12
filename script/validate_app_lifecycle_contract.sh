@@ -56,6 +56,16 @@ checks = {
         )
         is not None
     ),
+    "primary cold launch is routed through the registered control center presenter": (
+        re.search(
+            r'applicationDidFinishLaunching.*?setActivationPolicy\(\.regular\).*?'
+            r'NSApp\.activate\(ignoringOtherApps: true\).*?'
+            r'activatePrimaryInstance\(\)',
+            app,
+            re.S,
+        )
+        is not None
+    ),
     "menu bar reopens through the shared presenter": (
         re.search(
             r'MenuBarExtra\s*\{.*?Button\s*\(\s*'

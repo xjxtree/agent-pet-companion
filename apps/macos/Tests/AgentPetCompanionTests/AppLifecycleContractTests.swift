@@ -279,6 +279,10 @@ struct AppLifecycleContractTests {
             in: appSource
         ))
         #expect(LifecycleSource.matches(
+            #"applicationDidFinishLaunching[\s\S]*?setActivationPolicy\(\.regular\)[\s\S]*?NSApp\.activate\(ignoringOtherApps: true\)[\s\S]*?activatePrimaryInstance\(\)"#,
+            in: appSource
+        ))
+        #expect(LifecycleSource.matches(
             #"MenuBarExtra\s*\{[\s\S]*?Button\s*\(\s*APCLocalization\.text\(\.appActionOpenControlCenter\)\s*\)\s*\{\s*store\.presentMainWindow\(\)"#,
             in: appSource
         ))

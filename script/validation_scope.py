@@ -75,6 +75,7 @@ def recommends_computer_use(path: str) -> bool:
 class ValidationScope:
     changed_count: int
     docs_only: bool
+    changelog: bool
     localization: bool
     scripts: bool
     producer: bool
@@ -123,6 +124,7 @@ def classify(paths: list[str]) -> ValidationScope:
         swift_mode = "full"
 
     localization = any(is_localization(path) for path in normalized)
+    changelog = "CHANGELOG.md" in path_set
     scripts = any(path.startswith(("script/", ".github/")) for path in normalized)
     producer = any(
         path.startswith(("skills/agent-pet-maker/", "skills/agent-pet-studio/"))
@@ -185,6 +187,7 @@ def classify(paths: list[str]) -> ValidationScope:
     return ValidationScope(
         changed_count=len(normalized),
         docs_only=docs_only,
+        changelog=changelog,
         localization=localization,
         scripts=scripts,
         producer=producer,
@@ -231,6 +234,7 @@ def emit(scope: ValidationScope, output_format: str) -> None:
     names = {
         "changed_count": "APC_CHANGED_COUNT",
         "docs_only": "APC_CHANGED_DOCS_ONLY",
+        "changelog": "APC_CHANGED_CHANGELOG",
         "localization": "APC_CHANGED_LOCALIZATION",
         "scripts": "APC_CHANGED_SCRIPTS",
         "producer": "APC_CHANGED_PRODUCER",

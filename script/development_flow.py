@@ -381,11 +381,18 @@ class CIContext:
     release_preparation: bool
 
 
-def ci_context(event: str, base: str, head: str, draft: bool) -> CIContext:
+def ci_context(
+    event: str,
+    base: str,
+    head: str,
+    draft: bool,
+    *,
+    release_preparation: bool = False,
+) -> CIContext:
     if event == "push":
         if base != MAIN_BRANCH:
             fail("authoritative push CI is restricted to main")
-        return CIContext("main-push", True, True, False)
+        return CIContext("main-push", True, True, release_preparation)
     if event != "pull_request":
         fail("CI development lane supports only pull_request and push")
     if base == MAIN_BRANCH:
@@ -1002,6 +1009,11 @@ def parse_args() -> argparse.Namespace:
     ci.add_argument("--base", required=True)
     ci.add_argument("--head", default="")
     ci.add_argument("--draft", choices=("true", "false"), default="false")
+    ci.add_argument(
+        "--release-preparation",
+        choices=("true", "false", "1", "0"),
+        default="false",
+    )
     ci.add_argument("--format", choices=("json", "github"), default="json")
 
     status = subparsers.add_parser("status")
@@ -1080,7 +1092,13 @@ def main() -> int:
         )
         print(json.dumps(asdict(decision), sort_keys=True))
     elif args.command == "ci-context":
-        context = ci_context(args.event, args.base, args.head, args.draft == "true")
+        context = ci_context(
+            args.event,
+            args.base,
+            args.head,
+            args.draft == "true",
+            release_preparation=args.release_preparation in ("true", "1"),
+        )
         if args.format == "github":
             for key, value in asdict(context).items():
                 rendered = "1" if value is True else "0" if value is False else value
