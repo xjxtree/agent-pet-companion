@@ -1033,6 +1033,11 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("run: cargo test --workspace --locked", source)
         self.assertNotIn("working-directory: apps/macos", source)
         self.assertIn("Rebind source interaction proof to the development build identity", source)
+        bundle = source[source.index("  bundle:") : source.index("  candidate_proof:")]
+        self.assertLess(
+            bundle.index("Restore or write the exact development-bundle Rust target cache"),
+            bundle.index("Rebind source interaction proof to the development build identity"),
+        )
         self.assertIn("--proof-in \"$RUNNER_TEMP/interaction-proof/interaction-attestation.json\"", source)
         self.assertIn("APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}", source)
         self.assertIn("development-attestation.json", source)

@@ -728,6 +728,20 @@ jobs:
             --input-dir "$RUNNER_TEMP/swift-debug-products" \
             --commit "$GITHUB_SHA"
 
+      - name: Restore or write the one development-bundle Cargo source cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the exact development-bundle Rust target cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-development-bundle-${{ hashFiles('Cargo.lock') }}
+
       - name: Rebind source interaction proof to the development build identity
         id: development_identity
         run: |
@@ -752,20 +766,6 @@ jobs:
           "$RUNNER_TEMP/apc-validation-python/bin/python" -m pip install \
             --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
-
-      - name: Restore or write the one development-bundle Cargo source cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-
-      - name: Restore or write the exact development-bundle Rust target cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-development-bundle-${{ hashFiles('Cargo.lock') }}
 
       - name: Build and fully validate development App from the proven interaction contract
         env:
