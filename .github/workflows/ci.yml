@@ -612,7 +612,7 @@ jobs:
       - name: Verify App build toolchain
         run: ./script/validate_macos_build_contract.py toolchain
 
-      - name: Resolve exact Swift toolchain identity
+      - name: Resolve exact Swift cache identity
         id: swift_toolchain_identity
         run: |
           {
@@ -622,13 +622,20 @@ jobs:
           } >"$RUNNER_TEMP/swift-toolchain-identity.txt"
           digest="$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain-identity.txt" | awk '{print $1}')"
           printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+          printf 'source_tree=%s\n' "$(git rev-parse HEAD:apps/macos)" >>"$GITHUB_OUTPUT"
+
+      - name: Normalize exact Swift source-tree timestamps
+        run: |
+          # The cache key binds the complete tracked source tree, so a fixed mtime is
+          # safe and prevents a fresh checkout from invalidating every restored object.
+          git ls-files -z -- apps/macos | xargs -0 touch -t 200001010000.00
 
       - name: Restore or write the one strict Swift debug cache
         id: swift_strict_cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v2-${{ steps.swift_toolchain_identity.outputs.digest }}-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved', 'script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v3-${{ steps.swift_toolchain_identity.outputs.digest }}-${{ steps.swift_toolchain_identity.outputs.source_tree }}-${{ hashFiles('script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
 
       - name: Run complete Swift suite and create source interaction proof
         env:

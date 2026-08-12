@@ -171,8 +171,10 @@ rg -Fq 'cargo test -p petcore --test integration_d daemon_lifecycle:: --locked' 
 rg -Fq 'ci-swift-debug-products-${{ github.sha }}' "$CI_WORKFLOW"
 rg -Fq './script/swift_build_artifact.py restore' "$CI_WORKFLOW"
 rg -Fq 'Restore or write the one strict Swift debug cache' "$CI_WORKFLOW"
-rg -Fq 'swift-strict-debug-v2-' "$CI_WORKFLOW"
+rg -Fq 'swift-strict-debug-v3-' "$CI_WORKFLOW"
 rg -Fq 'steps.swift_toolchain_identity.outputs.digest' "$CI_WORKFLOW"
+rg -Fq 'steps.swift_toolchain_identity.outputs.source_tree' "$CI_WORKFLOW"
+rg -Fq 'Normalize exact Swift source-tree timestamps' "$CI_WORKFLOW"
 rg -Fq 'SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}' "$CI_WORKFLOW"
 rg -Fq -- '--cache-observation "swift-strict=' "$CI_WORKFLOW"
 rg -Fq -- '--pull-request-json' "$CI_WORKFLOW"
@@ -223,6 +225,8 @@ if ci.count("Restore or write the one strict Swift debug cache") != 1:
     raise SystemExit("strict Swift cache must have exactly one writer")
 if "id: swift_strict_cache" not in swift or "path: apps/macos/.build" not in swift:
     raise SystemExit("strict Swift cache must be owned by the Swift proof producer")
+if "git rev-parse HEAD:apps/macos" not in swift or "touch -t 200001010000.00" not in swift:
+    raise SystemExit("strict Swift cache must normalize its exact source-tree timestamps")
 if "restore-keys:" in ci or "restore-keys:" in release:
     raise SystemExit("CI/Release caches must not use cross-identity prefix fallbacks")
 if "matrix.architecture" not in job(release, "build_archives"):
