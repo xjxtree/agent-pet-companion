@@ -14,7 +14,14 @@ app_store = (root / "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift").r
 app_runtime = (root / "apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift").read_text()
 overlay = (root / "apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift").read_text()
 petcore = (root / "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift").read_text()
-zh_hans = (root / "apps/macos/Sources/AgentPetCompanion/Resources/zh-Hans.lproj/Localizable.strings").read_text()
+zh_hans = "\n".join(
+    path.read_text()
+    for path in sorted(
+        (root / "apps/macos/Sources/AgentPetCompanion/Resources/Localization").glob(
+            "*/zh-Hans.lproj/*.strings"
+        )
+    )
+)
 run_script = (root / "script/build_and_run.sh").read_text()
 build_script = (root / "script/build_app_bundle.sh").read_text()
 package = (root / "apps/macos/Package.swift").read_text()

@@ -156,10 +156,17 @@ def ruleset_payload(integration_id: int, *, train: bool = False) -> dict[str, An
         fail("GitHub Actions integration ID must be positive")
     rules = [
         {"type": "non_fast_forward"},
-        {"type": "required_linear_history"},
         pull_request_rule(),
         status_rule(integration_id, strict=not train),
     ]
+    # A new train is created from the protected default branch. Historical
+    # merge commits that predate the repository's squash-only policy must not
+    # make that branch impossible to create. Train PRs still allow only squash
+    # merges, so new train history remains linear without re-validating every
+    # inherited ancestor at ref creation time. Main retains the explicit
+    # linear-history rule.
+    if not train:
+        rules.insert(1, {"type": "required_linear_history"})
     if not train:
         rules.insert(0, {"type": "deletion"})
     return {

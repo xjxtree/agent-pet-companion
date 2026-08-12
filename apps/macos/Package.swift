@@ -29,9 +29,9 @@ let package = Package(
             resources: [
                 .process("Resources/AgentPetCompanionMark.png"),
                 .process("Resources/PiBadge.svg"),
-                .process("Resources/Localizable.xcstrings"),
-                .process("Resources/en.lproj"),
-                .process("Resources/zh-Hans.lproj"),
+                // Preserve feature table boundaries and raw catalogs. Runtime
+                // uses the tracked `.strings` files for bounded cached lookup.
+                .copy("Resources/Localization"),
                 // Keep the inventory as one named directory. Processing the
                 // parent Resources directory flattens unknown files, which
                 // would make the fixed-root PetCore seed contract impossible

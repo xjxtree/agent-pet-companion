@@ -54,12 +54,46 @@ PY
 
 cd "$ROOT_DIR"
 
+SECRET_READ_PATTERN='(read_to_string|std::fs::read|File::open|fs::read|NSData|Data\(contentsOf|contentsOfFile|contentsOf:|open\().*(auth\.json|cookie|cookies|api[_-]?key|oauth|credential|credentials|secret|bearer)'
 set +e
-STATIC_MATCHES="$(rg -n \
-  '(read_to_string|std::fs::read|File::open|fs::read|NSData|Data\(contentsOf|contentsOfFile|contentsOf:|open\().*(auth\.json|cookie|cookies|api[_-]?key|oauth|credential|credentials|secret|bearer)' \
-  apps crates plugins skills script \
-  -g '!target' \
-  -g '!script/validate_security_boundaries.sh' 2>&1)"
+if command -v rg >/dev/null 2>&1; then
+  STATIC_MATCHES="$(rg -n "$SECRET_READ_PATTERN" \
+    apps crates plugins skills script \
+    -g '!target' \
+    -g '!script/validate_security_boundaries.sh' 2>&1)"
+else
+  STATIC_MATCHES="$(git ls-files -co --exclude-standard -z -- \
+    apps crates plugins skills script \
+    | SECRET_READ_PATTERN="$SECRET_READ_PATTERN" python3 -c '
+import os
+import pathlib
+import re
+import sys
+
+paths = [item for item in sys.stdin.buffer.read().split(b"\0") if item]
+if len(paths) > 100_000:
+    raise SystemExit("security boundary validation failed: source inventory is unbounded")
+pattern = re.compile(os.environ["SECRET_READ_PATTERN"])
+matches = []
+for raw_path in paths:
+    path = pathlib.Path(os.fsdecode(raw_path))
+    if path.as_posix() == "script/validate_security_boundaries.sh":
+        continue
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise SystemExit(f"security boundary validation failed: cannot read {path}: {error}")
+    if b"\0" in data[:8192]:
+        continue
+    for line_number, line in enumerate(data.decode("utf-8", errors="ignore").splitlines(), 1):
+        if pattern.search(line):
+            matches.append(f"{path}:{line_number}:{line}")
+if matches:
+    print("\n".join(matches))
+    raise SystemExit(0)
+raise SystemExit(1)
+' 2>&1)"
+fi
 STATIC_STATUS="$?"
 set -e
 if [[ "$STATIC_STATUS" == "0" ]]; then

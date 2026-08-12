@@ -29,8 +29,10 @@ struct AgentConnectionsTests {
 
         #expect(source.contains(".onAppear {"))
         #expect(source.contains(
-            "store.requestAutomaticConnectionCheckOnFirstPresentation()"
+            "model.requestAutomaticCheckOnFirstPresentation()"
         ))
+        #expect(source.contains("@EnvironmentObject private var model: ConnectionsModel"))
+        #expect(!source.contains("@EnvironmentObject private var store: AppStore"))
     }
 
     @MainActor

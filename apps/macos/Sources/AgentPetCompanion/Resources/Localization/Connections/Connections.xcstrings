@@ -1,0 +1,3718 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "check_status.missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not found"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未检测到"
+          }
+        }
+      }
+    },
+    "check_status.needs_fix": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs repair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需修复"
+          }
+        }
+      }
+    },
+    "check_status.not_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "非必需"
+          }
+        }
+      }
+    },
+    "check_status.ok": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正常"
+          }
+        }
+      }
+    },
+    "check_status.unsupported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsupported"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持"
+          }
+        }
+      }
+    },
+    "check_status.unverified": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unverified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未验证"
+          }
+        }
+      }
+    },
+    "connection_mode.light": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Light check"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "轻量定位"
+          }
+        }
+      }
+    },
+    "connection_mode.runtime": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full check"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整检查"
+          }
+        }
+      }
+    },
+    "connections.action.bulk": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bulk Actions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批量操作"
+          }
+        }
+      }
+    },
+    "connections.action.check_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全部检查"
+          }
+        }
+      }
+    },
+    "connections.action.check_source_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 %@"
+          }
+        }
+      }
+    },
+    "connections.action.install_repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up or Repair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置或修复"
+          }
+        }
+      }
+    },
+    "connections.action.install_update": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "install or update"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装或更新"
+          }
+        }
+      }
+    },
+    "connections.action.recheck": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查连接"
+          }
+        }
+      }
+    },
+    "connections.action.remove": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "remove"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除"
+          }
+        }
+      }
+    },
+    "connections.action.repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repair Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修复连接"
+          }
+        }
+      }
+    },
+    "connections.action.repair_accessibility_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install or repair the %@ connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装或修复 %@ 连接"
+          }
+        }
+      }
+    },
+    "connections.action.repair_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up or Repair All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键设置或修复"
+          }
+        }
+      }
+    },
+    "connections.action.setup_again": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up Again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新设置连接"
+          }
+        }
+      }
+    },
+    "connections.action.test_channel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Test Message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "发送测试消息"
+          }
+        }
+      }
+    },
+    "connections.action.troubleshoot": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Fix"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看处理方法"
+          }
+        }
+      }
+    },
+    "connections.action.uninstall": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除连接"
+          }
+        }
+      }
+    },
+    "connections.action.uninstall_accessibility_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall the %@ connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载 %@ 连接"
+          }
+        }
+      }
+    },
+    "connections.action.uninstall_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall All Managed Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载所有受管连接"
+          }
+        }
+      }
+    },
+    "connections.action.write_repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Write and Repair"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入并修复"
+          }
+        }
+      }
+    },
+    "connections.agent_label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent"
+          }
+        }
+      }
+    },
+    "connections.capabilities.accessibility_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App support and audited capabilities: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 支持与审计能力，%@"
+          }
+        }
+      }
+    },
+    "connections.capabilities.audited": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audited host events"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已审计的宿主事件面"
+          }
+        }
+      }
+    },
+    "connections.capabilities.list_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (%d)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@（%d）"
+          }
+        }
+      }
+    },
+    "connections.capabilities.mapped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mapped information"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "映射的信息"
+          }
+        }
+      }
+    },
+    "connections.capabilities.privacy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy exclusions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私排除项"
+          }
+        }
+      }
+    },
+    "connections.capabilities.subscribed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registered contract events"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前契约注册项"
+          }
+        }
+      }
+    },
+    "connections.capabilities.summary_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target %@ · %d audited / %d registered"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标 %@ · 审计 %d / 注册 %d"
+          }
+        }
+      }
+    },
+    "connections.capabilities.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Support & Audited Capabilities"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 支持与审计能力"
+          }
+        }
+      }
+    },
+    "connections.capabilities.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore has not returned a capability list. Run a full check first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 PetCore 尚未返回能力清单。完成完整检查后再查看。"
+          }
+        }
+      }
+    },
+    "connections.capabilities.unreported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not reported"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未报告"
+          }
+        }
+      }
+    },
+    "connections.capabilities.version_unreported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version not reported"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版本未报告"
+          }
+        }
+      }
+    },
+    "connections.check.accessibility_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: %@. %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：%@，%@"
+          }
+        }
+      }
+    },
+    "connections.check.description.agent_cli": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether the selected agent command is available to the connection environment. Install or expose the agent CLI, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查连接环境能否使用所选 Agent 命令。若不可用，请安装 Agent CLI 或让当前环境可找到它，然后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.agent_version": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reports the detected host version as diagnostic context. Host versions never block compatibility; the managed connector and live runtime/channel checks decide connection health."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "把检测到的宿主版本作为诊断信息展示。宿主版本不会阻断兼容性；连接健康由受管连接器及实时宿主/通道检查决定。"
+          }
+        }
+      }
+    },
+    "connections.check.description.app_server": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether Codex App Server is available for connector workflows. Update or enable Codex, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 Codex App Server 是否可用于连接器工作流。请更新或启用 Codex，然后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.channel_test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks only the local diagnostic CLI, RPC, and event persistence path. It does not verify a real agent task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只检查本地诊断 CLI、RPC 与事件持久化链路，不代表真实 Agent 任务已验证。"
+          }
+        }
+      }
+    },
+    "connections.check.description.claude_hooks_policy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether Claude Hooks policies permit Agent Pet Companion. disableAllHooks, allowManagedHooksOnly, or another managed policy may block Hooks; adjust the policy or contact your administrator, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 Claude Hooks 策略是否允许 Agent Pet Companion。disableAllHooks、allowManagedHooksOnly 或其他管理策略可能阻止 Hooks；请调整策略或联系管理员，然后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.event_cli": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether Agent Pet Companion's local event command is installed. Use Install or Repair if it is missing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 Agent Pet Companion 的本地事件命令是否已安装。若缺失，请使用“安装或修复”。"
+          }
+        }
+      }
+    },
+    "connections.check.description.event_delivery": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether the local event command can reach PetCore. Repair the connector or local service, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查本地事件命令能否连接 PetCore。请修复连接器或本地服务，然后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.generic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks a supported connection condition. Refresh the check and follow the managed-connection guidance if it still needs attention."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查一个受支持的连接条件。请刷新检查；若仍需处理，请按受管连接指引操作。"
+          }
+        }
+      }
+    },
+    "connections.check.description.host_runtime": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether the agent host loaded its managed connector. Restart the agent after a repair, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 Agent 宿主是否已加载受管连接器。修复后请重启 Agent，再重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.host_server": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks whether the OpenCode server is available to the managed connector. Update or restart OpenCode, then check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 OpenCode Server 是否可供受管连接器使用。请更新或重启 OpenCode，然后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.host_verification": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks host trust and connector loading for this agent. Follow the host guidance and run a real agent task before checking again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查该 Agent 的宿主信任与连接器加载情况。请按宿主指引处理并运行一次真实 Agent 任务，再重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.description.managed_connector": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks the app-managed connector files and settings. Review the managed locations, then use Install or Repair."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查 App 管理的连接器文件与设置。请先查看受管位置，再使用“安装或修复”。"
+          }
+        }
+      }
+    },
+    "connections.check.detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status: %@. %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状态：%@。%@"
+          }
+        }
+      }
+    },
+    "connections.check.evidence.codex_trust_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%ld disabled · %ld modified · %ld untrusted of %ld. Review and trust these hooks in Codex, then recheck."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "共 %4$ld 个 Hook：未启用 %1$ld、已修改 %2$ld、未信任 %3$ld。请在 Codex 中审查并信任后重新检查。"
+          }
+        }
+      }
+    },
+    "connections.check.evidence.version_missing_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ did not return version information. This is non-blocking; use the connector and runtime/channel results."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 未返回版本信息。此项不阻断连接，请以连接器及宿主/通道检查结果为准。"
+          }
+        }
+      }
+    },
+    "connections.check.evidence.version_supported_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detected %@ for %@. This is informational; compatibility is verified by the managed connector and live runtime/channel checks."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检测到 %@（%@）。此项仅供诊断；兼容性由受管连接器及实时宿主/通道检查验证。"
+          }
+        }
+      }
+    },
+    "connections.check.evidence.version_unverified_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detected %@ for %@. Version information is non-blocking; use the connector and runtime/channel results."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检测到 %@（%@）。版本信息不阻断连接，请以连接器及宿主/通道检查结果为准。"
+          }
+        }
+      }
+    },
+    "connections.check.evidence.version_update_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detected %@ for %@. Host versions do not gate compatibility; update %@ only if its own runtime check fails."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检测到 %@（%@）。宿主版本不作为兼容性门槛；仅在 %@ 自身运行检查失败时再更新。"
+          }
+        }
+      }
+    },
+    "connections.check.name.agent_cli": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent CLI"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent CLI"
+          }
+        }
+      }
+    },
+    "connections.check.name.agent_version": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Version"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 版本"
+          }
+        }
+      }
+    },
+    "connections.check.name.app_server": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex App Server"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex App Server"
+          }
+        }
+      }
+    },
+    "connections.check.name.channel_test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Channel Test"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地通道自检"
+          }
+        }
+      }
+    },
+    "connections.check.name.claude_hooks_policy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Hooks Policy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Hooks 策略"
+          }
+        }
+      }
+    },
+    "connections.check.name.event_cli": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Event CLI"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地事件 CLI"
+          }
+        }
+      }
+    },
+    "connections.check.name.event_delivery": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Event Delivery"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "事件回传"
+          }
+        }
+      }
+    },
+    "connections.check.name.generic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection Check"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接检查项"
+          }
+        }
+      }
+    },
+    "connections.check.name.host_runtime": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host Runtime"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宿主运行时"
+          }
+        }
+      }
+    },
+    "connections.check.name.host_server": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenCode Server"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OpenCode Server"
+          }
+        }
+      }
+    },
+    "connections.check.name.host_verification": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Host Verification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宿主验证"
+          }
+        }
+      }
+    },
+    "connections.check.name.managed_connector": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed Connector"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "托管连接器"
+          }
+        }
+      }
+    },
+    "connections.check.version_support.claude": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Informational only; no host-version gate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅供诊断；没有宿主版本门槛"
+          }
+        }
+      }
+    },
+    "connections.check.version_support.codex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Informational only; no host-version gate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅供诊断；没有宿主版本门槛"
+          }
+        }
+      }
+    },
+    "connections.check.version_support.opencode": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Informational only; no host-version gate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅供诊断；没有宿主版本门槛"
+          }
+        }
+      }
+    },
+    "connections.check.version_support.pi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Informational only; no host-version gate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅供诊断；没有宿主版本门槛"
+          }
+        }
+      }
+    },
+    "connections.checks.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This snapshot contains no checks. Run a full check again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前快照没有返回检查项。请重新执行完整检查。"
+          }
+        }
+      }
+    },
+    "connections.checks.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查项"
+          }
+        }
+      }
+    },
+    "connections.component.kind.connector": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connector"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接器"
+          }
+        }
+      }
+    },
+    "connections.component.kind.extension": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extension"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扩展"
+          }
+        }
+      }
+    },
+    "connections.component.kind.hook": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hook"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hook"
+          }
+        }
+      }
+    },
+    "connections.component.kind.package": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Package"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "软件包"
+          }
+        }
+      }
+    },
+    "connections.component.kind.plugin": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plugin"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "插件"
+          }
+        }
+      }
+    },
+    "connections.component.kind.skill": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skill"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技能"
+          }
+        }
+      }
+    },
+    "connections.component.kind.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Component"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "组件"
+          }
+        }
+      }
+    },
+    "connections.component.required_version_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This App requires %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本 App 需要 %@"
+          }
+        }
+      }
+    },
+    "connections.component.version_mismatch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version mismatch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "版本不匹配"
+          }
+        }
+      }
+    },
+    "connections.component.version_mismatch_detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed %@ · This App requires %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前 %@ · 本 App 需要 %@"
+          }
+        }
+      }
+    },
+    "connections.confirm.managed_change_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app will %@ managed connection files for: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将为这些 Agent %@由 App 管理的连接文件：%@"
+          }
+        }
+      }
+    },
+    "connections.confirm.more_locations_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d more locations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %d 个位置"
+          }
+        }
+      }
+    },
+    "connections.confirm.no_repair_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No agent connections can currently be set up or repaired."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有可一键设置或修复的 Agent 连接。"
+          }
+        }
+      }
+    },
+    "connections.confirm.no_uninstall_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No managed agent connections are available to uninstall."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有检测到可卸载的 Agent 连接。"
+          }
+        }
+      }
+    },
+    "connections.confirm.paths_unreported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The inspector did not report specific paths."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查器当前未报告具体路径。"
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up or Repair Connections?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键设置或修复 Agent 连接？"
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set Up or Repair %d Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设置或修复 %d 个 Agent 连接"
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_files_intro": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The following managed connection files will be installed or updated:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将安装或更新以下受管连接文件："
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install or Repair %@?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认安装或修复 %@"
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_safety": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent credentials are not read, and unlisted user files are not changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不会读取 Agent 凭据，也不会修改未列出的用户文件。"
+          }
+        }
+      }
+    },
+    "connections.confirm.repair_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The app cannot automatically repair a managed connection issue in the current state."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前状态没有可由 App 自动修复的受管连接问题。"
+          }
+        }
+      }
+    },
+    "connections.confirm.safety_summary": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This does not uninstall the agent, read agent credentials, or change unrelated files."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不会卸载 Agent 本体、读取 Agent 凭据或修改无关文件。"
+          }
+        }
+      }
+    },
+    "connections.confirm.uninstall_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall All Connections?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认卸载所有连接"
+          }
+        }
+      }
+    },
+    "connections.confirm.uninstall_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall %d Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载 %d 个连接"
+          }
+        }
+      }
+    },
+    "connections.confirm.uninstall_files_intro": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The following managed connection files or settings will be removed:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将移除以下受管连接文件或配置："
+          }
+        }
+      }
+    },
+    "connections.confirm.uninstall_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall %@ Connection?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认卸载 %@ 连接"
+          }
+        }
+      }
+    },
+    "connections.confirm.uninstall_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No managed connection is currently available to uninstall."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前没有可卸载的受管连接。"
+          }
+        }
+      }
+    },
+    "connections.environment.export_diagnostics": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Redacted Diagnostics…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出脱敏诊断…"
+          }
+        }
+      }
+    },
+    "connections.environment.export_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full service status and log guidance are available in Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整服务状态与日志说明位于服务与诊断页面"
+          }
+        }
+      }
+    },
+    "connections.environment.exporting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Packaging…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在打包…"
+          }
+        }
+      }
+    },
+    "connections.environment.install_location_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install Locations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装位置"
+          }
+        }
+      }
+    },
+    "connections.environment.install_locations_empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed connection locations appear after a check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成检查后显示由 App 管理的连接位置。"
+          }
+        }
+      }
+    },
+    "connections.environment.install_locations_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection file locations (%d)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接文件位置（%d）"
+          }
+        }
+      }
+    },
+    "connections.environment.instance_id": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instance ID"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实例 ID"
+          }
+        }
+      }
+    },
+    "connections.environment.privacy_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks only managed connection files, CLI availability, and explicit event channels. Agent tokens, cookies, API keys, and other credentials are never read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只检查受管连接文件、CLI 可用性和显式事件通道；不读取 Agent 的令牌、Cookie、API Key 或其他凭据。"
+          }
+        }
+      }
+    },
+    "connections.environment.privacy_support": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy & Support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私与支持"
+          }
+        }
+      }
+    },
+    "connections.environment.privacy_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Privacy Boundary"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私边界"
+          }
+        }
+      }
+    },
+    "connections.environment.runtime_footer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Identifies the App/PetCore contract environment used for this agent check. Service health is available in Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅用于说明本次 Agent 检查发生在哪个 App/PetCore 合同环境；服务健康请在“服务与诊断”查看。"
+          }
+        }
+      }
+    },
+    "connections.environment.runtime_identity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Runtime Identity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时身份"
+          }
+        }
+      }
+    },
+    "connections.environment.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Environment"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查环境"
+          }
+        }
+      }
+    },
+    "connections.environment.value_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：%@"
+          }
+        }
+      }
+    },
+    "connections.failure.invalid_request": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The operation no longer has a valid Agent target. Select an Agent and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此操作已没有有效的 Agent 目标。请选择 Agent 后重试。"
+          }
+        }
+      }
+    },
+    "connections.failure.invalid_response": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local service returned an unexpected result. Try again, or open Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地服务返回了异常结果。请重试，或前往“服务与诊断”。"
+          }
+        }
+      }
+    },
+    "connections.failure.partial": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The action finished for only some Agents. Open each Agent that needs attention, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作仅对部分 Agent 完成。请逐个打开需要处理的 Agent 后重试。"
+          }
+        }
+      }
+    },
+    "connections.failure.rejected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection action could not be completed. Check the current status, then retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能完成此连接操作。请检查当前状态后重试。"
+          }
+        }
+      }
+    },
+    "connections.failure.transport": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local service is unavailable. Try again, or open Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地服务暂不可用。请重试，或前往“服务与诊断”。"
+          }
+        }
+      }
+    },
+    "connections.failure.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection operation could not be completed. Try again or open Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接操作未能完成。请重试或打开“服务与诊断”。"
+          }
+        }
+      }
+    },
+    "connections.guidance.action_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review the blocked check below, complete its required action, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请查看下方的阻断检查项，完成对应处理后重新检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.full_restart_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fully quit and reopen %@, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请完全退出并重新打开 %@，再检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.hook_authorization": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authorize Agent Pet Companion Hooks in Codex, fully quit and reopen every Codex window, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在 Codex 中授权 Agent Pet Companion Hooks，完全退出并重新打开所有 Codex 窗口，然后重新检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.install_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ was not found. Install or open it, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未找到 %@。请先安装或打开它，再检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.local_service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Service & Diagnostics, restore the local service, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请打开“服务与诊断”恢复本地服务，然后重新检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Set Up or Repair below."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择下方的“设置或修复”。"
+          }
+        }
+      }
+    },
+    "connections.guidance.restart_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart %@, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重启 %@，再检查连接。"
+          }
+        }
+      }
+    },
+    "connections.guidance.service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the connection again. If it still fails, open Service & Diagnostics."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新检查连接；如果仍失败，请前往“服务与诊断”。"
+          }
+        }
+      }
+    },
+    "connections.guidance.settings": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This Agent's settings are blocking the connection. Allow Agent Pet Companion, or contact your administrator."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Agent 的设置阻止了连接。请允许 Agent Pet Companion，或联系管理员。"
+          }
+        }
+      }
+    },
+    "connections.guidance.update_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update %@, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请更新 %@，再检查连接。"
+          }
+        }
+      }
+    },
+    "connections.health.action_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要操作"
+          }
+        }
+      }
+    },
+    "connections.health.attention_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d issues"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 项待处理"
+          }
+        }
+      }
+    },
+    "connections.health.healthy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证"
+          }
+        }
+      }
+    },
+    "connections.health.light": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Basic check complete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础检查完成"
+          }
+        }
+      }
+    },
+    "connections.health.limited": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some capabilities limited"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分能力受限"
+          }
+        }
+      }
+    },
+    "connections.health.pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not checked"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待检查"
+          }
+        }
+      }
+    },
+    "connections.health.unverified": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Awaiting verification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待验证"
+          }
+        }
+      }
+    },
+    "connections.hint.busy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wait for the current connection operation to finish."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待当前连接操作完成"
+          }
+        }
+      }
+    },
+    "connections.hint.check_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check all four agents."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查全部四个 Agent"
+          }
+        }
+      }
+    },
+    "connections.hint.recheck": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh this Agent's connection status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刷新此 Agent 的连接状态"
+          }
+        }
+      }
+    },
+    "connections.hint.repair_again": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows the changes before setting up this connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新设置连接前会先显示改动"
+          }
+        }
+      }
+    },
+    "connections.hint.repair_manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Follow the check item instructions to resolve this issue manually."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前问题需要按检查项说明手动处理"
+          }
+        }
+      }
+    },
+    "connections.hint.repair_none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This check found no issue that can be repaired automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前检查没有发现可自动修复的问题"
+          }
+        }
+      }
+    },
+    "connections.hint.repair_preview": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review managed file locations before confirming the write."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先预览受管文件位置，再确认写入"
+          }
+        }
+      }
+    },
+    "connections.hint.test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows a local test message on the desktop pet. A real Agent task is still required for verification."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在桌宠上显示一条本地测试消息；真实验证仍需运行一次 Agent 任务"
+          }
+        }
+      }
+    },
+    "connections.hint.troubleshoot": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows the exact blocked checks and the available next actions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开准确的阻断检查与当前可执行的处理操作。"
+          }
+        }
+      }
+    },
+    "connections.hint.uninstall": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removes the connection without uninstalling the Agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除连接，不会卸载 Agent"
+          }
+        }
+      }
+    },
+    "connections.item.located": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Located"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已定位"
+          }
+        }
+      }
+    },
+    "connections.list.accessibility": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 连接列表"
+          }
+        }
+      }
+    },
+    "connections.list.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接"
+          }
+        }
+      }
+    },
+    "connections.local_channel.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sends a diagnostic event through the local adapter and PetCore. It does not contact the provider or prove a real Agent task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过本地适配器与 PetCore 发送诊断事件；不会连接服务商，也不能证明真实 Agent 任务。"
+          }
+        }
+      }
+    },
+    "connections.local_channel.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Channel Test"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地通道测试"
+          }
+        }
+      }
+    },
+    "connections.managed.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install and repair change only the managed connection files listed in the inspector. Uninstall never removes the agent or user projects."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装和修复只修改检查器列出的受管连接文件；卸载不会删除 Agent 本体或用户项目。"
+          }
+        }
+      }
+    },
+    "connections.managed.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受管连接"
+          }
+        }
+      }
+    },
+    "connections.managed_actions.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reapply or remove only files owned by Agent Pet Companion. This does not install or update the Agent itself."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只重新写入或移除 Agent Pet Companion 管理的文件，不会安装或更新 Agent 本身。"
+          }
+        }
+      }
+    },
+    "connections.managed_actions.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受管连接"
+          }
+        }
+      }
+    },
+    "connections.managed_artifacts.count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d managed locations reported. Exact changes are shown before confirmation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已报告 %d 个受管位置；确认前会显示准确改动。"
+          }
+        }
+      }
+    },
+    "connections.managed_artifacts.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed Connection Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "受管连接文件"
+          }
+        }
+      }
+    },
+    "connections.managed_components.summary": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only items installed and maintained by Agent Pet Companion are shown here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这里只显示 Agent Pet Companion 安装和维护的项目。"
+          }
+        }
+      }
+    },
+    "connections.managed_components.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed by This App"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由本 App 管理"
+          }
+        }
+      }
+    },
+    "connections.metadata.cwd": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check directory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查目录"
+          }
+        }
+      }
+    },
+    "connections.metadata.format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        }
+      }
+    },
+    "connections.metadata.last_receipt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latest host receipt"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最近宿主回执"
+          }
+        }
+      }
+    },
+    "connections.metadata.verified_at": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证时间"
+          }
+        }
+      }
+    },
+    "connections.operation.check": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查"
+          }
+        }
+      }
+    },
+    "connections.operation.dismiss": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭提示"
+          }
+        }
+      }
+    },
+    "connections.operation.failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection operation failed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接操作失败"
+          }
+        }
+      }
+    },
+    "connections.operation.in_progress": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection operation in progress"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在执行连接操作"
+          }
+        }
+      }
+    },
+    "connections.operation.repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repairing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在修复"
+          }
+        }
+      }
+    },
+    "connections.operation.serial": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection operations run serially. Conflicting actions for other agents are temporarily unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接操作串行执行；其他 Agent 的冲突操作暂时不可用。"
+          }
+        }
+      }
+    },
+    "connections.operation.test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sending test message"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在发送测试消息"
+          }
+        }
+      }
+    },
+    "connections.operation.title_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %@"
+          }
+        }
+      }
+    },
+    "connections.operation.uninstall": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstalling"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在卸载"
+          }
+        }
+      }
+    },
+    "connections.page.subtitle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select an Agent to see its connection status and available actions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择一个 Agent，查看连接状态和可用操作。"
+          }
+        }
+      }
+    },
+    "connections.page.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 连接"
+          }
+        }
+      }
+    },
+    "connections.page_picker": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection Page"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接页面"
+          }
+        }
+      }
+    },
+    "connections.pane.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接详情"
+          }
+        }
+      }
+    },
+    "connections.pane.environment": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Environment"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查环境"
+          }
+        }
+      }
+    },
+    "connections.primary.accessibility_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %@"
+          }
+        }
+      }
+    },
+    "connections.primary.attention_verify_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Complete the current instructions, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成当前处理指引后，重新检查连接。"
+          }
+        }
+      }
+    },
+    "connections.primary.connect_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows the connection changes before asking you to confirm."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认前会先显示连接改动。"
+          }
+        }
+      }
+    },
+    "connections.primary.repair_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows the connection changes before asking you to confirm."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认前会先显示连接改动。"
+          }
+        }
+      }
+    },
+    "connections.primary.retry_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retries the failed connection operation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试失败的连接操作。"
+          }
+        }
+      }
+    },
+    "connections.primary.verify_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checks the connection again. Run a real Agent task first if asked."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新检查连接；如有提示，请先运行一次真实 Agent 任务。"
+          }
+        }
+      }
+    },
+    "connections.snapshot.description_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore has not returned check results for %@. You can run a full check now."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PetCore 尚未返回 %@ 的检查结果。你仍可立即执行完整检查。"
+          }
+        }
+      }
+    },
+    "connections.snapshot.none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No check snapshot"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚无检查快照"
+          }
+        }
+      }
+    },
+    "connections.source_picker": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择 Agent"
+          }
+        }
+      }
+    },
+    "connections.status.action_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要处理"
+          }
+        }
+      }
+    },
+    "connections.status.agent_missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Not Found"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未检测到 Agent"
+          }
+        }
+      }
+    },
+    "connections.status.hook_authorization": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hook Authorization Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 Hook 授权"
+          }
+        }
+      }
+    },
+    "connections.status.local_issue": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Connection Issue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地连接异常"
+          }
+        }
+      }
+    },
+    "connections.status.permission_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要设置授权"
+          }
+        }
+      }
+    },
+    "connections.status.restart_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要重启"
+          }
+        }
+      }
+    },
+    "connections.status.update_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要更新"
+          }
+        }
+      }
+    },
+    "connections.success.check": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection check finished. The status is up to date."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接检查已完成，状态已更新。"
+          }
+        }
+      }
+    },
+    "connections.success.repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection was set up or repaired, then checked again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已设置或修复，并已重新检查。"
+          }
+        }
+      }
+    },
+    "connections.success.test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The test message was sent. Run a real Agent task next to confirm the desktop pet responds."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测试消息已发送。请再运行一次真实 Agent 任务，确认桌宠会响应。"
+          }
+        }
+      }
+    },
+    "connections.success.uninstall": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection was removed. The Agent itself was not uninstalled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接已移除；Agent 本身未被卸载。"
+          }
+        }
+      }
+    },
+    "connections.summary.action_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connection needs attention before it can be used."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此连接需要完成处理后才能使用。"
+          }
+        }
+      }
+    },
+    "connections.summary.agent_missing_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ was not found on this Mac."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未在此 Mac 上检测到 %@。"
+          }
+        }
+      }
+    },
+    "connections.summary.checking": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Working on this Agent connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在处理此 Agent 连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.connected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This Agent is connected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Agent 已连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.hook_authorization": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Hooks were updated and must be reviewed and authorized again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Hooks 已更新，需要重新审查并授权。"
+          }
+        }
+      }
+    },
+    "connections.summary.light": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Basic checks are complete; waiting for the full runtime check."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础检查已完成，正在等待完整运行检测。"
+          }
+        }
+      }
+    },
+    "connections.summary.local_issue": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The local event service required by this connection is unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此连接所需的本地事件服务当前不可用。"
+          }
+        }
+      }
+    },
+    "connections.summary.needs_repair": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connection needs setup or repair."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此连接需要设置或修复。"
+          }
+        }
+      }
+    },
+    "connections.summary.not_checked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check whether this Agent is ready to connect."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查此 Agent 是否已准备好连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.permission_required_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ settings do not currently allow this connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的设置尚未允许此连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.restart_required_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ must reload the current connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 需要重新加载当前连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This Agent is not ready to connect."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此 Agent 尚未准备好连接。"
+          }
+        }
+      }
+    },
+    "connections.summary.update_required_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ version information does not block this connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 的版本信息不会阻断此连接。"
+          }
+        }
+      }
+    },
+    "connections.technical.summary": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local setup, managed connector, and real-task evidence."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地设置、受管连接器与真实任务证据。"
+          }
+        }
+      }
+    },
+    "connections.technical.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Technical Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "技术详情"
+          }
+        }
+      }
+    },
+    "connections.test.detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Test Channel” validates only the local CLI, RPC, and event persistence path. Real verification requires running a real %@ task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“测试通道”只验证本地 CLI、RPC 与事件持久化链路；真实验证需要运行一次真实的 %@ 任务。"
+          }
+        }
+      }
+    },
+    "connections.validation.boundary": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Channel Test checks only the on-device event path. Real Agent Validation requires activity from a real provider task."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“本地通道测试”只检查设备内事件链路；“真实 Agent 验证”必须来自真实服务商任务的活动。"
+          }
+        }
+      }
+    },
+    "connections.verification.action_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a real task in this Agent, then choose Verify to refresh the evidence."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在此 Agent 中运行一次真实任务，再选择“验证”刷新证据。"
+          }
+        }
+      }
+    },
+    "connections.verification.action_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a real agent task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请运行真实 Agent 任务"
+          }
+        }
+      }
+    },
+    "connections.verification.instruction_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a real %@ task, then verify again. The local channel test cannot replace this step."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请运行一次真实的 %@ 任务，再重新验证；本地通道测试不能替代这一步。"
+          }
+        }
+      }
+    },
+    "connections.verification.not_required_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connector does not require a real-agent verification step."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此连接无需真实 Agent 验证步骤。"
+          }
+        }
+      }
+    },
+    "connections.verification.not_required_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Real-agent verification not required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需真实 Agent 验证"
+          }
+        }
+      }
+    },
+    "connections.verification.not_run_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the connection, then run a real task in this Agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先检查连接，再在此 Agent 中运行一次真实任务。"
+          }
+        }
+      }
+    },
+    "connections.verification.not_run_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not verified yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未验证"
+          }
+        }
+      }
+    },
+    "connections.verification.pending_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a real task in this Agent, then check the connection again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在此 Agent 中运行一次真实任务，然后重新检查连接。"
+          }
+        }
+      }
+    },
+    "connections.verification.pending_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for a real task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待真实任务"
+          }
+        }
+      }
+    },
+    "connections.verification.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Real Agent Verification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 侧真实验证"
+          }
+        }
+      }
+    },
+    "connections.verification.verified_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The desktop pet received activity from a real task in this Agent."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌宠已收到此 Agent 的真实任务状态。"
+          }
+        }
+      }
+    },
+    "connections.verification.verified_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified with a real task"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已通过真实任务验证"
+          }
+        }
+      }
+    },
+    "verification_status.action_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Action required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需操作"
+          }
+        }
+      }
+    },
+    "verification_status.not_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需验证"
+          }
+        }
+      }
+    },
+    "verification_status.unverified": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Awaiting verification"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待验证"
+          }
+        }
+      }
+    },
+    "verification_status.verified": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

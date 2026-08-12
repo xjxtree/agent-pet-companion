@@ -6,7 +6,11 @@ apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift
 apps/macos/Sources/AgentPetCompanion/Overlay/OverlayValidationContract.swift
 apps/macos/Sources/AgentPetCompanion/Overlay/PetOverlayController.swift
 apps/macos/Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift
-apps/macos/Sources/AgentPetCompanionCore/AppModels.swift
+apps/macos/Sources/AgentPetCompanionCore/Contracts/AgentModels.swift
+apps/macos/Sources/AgentPetCompanionCore/Contracts/ConnectionModels.swift
+apps/macos/Sources/AgentPetCompanionCore/Contracts/GenerationModels.swift
+apps/macos/Sources/AgentPetCompanionCore/Contracts/PetModels.swift
+apps/macos/Sources/AgentPetCompanionCore/Contracts/SettingsModels.swift
 apps/macos/Tests/AgentPetCompanionTests/AppStoreOverlaySnapshotTests.swift
 apps/macos/Tests/AgentPetCompanionTests/OverlayDisplayWidthTests.swift
 apps/macos/Tests/AgentPetCompanionTests/OverlayGeometryTests.swift

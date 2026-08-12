@@ -20,17 +20,19 @@ flowchart LR
 
 The App and overlay share one UI process. PetCore is a separate per-user service and the normal online state owner. The App and Agent hosts never open SQLite directly. Explicit offline `petcore-cli petpack` maintenance is the only exception and uses the same locks and publication rules.
 
+The App composition root retains cross-feature orchestration in `AppStore`, while feature-owned observable state moves behind focused models. `ConnectionsModel` owns Agent connection snapshots and serialized check/repair/test/uninstall operations; `AgentConnectionsView` depends on that model rather than the whole store. User-facing strings are owned by seven feature tables (`Common`, `PetLibrary`, `Maker`, `Connections`, `Overlay`, `Settings`, and `Diagnostics`) with typed keys carrying their table identity. Runtime lookup, catalogs, and both locale files must contain the same key set; a global `Localizable` table is not supported.
+
 ## Ownership
 
 | Component | Responsibility | Primary source |
 |---|---|---|
 | macOS App | First run, five-page control center, menu bar, desktop pet, bubbles, native interaction, App diagnostics | [App](../../apps/macos/Sources/AgentPetCompanion/) |
-| Swift core | Shared models, PetCore transport, startup coordination, frame scheduling | [AgentPetCompanionCore](../../apps/macos/Sources/AgentPetCompanionCore/) |
+| Swift core | Domain-split wire contracts, PetCore transport, startup coordination, frame scheduling | [AgentPetCompanionCore](../../apps/macos/Sources/AgentPetCompanionCore/) |
 | PetCore | Durable state, snapshots, settings, Agent projection, pet library, generation, connectors, diagnostics | [petcore](../../crates/petcore/src/) |
 | `petcore-cli` | Connector adapter, RPC client, package tooling, explicit offline maintenance | [CLI](../../crates/petcore-cli/src/main.rs) |
 | Connector packages | Host-native managed integration artifacts | [plugins](../../plugins/) |
 | Pet Skills | In-App Studio and provider-neutral portable production workflows | [skills](../../skills/) |
-| Typed contracts | Rust authority types and schemas for external boundaries | [petcore-types](../../crates/petcore-types/src/lib.rs), [schemas](../../schemas/) |
+| Typed contracts | Domain-split Rust authority types and schemas for external boundaries | [petcore-types](../../crates/petcore-types/src/), [schemas](../../schemas/) |
 
 `AgentPetCompanionLifecycleClient` is a development helper for bundle-scoped normal App shutdown; it is not a resident production process.
 

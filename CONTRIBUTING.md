@@ -13,9 +13,10 @@ Agent Pet Companion is a local-first native macOS project. Keep changes focused 
 
 1. Read [AGENTS.md](AGENTS.md), then inspect the implementation, schemas, manifests, tests, and the owning document listed in [docs/README.md](docs/README.md). / 先阅读 `AGENTS.md`，再检查相关实现、schema、manifest、测试和负责该主题的文档。
 2. Keep local `main` read-only. The Agent chooses a direct `gd-ops/task/*` or `gd-ops/fix/*` PR to `main` for hotfix/small isolated work, or joins the main Agent's shared `gd-ops/train/*` for parallel/cross-component work. / 本地 `main` 只读；热修复或小型独立任务直接 PR 至 `main`，并行或跨组件任务加入主 Agent 的共享 train。
-3. Give each Agent/session an independent branch and worktree, preserve unrelated changes, and hand sub-Agent work to the train only through task PRs. / 每个 Agent/会话使用独立分支与 worktree，保留无关改动，并仅通过任务 PR 将子 Agent 工作交给 train。
-4. Add the smallest useful regression test and update the owning contract when behavior changes. / 行为变化时补充最小有效回归测试，并更新对应契约。
-5. Direct PRs update `[Unreleased]`; train task PRs add `changes/unreleased/*.json`, which the coordinator consumes before the final train PR becomes ready. / direct PR 更新 `[Unreleased]`；train 任务 PR 写入变更片段，最终 train PR ready 前由协调者汇总。
+3. Select one typed domain and claim from `development/domains.json`, register it with `development_flow.py branch-claim`, and obtain explicit approval before touching Amber or Red shared paths. The conflict preflight rejects overlapping claims before implementation. / 从领域清单选择一个 domain/claim 并登记；修改 Amber/Red 共享路径前必须获得显式批准，冲突预检会在实现前拒绝重叠声明。
+4. Give each Agent/session an independent branch and worktree, preserve unrelated changes, and hand sub-Agent work to the train only through task PRs. / 每个 Agent/会话使用独立分支与 worktree，保留无关改动，并仅通过任务 PR 将子 Agent 工作交给 train。
+5. Add the smallest useful regression test and update the owning contract when behavior changes. Use `validate_local_tests.sh --plan-only` to inspect the domain-focused local test plan, then run it when bounded feedback is useful. / 行为变化时补充最小有效回归测试并更新对应契约；可先查看领域聚焦测试计划，再按需执行有界本地反馈。
+6. Every direct, task, and train development PR adds a globally unique `changes/unreleased/*.json` fragment. Only an explicit release-preparation branch freezes and consumes fragments into root `CHANGELOG.md`. / 所有开发 PR 都写入全局唯一变更片段；只有显式 release-preparation 分支可冻结并汇总到根变更日志。
 
 The complete branch, worktree, ownership, auto-merge, and coordinator commands are defined in [Parallel development](docs/development/parallel-development.md). / 完整分支、worktree、所有权、自动合并与协调命令见并行开发文档。
 

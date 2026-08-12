@@ -5,7 +5,6 @@ pub mod agent_state;
 pub mod app_server;
 pub mod connections;
 pub mod daemon;
-pub mod db;
 pub mod diagnostics;
 pub mod event_envelope;
 pub mod generation;
@@ -21,6 +20,9 @@ pub mod reference_images;
 pub mod rollback_checkpoint;
 pub mod rpc;
 pub mod runtime_manifest;
+pub mod storage;
+
+pub use storage as db;
 
 use thiserror::Error;
 

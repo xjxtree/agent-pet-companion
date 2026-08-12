@@ -4,8 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v rg >/dev/null 2>&1; then
-  printf 'test isolation validation requires ripgrep (rg)\n' >&2
-  exit 2
+  rg() {
+    local mode="${1:-}"
+    shift || true
+    case "$mode" in
+      -Fq)
+        grep -Fq "$@"
+        ;;
+      -q)
+        grep -Eq "$@"
+        ;;
+      -n)
+        grep -En "$@"
+        ;;
+      *)
+        printf 'unsupported portable search mode: %s\n' "$mode" >&2
+        return 2
+        ;;
+    esac
+  }
 fi
 
 TMP_ROOT="${TMPDIR:-/tmp}"
@@ -451,10 +468,10 @@ R13_TEST_FILES=(
   "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingViewTests.swift"
   "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingAppStoreTests.swift"
   "$ROOT_DIR/apps/macos/Tests/AgentPetCompanionTests/OnboardingAppStoreTests.swift"
-  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
-  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
-  "$ROOT_DIR/crates/petcore/tests/agent_state_arbitration.rs"
-  "$ROOT_DIR/crates/petcore/tests/event_envelope_security.rs"
+  "$ROOT_DIR/crates/petcore/tests/integration_d/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/integration_d/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/integration_d/agent_state_arbitration.rs"
+  "$ROOT_DIR/crates/petcore/tests/integration_d/event_envelope_security.rs"
 )
 R13_TEST_NAMES=(
   "overlayNavigationCopyAndAccessibilityMatchTheValidatedDestination"

@@ -783,7 +783,7 @@ enum AgentConnectionsPresentation {
 }
 
 struct AgentConnectionsView: View {
-    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var model: ConnectionsModel
     @State private var confirmingRepairAll = false
     @State private var expandedSource: AgentSource?
 
@@ -809,7 +809,7 @@ struct AgentConnectionsView: View {
                 ForEach(AgentConnectionsCatalog.sources) { source in
                     AgentConnectionSection(
                         source: source,
-                        status: store.connections.first { $0.source == source },
+                        status: model.connections.first { $0.source == source },
                         isExpanded: expandedSource == source,
                         onToggle: {
                             withAnimation(.easeInOut(duration: 0.16)) {
@@ -839,10 +839,10 @@ struct AgentConnectionsView: View {
                 manageableSources.count
             )) {
                 let sources = manageableSources
-                guard !sources.isEmpty, store.canStartConnectionOperation else {
+                guard !sources.isEmpty, model.canStartOperation else {
                     return
                 }
-                store.repairConnections(sources)
+                model.repair(sources)
             }
             Button(APCLocalization.text(.commonCancel), role: .cancel) {}
         } message: {
@@ -851,10 +851,10 @@ struct AgentConnectionsView: View {
             ))
         }
         .onAppear {
-            store.requestAutomaticConnectionCheckOnFirstPresentation()
+            model.requestAutomaticCheckOnFirstPresentation()
             revealFirstUpdateAttentionSource()
         }
-        .onChange(of: store.appUpdateConvergenceState) { _, _ in
+        .onChange(of: model.updateAttentionSources) { _, _ in
             revealFirstUpdateAttentionSource()
         }
     }
@@ -896,9 +896,9 @@ struct AgentConnectionsView: View {
         }
         .apcClearGlassButtonStyle()
         .controlSize(.regular)
-        .disabled(!store.canStartConnectionOperation)
+        .disabled(!model.canStartOperation)
         .accessibilityHint(APCLocalization.text(
-            store.canStartConnectionOperation
+            model.canStartOperation
                 ? .connectionsPrimaryRepairHint
                 : .connectionsBusyHint
         ))
@@ -907,7 +907,7 @@ struct AgentConnectionsView: View {
 
     private var checkAllButton: some View {
         Button {
-            store.checkAllConnections()
+            model.checkAll()
         } label: {
             Label(
                 APCLocalization.text(.connectionsCheckAll),
@@ -916,9 +916,9 @@ struct AgentConnectionsView: View {
         }
         .apcClearGlassButtonStyle(prominent: true)
         .controlSize(.regular)
-        .disabled(!store.canStartConnectionOperation)
+        .disabled(!model.canStartOperation)
         .accessibilityHint(APCLocalization.text(
-            store.canStartConnectionOperation
+            model.canStartOperation
                 ? .connectionsCheckAllHint
                 : .connectionsBusyHint
         ))
@@ -927,7 +927,7 @@ struct AgentConnectionsView: View {
 
     private var manageableStatuses: [AgentConnectionStatus] {
         AgentConnectionsPresentation.manageableStatuses(
-            from: store.connections
+            from: model.connections
         )
     }
 
@@ -936,16 +936,13 @@ struct AgentConnectionsView: View {
     }
 
     private func revealFirstUpdateAttentionSource() {
-        guard case let .needsAttention(.connectors(issues)) =
-                store.appUpdateConvergenceState,
-              let source = issues.first?.source
-        else { return }
+        guard let source = model.updateAttentionSources.first else { return }
         expandedSource = source
     }
 }
 
 private struct AgentConnectionSection: View {
-    @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var model: ConnectionsModel
     @State private var confirmingRepair = false
     @State private var confirmingUninstall = false
 
@@ -958,12 +955,12 @@ private struct AgentConnectionSection: View {
         AgentConnectionProductPresentation(
             source: source,
             status: status,
-            operationState: store.connectionOperationState
+            operationState: model.operationState
         )
     }
 
     private var busy: Bool {
-        !store.canStartConnectionOperation
+        !model.canStartOperation
     }
 
     var body: some View {
@@ -990,12 +987,12 @@ private struct AgentConnectionSection: View {
                 let current = AgentConnectionProductPresentation(
                     source: source,
                     status: status,
-                    operationState: store.connectionOperationState
+                    operationState: model.operationState
                 )
                 guard current.canManageManagedConnector else {
                     return
                 }
-                store.repairConnection(source)
+                model.repair(source)
             }
             Button(APCLocalization.text(.commonCancel), role: .cancel) {}
         } message: {
@@ -1011,7 +1008,7 @@ private struct AgentConnectionSection: View {
                 role: .destructive
             ) {
                 guard status?.canUninstallManagedConnector == true else { return }
-                store.uninstallConnection(source)
+                model.uninstall(source)
             }
             Button(APCLocalization.text(.commonCancel), role: .cancel) {}
         } message: {
@@ -1073,7 +1070,7 @@ private struct AgentConnectionSection: View {
 
                 Text(AgentConnectionsPresentation.healthSummary(
                     for: presentation,
-                    operationState: store.connectionOperationState
+                    operationState: model.operationState
                 ))
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1124,14 +1121,14 @@ private struct AgentConnectionSection: View {
 
             if let failure = AgentConnectionsPresentation.failure(
                 for: source,
-                in: store.connectionOperationState
+                in: model.operationState
             ) {
                 operationFailureNotice(failure)
             }
 
             if let success = AgentConnectionsPresentation.success(
                 for: source,
-                in: store.connectionOperationState,
+                in: model.operationState,
                 status: status
             ) {
                 operationSuccessNotice(success)
@@ -1263,22 +1260,22 @@ private struct AgentConnectionSection: View {
             confirmingRepair = true
         case .verify:
             guard !busy else { return }
-            store.checkConnection(source)
+            model.check(source)
         case .retry:
             guard AgentConnectionsPresentation.failure(
                 for: source,
-                in: store.connectionOperationState
+                in: model.operationState
             ) != nil else {
                 return
             }
-            store.retryConnectionOperation()
+            model.retry()
         case .unavailable:
             break
         }
     }
 
     private var runningOperationTitle: String? {
-        guard let operation = store.connectionOperationState.runningOperation,
+        guard let operation = model.operationState.runningOperation,
               operation.sources.contains(source) else {
             return nil
         }
@@ -1314,7 +1311,7 @@ private struct AgentConnectionSection: View {
             Spacer(minLength: 12)
 
             Button(APCLocalization.text(.connectionsOperationDismiss)) {
-                store.dismissConnectionOperationNotice()
+                model.dismissNotice()
             }
             .buttonStyle(.borderless)
             .accessibilityIdentifier(
@@ -1352,7 +1349,7 @@ private struct AgentConnectionSection: View {
             Spacer(minLength: 12)
 
             Button(APCLocalization.text(.connectionsOperationDismiss)) {
-                store.dismissConnectionOperationNotice()
+                model.dismissNotice()
             }
             .buttonStyle(.borderless)
             .accessibilityIdentifier(
@@ -1404,7 +1401,7 @@ private struct AgentConnectionSection: View {
         Menu {
             if actionLayout.moreActions.contains(.recheck) {
                 Button {
-                    store.checkConnection(source)
+                    model.check(source)
                 } label: {
                     Label(
                         APCLocalization.text(.connectionsRecheck),
@@ -1421,7 +1418,7 @@ private struct AgentConnectionSection: View {
 
             if actionLayout.moreActions.contains(.sendTestMessage) {
                 Button {
-                    store.sendConnectionTestEvent(source)
+                    model.sendTestEvent(source)
                 } label: {
                     Label(
                         APCLocalization.text(.connectionsTestChannel),

@@ -8,7 +8,12 @@ DEVELOPER_BIN="/Library/Developer/CommandLineTools/usr/bin"
 INTEROP_DIR="/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
 CPP_INCLUDE="${CPLUS_INCLUDE_PATH:-}"
 SDK=""
-ARGS=(test --disable-sandbox)
+ARGS=(
+  test
+  --disable-sandbox
+  -Xswiftc -strict-concurrency=complete
+  -Xswiftc -warnings-as-errors
+)
 
 usage() {
   echo 'usage: validate_swift_tests.sh [--scope all|overlay|interaction]' >&2

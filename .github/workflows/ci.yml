@@ -13,6 +13,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -28,7 +29,7 @@ env:
 jobs:
   scope:
     name: Classify change once
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       base: ${{ steps.validation_base.outputs.base }}
@@ -46,10 +47,26 @@ jobs:
       lane: ${{ steps.development_context.outputs.lane }}
       full_candidate: ${{ steps.development_context.outputs.full_candidate }}
       release_source: ${{ steps.development_context.outputs.release_source }}
+      release_preparation: ${{ steps.development_context.outputs.release_preparation }}
+      actionable: ${{ steps.actionable.outputs.actionable }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
+          fetch-depth: 2
+
+      - name: Route edited pull-request events
+        id: actionable
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BASE_CHANGED: ${{ github.event.changes.base.ref.from }}
+        run: |
+          actionable=1
+          if [[ "$EVENT_NAME" == "pull_request" && "$EVENT_ACTION" == "edited" && -z "$BASE_CHANGED" ]]; then
+            actionable=0
+            echo 'Title/body-only edit: complete CI and merge authorization are intentionally skipped.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          echo "actionable=$actionable" >>"$GITHUB_OUTPUT"
 
       - name: Resolve validation base
         id: validation_base
@@ -74,6 +91,9 @@ jobs:
           fi
           if [[ "$base" == "0000000000000000000000000000000000000000" ]]; then
             base="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          if ! git rev-parse --verify "$base^{commit}" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=1 origin "$base"
           fi
           git rev-parse --verify "$base^{commit}" >/dev/null
           echo "base=$base" >>"$GITHUB_OUTPUT"
@@ -110,7 +130,7 @@ jobs:
   promotion:
     name: Promote trusted PR proof to main
     needs: scope
-    if: needs.scope.outputs.release_source == '1'
+    if: needs.scope.outputs.actionable == '1' && needs.scope.outputs.release_source == '1'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -119,6 +139,8 @@ jobs:
       pull-requests: read
     outputs:
       promoted: ${{ steps.finalize.outputs.promoted }}
+      fallback_category: ${{ steps.prepare.outputs.fallback_category }}
+      promotion_seconds: ${{ steps.prepare.outputs.promotion_seconds }}
       validation_commit: ${{ steps.finalize.outputs.validation_commit }}
       validation_run_id: ${{ steps.finalize.outputs.validation_run_id }}
       validation_run_attempt: ${{ steps.finalize.outputs.validation_run_attempt }}
@@ -136,6 +158,7 @@ jobs:
         env:
           MAIN_PARENT: ${{ needs.scope.outputs.base }}
         run: |
+          started="$SECONDS"
           mkdir -p "$RUNNER_TEMP/promoted-interaction"
           promotion_ready=0
           for attempt in 1 2 3; do
@@ -144,7 +167,8 @@ jobs:
               --main-commit "$GITHUB_SHA" \
               --main-parent "$MAIN_PARENT" \
               --candidate-attestation "$RUNNER_TEMP/candidate-interaction-attestation.json" \
-              --metadata "$RUNNER_TEMP/promotion-metadata.json"; then
+              --metadata "$RUNNER_TEMP/promotion-metadata.json" \
+              --failure-metadata "$RUNNER_TEMP/promotion-failure.json"; then
               promotion_ready=1
               break
             fi
@@ -160,12 +184,19 @@ jobs:
               echo "candidate=1" >>"$GITHUB_OUTPUT"
             else
               echo "candidate=0" >>"$GITHUB_OUTPUT"
+              echo "fallback_category=tree-mismatch" >>"$GITHUB_OUTPUT"
               echo 'Interaction proof rebinding failed; running complete main CI.' >>"$GITHUB_STEP_SUMMARY"
             fi
           else
             echo "candidate=0" >>"$GITHUB_OUTPUT"
-            echo 'No exact-tree trusted PR proof was promotable; running complete main CI.' >>"$GITHUB_STEP_SUMMARY"
+            category="$(jq -er '.category' "$RUNNER_TEMP/promotion-failure.json" 2>/dev/null || echo unavailable)"
+            echo "fallback_category=$category" >>"$GITHUB_OUTPUT"
+            echo "No exact-tree trusted PR proof was promotable ($category); running complete main CI." >>"$GITHUB_STEP_SUMMARY"
           fi
+          if [[ "$promotion_ready" == "1" && "$(tail -n 1 "$GITHUB_OUTPUT")" != fallback_category=* ]]; then
+            echo "fallback_category=none" >>"$GITHUB_OUTPUT"
+          fi
+          echo "promotion_seconds=$((SECONDS - started))" >>"$GITHUB_OUTPUT"
 
       - name: Upload main-bound promoted interaction proof
         if: steps.prepare.outputs.candidate == '1'
@@ -188,7 +219,18 @@ jobs:
             fi
             echo "$key=$value" >>"$GITHUB_OUTPUT"
           done
-          echo 'This main commit reused the exact-tree PR candidate proof.' >>"$GITHUB_STEP_SUMMARY"
+          {
+            echo '### Proof promotion'
+            echo
+            echo '| field | value |'
+            echo '|---|---|'
+            echo '| promoted | 1 |'
+            echo "| candidate PR | $(jq -er '.pull_request_number' "$RUNNER_TEMP/promotion-metadata.json") |"
+            echo "| candidate run/attempt | $(jq -er '.validation_run_id' "$RUNNER_TEMP/promotion-metadata.json") / $(jq -er '.validation_run_attempt' "$RUNNER_TEMP/promotion-metadata.json") |"
+            echo "| candidate proof digest | $(jq -er '.candidate_proof_sha256' "$RUNNER_TEMP/promotion-metadata.json") |"
+            echo '| fallback category | none |'
+            echo '| routing seconds | ${{ steps.prepare.outputs.promotion_seconds }} |'
+          } >>"$GITHUB_STEP_SUMMARY"
 
   static:
     name: Static source contracts
@@ -196,19 +238,14 @@ jobs:
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1'
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-
-      - name: Install common validation tooling
-        run: |
-          if ! command -v rg >/dev/null 2>&1; then
-            brew install ripgrep
-          fi
+          fetch-depth: 2
 
       - name: Diff and source syntax
         run: |
@@ -223,39 +260,38 @@ jobs:
         if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.scripts == '1'
         run: ./script/validate_build_scripts_safety.sh --skip-source-syntax --static-only
 
-      - name: Validate parallel changelog fragments
-        run: ./script/changelog_fragments.py validate
-
-      - name: Require main-bound changelog consolidation
-        if: >-
-          needs.scope.outputs.full_candidate == '1' &&
-          needs.scope.outputs.lane != 'task-to-train'
-        run: ./script/changelog_fragments.py require-consumed
+      - name: Enforce changelog lane policy
+        run: |
+          ./script/changelog_fragments.py policy \
+            --base-ref "${{ needs.scope.outputs.base }}" \
+            --release-preparation "${{ needs.scope.outputs.release_preparation }}"
 
       - name: Codex plugin and Skill version discipline for this change
         if: needs.scope.outputs.plugin_version == '1'
         run: ./script/validate_codex_plugin_version.py --base-ref "${{ needs.scope.outputs.base }}"
 
-  contracts:
-    name: Source and integration contracts
+  portable_contracts:
+    name: Portable source and integration contracts
     needs: [scope, promotion]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' ||
       needs.scope.outputs.docs_only != '1')
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install common validation tooling
         run: |
           if ! command -v rg >/dev/null 2>&1; then
-            brew install ripgrep
+            sudo apt-get update
+            sudo apt-get install --yes ripgrep
           fi
 
       - name: Prepare pinned Python validation environment
@@ -270,26 +306,6 @@ jobs:
               raise SystemExit("pinned Pillow lacks the required animated WebP support")
           PY
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
-
-      - name: Restore contract build products
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-contracts-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-contracts-
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
-
-      - name: Complete build and workflow contracts
-        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.scripts == '1'
-        run: ./script/validate_build_scripts_safety.sh --skip-source-syntax
-
-      - name: App lifecycle contract
-        if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.swift_mode != 'none'
-        run: ./script/validate_app_lifecycle_contract.sh
 
       - name: Schema contracts
         if: needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.schemas == '1' || needs.scope.outputs.producer == '1'
@@ -316,32 +332,96 @@ jobs:
           needs.scope.outputs.connectors == '1'
         run: ./script/validate_security_boundaries.sh
 
-  rust_lint:
-    name: Rust formatting and linting
+  macos_contracts:
+    name: macOS build and lifecycle contracts
     needs: [scope, promotion]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
-      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
+      (needs.scope.outputs.full_candidate == '1' ||
+      needs.scope.outputs.scripts == '1' ||
+      needs.scope.outputs.swift_mode != 'none')
     runs-on: macos-26
     timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Complete macOS build and workflow contracts
+        run: ./script/validate_build_scripts_safety.sh --skip-source-syntax
+
+      - name: App lifecycle contract
+        run: ./script/validate_app_lifecycle_contract.sh
+
+  cargo_source:
+    name: Prime portable Cargo sources
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      cache_hit: ${{ steps.cargo_source_cache.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Restore or write the one portable Cargo source cache
+        id: cargo_source_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Fetch the locked dependency graph
+        run: cargo fetch --locked
+
+      - name: Record Cargo source cache routing
+        env:
+          CARGO_SOURCE_CACHE_HIT: ${{ steps.cargo_source_cache.outputs.cache-hit }}
+        run: printf "Cargo source exact hit = \`%s\`.\n" "$CARGO_SOURCE_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+
+  rust_lint:
+    name: Rust formatting and linting
+    needs: [scope, promotion, cargo_source]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      cache_hit: ${{ steps.rust_lint_cache.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify Rust toolchain
         run: rustup show
 
-      - name: Restore Rust lint cache
+      - name: Restore exact Cargo sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-lint-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the one portable lint target cache
+        id: rust_lint_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-clippy-${{ hashFiles('Cargo.lock') }}
 
       - name: Rust formatting
         run: cargo fmt --all -- --check
@@ -349,19 +429,67 @@ jobs:
       - name: Strict Rust linting
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  rust_tests:
-    name: Rust tests (${{ matrix.shard }})
-    needs: [scope, promotion]
+  rust_test_build:
+    name: Link portable Rust test binaries once
+    needs: [scope, promotion, cargo_source]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      cache_hit: ${{ steps.rust_test_cache.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Restore exact Cargo sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the one portable test target cache
+        id: rust_test_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-test-${{ hashFiles('Cargo.lock') }}
+
+      - name: Link the complete portable test inventory once
+        run: cargo test --workspace --no-run --locked --timings
+
+      - name: Upload Cargo timing evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-test-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: target/cargo-timings/cargo-timing.html
+
+      - name: Record Rust test cache routing
+        env:
+          RUST_TEST_CACHE_HIT: ${{ steps.rust_test_cache.outputs.cache-hit }}
+        run: printf "Portable test target exact hit = \`%s\`.\n" "$RUST_TEST_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+
+  rust_tests:
+    name: Rust tests (${{ matrix.shard }})
+    needs: [scope, promotion, cargo_source, rust_test_build]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
     strategy:
       fail-fast: false
       matrix:
         shard: [core, integration-a, integration-b, integration-c, integration-d]
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -369,17 +497,19 @@ jobs:
       - name: Verify Rust toolchain
         run: rustup show
 
-      - name: Restore Rust test cache
+      - name: Restore exact Cargo sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-${{ matrix.shard }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-${{ matrix.shard }}-
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore the exact portable test target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-test-${{ hashFiles('Cargo.lock') }}
 
       - name: Run inventory-checked Rust shard
         run: |
@@ -401,6 +531,7 @@ jobs:
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none')
     runs-on: ubuntu-24.04
@@ -418,29 +549,93 @@ jobs:
       - name: Require the exact Rust shard completion set
         run: ./script/validate_rust_test_shards.py --verify-completion-dir "$RUNNER_TEMP/rust-shard-proof"
 
+  macos_platform:
+    name: macOS Rust platform semantics
+    needs: [scope, promotion]
+    if: >-
+      always() &&
+      needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
+      needs.promotion.outputs.promoted != '1' &&
+      (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.rust_mode != 'none' || needs.scope.outputs.bundle == '1')
+    runs-on: macos-26
+    timeout-minutes: 30
+    outputs:
+      cache_hit: ${{ steps.macos_rust_cache.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Restore or write the one macOS Cargo source cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the one macOS platform target cache
+        id: macos_rust_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-platform-test-${{ hashFiles('Cargo.lock') }}
+
+      - name: Prove platform lint, library, process, CLI metadata, and daemon semantics
+        run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test -p petcore --lib --locked
+          cargo test -p petcore --test integration_c process_runner:: --locked
+          cargo test -p petcore-cli --test integration petpack_build_metadata:: --locked
+          cargo test -p petcore --test integration_d daemon_lifecycle:: --locked
+
+      - name: Record macOS platform cache routing
+        env:
+          MACOS_PLATFORM_CACHE_HIT: ${{ steps.macos_rust_cache.outputs.cache-hit }}
+        run: printf "macOS platform target exact hit = \`%s\`.\n" "$MACOS_PLATFORM_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+
   swift_interaction:
     name: Swift and interaction proof
     needs: [scope, promotion]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none')
     runs-on: macos-26
     timeout-minutes: 25
+    outputs:
+      cache_hit: ${{ steps.swift_strict_cache.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify App build toolchain
         run: ./script/validate_macos_build_contract.py toolchain
 
-      - name: Restore Swift build products
+      - name: Resolve exact Swift cache identity
+        id: swift_toolchain_identity
+        run: |
+          {
+            swift --version
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+          } >"$RUNNER_TEMP/swift-toolchain-identity.txt"
+          digest="$(shasum -a 256 "$RUNNER_TEMP/swift-toolchain-identity.txt" | awk '{print $1}')"
+          printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+          printf 'source_tree=%s\n' "$(git rev-parse HEAD:apps/macos)" >>"$GITHUB_OUTPUT"
+
+      - name: Normalize exact Swift source-tree timestamps
+        run: |
+          # The cache key binds the complete tracked source tree, so a fixed mtime is
+          # safe and prevents a fresh checkout from invalidating every restored object.
+          git ls-files -z -- apps/macos | xargs -0 touch -t 200001010000.00
+
+      - name: Restore or write the one strict Swift debug cache
+        id: swift_strict_cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v3-${{ steps.swift_toolchain_identity.outputs.digest }}-${{ steps.swift_toolchain_identity.outputs.source_tree }}-${{ hashFiles('script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
 
       - name: Run complete Swift suite and create source interaction proof
         env:
@@ -458,29 +653,53 @@ jobs:
           retention-days: 3
           path: ${{ runner.temp }}/interaction-attestation.json
 
+      - name: Package exact strict Swift debug products
+        run: |
+          ./script/swift_build_artifact.py create \
+            --output-dir "$RUNNER_TEMP/swift-debug-products" \
+            --commit "$GITHUB_SHA"
+
+      - name: Upload exact strict Swift debug products
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-swift-debug-products-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          path: ${{ runner.temp }}/swift-debug-products
+
+      - name: Record strict Swift cache routing
+        env:
+          SWIFT_STRICT_CACHE_HIT: ${{ steps.swift_strict_cache.outputs.cache-hit }}
+        run: printf "Strict Swift debug cache exact hit = \`%s\`.\n" "$SWIFT_STRICT_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
+
   stress:
     name: Bounded event-storm stress
-    needs: [scope, promotion]
+    needs: [scope, promotion, cargo_source, rust_test_build]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       needs.scope.outputs.full_candidate == '1'
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Restore Rust stress cache
+      - name: Restore exact Cargo sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-stress-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore the exact portable test target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-test-${{ hashFiles('Cargo.lock') }}
 
       - name: Run release-grade bounded event storm
         run: ./script/validate_event_storm.sh
@@ -491,6 +710,7 @@ jobs:
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none') &&
       needs.swift_interaction.result == 'success'
@@ -504,13 +724,18 @@ jobs:
           name: ci-interaction-attestation-${{ github.sha }}
           path: ${{ runner.temp }}/interaction-proof
 
-      - name: Restore Swift build products
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Download exact strict Swift debug products
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          path: apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
+          name: ci-swift-debug-products-${{ github.sha }}
+          path: ${{ runner.temp }}/swift-debug-products
+
+      - name: Resolve sources and restore commit-bound Swift products
+        run: |
+          (cd apps/macos && swift package resolve --disable-sandbox)
+          ./script/swift_build_artifact.py restore \
+            --input-dir "$RUNNER_TEMP/swift-debug-products" \
+            --commit "$GITHUB_SHA"
 
       - name: Run offline overlay geometry, scheduler, accessibility, frame, and pointer contracts
         run: |
@@ -519,38 +744,49 @@ jobs:
 
   bundle:
     name: Packaged development App proof
-    needs: [scope, promotion, contracts, rust_lint, rust_tests, swift_interaction, overlay]
+    needs: [scope, promotion, swift_interaction]
     if: >-
       always() &&
       needs.scope.result == 'success' &&
+      needs.scope.outputs.actionable == '1' &&
       needs.promotion.outputs.promoted != '1' &&
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1')
     runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - name: Require successful source dependencies
-        env:
-          CONTRACTS_RESULT: ${{ needs.contracts.result }}
-          RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
-          RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
-          SWIFT_RESULT: ${{ needs.swift_interaction.result }}
-          OVERLAY_RESULT: ${{ needs.overlay.result }}
-        run: |
-          for result in "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$SWIFT_RESULT" "$OVERLAY_RESULT"; do
-            case "$result" in
-              success|skipped) ;;
-              *) echo "bundle dependency did not succeed: $result" >&2; exit 1 ;;
-            esac
-          done
-          test "$SWIFT_RESULT" = "success"
-          test "$OVERLAY_RESULT" = "success"
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ci-interaction-attestation-${{ github.sha }}
           path: ${{ runner.temp }}/interaction-proof
+
+      - name: Download exact strict Swift debug products
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ci-swift-debug-products-${{ github.sha }}
+          path: ${{ runner.temp }}/swift-debug-products
+
+      - name: Resolve sources and restore commit-bound Swift products
+        run: |
+          (cd apps/macos && swift package resolve --disable-sandbox)
+          ./script/swift_build_artifact.py restore \
+            --input-dir "$RUNNER_TEMP/swift-debug-products" \
+            --commit "$GITHUB_SHA"
+
+      - name: Restore or write the one development-bundle Cargo source cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the exact development-bundle Rust target cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-development-bundle-${{ hashFiles('Cargo.lock') }}
 
       - name: Rebind source interaction proof to the development build identity
         id: development_identity
@@ -577,25 +813,6 @@ jobs:
             --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
-      - name: Restore Rust build products
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-rust-bundle-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-rust-
-
-      - name: Restore Swift build products
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: apps/macos/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-apc-swift-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-apc-swift-
-
       - name: Build and fully validate development App from the proven interaction contract
         env:
           APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}
@@ -607,24 +824,28 @@ jobs:
 
   candidate_proof:
     name: Create promotable PR source proof
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle]
-    if: always() && github.event_name == 'pull_request' && needs.scope.outputs.full_candidate == '1'
+    needs: [scope, promotion, static, portable_contracts, macos_contracts, cargo_source, rust_lint, rust_test_build, rust_tests, rust_test_proof, macos_platform, swift_interaction, stress, overlay, bundle]
+    if: always() && github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1' && needs.scope.outputs.full_candidate == '1'
     runs-on: macos-26
     timeout-minutes: 10
     steps:
       - name: Require every candidate source gate
         env:
           STATIC_RESULT: ${{ needs.static.result }}
-          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          PORTABLE_CONTRACTS_RESULT: ${{ needs.portable_contracts.result }}
+          MACOS_CONTRACTS_RESULT: ${{ needs.macos_contracts.result }}
+          CARGO_SOURCE_RESULT: ${{ needs.cargo_source.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TEST_BUILD_RESULT: ${{ needs.rust_test_build.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
           RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
+          MACOS_PLATFORM_RESULT: ${{ needs.macos_platform.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
         run: |
-          for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+          for result in "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
             case "$result" in
               success) ;;
               *) echo "candidate source dependency did not succeed: $result" >&2; exit 1 ;;
@@ -673,7 +894,7 @@ jobs:
 
   source_proof:
     name: Bind release source proof to main commit
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle, candidate_proof]
+    needs: [scope, promotion, static, portable_contracts, macos_contracts, cargo_source, rust_lint, rust_test_build, rust_tests, rust_test_proof, macos_platform, swift_interaction, stress, overlay, bundle, candidate_proof]
     if: always() && needs.scope.outputs.release_source == '1'
     runs-on: macos-26
     timeout-minutes: 15
@@ -686,24 +907,28 @@ jobs:
         env:
           PROMOTED: ${{ needs.promotion.outputs.promoted }}
           STATIC_RESULT: ${{ needs.static.result }}
-          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          PORTABLE_CONTRACTS_RESULT: ${{ needs.portable_contracts.result }}
+          MACOS_CONTRACTS_RESULT: ${{ needs.macos_contracts.result }}
+          CARGO_SOURCE_RESULT: ${{ needs.cargo_source.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TEST_BUILD_RESULT: ${{ needs.rust_test_build.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
           RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
+          MACOS_PLATFORM_RESULT: ${{ needs.macos_platform.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
           BUNDLE_RESULT: ${{ needs.bundle.result }}
         run: |
           if [[ "$PROMOTED" == "1" ]]; then
-            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+            for result in "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 skipped) ;;
                 *) echo "promoted main CI unexpectedly scheduled a complete gate: $result" >&2; exit 1 ;;
               esac
             done
           else
-            for result in "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
+            for result in "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 success) ;;
                 *) echo "release source dependency did not succeed: $result" >&2; exit 1 ;;
@@ -799,19 +1024,28 @@ jobs:
 
   required:
     name: Required CI
-    needs: [scope, promotion, static, contracts, rust_lint, rust_tests, rust_test_proof, swift_interaction, stress, overlay, bundle, candidate_proof, source_proof]
+    needs: [scope, promotion, static, portable_contracts, macos_contracts, cargo_source, rust_lint, rust_test_build, rust_tests, rust_test_proof, macos_platform, swift_interaction, stress, overlay, bundle, candidate_proof, source_proof]
     if: always()
-    runs-on: macos-26
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - name: Require every scheduled job
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
           STATIC_RESULT: ${{ needs.static.result }}
-          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          PORTABLE_CONTRACTS_RESULT: ${{ needs.portable_contracts.result }}
+          MACOS_CONTRACTS_RESULT: ${{ needs.macos_contracts.result }}
+          CARGO_SOURCE_RESULT: ${{ needs.cargo_source.result }}
           RUST_LINT_RESULT: ${{ needs.rust_lint.result }}
+          RUST_TEST_BUILD_RESULT: ${{ needs.rust_test_build.result }}
           RUST_TESTS_RESULT: ${{ needs.rust_tests.result }}
           RUST_TEST_PROOF_RESULT: ${{ needs.rust_test_proof.result }}
+          MACOS_PLATFORM_RESULT: ${{ needs.macos_platform.result }}
           SWIFT_RESULT: ${{ needs.swift_interaction.result }}
           STRESS_RESULT: ${{ needs.stress.result }}
           OVERLAY_RESULT: ${{ needs.overlay.result }}
@@ -821,10 +1055,11 @@ jobs:
           FULL_CANDIDATE: ${{ needs.scope.outputs.full_candidate }}
           RELEASE_SOURCE: ${{ needs.scope.outputs.release_source }}
           PROMOTED: ${{ needs.promotion.outputs.promoted }}
+          ACTIONABLE: ${{ needs.scope.outputs.actionable }}
         run: |
           for result in \
-            "$SCOPE_RESULT" "$STATIC_RESULT" "$CONTRACTS_RESULT" \
-            "$RUST_LINT_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" \
+            "$SCOPE_RESULT" "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" \
+            "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" \
             "$STRESS_RESULT" "$OVERLAY_RESULT" "$BUNDLE_RESULT" \
             "$CANDIDATE_PROOF_RESULT" "$SOURCE_PROOF_RESULT"; do
             case "$result" in
@@ -832,10 +1067,10 @@ jobs:
               *) echo "scheduled CI job did not succeed: $result" >&2; exit 1 ;;
             esac
           done
-          if [[ "$FULL_CANDIDATE" == "1" && "$PROMOTED" != "1" ]]; then
+          if [[ "$ACTIONABLE" == "1" && "$FULL_CANDIDATE" == "1" && "$PROMOTED" != "1" ]]; then
             for result in \
-              "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
-              "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" \
+              "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
               "$OVERLAY_RESULT" "$BUNDLE_RESULT"; do
               case "$result" in
                 success) ;;
@@ -843,14 +1078,14 @@ jobs:
               esac
             done
           fi
-          if [[ "$FULL_CANDIDATE" == "1" && "$RELEASE_SOURCE" != "1" ]]; then
+          if [[ "$ACTIONABLE" == "1" && "$FULL_CANDIDATE" == "1" && "$RELEASE_SOURCE" != "1" ]]; then
             test "$CANDIDATE_PROOF_RESULT" = "success"
           fi
           if [[ "$PROMOTED" == "1" ]]; then
             test "$RELEASE_SOURCE" = "1"
             for result in \
-              "$STATIC_RESULT" "$CONTRACTS_RESULT" "$RUST_LINT_RESULT" \
-              "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
+              "$STATIC_RESULT" "$PORTABLE_CONTRACTS_RESULT" "$MACOS_CONTRACTS_RESULT" "$CARGO_SOURCE_RESULT" "$RUST_LINT_RESULT" \
+              "$RUST_TEST_BUILD_RESULT" "$RUST_TESTS_RESULT" "$RUST_TEST_PROOF_RESULT" "$MACOS_PLATFORM_RESULT" "$SWIFT_RESULT" "$STRESS_RESULT" \
               "$OVERLAY_RESULT" "$BUNDLE_RESULT" "$CANDIDATE_PROOF_RESULT"; do
               test "$result" = "skipped"
             done
@@ -860,17 +1095,110 @@ jobs:
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Emit content-free engineering feedback metrics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTED: ${{ needs.promotion.outputs.promoted }}
+          FALLBACK_CATEGORY: ${{ needs.promotion.outputs.fallback_category }}
+          CARGO_SOURCE_CACHE_HIT: ${{ needs.cargo_source.outputs.cache_hit }}
+          RUST_LINT_CACHE_HIT: ${{ needs.rust_lint.outputs.cache_hit }}
+          RUST_TEST_CACHE_HIT: ${{ needs.rust_test_build.outputs.cache_hit }}
+          MACOS_PLATFORM_CACHE_HIT: ${{ needs.macos_platform.outputs.cache_hit }}
+          SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/engineering-metrics"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --jq '{created_at: .created_at}' >"$RUNNER_TEMP/engineering-metrics/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            >"$RUNNER_TEMP/engineering-metrics/jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+            >"$RUNNER_TEMP/engineering-metrics/caches.json"
+          pr_number=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            pr_number="${{ github.event.pull_request.number }}"
+          else
+            pr_number="$(
+              gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+                --jq 'map(select(.base.ref == "main" and .merged_at != null and .merge_commit_sha == env.GITHUB_SHA)) | if length == 1 then .[0].number else empty end'
+            )"
+          fi
+          pr_inputs=()
+          if [[ -n "$pr_number" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+              >"$RUNNER_TEMP/engineering-metrics/pull-request.json"
+            gh api --paginate --slurp \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/issues/$pr_number/timeline?per_page=100" \
+              | jq 'add // []' \
+              >"$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
+            pr_inputs=(
+              --pull-request-json "$RUNNER_TEMP/engineering-metrics/pull-request.json"
+              --pull-request-timeline-json "$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
+            )
+          fi
+          run_created_at="$(jq -r '.created_at' "$RUNNER_TEMP/engineering-metrics/run.json")"
+          observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          proof_outcome=not-applicable
+          if [[ "$PROMOTED" == "1" ]]; then
+            proof_outcome=promoted
+          elif [[ "${{ needs.scope.outputs.full_candidate }}" == "1" ]]; then
+            proof_outcome=full-validation
+          fi
+          cache_value() {
+            case "$1" in
+              true|false) printf '%s' "$1" ;;
+              '') printf 'skipped' ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          ./script/engineering_metrics.py \
+            --base-ref "${{ needs.scope.outputs.base }}" \
+            --jobs-json "$RUNNER_TEMP/engineering-metrics/jobs.json" \
+            --cache-json "$RUNNER_TEMP/engineering-metrics/caches.json" \
+            "${pr_inputs[@]}" \
+            --run-created-at "$run_created_at" \
+            --observed-at "$observed_at" \
+            --proof-outcome "$proof_outcome" \
+            --fallback-category "${FALLBACK_CATEGORY:-not-applicable}" \
+            --cache-observation "cargo-source=$(cache_value "$CARGO_SOURCE_CACHE_HIT")" \
+            --cache-observation "rust-lint=$(cache_value "$RUST_LINT_CACHE_HIT")" \
+            --cache-observation "rust-test=$(cache_value "$RUST_TEST_CACHE_HIT")" \
+            --cache-observation "macos-platform=$(cache_value "$MACOS_PLATFORM_CACHE_HIT")" \
+            --cache-observation "swift-strict=$(cache_value "$SWIFT_STRICT_CACHE_HIT")" \
+            --output "$RUNNER_TEMP/engineering-metrics/metrics.json" \
+            --summary "$RUNNER_TEMP/engineering-metrics/summary.md" >>"$GITHUB_STEP_SUMMARY"
+          rm "$RUNNER_TEMP/engineering-metrics/run.json" \
+            "$RUNNER_TEMP/engineering-metrics/jobs.json" \
+            "$RUNNER_TEMP/engineering-metrics/caches.json"
+          rm -f \
+            "$RUNNER_TEMP/engineering-metrics/pull-request.json" \
+            "$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
+
+      - name: Upload bounded engineering feedback metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: engineering-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/engineering-metrics
 
       - name: Record live UI validation routing
         env:
           DEVELOPMENT_LANE: ${{ needs.scope.outputs.lane }}
           PROMOTED: ${{ needs.promotion.outputs.promoted }}
+          FALLBACK_CATEGORY: ${{ needs.promotion.outputs.fallback_category }}
+          ACTIONABLE: ${{ needs.scope.outputs.actionable }}
         run: |
           printf 'Development lane: %s.\n' "$DEVELOPMENT_LANE" >>"$GITHUB_STEP_SUMMARY"
           if [[ "$PROMOTED" == "1" ]]; then
-            echo 'This exact main tree reused the complete direct/train PR proof; only main-bound proof issuance ran after merge.' >>"$GITHUB_STEP_SUMMARY"
+            echo 'This main commit reused the exact-tree PR candidate proof from the complete direct/train gate; only main-bound proof issuance ran after merge.' >>"$GITHUB_STEP_SUMMARY"
+          elif [[ "$ACTIONABLE" != "1" ]]; then
+            echo 'This title/body-only edit intentionally issued no merge ticket and scheduled no complete gates.' >>"$GITHUB_STEP_SUMMARY"
           elif [[ "${{ needs.scope.outputs.full_candidate }}" == "1" ]]; then
-            echo 'This is a complete main-bound candidate gate.' >>"$GITHUB_STEP_SUMMARY"
+            echo "This is a complete main-bound candidate gate; promotion fallback category: ${FALLBACK_CATEGORY:-not-applicable}." >>"$GITHUB_STEP_SUMMARY"
           else
             echo 'This is a change-scoped task-to-train or draft gate.' >>"$GITHUB_STEP_SUMMARY"
           fi
@@ -898,7 +1226,7 @@ jobs:
         run: git diff --check
 
       - name: Bind the successful PR run to its exact merge lane
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -924,7 +1252,7 @@ jobs:
             --output "$RUNNER_TEMP/merge-ticket/merge-ticket.json"
 
       - name: Upload exact PR merge ticket
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && needs.scope.outputs.actionable == '1'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-merge-ticket-${{ github.run_id }}-${{ github.run_attempt }}

@@ -21,9 +21,13 @@ WORKFLOW_PATH = ".github/workflows/ci.yml"
 MAIN_WORKFLOW_EVENTS = {"push", "workflow_dispatch"}
 EXPECTED_GATES = [
     "bundle",
-    "contracts",
+    "macos-contracts",
+    "macos-platform",
     "overlay",
+    "portable-contracts",
     "rust-lint",
+    "rust-test-build",
+    "rust-test-proof",
     "rust-tests",
     "static",
     "stress",

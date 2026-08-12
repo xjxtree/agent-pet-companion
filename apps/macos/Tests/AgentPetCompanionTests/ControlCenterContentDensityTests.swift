@@ -32,9 +32,9 @@ struct ControlCenterContentDensityTests {
         #expect(!connections.contains("ToolbarItemGroup(placement: .secondaryAction)"))
         #expect(connections.contains("ProductPageHeader("))
         #expect(connections.contains("summary: APCLocalization.text(.connectionsPageSubtitle)"))
-        #expect(connections.contains("store.checkAllConnections()"))
+        #expect(connections.contains("model.checkAll()"))
         #expect(connections.contains("\"connections.primary.check-all\""))
-        #expect(connections.contains("store.repairConnections(sources)"))
+        #expect(connections.contains("model.repair(sources)"))
         #expect(connections.contains("\"connections.secondary.setup-all\""))
         #expect(occurrences(
             of: ".apcClearGlassButtonStyle(prominent: true)",

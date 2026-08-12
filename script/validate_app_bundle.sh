@@ -244,14 +244,21 @@ fi
   echo "app bundle validation failed: missing bundled agent-pet-maker skill" >&2
   exit 1
 }
-[[ -f "$LOCALIZATION_BUNDLE/Localizable.xcstrings" ]] || {
-  echo "app bundle validation failed: missing bundled String Catalog" >&2
-  exit 1
-}
-[[ -f "$LOCALIZATION_BUNDLE/en.lproj/Localizable.strings" ]] || {
-  echo "app bundle validation failed: missing bundled English localization" >&2
-  exit 1
-}
+for table in Common PetLibrary Maker Connections Overlay Settings Diagnostics; do
+  table_root="$LOCALIZATION_BUNDLE/Localization/$table"
+  [[ -f "$table_root/$table.xcstrings" ]] || {
+    echo "app bundle validation failed: missing bundled $table String Catalog" >&2
+    exit 1
+  }
+  [[ -f "$table_root/en.lproj/$table.strings" ]] || {
+    echo "app bundle validation failed: missing bundled $table English localization" >&2
+    exit 1
+  }
+  [[ -f "$table_root/zh-Hans.lproj/$table.strings" ]] || {
+    echo "app bundle validation failed: missing bundled $table Simplified Chinese localization" >&2
+    exit 1
+  }
+done
 [[ -f "$BUNDLE_ICON" ]] || {
   echo "app bundle validation failed: missing app icon" >&2
   exit 1
@@ -260,11 +267,6 @@ fi
   echo "app bundle validation failed: missing bundled brand mark" >&2
   exit 1
 }
-if ! find "$LOCALIZATION_BUNDLE" -maxdepth 2 -type f \
-  -ipath '*/zh-hans.lproj/Localizable.strings' -print -quit | grep -q .; then
-  echo "app bundle validation failed: missing bundled Simplified Chinese localization" >&2
-  exit 1
-fi
 cmp -s "$SOURCE_SKILL" "$BUNDLED_SKILL" || {
   echo "app bundle validation failed: bundled agent-pet-studio skill differs from source" >&2
   exit 1

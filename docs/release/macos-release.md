@@ -20,6 +20,8 @@ Choose semantic version `X.Y.Z` and a positive build number. The exact release c
 - a clean worktree;
 - the validation required for that release.
 
+Release preparation begins from a frozen `changes/unreleased/` inventory on an explicitly registered `release_preparation` branch. That branch alone consumes the globally unique typed fragments into the matching changelog section; ordinary direct, task, and train PRs leave root `CHANGELOG.md` untouched. The release source checks reject missing fragments before preparation and reject leftover fragments after consumption. / 发布准备从显式登记的 `release_preparation` 分支冻结变更片段清单开始；只有该分支可将全局唯一的类型化片段汇总到匹配版本段。普通开发 PR 不修改根变更日志；源码门禁会在准备前拒绝缺失片段，并在汇总后拒绝残留片段。
+
 The runtime build ID is `X.Y.Z.BUILD.FULL_40_CHARACTER_COMMIT`. App, PetCore, CLI, manifest, and both archives must agree. One version maps to one tag, one changelog section, and one GitHub Release. / 版本、tag、CHANGELOG、完整 commit、build ID 与两个架构产物必须一一对应。
 
 The Codex plugin keeps an independent semantic version. Any change under `plugins/codex`, `skills/agent-pet-studio`, or `skills/agent-pet-maker` requires a greater plugin version than the previous release. Every bundled Skill front matter must declare that same version, while the hooks template is restricted to Codex-supported top-level fields. Hook version presentation binds an exact current rendered template to the plugin manifest; current source/cache digests prove convergence and are never a historical ownership registry. / Codex 插件独立版本必须递增；所有内置 Skill 的 front matter 必须声明同一版本；hooks 模板只能使用 Codex 支持的顶层字段。Hook 的版本展示通过当前完整渲染模板与插件清单绑定；当前源与缓存摘要只用于证明收敛，绝不是历史归属注册表。

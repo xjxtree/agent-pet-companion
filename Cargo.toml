@@ -24,3 +24,12 @@ thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2

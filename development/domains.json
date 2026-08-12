@@ -1,0 +1,878 @@
+{
+  "schema_version": "apc.development-domains.v1",
+  "domains": [
+    {
+      "id": "agent-connections",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/Features/Connections/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Connections/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/AgentConnectionsView.swift",
+        "crates/petcore/src/connections/**",
+        "crates/petcore/tests/connector_contracts.rs",
+        "crates/petcore/tests/connector_ordering.rs",
+        "plugins/**"
+      ],
+      "dependencies": [
+        "app-shell-runtime",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/rpc/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore-types/src/**",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/integrations/agent-connectors.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "-p",
+          "petcore",
+          "--test",
+          "integration_d",
+          "--locked"
+        ],
+        [
+          "./script/validate_connectors_runtime.sh"
+        ]
+      ],
+      "ci_flags": {
+        "connectors": true,
+        "rust_mode": "petcore",
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "codex-adapter",
+          "paths": [
+            "crates/petcore/src/connections/adapters/codex.rs",
+            "plugins/codex/**"
+          ]
+        },
+        {
+          "id": "claude-adapter",
+          "paths": [
+            "crates/petcore/src/connections/adapters/claude_code.rs",
+            "plugins/claude-code/**"
+          ]
+        },
+        {
+          "id": "pi-adapter",
+          "paths": [
+            "crates/petcore/src/connections/adapters/pi.rs",
+            "plugins/pi/**"
+          ]
+        },
+        {
+          "id": "opencode-adapter",
+          "paths": [
+            "crates/petcore/src/connections/adapters/opencode.rs",
+            "plugins/opencode/**"
+          ]
+        },
+        {
+          "id": "connections-model",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Features/Connections/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Connections/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/AgentConnectionsView.swift"
+          ]
+        },
+        {
+          "id": "connections-shared",
+          "paths": [
+            "crates/petcore/src/connections/**",
+            "crates/petcore/tests/connector_contracts.rs",
+            "crates/petcore/tests/connector_ordering.rs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "app-shell-runtime",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/App/AgentIconProvider.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/AppManualInstallation.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/BrandAssets.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/BundledPetInventory.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/InitialAppearanceWindowGate.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/Localization.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/LocalizationKeys/**",
+        "apps/macos/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/PetCoreOperationalState.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/ProductConvergence.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Common/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/ContentView.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
+      ],
+      "dependencies": [
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Package.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/overview.md",
+      "focused_tests": [
+        [
+          "./script/validate_swift_tests.sh",
+          "--scope",
+          "all"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": false,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "app-composition",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/App/AgentIconProvider.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/AppManualInstallation.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/BrandAssets.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/BundledPetInventory.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/InitialAppearanceWindowGate.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/Localization.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/LocalizationKeys/**",
+            "apps/macos/Sources/AgentPetCompanion/App/PackagedResourceBundle.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/PetCoreOperationalState.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/ProductConvergence.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Common/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/ContentView.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diagnostics-update",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/App/AppUpdateController.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/Diagnostics.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/DiagnosticsExportState.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/GitHubReleaseUpdateChecker.swift",
+        "apps/macos/Sources/AgentPetCompanion/Features/Diagnostics/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Diagnostics/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/ServiceDiagnosticsView.swift",
+        "crates/petcore/src/diagnostics.rs"
+      ],
+      "dependencies": [
+        "app-shell-runtime",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/runtime-and-ipc.md",
+      "focused_tests": [
+        [
+          "./script/validate_swift_tests.sh",
+          "--scope",
+          "all"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "rust_mode": "petcore",
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "diagnostics",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/App/Diagnostics.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/DiagnosticsExportState.swift",
+            "apps/macos/Sources/AgentPetCompanion/Features/Diagnostics/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Diagnostics/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/ServiceDiagnosticsView.swift",
+            "crates/petcore/src/diagnostics.rs"
+          ]
+        },
+        {
+          "id": "updates",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/App/AppUpdateController.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/GitHubReleaseUpdateChecker.swift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "maker-generation",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/Features/Maker/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Maker/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/MakerExperiencePresentation.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/MakerSessionWorkspace.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetMakerResultView.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetStudioView.swift",
+        "crates/petcore/src/generation.rs",
+        "skills/agent-pet-maker/**",
+        "skills/agent-pet-studio/**"
+      ],
+      "dependencies": [
+        "pet-library",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/rpc/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore-types/src/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/storage/generation.rs",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/data-model.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "-p",
+          "petcore",
+          "--test",
+          "integration_b",
+          "--locked"
+        ],
+        [
+          "./script/validate_pet_skills.sh"
+        ]
+      ],
+      "ci_flags": {
+        "producer": true,
+        "rust_mode": "petcore",
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "generation-runtime",
+          "paths": [
+            "crates/petcore/src/generation.rs"
+          ]
+        },
+        {
+          "id": "maker-ui",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Features/Maker/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Maker/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/MakerExperiencePresentation.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/MakerSessionWorkspace.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetMakerResultView.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetStudioView.swift"
+          ]
+        },
+        {
+          "id": "maker-skills",
+          "paths": [
+            "skills/agent-pet-maker/**",
+            "skills/agent-pet-studio/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overlay-sessions",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/Overlay/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Overlay/**",
+        "apps/macos/Tests/AgentPetCompanionTests/FrameTimelineTests.swift",
+        "apps/macos/Tests/AgentPetCompanionTests/OverlayDisplayWidthTests.swift",
+        "apps/macos/Tests/AgentPetCompanionTests/OverlayGeometryTests.swift",
+        "apps/macos/Tests/AgentPetCompanionTests/OverlayInteractionTelemetryTests.swift",
+        "apps/macos/Tests/AgentPetCompanionTests/OverlayPlacementAuthorityTests.swift"
+      ],
+      "dependencies": [
+        "app-shell-runtime",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/runtime-and-ipc.md",
+      "focused_tests": [
+        [
+          "./script/validate_swift_tests.sh",
+          "--scope",
+          "overlay"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "swift_mode": "overlay"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "session-bubble",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift",
+            "apps/macos/Sources/AgentPetCompanion/Overlay/OverlayBubbleTypography.swift"
+          ]
+        },
+        {
+          "id": "overlay-runtime",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Overlay/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Overlay/**",
+            "apps/macos/Tests/AgentPetCompanionTests/FrameTimelineTests.swift",
+            "apps/macos/Tests/AgentPetCompanionTests/OverlayDisplayWidthTests.swift",
+            "apps/macos/Tests/AgentPetCompanionTests/OverlayGeometryTests.swift",
+            "apps/macos/Tests/AgentPetCompanionTests/OverlayInteractionTelemetryTests.swift",
+            "apps/macos/Tests/AgentPetCompanionTests/OverlayPlacementAuthorityTests.swift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pet-library",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/Features/PetLibrary/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/PetLibrary/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetAssetRecoveryCard.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryAnimationPreview.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryPresentation.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryView.swift",
+        "crates/petcore/src/pet_revision.rs"
+      ],
+      "dependencies": [
+        "petpack-format",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/storage/pets.rs",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/data-model.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "-p",
+          "petcore",
+          "--test",
+          "integration_c",
+          "--locked"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "rust_mode": "petcore",
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "library",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Features/PetLibrary/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/PetLibrary/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetAssetRecoveryCard.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryAnimationPreview.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryPresentation.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/PetLibraryView.swift",
+            "crates/petcore/src/pet_revision.rs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "petpack-format",
+      "owned_paths": [
+        "crates/petcore/src/petpack.rs",
+        "crates/petcore-cli/tests/petpack_build_metadata.rs",
+        "crates/petcore-cli/tests/petpack_export_routing.rs",
+        "crates/petcore-cli/tests/petpack_import_routing.rs",
+        "crates/petcore/tests/petpack_export.rs",
+        "crates/petcore/tests/petpack_import_atomic.rs",
+        "crates/petcore/tests/petpack_resource_limits.rs",
+        "crates/petcore/tests/petpack_v3_contract.rs",
+        "schemas/petpack.schema.json"
+      ],
+      "dependencies": [
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "crates/petcore-types/src/pet.rs",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "-p",
+          "petcore",
+          "--test",
+          "integration_c",
+          "--locked"
+        ]
+      ],
+      "ci_flags": {
+        "producer": true,
+        "rust_mode": "petcore",
+        "schemas": true
+      },
+      "allow_parallel_claims": false,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "petpack-v3",
+          "paths": [
+            "crates/petcore/src/petpack.rs",
+            "crates/petcore-cli/tests/petpack_build_metadata.rs",
+            "crates/petcore-cli/tests/petpack_export_routing.rs",
+            "crates/petcore-cli/tests/petpack_import_routing.rs",
+            "crates/petcore/tests/petpack_export.rs",
+            "crates/petcore/tests/petpack_import_atomic.rs",
+            "crates/petcore/tests/petpack_resource_limits.rs",
+            "crates/petcore/tests/petpack_v3_contract.rs",
+            "schemas/petpack.schema.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "release-control-plane",
+      "owned_paths": [
+        ".github/workflows/auto-merge.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "development/**",
+        "script/changelog_fragments.py",
+        "script/ci_proof_promotion.py",
+        "script/configure_main_branch_ruleset.py",
+        "script/development_domains.py",
+        "script/development_flow.py",
+        "script/engineering_metrics.py",
+        "script/interaction-contract-files.txt",
+        "script/resolve_release_source_proof.py",
+        "script/release_source_proof.py",
+        "script/swift_build_artifact.py",
+        "script/validate_build_scripts_safety.sh",
+        "script/validate_local_tests.sh",
+        "script/validate_local_tests.py",
+        "script/validate_overlay_offline.sh",
+        "script/validate_portable_pet_maker.sh",
+        "script/validate_rust_test_shards.py",
+        "script/validate_schema_fixtures.sh",
+        "script/validate_security_boundaries.sh",
+        "script/validate_swift_tests.sh",
+        "script/validate_test_isolation.sh",
+        "script/validation_scope.py"
+      ],
+      "dependencies": [
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "AGENTS.md",
+          "risk": "amber"
+        },
+        {
+          "path": "CONTRIBUTING.md",
+          "risk": "amber"
+        },
+        {
+          "path": "Cargo.toml",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/**",
+          "risk": "amber"
+        },
+        {
+          "path": "changes/unreleased/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/**",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/**",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_app_bundle.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_app_lifecycle_contract.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_localizations.py",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_source_syntax.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/tests/**",
+          "risk": "amber"
+        },
+        {
+          "path": ".github/workflows/auto-merge.yml",
+          "risk": "red"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "risk": "red"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "risk": "red"
+        },
+        {
+          "path": "script/ci_proof_promotion.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/configure_main_branch_ruleset.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/development_flow.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/release_source_proof.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/resolve_release_source_proof.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/validate_build_scripts_safety.sh",
+          "risk": "red"
+        },
+        {
+          "path": "script/validate_rust_test_shards.py",
+          "risk": "red"
+        },
+        {
+          "path": "script/validation_scope.py",
+          "risk": "red"
+        }
+      ],
+      "durable_document": "docs/development/parallel-development.md",
+      "focused_tests": [
+        [
+          "python3",
+          "script/tests/test_validation_tooling.py"
+        ],
+        [
+          "./script/validate_build_scripts_safety.sh",
+          "--static-only"
+        ]
+      ],
+      "ci_flags": {
+        "scripts": true
+      },
+      "allow_parallel_claims": false,
+      "control_plane": true,
+      "claims": [
+        {
+          "id": "control-plane",
+          "paths": [
+            ".github/workflows/auto-merge.yml",
+            ".github/workflows/ci.yml",
+            ".github/workflows/release.yml",
+            "development/**",
+            "script/changelog_fragments.py",
+            "script/ci_proof_promotion.py",
+            "script/configure_main_branch_ruleset.py",
+            "script/development_domains.py",
+            "script/development_flow.py",
+            "script/engineering_metrics.py",
+            "script/interaction-contract-files.txt",
+            "script/resolve_release_source_proof.py",
+            "script/release_source_proof.py",
+            "script/swift_build_artifact.py",
+            "script/validate_build_scripts_safety.sh",
+            "script/validate_local_tests.py",
+            "script/validate_local_tests.sh",
+            "script/validate_overlay_offline.sh",
+            "script/validate_portable_pet_maker.sh",
+            "script/validate_rust_test_shards.py",
+            "script/validate_schema_fixtures.sh",
+            "script/validate_security_boundaries.sh",
+            "script/validate_swift_tests.sh",
+            "script/validate_test_isolation.sh",
+            "script/validation_scope.py"
+          ]
+        },
+        {
+          "id": "engineering-speedup",
+          "paths": [
+            ".github/workflows/auto-merge.yml",
+            ".github/workflows/ci.yml",
+            ".github/workflows/release.yml",
+            "development/**",
+            "script/changelog_fragments.py",
+            "script/ci_proof_promotion.py",
+            "script/configure_main_branch_ruleset.py",
+            "script/development_domains.py",
+            "script/development_flow.py",
+            "script/engineering_metrics.py",
+            "script/interaction-contract-files.txt",
+            "script/resolve_release_source_proof.py",
+            "script/release_source_proof.py",
+            "script/swift_build_artifact.py",
+            "script/validate_build_scripts_safety.sh",
+            "script/validate_local_tests.py",
+            "script/validate_local_tests.sh",
+            "script/validate_overlay_offline.sh",
+            "script/validate_portable_pet_maker.sh",
+            "script/validate_rust_test_shards.py",
+            "script/validate_schema_fixtures.sh",
+            "script/validate_security_boundaries.sh",
+            "script/validate_swift_tests.sh",
+            "script/validate_test_isolation.sh",
+            "script/validation_scope.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "settings-appearance",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanion/Features/Settings/**",
+        "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Settings/**",
+        "apps/macos/Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift",
+        "apps/macos/Sources/AgentPetCompanion/Views/SidebarConfigurationLivePreview.swift"
+      ],
+      "dependencies": [
+        "app-shell-runtime",
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/data-model.md",
+      "focused_tests": [
+        [
+          "./script/validate_swift_tests.sh",
+          "--scope",
+          "all"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": false,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "appearance",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanion/Features/Settings/**",
+            "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Settings/**",
+            "apps/macos/Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift",
+            "apps/macos/Sources/AgentPetCompanion/Views/SidebarConfigurationLivePreview.swift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "shared-contracts",
+      "owned_paths": [
+        "apps/macos/Sources/AgentPetCompanionCore/Contracts/**",
+        "crates/petcore-types/src/**",
+        "crates/petcore/src/rpc/**"
+      ],
+      "dependencies": [],
+      "shared_paths": [
+        {
+          "path": "apps/macos/Package.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "Cargo.toml",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/runtime-and-ipc.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "--workspace",
+          "--locked"
+        ],
+        [
+          "./script/validate_swift_tests.sh",
+          "--scope",
+          "all"
+        ]
+      ],
+      "ci_flags": {
+        "bundle": true,
+        "rust_mode": "workspace",
+        "swift_mode": "full"
+      },
+      "allow_parallel_claims": false,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "rpc-contracts",
+          "paths": [
+            "crates/petcore/src/rpc/**"
+          ]
+        },
+        {
+          "id": "rust-types",
+          "paths": [
+            "crates/petcore-types/src/**"
+          ]
+        },
+        {
+          "id": "swift-contracts",
+          "paths": [
+            "apps/macos/Sources/AgentPetCompanionCore/Contracts/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "storage-migrations",
+      "owned_paths": [
+        "crates/petcore/src/storage/**"
+      ],
+      "dependencies": [
+        "shared-contracts"
+      ],
+      "shared_paths": [
+        {
+          "path": "crates/petcore/src/storage/migrations.rs",
+          "risk": "red"
+        },
+        {
+          "path": "docs/architecture/data-model.md",
+          "risk": "amber"
+        }
+      ],
+      "durable_document": "docs/architecture/data-model.md",
+      "focused_tests": [
+        [
+          "cargo",
+          "test",
+          "-p",
+          "petcore",
+          "--lib",
+          "--locked"
+        ]
+      ],
+      "ci_flags": {
+        "rust_mode": "petcore"
+      },
+      "allow_parallel_claims": true,
+      "control_plane": false,
+      "claims": [
+        {
+          "id": "agent-queries",
+          "paths": [
+            "crates/petcore/src/storage/agents.rs"
+          ]
+        },
+        {
+          "id": "connection-queries",
+          "paths": [
+            "crates/petcore/src/storage/connections.rs"
+          ]
+        },
+        {
+          "id": "generation-queries",
+          "paths": [
+            "crates/petcore/src/storage/generation.rs"
+          ]
+        },
+        {
+          "id": "pet-queries",
+          "paths": [
+            "crates/petcore/src/storage/pets.rs"
+          ]
+        },
+        {
+          "id": "settings-queries",
+          "paths": [
+            "crates/petcore/src/storage/settings.rs"
+          ]
+        },
+        {
+          "id": "migrations",
+          "paths": [
+            "crates/petcore/src/storage/migrations.rs"
+          ]
+        }
+      ]
+    }
+  ]
+}

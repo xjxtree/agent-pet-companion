@@ -720,6 +720,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.overlay_interaction = (
             ROOT / "script/validate_overlay_interaction.sh"
         ).read_text(encoding="utf-8")
+        self.overlay_offline = (
+            ROOT / "script/validate_overlay_offline.sh"
+        ).read_text(encoding="utf-8")
         self.test_all_attestation = (
             ROOT / "script/prepare_interaction_attestation.sh"
         ).read_text(encoding="utf-8")
@@ -871,6 +874,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("Run release-grade bounded event storm", self.ci)
         self.assertIn("./script/validate_event_storm.sh", self.ci)
         self.assertIn("./script/validate_overlay_offline.sh", self.ci)
+        self.assertIn("SWIFT_TEST_BUILD_ARGS+=(--skip-build)", self.overlay_offline)
+        self.assertIn("validated Swift artifact is missing the package test bundle", self.overlay_offline)
         self.assertIn("Upload exact-commit release source proof", self.ci)
         self.assertIn("--proof-in \"$RUNNER_TEMP/source-proof/interaction-attestation.json\"", self.prepare)
         self.assertIn(
@@ -1029,9 +1034,25 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("release-source-proof-${{ github.sha }}", source)
         self.assertIn("Computer Use is recommended", source)
         self.assertNotIn("APC_VALIDATE_HOST_UI: \"1\"", source)
-        self.assertNotIn("cargo test --workspace", source)
+        self.assertIn("cargo test --workspace --no-run --locked", source)
+        self.assertNotIn("run: cargo test --workspace --locked", source)
         self.assertNotIn("working-directory: apps/macos", source)
         self.assertIn("Rebind source interaction proof to the development build identity", source)
+        self.assertIn("Restore or write the one strict Swift debug cache", source)
+        self.assertIn("swift-strict-debug-v3-", source)
+        self.assertIn("steps.swift_toolchain_identity.outputs.digest", source)
+        self.assertIn("steps.swift_toolchain_identity.outputs.source_tree", source)
+        self.assertIn("Normalize exact Swift source-tree timestamps", source)
+        self.assertIn("SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}", source)
+        self.assertIn('--cache-observation "swift-strict=', source)
+        self.assertIn("--pull-request-json", source)
+        self.assertIn("pull-request-timeline.json", source)
+        self.assertIn("gh api --paginate --slurp", source)
+        bundle = source[source.index("  bundle:") : source.index("  candidate_proof:")]
+        self.assertLess(
+            bundle.index("Restore or write the exact development-bundle Rust target cache"),
+            bundle.index("Rebind source interaction proof to the development build identity"),
+        )
         self.assertIn("--proof-in \"$RUNNER_TEMP/interaction-proof/interaction-attestation.json\"", source)
         self.assertIn("APC_BUILD_ID: ${{ steps.development_identity.outputs.build_id }}", source)
         self.assertIn("development-attestation.json", source)

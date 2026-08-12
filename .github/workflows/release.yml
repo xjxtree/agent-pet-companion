@@ -272,6 +272,17 @@ jobs:
           command -v lipo
           command -v shasum
 
+      - name: Restore or write the one Release Cargo source cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Fetch the locked Release dependency graph
+        run: cargo fetch --locked
+
       - name: Prepare pinned Python validation environment
         run: |
           python3 -m venv "$RUNNER_TEMP/apc-validation-python"
@@ -279,17 +290,25 @@ jobs:
             --disable-pip-version-check --no-deps --only-binary=:all: "Pillow==11.3.0"
           echo "$RUNNER_TEMP/apc-validation-python/bin" >>"$GITHUB_PATH"
 
-      - name: Restore source/build cache
+      - name: Restore exact Release Cargo sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-            apps/macos/.build
-          key: macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-${{ needs.prepare.outputs.commit }}
-          restore-keys: |
-            macos-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-source-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Restore or write the architecture-bound Release Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-${{ matrix.architecture == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}-release-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore or write the architecture-bound Release Swift products
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ matrix.architecture }}-release-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}-${{ needs.prepare.outputs.commit }}
 
       - name: Build one source-proven official component
         env:
