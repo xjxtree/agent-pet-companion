@@ -5949,15 +5949,20 @@ fn codex_app_server_probe_reports_structured_stdio_errors() {
     writeln!(
         file,
         r#"#!/bin/sh
-# The configured-command test covers request parsing. This fixture isolates
-# structured error mapping and keeps stdout open until PetCore terminates it.
-printf '%s\n' 'fatal initialize diagnostic' >&2
-sleep 0.05
-printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"initialize boom"}}}}'
-sleep 5
+while IFS= read -r request; do
+  case "$request" in
+    *initialize*)
+      printf '%s\n' 'fatal initialize diagnostic' >&2
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"initialize boom"}}}}'
+      ;;
+  esac
+done
 "#
     )
     .unwrap();
+    // Linux rejects executing a script while another descriptor still has it
+    // open for writing (`ETXTBSY`); macOS permits that race.
+    drop(file);
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
@@ -5980,7 +5985,10 @@ sleep 5
 
     assert_eq!(probe["initialized"], false);
     assert_eq!(probe["mode"], "configured");
-    assert_eq!(probe["error_info"]["kind"], "server_error");
+    assert_eq!(
+        probe["error_info"]["kind"], "server_error",
+        "unexpected App Server probe result: {probe:#}"
+    );
     assert_eq!(probe["error_info"]["stage"], "initialize");
     assert_eq!(probe["error_info"]["method"], "initialize");
     assert!(probe["error"].as_str().unwrap().contains("initialize boom"));
