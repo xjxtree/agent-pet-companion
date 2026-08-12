@@ -70,6 +70,16 @@ extension APCLocalizationKey {
     static let commonImagesFormat = APCLocalizationKey("common.images.format", table: .common)
     static let commonValueOfTotalFormat = APCLocalizationKey("common.value_of_total.format", table: .common)
     static let appActionCheckConnections = APCLocalizationKey("app.action.check_connections", table: .common)
+    static let appAgentConnectionsCheckingTitle = APCLocalizationKey("app.agent_connections.checking.title", table: .common)
+    static let appAgentConnectionsCheckingDetail = APCLocalizationKey("app.agent_connections.checking.detail", table: .common)
+    static let appAgentConnectionsAttentionTitle = APCLocalizationKey("app.agent_connections.attention.title", table: .common)
+    static let appAgentConnectionsAttentionDetailFormat = APCLocalizationKey("app.agent_connections.attention.detail_format", table: .common)
+    static let appAgentConnectionsCheckFailedTitle = APCLocalizationKey("app.agent_connections.check_failed.title", table: .common)
+    static let appAgentConnectionsCheckFailedDetailFormat = APCLocalizationKey("app.agent_connections.check_failed.detail_format", table: .common)
+    static let appAgentConnectionsIssueSourceFormat = APCLocalizationKey("app.agent_connections.issue.source_format", table: .common)
+    static let appAgentConnectionsIssuePluginUpdate = APCLocalizationKey("app.agent_connections.issue.plugin_update", table: .common)
+    static let appAgentConnectionsIssuePathConflict = APCLocalizationKey("app.agent_connections.issue.path_conflict", table: .common)
+    static let appAgentConnectionsIssueIncomplete = APCLocalizationKey("app.agent_connections.issue.incomplete", table: .common)
     static let appActionShowPet = APCLocalizationKey("app.action.show_pet", table: .common)
     static let appActionHidePet = APCLocalizationKey("app.action.hide_pet", table: .common)
     static let appActionMore = APCLocalizationKey("app.action.more", table: .common)
@@ -205,6 +215,16 @@ extension APCLocalizationKey {
         .commonImagesFormat,
         .commonValueOfTotalFormat,
         .appActionCheckConnections,
+        .appAgentConnectionsCheckingTitle,
+        .appAgentConnectionsCheckingDetail,
+        .appAgentConnectionsAttentionTitle,
+        .appAgentConnectionsAttentionDetailFormat,
+        .appAgentConnectionsCheckFailedTitle,
+        .appAgentConnectionsCheckFailedDetailFormat,
+        .appAgentConnectionsIssueSourceFormat,
+        .appAgentConnectionsIssuePluginUpdate,
+        .appAgentConnectionsIssuePathConflict,
+        .appAgentConnectionsIssueIncomplete,
         .appActionShowPet,
         .appActionHidePet,
         .appActionMore,

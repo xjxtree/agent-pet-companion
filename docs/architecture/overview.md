@@ -55,7 +55,8 @@ The App composition root retains cross-feature orchestration in `AppStore`, whil
 1. The App claims its single-instance identity and checks the exact bundled runtime contract.
 2. A compatible PetCore is reused. Otherwise the App stages, preflights, replaces, verifies, and either commits or rolls back the managed runtime.
 3. The App hydrates behavior settings, converges bundled pets by stable ID, reads one authoritative `state.snapshot`, presents first run or the control center, then presents the overlay.
-4. Subsequent state arrives through revision-based `state.wait`; the App does not read SQLite or poll bundle files.
+4. After the launch-critical snapshot path and any release connector convergence complete, the App runs one full check of all four Agent connections and projects actionable failures into a control-center-wide notice that opens Agent Connections.
+5. Subsequent state arrives through revision-based `state.wait`; the App does not read SQLite or poll bundle files.
 
 Closing the control center leaves the menu bar and enabled pet running. Reopen targets the registered control-center window rather than whichever App window happens to be visible. Standard Quit closes the UI host and overlay; the LaunchAgent-hosted PetCore may remain available.
 

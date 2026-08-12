@@ -35,6 +35,26 @@ struct AgentConnectionsTests {
         #expect(!source.contains("@EnvironmentObject private var store: AppStore"))
     }
 
+    @Test
+    func runtimeBootstrapSchedulesTheLaunchWideFullCheck() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: packageRoot.appendingPathComponent(
+                "Sources/AgentPetCompanion/App/AppStore.swift"
+            ),
+            encoding: .utf8
+        )
+        let expression = try Regex(
+            #"private func completeRuntimeBootstrap\(\) async \{[\s\S]*?scheduleProductConvergence\(bundledPetsReady: bundledPetsReady\)[\s\S]*?scheduleStartupConnectionCheck\(\)"#
+        )
+
+        #expect(source.firstMatch(of: expression) != nil)
+    }
+
     @MainActor
     @Test
     func automaticRuntimeCheckWaitsForStartupProjectionAndRunsOnlyOnce() async throws {
@@ -123,6 +143,109 @@ struct AgentConnectionsTests {
 
         #expect(checkCount == 0)
         #expect(store.connectionOperationState == .idle)
+    }
+
+    @MainActor
+    @Test
+    func appStartupAlwaysRunsOneFullCheckEvenWhenSnapshotLooksCurrent() async throws {
+        var checkCount = 0
+        let runtimeStatuses = AgentSource.allCases.map { source in
+            currentStatus(
+                source: source,
+                items: [item(.ok, code: .managedConnector)]
+            )
+        }
+        let response = try jsonObject(runtimeStatuses)
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { method, params, _ in
+                #expect(method == "connections.check")
+                #expect((params as? [String: String])?.isEmpty == true)
+                checkCount += 1
+                return response
+            },
+            productConvergenceManifest: nil
+        )
+        store.connections = runtimeStatuses
+
+        store.scheduleStartupConnectionCheck()
+        for _ in 0..<1_000 where
+            checkCount == 0 || store.connectionOperationState.isRunning
+        {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+
+        #expect(checkCount == 1)
+        #expect(store.startupConnectionCheckState == .completed)
+        #expect(
+            store.connectionOperationState.succeededOperation
+                == AgentConnectionOperation(
+                    kind: .check,
+                    sources: AgentSource.allCases
+                )
+        )
+
+        store.scheduleStartupConnectionCheck()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(checkCount == 1)
+    }
+
+    @MainActor
+    @Test
+    func successfulFullRetryClearsAStartupCheckFailure() async throws {
+        var attempt = 0
+        let runtimeStatuses = AgentSource.allCases.map { source in
+            currentStatus(
+                source: source,
+                items: [item(.ok, code: .managedConnector)]
+            )
+        }
+        let response = try jsonObject(runtimeStatuses)
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            petCoreRequestOverride: { _, _, _ in
+                attempt += 1
+                if attempt == 1 {
+                    throw AgentConnectionOperationExecutionError(
+                        .transportUnavailable
+                    )
+                }
+                return response
+            },
+            productConvergenceManifest: nil
+        )
+        store.connections = runtimeStatuses
+
+        store.scheduleStartupConnectionCheck()
+        for _ in 0..<1_000 where store.startupConnectionCheckState != .failed(
+            .transportUnavailable
+        ) {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(
+            store.startupConnectionCheckState == .failed(.transportUnavailable)
+        )
+
+        store.retryConnectionOperation()
+        for _ in 0..<1_000 where
+            store.startupConnectionCheckState != .completed
+                || store.connectionOperationState.isRunning
+        {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+
+        #expect(attempt == 2)
+        #expect(store.startupConnectionCheckState == .completed)
     }
 
     @MainActor

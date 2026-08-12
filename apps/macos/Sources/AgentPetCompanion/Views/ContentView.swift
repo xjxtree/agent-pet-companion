@@ -33,6 +33,25 @@ struct ContentView: View {
                             }
                             .padding(.horizontal, 24)
                             .padding(.top, 14)
+                            if let agentConnectionBanner,
+                               store.selection != .connections
+                            {
+                                InlineRecoveryBanner(
+                                    identity: ProductComponentIdentity(
+                                        scope: "shell",
+                                        instance: "agent-connections"
+                                    ),
+                                    status: agentConnectionBanner.status,
+                                    primaryAction: agentConnectionBanner.primaryAction
+                                ) { action in
+                                    switch action {
+                                    case .openConnections:
+                                        store.selection = .connections
+                                    }
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                            }
                             if let recoveryBanner,
                                store.selection != .diagnostics
                             {
@@ -173,6 +192,16 @@ struct ContentView: View {
     private var recoveryBanner: ControlCenterRecoveryBannerPresentation? {
         ControlCenterRecoveryBannerPresentation.resolve(
             for: store.petCoreOperationalState
+        )
+    }
+
+    private var agentConnectionBanner: ControlCenterAgentConnectionBannerPresentation? {
+        ControlCenterAgentConnectionBannerPresentation.resolve(
+            startupState: store.startupConnectionCheckState,
+            connections: store.connections,
+            operationState: store.connectionOperationState,
+            serviceState: store.petCoreOperationalState,
+            convergenceState: store.appUpdateConvergenceState
         )
     }
 }
