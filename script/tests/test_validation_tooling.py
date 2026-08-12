@@ -812,6 +812,12 @@ class DevelopmentFlowTests(unittest.TestCase):
 
 
 class ChangelogFragmentTests(unittest.TestCase):
+    def test_policy_boolean_values_accept_cli_and_workflow_forms(self) -> None:
+        self.assertEqual(
+            changelog_fragments.POLICY_BOOLEAN_VALUES,
+            {"true": True, "false": False, "1": True, "0": False},
+        )
+
     def test_fragment_roundtrip_renders_and_consumes_bilingual_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

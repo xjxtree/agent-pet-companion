@@ -2,6 +2,18 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v rg >/dev/null 2>&1; then
+  rg() {
+    local mode="${1:-}"
+    shift || true
+    if [[ "$mode" != "-n" ]]; then
+      printf 'unsupported portable search mode: %s\n' "$mode" >&2
+      return 2
+    fi
+    grep -ERn "$@"
+  }
+fi
 MACOS_DIR="$ROOT_DIR/apps/macos"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-overlay-offline.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT

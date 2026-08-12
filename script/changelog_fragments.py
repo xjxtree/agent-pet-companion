@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 
 SCHEMA_VERSION = "apc.changelog-fragment.v1"
+POLICY_BOOLEAN_VALUES = {"true": True, "false": False, "1": True, "0": False}
 CATEGORIES = ("Added", "Changed", "Fixed", "Deprecated", "Removed", "Security")
 FRAGMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}[.]json")
 FRAGMENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
@@ -280,7 +281,11 @@ def parse_args() -> argparse.Namespace:
 
     policy = subparsers.add_parser("policy")
     policy.add_argument("--base-ref", required=True)
-    policy.add_argument("--release-preparation", choices=("true", "false"), required=True)
+    policy.add_argument(
+        "--release-preparation",
+        choices=tuple(POLICY_BOOLEAN_VALUES),
+        required=True,
+    )
 
     create = subparsers.add_parser("create")
     create.add_argument("--id", required=True)
@@ -341,7 +346,7 @@ def main() -> int:
         validate_pr_policy(
             root,
             base_ref=args.base_ref,
-            release_preparation=args.release_preparation == "true",
+            release_preparation=POLICY_BOOLEAN_VALUES[args.release_preparation],
         )
         print("Changelog PR policy ok")
     elif args.command == "consume":

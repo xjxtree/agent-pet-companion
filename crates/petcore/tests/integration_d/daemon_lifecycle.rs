@@ -79,7 +79,15 @@ fn uds_exchange(paths: &AppPaths, payload: &[u8]) -> Vec<u8> {
     stream.write_all(payload).unwrap();
     stream.shutdown(Shutdown::Write).unwrap();
     let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
+    match stream.read_to_end(&mut response) {
+        Ok(_) => {}
+        // Linux can report ECONNRESET after the peer deliberately stops
+        // reading an oversized or over-capacity request. Preserve any bounded
+        // response bytes already received; the caller still validates them.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::ConnectionReset && !response.is_empty() => {}
+        Err(error) => panic!("UDS response read failed: {error}"),
+    }
     response
 }
 

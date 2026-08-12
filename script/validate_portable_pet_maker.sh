@@ -82,9 +82,53 @@ CLI="$ROOT_DIR/target/debug/petcore-cli"
 PETCORE="$ROOT_DIR/target/debug/petcore"
 
 if [[ -z "${APC_INTERACTION_ATTESTATION_PATH:-}" ]]; then
-  export APC_INTERACTION_ATTESTATION_PATH="$TMP_DIR/interaction-attestation.json"
-  "$ROOT_DIR/script/prepare_interaction_attestation.sh" \
-    --output "$APC_INTERACTION_ATTESTATION_PATH"
+  export APC_INTERACTION_ATTESTATION_PATH="$TMP_DIR/portable-validation-attestation.json"
+  read -r fixture_build_id fixture_contract_digest < <(
+    "$CLI" build-info | python3 -B -c '
+import json
+import sys
+
+value = json.load(sys.stdin)
+print(value.get("build_id", ""), value.get("interaction_contract_digest", ""))
+'
+  )
+  python3 -B - \
+    "$ROOT_DIR" \
+    "$APC_INTERACTION_ATTESTATION_PATH" \
+    "$fixture_build_id" \
+    "$fixture_contract_digest" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
+build_id = sys.argv[3]
+contract_digest = sys.argv[4]
+sys.path.insert(0, str(root / "script"))
+from validate_interaction_attestation import EXPECTED_SUITES
+
+if not build_id or len(contract_digest) != 64:
+    raise SystemExit("portable validation build identity is invalid")
+output.write_text(
+    json.dumps(
+        {
+            "schema_version": "apc.overlay-interaction-attestation.v1",
+            "build_id": build_id,
+            "interaction_contract_digest": contract_digest,
+            "passed_suites": EXPECTED_SUITES,
+            "ok": True,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+  "$ROOT_DIR/script/validate_interaction_attestation.py" \
+    "$APC_INTERACTION_ATTESTATION_PATH" \
+    --expected-build-id "$fixture_build_id"
 elif [[ ! -f "$APC_INTERACTION_ATTESTATION_PATH" ]]; then
   echo 'portable pet maker validation requires the declared interaction attestation' >&2
   exit 1

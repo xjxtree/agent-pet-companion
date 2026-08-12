@@ -291,6 +291,13 @@ rg -Fq -- '--attestation-out' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'interaction-contract-files.txt' "$OVERLAY_INTERACTION_VALIDATOR"
 rg -Fq 'petpack verify-production-interaction' \
   "$ROOT_DIR/script/validate_app_bundle.sh"
+if rg -Fq 'prepare_interaction_attestation.sh' \
+  "$ROOT_DIR/script/validate_portable_pet_maker.sh"; then
+  echo 'portable producer validation must not invoke the macOS Swift proof producer' >&2
+  exit 1
+fi
+rg -Fq 'validate_interaction_attestation.py' \
+  "$ROOT_DIR/script/validate_portable_pet_maker.sh"
 rg -Fq 'interaction-attestation.json' "$ROOT_DIR/script/build_app_bundle.sh"
 rg -Fq -- '--interaction-attestation "$APC_INTERACTION_ATTESTATION_PATH"' "$TEST_ALL"
 rg -Fq 'validate_interaction_attestation.py' "$ROOT_DIR/script/build_app_bundle.sh"

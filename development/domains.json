@@ -508,9 +508,13 @@
         "script/validate_build_scripts_safety.sh",
         "script/validate_local_tests.sh",
         "script/validate_local_tests.py",
+        "script/validate_overlay_offline.sh",
+        "script/validate_portable_pet_maker.sh",
         "script/validate_rust_test_shards.py",
         "script/validate_schema_fixtures.sh",
+        "script/validate_security_boundaries.sh",
         "script/validate_swift_tests.sh",
+        "script/validate_test_isolation.sh",
         "script/validation_scope.py"
       ],
       "dependencies": [
@@ -647,9 +651,13 @@
             "script/validate_build_scripts_safety.sh",
             "script/validate_local_tests.py",
             "script/validate_local_tests.sh",
+            "script/validate_overlay_offline.sh",
+            "script/validate_portable_pet_maker.sh",
             "script/validate_rust_test_shards.py",
             "script/validate_schema_fixtures.sh",
+            "script/validate_security_boundaries.sh",
             "script/validate_swift_tests.sh",
+            "script/validate_test_isolation.sh",
             "script/validation_scope.py"
           ]
         },
@@ -673,9 +681,13 @@
             "script/validate_build_scripts_safety.sh",
             "script/validate_local_tests.py",
             "script/validate_local_tests.sh",
+            "script/validate_overlay_offline.sh",
+            "script/validate_portable_pet_maker.sh",
             "script/validate_rust_test_shards.py",
             "script/validate_schema_fixtures.sh",
+            "script/validate_security_boundaries.sh",
             "script/validate_swift_tests.sh",
+            "script/validate_test_isolation.sh",
             "script/validation_scope.py"
           ]
         }
