@@ -541,19 +541,40 @@ done
         },
     )
     .unwrap();
-    let synced = handle_request(
-        &state,
-        RpcRequest {
-            jsonrpc: Some("2.0".to_string()),
-            id: Some(json!("wait")),
-            method: "state.wait".to_string(),
-            params: json!({
-                "after_revision": snapshot["revision"],
-                "timeout_ms": 3_000
-            }),
-        },
-    )
-    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut after_revision = snapshot["revision"].clone();
+    let synced = loop {
+        let candidate = handle_request(
+            &state,
+            RpcRequest {
+                jsonrpc: Some("2.0".to_string()),
+                id: Some(json!("wait")),
+                method: "state.wait".to_string(),
+                params: json!({
+                    "after_revision": after_revision,
+                    "timeout_ms": 1_000
+                }),
+            },
+        )
+        .unwrap();
+        let ready = candidate["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| {
+                session["overlay_display"]["navigation"]["routable_session_id"]
+                    == "019f5b0f-88ff-7413-8953-29de4ed0951c"
+                    && session["official_status"] == "ready"
+            });
+        if ready {
+            break candidate;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Codex activity sync did not reach the ready terminal projection: {candidate:#}"
+        );
+        after_revision = candidate["revision"].clone();
+    };
     let session = synced["active_agent_sessions"]
         .as_array()
         .unwrap()
