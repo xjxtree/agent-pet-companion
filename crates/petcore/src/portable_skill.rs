@@ -444,6 +444,8 @@ fn bundled_content_sha256() -> String {
 
 fn entry_identity(metadata: &rustix::fs::Stat) -> EntryIdentity {
     EntryIdentity {
+        // Darwin exposes dev_t as a signed integer while Linux uses u64.
+        #[allow(clippy::unnecessary_cast)]
         dev: metadata.st_dev as u64,
         ino: metadata.st_ino,
         mode: metadata.st_mode,

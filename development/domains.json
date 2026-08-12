@@ -509,6 +509,7 @@
         "script/validate_local_tests.sh",
         "script/validate_local_tests.py",
         "script/validate_rust_test_shards.py",
+        "script/validate_schema_fixtures.sh",
         "script/validate_swift_tests.sh",
         "script/validation_scope.py"
       ],
@@ -647,6 +648,7 @@
             "script/validate_local_tests.py",
             "script/validate_local_tests.sh",
             "script/validate_rust_test_shards.py",
+            "script/validate_schema_fixtures.sh",
             "script/validate_swift_tests.sh",
             "script/validation_scope.py"
           ]
@@ -672,6 +674,7 @@
             "script/validate_local_tests.py",
             "script/validate_local_tests.sh",
             "script/validate_rust_test_shards.py",
+            "script/validate_schema_fixtures.sh",
             "script/validate_swift_tests.sh",
             "script/validation_scope.py"
           ]

@@ -100,12 +100,14 @@ assert_json "$SNAPSHOT" 'len(set(event["id"] for event in data["events"])) == le
 assert_json "$SNAPSHOT" 'all(event["session_id"].startswith("ses-") and len(event["session_id"]) == 68 for event in data["events"])'
 assert_json "$SNAPSHOT" '"/tmp/apc-storm/" not in json.dumps(data)'
 
-RECENT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" events recent --limit "$EVENT_COUNT")"
-EVENT_COUNT="$EVENT_COUNT" JSON="$RECENT" python3 - <<'PY'
+APC_HOME="$TMP_DIR/home" \
+  "$ROOT_DIR/target/debug/petcore-cli" events recent --limit "$EVENT_COUNT" \
+  | EVENT_COUNT="$EVENT_COUNT" python3 -c '
 import json
 import os
+import sys
 
-events = json.loads(os.environ["JSON"])
+events = json.load(sys.stdin)
 expected = int(os.environ["EVENT_COUNT"])
 ids = {event["id"] for event in events}
 assert len(events) == expected, len(events)
@@ -119,7 +121,7 @@ if expected >= 12:
     assert {event["event_type"] for event in events} == {
         "start", "thinking", "plan", "tool", "waiting", "done", "failed"
     }
-PY
+'
 
 WAITED="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" state wait --after-revision "$INITIAL_REVISION" --timeout-ms 1000)"
 assert_json "$WAITED" 'data["changed"] is True and data["revision"] != "'"$INITIAL_REVISION"'"'
