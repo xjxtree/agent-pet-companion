@@ -724,6 +724,32 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             ROOT / "script/prepare_interaction_attestation.sh"
         ).read_text(encoding="utf-8")
 
+    def test_release_requires_exact_local_computer_use_acceptance(self) -> None:
+        trigger = self.source[: self.source.index("\npermissions:")]
+        self.assertIn("workflow_dispatch:", trigger)
+        self.assertNotIn("\n  push:", trigger)
+        self.assertIn("host_ui_tested_commit:", trigger)
+        self.assertIn("host_ui_result:", trigger)
+        self.assertIn('default: "failed"', trigger)
+        self.assertIn("- failed", trigger)
+        self.assertIn("- passed", trigger)
+
+        gate = self.prepare.index("Require local Computer Use acceptance")
+        identity = self.prepare.index("Resolve release identity")
+        self.assertLess(gate, identity)
+        self.assertIn('test "$HOST_UI_TESTED_COMMIT" = "$commit"', self.prepare)
+        self.assertIn('test "$HOST_UI_RESULT" = "passed"', self.prepare)
+
+        release_doc = (ROOT / "docs/release/macos-release.md").read_text(
+            encoding="utf-8"
+        )
+        agent_instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        for source in (release_doc, agent_instructions):
+            self.assertIn("Computer Use", source)
+            self.assertIn("host_ui_tested_commit", source)
+            self.assertIn("host_ui_result=passed", source)
+            self.assertIn("交由用户决定", source)
+
     def test_workflow_has_no_signing_environment_or_apple_trust_pipeline(self) -> None:
         self.assertNotRegex(self.source, r"(?m)^\s*environment:")
         self.assertNotIn("${{ vars.", self.source)

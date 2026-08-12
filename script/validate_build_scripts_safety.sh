@@ -341,9 +341,15 @@ if rg -q -- '--(arm64|x86_64)-evidence-sha256' \
   exit 1
 fi
 
-rg -q 'push:' "$WORKFLOW"
-rg -q 'tags:' "$WORKFLOW"
 rg -q 'workflow_dispatch:' "$WORKFLOW"
+if rg -q '^  push:' "$WORKFLOW"; then
+  echo 'release workflow must require explicit dispatch after local Computer Use acceptance' >&2
+  exit 1
+fi
+rg -q 'host_ui_tested_commit:' "$WORKFLOW"
+rg -q 'host_ui_result:' "$WORKFLOW"
+rg -Fq 'test "$HOST_UI_TESTED_COMMIT" = "$commit"' "$WORKFLOW"
+rg -Fq 'test "$HOST_UI_RESULT" = "passed"' "$WORKFLOW"
 if rg -q 'self-hosted' "$WORKFLOW"; then
   echo 'release workflow must use fresh GitHub-hosted native macOS runners' >&2
   exit 1

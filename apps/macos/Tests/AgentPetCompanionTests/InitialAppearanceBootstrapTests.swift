@@ -40,6 +40,44 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
+    func windowGateRevealDefersPresentationWithoutForcingContentLayout() async {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let contentView = InitialAppearanceLayoutProbe(frame: window.contentLayoutRect)
+        let gate = InitialAppearanceWindowGateHostView(
+            readiness: .pending,
+            theme: .system
+        )
+        window.contentView = contentView
+        contentView.addSubview(gate)
+
+        #expect(window.alphaValue == 0)
+        #expect(window.ignoresMouseEvents)
+        contentView.reset()
+
+        gate.update(readiness: .authoritative, theme: .dark)
+
+        #expect(contentView.layoutPasses == 0)
+        #expect(contentView.displayPasses == 0)
+        #expect(window.alphaValue == 0)
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+        #expect(gate.hasRevealed)
+    }
+
+    @MainActor
+    @Test
     func healthyBootstrapAppliesVersionedBehaviorBeforePublishingReadiness() async throws {
         let probe = InitialAppearanceProbe()
         let darkBehavior = BehaviorSettings(appearanceTheme: .dark)
@@ -784,6 +822,27 @@ private actor InitialAppearanceFallbackProbe {
 
     func delays() -> [Duration] {
         recordedDelays
+    }
+}
+
+@MainActor
+private final class InitialAppearanceLayoutProbe: NSView {
+    private(set) var layoutPasses = 0
+    private(set) var displayPasses = 0
+
+    override func layoutSubtreeIfNeeded() {
+        layoutPasses += 1
+        super.layoutSubtreeIfNeeded()
+    }
+
+    override func displayIfNeeded() {
+        displayPasses += 1
+        super.displayIfNeeded()
+    }
+
+    func reset() {
+        layoutPasses = 0
+        displayPasses = 0
     }
 }
 

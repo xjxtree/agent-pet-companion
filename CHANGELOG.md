@@ -14,6 +14,12 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+### Fixed / 修复
+
+- The Control Center now defers its first appearance reveal until SwiftUI finishes the current render pass, preventing the installed macOS App from opening with a blank main window.
+
+  控制中心现在会等到 SwiftUI 完成当前渲染周期后再显示首次外观，避免已安装的 macOS App 打开后主窗口呈现空白。
+
 ## [0.4.0] - 2026-08-12
 
 ### Added / 新增

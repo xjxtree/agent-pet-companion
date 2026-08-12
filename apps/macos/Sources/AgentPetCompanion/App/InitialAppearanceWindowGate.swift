@@ -61,6 +61,7 @@ final class InitialAppearanceWindowGateHostView: NSView {
     private weak var controlledWindow: NSWindow?
     private var originalAlphaValue: CGFloat?
     private var originalIgnoresMouseEvents: Bool?
+    private var revealScheduled = false
 
     init(readiness: InitialAppearanceReadiness, theme: AppearanceTheme) {
         self.readiness = readiness
@@ -103,16 +104,30 @@ final class InitialAppearanceWindowGateHostView: NSView {
             window.appearance = appearanceName.flatMap(NSAppearance.init(named:))
         }
 
-        window.contentView?.layoutSubtreeIfNeeded()
-        window.contentView?.displayIfNeeded()
+        guard !hasRevealed, !revealScheduled else { return }
+        revealScheduled = true
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            window.alphaValue = originalAlphaValue ?? 1
+        // `updateNSView` runs while SwiftUI may still be rendering its
+        // NSHostingView. Forcing AppKit layout or display from this callback
+        // re-enters that render pass and can leave the complete content area
+        // blank. Reveal on the next main-queue turn instead; AppKit then owns
+        // the normal layout/display cycle for the newly applied appearance.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self else { return }
+            self.revealScheduled = false
+            guard let window,
+                  self.controlledWindow === window,
+                  self.readiness != .pending
+            else { return }
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                window.alphaValue = self.originalAlphaValue ?? 1
+            }
+            window.ignoresMouseEvents = self.originalIgnoresMouseEvents ?? false
+            self.hasRevealed = true
         }
-        window.ignoresMouseEvents = originalIgnoresMouseEvents ?? false
-        hasRevealed = true
     }
 
     private func captureOriginalWindowStateIfNeeded(for window: NSWindow) {
@@ -120,5 +135,7 @@ final class InitialAppearanceWindowGateHostView: NSView {
         controlledWindow = window
         originalAlphaValue = window.alphaValue
         originalIgnoresMouseEvents = window.ignoresMouseEvents
+        hasRevealed = false
+        revealScheduled = false
     }
 }
