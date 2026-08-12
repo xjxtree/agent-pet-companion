@@ -66,6 +66,22 @@ swift_build_artifact = load_module(
 
 
 class EngineeringMetricsTests(unittest.TestCase):
+    def test_change_metrics_loads_domains_and_matches_path_patterns(self) -> None:
+        metrics = engineering_metrics.change_metrics(
+            ROOT,
+            [
+                "script/engineering_metrics.py",
+                "script/tests/test_validation_tooling.py",
+                "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+            ],
+        )
+
+        self.assertEqual(metrics["changed_path_count"], 3)
+        self.assertEqual(metrics["domain_path_counts"]["release-control-plane"], 1)
+        self.assertEqual(metrics["amber_path_count"], 2)
+        self.assertEqual(metrics["red_path_count"], 0)
+        self.assertEqual(metrics["hotspot_path_counts"]["app-store"], 1)
+
     def test_job_metrics_report_platform_minutes_without_source_content(self) -> None:
         metrics = engineering_metrics.job_metrics(
             {

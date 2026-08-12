@@ -198,19 +198,19 @@ def lifecycle_metrics(values: list[str | None]) -> dict[str, int | None]:
 
 
 def change_metrics(root: pathlib.Path, paths: list[str]) -> dict[str, Any]:
-    manifest = load_manifest(root / "development/domains.json")
+    manifest = load_manifest(root)
     domains: dict[str, int] = {}
     amber: set[str] = set()
     red: set[str] = set()
     for path in paths:
         for domain in manifest.domains:
-            if any(path_matches(pattern, path) for pattern in domain.owned_paths):
+            if any(path_matches(path, pattern) for pattern in domain.owned_paths):
                 domains[domain.id] = domains.get(domain.id, 0) + 1
             for shared in domain.shared_paths:
-                if path_matches(shared.path, path):
+                if path_matches(path, shared.path):
                     (red if shared.risk == "red" else amber).add(path)
     hotspots = {
-        name: sum(any(path_matches(pattern, path) for pattern in patterns) for path in paths)
+        name: sum(any(path_matches(path, pattern) for pattern in patterns) for path in paths)
         for name, patterns in HOTSPOTS.items()
     }
     return {
