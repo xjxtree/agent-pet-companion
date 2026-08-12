@@ -140,6 +140,34 @@ struct AppLifecycleContractTests {
 
     @MainActor
     @Test
+    func coldLaunchPresentationFrontsTheWindowWhenRegistrationWinsTheRace() {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            runtimeHandoffIfNeeded: { false }
+        )
+        let window = ControlCenterFrontRecordingWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        store.presentMainWindow()
+        #expect(window.frontRequestCount == 0)
+
+        store.registerControlCenterWindow(window)
+
+        #expect(window.frontRequestCount == 1)
+        #expect(store.controlCenterIsOpen)
+    }
+
+    @MainActor
+    @Test
     func aboutWindowFirstDoesNotInterceptAControlCenterReopen() {
         let aboutWindow = NSWindow(
             contentRect: .zero,
@@ -279,7 +307,7 @@ struct AppLifecycleContractTests {
             in: appSource
         ))
         #expect(LifecycleSource.matches(
-            #"applicationDidFinishLaunching[\s\S]*?setActivationPolicy\(\.regular\)[\s\S]*?NSApp\.activate\(ignoringOtherApps: true\)[\s\S]*?activatePrimaryInstance\(\)"#,
+            #"applicationDidFinishLaunching[\s\S]*?DispatchQueue\.main\.async\s*\{\s*AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)"#,
             in: appSource
         ))
         #expect(LifecycleSource.matches(
@@ -600,6 +628,15 @@ struct AppLifecycleContractTests {
 
         #expect(succeeded)
         #expect(store.statusText == "正在导入用户宠物")
+    }
+}
+
+@MainActor
+private final class ControlCenterFrontRecordingWindow: NSWindow {
+    private(set) var frontRequestCount = 0
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        frontRequestCount += 1
     }
 }
 

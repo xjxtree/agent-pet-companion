@@ -58,9 +58,8 @@ checks = {
     ),
     "primary cold launch is routed through the registered control center presenter": (
         re.search(
-            r'applicationDidFinishLaunching.*?setActivationPolicy\(\.regular\).*?'
-            r'NSApp\.activate\(ignoringOtherApps: true\).*?'
-            r'activatePrimaryInstance\(\)',
+            r'applicationDidFinishLaunching.*?DispatchQueue\.main\.async\s*\{\s*'
+            r'AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)',
             app,
             re.S,
         )

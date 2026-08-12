@@ -62,11 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppDiagnostics.shared.log(.notice, category: "lifecycle", event: "app_did_finish_launching")
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        // A primary cold launch must use the same registered single-window
-        // presenter as Dock reopen and secondary-instance activation. If the
-        // SwiftUI presenter is not installed yet, AppStore replays this one
-        // request when the MenuBarExtra label registers it.
-        AppSingleInstanceCoordinator.shared.activatePrimaryInstance()
+        // Defer one turn so SwiftUI installs the primary activation handler
+        // and AppKit completes its launch-time scene ordering before the
+        // shared presenter fronts the registered Control Center window.
+        DispatchQueue.main.async {
+            AppSingleInstanceCoordinator.shared.activatePrimaryInstance()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
