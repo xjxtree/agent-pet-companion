@@ -5,6 +5,33 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATIC_ONLY=0
 SKIP_SOURCE_SYNTAX=0
 
+# GitHub runner images do not guarantee ripgrep. Keep this validator portable
+# without adding package-manager setup to every Linux and macOS contract job.
+if ! command -v rg >/dev/null 2>&1; then
+  rg() {
+    local mode="${1:-}"
+    shift || true
+    case "$mode" in
+      -Fq)
+        grep -Fq "$@"
+        ;;
+      -q)
+        grep -Eq "$@"
+        ;;
+      -n)
+        grep -En "$@"
+        ;;
+      -c)
+        grep -Ec "$@"
+        ;;
+      *)
+        printf 'unsupported portable search mode: %s\n' "$mode" >&2
+        return 2
+        ;;
+    esac
+  }
+fi
+
 while (($# > 0)); do
   case "$1" in
     --static-only)
