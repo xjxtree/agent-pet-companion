@@ -546,7 +546,15 @@
           "risk": "amber"
         },
         {
+          "path": "CHANGELOG.md",
+          "risk": "amber"
+        },
+        {
           "path": "CONTRIBUTING.md",
+          "risk": "amber"
+        },
+        {
+          "path": "Cargo.lock",
           "risk": "amber"
         },
         {
