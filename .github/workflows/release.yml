@@ -1,9 +1,6 @@
 name: GitHub Release for macOS
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -19,12 +16,24 @@ on:
         description: Successful main commit to promote (blank uses current main)
         required: false
         type: string
+      host_ui_tested_commit:
+        description: Full main commit tested locally through Computer Use
+        required: true
+        type: string
+      host_ui_result:
+        description: Result of the required local Computer Use basic-function acceptance
+        required: true
+        default: "failed"
+        type: choice
+        options:
+          - failed
+          - passed
 
 permissions:
   contents: read
 
 concurrency:
-  group: github-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: github-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -52,24 +61,29 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.commit || 'main') || github.ref }}
+          ref: ${{ inputs.commit || 'main' }}
+
+      - name: Require local Computer Use acceptance
+        env:
+          HOST_UI_RESULT: ${{ inputs.host_ui_result }}
+          HOST_UI_TESTED_COMMIT: ${{ inputs.host_ui_tested_commit }}
+        run: |
+          commit="$(git rev-parse HEAD)"
+          [[ "$HOST_UI_TESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$HOST_UI_TESTED_COMMIT" = "$commit"
+          if ! test "$HOST_UI_RESULT" = "passed"; then
+            echo 'GitHub Release is blocked: local Computer Use acceptance did not pass. Stop and ask the user to decide the next action.' >&2
+            exit 1
+          fi
 
       - name: Resolve release identity
         id: release_identity
         env:
-          EVENT_NAME: ${{ github.event_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_BUILD: ${{ inputs.build }}
-          PUSH_TAG: ${{ github.ref_name }}
-          PUSH_BUILD: ${{ github.run_number }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            tag="$DISPATCH_TAG"
-            build="$DISPATCH_BUILD"
-          else
-            tag="$PUSH_TAG"
-            build="$PUSH_BUILD"
-          fi
+          tag="$DISPATCH_TAG"
+          build="$DISPATCH_BUILD"
           [[ "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
           [[ "$build" =~ ^[1-9][0-9]*$ ]]
           version="${tag#v}"
@@ -80,9 +94,6 @@ jobs:
           if git rev-parse --verify "refs/tags/$tag^{commit}" >/dev/null 2>&1; then
             test "$(git rev-list -n 1 "$tag")" = "$commit"
             tag_exists=1
-          elif [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
-            echo "tag push did not resolve to a local tag" >&2
-            exit 1
           fi
           source_version="$(awk -F'"' '/^version = / {print $2; exit}' crates/petcore/Cargo.toml)"
           test "$version" = "$source_version"

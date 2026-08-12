@@ -58,6 +58,7 @@ docs/
 
 - Use non-interactive command-line checks for builds, unit tests, protocol tests, and other validations that do not require the live macOS UI.
 - For live App, menu bar, desktop pet, bubble, window lifecycle, and other macOS UI behavior, Computer Use is recommended when it is available and useful. The executing agent may choose another suitable verification method based on the task and environment.
+- Before dispatching any GitHub Release, check out the exact clean `main` commit, launch its test App through `script/build_and_run.sh --run`, and use Computer Use to complete the basic-function acceptance checklist in `docs/release/macos-release.md`. Dispatch only with the same full commit in `commit` and `host_ui_tested_commit` plus `host_ui_result=passed`. If any check fails or cannot be observed, do not publish or claim success: report the evidence and stop so the next action is 交由用户决定.
 - Launch verification builds through the project's `script/build_and_run.sh` entry points. Keep host-affecting checks scoped to the intended App or an owned validation runtime, and distinguish directly observed UI behavior from conclusions based only on structural or automated checks.
 - Apply these practices to real-device lifecycle testing as well, including launch, close and reopen, quit, update handoff, menu commands, and multi-instance scenarios.
 

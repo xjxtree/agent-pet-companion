@@ -47,7 +47,7 @@ APC_VALIDATE_REAL_APP_SERVER=0 \
 ./script/test_all.sh --source-only --include-stress
 ```
 
-Then run the environment-dependent connector, App Server, visible-UI, renderer, and profiling gates required by [Validation profiles](../development/validation.md). The executing Agent selects a suitable live-App inspection method. A gate not run is skipped, never passed. / 随后按发布范围运行环境门禁；可见 App 的验收方法由执行 Agent 选择，未运行的门禁只能标记为 skipped。
+Then run the environment-dependent connector, App Server, renderer, and profiling gates required by [Validation profiles](../development/validation.md). Visible-UI acceptance is never optional for a GitHub Release and must use the local Computer Use checklist below. Any other gate not run is skipped, never passed. / 随后按发布范围运行连接器、App Server、渲染与性能环境门禁。GitHub Release 的可见 UI 验收不可跳过，且必须使用下方本地 Computer Use 清单；其他未运行的门禁只能标记为 skipped。
 
 The complete Swift CI shard generates a source-build interaction attestation. `source-proof.json` binds its bytes to the repository, full commit/tree, latest stable baseline, trusted exact-commit `main` issuer run (`push` or `workflow_dispatch`), complete gate inventory, and toolchain contract. Release downloads it only from that successful exact-commit CI run, validates it, and rebinds the interaction attestation to the final release build ID before supplying it to both architecture builds. / 完整 Swift CI 分片会生成源码 build 的交互证明；`source-proof.json` 将其字节绑定到仓库、完整 commit/tree、latest stable 基线、受信任的同 commit `main` 签发 run（`push` 或 `workflow_dispatch`）、完整门禁清单与工具链合同。Release 只从该成功的同 commit CI run 下载并校验，再将交互证明重新绑定到最终发布 build ID，供两个架构构建复用。
 
@@ -96,32 +96,63 @@ Validate a clean local or downloaded three-file directory with:
 
 Validation rejects missing/extra assets, unsafe or malformed ZIPs, checksum/identity disagreement, invalid ad-hoc signatures, mixed/universal binaries, unexpected Mach-O content, and architecture mismatch. Native packaged acceptance also starts the bundled runtime in an isolated home and proves all three included pets, canonical covers, and every authored frame for all nine actions.
 
+## Mandatory local Computer Use acceptance / 必需的本地 Computer Use 验收
+
+Before any GitHub Release dispatch, check out the exact clean `main` commit that will be released and launch its test App through the normal product path:
+
+在触发任何 GitHub Release 之前，必须检出将要发布的精确、干净 `main` commit，并通过正常产品路径启动其测试 App：
+
+```bash
+git switch main
+git pull --ff-only
+test -z "$(git status --porcelain)"
+git rev-parse HEAD
+./script/build_and_run.sh --run
+```
+
+Use Computer Use—not `--run-ui-validation`, a hidden `NSHostingView`, AX-only validation, or source inspection—to observe and operate the running App. The acceptance is one bounded basic-function pass:
+
+必须使用 Computer Use 直接观察并操作正在运行的 App；`--run-ui-validation`、隐藏的 `NSHostingView`、仅 AX 验证或源码检查都不能替代。验收只需完成一次有界的基础功能检查：
+
+1. Launch reaches a visible, nonblank first-run onboarding or returning-user Control Center window. / 启动后能看到非空白的首次引导或普通控制中心窗口。
+2. The five navigation entries appear in the required order, and each destination visibly renders after selection. / 五个导航入口按规定顺序出现，逐一选择后页面均能实际显示。
+3. Pet Library visibly presents the three bundled pets and a working action preview. / 宠物库能看到三只内置宠物，动作预览可正常工作。
+4. The desktop pet can be hidden and shown from the Control Center. / 可从控制中心隐藏并重新显示桌宠。
+5. Closing and reopening the Control Center, then quitting and relaunching the App, restores a visible usable window. / 关闭并重新打开控制中心、退出并重启 App 后，仍能恢复可见且可用的窗口。
+
+Record the full tested commit and the result. A pass authorizes one dispatch for that exact commit. If any item fails or cannot be directly observed, do not dispatch, do not enter `passed`, and do not autonomously waive the failure; preserve the evidence and stop so the next action is 交由用户决定. After any source change, even a release-only fix, repeat the acceptance against the new commit.
+
+记录完整的被测 commit 与结果。通过结果只授权发布这个精确 commit。若任一检查失败或无法直接观察，不得触发发布、不得填写 `passed`、也不得由 Agent 自行豁免；应保留证据并停止，后续动作交由用户决定。任何源码变化（包括仅用于发布的修复）都会使旧结果失效，必须针对新 commit 重新验收。
+
 ## GitHub automation / GitHub 自动化
 
-`.github/workflows/release.yml` runs from a protected `vX.Y.Z` tag or an explicit dispatch that promotes a successful main commit. The fast path is: / `.github/workflows/release.yml` 可由受保护 `vX.Y.Z` tag 或显式 dispatch 晋级一个成功的 main commit。快速路径如下：
+`.github/workflows/release.yml` runs only by explicit dispatch after the mandatory local Computer Use acceptance. A tag push cannot start publication. The workflow requires the tested full commit and a passed result before it can validate or create the protected tag. / `.github/workflows/release.yml` 仅能在完成必需的本地 Computer Use 验收后显式触发；推送 tag 不能启动发布。workflow 会先要求被测完整 commit 与通过结果，再继续验证或创建受保护 tag。
 
 ```bash
 gh workflow run release.yml \
   -f tag=vX.Y.Z \
   -f build=BUILD_NUMBER \
-  -f commit=FULL_40_CHARACTER_MAIN_COMMIT
+  -f commit=FULL_40_CHARACTER_MAIN_COMMIT \
+  -f host_ui_tested_commit=FULL_40_CHARACTER_MAIN_COMMIT \
+  -f host_ui_result=passed
 ```
 
-Omit `commit` to use current `main`. Dispatch verifies source version, changelog, ancestry, latest stable baseline, and the successful exact-commit main proof before it creates a missing lightweight tag through GitHub's API. An existing tag must already target the same commit. Tag creation cannot make an unproven commit releasable, and any later job rechecks the remote identity. / 省略 `commit` 时使用当前 `main`。dispatch 会先验证源码版本、CHANGELOG、祖先关系、latest stable 基线及同 commit 的成功 main 证明，再通过 GitHub API 创建缺失的轻量 tag；已有 tag 必须已指向同一 commit。创建 tag 不能让未经证明的 commit 进入发布，后续任务仍会复核远端身份。
+`host_ui_tested_commit` must be the same full commit resolved by `commit` (or current `main` when `commit` is omitted), and `host_ui_result` defaults to `failed`. A missing, failed, malformed, or mismatched declaration blocks the workflow before tag creation or archive builds. Dispatch then verifies source version, changelog, ancestry, latest stable baseline, and the successful exact-commit main proof before it creates a missing lightweight tag through GitHub's API. An existing tag must already target the same commit. Tag creation cannot make an unproven commit releasable, and any later job rechecks the remote identity. / `host_ui_tested_commit` 必须与 `commit` 解析出的完整 commit 相同（省略 `commit` 时即当前 `main`），`host_ui_result` 默认是 `failed`。声明缺失、失败、格式错误或 commit 不一致时，workflow 会在创建 tag 或构建归档前阻断。之后 dispatch 才会验证源码版本、CHANGELOG、祖先关系、latest stable 基线及同 commit 的成功 main 证明，再通过 GitHub API 创建缺失的轻量 tag；已有 tag 必须已指向同一 commit。创建 tag 不能让未经证明的 commit 进入发布，后续任务仍会复核远端身份。
 
 In order the workflow:
 
-1. verifies source version, changelog, full main commit, latest stable baseline, and Codex plugin/Skill version discipline;
-2. resolves the successful same-repository `main` CI `push` or exact-SHA `workflow_dispatch` run for that exact commit, rejects PR/fork/failed or ambiguous runs and artifacts, validates the two-file source proof, then rebinds its interaction attestation to the final release build ID;
-3. creates a missing tag only after proof validation, or verifies the existing tag, then rechecks its remote commit;
-4. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and rebound proof;
-5. assembles the exact three-file candidate once and records trusted digests;
-6. validates the exact SDK/deployment/weak-link contract in every App archive;
-7. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
-8. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
-9. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
-10. publishes it as latest stable only after all checks pass; and
-11. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
+1. rejects any missing, failed, malformed, or commit-mismatched local Computer Use acceptance declaration;
+2. verifies source version, changelog, full main commit, latest stable baseline, and Codex plugin/Skill version discipline;
+3. resolves the successful same-repository `main` CI `push` or exact-SHA `workflow_dispatch` run for that exact commit, rejects PR/fork/failed or ambiguous runs and artifacts, validates the two-file source proof, then rebinds its interaction attestation to the final release build ID;
+4. creates a missing tag only after proof validation, or verifies the existing tag, then rechecks its remote commit;
+5. restores dependency/build caches and builds `arm64` and `x86_64` ZIP components in parallel on macOS 26 from the proven commit and rebound proof;
+6. assembles the exact three-file candidate once and records trusted digests;
+7. validates the exact SDK/deployment/weak-link contract in every App archive;
+8. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
+9. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
+10. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
+11. publishes it as latest stable only after all checks pass; and
+12. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
 
 Native compatibility validation on both architectures and packaged macOS 26 validation are hard dependencies; cross-building or static symbol inspection is not a substitute for runtime acceptance. Existing Releases are never overwritten. / 双架构原生兼容验收与 macOS 26 打包产物验收都是硬门禁；交叉构建或静态符号检查不能替代运行时验收，已有 Release 不会被覆盖。
 
