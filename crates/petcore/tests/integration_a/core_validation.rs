@@ -5949,13 +5949,12 @@ fn codex_app_server_probe_reports_structured_stdio_errors() {
     writeln!(
         file,
         r#"#!/bin/sh
-IFS= read -r request || exit 2
-case "$request" in
-  *'"method":"initialize"'*) ;;
-  *) printf '%s\n' 'unexpected request' >&2; exit 3 ;;
-esac
+# The configured-command test covers request parsing. This fixture isolates
+# structured error mapping and keeps stdout open until PetCore terminates it.
 printf '%s\n' 'fatal initialize diagnostic' >&2
+sleep 0.05
 printf '%s\n' '{{"jsonrpc":"2.0","id":1,"error":{{"code":-32000,"message":"initialize boom"}}}}'
+sleep 5
 "#
     )
     .unwrap();
