@@ -14,6 +14,18 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-12
+
+### Changed / 变更
+
+<!-- apc-fragment:501-engineering-speedup -->
+- Development work now uses typed domain claims, focused local validation, lower-cost CI, and modular Rust and Swift ownership boundaries.
+
+  开发流程现采用类型化领域声明、聚焦本地验证、更低成本的 CI，以及模块化的 Rust 与 Swift 所有权边界。
+<!-- apc-fragment:startup-agent-connection-alert-20260812 -->
+- Each App launch now runs a full Agent connection check and shows actionable global notices for plugin, connector, authorization, restart, and channel issues.
+
+  App 每次启动都会完整检查 Agent 连接，并针对插件、连接器、授权、重启与通道问题显示可操作的全局提示。
 ## [0.4.2] - 2026-08-12
 
 ### Fixed / 修复
