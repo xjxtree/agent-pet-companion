@@ -31,6 +31,15 @@
 ./script/validate_local_tests.sh --plan-only
 ```
 
+`development_flow.py` keeps cumulative, content-free coordination counters in the locked common state. Applied claim-overlap rejections are recorded automatically; confirmed textual preflight conflicts use `conflicts --record`; and unavoidable train conflict resolutions use `coordination-record --event train_conflict_resolutions --apply`. `pr-open` snapshots only the three counts and the claim timestamp into a bounded hidden PR marker so CI can calculate lifecycle and coordination metrics without receiving local paths or source content. / `development_flow.py` 在加锁的公共状态中维护累计且不含内容的协调计数；实际 apply 的 claim overlap 拒绝会自动记录，确认的文本冲突通过 `conflicts --record` 登记，无法避免的 train 人工解冲突通过 `coordination-record` 登记。`pr-open` 只把三个计数与 claim 时间快照到有界的隐藏 PR 标记中，使 CI 无需接收本地路径或源码内容即可计算生命周期与协调指标。
+
+```bash
+./script/development_flow.py conflicts --record
+./script/development_flow.py coordination-record \
+  --event merge_tree_conflicts \
+  --apply
+```
+
 The coordinator starts one shared train and task worktrees from explicit remote bases. Commands are plans unless `--apply` is present; shared state lives under Git's common directory so all worktrees see the same active train. / 协调者从明确的远端基线创建一个共享 train 和各任务 worktree。未给出 `--apply` 时命令只输出计划；共享状态位于 Git common directory，因此全部 worktree 能看到同一活动 train。
 
 ```bash

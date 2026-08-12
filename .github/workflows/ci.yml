@@ -385,7 +385,9 @@ jobs:
         run: cargo fetch --locked
 
       - name: Record Cargo source cache routing
-        run: echo 'Cargo source exact hit = `${{ steps.cargo_source_cache.outputs.cache-hit }}`.' >>"$GITHUB_STEP_SUMMARY"
+        env:
+          CARGO_SOURCE_CACHE_HIT: ${{ steps.cargo_source_cache.outputs.cache-hit }}
+        run: printf "Cargo source exact hit = \`%s\`.\n" "$CARGO_SOURCE_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   rust_lint:
     name: Rust formatting and linting
@@ -459,10 +461,20 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('rust-toolchain.toml') }}-host-test-${{ hashFiles('Cargo.lock') }}
 
       - name: Link the complete portable test inventory once
-        run: cargo test --workspace --no-run --locked
+        run: cargo test --workspace --no-run --locked --timings
+
+      - name: Upload Cargo timing evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-test-timings-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: target/cargo-timings/cargo-timing.html
 
       - name: Record Rust test cache routing
-        run: echo 'Portable test target exact hit = `${{ steps.rust_test_cache.outputs.cache-hit }}`.' >>"$GITHUB_STEP_SUMMARY"
+        env:
+          RUST_TEST_CACHE_HIT: ${{ steps.rust_test_cache.outputs.cache-hit }}
+        run: printf "Portable test target exact hit = \`%s\`.\n" "$RUST_TEST_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   rust_tests:
     name: Rust tests (${{ matrix.shard }})
@@ -577,7 +589,9 @@ jobs:
           cargo test -p petcore --test integration_d daemon_lifecycle:: --locked
 
       - name: Record macOS platform cache routing
-        run: echo 'macOS platform target exact hit = `${{ steps.macos_rust_cache.outputs.cache-hit }}`.' >>"$GITHUB_STEP_SUMMARY"
+        env:
+          MACOS_PLATFORM_CACHE_HIT: ${{ steps.macos_rust_cache.outputs.cache-hit }}
+        run: printf "macOS platform target exact hit = \`%s\`.\n" "$MACOS_PLATFORM_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   swift_interaction:
     name: Swift and interaction proof
@@ -590,11 +604,20 @@ jobs:
       (needs.scope.outputs.full_candidate == '1' || needs.scope.outputs.bundle == '1' || needs.scope.outputs.swift_mode != 'none')
     runs-on: macos-26
     timeout-minutes: 25
+    outputs:
+      cache_hit: ${{ steps.swift_strict_cache.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Verify App build toolchain
         run: ./script/validate_macos_build_contract.py toolchain
+
+      - name: Restore or write the one strict Swift debug cache
+        id: swift_strict_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: apps/macos/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-strict-debug-v2-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved', 'script/validate_macos_build_contract.py', 'script/validate_swift_tests.sh', 'script/prepare_interaction_attestation.sh') }}
 
       - name: Run complete Swift suite and create source interaction proof
         env:
@@ -626,6 +649,11 @@ jobs:
           retention-days: 1
           compression-level: 0
           path: ${{ runner.temp }}/swift-debug-products
+
+      - name: Record strict Swift cache routing
+        env:
+          SWIFT_STRICT_CACHE_HIT: ${{ steps.swift_strict_cache.outputs.cache-hit }}
+        run: printf "Strict Swift debug cache exact hit = \`%s\`.\n" "$SWIFT_STRICT_CACHE_HIT" >>"$GITHUB_STEP_SUMMARY"
 
   stress:
     name: Bounded event-storm stress
@@ -982,6 +1010,11 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - name: Require every scheduled job
         env:
@@ -1056,6 +1089,7 @@ jobs:
           RUST_LINT_CACHE_HIT: ${{ needs.rust_lint.outputs.cache_hit }}
           RUST_TEST_CACHE_HIT: ${{ needs.rust_test_build.outputs.cache_hit }}
           MACOS_PLATFORM_CACHE_HIT: ${{ needs.macos_platform.outputs.cache_hit }}
+          SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}
         run: |
           mkdir -p "$RUNNER_TEMP/engineering-metrics"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
@@ -1064,6 +1098,28 @@ jobs:
             >"$RUNNER_TEMP/engineering-metrics/jobs.json"
           gh api "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
             >"$RUNNER_TEMP/engineering-metrics/caches.json"
+          pr_number=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            pr_number="${{ github.event.pull_request.number }}"
+          else
+            pr_number="$(
+              gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+                --jq 'map(select(.base.ref == "main" and .merged_at != null and .merge_commit_sha == env.GITHUB_SHA)) | if length == 1 then .[0].number else empty end'
+            )"
+          fi
+          pr_inputs=()
+          if [[ -n "$pr_number" ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+              >"$RUNNER_TEMP/engineering-metrics/pull-request.json"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/issues/$pr_number/timeline?per_page=100" \
+              >"$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
+            pr_inputs=(
+              --pull-request-json "$RUNNER_TEMP/engineering-metrics/pull-request.json"
+              --pull-request-timeline-json "$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
+            )
+          fi
           run_created_at="$(jq -r '.created_at' "$RUNNER_TEMP/engineering-metrics/run.json")"
           observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           proof_outcome=not-applicable
@@ -1083,6 +1139,7 @@ jobs:
             --base-ref "${{ needs.scope.outputs.base }}" \
             --jobs-json "$RUNNER_TEMP/engineering-metrics/jobs.json" \
             --cache-json "$RUNNER_TEMP/engineering-metrics/caches.json" \
+            "${pr_inputs[@]}" \
             --run-created-at "$run_created_at" \
             --observed-at "$observed_at" \
             --proof-outcome "$proof_outcome" \
@@ -1091,11 +1148,15 @@ jobs:
             --cache-observation "rust-lint=$(cache_value "$RUST_LINT_CACHE_HIT")" \
             --cache-observation "rust-test=$(cache_value "$RUST_TEST_CACHE_HIT")" \
             --cache-observation "macos-platform=$(cache_value "$MACOS_PLATFORM_CACHE_HIT")" \
+            --cache-observation "swift-strict=$(cache_value "$SWIFT_STRICT_CACHE_HIT")" \
             --output "$RUNNER_TEMP/engineering-metrics/metrics.json" \
             --summary "$RUNNER_TEMP/engineering-metrics/summary.md" >>"$GITHUB_STEP_SUMMARY"
           rm "$RUNNER_TEMP/engineering-metrics/run.json" \
             "$RUNNER_TEMP/engineering-metrics/jobs.json" \
             "$RUNNER_TEMP/engineering-metrics/caches.json"
+          rm -f \
+            "$RUNNER_TEMP/engineering-metrics/pull-request.json" \
+            "$RUNNER_TEMP/engineering-metrics/pull-request-timeline.json"
 
       - name: Upload bounded engineering feedback metrics
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

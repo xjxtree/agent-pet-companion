@@ -170,6 +170,12 @@ rg -Fq 'cargo test -p petcore-cli --test integration petpack_build_metadata:: --
 rg -Fq 'cargo test -p petcore --test integration_d daemon_lifecycle:: --locked' "$CI_WORKFLOW"
 rg -Fq 'ci-swift-debug-products-${{ github.sha }}' "$CI_WORKFLOW"
 rg -Fq './script/swift_build_artifact.py restore' "$CI_WORKFLOW"
+rg -Fq 'Restore or write the one strict Swift debug cache' "$CI_WORKFLOW"
+rg -Fq 'swift-strict-debug-v2-' "$CI_WORKFLOW"
+rg -Fq 'SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}' "$CI_WORKFLOW"
+rg -Fq -- '--cache-observation "swift-strict=' "$CI_WORKFLOW"
+rg -Fq -- '--pull-request-json' "$CI_WORKFLOW"
+rg -Fq 'pull-request-timeline.json' "$CI_WORKFLOW"
 rg -Fq './script/engineering_metrics.py' "$CI_WORKFLOW"
 rg -Fq 'Rebind source interaction proof to the development build identity' "$CI_WORKFLOW"
 rg -Fq -- '--proof-in "$RUNNER_TEMP/interaction-proof/interaction-attestation.json"' "$CI_WORKFLOW"
@@ -211,6 +217,10 @@ if "swift_build_artifact.py restore" not in bundle or "swift_build_artifact.py r
     raise SystemExit("both Swift consumers must restore the exact build artifact")
 if "swift_build_artifact.py create" not in swift:
     raise SystemExit("Swift interaction must be the only exact artifact producer")
+if ci.count("Restore or write the one strict Swift debug cache") != 1:
+    raise SystemExit("strict Swift cache must have exactly one writer")
+if "id: swift_strict_cache" not in swift or "path: apps/macos/.build" not in swift:
+    raise SystemExit("strict Swift cache must be owned by the Swift proof producer")
 if "restore-keys:" in ci or "restore-keys:" in release:
     raise SystemExit("CI/Release caches must not use cross-identity prefix fallbacks")
 if "matrix.architecture" not in job(release, "build_archives"):

@@ -35,8 +35,15 @@ from development_domains import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = "apc.development-flow.v2"
+SCHEMA_VERSION = "apc.development-flow.v3"
+PREVIOUS_SCHEMA_VERSION = "apc.development-flow.v2"
 LEGACY_SCHEMA_VERSION = "apc.development-flow.v1"
+COORDINATION_SCHEMA_VERSION = "apc.engineering-coordination.v1"
+COORDINATION_FIELDS = (
+    "claim_overlap_rejections",
+    "merge_tree_conflicts",
+    "train_conflict_resolutions",
+)
 MAIN_BRANCH = "main"
 TRAIN_PREFIX = "gd-ops/train/"
 TASK_PREFIX = "gd-ops/task/"
@@ -51,6 +58,10 @@ SLUG_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 def fail(message: str) -> NoReturn:
     raise ValueError(message)
+
+
+class ClaimOverlapError(ValueError):
+    """An exclusive/domain/Red claim collision rejected before mutation."""
 
 
 def run(
@@ -102,11 +113,12 @@ def empty_state() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "active_train": None,
         "branches": {},
+        "coordination": {field: 0 for field in COORDINATION_FIELDS},
     }
 
 
 def validate_state(payload: dict[str, Any]) -> dict[str, Any]:
-    if set(payload) != {"schema_version", "active_train", "branches"}:
+    if set(payload) != {"schema_version", "active_train", "branches", "coordination"}:
         fail("development-flow state field inventory is invalid")
     if payload.get("schema_version") != SCHEMA_VERSION:
         fail("development-flow state schema is unsupported")
@@ -188,7 +200,27 @@ def validate_state(payload: dict[str, Any]) -> dict[str, Any]:
             context["control_plane_owner"], bool
         ):
             fail("development-flow branch policy flags are invalid")
+    coordination = payload.get("coordination")
+    if not isinstance(coordination, dict) or set(coordination) != set(COORDINATION_FIELDS):
+        fail("development-flow coordination field inventory is invalid")
+    if any(
+        not isinstance(coordination[field], int)
+        or not 0 <= coordination[field] <= 1_000_000
+        for field in COORDINATION_FIELDS
+    ):
+        fail("development-flow coordination count is invalid")
     return payload
+
+
+def migrate_previous_state(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != {"schema_version", "active_train", "branches"}:
+        fail("previous development-flow state field inventory is invalid")
+    if payload.get("schema_version") != PREVIOUS_SCHEMA_VERSION:
+        fail("development-flow state schema is unsupported")
+    migrated = dict(payload)
+    migrated["schema_version"] = SCHEMA_VERSION
+    migrated["coordination"] = {field: 0 for field in COORDINATION_FIELDS}
+    return validate_state(migrated)
 
 
 def migrate_legacy_state(payload: dict[str, Any]) -> dict[str, Any]:
@@ -228,6 +260,8 @@ def read_state(path: pathlib.Path) -> dict[str, Any]:
         fail("development-flow state must contain one JSON object")
     if payload.get("schema_version") == LEGACY_SCHEMA_VERSION:
         return migrate_legacy_state(payload)
+    if payload.get("schema_version") == PREVIOUS_SCHEMA_VERSION:
+        return migrate_previous_state(payload)
     return validate_state(payload)
 
 
@@ -255,6 +289,36 @@ def update_state(root: pathlib.Path, transform: Any) -> dict[str, Any]:
             except FileNotFoundError:
                 pass
         return state
+
+
+def record_coordination(root: pathlib.Path, event: str, count: int) -> dict[str, Any]:
+    if event not in COORDINATION_FIELDS or not 1 <= count <= 10_000:
+        fail("coordination event or count is invalid")
+
+    def transform(state: dict[str, Any]) -> dict[str, Any]:
+        updated = state["coordination"][event] + count
+        if updated > 1_000_000:
+            fail("development-flow coordination count exceeds its bound")
+        state["coordination"][event] = updated
+        return state
+
+    return update_state(root, transform)
+
+
+def coordination_marker(context: dict[str, Any], state: dict[str, Any]) -> str:
+    created_at = context.get("created_at")
+    if not isinstance(created_at, str):
+        fail("branch claim timestamp is required for engineering metrics")
+    payload = {
+        "schema_version": COORDINATION_SCHEMA_VERSION,
+        "task_created_at": created_at,
+        **{field: state["coordination"][field] for field in COORDINATION_FIELDS},
+    }
+    return (
+        "<!-- apc-engineering-coordination-v1 "
+        + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        + " -->"
+    )
 
 
 @dataclass(frozen=True)
@@ -455,13 +519,13 @@ def ensure_claim_available(
             if patterns_overlap(path, other_path)
         ]
         if overlaps:
-            fail(
+            raise ClaimOverlapError(
                 f"exclusive path claim overlaps active branch {other_branch}: {overlaps[0]}"
             )
         if domain.id == other_domain.id and (
             not domain.allow_parallel_claims or not other_domain.allow_parallel_claims
         ):
-            fail(
+            raise ClaimOverlapError(
                 f"domain {domain.id!r} permits only one active claim; "
                 f"branch {other_branch} already owns it"
             )
@@ -474,10 +538,24 @@ def ensure_claim_available(
                     context_pattern_risk(manifest, other, other_pattern),
                 }
                 if "red" in risks:
-                    fail(
+                    raise ClaimOverlapError(
                         f"Red path approval overlaps active branch {other_branch}: "
                         f"{pattern!r} and {other_pattern!r}"
                     )
+
+
+def ensure_claim_available_recorded(
+    root: pathlib.Path,
+    manifest: Manifest,
+    state: dict[str, Any],
+    branch: str,
+    context: dict[str, Any],
+) -> None:
+    try:
+        ensure_claim_available(manifest, state, branch, context)
+    except ClaimOverlapError:
+        record_coordination(root, "claim_overlap_rejections", 1)
+        raise
 
 
 def context_allows_path(context: dict[str, Any], path: str) -> bool:
@@ -566,7 +644,7 @@ def train_start(args: argparse.Namespace, root: pathlib.Path) -> None:
         base_commit=remote_base_commit(root, MAIN_BRANCH),
         worktree=worktree,
     )
-    ensure_claim_available(manifest, current_state, branch, context)
+    ensure_claim_available_recorded(root, manifest, current_state, branch, context)
     run(commands[1], cwd=root)
     run(commands[2], cwd=root)
 
@@ -646,7 +724,7 @@ def task_start(args: argparse.Namespace, root: pathlib.Path) -> None:
         base_commit=remote_base_commit(root, base),
         worktree=worktree,
     )
-    ensure_claim_available(manifest, state, branch, context)
+    ensure_claim_available_recorded(root, manifest, state, branch, context)
     run(commands[1], cwd=root)
 
     def transform(current: dict[str, Any]) -> dict[str, Any]:
@@ -688,8 +766,8 @@ def branch_claim(args: argparse.Namespace, root: pathlib.Path) -> None:
         base_commit=existing["base_commit"] or remote_base_commit(root, base),
         worktree=worktree,
     )
-    ensure_claim_available(manifest, state, branch, context)
     if not args.apply:
+        ensure_claim_available(manifest, state, branch, context)
         print(
             json.dumps(
                 {"apply": False, "branch": branch, "context": context},
@@ -698,6 +776,7 @@ def branch_claim(args: argparse.Namespace, root: pathlib.Path) -> None:
             )
         )
         return
+    ensure_claim_available_recorded(root, manifest, state, branch, context)
 
     def transform(current: dict[str, Any]) -> dict[str, Any]:
         if branch not in current["branches"]:
@@ -717,7 +796,7 @@ def branch_ref(root: pathlib.Path, branch: str) -> str | None:
     return None
 
 
-def conflicts(root: pathlib.Path) -> None:
+def conflicts(root: pathlib.Path, *, record: bool = False) -> None:
     state_path, _ = common_state_paths(root)
     state = read_state(state_path)
     manifest = load_manifest(root)
@@ -775,7 +854,22 @@ def conflicts(root: pathlib.Path) -> None:
                         "merge_tree": merge_detail,
                     }
                 )
-    print(json.dumps({"active_branches": branches, "conflicts": reports}, indent=2, sort_keys=True))
+    merge_tree_conflicts = sum(
+        report["textual_conflict"] is True for report in reports
+    )
+    if record and merge_tree_conflicts:
+        record_coordination(root, "merge_tree_conflicts", merge_tree_conflicts)
+    print(
+        json.dumps(
+            {
+                "active_branches": branches,
+                "conflicts": reports,
+                "recorded_merge_tree_conflicts": merge_tree_conflicts if record else 0,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def pr_open(args: argparse.Namespace, root: pathlib.Path) -> None:
@@ -809,6 +903,8 @@ def pr_open(args: argparse.Namespace, root: pathlib.Path) -> None:
             f"- Release preparation: `{'yes' if context['release_preparation'] else 'no'}`",
             "- Focused validation:",
             *[f"  - `{command}`" for command in validation],
+            "",
+            coordination_marker(context, state),
         ]
     )
     if args.body_file:
@@ -950,7 +1046,13 @@ def parse_args() -> argparse.Namespace:
     claim.add_argument("--release-preparation", action="store_true")
     claim.add_argument("--apply", action="store_true")
 
-    subparsers.add_parser("conflicts")
+    conflicts_parser = subparsers.add_parser("conflicts")
+    conflicts_parser.add_argument("--record", action="store_true")
+
+    coordination = subparsers.add_parser("coordination-record")
+    coordination.add_argument("--event", choices=COORDINATION_FIELDS, required=True)
+    coordination.add_argument("--count", type=int, default=1)
+    coordination.add_argument("--apply", action="store_true")
 
     pr = subparsers.add_parser("pr-open")
     pr.add_argument("--worktree", type=pathlib.Path, required=True)
@@ -987,6 +1089,19 @@ def main() -> int:
             print(json.dumps(asdict(context), sort_keys=True))
     elif args.command == "status":
         print(json.dumps(read_state(state_path), indent=2, sort_keys=True))
+    elif args.command == "coordination-record":
+        if not args.apply:
+            command_plan(
+                [], action="record-coordination", event=args.event, count=args.count
+            )
+        else:
+            print(
+                json.dumps(
+                    record_coordination(root, args.event, args.count),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
     elif args.command == "train-start":
         train_start(args, root)
     elif args.command == "train-clear":
@@ -1024,7 +1139,7 @@ def main() -> int:
     elif args.command == "branch-claim":
         branch_claim(args, root)
     elif args.command == "conflicts":
-        conflicts(root)
+        conflicts(root, record=args.record)
     else:
         pr_open(args, root)
     return 0

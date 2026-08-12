@@ -1038,6 +1038,12 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("run: cargo test --workspace --locked", source)
         self.assertNotIn("working-directory: apps/macos", source)
         self.assertIn("Rebind source interaction proof to the development build identity", source)
+        self.assertIn("Restore or write the one strict Swift debug cache", source)
+        self.assertIn("swift-strict-debug-v2-", source)
+        self.assertIn("SWIFT_STRICT_CACHE_HIT: ${{ needs.swift_interaction.outputs.cache_hit }}", source)
+        self.assertIn('--cache-observation "swift-strict=', source)
+        self.assertIn("--pull-request-json", source)
+        self.assertIn("pull-request-timeline.json", source)
         bundle = source[source.index("  bundle:") : source.index("  candidate_proof:")]
         self.assertLess(
             bundle.index("Restore or write the exact development-bundle Rust target cache"),

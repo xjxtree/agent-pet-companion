@@ -82,6 +82,18 @@ class EngineeringMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["red_path_count"], 0)
         self.assertEqual(metrics["hotspot_path_counts"]["app-store"], 1)
 
+        split = engineering_metrics.change_metrics(
+            ROOT,
+            [
+                "crates/petcore/src/connections/adapters/pi.rs",
+                "crates/petcore/src/rpc/connections.rs",
+                "crates/petcore/src/storage/pets.rs",
+            ],
+        )
+        self.assertEqual(split["hotspot_path_counts"]["connections-monolith"], 0)
+        self.assertEqual(split["hotspot_path_counts"]["rpc-monolith"], 0)
+        self.assertEqual(split["hotspot_path_counts"]["storage-monolith"], 0)
+
     def test_job_metrics_report_platform_minutes_without_source_content(self) -> None:
         metrics = engineering_metrics.job_metrics(
             {
@@ -117,12 +129,44 @@ class EngineeringMetricsTests(unittest.TestCase):
             }
         )
         self.assertEqual(metrics["workflow_wall_seconds"], 120)
-        self.assertEqual(metrics["critical_path_seconds"], 120)
-        self.assertEqual(metrics["execution_seconds"], 120)
+        self.assertEqual(metrics["critical_path_seconds"], 90)
+        self.assertEqual(metrics["execution_seconds"], 150)
         self.assertEqual(metrics["linux_job_seconds"], 60)
         self.assertEqual(metrics["macos_job_seconds"], 90)
+        self.assertEqual(metrics["peak_macos_concurrency"], 1)
         self.assertEqual(metrics["cache_restore_seconds"], 7)
         self.assertEqual(metrics["cache_save_seconds"], 5)
+
+    def test_job_metrics_compute_the_versioned_dag_critical_path(self) -> None:
+        metrics = engineering_metrics.job_metrics(
+            {
+                "jobs": [
+                    {
+                        "name": "Classify change once",
+                        "started_at": "2026-08-12T00:00:00Z",
+                        "completed_at": "2026-08-12T00:00:10Z",
+                        "labels": ["ubuntu-24.04"],
+                        "steps": [],
+                    },
+                    {
+                        "name": "Swift and interaction proof",
+                        "started_at": "2026-08-12T00:00:10Z",
+                        "completed_at": "2026-08-12T00:01:10Z",
+                        "labels": ["macos-26"],
+                        "steps": [],
+                    },
+                    {
+                        "name": "Packaged development App proof",
+                        "started_at": "2026-08-12T00:01:10Z",
+                        "completed_at": "2026-08-12T00:01:40Z",
+                        "labels": ["macos-26"],
+                        "steps": [],
+                    },
+                ]
+            }
+        )
+        self.assertEqual(metrics["critical_path_seconds"], 100)
+        self.assertEqual(metrics["workflow_wall_seconds"], 100)
 
     def test_cache_and_lifecycle_metrics_have_bounded_stable_definitions(self) -> None:
         observed = datetime(2026, 8, 12, 12, tzinfo=timezone.utc)
@@ -153,6 +197,32 @@ class EngineeringMetricsTests(unittest.TestCase):
         self.assertEqual(lifecycle["task_to_ready_seconds"], 3_600)
         self.assertEqual(lifecycle["ready_to_merged_seconds"], 900)
 
+    def test_pull_request_marker_populates_real_coordination_and_lifecycle(self) -> None:
+        marker = {
+            "schema_version": engineering_metrics.COORDINATION_SCHEMA_VERSION,
+            "task_created_at": "2026-08-12T09:00:00Z",
+            "claim_overlap_rejections": 2,
+            "merge_tree_conflicts": 1,
+            "train_conflict_resolutions": 3,
+        }
+        body = (
+            "summary\n\n<!-- apc-engineering-coordination-v1 "
+            + json.dumps(marker, sort_keys=True, separators=(",", ":"))
+            + " -->"
+        )
+        lifecycle, coordination = engineering_metrics.github_pr_metrics(
+            {
+                "body": body,
+                "created_at": "2026-08-12T09:30:00Z",
+                "merged_at": "2026-08-12T11:30:00Z",
+                "draft": False,
+            },
+            [],
+        )
+        self.assertEqual(coordination["claim_overlap_rejections"], 2)
+        self.assertEqual(lifecycle["task_to_ready_seconds"], 1_800)
+        self.assertEqual(lifecycle["ready_to_merged_seconds"], 7_200)
+
     def test_summary_exposes_proof_cache_and_coordination_outcomes(self) -> None:
         summary = engineering_metrics.render_summary(
             {
@@ -182,6 +252,17 @@ class EngineeringMetricsTests(unittest.TestCase):
         self.assertIn("| exact cache `cargo-source` | true |", summary)
         self.assertIn("| claim-overlap rejections | 2 |", summary)
         self.assertIn("| ready-to-merged seconds | n/a |", summary)
+
+
+class RustTestIdentityTests(unittest.TestCase):
+    def test_canonical_identity_digest_is_order_independent(self) -> None:
+        first = {"petcore:alpha:test_one", "petcore:beta:tests::test_two"}
+        second = set(reversed(sorted(first)))
+        self.assertEqual(
+            rust_test_shards.identity_digest(first),
+            rust_test_shards.identity_digest(second),
+        )
+        self.assertRegex(rust_test_shards.identity_digest(first), r"^[0-9a-f]{64}$")
 
 
 class SwiftBuildArtifactTests(unittest.TestCase):
@@ -678,6 +759,33 @@ class MainBranchRulesetTests(unittest.TestCase):
 
 
 class DevelopmentFlowTests(unittest.TestCase):
+    def test_coordination_marker_is_content_free_and_schema_bound(self) -> None:
+        state = development_flow.empty_state()
+        state["coordination"] = {
+            "claim_overlap_rejections": 2,
+            "merge_tree_conflicts": 1,
+            "train_conflict_resolutions": 0,
+        }
+        marker = development_flow.coordination_marker(
+            {"created_at": "2026-08-12T00:00:00Z"}, state
+        )
+        self.assertIn("apc.engineering-coordination.v1", marker)
+        self.assertIn('"claim_overlap_rejections":2', marker)
+        self.assertNotIn("/tmp", marker)
+
+    def test_previous_state_migrates_with_zero_coordination_counts(self) -> None:
+        previous = {
+            "schema_version": development_flow.PREVIOUS_SCHEMA_VERSION,
+            "active_train": None,
+            "branches": {},
+        }
+        migrated = development_flow.migrate_previous_state(previous)
+        self.assertEqual(migrated["schema_version"], development_flow.SCHEMA_VERSION)
+        self.assertEqual(
+            migrated["coordination"],
+            {field: 0 for field in development_flow.COORDINATION_FIELDS},
+        )
+
     def test_current_domain_manifest_is_strict_sorted_and_disjoint(self) -> None:
         manifest = development_domains.load_manifest(ROOT)
         self.assertEqual(
@@ -726,13 +834,18 @@ class DevelopmentFlowTests(unittest.TestCase):
         )
         state = development_flow.empty_state()
         state["branches"]["gd-ops/task/1-overlay"] = first
-        with self.assertRaisesRegex(ValueError, "overlaps active branch"):
-            development_flow.ensure_claim_available(
-                manifest,
-                state,
-                "gd-ops/task/2-bubble",
-                second,
-            )
+        with mock.patch.object(development_flow, "record_coordination") as record:
+            with self.assertRaisesRegex(ValueError, "overlaps active branch"):
+                development_flow.ensure_claim_available_recorded(
+                    pathlib.Path("/tmp/repository"),
+                    manifest,
+                    state,
+                    "gd-ops/task/2-bubble",
+                    second,
+                )
+        record.assert_called_once_with(
+            pathlib.Path("/tmp/repository"), "claim_overlap_rejections", 1
+        )
 
     def test_red_shared_path_requires_control_plane_owner(self) -> None:
         manifest = development_domains.load_manifest(ROOT)

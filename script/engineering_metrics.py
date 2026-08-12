@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 import json
 import pathlib
+import re
 import subprocess
 import sys
 from typing import Any, NoReturn
@@ -14,7 +15,8 @@ from typing import Any, NoReturn
 from development_domains import load_manifest, path_matches
 
 
-SCHEMA_VERSION = "apc.engineering-metrics.v1"
+SCHEMA_VERSION = "apc.engineering-metrics.v2"
+COORDINATION_SCHEMA_VERSION = "apc.engineering-coordination.v1"
 MAX_INPUT_BYTES = 4 * 1024 * 1024
 MAX_CHANGED_PATHS = 4096
 MAX_JOBS = 256
@@ -32,9 +34,11 @@ FALLBACK_CATEGORIES = {
 }
 HOTSPOTS = {
     "app-store": ("apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",),
-    "connections": ("crates/petcore/src/connections.rs", "crates/petcore/src/connections/**"),
-    "rpc": ("crates/petcore/src/rpc.rs", "crates/petcore/src/rpc/**"),
-    "storage": ("crates/petcore/src/db.rs", "crates/petcore/src/storage/**"),
+    # Count the former shared monoliths, not their feature-owned module trees.
+    # Otherwise a successful split would still look like hotspot contention.
+    "connections-monolith": ("crates/petcore/src/connections.rs",),
+    "rpc-monolith": ("crates/petcore/src/rpc.rs",),
+    "storage-monolith": ("crates/petcore/src/db.rs",),
     "global-localization": (
         "apps/macos/Sources/AgentPetCompanion/App/Localization.swift",
         "apps/macos/Sources/AgentPetCompanion/Resources/Localizable.xcstrings",
@@ -43,6 +47,64 @@ HOTSPOTS = {
     ),
     "root-changelog": ("CHANGELOG.md",),
 }
+COORDINATION_MARKER = re.compile(
+    r"<!-- apc-engineering-coordination-v1 (?P<payload>\{[^\r\n]{1,2048}\}) -->"
+)
+COORDINATION_FIELDS = (
+    "claim_overlap_rejections",
+    "merge_tree_conflicts",
+    "train_conflict_resolutions",
+)
+
+# GitHub's jobs API omits `needs`, so this small public display-name graph is
+# the versioned definition used for the DAG critical-path calculation.
+CI_JOB_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "Promote trusted PR proof to main": ("Classify change once",),
+    "Static source contracts": ("Classify change once", "Promote trusted PR proof to main"),
+    "Portable source and integration contracts": ("Classify change once", "Promote trusted PR proof to main"),
+    "macOS build and lifecycle contracts": ("Classify change once", "Promote trusted PR proof to main"),
+    "Prime portable Cargo sources": ("Classify change once", "Promote trusted PR proof to main"),
+    "Rust formatting and linting": ("Classify change once", "Promote trusted PR proof to main", "Prime portable Cargo sources"),
+    "Link portable Rust test binaries once": ("Classify change once", "Promote trusted PR proof to main", "Prime portable Cargo sources"),
+    "Verify every Rust test shard": (
+        "Classify change once",
+        "Promote trusted PR proof to main",
+        "Rust tests (core)",
+        "Rust tests (integration-a)",
+        "Rust tests (integration-b)",
+        "Rust tests (integration-c)",
+        "Rust tests (integration-d)",
+    ),
+    "macOS Rust platform semantics": ("Classify change once", "Promote trusted PR proof to main"),
+    "Swift and interaction proof": ("Classify change once", "Promote trusted PR proof to main"),
+    "Bounded event-storm stress": (
+        "Classify change once",
+        "Promote trusted PR proof to main",
+        "Prime portable Cargo sources",
+        "Link portable Rust test binaries once",
+    ),
+    "Offline overlay contracts": ("Classify change once", "Promote trusted PR proof to main", "Swift and interaction proof"),
+    "Packaged development App proof": ("Classify change once", "Promote trusted PR proof to main", "Swift and interaction proof"),
+}
+CANDIDATE_DEPENDENCIES = (
+    "Static source contracts",
+    "Portable source and integration contracts",
+    "macOS build and lifecycle contracts",
+    "Prime portable Cargo sources",
+    "Rust formatting and linting",
+    "Link portable Rust test binaries once",
+    "Verify every Rust test shard",
+    "macOS Rust platform semantics",
+    "Swift and interaction proof",
+    "Bounded event-storm stress",
+    "Offline overlay contracts",
+    "Packaged development App proof",
+)
+CI_JOB_DEPENDENCIES["Create promotable PR source proof"] = CANDIDATE_DEPENDENCIES
+CI_JOB_DEPENDENCIES["Bind release source proof to main commit"] = (
+    *CANDIDATE_DEPENDENCIES,
+    "Create promotable PR source proof",
+)
 
 
 def fail(message: str) -> NoReturn:
@@ -78,6 +140,60 @@ def parse_timestamp(value: Any) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def job_dependencies(name: str) -> tuple[str, ...]:
+    if name.startswith("Rust tests (") and name.endswith(")"):
+        return (
+            "Classify change once",
+            "Promote trusted PR proof to main",
+            "Link portable Rust test binaries once",
+        )
+    return CI_JOB_DEPENDENCIES.get(name, ())
+
+
+def dag_critical_path(rows: list[dict[str, Any]]) -> int:
+    by_name = {row["name"]: row for row in rows}
+    if len(by_name) != len(rows):
+        fail("jobs input contains duplicate display names")
+    memo: dict[str, int] = {}
+    active: set[str] = set()
+
+    def visit(name: str) -> int:
+        if name in memo:
+            return memo[name]
+        if name in active:
+            fail("CI job dependency graph contains a cycle")
+        active.add(name)
+        parents = [
+            visit(parent) for parent in job_dependencies(name) if parent in by_name
+        ]
+        value = int(by_name[name]["duration_seconds"]) + (
+            max(parents) if parents else 0
+        )
+        active.remove(name)
+        memo[name] = value
+        return value
+
+    return max((visit(name) for name in by_name), default=0)
+
+
+def peak_platform_concurrency(
+    intervals: list[tuple[datetime, datetime]],
+) -> int:
+    events = [
+        event
+        for started, completed in intervals
+        for event in ((started, 1), (completed, -1))
+    ]
+    active = 0
+    peak = 0
+    # End events sort first at identical timestamps so adjacent jobs do not
+    # look concurrent merely because GitHub rounded their boundary equally.
+    for _, delta in sorted(events, key=lambda event: (event[0], event[1])):
+        active += delta
+        peak = max(peak, active)
+    return peak
+
+
 def job_metrics(payload: Any, run_created_at: datetime | None = None) -> dict[str, Any]:
     jobs = payload.get("jobs") if isinstance(payload, dict) else payload
     if not isinstance(jobs, list) or len(jobs) > MAX_JOBS:
@@ -89,6 +205,7 @@ def job_metrics(payload: Any, run_created_at: datetime | None = None) -> dict[st
     ends: list[datetime] = []
     cache_restore_seconds = 0
     cache_save_seconds = 0
+    macos_intervals: list[tuple[datetime, datetime]] = []
     for job in jobs:
         if not isinstance(job, dict):
             fail("jobs input contains a non-object")
@@ -108,6 +225,8 @@ def job_metrics(payload: Any, run_created_at: datetime | None = None) -> dict[st
         platform = "macos" if "macos" in identity.lower() else "linux" if "ubuntu" in identity.lower() or "linux" in identity.lower() else "unknown"
         if platform == "macos":
             macos_seconds += duration
+            if started is not None and completed is not None:
+                macos_intervals.append((started, completed))
         elif platform == "linux":
             linux_seconds += duration
         steps = job.get("steps", [])
@@ -146,13 +265,12 @@ def job_metrics(payload: Any, run_created_at: datetime | None = None) -> dict[st
     return {
         "jobs": rows,
         "queue_seconds": queue,
-        "execution_seconds": max(0, wall),
-        # The observed workflow wall is the stable DAG critical-path measure:
-        # parallel job-minutes remain a separate resource-consumption metric.
-        "critical_path_seconds": max(0, wall),
+        "execution_seconds": sum(int(row["duration_seconds"]) for row in rows),
+        "critical_path_seconds": dag_critical_path(rows),
         "workflow_wall_seconds": max(0, wall),
         "macos_job_seconds": macos_seconds,
         "linux_job_seconds": linux_seconds,
+        "peak_macos_concurrency": peak_platform_concurrency(macos_intervals),
         "cache_restore_seconds": cache_restore_seconds,
         "cache_save_seconds": cache_save_seconds,
     }
@@ -197,6 +315,78 @@ def lifecycle_metrics(values: list[str | None]) -> dict[str, int | None]:
     }
 
 
+def coordination_marker(body: Any) -> dict[str, Any] | None:
+    if not isinstance(body, str) or len(body.encode("utf-8")) > 256 * 1024:
+        return None
+    matches = list(COORDINATION_MARKER.finditer(body))
+    if not matches:
+        return None
+    if len(matches) != 1:
+        fail("pull request body contains duplicate engineering coordination markers")
+    payload = json.loads(matches[0].group("payload"))
+    expected = {"schema_version", "task_created_at", *COORDINATION_FIELDS}
+    if not isinstance(payload, dict) or set(payload) != expected:
+        fail("engineering coordination marker field inventory is invalid")
+    if payload["schema_version"] != COORDINATION_SCHEMA_VERSION:
+        fail("engineering coordination marker schema is unsupported")
+    if parse_timestamp(payload["task_created_at"]) is None:
+        fail("engineering coordination task timestamp is invalid")
+    for field in COORDINATION_FIELDS:
+        if not isinstance(payload[field], int) or not 0 <= payload[field] <= 1_000_000:
+            fail("engineering coordination count is invalid")
+    return payload
+
+
+def github_pr_metrics(
+    pull_request: Any,
+    timeline: Any,
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    if not isinstance(pull_request, dict):
+        fail("pull-request input must contain one object")
+    if not isinstance(timeline, list) or len(timeline) > 2048:
+        fail("pull-request timeline must be a bounded array")
+    marker = coordination_marker(pull_request.get("body"))
+    task_created_value = marker["task_created_at"] if marker else pull_request.get(
+        "created_at"
+    )
+    task_created = parse_timestamp(task_created_value)
+    pull_request_created = parse_timestamp(pull_request.get("created_at"))
+    merged = parse_timestamp(pull_request.get("merged_at"))
+    ready_events: list[datetime] = []
+    converted_events: list[datetime] = []
+    for event in timeline:
+        if not isinstance(event, dict):
+            fail("pull-request timeline contains a non-object")
+        timestamp = parse_timestamp(event.get("created_at"))
+        if timestamp is None:
+            continue
+        if event.get("event") == "ready_for_review":
+            ready_events.append(timestamp)
+        elif event.get("event") == "convert_to_draft":
+            converted_events.append(timestamp)
+    if ready_events:
+        ready = min(ready_events)
+    elif pull_request_created is not None and (
+        pull_request.get("draft") is False or converted_events
+    ):
+        # With no ready event, the PR was born ready. A later draft conversion
+        # does not erase that first-ready timestamp.
+        ready = pull_request_created
+    else:
+        ready = None
+    lifecycle = lifecycle_metrics(
+        [
+            task_created.isoformat() if task_created else None,
+            ready.isoformat() if ready else None,
+            merged.isoformat() if merged else None,
+        ]
+    )
+    coordination = {
+        field: marker[field] if marker else None for field in COORDINATION_FIELDS
+    }
+    return lifecycle, coordination
+
+
 def change_metrics(root: pathlib.Path, paths: list[str]) -> dict[str, Any]:
     manifest = load_manifest(root)
     domains: dict[str, int] = {}
@@ -228,6 +418,10 @@ def render_summary(payload: dict[str, Any]) -> str:
     proof = payload["proof"]
     coordination = payload["coordination"]
     lifecycle = payload["lifecycle"]
+    rendered_coordination = {
+        field: coordination[field] if coordination[field] is not None else "n/a"
+        for field in COORDINATION_FIELDS
+    }
     lines = [
         "### Engineering feedback metrics",
         "",
@@ -238,9 +432,9 @@ def render_summary(payload: dict[str, Any]) -> str:
         f"| Red paths | {change['red_path_count']} |",
         f"| proof outcome | {proof['outcome']} |",
         f"| promotion fallback | {proof['fallback_category']} |",
-        f"| claim-overlap rejections | {coordination['claim_overlap_rejections']} |",
-        f"| merge-tree conflicts | {coordination['merge_tree_conflicts']} |",
-        f"| train conflict resolutions | {coordination['train_conflict_resolutions']} |",
+        f"| claim-overlap rejections | {rendered_coordination['claim_overlap_rejections']} |",
+        f"| merge-tree conflicts | {rendered_coordination['merge_tree_conflicts']} |",
+        f"| train conflict resolutions | {rendered_coordination['train_conflict_resolutions']} |",
         f"| task-to-ready seconds | {lifecycle['task_to_ready_seconds'] if lifecycle['task_to_ready_seconds'] is not None else 'n/a'} |",
         f"| ready-to-merged seconds | {lifecycle['ready_to_merged_seconds'] if lifecycle['ready_to_merged_seconds'] is not None else 'n/a'} |",
     ]
@@ -252,9 +446,10 @@ def render_summary(payload: dict[str, Any]) -> str:
                 f"| queue seconds | {timing['queue_seconds'] if timing['queue_seconds'] is not None else 'n/a'} |",
                 f"| execution seconds | {timing['execution_seconds']} |",
                 f"| workflow wall seconds | {timing['workflow_wall_seconds']} |",
-                f"| observed critical path seconds | {timing['critical_path_seconds']} |",
+                f"| DAG critical path seconds | {timing['critical_path_seconds']} |",
                 f"| macOS job-minutes | {timing['macos_job_seconds'] / 60:.2f} |",
                 f"| Linux job-minutes | {timing['linux_job_seconds'] / 60:.2f} |",
+                f"| peak concurrent macOS jobs | {timing['peak_macos_concurrency']} |",
                 f"| cache restore seconds | {timing['cache_restore_seconds']} |",
                 f"| cache save seconds | {timing['cache_save_seconds']} |",
             ]
@@ -278,14 +473,16 @@ def main() -> int:
     parser.add_argument("--base-ref", required=True)
     parser.add_argument("--jobs-json", type=pathlib.Path)
     parser.add_argument("--cache-json", type=pathlib.Path)
+    parser.add_argument("--pull-request-json", type=pathlib.Path)
+    parser.add_argument("--pull-request-timeline-json", type=pathlib.Path)
     parser.add_argument("--run-created-at")
     parser.add_argument("--observed-at")
     parser.add_argument("--proof-outcome", choices=("promoted", "full-validation", "not-applicable"), default="not-applicable")
     parser.add_argument("--fallback-category", default="not-applicable")
     parser.add_argument("--cache-observation", action="append", default=[])
-    parser.add_argument("--claim-overlap-rejections", type=int, default=0)
-    parser.add_argument("--merge-tree-conflicts", type=int, default=0)
-    parser.add_argument("--train-conflict-resolutions", type=int, default=0)
+    parser.add_argument("--claim-overlap-rejections", type=int)
+    parser.add_argument("--merge-tree-conflicts", type=int)
+    parser.add_argument("--train-conflict-resolutions", type=int)
     parser.add_argument("--task-created-at")
     parser.add_argument("--ready-at")
     parser.add_argument("--merged-at")
@@ -294,6 +491,31 @@ def main() -> int:
     args = parser.parse_args()
     try:
         root = args.root.resolve()
+        coordination = {
+            "claim_overlap_rejections": args.claim_overlap_rejections,
+            "merge_tree_conflicts": args.merge_tree_conflicts,
+            "train_conflict_resolutions": args.train_conflict_resolutions,
+        }
+        lifecycle = lifecycle_metrics(
+            [args.task_created_at, args.ready_at, args.merged_at]
+        )
+        if (args.pull_request_json is None) != (
+            args.pull_request_timeline_json is None
+        ):
+            fail("pull-request metadata and timeline inputs must be supplied together")
+        if args.pull_request_json is not None:
+            github_lifecycle, github_coordination = github_pr_metrics(
+                read_json(args.pull_request_json.resolve()),
+                read_json(args.pull_request_timeline_json.resolve()),
+            )
+            lifecycle = {
+                key: value if value is not None else github_lifecycle[key]
+                for key, value in lifecycle.items()
+            }
+            coordination = {
+                key: value if value is not None else github_coordination[key]
+                for key, value in coordination.items()
+            }
         payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "base_ref": args.base_ref,
@@ -302,22 +524,21 @@ def main() -> int:
                 "outcome": args.proof_outcome,
                 "fallback_category": args.fallback_category,
             },
-            "coordination": {
-                "claim_overlap_rejections": args.claim_overlap_rejections,
-                "merge_tree_conflicts": args.merge_tree_conflicts,
-                "train_conflict_resolutions": args.train_conflict_resolutions,
+            "coordination": coordination,
+            "lifecycle": lifecycle,
+            "definitions": {
+                "critical_path": "longest completed job-duration path in the versioned CI needs graph",
+                "task_created_at": "development-flow claim timestamp, falling back to pull-request creation",
+                "ready_at": "first ready-for-review timestamp, or creation when born ready",
+                "coordination": "cumulative content-free development-flow counters snapshotted into the pull request",
             },
-            "lifecycle": lifecycle_metrics(
-                [args.task_created_at, args.ready_at, args.merged_at]
-            ),
         }
         if args.fallback_category not in FALLBACK_CATEGORIES:
             fail("fallback category is not closed")
-        if min(
-            args.claim_overlap_rejections,
-            args.merge_tree_conflicts,
-            args.train_conflict_resolutions,
-        ) < 0:
+        observed_coordination = [
+            value for value in coordination.values() if value is not None
+        ]
+        if any(not isinstance(value, int) or value < 0 for value in observed_coordination):
             fail("coordination counts must not be negative")
         observations: dict[str, str] = {}
         for observation in args.cache_observation:

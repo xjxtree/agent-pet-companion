@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import pathlib
 import re
@@ -72,6 +73,7 @@ SHARDS: dict[str, list[TestBinary]] = {
 }
 ALL_SHARDS = ["core", *SHARDS]
 COMPLETION_SCHEMA = "apc.rust-test-shard-completion.v1"
+IDENTITY_SCHEMA = "apc.rust-test-identities.v1"
 
 
 def discovered_tests(root: pathlib.Path) -> set[tuple[str, str, str]]:
@@ -144,6 +146,107 @@ def commands(root: pathlib.Path, shard: str) -> list[list[str]]:
     ]
 
 
+def listed_test_names(root: pathlib.Path, package: str, binary: str) -> set[str]:
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--manifest-path",
+            str(root / "Cargo.toml"),
+            "-p",
+            package,
+            "--test",
+            binary,
+            "--locked",
+            "--",
+            "--list",
+            "--format",
+            "terse",
+        ],
+        cwd=root,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    names = {
+        line.removesuffix(": test")
+        for line in result.stdout.splitlines()
+        if line.endswith(": test")
+    }
+    if not names:
+        raise ValueError(f"Rust test binary listed no tests: {package}/{binary}")
+    return names
+
+
+def consolidated_test_identities(root: pathlib.Path) -> set[str]:
+    identities: set[str] = set()
+    for shard in SHARDS.values():
+        for target in shard:
+            leaves = set(target.leaf_modules)
+            for name in listed_test_names(root, target.package, target.binary):
+                leaf, separator, test_name = name.partition("::")
+                if not separator or leaf not in leaves or not test_name:
+                    raise ValueError(
+                        f"Rust test identity is not owned by one declared leaf: "
+                        f"{target.package}/{target.binary}/{name}"
+                    )
+                identity = f"{target.package}:{leaf}:{test_name}"
+                if identity in identities:
+                    raise ValueError(f"duplicate canonical Rust test identity: {identity}")
+                identities.add(identity)
+    return identities
+
+
+def legacy_test_identities(root: pathlib.Path) -> set[str]:
+    identities: set[str] = set()
+    for package in ("petcore", "petcore-cli"):
+        tests = root / "crates" / package / "tests"
+        binaries = sorted(path.stem for path in tests.glob("*.rs"))
+        if not binaries:
+            raise ValueError(f"legacy Rust test inventory is empty: {package}")
+        for binary in binaries:
+            for name in listed_test_names(root, package, binary):
+                identity = f"{package}:{binary}:{name}"
+                if identity in identities:
+                    raise ValueError(f"duplicate canonical Rust test identity: {identity}")
+                identities.add(identity)
+    return identities
+
+
+def identity_digest(identities: set[str]) -> str:
+    payload = "".join(f"{identity}\n" for identity in sorted(identities))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compare_identities(root: pathlib.Path, legacy_root: pathlib.Path) -> None:
+    current = consolidated_test_identities(root)
+    legacy = legacy_test_identities(legacy_root)
+    missing = sorted(legacy - current)
+    extra = sorted(current - legacy)
+    if missing or extra:
+        raise ValueError(
+            "Rust test identity mismatch after consolidation: "
+            f"missing={missing[:20]} extra={extra[:20]}"
+        )
+    print(
+        json.dumps(
+            {
+                "schema_version": IDENTITY_SCHEMA,
+                "identity_count": len(current),
+                "identity_sha256": identity_digest(current),
+                "legacy_root_commit": subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=legacy_root,
+                    check=True,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                ).stdout.strip(),
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def write_completion(proof_dir: pathlib.Path, shard: str) -> pathlib.Path:
     if shard not in ALL_SHARDS:
         raise ValueError(f"unknown Rust test shard: {shard}")
@@ -195,6 +298,7 @@ def main() -> int:
     operation.add_argument("--list-shards", action="store_true")
     operation.add_argument("--list-leaves", action="store_true")
     operation.add_argument("--verify-completion-dir", type=pathlib.Path)
+    operation.add_argument("--compare-identities", type=pathlib.Path)
     parser.add_argument("--completion-dir", type=pathlib.Path)
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
@@ -212,6 +316,14 @@ def main() -> int:
             if args.plan or args.completion_dir is not None:
                 parser.error("completion verification cannot be combined with shard output options")
             validate_completions(args.verify_completion_dir)
+            return 0
+        if args.compare_identities is not None:
+            if args.plan or args.completion_dir is not None:
+                parser.error("identity comparison cannot be combined with shard output options")
+            legacy_root = args.compare_identities.resolve()
+            if legacy_root == root or not (legacy_root / "Cargo.toml").is_file():
+                parser.error("identity comparison requires a distinct legacy repository root")
+            compare_identities(root, legacy_root)
             return 0
         if args.shard is None:
             parser.error("--shard is required")
