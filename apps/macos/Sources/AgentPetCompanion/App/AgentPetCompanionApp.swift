@@ -62,6 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppDiagnostics.shared.log(.notice, category: "lifecycle", event: "app_did_finish_launching")
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Defer one turn so SwiftUI installs the primary activation handler
+        // and AppKit completes its launch-time scene ordering before the
+        // shared presenter fronts the registered Control Center window.
+        DispatchQueue.main.async {
+            AppSingleInstanceCoordinator.shared.activatePrimaryInstance()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

@@ -56,6 +56,15 @@ checks = {
         )
         is not None
     ),
+    "primary cold launch is routed through the registered control center presenter": (
+        re.search(
+            r'applicationDidFinishLaunching.*?DispatchQueue\.main\.async\s*\{\s*'
+            r'AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)',
+            app,
+            re.S,
+        )
+        is not None
+    ),
     "menu bar reopens through the shared presenter": (
         re.search(
             r'MenuBarExtra\s*\{.*?Button\s*\(\s*'

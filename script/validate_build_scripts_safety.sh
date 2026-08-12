@@ -127,6 +127,8 @@ fi
 # compile-only, while CI owns complete tests, source proof, and App assembly.
 rg -Fq './script/validation_scope.py' "$CI_WORKFLOW"
 rg -Fq './script/development_flow.py ci-context' "$CI_WORKFLOW"
+rg -Fq 'changelog: ${{ steps.validation_scope.outputs.changelog }}' "$CI_WORKFLOW"
+rg -Fq -- '--release-preparation "${{ steps.validation_scope.outputs.changelog }}"' "$CI_WORKFLOW"
 rg -Fq './script/changelog_fragments.py policy' "$CI_WORKFLOW"
 rg -Fq -- '--release-preparation "${{ needs.scope.outputs.release_preparation }}"' "$CI_WORKFLOW"
 rg -Fq 'needs.scope.outputs.actionable' "$CI_WORKFLOW"

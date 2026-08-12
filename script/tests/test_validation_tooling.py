@@ -435,8 +435,16 @@ class ValidationScopeTests(unittest.TestCase):
     def test_changelog_fragment_only_is_documentation_scope(self) -> None:
         scope = validation_scope.classify(["changes/unreleased/task-42.json"])
         self.assertTrue(scope.docs_only)
+        self.assertFalse(scope.changelog)
         self.assertEqual(scope.rust_mode, "none")
         self.assertFalse(scope.bundle)
+
+    def test_root_changelog_has_an_exact_typed_scope_flag(self) -> None:
+        scope = validation_scope.classify(
+            ["CHANGELOG.md", "changes/unreleased/task-42.json"]
+        )
+        self.assertTrue(scope.changelog)
+        self.assertTrue(scope.docs_only)
 
     def test_overlay_change_uses_focused_swift_and_recommends_live_ui(self) -> None:
         scope = validation_scope.classify(
@@ -935,9 +943,22 @@ class DevelopmentFlowTests(unittest.TestCase):
         )
         push = development_flow.ci_context("push", "main", "", False)
         self.assertEqual(
-            (push.lane, push.full_candidate, push.release_source),
-            ("main-push", True, True),
+            (
+                push.lane,
+                push.full_candidate,
+                push.release_source,
+                push.release_preparation,
+            ),
+            ("main-push", True, True, False),
         )
+        release_push = development_flow.ci_context(
+            "push",
+            "main",
+            "",
+            False,
+            release_preparation=True,
+        )
+        self.assertTrue(release_push.release_preparation)
 
 
 class ChangelogFragmentTests(unittest.TestCase):

@@ -820,6 +820,7 @@ final class AppStore: ObservableObject {
     private(set) var controlCenterIsOpen = false
     private var pendingMainWindowPresentation = false
     private var pendingMainWindowPresentationChecksRuntimeHandoff = true
+    private var pendingControlCenterFronting = false
     private var generationMessagesTask: Task<Void, Never>?
     private var latestGenerationRestoreAttemptState = LatestGenerationRestoreAttemptState.notAttempted
     private var latestGenerationRestoreAttemptSequence: UInt64 = 0
@@ -1501,7 +1502,10 @@ final class AppStore: ObservableObject {
         let checksRuntimeHandoff = pendingMainWindowPresentationChecksRuntimeHandoff
         pendingMainWindowPresentation = false
         pendingMainWindowPresentationChecksRuntimeHandoff = true
-        guard !checksRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }
+        guard !checksRuntimeHandoff || !runtimeHandoffIfNeeded() else {
+            pendingControlCenterFronting = false
+            return
+        }
         presenter()
         NSApp?.activate(ignoringOtherApps: true)
     }
@@ -1525,6 +1529,11 @@ final class AppStore: ObservableObject {
                 self.controlCenterIsOpen = false
                 self.overlayController.controlCenterDidClose()
             }
+        }
+        if pendingControlCenterFronting {
+            pendingControlCenterFronting = false
+            window.makeKeyAndOrderFront(nil)
+            NSApp?.activate(ignoringOtherApps: true)
         }
     }
 
@@ -1614,7 +1623,9 @@ final class AppStore: ObservableObject {
 
     private func presentMainWindow(checkRuntimeHandoff: Bool) {
         guard !checkRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }
+        pendingControlCenterFronting = true
         if frontExistingMainWindow() {
+            pendingControlCenterFronting = false
             pendingMainWindowPresentation = false
             pendingMainWindowPresentationChecksRuntimeHandoff = true
             NSApp?.activate(ignoringOtherApps: true)

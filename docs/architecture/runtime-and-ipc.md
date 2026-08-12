@@ -15,6 +15,8 @@ The App and PetCore each hold a private instance lock. A second App instance req
 
 Closing the control-center window leaves the menu bar and enabled overlay active. Reopen targets the registered control-center scene; About cannot intercept it. Standard Quit closes the App and overlay. A LaunchAgent-hosted PetCore remains available, while a direct-child fallback is tied to the App process.
 
+A primary cold launch queues one activation through that same registered control-center presenter on the main run-loop turn after AppKit finishes launching. If SwiftUI has not installed the presenter or registered its NSWindow yet, the request remains pending until both steps complete; AppKit activation then fronts that exact window. Cold launch, Dock reopen, and secondary-instance activation therefore converge on the same single window.
+
 ## Startup and managed runtime
 
 ```mermaid

@@ -14,7 +14,7 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-08-12
+## [0.4.3] - 2026-08-13
 
 ### Changed / 变更
 
@@ -26,6 +26,14 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 - Each App launch now runs a full Agent connection check and shows actionable global notices for plugin, connector, authorization, restart, and channel issues.
 
   App 每次启动都会完整检查 Agent 连接，并针对插件、连接器、授权、重启与通道问题显示可操作的全局提示。
+
+### Fixed / 修复
+
+<!-- apc-fragment:release-blockers-20260813 -->
+- Cold launch now presents the registered Control Center window through the same single-instance activation path used by reopen requests, instead of leaving the window hidden behind the desktop pet.
+
+  冷启动现在通过与重新打开请求相同的单实例激活路径呈现已注册的控制中心窗口，不再只显示桌宠而将控制中心隐藏。
+
 ## [0.4.2] - 2026-08-12
 
 ### Fixed / 修复

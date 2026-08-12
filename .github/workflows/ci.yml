@@ -34,6 +34,7 @@ jobs:
     outputs:
       base: ${{ steps.validation_base.outputs.base }}
       docs_only: ${{ steps.validation_scope.outputs.docs_only }}
+      changelog: ${{ steps.validation_scope.outputs.changelog }}
       localization: ${{ steps.validation_scope.outputs.localization }}
       scripts: ${{ steps.validation_scope.outputs.scripts }}
       producer: ${{ steps.validation_scope.outputs.producer }}
@@ -124,6 +125,7 @@ jobs:
             ./script/development_flow.py ci-context \
               --event push \
               --base main \
+              --release-preparation "${{ steps.validation_scope.outputs.changelog }}" \
               --format github >>"$GITHUB_OUTPUT"
           fi
 
