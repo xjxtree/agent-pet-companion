@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Changed",
+  "scope": "agent-connections",
+  "summary_en": "Each App launch now runs a full Agent connection check and shows actionable global notices for plugin, connector, authorization, restart, and channel issues.",
+  "summary_zh": "App 每次启动都会完整检查 Agent 连接，并针对插件、连接器、授权、重启与通道问题显示可操作的全局提示。"
+}

@@ -185,6 +185,228 @@ struct ControlCenterRecoveryBannerPresentation: Equatable {
     }
 }
 
+enum ControlCenterAgentConnectionAction: Hashable {
+    case openConnections
+}
+
+struct ControlCenterAgentConnectionBannerPresentation: Equatable {
+    let status: ProductStatusPresentation
+    let primaryAction: ProductActionPresentation<ControlCenterAgentConnectionAction>
+    let affectedSources: [AgentSource]
+
+    static func resolve(
+        startupState: AppStartupConnectionCheckState,
+        connections: [AgentConnectionStatus],
+        operationState: AgentConnectionOperationState,
+        serviceState: PetCoreOperationalState,
+        convergenceState: AppUpdateConvergenceState,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> Self? {
+        guard serviceState == .online else { return nil }
+        if case .needsAttention(.connectors) = convergenceState {
+            // The post-update banner already names the affected Agents and
+            // owns its scoped recovery/recheck actions.
+            return nil
+        }
+
+        if case let .failed(failure) = operationState {
+            return failed(
+                reason: failure.reason,
+                sources: failure.operation.sources,
+                localeIdentifier: localeIdentifier
+            )
+        }
+
+        switch startupState {
+        case .idle, .waiting:
+            return nil
+        case .checking:
+            return checking(localeIdentifier: localeIdentifier)
+        case let .failed(reason):
+            return failed(
+                reason: reason,
+                sources: AgentSource.allCases,
+                localeIdentifier: localeIdentifier
+            )
+        case .completed:
+            break
+        }
+
+        let issues = AgentSource.allCases.compactMap { source in
+            issue(
+                for: source,
+                status: connections.first { $0.source == source },
+                localeIdentifier: localeIdentifier
+            )
+        }
+        guard !issues.isEmpty else { return nil }
+
+        let detail = issues.map { issue in
+            APCLocalization.format(
+                .appAgentConnectionsIssueSourceFormat,
+                locale: localeIdentifier,
+                issue.source.title,
+                issue.summary
+            )
+        }.joined(separator: localeIdentifier.lowercased().hasPrefix("zh") ? "；" : "; ")
+
+        return Self(
+            status: ProductStatusPresentation(
+                appearance: .attention,
+                title: APCLocalization.text(
+                    .appAgentConnectionsAttentionTitle,
+                    locale: localeIdentifier
+                ),
+                detail: APCLocalization.format(
+                    .appAgentConnectionsAttentionDetailFormat,
+                    locale: localeIdentifier,
+                    detail
+                )
+            ),
+            primaryAction: openConnectionsAction(localeIdentifier: localeIdentifier),
+            affectedSources: issues.map(\.source)
+        )
+    }
+
+    private struct Issue {
+        let source: AgentSource
+        let summary: String
+    }
+
+    private static func issue(
+        for source: AgentSource,
+        status: AgentConnectionStatus?,
+        localeIdentifier: String
+    ) -> Issue? {
+        let presentation = AgentConnectionProductPresentation(
+            source: source,
+            status: status,
+            operationState: .idle
+        )
+        guard let status, presentation.hasCurrentTypedSnapshot else {
+            return Issue(
+                source: source,
+                summary: APCLocalization.text(
+                    .appAgentConnectionsIssueIncomplete,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        if status.hasManagedPathConflict {
+            return Issue(
+                source: source,
+                summary: APCLocalization.text(
+                    .appAgentConnectionsIssuePathConflict,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        if presentation.health == .needsRepair
+            || presentation.managedComponents.contains(where: managedComponentNeedsUpdate)
+        {
+            return Issue(
+                source: source,
+                summary: APCLocalization.text(
+                    .appAgentConnectionsIssuePluginUpdate,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        if AgentConnectionsPresentation.attentionReason(for: presentation) != nil {
+            return Issue(
+                source: source,
+                summary: AgentConnectionsPresentation.healthTitle(
+                    for: presentation,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        if presentation.health == .notChecked || presentation.health == .unavailable {
+            return Issue(
+                source: source,
+                summary: APCLocalization.text(
+                    .appAgentConnectionsIssueIncomplete,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        return nil
+    }
+
+    private static func managedComponentNeedsUpdate(
+        _ component: AgentManagedComponent
+    ) -> Bool {
+        component.status.isBlocking
+            || component.contentMatches == false
+            || (
+                component.expectedVersion != nil
+                    && component.activeVersion != nil
+                    && component.expectedVersion != component.activeVersion
+            )
+    }
+
+    private static func checking(localeIdentifier: String) -> Self {
+        Self(
+            status: ProductStatusPresentation(
+                appearance: .checking,
+                title: APCLocalization.text(
+                    .appAgentConnectionsCheckingTitle,
+                    locale: localeIdentifier
+                ),
+                detail: APCLocalization.text(
+                    .appAgentConnectionsCheckingDetail,
+                    locale: localeIdentifier
+                )
+            ),
+            primaryAction: openConnectionsAction(localeIdentifier: localeIdentifier),
+            affectedSources: AgentSource.allCases
+        )
+    }
+
+    private static func failed(
+        reason: AgentConnectionOperationFailureReason,
+        sources: [AgentSource],
+        localeIdentifier: String
+    ) -> Self {
+        Self(
+            status: ProductStatusPresentation(
+                appearance: .error,
+                title: APCLocalization.text(
+                    .appAgentConnectionsCheckFailedTitle,
+                    locale: localeIdentifier
+                ),
+                detail: APCLocalization.format(
+                    .appAgentConnectionsCheckFailedDetailFormat,
+                    locale: localeIdentifier,
+                    AgentConnectionsPresentation.operationFailureDetail(
+                        reason,
+                        locale: localeIdentifier
+                    )
+                )
+            ),
+            primaryAction: openConnectionsAction(localeIdentifier: localeIdentifier),
+            affectedSources: sources
+        )
+    }
+
+    private static func openConnectionsAction(
+        localeIdentifier: String
+    ) -> ProductActionPresentation<ControlCenterAgentConnectionAction> {
+        ProductActionPresentation(
+            action: .openConnections,
+            title: APCLocalization.text(
+                .navigationConnections,
+                locale: localeIdentifier
+            ),
+            systemImage: "link",
+            accessibilityLabel: APCLocalization.text(
+                .appActionCheckConnections,
+                locale: localeIdentifier
+            )
+        )
+    }
+}
+
 private struct ControlCenterShellModeKey: EnvironmentKey {
     static let defaultValue = ControlCenterShellMode.allColumns
 }

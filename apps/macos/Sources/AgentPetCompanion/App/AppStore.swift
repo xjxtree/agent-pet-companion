@@ -604,6 +604,14 @@ enum AppUpdateConvergenceState: Equatable {
     case needsAttention(AppUpdateConvergenceAttention)
 }
 
+enum AppStartupConnectionCheckState: Equatable {
+    case idle
+    case waiting
+    case checking
+    case completed
+    case failed(AgentConnectionOperationFailureReason)
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     typealias BundledPetSeeder = @MainActor () async -> Bool
@@ -745,6 +753,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var portableMakerSkillOperation = PortableMakerSkillOperation.idle
     @Published private(set) var portableMakerSkillFailure: PortableMakerSkillFailure?
     @Published private(set) var manualAppInstallationRequest: AppManualInstallationRequest?
+    @Published private(set) var startupConnectionCheckState =
+        AppStartupConnectionCheckState.idle
     @Published private(set) var appUpdateConvergenceState = AppUpdateConvergenceState.idle {
         didSet {
             if case let .needsAttention(attention) = appUpdateConvergenceState {
@@ -831,6 +841,7 @@ final class AppStore: ObservableObject {
     private var runtimeBootstrap: (id: UInt64, task: Task<Bool, Never>)?
     private var runtimeBootstrapRetryTask: Task<Void, Never>?
     private var runtimeBootstrapRetryDelaySeconds: UInt64 = 2
+    private var startupConnectionCheckTask: Task<Void, Never>?
     private var bundledPetSeedRetryTask: Task<Void, Never>?
     private var initialAppearanceFallbackTask: Task<Void, Never>?
     private var recoverySequence: UInt64 = 0
@@ -1019,6 +1030,10 @@ final class AppStore: ObservableObject {
                 self?.statusText = status
             },
             failureSink: { [weak self] operation, reason in
+                self?.finishStartupConnectionCheckIfNeeded(
+                    operation: operation,
+                    result: .failure(reason)
+                )
                 self?.diagnostics.log(
                     .error,
                     category: "connections",
@@ -1031,6 +1046,9 @@ final class AppStore: ObservableObject {
                 )
             },
             checkedSink: { [weak self] sources in
+                self?.finishStartupConnectionCheckIfNeeded(
+                    checkedSources: sources
+                )
                 self?.reconcileProductConvergenceConnectorAttention(
                     afterChecking: sources
                 )
@@ -2147,7 +2165,32 @@ final class AppStore: ObservableObject {
             }
         }
         scheduleProductConvergence(bundledPetsReady: bundledPetsReady)
+        scheduleStartupConnectionCheck()
         appUpdater.checkAutomaticallyIfDue()
+    }
+
+    /// Runs one authoritative four-Agent runtime check for this App process.
+    /// Product convergence retains priority because it may refresh the same
+    /// managed host artifacts; the startup check begins as soon as that flow
+    /// and any user-started connection operation release the shared gate.
+    func scheduleStartupConnectionCheck() {
+        guard startupConnectionCheckState == .idle else { return }
+        startupConnectionCheckState = .waiting
+        startupConnectionCheckTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if self.productConvergenceTask == nil,
+                   self.connectionsModel.canStartOperation
+                {
+                    self.startupConnectionCheckState = .checking
+                    self.connectionsModel.checkAll()
+                    self.startupConnectionCheckTask = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            self?.startupConnectionCheckTask = nil
+        }
     }
 
     @discardableResult
@@ -6927,6 +6970,44 @@ final class AppStore: ObservableObject {
         )
         if fullyResolved {
             scheduleProductConvergence(force: true)
+        }
+    }
+
+    private enum StartupConnectionCheckResult {
+        case success
+        case failure(AgentConnectionOperationFailureReason)
+    }
+
+    private func finishStartupConnectionCheckIfNeeded(
+        checkedSources: Set<AgentSource>
+    ) {
+        guard checkedSources == Set(AgentSource.allCases) else { return }
+        finishStartupConnectionCheckIfNeeded(
+            operation: AgentConnectionOperation(
+                kind: .check,
+                sources: AgentSource.allCases
+            ),
+            result: .success
+        )
+    }
+
+    private func finishStartupConnectionCheckIfNeeded(
+        operation: AgentConnectionOperation,
+        result: StartupConnectionCheckResult
+    ) {
+        guard startupConnectionCheckState != .idle,
+              operation.kind == .check,
+              operation.sources == AgentSource.allCases
+        else { return }
+
+        startupConnectionCheckTask?.cancel()
+        startupConnectionCheckTask = nil
+
+        switch result {
+        case .success:
+            startupConnectionCheckState = .completed
+        case let .failure(reason):
+            startupConnectionCheckState = .failed(reason)
         }
     }
 

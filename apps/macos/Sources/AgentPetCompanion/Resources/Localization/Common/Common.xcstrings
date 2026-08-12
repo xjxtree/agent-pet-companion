@@ -273,6 +273,166 @@
         }
       }
     },
+    "app.agent_connections.attention.detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@. Open Agent Connections for the exact recovery steps."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@。打开“Agent 连接”查看具体处理步骤。"
+          }
+        }
+      }
+    },
+    "app.agent_connections.attention.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent connections need attention"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 连接需要处理"
+          }
+        }
+      }
+    },
+    "app.agent_connections.check_failed.detail_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Open Agent Connections to retry and view recovery steps."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 请打开“Agent 连接”重试并查看处理步骤。"
+          }
+        }
+      }
+    },
+    "app.agent_connections.check_failed.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent connection operation did not finish"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 连接操作未完成"
+          }
+        }
+      }
+    },
+    "app.agent_connections.checking.detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The App is running a full check of Codex, Claude Code, Pi, and OpenCode for this launch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次启动正在对 Codex、Claude Code、Pi 与 OpenCode 执行一次完整检查。"
+          }
+        }
+      }
+    },
+    "app.agent_connections.checking.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking Agent connections"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查 Agent 连接"
+          }
+        }
+      }
+    },
+    "app.agent_connections.issue.incomplete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full connection result is incomplete"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完整连接检查结果不完整"
+          }
+        }
+      }
+    },
+    "app.agent_connections.issue.path_conflict": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App-managed plugin or connector path conflict"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 管理的插件或连接器路径冲突"
+          }
+        }
+      }
+    },
+    "app.agent_connections.issue.plugin_update": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App-managed plugin or connector needs setup or update"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App 管理的插件或连接器需要设置或更新"
+          }
+        }
+      }
+    },
+    "app.agent_connections.issue.source_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：%@"
+          }
+        }
+      }
+    },
     "app.help.hide_pet": {
       "localizations": {
         "en": {

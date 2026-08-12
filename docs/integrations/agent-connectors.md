@@ -97,13 +97,24 @@ PetCore supplies typed capabilities for safe repair and removal; the App never i
 Every authoritative App snapshot includes a bounded light check for all four
 Agents. Agent Connections presents a healthy light result as **Basic check
 complete** and immediately exposes specific missing-host or managed-repair
-findings; it never labels an available light result as if no check ran. The
-first Agent Connections presentation in each App session requests one full
-runtime check after all four light projections are loaded and release connector
-convergence is idle. A fresh runtime projection is reused instead of probing
-again, while **Check All** remains the explicit retry path. Full host probes stay
-out of the launch-critical path because they may cold-start Agent hosts, load
-plugins, or encounter host trust and protected-folder prompts.
+findings; it never labels an available light result as if no check ran. Every
+App launch schedules one full four-Agent runtime check after the authoritative
+light projections are loaded and release connector convergence is idle. This
+check runs even when a prior runtime projection is available, but remains
+outside the launch-critical snapshot and window-presentation path because host
+probes may cold-start Agent hosts, load plugins, or encounter host trust and
+protected-folder prompts. **Check All** remains the explicit retry path.
+
+The control-center shell shows the launch check while it runs. After completion,
+any missing host, managed plugin/connector setup or version mismatch, managed
+path conflict, Hook authorization, host permission/restart requirement, local
+event-channel failure, incomplete result, or failed connection operation is a
+global in-App notice outside Agent Connections. The notice names each affected
+Agent and its closed issue category and opens Agent Connections for the exact
+typed recovery steps. Post-update connector convergence keeps its existing
+higher-priority scoped notice so the App never duplicates the same problem.
+Healthy local integration that only awaits an ordinary real Agent task remains
+neutral and does not create a global failure notice.
 
 Agent Connections distinguishes local integration health from evidence of a real provider task. It lists only App-owned plugins, connectors, extensions, and bundled Skills with safe names and verified active/required release versions. Paths, digests, internal contract IDs, user-managed components, and unrelated runtime diagnostics remain hidden. A detected Agent host version is diagnostic context only and never gates compatibility. Health is decided by the exact App-managed connector contract, host runtime probe, local event channel, and current connector receipts, so a host upgrade does not require a new hardcoded version allowance.
 

@@ -172,6 +172,110 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func startupConnectionCheckAndConcreteIssuesUseOneGlobalRoute() throws {
+        let checking = try #require(
+            ControlCenterAgentConnectionBannerPresentation.resolve(
+                startupState: .checking,
+                connections: [],
+                operationState: .idle,
+                serviceState: .online,
+                convergenceState: .idle,
+                localeIdentifier: "zh-Hans"
+            )
+        )
+        #expect(checking.status.appearance == .checking)
+        #expect(checking.status.title == "正在检查 Agent 连接")
+        #expect(checking.primaryAction.action == .openConnections)
+
+        let pluginUpdate = connectionStatus(
+            source: .codex,
+            checkStatus: .needsFix,
+            managedComponentStatus: .needsFix
+        )
+        let healthy = AgentSource.allCases.dropFirst().map {
+            connectionStatus(source: $0)
+        }
+        let attention = try #require(
+            ControlCenterAgentConnectionBannerPresentation.resolve(
+                startupState: .completed,
+                connections: [pluginUpdate] + healthy,
+                operationState: .succeeded(.init(
+                    kind: .check,
+                    sources: AgentSource.allCases
+                )),
+                serviceState: .online,
+                convergenceState: .idle,
+                localeIdentifier: "zh-Hans"
+            )
+        )
+
+        #expect(attention.status.appearance == .attention)
+        #expect(attention.affectedSources == [.codex])
+        #expect(attention.status.detail?.contains("Codex") == true)
+        #expect(attention.status.detail?.contains("插件或连接器需要设置或更新") == true)
+        #expect(attention.primaryAction.title == "Agent 连接")
+    }
+
+    @Test
+    func awaitingRealTaskVerificationIsNotReportedAsAConnectionFailure() {
+        let statuses = AgentSource.allCases.map {
+            connectionStatus(source: $0, verification: .unverified)
+        }
+
+        #expect(ControlCenterAgentConnectionBannerPresentation.resolve(
+            startupState: .completed,
+            connections: statuses,
+            operationState: .succeeded(.init(
+                kind: .check,
+                sources: AgentSource.allCases
+            )),
+            serviceState: .online,
+            convergenceState: .idle,
+            localeIdentifier: "en"
+        ) == nil)
+    }
+
+    @Test
+    func connectionCheckFailureAndUpdateAttentionDoNotDuplicateBanners() throws {
+        let failedOperation = AgentConnectionOperation(
+            kind: .check,
+            sources: AgentSource.allCases
+        )
+        let failure = try #require(
+            ControlCenterAgentConnectionBannerPresentation.resolve(
+                startupState: .failed(.transportUnavailable),
+                connections: [],
+                operationState: .failed(.init(
+                    operation: failedOperation,
+                    reason: .transportUnavailable
+                )),
+                serviceState: .online,
+                convergenceState: .idle,
+                localeIdentifier: "en"
+            )
+        )
+        #expect(failure.status.appearance == .error)
+        #expect(failure.status.title == "Agent connection operation did not finish")
+        #expect(failure.primaryAction.action == .openConnections)
+
+        let updateIssue = ProductConnectorConvergenceIssue(
+            source: .codex,
+            reason: .verificationIncomplete
+        )
+        #expect(ControlCenterAgentConnectionBannerPresentation.resolve(
+            startupState: .failed(.transportUnavailable),
+            connections: [],
+            operationState: .failed(.init(
+                operation: failedOperation,
+                reason: .transportUnavailable
+            )),
+            serviceState: .online,
+            convergenceState: .needsAttention(.connectors([updateIssue])),
+            localeIdentifier: "en"
+        ) == nil)
+    }
+
+    @Test
     func toolbarContainsNoOverflowNavigationDuplicate() throws {
         let contentSource = try String(
             contentsOf: sourceDirectory.appendingPathComponent(
@@ -239,5 +343,58 @@ struct ControlCenterShellTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/AgentPetCompanion", isDirectory: true)
+    }
+
+    private func connectionStatus(
+        source: AgentSource,
+        checkStatus: CheckStatus = .ok,
+        managedComponentStatus: CheckStatus = .ok,
+        verification: AgentVerificationStatus = .verified
+    ) -> AgentConnectionStatus {
+        AgentConnectionStatus(
+            source: source,
+            items: [
+                ConnectionCheckItem(
+                    code: .managedConnector,
+                    name: "managed connector",
+                    status: checkStatus,
+                    detail: "bounded test detail",
+                    recoveryAction: checkStatus.isBlocking
+                        ? .confirmManagedRepair
+                        : nil
+                )
+            ],
+            installPaths: [],
+            connectorInstalled: checkStatus == .ok,
+            checkMode: .runtime,
+            verification: AgentVerification(
+                status: verification,
+                title: "verification",
+                detail: "verification detail"
+            ),
+            capabilities: AgentConnectorCapabilities(
+                contractVersion: "typed-test-v1",
+                subscribedEvents: [],
+                mappedInformation: [],
+                privacyExclusions: [],
+                repairableConnectorIssue: checkStatus.isBlocking,
+                canRepairManagedConnector: true,
+                managedPathConflict: false,
+                canUninstallManagedConnector: true,
+                managedComponents: [
+                    AgentManagedComponent(
+                        kind: .plugin,
+                        name: "agent-pet-companion",
+                        ownership: .appManaged,
+                        status: managedComponentStatus,
+                        expectedVersion: "1.1.0",
+                        activeVersion: managedComponentStatus == .ok
+                            ? "1.1.0"
+                            : "1.0.0",
+                        contentMatches: managedComponentStatus == .ok
+                    )
+                ]
+            )
+        )
     }
 }

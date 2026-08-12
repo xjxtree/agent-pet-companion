@@ -70,6 +70,16 @@
 "common.images.format" = "%d images";
 "common.value_of_total.format" = "%@ %d/%d";
 "app.action.check_connections" = "Check Agent Connections";
+"app.agent_connections.checking.title" = "Checking Agent connections";
+"app.agent_connections.checking.detail" = "The App is running a full check of Codex, Claude Code, Pi, and OpenCode for this launch.";
+"app.agent_connections.attention.title" = "Agent connections need attention";
+"app.agent_connections.attention.detail_format" = "%@. Open Agent Connections for the exact recovery steps.";
+"app.agent_connections.check_failed.title" = "Agent connection operation did not finish";
+"app.agent_connections.check_failed.detail_format" = "%@ Open Agent Connections to retry and view recovery steps.";
+"app.agent_connections.issue.source_format" = "%@: %@";
+"app.agent_connections.issue.plugin_update" = "App-managed plugin or connector needs setup or update";
+"app.agent_connections.issue.path_conflict" = "App-managed plugin or connector path conflict";
+"app.agent_connections.issue.incomplete" = "Full connection result is incomplete";
 "app.action.show_pet" = "Show Desktop Pet";
 "app.action.hide_pet" = "Hide Desktop Pet";
 "app.action.more" = "More";
