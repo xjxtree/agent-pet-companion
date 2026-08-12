@@ -18,6 +18,7 @@ struct OverlayDesktopVisibilityPolicy {
 
     func shouldHide(
         rendererValidationActive: Bool,
+        controlCenterWindowIsConcealed: Bool,
         frontmostApplicationIsFinder: Bool,
         finderHasRegularWindow: Bool,
         hasVisibleRegularApplicationWindow: Bool
@@ -29,6 +30,10 @@ struct OverlayDesktopVisibilityPolicy {
         guard controlCenterIsOpen, !rendererValidationActive else {
             return false
         }
+        // The initial appearance gate may briefly conceal the real control
+        // center while applying persisted presentation. That transition is
+        // not the system Show Desktop gesture and must never hide the pet.
+        guard !controlCenterWindowIsConcealed else { return false }
         if frontmostApplicationIsFinder {
             return !finderHasRegularWindow
         }
@@ -110,6 +115,7 @@ final class PetOverlayController {
     private var desktopVisibilityTimer: Timer?
     private var hiddenForDesktop = false
     private var desktopVisibilityPolicy = OverlayDesktopVisibilityPolicy()
+    private weak var controlCenterWindow: NSWindow?
     private let controlPresentation = OverlayControlPresentationState()
     private let interactionPresentation = OverlayInteractionPresentationState()
     private var controlPanelFadeOutTask: Task<Void, Never>?
@@ -405,11 +411,13 @@ final class PetOverlayController {
         }
     }
 
-    func controlCenterDidOpen() {
+    func controlCenterDidOpen(window: NSWindow) {
+        controlCenterWindow = window
         desktopVisibilityPolicy.controlCenterDidOpen()
     }
 
     func controlCenterDidClose() {
+        controlCenterWindow = nil
         desktopVisibilityPolicy.controlCenterDidClose()
         hiddenForDesktop = false
         guard store?.behavior.enabled == true else { return }
@@ -992,6 +1000,10 @@ final class PetOverlayController {
         }
         return desktopVisibilityPolicy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed:
+                controlCenterWindow.map {
+                    $0.alphaValue <= 0 || $0.ignoresMouseEvents
+                } ?? false,
             frontmostApplicationIsFinder: frontmostApplicationIsFinder,
             finderHasRegularWindow: finderHasRegularWindow,
             hasVisibleRegularApplicationWindow:

@@ -52,6 +52,7 @@ struct AppLifecycleContractTests {
 
         #expect(policy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
@@ -61,12 +62,14 @@ struct AppLifecycleContractTests {
 
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
@@ -81,19 +84,29 @@ struct AppLifecycleContractTests {
 
         #expect(policy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: true
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: true,
+            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
+            finderHasRegularWindow: false,
+            hasVisibleRegularApplicationWindow: false
+        ))
+        #expect(!policy.shouldHide(
+            rendererValidationActive: false,
+            controlCenterWindowIsConcealed: true,
+            frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))

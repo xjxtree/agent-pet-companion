@@ -1494,7 +1494,7 @@ final class AppStore: ObservableObject {
         window.identifier = Self.controlCenterWindowIdentifier
         controlCenterWindow = window
         controlCenterIsOpen = true
-        overlayController.controlCenterDidOpen()
+        overlayController.controlCenterDidOpen(window: window)
         controlCenterCloseObserver = NotificationCenter.default.publisher(
             for: NSWindow.willCloseNotification,
             object: window
@@ -1871,7 +1871,7 @@ final class AppStore: ObservableObject {
         }
         window.makeKeyAndOrderFront(nil)
         controlCenterIsOpen = true
-        overlayController.controlCenterDidOpen()
+        overlayController.controlCenterDidOpen(window: window)
         return true
     }
 

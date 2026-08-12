@@ -120,7 +120,7 @@ Use Computer Use—not `--run-ui-validation`, a hidden `NSHostingView`, AX-only 
 2. The five navigation entries appear in the required order, and each destination visibly renders after selection. / 五个导航入口按规定顺序出现，逐一选择后页面均能实际显示。
 3. Pet Library visibly presents the three bundled pets and a working action preview. / 宠物库能看到三只内置宠物，动作预览可正常工作。
 4. The desktop pet can be hidden and shown from the Control Center. / 可从控制中心隐藏并重新显示桌宠。
-5. Closing and reopening the Control Center, then quitting and relaunching the App, restores a visible usable window. / 关闭并重新打开控制中心、退出并重启 App 后，仍能恢复可见且可用的窗口。
+5. Closing and reopening the Control Center, then quitting and relaunching the App twice consecutively, restores a visible usable window after each cold launch. / 关闭并重新打开控制中心后，连续两次退出并重启 App；每次冷启动都必须恢复可见且可用的窗口。
 
 Record the full tested commit and the result. A pass authorizes one dispatch for that exact commit. If any item fails or cannot be directly observed, do not dispatch, do not enter `passed`, and do not autonomously waive the failure; preserve the evidence and stop so the next action is 交由用户决定. After any source change, even a release-only fix, repeat the acceptance against the new commit.
 
