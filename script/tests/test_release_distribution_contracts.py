@@ -720,6 +720,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.overlay_interaction = (
             ROOT / "script/validate_overlay_interaction.sh"
         ).read_text(encoding="utf-8")
+        self.overlay_offline = (
+            ROOT / "script/validate_overlay_offline.sh"
+        ).read_text(encoding="utf-8")
         self.test_all_attestation = (
             ROOT / "script/prepare_interaction_attestation.sh"
         ).read_text(encoding="utf-8")
@@ -871,6 +874,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("Run release-grade bounded event storm", self.ci)
         self.assertIn("./script/validate_event_storm.sh", self.ci)
         self.assertIn("./script/validate_overlay_offline.sh", self.ci)
+        self.assertIn("SWIFT_TEST_BUILD_ARGS+=(--skip-build)", self.overlay_offline)
+        self.assertIn("validated Swift artifact is missing the package test bundle", self.overlay_offline)
         self.assertIn("Upload exact-commit release source proof", self.ci)
         self.assertIn("--proof-in \"$RUNNER_TEMP/source-proof/interaction-attestation.json\"", self.prepare)
         self.assertIn(

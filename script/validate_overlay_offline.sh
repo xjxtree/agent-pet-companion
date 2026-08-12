@@ -52,13 +52,26 @@ if [[ -n "$INTERACTION_ATTESTATION" ]]; then
   "$ROOT_DIR/script/validate_interaction_attestation.py" "$VERIFIED_INTERACTION_ATTESTATION"
 fi
 
-swift build \
-  --package-path "$MACOS_DIR" \
-  --product AgentPetCompanion \
-  -Xswiftc -strict-concurrency=complete \
-  -Xswiftc -warnings-as-errors >/dev/null
-
 BIN_DIR="$(swift build --package-path "$MACOS_DIR" --show-bin-path)"
+SWIFT_TEST_BUILD_ARGS=()
+if [[ -n "$INTERACTION_ATTESTATION" ]]; then
+  [[ -x "$BIN_DIR/AgentPetCompanion" ]] || {
+    echo 'validated Swift artifact is missing the AgentPetCompanion executable' >&2
+    exit 1
+  }
+  [[ -d "$BIN_DIR/AgentPetCompanionPackageTests.xctest" ]] || {
+    echo 'validated Swift artifact is missing the package test bundle' >&2
+    exit 1
+  }
+  SWIFT_TEST_BUILD_ARGS+=(--skip-build)
+else
+  swift build \
+    --package-path "$MACOS_DIR" \
+    --product AgentPetCompanion \
+    -Xswiftc -strict-concurrency=complete \
+    -Xswiftc -warnings-as-errors >/dev/null
+fi
+
 APC_HOME="$TMP_DIR/ui-validation-home" \
 APC_DISABLE_LAUNCH_AGENT=1 \
 APC_DISABLE_CODEX_APP_SERVER_AUTO=1 \
@@ -78,6 +91,7 @@ fi
 suite_filter="$(IFS='|'; printf '%s' "${SUITES[*]}")"
 swift test \
   --package-path "$MACOS_DIR" \
+  "${SWIFT_TEST_BUILD_ARGS[@]}" \
   --filter "$suite_filter" \
   -Xswiftc -strict-concurrency=complete \
   -Xswiftc -warnings-as-errors
