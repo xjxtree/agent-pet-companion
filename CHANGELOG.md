@@ -14,6 +14,8 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-12
+
 ### Fixed / 修复
 
 - The Control Center now defers its first appearance reveal until SwiftUI finishes the current render pass, preventing the installed macOS App from opening with a blank main window.
