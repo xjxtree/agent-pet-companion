@@ -131,6 +131,26 @@
         {
           "path": "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
           "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Tests/AgentPetCompanionTests/AgentConnectionsTests.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Tests/AgentPetCompanionTests/ControlCenterShellTests.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "changes/unreleased/**",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/architecture/overview.md",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/integrations/agent-connectors.md",
+          "risk": "amber"
         }
       ],
       "durable_document": "docs/architecture/overview.md",
