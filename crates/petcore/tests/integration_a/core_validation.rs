@@ -1583,7 +1583,7 @@ fn startup_scrubs_legacy_connector_runtime_events_into_diagnostics() {
                 "interaction_kind": null,
                 "project_label": null
             }),
-            created_at: "2026-07-14T00:00:00Z".to_string(),
+            created_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
         })
         .unwrap();
 
@@ -1620,7 +1620,7 @@ fn startup_reclassifies_legacy_pi_tool_errors_as_non_terminal_tool_events() {
                 "interaction_kind": null,
                 "project_label": null
             }),
-            created_at: "2026-07-14T00:00:00Z".to_string(),
+            created_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
         })
         .unwrap();
 
