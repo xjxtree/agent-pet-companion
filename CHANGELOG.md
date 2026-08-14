@@ -14,6 +14,15 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-08-14
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260814-uninstalled-agent-global-notice -->
+- Treat an uninstalled optional Agent App or CLI as informational setup guidance on Agent Connections instead of a global connection problem.
+
+  未安装可选 Agent App 或 CLI 时，仅在 Agent 连接页显示设置提示，不再归为全局连接问题。
+
 ## [0.4.4] - 2026-08-14
 
 ### Fixed / 修复
