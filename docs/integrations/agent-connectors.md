@@ -114,7 +114,10 @@ Agent and its closed issue category and opens Agent Connections for the exact
 typed recovery steps. Post-update connector convergence keeps its existing
 higher-priority scoped notice so the App never duplicates the same problem.
 Healthy local integration that only awaits an ordinary real Agent task remains
-neutral and does not create a global failure notice.
+neutral and does not create a global failure notice. When the bounded runtime
+result cache expires, a complete healthy light snapshot is likewise neutral;
+normal cache expiry never reclassifies a successful full check as an incomplete
+result. Concrete light-check findings remain actionable and keep the notice.
 
 Agent Connections distinguishes local integration health from evidence of a real provider task. It lists only App-owned plugins, connectors, extensions, and bundled Skills with safe names and verified active/required release versions. Paths, digests, internal contract IDs, user-managed components, and unrelated runtime diagnostics remain hidden. A detected Agent host version is diagnostic context only and never gates compatibility. Health is decided by the exact App-managed connector contract, host runtime probe, local event channel, and current connector receipts, so a host upgrade does not require a new hardcoded version allowance.
 

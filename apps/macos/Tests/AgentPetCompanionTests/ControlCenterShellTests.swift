@@ -236,6 +236,56 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func healthyLightSnapshotsAfterRuntimeCacheExpiryDoNotCreateFalseAttention() {
+        let statuses = AgentSource.allCases.map {
+            connectionStatus(source: $0, checkMode: .light)
+        }
+
+        #expect(ControlCenterAgentConnectionBannerPresentation.resolve(
+            startupState: .completed,
+            connections: statuses,
+            operationState: .succeeded(.init(
+                kind: .check,
+                sources: AgentSource.allCases
+            )),
+            serviceState: .online,
+            convergenceState: .idle,
+            localeIdentifier: "zh-Hans"
+        ) == nil)
+    }
+
+    @Test
+    func lightSnapshotsStillReportConcreteConnectionIssues() throws {
+        let needsRepair = connectionStatus(
+            source: .codex,
+            checkStatus: .needsFix,
+            managedComponentStatus: .needsFix,
+            checkMode: .light
+        )
+        let healthy = AgentSource.allCases.dropFirst().map {
+            connectionStatus(source: $0, checkMode: .light)
+        }
+
+        let attention = try #require(
+            ControlCenterAgentConnectionBannerPresentation.resolve(
+                startupState: .completed,
+                connections: [needsRepair] + healthy,
+                operationState: .succeeded(.init(
+                    kind: .check,
+                    sources: AgentSource.allCases
+                )),
+                serviceState: .online,
+                convergenceState: .idle,
+                localeIdentifier: "zh-Hans"
+            )
+        )
+
+        #expect(attention.affectedSources == [.codex])
+        #expect(attention.status.detail?.contains("Codex") == true)
+        #expect(attention.status.detail?.contains("插件或连接器需要设置或更新") == true)
+    }
+
+    @Test
     func connectionCheckFailureAndUpdateAttentionDoNotDuplicateBanners() throws {
         let failedOperation = AgentConnectionOperation(
             kind: .check,
@@ -349,6 +399,7 @@ struct ControlCenterShellTests {
         source: AgentSource,
         checkStatus: CheckStatus = .ok,
         managedComponentStatus: CheckStatus = .ok,
+        checkMode: ConnectionCheckMode = .runtime,
         verification: AgentVerificationStatus = .verified
     ) -> AgentConnectionStatus {
         AgentConnectionStatus(
@@ -366,7 +417,7 @@ struct ControlCenterShellTests {
             ],
             installPaths: [],
             connectorInstalled: checkStatus == .ok,
-            checkMode: .runtime,
+            checkMode: checkMode,
             verification: AgentVerification(
                 status: verification,
                 title: "verification",
