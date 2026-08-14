@@ -283,7 +283,7 @@ struct ControlCenterAgentConnectionBannerPresentation: Equatable {
             status: status,
             operationState: .idle
         )
-        guard let status, presentation.hasCurrentTypedSnapshot else {
+        guard let status else {
             return Issue(
                 source: source,
                 summary: APCLocalization.text(
@@ -317,6 +317,23 @@ struct ControlCenterAgentConnectionBannerPresentation: Equatable {
                 source: source,
                 summary: AgentConnectionsPresentation.healthTitle(
                     for: presentation,
+                    locale: localeIdentifier
+                )
+            )
+        }
+        // A runtime result is intentionally cached for only a bounded period.
+        // Once it expires, PetCore resumes publishing an authoritative light
+        // snapshot. A complete, healthy light snapshot still proves that the
+        // local integration has no current actionable issue; it must not turn
+        // an earlier successful full check into an "incomplete result" alert.
+        if presentation.hasCurrentLightSnapshot {
+            return nil
+        }
+        guard presentation.hasCurrentTypedSnapshot else {
+            return Issue(
+                source: source,
+                summary: APCLocalization.text(
+                    .appAgentConnectionsIssueIncomplete,
                     locale: localeIdentifier
                 )
             )
