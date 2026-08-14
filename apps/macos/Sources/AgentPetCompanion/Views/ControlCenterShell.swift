@@ -292,6 +292,14 @@ struct ControlCenterAgentConnectionBannerPresentation: Equatable {
                 )
             )
         }
+        // Agent hosts are optional. Their absence belongs only to the
+        // Agent Connections page as setup guidance, never to the global
+        // control-center problem notice.
+        if presentation.technicalItems.contains(where: { item in
+            item.code == .agentCLI && item.status == .missing
+        }) {
+            return nil
+        }
         if status.hasManagedPathConflict {
             return Issue(
                 source: source,

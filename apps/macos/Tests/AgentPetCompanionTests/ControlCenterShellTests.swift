@@ -236,6 +236,45 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func uninstalledAgentIsOnlyReportedOnTheConnectionsPage() throws {
+        let notInstalled = connectionStatus(
+            source: .claudeCode,
+            checkStatus: .needsFix,
+            managedComponentStatus: .needsFix,
+            agentCLIStatus: .missing
+        )
+        let statuses = [notInstalled] + AgentSource.allCases
+            .filter { $0 != .claudeCode }
+            .map { connectionStatus(source: $0) }
+
+        #expect(ControlCenterAgentConnectionBannerPresentation.resolve(
+            startupState: .completed,
+            connections: statuses,
+            operationState: .succeeded(.init(
+                kind: .check,
+                sources: AgentSource.allCases
+            )),
+            serviceState: .online,
+            convergenceState: .idle,
+            localeIdentifier: "en"
+        ) == nil)
+
+        let connectionPagePresentation = AgentConnectionProductPresentation(
+            source: .claudeCode,
+            status: notInstalled,
+            operationState: .idle
+        )
+        #expect(AgentConnectionsPresentation.healthTitle(
+            for: connectionPagePresentation,
+            locale: "en"
+        ) == "Agent Not Found")
+        #expect(AgentConnectionsPresentation.userGuidance(
+            for: connectionPagePresentation,
+            locale: "en"
+        )?.contains("Install or open") == true)
+    }
+
+    @Test
     func healthyLightSnapshotsAfterRuntimeCacheExpiryDoNotCreateFalseAttention() {
         let statuses = AgentSource.allCases.map {
             connectionStatus(source: $0, checkMode: .light)
@@ -400,11 +439,20 @@ struct ControlCenterShellTests {
         checkStatus: CheckStatus = .ok,
         managedComponentStatus: CheckStatus = .ok,
         checkMode: ConnectionCheckMode = .runtime,
-        verification: AgentVerificationStatus = .verified
+        verification: AgentVerificationStatus = .verified,
+        agentCLIStatus: CheckStatus? = nil
     ) -> AgentConnectionStatus {
         AgentConnectionStatus(
             source: source,
-            items: [
+            items: (agentCLIStatus.map { status in
+                [ConnectionCheckItem(
+                    code: .agentCLI,
+                    name: "Agent host",
+                    status: status,
+                    detail: "bounded test detail",
+                    recoveryAction: .recheck
+                )]
+            } ?? []) + [
                 ConnectionCheckItem(
                     code: .managedConnector,
                     name: "managed connector",
