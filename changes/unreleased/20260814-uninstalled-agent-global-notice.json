@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "macos",
-  "summary_en": "Treat an uninstalled optional Agent App or CLI as informational setup guidance on Agent Connections instead of a global connection problem.",
-  "summary_zh": "未安装可选 Agent App 或 CLI 时，仅在 Agent 连接页显示设置提示，不再归为全局连接问题。"
-}
