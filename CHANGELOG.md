@@ -14,6 +14,15 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-08-14
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260814-agent-connection-expiry-alert -->
+- Prevent normal Agent runtime-check cache expiry from producing false incomplete-result alerts while preserving concrete light-check warnings.
+
+  修复 Agent 完整检查缓存正常过期后误报“结果不完整”的问题，同时保留轻量检查发现的具体异常提示。
+
 ## [0.4.3] - 2026-08-13
 
 ### Changed / 变更

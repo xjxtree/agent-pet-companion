@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "macos",
-  "summary_en": "Prevent normal Agent runtime-check cache expiry from producing false incomplete-result alerts while preserving concrete light-check warnings.",
-  "summary_zh": "修复 Agent 完整检查缓存正常过期后误报“结果不完整”的问题，同时保留轻量检查发现的具体异常提示。"
-}
