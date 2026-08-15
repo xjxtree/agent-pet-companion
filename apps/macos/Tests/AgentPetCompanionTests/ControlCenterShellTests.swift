@@ -22,6 +22,26 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func initialOverlayOnlyRestoresAnActiveVisibleKeyControlCenter() {
+        let scenarios = [
+            (true, true, true, true, true),
+            (false, true, true, true, false),
+            (true, false, true, true, false),
+            (true, true, false, true, false),
+            (true, true, true, false, false),
+        ]
+
+        for scenario in scenarios {
+            #expect(InitialOverlayFocusPolicy.shouldRestoreControlCenter(
+                controlCenterWasKeyBeforePresentation: scenario.0,
+                appIsActive: scenario.1,
+                controlCenterIsOpen: scenario.2,
+                windowIsVisible: scenario.3
+            ) == scenario.4)
+        }
+    }
+
+    @Test
     func navigationUsesTheFixedProductOrderAndTypedSelection() {
         let items = ControlCenterNavigationPresentation.items(
             selection: .configuration,

@@ -9,6 +9,20 @@ enum OverlayBubbleDisclosureDirection: Equatable {
     case collapsing
 }
 
+enum InitialOverlayFocusPolicy {
+    static func shouldRestoreControlCenter(
+        controlCenterWasKeyBeforePresentation: Bool,
+        appIsActive: Bool,
+        controlCenterIsOpen: Bool,
+        windowIsVisible: Bool
+    ) -> Bool {
+        controlCenterWasKeyBeforePresentation
+            && appIsActive
+            && controlCenterIsOpen
+            && windowIsVisible
+    }
+}
+
 enum OverlayBubbleDisclosureAction: Equatable {
     case revealBubble
     case revealCollapsedStandaloneStack
@@ -3003,8 +3017,33 @@ final class AppStore: ObservableObject {
               hasLoadedStateSnapshot,
               !hasPresentedOverlay
         else { return }
+        let keyControlCenterWindow: NSWindow? = if controlCenterIsOpen,
+                                                  controlCenterWindow?.isKeyWindow == true {
+            controlCenterWindow
+        } else {
+            nil
+        }
         hasPresentedOverlay = true
         overlayPresenter(overlayController, self)
+        guard let keyControlCenterWindow else { return }
+
+        // The resident panels can become key for explicit keyboard navigation,
+        // but their first ordering must not take the cold-launch focus away
+        // from an already-key Control Center. Defer until AppKit has completed
+        // the overlay ordering turn, and never reactivate an App the user has
+        // already left.
+        DispatchQueue.main.async { [weak self, weak keyControlCenterWindow] in
+            guard let self, let keyControlCenterWindow,
+                  self.controlCenterWindow === keyControlCenterWindow,
+                  InitialOverlayFocusPolicy.shouldRestoreControlCenter(
+                      controlCenterWasKeyBeforePresentation: true,
+                      appIsActive: NSApp?.isActive == true,
+                      controlCenterIsOpen: self.controlCenterIsOpen,
+                      windowIsVisible: keyControlCenterWindow.isVisible
+                  )
+            else { return }
+            keyControlCenterWindow.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func reconcileActiveGeneration(_ snapshot: ActiveGenerationSnapshot) {
