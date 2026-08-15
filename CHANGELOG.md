@@ -18,6 +18,11 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ### Fixed / 修复
 
+<!-- apc-fragment:20260816-cold-launch-control-center -->
+- Cold launches consistently present a visible Control Center window.
+
+  冷启动现在会稳定显示可见的控制中心窗口。
+
 <!-- apc-fragment:20260814-uninstalled-agent-global-notice -->
 - Treat an uninstalled optional Agent App or CLI as informational setup guidance on Agent Connections instead of a global connection problem.
 
