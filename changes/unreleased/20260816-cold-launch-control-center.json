@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "macos",
-  "summary_en": "Cold launches consistently present a visible Control Center window.",
-  "summary_zh": "冷启动现在会稳定显示可见的控制中心窗口。"
-}
