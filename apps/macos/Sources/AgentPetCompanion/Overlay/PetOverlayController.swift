@@ -18,7 +18,6 @@ struct OverlayDesktopVisibilityPolicy {
 
     func shouldHide(
         rendererValidationActive: Bool,
-        controlCenterWindowIsConcealed: Bool,
         frontmostApplicationIsFinder: Bool,
         finderHasRegularWindow: Bool,
         hasVisibleRegularApplicationWindow: Bool
@@ -30,10 +29,6 @@ struct OverlayDesktopVisibilityPolicy {
         guard controlCenterIsOpen, !rendererValidationActive else {
             return false
         }
-        // The initial appearance gate may briefly conceal the real control
-        // center while applying persisted presentation. That transition is
-        // not the system Show Desktop gesture and must never hide the pet.
-        guard !controlCenterWindowIsConcealed else { return false }
         if frontmostApplicationIsFinder {
             return !finderHasRegularWindow
         }
@@ -115,7 +110,6 @@ final class PetOverlayController {
     private var desktopVisibilityTimer: Timer?
     private var hiddenForDesktop = false
     private var desktopVisibilityPolicy = OverlayDesktopVisibilityPolicy()
-    private weak var controlCenterWindow: NSWindow?
     private let controlPresentation = OverlayControlPresentationState()
     private let interactionPresentation = OverlayInteractionPresentationState()
     private var controlPanelFadeOutTask: Task<Void, Never>?
@@ -219,7 +213,7 @@ final class PetOverlayController {
         bubblePanel.ignoresMouseEvents = false
         bubblePanel.acceptsMouseMovedEvents = true
         bubblePanel.isMovableByWindowBackground = false
-        bubblePanel.becomesKeyOnlyIfNeeded = false
+        bubblePanel.becomesKeyOnlyIfNeeded = true
         bubblePanel.collectionBehavior = Self.companionCollectionBehavior
         bubblePanel.canHide = true
         bubblePanel.hidesOnDeactivate = false
@@ -411,13 +405,11 @@ final class PetOverlayController {
         }
     }
 
-    func controlCenterDidOpen(window: NSWindow) {
-        controlCenterWindow = window
+    func controlCenterDidOpen() {
         desktopVisibilityPolicy.controlCenterDidOpen()
     }
 
     func controlCenterDidClose() {
-        controlCenterWindow = nil
         desktopVisibilityPolicy.controlCenterDidClose()
         hiddenForDesktop = false
         guard store?.behavior.enabled == true else { return }
@@ -1000,10 +992,6 @@ final class PetOverlayController {
         }
         return desktopVisibilityPolicy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed:
-                controlCenterWindow.map {
-                    $0.alphaValue <= 0 || $0.ignoresMouseEvents
-                } ?? false,
             frontmostApplicationIsFinder: frontmostApplicationIsFinder,
             finderHasRegularWindow: finderHasRegularWindow,
             hasVisibleRegularApplicationWindow:
@@ -1088,12 +1076,13 @@ final class BubbleOverlayPanel: NSPanel {
     private let pointerMonitor = OverlayPointerEventMonitor()
     private var clickMenuTarget: BubbleClickMenuTarget?
     private var pendingBubbleClick: OverlayBubblePressGesture?
+    private(set) var keyboardNavigationLeaseIsActive = false
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { keyboardNavigationLeaseIsActive }
     override var canBecomeMain: Bool { false }
 
     override func performDrag(with event: NSEvent) {}
@@ -1113,6 +1102,7 @@ final class BubbleOverlayPanel: NSPanel {
     func stopPointerTracking() {
         pointerMonitor.stop()
         pendingBubbleClick = nil
+        endKeyboardNavigation()
         setIgnoresMouseEventsIfNeeded(false)
     }
 
@@ -1131,10 +1121,26 @@ final class BubbleOverlayPanel: NSPanel {
     }
 
     func beginKeyboardNavigation() {
+        beginKeyboardNavigationLease()
         setIgnoresMouseEventsIfNeeded(false)
         makeKeyAndOrderFront(nil)
         _ = makeFirstResponder(contentView)
         selectNextKeyView(nil)
+    }
+
+    func beginKeyboardNavigationLease() {
+        keyboardNavigationLeaseIsActive = true
+    }
+
+    func endKeyboardNavigation() {
+        guard keyboardNavigationLeaseIsActive else { return }
+        if isKeyWindow {
+            resignKey()
+        } else {
+            keyboardNavigationLeaseIsActive = false
+            pendingBubbleClick = nil
+            onKeyboardNavigationChanged?(false)
+        }
     }
 
     override func becomeKey() {
@@ -1144,9 +1150,13 @@ final class BubbleOverlayPanel: NSPanel {
     }
 
     override func resignKey() {
+        let hadKeyboardNavigationLease = keyboardNavigationLeaseIsActive
         super.resignKey()
+        keyboardNavigationLeaseIsActive = false
         pendingBubbleClick = nil
-        onKeyboardNavigationChanged?(false)
+        if hadKeyboardNavigationLease {
+            onKeyboardNavigationChanged?(false)
+        }
         refreshPointerPassthrough()
     }
 
@@ -1457,7 +1467,7 @@ final class ControlOverlayPanel: NSPanel {
         frameRect
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     override func becomeKey() {
@@ -1522,7 +1532,7 @@ private final class OverlayPanel: NSPanel {
         frameRect
     }
 
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     override func performDrag(with event: NSEvent) {}

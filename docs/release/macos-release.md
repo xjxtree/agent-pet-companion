@@ -109,8 +109,13 @@ git switch main
 git pull --ff-only
 test -z "$(git status --porcelain)"
 git rev-parse HEAD
+APC_VALIDATE_HOST_UI=1 \
+APC_MAIN_UI_COLD_LAUNCH_ITERATIONS=20 \
+./script/validate_main_window_ui.sh
 ./script/build_and_run.sh --run
 ```
+
+The stress command is a fail-closed Release prerequisite, not a substitute for Computer Use. It runs twenty real foreground cold launches with deterministic timing jitter and requires the exact singleton Control Center to be visible, opaque, on layer 0, pixel-nonblank, and still key after the overlay is ordered. A ScreenCaptureKit or Accessibility observation that cannot be completed is a failed gate. / 冷启动压力命令是 fail-closed 的发布前置条件，不能替代 Computer Use。它以确定性时序扰动执行二十次真实前台冷启动，并要求精确的单例控制中心可见、不透明、位于 layer 0、像素非空，且桌宠浮层完成排序后仍保持 key window；ScreenCaptureKit 或辅助功能观察无法完成时按失败处理。
 
 Use Computer Use—not `--run-ui-validation`, a hidden `NSHostingView`, AX-only validation, or source inspection—to observe and operate the running App. The acceptance is one bounded basic-function pass:
 
@@ -122,9 +127,9 @@ Use Computer Use—not `--run-ui-validation`, a hidden `NSHostingView`, AX-only 
 4. The desktop pet can be hidden and shown from the Control Center. / 可从控制中心隐藏并重新显示桌宠。
 5. Closing and reopening the Control Center, then quitting and relaunching the App twice consecutively, restores a visible usable window after each cold launch. / 关闭并重新打开控制中心后，连续两次退出并重启 App；每次冷启动都必须恢复可见且可用的窗口。
 
-Record the full tested commit and the result. A pass authorizes one dispatch for that exact commit. If any item fails or cannot be directly observed, do not dispatch, do not enter `passed`, and do not autonomously waive the failure; preserve the evidence and stop so the next action is 交由用户决定. After any source change, even a release-only fix, repeat the acceptance against the new commit.
+Record the full tested commit and the combined stress plus Computer Use result. Enter `host_ui_result=passed` only when both gates passed on the same exact clean commit; that pass authorizes one dispatch for that commit. If any item fails or cannot be directly observed, do not dispatch, do not enter `passed`, and do not autonomously waive the failure; preserve the evidence and stop so the next action is 交由用户决定. After any source change, even a release-only fix, repeat both gates against the new commit.
 
-记录完整的被测 commit 与结果。通过结果只授权发布这个精确 commit。若任一检查失败或无法直接观察，不得触发发布、不得填写 `passed`、也不得由 Agent 自行豁免；应保留证据并停止，后续动作交由用户决定。任何源码变化（包括仅用于发布的修复）都会使旧结果失效，必须针对新 commit 重新验收。
+记录完整的被测 commit，以及压力门禁与 Computer Use 的组合结果。只有两项门禁都在同一个精确且干净的 commit 上通过，才能填写 `host_ui_result=passed`，且该结果只授权发布这个 commit。若任一检查失败或无法直接观察，不得触发发布、不得填写 `passed`、也不得由 Agent 自行豁免；应保留证据并停止，后续动作交由用户决定。任何源码变化（包括仅用于发布的修复）都会使旧结果失效，必须针对新 commit 重新执行两项门禁。
 
 ## GitHub automation / GitHub 自动化
 

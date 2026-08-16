@@ -70,6 +70,7 @@ Branch/worktree ownership and direct/train PR coordination are defined by [Paral
 ## Environment-dependent gates / 环境门禁
 
 - `APC_VALIDATE_HOST_UI=1` permits repository validators that affect a packaged App runtime. It does not itself invoke Computer Use.
+- `APC_MAIN_UI_COLD_LAUNCH_ITERATIONS=1..100` controls the real foreground Control Center stress loop inside `validate_main_window_ui.sh` (default `3`; Release acceptance requires at least `20`). Each iteration uses an isolated owned runtime and varied launch-request timing, then proves the exact window identifier, layer, alpha, frame, nonblank ScreenCaptureKit pixels, overlay presentation, and retained key-window identity. Screen Recording and Accessibility access must be available to the executing host; an unavailable observation fails this host gate rather than being inferred as passed. / 该变量控制真实前台控制中心的冷启动压力循环（默认 `3`，Release 验收至少 `20`）；每轮使用隔离运行时与不同的展示请求时序，并验证精确窗口标识、层级、透明度、尺寸、非空白像素、悬浮层展示及持续的 key-window 身份。主机缺少录屏或辅助功能权限时门禁直接失败，不得推断为通过。
 - `APC_VALIDATE_REAL_AGENT_CONNECTORS=1` permits checks against installed Agent CLIs and managed connector files. It never permits reading credential stores.
 - `APC_VALIDATE_REAL_APP_SERVER=1` permits the real App Server lifecycle validation. It deliberately requests native input, completes one pet, interrupts and restarts its owned PetCore, resumes a second task, then strictly cancels and verifies the exact Studio thread is archived or absent from the ordinary list. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` keeps the strict release proof; lowering it weakens the result.
 - `APC_RUN_SIX_HOUR_MAKER_SOAK=1` runs the non-default six-hour gate. It holds a real task in durable waiting-for-user state for just over six hours, verifies the backend-authoritative duration includes that interval, and then runs the same resume/cancel lifecycle checks.
@@ -86,6 +87,8 @@ APC_VALIDATE_REAL_AGENT_CONNECTORS=1 ./script/validate_real_agent_connectors.sh
 APC_VALIDATE_REAL_APP_SERVER=1 ./script/validate_real_app_server.sh
 APC_RUN_SIX_HOUR_MAKER_SOAK=1 ./script/soak_ai_pet_maker_six_hours.sh
 APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
+APC_VALIDATE_HOST_UI=1 APC_MAIN_UI_COLD_LAUNCH_ITERATIONS=20 \
+  ./script/validate_main_window_ui.sh
 ./script/validate_overlay_performance_summary.sh /absolute/summary.json 60
 ```
 

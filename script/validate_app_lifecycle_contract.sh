@@ -11,8 +11,20 @@ import sys
 root = pathlib.Path(sys.argv[1])
 app = (root / "apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift").read_text()
 app_store = (root / "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift").read_text()
+presentation = (
+    root
+    / "apps/macos/Sources/AgentPetCompanion/App/ControlCenterPresentationCoordinator.swift"
+).read_text()
+appearance = (
+    root
+    / "apps/macos/Sources/AgentPetCompanion/App/InitialAppearanceWindowAppearance.swift"
+).read_text()
 app_runtime = (root / "apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift").read_text()
 overlay = (root / "apps/macos/Sources/AgentPetCompanion/Overlay/OverlayRootView.swift").read_text()
+overlay_controller = (
+    root / "apps/macos/Sources/AgentPetCompanion/Overlay/PetOverlayController.swift"
+).read_text()
+main_window_validator = (root / "script/validate_main_window_ui.sh").read_text()
 petcore = (root / "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift").read_text()
 zh_hans = "\n".join(
     path.read_text()
@@ -58,7 +70,7 @@ checks = {
     ),
     "primary cold launch is routed through the registered control center presenter": (
         re.search(
-            r'applicationDidFinishLaunching.*?DispatchQueue\.main\.async\s*\{\s*'
+            r'applicationDidFinishLaunching.*?ControlCenterColdLaunchTiming\.schedule\s*\{\s*'
             r'AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)',
             app,
             re.S,
@@ -93,13 +105,41 @@ checks = {
             app_store,
         )
         is not None
+        and "controlCenterPresentationCoordinator.requestPresentation(" in app_store
+        and "runtimeHandoffIfNeeded" in presentation
+    ),
+    "one coordinator owns control-center visibility activation and key state": (
+        "final class ControlCenterPresentationCoordinator" in presentation
+        and "private var wantsPresentation = false" in presentation
+        and "window.alphaValue = 1" in presentation
+        and "window.ignoresMouseEvents = false" in presentation
+        and "activateApplication()" in presentation
+        and "window.makeKeyAndOrderFront(nil)" in presentation
+        and "ControlCenterPresentationCoordinator(" in app_store
         and re.search(
-            r'private func presentMainWindow\(checkRuntimeHandoff: Bool\)\s*\{\s*'
-            r'guard !checkRuntimeHandoff \|\| !runtimeHandoffIfNeeded\(\) '
-            r'else \{ return \}',
-            app_store,
+            r'setMainWindowPresenter\s*\{\s*openWindow\(id:\s*"main"\)\s*\}',
+            app,
         )
         is not None
+    ),
+    "appearance hydration never hides or disables a window": (
+        "InitialAppearanceWindowView" in appearance
+        and "window.appearance = nextAppearance" in appearance
+        and "alphaValue" not in appearance
+        and "ignoresMouseEvents" not in appearance
+        and "InitialAppearanceWindowGate" not in app
+    ),
+    "overlay panels are passive unless the bubble holds an explicit keyboard lease": (
+        "bubblePanel.becomesKeyOnlyIfNeeded = true" in overlay_controller
+        and "override var canBecomeKey: Bool { keyboardNavigationLeaseIsActive }"
+        in overlay_controller
+        and overlay_controller.count("override var canBecomeKey: Bool { false }") >= 2
+        and "beginKeyboardNavigationLease()" in overlay_controller
+    ),
+    "cold-launch acceptance rebuilds the exact worktree App": (
+        '"$ROOT_DIR/script/build_app_bundle.sh" >/dev/null'
+        in main_window_validator
+        and 'if [[ ! -x "$APP_BINARY"' not in main_window_validator
     ),
     "resident UI host has no periodic installed-build polling": (
         "AppInstalledBuildMonitor" not in app_runtime
