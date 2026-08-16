@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 fn received_at() -> &'static str {
     // Ordinary fixtures stay inside the retention window without embedding a
@@ -21,6 +21,13 @@ fn received_at() -> &'static str {
                 .expect("format current fixture timestamp")
         })
         .as_str()
+}
+
+fn received_at_offset(seconds: i64) -> String {
+    (OffsetDateTime::parse(received_at(), &Rfc3339).expect("parse retained fixture timestamp")
+        + Duration::seconds(seconds))
+    .format(&Rfc3339)
+    .expect("format retained fixture timestamp")
 }
 const FORBIDDEN_VALUES: &[&str] = &[
     "FORBIDDEN_PROMPT_VALUE_7f16",
@@ -918,17 +925,18 @@ fn event_retention_prunes_oldest_rows() {
     let temp = tempfile::tempdir().unwrap();
     let database = Database::new(temp.path().join("events.sqlite"));
     database.init().unwrap();
+    let oldest_created_at = received_at_offset(0);
     for (id, created_at) in [
-        ("oldest", "2099-07-01T00:00:00Z"),
-        ("middle", "2099-07-02T00:00:00Z"),
-        ("newest", "2099-07-03T00:00:00Z"),
+        ("oldest", oldest_created_at.clone()),
+        ("middle", received_at_offset(1)),
+        ("newest", received_at_offset(2)),
     ] {
         database
             .insert_event(&strict_event(
                 id,
                 AgentSource::ClaudeCode,
                 Some("session"),
-                created_at,
+                &created_at,
             ))
             .unwrap();
     }
@@ -947,17 +955,18 @@ fn event_retention_prunes_oldest_rows() {
     let recent = database.recent_events(10).unwrap();
     assert_eq!(recent.len(), 2);
     assert!(recent.iter().all(|event| event.id != "oldest"));
+    let summarized_day = &oldest_created_at[..10];
     let summarized: i64 = Connection::open(database.path())
         .unwrap()
         .query_row(
             r#"
             SELECT event_count
             FROM agent_event_daily_counts
-            WHERE event_day = '2099-07-01'
+            WHERE event_day = ?1
               AND source = 'claude_code'
               AND event_type = 'tool'
             "#,
-            [],
+            params![summarized_day],
             |row| row.get(0),
         )
         .unwrap();
@@ -971,15 +980,15 @@ fn session_alias_authority_survives_restart_migration_and_tracks_event_retention
     let database = Database::new(path.clone());
     database.init().unwrap();
     for (id, session_id, created_at) in [
-        ("alias-a-first", "raw-session-a", "2026-07-20T00:00:00Z"),
-        ("alias-b-first", "raw-session-b", "2026-07-20T00:00:01Z"),
+        ("alias-a-first", "raw-session-a", received_at_offset(0)),
+        ("alias-b-first", "raw-session-b", received_at_offset(1)),
     ] {
         database
             .insert_event(&strict_event(
                 id,
                 AgentSource::ClaudeCode,
                 Some(session_id),
-                created_at,
+                &created_at,
             ))
             .unwrap();
     }
@@ -1037,7 +1046,7 @@ fn session_alias_authority_survives_restart_migration_and_tracks_event_retention
             "alias-a-newest",
             AgentSource::ClaudeCode,
             Some("raw-session-a"),
-            "2026-07-20T00:00:02Z",
+            &received_at_offset(2),
         ))
         .unwrap();
     assert_eq!(read_aliases(), initial);
@@ -1054,7 +1063,7 @@ fn session_alias_authority_survives_restart_migration_and_tracks_event_retention
             "alias-c-after-retention",
             AgentSource::ClaudeCode,
             Some("raw-session-c"),
-            "2026-07-20T00:00:03Z",
+            &received_at_offset(3),
         ))
         .unwrap();
     assert_eq!(

@@ -5,7 +5,16 @@ use petcore_types::{
     AgentVerification, BehaviorSettings, ConnectionCheckMode,
 };
 use serde_json::json;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, OnceLock};
+use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+fn fixture_timestamp(offset_seconds: i64) -> String {
+    static BASE: OnceLock<OffsetDateTime> = OnceLock::new();
+    (*BASE.get_or_init(|| OffsetDateTime::now_utc() - Duration::minutes(1))
+        + Duration::seconds(offset_seconds))
+    .format(&Rfc3339)
+    .expect("format retained event fixture timestamp")
+}
 
 fn event(id: &str, kind: AgentEventType, source_event: &str, turn_id: &str) -> AgentEvent {
     AgentEvent {
@@ -23,7 +32,7 @@ fn event(id: &str, kind: AgentEventType, source_event: &str, turn_id: &str) -> A
             "affects_activity": true,
             "session_active": !matches!(kind, AgentEventType::Done | AgentEventType::Failed)
         }),
-        created_at: "2026-07-17T10:00:00Z".to_string(),
+        created_at: fixture_timestamp(0),
     }
 }
 
@@ -47,11 +56,7 @@ fn metadata_only_connector_events_never_drive_the_pet_state() {
         preferred_app_navigation_payload: None,
         tool_activity_run_marker: None,
     }];
-    let now = time::OffsetDateTime::parse(
-        "2026-07-17T10:00:01Z",
-        &time::format_description::well_known::Rfc3339,
-    )
-    .unwrap();
+    let now = OffsetDateTime::parse(&fixture_timestamp(1), &Rfc3339).unwrap();
     assert!(
         agent_state::select_active_agent_state(&BehaviorSettings::default(), &candidates, now)
             .is_none()
@@ -114,7 +119,7 @@ fn newer_metadata_does_not_hide_the_latest_activity_for_a_session() {
     assert_eq!(candidates[0].event.event_type, AgentEventType::Tool);
 
     let mut done = event("evt-done", AgentEventType::Done, "Stop", "prompt-one");
-    done.created_at = "2026-07-17T10:00:01Z".to_string();
+    done.created_at = fixture_timestamp(1);
     database.insert_event(&done).unwrap();
     let mut config = event(
         "evt-config",
@@ -122,7 +127,7 @@ fn newer_metadata_does_not_hide_the_latest_activity_for_a_session() {
         "ConfigChange",
         "prompt-one",
     );
-    config.created_at = "2026-07-17T10:00:02Z".to_string();
+    config.created_at = fixture_timestamp(2);
     config.payload_json["affects_activity"] = json!(false);
     database.insert_event(&config).unwrap();
 
@@ -156,7 +161,7 @@ fn concurrent_single_source_status_writes_preserve_all_four_agents() {
                 verification: AgentVerification::default(),
                 capabilities: AgentConnectorCapabilities::default(),
                 check_mode: ConnectionCheckMode::Runtime,
-                checked_at: "2026-07-17T10:00:00Z".to_string(),
+                checked_at: fixture_timestamp(0),
             };
             barrier.wait();
             database.upsert_connection_status(&status).unwrap();

@@ -55,4 +55,6 @@ if broken_links:
     raise SystemExit("broken local Markdown links:\n" + "\n".join(broken_links))
 PY
 
+python3 "$ROOT_DIR/script/validate_time_independent_tests.py" --root "$ROOT_DIR"
+
 echo 'Shell, Python, JSON and local Markdown link syntax ok'

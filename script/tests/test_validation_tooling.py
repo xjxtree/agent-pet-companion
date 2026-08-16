@@ -31,6 +31,7 @@ CHANGELOG_FRAGMENTS_PATH = ROOT / "script/changelog_fragments.py"
 LOCAL_TESTS_PATH = ROOT / "script/validate_local_tests.py"
 ENGINEERING_METRICS_PATH = ROOT / "script/engineering_metrics.py"
 SWIFT_BUILD_ARTIFACT_PATH = ROOT / "script/swift_build_artifact.py"
+TIME_INDEPENDENT_TESTS_PATH = ROOT / "script/validate_time_independent_tests.py"
 INTERACTION_SUITES = [
     "OverlayPlacementAuthorityTests",
     "AppStoreOverlaySnapshotTests",
@@ -63,6 +64,71 @@ engineering_metrics = load_module("apc_engineering_metrics", ENGINEERING_METRICS
 swift_build_artifact = load_module(
     "apc_swift_build_artifact", SWIFT_BUILD_ARTIFACT_PATH
 )
+time_independent_tests = load_module(
+    "apc_time_independent_tests", TIME_INDEPENDENT_TESTS_PATH
+)
+
+
+class TimeIndependentRustFixtureTests(unittest.TestCase):
+    def violations(self, source: str) -> list[object]:
+        return time_independent_tests.violations_in_source(
+            pathlib.Path("crates/example/tests/retention.rs"), source
+        )
+
+    def test_rejects_fixed_timestamp_reached_through_fixture_helper(self) -> None:
+        violations = self.violations(
+            r'''
+fn event() -> AgentEvent {
+    AgentEvent { created_at: "2026-07-17T10:00:00Z".to_string() }
+}
+
+#[test]
+fn retention_projection() {
+    let database = database();
+    database.insert_event(&event()).unwrap();
+}
+'''
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].function, "event")
+        self.assertEqual(violations[0].timestamp, "2026-07-17T10:00:00Z")
+
+    def test_rejects_fixed_timestamp_in_raw_sql_retention_fixture(self) -> None:
+        violations = self.violations(
+            r'''
+#[test]
+fn retention_projection() {
+    database.insert_event(&event()).unwrap();
+    connection.execute(r#"INSERT INTO agent_events VALUES ('2099-01-01T00:00:00Z')"#);
+}
+'''
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].function, "retention_projection")
+
+    def test_allows_relative_current_time_and_unrelated_schema_fixture(self) -> None:
+        violations = self.violations(
+            r'''
+fn event() -> AgentEvent {
+    AgentEvent { created_at: fixture_timestamp(2) }
+}
+
+#[test]
+fn retention_projection() {
+    database.upsert_codex_activity_event(&event()).unwrap();
+}
+
+#[test]
+fn schema_round_trip() {
+    let json = r#"{"created_at":"2026-07-17T10:00:00Z"}"#;
+    assert!(json.contains("created_at"));
+}
+'''
+        )
+
+        self.assertEqual(violations, [])
 
 
 class EngineeringMetricsTests(unittest.TestCase):

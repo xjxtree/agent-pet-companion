@@ -26,6 +26,8 @@ Build and validation are separate profiles. `build_and_run.sh --run` and the env
 
 The local default is deliberately bounded: it checks diff and source syntax, localization and lightweight Skill/workflow contracts when touched, Rust formatting plus `cargo check`, and strict Swift compilation. `validate_local_tests.sh` is an optional domain-manifest-driven focused entrypoint; it uses explicit changed paths, rejects stale or unknown domains, and falls back conservatively when no exact focused suite exists. Neither local path runs complete Rust or Swift tests, simulated connector/producer roundtrips, App assembly, stress, or release artifact validation. Those duplicate proofs belong to required GitHub CI. The local gate never launches the GUI, mutates user LaunchAgents, invokes real Agents, or reads credentials. / 本地默认门禁刻意保持轻量；可选的领域聚焦入口根据类型化领域清单和明确改动路径生成计划，拒绝未知领域，并在无法精确命中时保守回退。两条本地路径都不重复远端全量测试、组装、压力或发布验证，也不会启动 GUI、修改 LaunchAgent、调用真实 Agent 或读取凭据。
 
+Source syntax validation also rejects absolute RFC 3339 dates in Rust fixtures that call event-retention write APIs, including dates reached through same-file fixture helpers. Such tests must capture one current UTC base and express ordering or expiry with relative offsets; fixed dates remain valid in isolated schema, serialization, and migration fixtures that do not cross a real wall clock. / 源码语法门禁还会拒绝 Rust 测试中调用事件保留写入 API（包括经同文件 fixture helper 间接调用）时使用固定 RFC 3339 绝对日期。这类测试必须捕获一次当前 UTC 基准并用相对偏移表达顺序或过期；不接触真实时钟的独立 schema、序列化与迁移 fixture 仍可保留固定日期。
+
 `validation_scope.py` is the single path classifier used by local pre-push and CI. The routing contract is: / 本地预推送与 CI 共用 `validation_scope.py`，范围合同如下：
 
 | Change / 变更 | Automatic proof / 自动证明 | Not automatic / 不自动执行 |

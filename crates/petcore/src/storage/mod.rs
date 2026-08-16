@@ -1497,6 +1497,16 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::OnceLock;
+    use time::{format_description::well_known::Rfc3339, Duration as TimeDuration, OffsetDateTime};
+
+    fn retained_event_timestamp(offset_seconds: i64) -> String {
+        static BASE: OnceLock<OffsetDateTime> = OnceLock::new();
+        (*BASE.get_or_init(|| OffsetDateTime::now_utc() - TimeDuration::minutes(1))
+            + TimeDuration::seconds(offset_seconds))
+        .format(&Rfc3339)
+        .expect("format retained event fixture timestamp")
+    }
 
     fn sqlite_contention_error(code: ErrorCode, extended_code: i32) -> PetCoreError {
         PetCoreError::Sqlite(rusqlite::Error::SqliteFailure(
@@ -2553,7 +2563,7 @@ mod tests {
                 "diagnostic": diagnostic,
                 "affects_activity": affects_activity
             }),
-            created_at: "2026-07-20T00:00:00Z".to_string(),
+            created_at: retained_event_timestamp(0),
         }
     }
 
@@ -2630,7 +2640,7 @@ mod tests {
                 "terminal_app": fixture.terminal_app,
                 "session_open_url": fixture.session_open_url
             }),
-            created_at: "2026-07-20T00:00:00Z".to_string(),
+            created_at: retained_event_timestamp(0),
         }
     }
 
@@ -2712,7 +2722,7 @@ mod tests {
                 Some("warp://session/0123456789abcdef0123456789abcdef"),
             ),
         );
-        current_cli_old.created_at = "2026-07-20T00:00:10Z".to_string();
+        current_cli_old.created_at = retained_event_timestamp(10);
         let mut current_app_new = codex_runtime_marker(CodexRuntimeMarkerFixture::new(
             "current-app-new",
             "current-session",
@@ -2720,7 +2730,7 @@ mod tests {
             "PostToolUse",
             "chatgpt_app",
         ));
-        current_app_new.created_at = "2026-07-20T00:00:01Z".to_string();
+        current_app_new.created_at = retained_event_timestamp(1);
         for marker in [
             current_cli_old,
             current_app_new,
@@ -2883,7 +2893,7 @@ mod tests {
             event.payload_json["outcome"] = json!("session_closed");
             event.payload_json["session_active"] = json!(false);
             event.payload_json["session_open"] = json!(false);
-            event.created_at = "2026-07-20T00:01:00Z".to_string();
+            event.created_at = retained_event_timestamp(60);
             event
         };
         let listed_closure = closure(listed_thread);
@@ -2994,30 +3004,40 @@ mod tests {
         let database = Database::new(temp.path().join("events.sqlite"));
         database.init().unwrap();
         for event in [
-            message_event("user-first", "user", "first prompt", "2026-07-20T00:00:00Z"),
+            message_event(
+                "user-first",
+                "user",
+                "first prompt",
+                &retained_event_timestamp(0),
+            ),
             message_event(
                 "assistant-first",
                 "assistant",
                 "first answer",
-                "2026-07-20T00:00:01Z",
+                &retained_event_timestamp(1),
             ),
-            message_event("user-latest", "user", "next prompt", "2026-07-20T00:00:02Z"),
+            message_event(
+                "user-latest",
+                "user",
+                "next prompt",
+                &retained_event_timestamp(2),
+            ),
             message_event(
                 "assistant-empty",
                 "assistant",
                 "   ",
-                "2026-07-20T00:00:03Z",
+                &retained_event_timestamp(3),
             ),
             message_event(
                 "assistant-latest",
                 "assistant",
                 "latest answer",
-                "2026-07-20T00:00:04Z",
+                &retained_event_timestamp(4),
             ),
             session_title_event(
                 "title-latest",
                 "Generated session title",
-                "2026-07-20T00:00:05Z",
+                &retained_event_timestamp(5),
             ),
         ] {
             assert_eq!(
@@ -3072,7 +3092,7 @@ mod tests {
                 "before",
                 "user",
                 "before",
-                "2026-07-20T00:00:00Z",
+                &retained_event_timestamp(0),
             ))
             .unwrap();
         let old_revision = database.state_revision().unwrap();
@@ -3095,7 +3115,7 @@ mod tests {
                     enum_name(AgentEventType::Start),
                     AgentEventType::Start.zh_label(),
                     "{not-json",
-                    "2026-07-20T00:00:01Z",
+                    retained_event_timestamp(1),
                 ],
             )
             .unwrap();
@@ -3140,7 +3160,7 @@ mod tests {
                 "before",
                 "user",
                 "before",
-                "2026-07-20T00:00:00Z",
+                &retained_event_timestamp(0),
             ))
             .unwrap();
 
@@ -3157,7 +3177,7 @@ mod tests {
                     "concurrent",
                     "assistant",
                     "concurrent answer",
-                    "2026-07-20T00:00:01Z",
+                    &retained_event_timestamp(1),
                 ))
                 .unwrap();
         })
