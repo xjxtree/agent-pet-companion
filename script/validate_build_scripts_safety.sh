@@ -484,16 +484,26 @@ if rg -q 'published_immutable|value[.]get[(]"immutable"|immutable-releases' "$WO
   echo 'release workflow must not require GitHub Immutable Releases' >&2
   exit 1
 fi
-rg -q 'Update in three steps / 三步更新' "$WORKFLOW"
-rg -q 'Your pets, settings, history, and active work stay on this Mac and are preserved[.]' \
-  "$WORKFLOW"
-rg -q '你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。' \
-  "$WORKFLOW"
-rg -q 'move the new App to Applications, and choose Replace' "$WORKFLOW"
-rg -q '将新版移入“应用程序”，并选择“替换”' "$WORKFLOW"
-rg -q 'Control-click' "$WORKFLOW"
-rg -q 'Open Anyway' "$WORKFLOW"
-rg -q 'ad-hoc signed' "$WORKFLOW"
+rg -Fq './script/changelog_fragments.py' "$WORKFLOW"
+rg -Fq 'release-notes' "$WORKFLOW"
+rg -Fq -- '--version "$RELEASE_VERSION"' "$WORKFLOW"
+rg -Fq -- '--expected-notes "$notes_file"' "$WORKFLOW"
+if rg -q 'Update in three steps / 三步更新' "$WORKFLOW"; then
+  echo 'release notes must not fall back to the fixed three-step-only template' >&2
+  exit 1
+fi
+rg -Fq "## What's new / 本版本更新" \
+  "$ROOT_DIR/script/changelog_fragments.py"
+rg -Fq '## Install / 安装' "$ROOT_DIR/script/changelog_fragments.py"
+rg -Fq 'Your local pets, settings, history, and active work are preserved.' \
+  "$ROOT_DIR/script/changelog_fragments.py"
+rg -Fq '本机宠物、设置、历史和正在进行的工作会保留。' \
+  "$ROOT_DIR/script/changelog_fragments.py"
+rg -q 'Control-click' "$ROOT_DIR/script/changelog_fragments.py"
+rg -q 'Open Anyway' "$ROOT_DIR/script/changelog_fragments.py"
+rg -q 'ad-hoc signed' "$ROOT_DIR/script/changelog_fragments.py"
+rg -q 'not Developer ID signed' "$ROOT_DIR/script/changelog_fragments.py"
+rg -q '没有 Developer ID 签名' "$ROOT_DIR/script/changelog_fragments.py"
 if rg -n 'uses:[[:space:]]+[^#[:space:]]+@v[0-9]' "$WORKFLOW" >/dev/null; then
   echo 'release workflow actions must be pinned to full commit SHAs' >&2
   exit 1

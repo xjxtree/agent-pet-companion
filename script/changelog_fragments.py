@@ -32,6 +32,15 @@ HEADINGS = {
     "Removed": "### Removed / 移除",
     "Security": "### Security / 安全",
 }
+RELEASE_SUMMARY_HEADING = "## What's new / 本版本更新"
+RELEASE_INSTALL_HEADING = "## Install / 安装"
+RELEASE_INSTALLATION = """Download the ZIP for your Mac (`macos-arm64` for Apple silicon or `macos-x86_64` for Intel), unzip it, quit Agent Pet Companion, and replace the App in `/Applications`. Your local pets, settings, history, and active work are preserved.
+
+下载适用于这台 Mac 的 ZIP（Apple 芯片使用 `macos-arm64`，Intel 使用 `macos-x86_64`），解压后退出 Agent Pet Companion，并替换 `/Applications` 中的 App。本机宠物、设置、历史和正在进行的工作会保留。
+
+**First launch / 首次打开：** These builds are ad-hoc signed, not Developer ID signed, and not Apple-notarized. If macOS blocks the App, Control-click it in Finder and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**. Verify the ZIP with `SHA256SUMS.txt` before opening it.
+
+当前版本使用 ad-hoc 签名，没有 Developer ID 签名，也未经过 Apple 公证。如果 macOS 阻止打开，请在 Finder 中按住 Control 点按 App 并选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。打开前请使用 `SHA256SUMS.txt` 校验 ZIP。"""
 
 
 def fail(message: str) -> NoReturn:
@@ -195,6 +204,42 @@ def freeze_release(changelog: str, version: str, release_date: str) -> str:
     )
 
 
+def release_summary(changelog: str, version: str) -> str:
+    if VERSION.fullmatch(version) is None:
+        fail("release version must be semantic X.Y.Z")
+    heading = re.compile(
+        rf"^## \[{re.escape(version)}\] - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$",
+        flags=re.MULTILINE,
+    )
+    matches = list(heading.finditer(changelog))
+    if len(matches) != 1:
+        fail(f"CHANGELOG must contain exactly one release section for {version}")
+    start = matches[0].end()
+    next_version = re.search(r"^## \[", changelog[start:], flags=re.MULTILINE)
+    end = len(changelog) if next_version is None else start + next_version.start()
+    summary = changelog[start:end].strip()
+    if not summary:
+        fail(f"CHANGELOG release section {version} is empty")
+    if not any(heading in summary for heading in HEADINGS.values()):
+        fail(f"CHANGELOG release section {version} has no supported change category")
+    summary = FRAGMENT_MARKER.sub("", summary)
+    summary = re.sub(r"\n{3,}", "\n\n", summary).strip()
+    if not summary:
+        fail(f"CHANGELOG release section {version} has no public summary")
+    return summary
+
+
+def render_github_release_notes(changelog: str, version: str) -> str:
+    summary = release_summary(changelog, version)
+    return (
+        f"# Agent Pet Companion {version}\n\n"
+        f"{RELEASE_SUMMARY_HEADING}\n\n"
+        f"{summary}\n\n"
+        f"{RELEASE_INSTALL_HEADING}\n\n"
+        f"{RELEASE_INSTALLATION}\n"
+    )
+
+
 def git_changed_paths(root: pathlib.Path, base_ref: str) -> set[str]:
     result = subprocess.run(
         ["git", "diff", "--name-only", "-z", base_ref, "HEAD", "--"],
@@ -279,6 +324,9 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("render")
     subparsers.add_parser("require-consumed")
 
+    release_notes = subparsers.add_parser("release-notes")
+    release_notes.add_argument("--version", required=True)
+
     policy = subparsers.add_parser("policy")
     policy.add_argument("--base-ref", required=True)
     policy.add_argument(
@@ -332,6 +380,22 @@ def main() -> int:
         atomic_write(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         parse_fragment(target)
         print(target)
+        return 0
+
+    if args.command == "release-notes":
+        changelog = root / "CHANGELOG.md"
+        if (
+            not changelog.is_file()
+            or changelog.is_symlink()
+            or changelog.stat().st_size > 4 * 1024 * 1024
+        ):
+            fail("CHANGELOG.md must be a bounded regular file")
+        print(
+            render_github_release_notes(
+                changelog.read_text(encoding="utf-8"), args.version
+            ),
+            end="",
+        )
         return 0
 
     items = fragments(root)

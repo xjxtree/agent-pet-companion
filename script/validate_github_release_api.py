@@ -16,15 +16,28 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 VERSION_PATTERN = re.compile(r"[0-9]+(?:[.][0-9]+){2}")
 MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_NOTES_BYTES = 512 * 1024
+SUMMARY_HEADING = "## What's new / 本版本更新"
+INSTALL_HEADING = "## Install / 安装"
+CATEGORY_HEADING = re.compile(
+    r"^### (?:Added / 新增|Changed / 变更|Fixed / 修复|Deprecated / 弃用|Removed / 移除|Security / 安全)$",
+    flags=re.MULTILINE,
+)
 REQUIRED_GUIDANCE = (
-    "1. Download and unzip the archive for this Mac.",
-    "2. Quit Agent Pet Companion, move the new App to Applications, and choose Replace.",
-    "3. Open the new App from Applications.",
-    "1. 下载并解压适用于这台 Mac 的归档。",
-    "2. 退出 Agent Pet Companion，将新版移入“应用程序”，并选择“替换”。",
-    "3. 从“应用程序”打开新版。",
-    "Your pets, settings, history, and active work stay on this Mac and are preserved.",
-    "你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。",
+    "`macos-arm64`",
+    "`macos-x86_64`",
+    "replace the App in `/Applications`",
+    "替换 `/Applications` 中的 App",
+    "Your local pets, settings, history, and active work are preserved.",
+    "本机宠物、设置、历史和正在进行的工作会保留。",
+    "**First launch / 首次打开：**",
+    "not Developer ID signed",
+    "没有 Developer ID 签名",
+    "Control-click",
+    "System Settings → Privacy & Security → Open Anyway",
+    "按住 Control 点按",
+    "系统设置 → 隐私与安全性 → 仍要打开",
+    "`SHA256SUMS.txt`",
 )
 
 
@@ -42,6 +55,19 @@ def read_json(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
+def read_expected_notes(path: pathlib.Path) -> str:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size > MAX_NOTES_BYTES
+    ):
+        raise ValueError(f"expected Release notes must be a bounded regular file: {path}")
+    value = path.read_text(encoding="utf-8")
+    if not value.strip():
+        raise ValueError("expected Release notes are empty")
+    return value
+
+
 def expected_assets(version: str) -> dict[str, str]:
     return {
         f"AgentPetCompanion-{version}-macos-arm64.zip": "arm64",
@@ -56,6 +82,7 @@ def validate_release(
     repository: str,
     version: str,
     trusted_digests: dict[str, str],
+    expected_notes: str,
 ) -> int:
     tag = f"v{version}"
     if release.get("tag_name") != tag:
@@ -70,12 +97,22 @@ def validate_release(
 
     body = release.get("body")
     if not isinstance(body, str):
-        raise ValueError("published Release has no installation guidance")
+        raise ValueError("published Release has no notes")
+    if body.rstrip("\n") != expected_notes.rstrip("\n"):
+        raise ValueError("published Release notes differ from the generated changelog summary")
+    if not body.startswith(f"# Agent Pet Companion {version}\n"):
+        raise ValueError("published Release notes title does not match the release version")
+    summary_at = body.find(SUMMARY_HEADING)
+    install_at = body.find(INSTALL_HEADING)
+    if summary_at < 0 or install_at < 0 or summary_at >= install_at:
+        raise ValueError("published Release notes must put the version summary before installation")
+    if CATEGORY_HEADING.search(body[summary_at:install_at]) is None:
+        raise ValueError("published Release notes contain no categorized version changes")
+    if "<!-- apc-fragment:" in body:
+        raise ValueError("published Release notes expose an internal changelog marker")
     missing_guidance = [line for line in REQUIRED_GUIDANCE if line not in body]
     if missing_guidance:
-        raise ValueError(
-            "published Release is missing the bilingual three-step replacement guidance"
-        )
+        raise ValueError("published Release is missing concise bilingual installation guidance")
 
     expected = expected_assets(version)
     assets = release.get("assets")
@@ -116,18 +153,21 @@ def validate(
     repository: str,
     version: str,
     trusted_digests: dict[str, str],
+    expected_notes: str,
 ) -> None:
     release_id = validate_release(
         release,
         repository=repository,
         version=version,
         trusted_digests=trusted_digests,
+        expected_notes=expected_notes,
     )
     latest_id = validate_release(
         latest,
         repository=repository,
         version=version,
         trusted_digests=trusted_digests,
+        expected_notes=expected_notes,
     )
     if latest_id != release_id:
         raise ValueError("the newly published stable Release is not GitHub's latest Release")
@@ -139,6 +179,7 @@ def main() -> int:
     parser.add_argument("--latest-json", required=True, type=pathlib.Path)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--expected-notes", required=True, type=pathlib.Path)
     parser.add_argument("--arm64-zip-sha256", required=True)
     parser.add_argument("--x86-64-zip-sha256", required=True)
     parser.add_argument("--checksum-sha256", required=True)
@@ -162,6 +203,7 @@ def main() -> int:
             repository=arguments.repository,
             version=arguments.version,
             trusted_digests=trusted_digests,
+            expected_notes=read_expected_notes(arguments.expected_notes),
         )
     except (OSError, ValueError) as error:
         print(f"GitHub Release API validation failed: {error}", file=sys.stderr)

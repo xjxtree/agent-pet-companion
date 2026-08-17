@@ -543,24 +543,10 @@ jobs:
           fi
 
           notes_file="$RUNNER_TEMP/apc-release-notes.md"
-          {
-            printf '# Agent Pet Companion %s\n\n' "$RELEASE_VERSION"
-            printf '## Update in three steps / 三步更新\n\n'
-            printf '1. Download and unzip the archive for this Mac.\n'
-            printf '2. Quit Agent Pet Companion, move the new App to Applications, and choose Replace.\n'
-            printf '3. Open the new App from Applications.\n\n'
-            printf '1. 下载并解压适用于这台 Mac 的归档。\n'
-            printf '2. 退出 Agent Pet Companion，将新版移入“应用程序”，并选择“替换”。\n'
-            printf '3. 从“应用程序”打开新版。\n\n'
-            printf 'Your pets, settings, history, and active work stay on this Mac and are preserved.\n\n'
-            printf '你的宠物、设置、历史和正在进行的工作会留在这台 Mac 上并保持不变。\n\n'
-            # shellcheck disable=SC2016
-            printf 'Apple silicon uses `macos-arm64`; Intel uses `macos-x86_64`. Download `SHA256SUMS.txt` with the ZIP and verify the selected archive before replacing the App.\n\n'
-            # shellcheck disable=SC2016
-            printf 'Apple 芯片使用 `macos-arm64`，Intel 使用 `macos-x86_64`。请同时下载 `SHA256SUMS.txt`，并在替换 App 前核对所选归档。\n\n'
-            printf '**First launch:** these Apps are ad-hoc signed, are not Developer ID signed, and are not Apple-notarized. If macOS blocks the App, Control-click it in Finder and choose **Open**, or use **System Settings → Privacy & Security → Open Anyway**. Only continue if you downloaded it from this GitHub Release and its SHA-256 matches the published checksum.\n\n'
-            printf '**首次打开：** 当前 App 使用 ad-hoc 签名，没有 Developer ID 签名，也未经过 Apple 公证。如果 macOS 阻止打开，请在 Finder 中按住 Control 点按 App 并选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。仅在文件来自本 GitHub Release 且 SHA-256 与校验和一致时继续。\n'
-          } >"$notes_file"
+          ./script/changelog_fragments.py \
+            --root "$GITHUB_WORKSPACE" \
+            release-notes \
+            --version "$RELEASE_VERSION" >"$notes_file"
 
           assets=(
             "release-assets/AgentPetCompanion-$RELEASE_VERSION-macos-arm64.zip"
@@ -608,6 +594,7 @@ jobs:
             --latest-json "$latest_json" \
             --repository "$GITHUB_REPOSITORY" \
             --version "$RELEASE_VERSION" \
+            --expected-notes "$notes_file" \
             --arm64-zip-sha256 "${{ needs.assemble.outputs.arm64_zip_sha256 }}" \
             --x86-64-zip-sha256 "${{ needs.assemble.outputs.x86_64_zip_sha256 }}" \
             --checksum-sha256 "${{ needs.assemble.outputs.checksum_sha256 }}"

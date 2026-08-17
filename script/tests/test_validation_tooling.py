@@ -1082,6 +1082,39 @@ class ChangelogFragmentTests(unittest.TestCase):
         self.assertIn("## [Unreleased]\n\n## [1.1.0] - 2026-08-12", frozen)
         self.assertEqual(frozen.count("apc-fragment:feature-1"), 1)
 
+    def test_github_release_notes_use_exact_version_summary_before_brief_install(self) -> None:
+        changelog = (
+            "# Changelog\n\n## [Unreleased]\n\n"
+            "## [1.1.0] - 2026-08-12\n\n### Fixed / 修复\n\n"
+            "<!-- apc-fragment:feature-1 -->\n- Fixed launch.\n\n  修复启动问题。\n\n"
+            "## [1.0.0] - 2026-01-01\n\n### Added / 新增\n\n- Initial.\n"
+        )
+        notes = changelog_fragments.render_github_release_notes(changelog, "1.1.0")
+        self.assertTrue(notes.startswith("# Agent Pet Companion 1.1.0\n"))
+        self.assertLess(
+            notes.index(changelog_fragments.RELEASE_SUMMARY_HEADING),
+            notes.index(changelog_fragments.RELEASE_INSTALL_HEADING),
+        )
+        self.assertIn("Fixed launch.", notes)
+        self.assertIn("修复启动问题。", notes)
+        self.assertNotIn("Initial.", notes)
+        self.assertNotIn("apc-fragment", notes)
+        self.assertNotIn("Update in three steps", notes)
+        self.assertIn("`macos-arm64`", notes)
+        self.assertIn("`macos-x86_64`", notes)
+
+    def test_github_release_notes_reject_missing_or_ambiguous_version_section(self) -> None:
+        changelog = "# Changelog\n\n## [Unreleased]\n"
+        with self.assertRaisesRegex(ValueError, "exactly one release section"):
+            changelog_fragments.render_github_release_notes(changelog, "1.1.0")
+
+        duplicate = (
+            "# Changelog\n\n## [1.1.0] - 2026-08-12\n\n### Fixed / 修复\n\n- A.\n\n"
+            "## [1.1.0] - 2026-08-13\n\n### Fixed / 修复\n\n- B.\n"
+        )
+        with self.assertRaisesRegex(ValueError, "exactly one release section"):
+            changelog_fragments.render_github_release_notes(duplicate, "1.1.0")
+
     def test_consumed_fragment_id_cannot_be_reused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
