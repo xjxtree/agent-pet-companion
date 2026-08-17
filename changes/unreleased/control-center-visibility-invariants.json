@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "macos",
-  "summary_en": "Control Center presentation now has one focus-safe window owner, nonblocking appearance hydration, and a repeated cold-launch release gate.",
-  "summary_zh": "控制中心现由单一且焦点安全的窗口协调器展示，主题加载不再阻塞窗口，并新增重复冷启动发布门禁。"
-}
