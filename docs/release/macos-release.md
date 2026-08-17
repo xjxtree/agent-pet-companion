@@ -156,7 +156,7 @@ In order the workflow:
 6. assembles the exact three-file candidate once and records trusted digests;
 7. validates the exact SDK/deployment/weak-link contract in every App archive;
 8. runs the matching ZIP on macOS 15 arm64 and Intel hosts to prove the compatibility path, then runs the arm64 ZIP again on macOS 26 to prove the packaged modern-system path;
-9. creates a non-prerelease draft with bilingual installation and first-open guidance after exact-inventory and digest checks;
+9. creates a non-prerelease draft whose bilingual version summary is rendered from the exact `CHANGELOG.md` release section, followed by concise installation and first-open guidance, after exact-inventory and digest checks;
 10. downloads the draft assets and verifies exact inventory plus byte-for-byte equality with all three trusted digests, without rerunning the already completed native package suites;
 11. publishes it as latest stable only after all checks pass; and
 12. verifies through GitHub's API that the tag Release and `/releases/latest` are the same public stable Release with the trusted assets and digests.
@@ -165,7 +165,7 @@ Native compatibility validation on both architectures and packaged macOS 26 vali
 
 ## User installation contract / 用户安装合同
 
-The App, README, and Release notes use the same flow:
+The App, README, and Release notes use the same replacement flow. README may present it as numbered setup steps; each GitHub Release instead leads with the exact version's categorized bilingual `CHANGELOG.md` summary and then gives this flow as a short installation note. / App、README 与 Release notes 使用同一套替换流程；README 可以按编号步骤说明，而每个 GitHub Release 必须先展示从该版本 `CHANGELOG.md` 精确生成的分类双语变更摘要，再用简短安装说明呈现以下流程：
 
 1. download the architecture ZIP and `SHA256SUMS.txt`, then verify the ZIP;
 2. quit Agent Pet Companion, move the new App to `/Applications`, and choose **Replace**;

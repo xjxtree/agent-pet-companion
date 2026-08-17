@@ -9,6 +9,7 @@ import plistlib
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -21,6 +22,7 @@ def load_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / relative_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -34,6 +36,9 @@ release_identity = load_module(
 )
 release_api = load_module(
     "apc_release_api", "script/validate_github_release_api.py"
+)
+changelog_fragments = load_module(
+    "apc_changelog_fragments_release", "script/changelog_fragments.py"
 )
 plugin_version = load_module(
     "apc_plugin_version", "script/validate_codex_plugin_version.py"
@@ -279,6 +284,16 @@ class PublishedReleaseAPITests(unittest.TestCase):
     VERSION = "1.2.3"
     REPOSITORY = "xjxtree/agent-pet-companion"
 
+    def expected_notes(self) -> str:
+        changelog = (
+            "# Changelog\n\n## [Unreleased]\n\n"
+            f"## [{self.VERSION}] - 2026-07-24\n\n### Fixed / 修复\n\n"
+            "<!-- apc-fragment:release-fix -->\n- Fixed launch.\n\n  修复启动问题。\n"
+        )
+        return changelog_fragments.render_github_release_notes(
+            changelog, self.VERSION
+        )
+
     def release_fixture(self) -> tuple[dict, dict[str, str]]:
         digests = {
             "arm64": "a" * 64,
@@ -292,7 +307,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
             "prerelease": False,
             "immutable": True,
             "published_at": "2026-07-24T00:00:00Z",
-            "body": "\n".join(release_api.REQUIRED_GUIDANCE),
+            "body": self.expected_notes(),
             "assets": [],
         }
         for name, kind in release_api.expected_assets(self.VERSION).items():
@@ -318,6 +333,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
             repository=self.REPOSITORY,
             version=self.VERSION,
             trusted_digests=digests,
+            expected_notes=self.expected_notes(),
         )
 
     def test_mutable_release_is_accepted(self) -> None:
@@ -329,6 +345,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
             repository=self.REPOSITORY,
             version=self.VERSION,
             trusted_digests=digests,
+            expected_notes=self.expected_notes(),
         )
 
     def test_prerelease_wrong_digest_and_nonlatest_fail_closed(self) -> None:
@@ -347,6 +364,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
                         repository=self.REPOSITORY,
                         version=self.VERSION,
                         trusted_digests=digests,
+                        expected_notes=self.expected_notes(),
                     )
 
         release, digests = self.release_fixture()
@@ -359,6 +377,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
                 repository=self.REPOSITORY,
                 version=self.VERSION,
                 trusted_digests=digests,
+                expected_notes=self.expected_notes(),
             )
 
     def test_missing_replacement_guidance_or_extra_asset_fails_closed(self) -> None:
@@ -370,6 +389,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
                 repository=self.REPOSITORY,
                 version=self.VERSION,
                 trusted_digests=digests,
+                expected_notes=self.expected_notes(),
             )
 
         release, digests = self.release_fixture()
@@ -388,6 +408,7 @@ class PublishedReleaseAPITests(unittest.TestCase):
                 repository=self.REPOSITORY,
                 version=self.VERSION,
                 trusted_digests=digests,
+                expected_notes=self.expected_notes(),
             )
 
 
@@ -771,20 +792,30 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.source)
 
-    def test_release_notes_disclose_adhoc_signing_and_both_first_open_paths(self) -> None:
-        self.assertIn("ad-hoc signed", self.publish)
-        self.assertIn("not Developer ID signed", self.publish)
-        self.assertIn("没有 Developer ID 签名", self.publish)
-        self.assertIn("Control-click", self.publish)
-        self.assertIn("System Settings → Privacy & Security → Open Anyway", self.publish)
-        self.assertIn("按住 Control 点按", self.publish)
-        self.assertIn("系统设置 → 隐私与安全性 → 仍要打开", self.publish)
-        guidance_start = self.publish.index("## Update in three steps / 三步更新")
-        disclosure = self.publish.index("**First launch:**")
-        self.assertLess(guidance_start, disclosure)
+    def test_release_notes_derive_version_summary_before_brief_install(self) -> None:
+        generator = self.publish.index("./script/changelog_fragments.py")
+        create = self.publish.index('gh release create "$RELEASE_TAG"')
+        api_validation = self.publish.index("./script/validate_github_release_api.py")
+        self.assertLess(generator, create)
+        self.assertLess(create, api_validation)
+        self.assertIn('release-notes \\\n            --version "$RELEASE_VERSION"', self.publish)
+        self.assertIn('--expected-notes "$notes_file"', self.publish)
+        self.assertNotIn("Update in three steps / 三步更新", self.publish)
+
+        changelog = (
+            "# Changelog\n\n## [Unreleased]\n\n"
+            "## [1.2.3] - 2026-08-17\n\n### Changed / 变更\n\n"
+            "<!-- apc-fragment:release-notes -->\n- Summarize changes.\n\n"
+            "  汇总版本变更。\n"
+        )
+        notes = changelog_fragments.render_github_release_notes(changelog, "1.2.3")
+        summary = notes.index(release_api.SUMMARY_HEADING)
+        installation = notes.index(release_api.INSTALL_HEADING)
+        self.assertLess(summary, installation)
+        self.assertNotIn("apc-fragment", notes)
         for line in release_api.REQUIRED_GUIDANCE:
             with self.subTest(line=line):
-                self.assertIn(line, self.publish)
+                self.assertIn(line, notes)
 
     def test_publication_is_explicit_latest_stable_and_api_verified(self) -> None:
         go_live = self.publish.index(
