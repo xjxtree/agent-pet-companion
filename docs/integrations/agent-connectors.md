@@ -81,6 +81,8 @@ Local package actions `acknowledge`, `drag_left`, and `drag_right` never emit ev
 
 Ordinary `session_active` is a bounded observation, not a permanent heartbeat. `waiting` and `failed` remain until a newer event resolves them. Repeated terminal notifications in one activity epoch share one completion acknowledgement identity; a later true activation creates a new scope.
 
+Claude Code's delayed `idle_prompt` notification completes an ordinary turn only when the current session has no unresolved background-work fence. A `Stop` that reports `background_tasks` or `session_crons` opens that fence; the notification remains in bounded audit history but cannot replace the running projection or reject later same-turn tool/sub-Agent activity. A new Claude process boundary or an explicit `Stop`, `StopFailure`, `SessionEnd`, or `agent_completed` edge settles the fence. This distinction is Claude-specific and does not change ordinary `idle_prompt` completion or any other Agent's terminal mapping.
+
 Pi emits `input` before it validates the interactive session's selected model. When the public Extension context has no model at that boundary, the managed adapter closes that admitted input directly as `failed` with the closed `model_unavailable` outcome; it never inspects provider credentials or auth storage. Other Pi failures continue to settle only on a stable terminal host boundary.
 
 ## Managed connection operations

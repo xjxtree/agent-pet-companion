@@ -1,5 +1,130 @@
 use super::*;
 
+fn claude_session_has_open_background_work(
+    connection: &Connection,
+    session_key: &str,
+) -> Result<bool> {
+    let latest_boundary = connection
+        .query_row(
+            r#"
+            SELECT CASE
+                     WHEN event_type = 'start'
+                      AND json_extract(payload_json, '$.source_event') = 'Stop'
+                      AND json_extract(payload_json, '$.outcome') = 'background_active'
+                     THEN 'background'
+                     ELSE 'settled'
+                   END
+            FROM agent_events
+            WHERE source = 'claude_code'
+              AND session_key = ?1
+              AND COALESCE(json_extract(payload_json, '$.diagnostic'), 0) != 1
+              AND (
+                (
+                  event_type = 'start'
+                  AND json_extract(payload_json, '$.source_event') = 'Stop'
+                  AND json_extract(payload_json, '$.outcome') = 'background_active'
+                )
+                OR json_extract(payload_json, '$.source_event') = 'SessionStart'
+                OR (
+                  event_type = 'done'
+                  AND json_extract(payload_json, '$.source_event') IN ('Stop', 'SessionEnd')
+                )
+                OR (
+                  event_type = 'done'
+                  AND json_extract(payload_json, '$.source_event') = 'Notification'
+                  AND json_extract(payload_json, '$.outcome') = 'agent_completed'
+                )
+                OR (
+                  event_type = 'failed'
+                  AND json_extract(payload_json, '$.source_event') = 'StopFailure'
+                )
+              )
+            ORDER BY created_at DESC, row_id DESC
+            LIMIT 1
+            "#,
+            params![session_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(latest_boundary.as_deref() == Some("background"))
+}
+
+fn event_arrived_after_turn_terminal(
+    connection: &Connection,
+    event: &AgentEvent,
+    session_key: &str,
+) -> Result<bool> {
+    if matches!(
+        event.event_type,
+        AgentEventType::Done | AgentEventType::Failed
+    ) || event
+        .payload_json
+        .get("diagnostic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || event
+            .payload_json
+            .get("affects_activity")
+            .and_then(Value::as_bool)
+            == Some(false)
+    {
+        return Ok(false);
+    }
+    let Some(turn_id) = event
+        .payload_json
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    let mut claude_background_work_is_open = None;
+
+    let mut statement = connection.prepare(
+        r#"
+        SELECT event_type, payload_json
+        FROM agent_events
+        WHERE source = ?1 AND session_key = ?2
+        ORDER BY row_id DESC
+        "#,
+    )?;
+    let rows = statement.query_map(params![enum_name(event.source), session_key], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (event_type, payload_json) = row?;
+        if !matches!(event_type.as_str(), "done" | "failed") {
+            continue;
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        let source_event = payload.get("source_event").and_then(Value::as_str);
+        let outcome = payload.get("outcome").and_then(Value::as_str);
+        let is_claude_idle_notification = event.source == AgentSource::ClaudeCode
+            && source_event == Some("Notification")
+            && outcome == Some("idle");
+        let ignore_terminal = matches!(
+            source_event,
+            Some("app_server_activity" | "connection.test")
+        ) || (is_claude_idle_notification
+            && *claude_background_work_is_open.get_or_insert(
+                claude_session_has_open_background_work(connection, session_key)?,
+            ));
+        if ignore_terminal {
+            // Only an open Claude background fence makes the delayed idle
+            // notification non-terminal. Ordinary idle keeps its existing
+            // same-turn fence.
+            continue;
+        }
+        if payload.get("turn_id").and_then(Value::as_str) == Some(turn_id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl Database {
     pub fn state_revision(&self) -> Result<u64> {
         let connection = self.open()?;
@@ -1111,11 +1236,71 @@ impl Database {
         let events = {
             let mut statement = transaction.prepare(
                 r#"
-            WITH eligible AS (
+            WITH claude_ordered AS (
+              SELECT row_id, session_key, event_type, payload_json,
+                     CASE
+                       WHEN event_type = 'start'
+                        AND json_extract(payload_json, '$.source_event') = 'Stop'
+                        AND json_extract(payload_json, '$.outcome') = 'background_active'
+                       THEN 'background'
+                       WHEN json_extract(payload_json, '$.source_event') = 'SessionStart'
+                         OR (
+                           event_type = 'done'
+                           AND json_extract(payload_json, '$.source_event') IN ('Stop', 'SessionEnd')
+                         )
+                         OR (
+                           event_type = 'done'
+                           AND json_extract(payload_json, '$.source_event') = 'Notification'
+                           AND json_extract(payload_json, '$.outcome') = 'agent_completed'
+                         )
+                         OR (
+                           event_type = 'failed'
+                           AND json_extract(payload_json, '$.source_event') = 'StopFailure'
+                         )
+                       THEN 'settled'
+                     END AS background_boundary,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY session_key
+                       ORDER BY created_at ASC, row_id ASC
+                     ) AS session_sequence
+              FROM agent_events
+              WHERE source = 'claude_code'
+                AND COALESCE(json_extract(payload_json, '$.diagnostic'), 0) != 1
+            ),
+            claude_background_state AS (
+              SELECT row_id, event_type, payload_json,
+                     MAX(CASE WHEN background_boundary = 'background'
+                       THEN session_sequence END) OVER (
+                         PARTITION BY session_key
+                         ORDER BY session_sequence ASC
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                       ) AS latest_background_sequence,
+                     MAX(CASE WHEN background_boundary = 'settled'
+                       THEN session_sequence END) OVER (
+                         PARTITION BY session_key
+                         ORDER BY session_sequence ASC
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                       ) AS latest_settled_sequence
+              FROM claude_ordered
+            ),
+            claude_background_fenced_idle AS (
+              SELECT row_id
+              FROM claude_background_state
+              WHERE event_type = 'done'
+                AND json_extract(payload_json, '$.source_event') = 'Notification'
+                AND json_extract(payload_json, '$.outcome') = 'idle'
+                AND latest_background_sequence > COALESCE(latest_settled_sequence, 0)
+            ),
+            eligible AS (
               SELECT row_id, external_event_id, source, project_path, session_id,
                      session_key, event_type, title, detail, payload_json, created_at
               FROM agent_events
               WHERE COALESCE(json_extract(payload_json, '$.diagnostic'), 0) != 1
+                -- Claude emits idle_prompt on the main prompt's idle timer even
+                -- while background agents are still running. Keep that bounded
+                -- audit row, but do not let it close the projected session until
+                -- a stronger lifecycle edge settles or resets the background work.
+                AND row_id NOT IN (SELECT row_id FROM claude_background_fenced_idle)
                 AND (
                   COALESCE(json_extract(payload_json, '$.affects_activity'), 1) != 0
                   OR (
@@ -1545,5 +1730,179 @@ impl Database {
         let pruned = prune_events_in_transaction(&transaction, policy)?;
         transaction.commit()?;
         Ok(pruned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::OnceLock;
+    use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+    fn fixture_timestamp(offset_seconds: i64) -> String {
+        static BASE: OnceLock<OffsetDateTime> = OnceLock::new();
+        (*BASE.get_or_init(|| OffsetDateTime::now_utc() - Duration::minutes(1))
+            + Duration::seconds(offset_seconds))
+        .format(&Rfc3339)
+        .expect("format retained event fixture timestamp")
+    }
+
+    fn claude_event(
+        id: &str,
+        event_type: AgentEventType,
+        source_event: &str,
+        turn_id: &str,
+        offset_seconds: i64,
+    ) -> AgentEvent {
+        AgentEvent {
+            id: id.to_string(),
+            source: AgentSource::ClaudeCode,
+            project_path: None,
+            session_id: Some("claude-background-session".to_string()),
+            event_type,
+            title: event_type.zh_label().to_string(),
+            detail: None,
+            payload_json: json!({
+                "source_event": source_event,
+                "turn_id": turn_id,
+                "diagnostic": false,
+                "affects_activity": true,
+                "session_active": !matches!(
+                    event_type,
+                    AgentEventType::Done | AgentEventType::Failed
+                )
+            }),
+            created_at: fixture_timestamp(offset_seconds),
+        }
+    }
+
+    #[test]
+    fn claude_idle_prompt_cannot_settle_open_background_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("agent-pet.sqlite"));
+        database.init().unwrap();
+
+        database
+            .insert_event(&claude_event(
+                "evt-background-prompt",
+                AgentEventType::Start,
+                "UserPromptSubmit",
+                "prompt-background",
+                0,
+            ))
+            .unwrap();
+
+        let mut background = claude_event(
+            "evt-background-active",
+            AgentEventType::Start,
+            "Stop",
+            "prompt-background",
+            1,
+        );
+        background.payload_json["outcome"] = json!("background_active");
+        database.insert_event(&background).unwrap();
+
+        let mut idle = claude_event(
+            "evt-background-idle",
+            AgentEventType::Done,
+            "Notification",
+            "prompt-background",
+            2,
+        );
+        idle.payload_json["outcome"] = json!("idle");
+        assert_eq!(
+            database.insert_event(&idle).unwrap(),
+            InsertEventOutcome::Inserted,
+            "the idle notification remains available as bounded audit history"
+        );
+
+        let projected = database.latest_sequenced_events_by_session(10).unwrap();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].event.id, "evt-background-active");
+        assert_eq!(projected[0].event.event_type, AgentEventType::Start);
+        assert_eq!(
+            projected[0].event.payload_json["outcome"],
+            "background_active"
+        );
+        assert!(database
+            .recent_events(10)
+            .unwrap()
+            .iter()
+            .any(|event| event.id == "evt-background-idle"));
+
+        let later_tool = claude_event(
+            "evt-background-later-tool",
+            AgentEventType::Tool,
+            "PreToolUse",
+            "prompt-background",
+            3,
+        );
+        assert_eq!(
+            database.insert_event(&later_tool).unwrap(),
+            InsertEventOutcome::Inserted,
+            "a background idle notification must not fence later activity for the same turn"
+        );
+        let projected = database.latest_sequenced_events_by_session(10).unwrap();
+        assert_eq!(projected[0].event.id, "evt-background-later-tool");
+        assert_eq!(projected[0].event.event_type, AgentEventType::Tool);
+
+        let mut completed = claude_event(
+            "evt-background-completed",
+            AgentEventType::Done,
+            "Stop",
+            "prompt-background",
+            4,
+        );
+        completed.payload_json["outcome"] = json!("completed");
+        database.insert_event(&completed).unwrap();
+        let projected = database.latest_sequenced_events_by_session(10).unwrap();
+        assert_eq!(projected[0].event.id, "evt-background-completed");
+        assert_eq!(projected[0].event.event_type, AgentEventType::Done);
+    }
+
+    #[test]
+    fn claude_idle_prompt_still_settles_a_turn_without_background_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = Database::new(temp.path().join("agent-pet.sqlite"));
+        database.init().unwrap();
+
+        database
+            .insert_event(&claude_event(
+                "evt-ordinary-prompt",
+                AgentEventType::Start,
+                "UserPromptSubmit",
+                "prompt-ordinary",
+                10,
+            ))
+            .unwrap();
+
+        let mut idle = claude_event(
+            "evt-ordinary-idle",
+            AgentEventType::Done,
+            "Notification",
+            "prompt-ordinary",
+            11,
+        );
+        idle.payload_json["outcome"] = json!("idle");
+        database.insert_event(&idle).unwrap();
+
+        let projected = database.latest_sequenced_events_by_session(10).unwrap();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].event.id, "evt-ordinary-idle");
+        assert_eq!(projected[0].event.event_type, AgentEventType::Done);
+
+        let late_tool = claude_event(
+            "evt-ordinary-late-tool",
+            AgentEventType::Tool,
+            "PreToolUse",
+            "prompt-ordinary",
+            12,
+        );
+        assert_eq!(
+            database.insert_event(&late_tool).unwrap(),
+            InsertEventOutcome::Suppressed,
+            "ordinary idle retains the existing same-turn terminal fence"
+        );
     }
 }
