@@ -813,69 +813,6 @@ fn event_has_nonempty_payload_text(event: &AgentEvent, key: &str) -> bool {
         .is_some_and(|message| !message.trim().is_empty())
 }
 
-fn event_arrived_after_turn_terminal(
-    connection: &Connection,
-    event: &AgentEvent,
-    session_key: &str,
-) -> Result<bool> {
-    if matches!(
-        event.event_type,
-        AgentEventType::Done | AgentEventType::Failed
-    ) || event
-        .payload_json
-        .get("diagnostic")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || event
-            .payload_json
-            .get("affects_activity")
-            .and_then(Value::as_bool)
-            == Some(false)
-    {
-        return Ok(false);
-    }
-    let Some(turn_id) = event
-        .payload_json
-        .get("turn_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(false);
-    };
-
-    let mut statement = connection.prepare(
-        r#"
-        SELECT event_type, payload_json
-        FROM agent_events
-        WHERE source = ?1 AND session_key = ?2
-        ORDER BY row_id DESC
-        "#,
-    )?;
-    let rows = statement.query_map(params![enum_name(event.source), session_key], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (event_type, payload_json) = row?;
-        if !matches!(event_type.as_str(), "done" | "failed") {
-            continue;
-        }
-        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
-            continue;
-        };
-        if matches!(
-            payload.get("source_event").and_then(Value::as_str),
-            Some("app_server_activity" | "connection.test")
-        ) {
-            continue;
-        }
-        if payload.get("turn_id").and_then(Value::as_str) == Some(turn_id) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 fn prune_events_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
     policy: EventRetentionPolicy,
