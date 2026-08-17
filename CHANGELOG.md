@@ -14,6 +14,25 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-08-17
+
+### Changed / 变更
+
+<!-- apc-fragment:20260817-release-notes-version-summary -->
+- GitHub Releases now lead with the exact version change summary and follow it with concise installation guidance.
+
+  GitHub Release 现在会先展示对应版本的变更摘要，再附上精简安装说明。
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260817-claude-background-idle-completion -->
+- Claude Code idle notifications no longer mark a session complete while its background agents are still working.
+
+  Claude Code 的后台 Agent 仍在工作时，空闲通知不再误将会话标记为已完成。
+<!-- apc-fragment:control-center-visibility-invariants -->
+- Control Center presentation now has one focus-safe window owner, nonblocking appearance hydration, and a repeated cold-launch release gate.
+
+  控制中心现由单一且焦点安全的窗口协调器展示，主题加载不再阻塞窗口，并新增重复冷启动发布门禁。
 ## [0.4.5] - 2026-08-14
 
 ### Fixed / 修复

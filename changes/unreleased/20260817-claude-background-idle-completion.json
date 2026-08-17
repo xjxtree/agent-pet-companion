@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "connections",
-  "summary_en": "Claude Code idle notifications no longer mark a session complete while its background agents are still working.",
-  "summary_zh": "Claude Code 的后台 Agent 仍在工作时，空闲通知不再误将会话标记为已完成。"
-}

@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Changed",
-  "scope": "release",
-  "summary_en": "GitHub Releases now lead with the exact version change summary and follow it with concise installation guidance.",
-  "summary_zh": "GitHub Release 现在会先展示对应版本的变更摘要，再附上精简安装说明。"
-}
