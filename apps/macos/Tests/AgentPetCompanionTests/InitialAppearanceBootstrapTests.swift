@@ -7,74 +7,28 @@ import Testing
 @Suite(.serialized)
 struct InitialAppearanceBootstrapTests {
     @Test
-    func windowGateOnlyHoldsWhileAuthoritativeAppearanceIsPending() {
-        #expect(!InitialAppearanceWindowGate.shouldRevealWindow(for: .pending))
-        #expect(InitialAppearanceWindowGate.shouldRevealWindow(for: .authoritative))
-        #expect(InitialAppearanceWindowGate.shouldRevealWindow(for: .unavailable))
-        #expect(InitialAppearanceWindowGate.action(
+    func windowAppearanceUsesSystemFallbackUntilAuthoritativeThemeArrives() {
+        #expect(InitialAppearanceWindowPolicy.appearanceName(
             for: .pending,
-            theme: .system,
-            hasRevealed: false
-        ) == .conceal)
-        #expect(InitialAppearanceWindowGate.action(
+            theme: .dark
+        ) == nil)
+        #expect(InitialAppearanceWindowPolicy.appearanceName(
             for: .authoritative,
-            theme: .dark,
-            hasRevealed: false
-        ) == .reveal(appearanceName: .darkAqua))
-        #expect(InitialAppearanceWindowGate.action(
+            theme: .dark
+        ) == .darkAqua)
+        #expect(InitialAppearanceWindowPolicy.appearanceName(
             for: .authoritative,
-            theme: .light,
-            hasRevealed: false
-        ) == .reveal(appearanceName: .aqua))
-        #expect(InitialAppearanceWindowGate.action(
+            theme: .light
+        ) == .aqua)
+        #expect(InitialAppearanceWindowPolicy.appearanceName(
             for: .unavailable,
-            theme: .dark,
-            hasRevealed: false
-        ) == .reveal(appearanceName: nil))
-        #expect(InitialAppearanceWindowGate.action(
-            for: .pending,
-            theme: .dark,
-            hasRevealed: true
-        ) == .noChange)
+            theme: .dark
+        ) == nil)
     }
 
     @MainActor
     @Test
-    func windowGateRevealDefersPresentationWithoutForcingContentLayout() async {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        let contentView = InitialAppearanceLayoutProbe(frame: window.contentLayoutRect)
-        let gate = InitialAppearanceWindowGateHostView(
-            readiness: .pending,
-            theme: .system
-        )
-        window.contentView = contentView
-        contentView.addSubview(gate)
-
-        #expect(window.alphaValue == 0)
-        #expect(window.ignoresMouseEvents)
-        contentView.reset()
-
-        gate.update(readiness: .authoritative, theme: .dark)
-
-        #expect(contentView.layoutPasses == 0)
-        #expect(contentView.displayPasses == 0)
-        #expect(window.alphaValue == 0)
-
-        await waitForNextMainQueueTurn()
-
-        #expect(window.alphaValue == 1)
-        #expect(!window.ignoresMouseEvents)
-        #expect(gate.hasRevealed)
-    }
-
-    @MainActor
-    @Test
-    func windowGateRevealSurvivesHostRemovalBeforeDeferredTurn() async {
+    func pendingAppearanceNeverConcealsOrDisablesTheWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
             styleMask: [.titled],
@@ -82,28 +36,27 @@ struct InitialAppearanceBootstrapTests {
             defer: false
         )
         let contentView = NSView(frame: window.contentLayoutRect)
-        var gate: InitialAppearanceWindowGateHostView? =
-            InitialAppearanceWindowGateHostView(
-                readiness: .pending,
-                theme: .system
-            )
+        let appearanceView = InitialAppearanceWindowHostView(
+            readiness: .pending,
+            theme: .system
+        )
         window.contentView = contentView
-        contentView.addSubview(gate!)
+        contentView.addSubview(appearanceView)
 
-        #expect(window.alphaValue == 0)
-        gate?.update(readiness: .authoritative, theme: .dark)
-        gate?.removeFromSuperview()
-        gate = nil
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
+        #expect(window.appearance == nil)
 
-        await waitForNextMainQueueTurn()
+        appearanceView.update(readiness: .authoritative, theme: .dark)
 
+        #expect(window.appearance?.name == .darkAqua)
         #expect(window.alphaValue == 1)
         #expect(!window.ignoresMouseEvents)
     }
 
     @MainActor
     @Test
-    func windowGateReplacementCannotRecordConcealedStateAsOriginal() async {
+    func appearanceHostReplacementCannotChangeVisibilityOrInputState() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
             styleMask: [.titled],
@@ -111,63 +64,22 @@ struct InitialAppearanceBootstrapTests {
             defer: false
         )
         let contentView = NSView(frame: window.contentLayoutRect)
-        let firstGate = InitialAppearanceWindowGateHostView(
-            readiness: .pending,
-            theme: .system
-        )
-        let replacementGate = InitialAppearanceWindowGateHostView(
-            readiness: .pending,
-            theme: .system
-        )
         window.contentView = contentView
-        contentView.addSubview(firstGate)
-        contentView.addSubview(replacementGate)
-
-        #expect(window.alphaValue == 0)
-        #expect(window.ignoresMouseEvents)
-        replacementGate.update(readiness: .authoritative, theme: .light)
-
-        await waitForNextMainQueueTurn()
+        let firstHost = InitialAppearanceWindowHostView(
+            readiness: .pending,
+            theme: .system
+        )
+        let replacementHost = InitialAppearanceWindowHostView(
+            readiness: .authoritative,
+            theme: .light
+        )
+        contentView.addSubview(firstHost)
+        firstHost.removeFromSuperview()
+        contentView.addSubview(replacementHost)
 
         #expect(window.alphaValue == 1)
         #expect(!window.ignoresMouseEvents)
-        #expect(firstGate.hasRevealed)
-        #expect(replacementGate.hasRevealed)
-    }
-
-    @MainActor
-    @Test
-    func pendingWindowGateFailsOpenWhenItsLastHostIsDismantled() async {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        let contentView = NSView(frame: window.contentLayoutRect)
-        let gate = InitialAppearanceWindowGateHostView(
-            readiness: .pending,
-            theme: .system
-        )
-        window.contentView = contentView
-        contentView.addSubview(gate)
-
-        #expect(window.alphaValue == 0)
-        gate.detachFromWindow()
-
-        await waitForNextMainQueueTurn()
-
-        #expect(window.alphaValue == 1)
-        #expect(!window.ignoresMouseEvents)
-    }
-
-    @MainActor
-    private func waitForNextMainQueueTurn() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                continuation.resume()
-            }
-        }
+        #expect(window.appearance?.name == .aqua)
     }
 
     @MainActor
@@ -219,7 +131,7 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
-    func behaviorFetchFailureKeepsTheGateThroughSnapshotAttemptThenFallsBack() async {
+    func behaviorFetchFailureKeepsAppearancePendingThroughSnapshotThenFallsBack() async {
         let probe = InitialAppearanceProbe()
         let store = AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
@@ -245,7 +157,7 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
-    func behaviorFetchFailureReleasesTheWindowBeforeAStalledReadyPipelineCompletes() async {
+    func behaviorFetchFailurePublishesFallbackBeforeAStalledReadyPipelineCompletes() async {
         let gate = InitialAppearanceReadyGate()
         let fallback = InitialAppearanceFallbackProbe()
         let store = AppStore(
@@ -598,7 +510,7 @@ struct InitialAppearanceBootstrapTests {
 
     @MainActor
     @Test
-    func petCoreStartupFailureAlsoReleasesTheWindowGateToFallbackAppearance() async {
+    func petCoreStartupFailureAlsoPublishesTheSystemAppearanceFallback() async {
         let probe = InitialAppearanceProbe()
         let store = AppStore(
             bootstrapHooks: AppStoreBootstrapHooks(
@@ -916,27 +828,6 @@ private actor InitialAppearanceFallbackProbe {
 
     func delays() -> [Duration] {
         recordedDelays
-    }
-}
-
-@MainActor
-private final class InitialAppearanceLayoutProbe: NSView {
-    private(set) var layoutPasses = 0
-    private(set) var displayPasses = 0
-
-    override func layoutSubtreeIfNeeded() {
-        layoutPasses += 1
-        super.layoutSubtreeIfNeeded()
-    }
-
-    override func displayIfNeeded() {
-        displayPasses += 1
-        super.displayIfNeeded()
-    }
-
-    func reset() {
-        layoutPasses = 0
-        displayPasses = 0
     }
 }
 

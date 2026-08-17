@@ -9,10 +9,13 @@ APP_BUNDLE="$ROOT_DIR/dist/AgentPetCompanion.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/AgentPetCompanion"
 PETCORE_BINARY="$APP_BUNDLE/Contents/Resources/bin/petcore"
 PETCORE_CLI="$APP_BUNDLE/Contents/Resources/bin/petcore-cli"
+COLD_LAUNCH_ITERATIONS="${APC_MAIN_UI_COLD_LAUNCH_ITERATIONS:-3}"
+COLD_LAUNCH_PROBE_SOURCE="$ROOT_DIR/script/fixtures/MainWindowColdLaunchProbe.swift"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apc-main-window-ui.XXXXXX")"
 apc_use_isolated_home "$TMP_DIR"
 OWNED_PROTOCOL="$APC_HOME/run/validation-owned-runtime.json"
 APP_LOG="$TMP_DIR/app.log"
+COLD_LAUNCH_PROBE="$TMP_DIR/main-window-cold-launch-probe"
 
 cleanup() {
   apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
@@ -20,9 +23,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ ! -x "$APP_BINARY" || ! -x "$PETCORE_BINARY" || ! -x "$PETCORE_CLI" ]]; then
-  "$ROOT_DIR/script/build_app_bundle.sh" >/dev/null
+# Host acceptance must exercise the current worktree, never a stale bundle
+# left in dist by an earlier branch or commit. The project builder remains
+# incremental when its exact source-bound build identity is unchanged.
+"$ROOT_DIR/script/build_app_bundle.sh" >/dev/null
+
+if [[ ! "$COLD_LAUNCH_ITERATIONS" =~ ^[0-9]+$ ]] \
+  || ((COLD_LAUNCH_ITERATIONS < 1 || COLD_LAUNCH_ITERATIONS > 100)); then
+  printf 'APC_MAIN_UI_COLD_LAUNCH_ITERATIONS must be an integer from 1 through 100\n' >&2
+  exit 2
 fi
+
+xcrun swiftc \
+  -parse-as-library \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "$COLD_LAUNCH_PROBE_SOURCE" \
+  -o "$COLD_LAUNCH_PROBE"
 
 apc_start_owned_runtime \
   "$APP_BINARY" \
@@ -890,3 +907,28 @@ guard waitForVisibleControlCenter() else {
 
 print("Main window UI and close/reopen lifecycle validation ok")
 SWIFT
+
+# The structural acceptance above runs once against the complete product. The
+# bounded loop below then repeatedly tears down and cold-starts the same owned
+# App/runtime while varying the coordinator request timing. Every iteration
+# proves the exact singleton identifier, layer-0 visibility, positive alpha,
+# nonblank pixels, overlay presentation, and retained Control Center focus.
+apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
+COLD_LAUNCH_JITTERS=(0 1 16 33 83 167 333 667 1000 1500)
+for ((iteration = 1; iteration <= COLD_LAUNCH_ITERATIONS; iteration += 1)); do
+  jitter_index=$(((iteration - 1) % ${#COLD_LAUNCH_JITTERS[@]}))
+  export APC_CONTROL_CENTER_LAUNCH_JITTER_MS="${COLD_LAUNCH_JITTERS[$jitter_index]}"
+  APP_LOG="$TMP_DIR/cold-launch-$iteration.log"
+  apc_start_owned_runtime \
+    "$APP_BINARY" \
+    "$PETCORE_CLI" \
+    "$PETCORE_BINARY" \
+    "$APP_LOG" \
+    "$OWNED_PROTOCOL"
+  APP_PID="$APC_OWNED_APP_PID" "$COLD_LAUNCH_PROBE"
+  apc_stop_owned_runtime "$PETCORE_CLI" "$PETCORE_BINARY" "$OWNED_PROTOCOL"
+done
+unset APC_CONTROL_CENTER_LAUNCH_JITTER_MS
+
+printf 'Main window cold-launch stress validation ok: %s iterations\n' \
+  "$COLD_LAUNCH_ITERATIONS"

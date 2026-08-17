@@ -40,7 +40,7 @@ struct ControlOverlayPanelTests {
     }
 
     @Test
-    func bubblePanelSupportsExplicitFullKeyboardNavigation() {
+    func bubblePanelRequiresAnExplicitKeyboardNavigationLease() {
         let panel = BubbleOverlayPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -48,8 +48,18 @@ struct ControlOverlayPanelTests {
             defer: false
         )
 
-        #expect(panel.canBecomeKey)
+        #expect(!panel.canBecomeKey)
         #expect(!panel.canBecomeMain)
+
+        panel.beginKeyboardNavigationLease()
+
+        #expect(panel.keyboardNavigationLeaseIsActive)
+        #expect(panel.canBecomeKey)
+
+        panel.endKeyboardNavigation()
+
+        #expect(!panel.keyboardNavigationLeaseIsActive)
+        #expect(!panel.canBecomeKey)
     }
 
     @Test
@@ -65,10 +75,20 @@ struct ControlOverlayPanelTests {
             focusTransitions.append($0)
         }
 
+        panel.beginKeyboardNavigationLease()
         panel.becomeKey()
         panel.resignKey()
 
         #expect(focusTransitions == [true, false])
+        #expect(!panel.canBecomeKey)
+    }
+
+    @Test
+    func ordinaryControlPanelCanNeverBecomeKey() {
+        let panel = makePanel()
+
+        #expect(!panel.canBecomeKey)
+        #expect(!panel.canBecomeMain)
     }
 
     @Test

@@ -26,6 +26,8 @@ Build and validation are separate profiles. `build_and_run.sh --run` and the env
 
 The local default is deliberately bounded: it checks diff and source syntax, localization and lightweight Skill/workflow contracts when touched, Rust formatting plus `cargo check`, and strict Swift compilation. `validate_local_tests.sh` is an optional domain-manifest-driven focused entrypoint; it uses explicit changed paths, rejects stale or unknown domains, and falls back conservatively when no exact focused suite exists. Neither local path runs complete Rust or Swift tests, simulated connector/producer roundtrips, App assembly, stress, or release artifact validation. Those duplicate proofs belong to required GitHub CI. The local gate never launches the GUI, mutates user LaunchAgents, invokes real Agents, or reads credentials. / 本地默认门禁刻意保持轻量；可选的领域聚焦入口根据类型化领域清单和明确改动路径生成计划，拒绝未知领域，并在无法精确命中时保守回退。两条本地路径都不重复远端全量测试、组装、压力或发布验证，也不会启动 GUI、修改 LaunchAgent、调用真实 Agent 或读取凭据。
 
+Source syntax validation also rejects absolute RFC 3339 dates in Rust fixtures that call event-retention write APIs, including dates reached through same-file fixture helpers. Such tests must capture one current UTC base and express ordering or expiry with relative offsets; fixed dates remain valid in isolated schema, serialization, and migration fixtures that do not cross a real wall clock. / 源码语法门禁还会拒绝 Rust 测试中调用事件保留写入 API（包括经同文件 fixture helper 间接调用）时使用固定 RFC 3339 绝对日期。这类测试必须捕获一次当前 UTC 基准并用相对偏移表达顺序或过期；不接触真实时钟的独立 schema、序列化与迁移 fixture 仍可保留固定日期。
+
 `validation_scope.py` is the single path classifier used by local pre-push and CI. The routing contract is: / 本地预推送与 CI 共用 `validation_scope.py`，范围合同如下：
 
 | Change / 变更 | Automatic proof / 自动证明 | Not automatic / 不自动执行 |
@@ -70,6 +72,7 @@ Branch/worktree ownership and direct/train PR coordination are defined by [Paral
 ## Environment-dependent gates / 环境门禁
 
 - `APC_VALIDATE_HOST_UI=1` permits repository validators that affect a packaged App runtime. It does not itself invoke Computer Use.
+- `APC_MAIN_UI_COLD_LAUNCH_ITERATIONS=1..100` controls the real foreground Control Center stress loop inside `validate_main_window_ui.sh` (default `3`; Release acceptance requires at least `20`). Each iteration uses an isolated owned runtime and varied launch-request timing, then proves the exact window identifier, layer, alpha, frame, nonblank ScreenCaptureKit pixels, overlay presentation, and retained key-window identity. Screen Recording and Accessibility access must be available to the executing host; an unavailable observation fails this host gate rather than being inferred as passed. / 该变量控制真实前台控制中心的冷启动压力循环（默认 `3`，Release 验收至少 `20`）；每轮使用隔离运行时与不同的展示请求时序，并验证精确窗口标识、层级、透明度、尺寸、非空白像素、悬浮层展示及持续的 key-window 身份。主机缺少录屏或辅助功能权限时门禁直接失败，不得推断为通过。
 - `APC_VALIDATE_REAL_AGENT_CONNECTORS=1` permits checks against installed Agent CLIs and managed connector files. It never permits reading credential stores.
 - `APC_VALIDATE_REAL_APP_SERVER=1` permits the real App Server lifecycle validation. It deliberately requests native input, completes one pet, interrupts and restarts its owned PetCore, resumes a second task, then strictly cancels and verifies the exact Studio thread is archived or absent from the ordinary list. `APC_REQUIRE_EXTERNAL_SKILL_SOURCE=1` keeps the strict release proof; lowering it weakens the result.
 - `APC_RUN_SIX_HOUR_MAKER_SOAK=1` runs the non-default six-hour gate. It holds a real task in durable waiting-for-user state for just over six hours, verifies the backend-authoritative duration includes that interval, and then runs the same resume/cancel lifecycle checks.
@@ -86,6 +89,8 @@ APC_VALIDATE_REAL_AGENT_CONNECTORS=1 ./script/validate_real_agent_connectors.sh
 APC_VALIDATE_REAL_APP_SERVER=1 ./script/validate_real_app_server.sh
 APC_RUN_SIX_HOUR_MAKER_SOAK=1 ./script/soak_ai_pet_maker_six_hours.sh
 APC_EVENT_STORM_COUNT=1000 ./script/validate_event_storm.sh
+APC_VALIDATE_HOST_UI=1 APC_MAIN_UI_COLD_LAUNCH_ITERATIONS=20 \
+  ./script/validate_main_window_ui.sh
 ./script/validate_overlay_performance_summary.sh /absolute/summary.json 60
 ```
 

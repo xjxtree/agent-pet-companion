@@ -9,20 +9,6 @@ enum OverlayBubbleDisclosureDirection: Equatable {
     case collapsing
 }
 
-enum InitialOverlayFocusPolicy {
-    static func shouldRestoreControlCenter(
-        controlCenterWasKeyBeforePresentation: Bool,
-        appIsActive: Bool,
-        controlCenterIsOpen: Bool,
-        windowIsVisible: Bool
-    ) -> Bool {
-        controlCenterWasKeyBeforePresentation
-            && appIsActive
-            && controlCenterIsOpen
-            && windowIsVisible
-    }
-}
-
 enum OverlayBubbleDisclosureAction: Equatable {
     case revealBubble
     case revealCollapsedStandaloneStack
@@ -790,6 +776,10 @@ final class AppStore: ObservableObject {
     private let overlayPlacementJournalStore: OverlayPlacementJournalStore
     private let agentSessionRouteOpener: AgentSessionRouteOpener
     private let runtimeHandoffIfNeeded: RuntimeHandoffCheck
+    private let controlCenterWindowProvider:
+        ControlCenterPresentationCoordinator.WindowProvider
+    private let controlCenterApplicationActivator:
+        ControlCenterPresentationCoordinator.ApplicationActivator
     private let applicationAppearanceApplier: ApplicationAppearanceApplier
     private let applicationLanguageApplier: ApplicationLanguageApplier
     private let overlayPresenter: OverlayPresenter
@@ -827,14 +817,34 @@ final class AppStore: ObservableObject {
     private var behaviorMutationTask: Task<Void, Never>?
     private var behaviorMutationSequence: UInt64 = 0
     private var pendingBehaviorMutationCount = 0
-    private var mainWindowPresenter: (() -> Void)?
-    private weak var controlCenterWindow: NSWindow?
-    private var controlCenterCloseObserver: AnyCancellable?
     private var connectionsModelObservation: AnyCancellable?
-    private(set) var controlCenterIsOpen = false
-    private var pendingMainWindowPresentation = false
-    private var pendingMainWindowPresentationChecksRuntimeHandoff = true
-    private var pendingControlCenterFronting = false
+    private lazy var controlCenterPresentationCoordinator =
+        ControlCenterPresentationCoordinator(
+            identifier: Self.controlCenterWindowIdentifier,
+            windowProvider: controlCenterWindowProvider,
+            activateApplication: controlCenterApplicationActivator,
+            runtimeHandoffIfNeeded: { [weak self] in
+                self?.runtimeHandoffIfNeeded() ?? false
+            },
+            onWindowOpened: { [weak self] _ in
+                guard let self else { return }
+                self.overlayController.controlCenterDidOpen()
+                self.diagnostics.log(
+                    .debug,
+                    category: "lifecycle",
+                    event: "control_center_opened"
+                )
+            },
+            onWindowClosed: { [weak self] in
+                guard let self else { return }
+                self.overlayController.controlCenterDidClose()
+                self.diagnostics.log(
+                    .debug,
+                    category: "lifecycle",
+                    event: "control_center_closed"
+                )
+            }
+        )
     private var generationMessagesTask: Task<Void, Never>?
     private var latestGenerationRestoreAttemptState = LatestGenerationRestoreAttemptState.notAttempted
     private var latestGenerationRestoreAttemptSequence: UInt64 = 0
@@ -885,6 +895,14 @@ final class AppStore: ObservableObject {
     static let controlCenterWindowIdentifier = NSUserInterfaceItemIdentifier(
         "dev.agentpet.companion.control-center"
     )
+
+    var controlCenterIsOpen: Bool {
+        controlCenterPresentationCoordinator.isOpen
+    }
+
+    var controlCenterPresentationPhase: ControlCenterPresentationCoordinator.Phase {
+        controlCenterPresentationCoordinator.phase
+    }
     private static let defaultOverlayKeyboardFocusHandler: OverlayKeyboardFocusHandler = { controller, action in
         switch action {
         case .bubbleSessions:
@@ -914,6 +932,10 @@ final class AppStore: ObservableObject {
         agentSessionRouteOpener = Self.openAgentSessionRoute
         runtimeHandoffIfNeeded = {
             AppUpdateHandoffCoordinator.shared.restartIfInstalledBuildChanged()
+        }
+        controlCenterWindowProvider = { NSApp?.windows ?? [] }
+        controlCenterApplicationActivator = {
+            NSApp?.activate(ignoringOtherApps: true)
         }
         applicationAppearanceApplier = { theme in
             APCApplicationAppearance.apply(theme)
@@ -969,6 +991,10 @@ final class AppStore: ObservableObject {
             .failed(.applicationUnavailable)
         },
         runtimeHandoffIfNeeded: @escaping RuntimeHandoffCheck = { false },
+        controlCenterWindowProvider: @escaping
+            ControlCenterPresentationCoordinator.WindowProvider = { [] },
+        controlCenterApplicationActivator: @escaping
+            ControlCenterPresentationCoordinator.ApplicationActivator = {},
         applicationAppearanceApplier: @escaping ApplicationAppearanceApplier = { theme in
             APCApplicationAppearance.apply(theme)
         },
@@ -1007,6 +1033,8 @@ final class AppStore: ObservableObject {
         self.overlayPlacementJournalStore = overlayPlacementJournalStore
         self.agentSessionRouteOpener = agentSessionRouteOpener
         self.runtimeHandoffIfNeeded = runtimeHandoffIfNeeded
+        self.controlCenterWindowProvider = controlCenterWindowProvider
+        self.controlCenterApplicationActivator = controlCenterApplicationActivator
         self.applicationAppearanceApplier = applicationAppearanceApplier
         self.applicationLanguageApplier = applicationLanguageApplier
         self.overlayPresenter = overlayPresenter
@@ -1511,44 +1539,11 @@ final class AppStore: ObservableObject {
     }
 
     func setMainWindowPresenter(_ presenter: @escaping () -> Void) {
-        mainWindowPresenter = presenter
-        guard pendingMainWindowPresentation else { return }
-        let checksRuntimeHandoff = pendingMainWindowPresentationChecksRuntimeHandoff
-        pendingMainWindowPresentation = false
-        pendingMainWindowPresentationChecksRuntimeHandoff = true
-        guard !checksRuntimeHandoff || !runtimeHandoffIfNeeded() else {
-            pendingControlCenterFronting = false
-            return
-        }
-        presenter()
-        NSApp?.activate(ignoringOtherApps: true)
+        controlCenterPresentationCoordinator.installPresenter(presenter)
     }
 
     func registerControlCenterWindow(_ window: NSWindow) {
-        guard controlCenterWindow !== window else { return }
-        controlCenterCloseObserver?.cancel()
-        window.identifier = Self.controlCenterWindowIdentifier
-        controlCenterWindow = window
-        controlCenterIsOpen = true
-        overlayController.controlCenterDidOpen(window: window)
-        controlCenterCloseObserver = NotificationCenter.default.publisher(
-            for: NSWindow.willCloseNotification,
-            object: window
-        )
-        .sink { [weak self, weak window] _ in
-            Task { @MainActor in
-                guard let self, self.controlCenterWindow === window else {
-                    return
-                }
-                self.controlCenterIsOpen = false
-                self.overlayController.controlCenterDidClose()
-            }
-        }
-        if pendingControlCenterFronting {
-            pendingControlCenterFronting = false
-            window.makeKeyAndOrderFront(nil)
-            NSApp?.activate(ignoringOtherApps: true)
-        }
+        controlCenterPresentationCoordinator.register(window)
     }
 
     func presentManualAppInstallation(_ request: AppManualInstallationRequest) {
@@ -1636,28 +1631,20 @@ final class AppStore: ObservableObject {
     }
 
     private func presentMainWindow(checkRuntimeHandoff: Bool) {
-        guard !checkRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }
-        pendingControlCenterFronting = true
-        if frontExistingMainWindow() {
-            pendingControlCenterFronting = false
-            pendingMainWindowPresentation = false
-            pendingMainWindowPresentationChecksRuntimeHandoff = true
-            NSApp?.activate(ignoringOtherApps: true)
-            return
-        }
-
-        if let mainWindowPresenter {
-            pendingMainWindowPresentation = false
-            pendingMainWindowPresentationChecksRuntimeHandoff = true
-            mainWindowPresenter()
-        } else {
-            // A secondary launch or Dock reopen can arrive before either scene
-            // has installed its openWindow presenter. Replay exactly once when
-            // the first presenter becomes available.
-            pendingMainWindowPresentation = true
-            pendingMainWindowPresentationChecksRuntimeHandoff = checkRuntimeHandoff
-        }
-        NSApp?.activate(ignoringOtherApps: true)
+        controlCenterPresentationCoordinator.requestPresentation(
+            checkRuntimeHandoff: checkRuntimeHandoff
+        )
+        diagnostics.log(
+            .debug,
+            category: "lifecycle",
+            event: "control_center_presentation_requested",
+            metadata: [
+                "phase": .string(
+                    controlCenterPresentationCoordinator.phase.diagnosticValue
+                ),
+                "runtime_handoff_checked": .bool(checkRuntimeHandoff),
+            ]
+        )
     }
 
     func presentAgentSession(
@@ -1898,31 +1885,11 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func frontExistingMainWindow() -> Bool {
-        guard let application = NSApp else {
-            return false
-        }
-        let window = if let controlCenterWindow,
-                        Self.isMainWindowCandidate(controlCenterWindow) {
-            controlCenterWindow
-        } else {
-            application.windows.first(where: Self.isMainWindowCandidate)
-        }
-        guard let window else { return false }
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-        controlCenterIsOpen = true
-        overlayController.controlCenterDidOpen(window: window)
-        return true
-    }
-
     static func isMainWindowCandidate(_ window: NSWindow) -> Bool {
-        window.identifier == controlCenterWindowIdentifier
-            && !(window is NSPanel)
-            && window.level == .normal
-            && window.styleMask.contains(.titled)
+        ControlCenterPresentationCoordinator.isCandidate(
+            window,
+            identifier: controlCenterWindowIdentifier
+        )
     }
 
     private enum RuntimeBootstrapStartMode {
@@ -1969,9 +1936,9 @@ final class AppStore: ObservableObject {
             appUpdateConvergenceState = .updating
         }
         setServiceChecking()
-        // Bound the invisible window gate from bootstrap start. Runtime
-        // replacement and rollback can take much longer than appearance
-        // hydration, and must not make the App look dead while it is checking.
+        // Bound appearance hydration from bootstrap start. Runtime replacement
+        // and rollback can take much longer, so the already-visible system
+        // appearance must remain the explicit fallback while they run.
         scheduleInitialAppearanceFallback()
         let startResult = switch startMode {
         case .ensureRunning:
@@ -2105,9 +2072,9 @@ final class AppStore: ObservableObject {
             // focused behavior request is suspended. Once that snapshot is
             // authoritative, never publish this older focused result.
             guard initialAppearanceReadiness != .authoritative else { return }
-            // The publication order is deliberate: every window gate observing
-            // readiness must see behavior, revision, and AppKit appearance as
-            // one fully prepared initial presentation state.
+            // The publication order is deliberate: every window appearance
+            // observer sees behavior, revision, and AppKit appearance as one
+            // fully prepared initial presentation state.
             authoritativeBehavior = versioned.behavior
             behavior = versioned.behavior
             behaviorRevision = versioned.revision
@@ -3017,33 +2984,8 @@ final class AppStore: ObservableObject {
               hasLoadedStateSnapshot,
               !hasPresentedOverlay
         else { return }
-        let keyControlCenterWindow: NSWindow? = if controlCenterIsOpen,
-                                                  controlCenterWindow?.isKeyWindow == true {
-            controlCenterWindow
-        } else {
-            nil
-        }
         hasPresentedOverlay = true
         overlayPresenter(overlayController, self)
-        guard let keyControlCenterWindow else { return }
-
-        // The resident panels can become key for explicit keyboard navigation,
-        // but their first ordering must not take the cold-launch focus away
-        // from an already-key Control Center. Defer until AppKit has completed
-        // the overlay ordering turn, and never reactivate an App the user has
-        // already left.
-        DispatchQueue.main.async { [weak self, weak keyControlCenterWindow] in
-            guard let self, let keyControlCenterWindow,
-                  self.controlCenterWindow === keyControlCenterWindow,
-                  InitialOverlayFocusPolicy.shouldRestoreControlCenter(
-                      controlCenterWasKeyBeforePresentation: true,
-                      appIsActive: NSApp?.isActive == true,
-                      controlCenterIsOpen: self.controlCenterIsOpen,
-                      windowIsVisible: keyControlCenterWindow.isVisible
-                  )
-            else { return }
-            keyControlCenterWindow.makeKeyAndOrderFront(nil)
-        }
     }
 
     private func reconcileActiveGeneration(_ snapshot: ActiveGenerationSnapshot) {

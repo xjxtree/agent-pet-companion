@@ -4,7 +4,7 @@ import SwiftUI
 import Testing
 @testable import AgentPetCompanion
 
-@Suite
+@Suite(.serialized)
 struct AppLifecycleContractTests {
     @MainActor
     @Test
@@ -25,13 +25,12 @@ struct AppLifecycleContractTests {
                 onReady: { _ in }
             )
         )
-        let window = NSPanel(
+        let window = NSWindow(
             contentRect: .zero,
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        defer { window.close() }
 
         store.registerControlCenterWindow(window)
         #expect(store.controlCenterIsOpen)
@@ -40,7 +39,6 @@ struct AppLifecycleContractTests {
             name: NSWindow.willCloseNotification,
             object: window
         )
-        await Task.yield()
 
         #expect(!store.controlCenterIsOpen)
     }
@@ -52,7 +50,6 @@ struct AppLifecycleContractTests {
 
         #expect(policy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
@@ -62,14 +59,12 @@ struct AppLifecycleContractTests {
 
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
@@ -84,29 +79,19 @@ struct AppLifecycleContractTests {
 
         #expect(policy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: false,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: true
         ))
         #expect(!policy.shouldHide(
             rendererValidationActive: true,
-            controlCenterWindowIsConcealed: false,
             frontmostApplicationIsFinder: true,
-            finderHasRegularWindow: false,
-            hasVisibleRegularApplicationWindow: false
-        ))
-        #expect(!policy.shouldHide(
-            rendererValidationActive: false,
-            controlCenterWindowIsConcealed: true,
-            frontmostApplicationIsFinder: false,
             finderHasRegularWindow: false,
             hasVisibleRegularApplicationWindow: false
         ))
@@ -127,15 +112,53 @@ struct AppLifecycleContractTests {
 
         store.presentMainWindow()
         store.presentMainWindow()
+        #expect(store.controlCenterPresentationPhase == .waitingForPresenter)
         store.setMainWindowPresenter {
             presentations += 1
         }
         #expect(presentations == 1)
+        #expect(store.controlCenterPresentationPhase == .waitingForWindow)
 
         store.setMainWindowPresenter {
             presentations += 1
         }
         #expect(presentations == 1)
+    }
+
+    @MainActor
+    @Test
+    func presenterAndWindowRegistrationOrderConvergeOnOneKeyPresentation() {
+        let store = AppStore(
+            bootstrapHooks: AppStoreBootstrapHooks(
+                ensureRunning: { .alreadyHealthy },
+                recover: { .alreadyHealthy },
+                refreshSnapshot: { _ in },
+                onReady: { _ in }
+            ),
+            runtimeHandoffIfNeeded: { false }
+        )
+        let window = ControlCenterFrontRecordingWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        var presentations = 0
+        store.setMainWindowPresenter {
+            presentations += 1
+        }
+
+        store.presentMainWindow()
+        store.presentMainWindow()
+
+        #expect(presentations == 1)
+        #expect(store.controlCenterPresentationPhase == .waitingForWindow)
+
+        store.registerControlCenterWindow(window)
+
+        #expect(window.frontRequestCount == 1)
+        #expect(store.controlCenterPresentationPhase == .presented)
+        #expect(store.controlCenterIsOpen)
     }
 
     @MainActor
@@ -160,10 +183,40 @@ struct AppLifecycleContractTests {
         store.presentMainWindow()
         #expect(window.frontRequestCount == 0)
 
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+
         store.registerControlCenterWindow(window)
 
         #expect(window.frontRequestCount == 1)
+        #expect(window.alphaValue == 1)
+        #expect(!window.ignoresMouseEvents)
         #expect(store.controlCenterIsOpen)
+    }
+
+    @Test
+    func coldLaunchJitterIsBoundedAndHostValidationOnly() {
+        #expect(ControlCenterColdLaunchTiming.validationJitterMilliseconds(
+            environment: [:]
+        ) == 0)
+        #expect(ControlCenterColdLaunchTiming.validationJitterMilliseconds(
+            environment: [
+                "APC_VALIDATE_HOST_UI": "0",
+                "APC_CONTROL_CENTER_LAUNCH_JITTER_MS": "750",
+            ]
+        ) == 0)
+        #expect(ControlCenterColdLaunchTiming.validationJitterMilliseconds(
+            environment: [
+                "APC_VALIDATE_HOST_UI": "1",
+                "APC_CONTROL_CENTER_LAUNCH_JITTER_MS": "750",
+            ]
+        ) == 750)
+        #expect(ControlCenterColdLaunchTiming.validationJitterMilliseconds(
+            environment: [
+                "APC_VALIDATE_HOST_UI": "1",
+                "APC_CONTROL_CENTER_LAUNCH_JITTER_MS": "1501",
+            ]
+        ) == 0)
     }
 
     @MainActor
@@ -271,7 +324,9 @@ struct AppLifecycleContractTests {
 
         #expect(store.appUpdateConvergenceState == .idle)
         #expect(store.manualAppInstallationRequest == request)
-        #expect(presentations == 2)
+        // Both forced recovery requests target the same outstanding singleton
+        // scene presentation; the visible guide state updates independently.
+        #expect(presentations == 1)
     }
 
     @Test
@@ -307,7 +362,7 @@ struct AppLifecycleContractTests {
             in: appSource
         ))
         #expect(LifecycleSource.matches(
-            #"applicationDidFinishLaunching[\s\S]*?DispatchQueue\.main\.async\s*\{\s*AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)"#,
+            #"applicationDidFinishLaunching[\s\S]*?ControlCenterColdLaunchTiming\.schedule\s*\{\s*AppSingleInstanceCoordinator\.shared\.activatePrimaryInstance\(\)"#,
             in: appSource
         ))
         #expect(LifecycleSource.matches(
@@ -337,10 +392,7 @@ struct AppLifecycleContractTests {
         ))
         #expect(overlaySource.contains("onOpenMainWindow: { store.presentMainWindow() }"))
         #expect(appStoreSource.contains(
-            "private func presentMainWindow(checkRuntimeHandoff: Bool)"
-        ))
-        #expect(appStoreSource.contains(
-            "guard !checkRuntimeHandoff || !runtimeHandoffIfNeeded() else { return }"
+            "controlCenterPresentationCoordinator.requestPresentation("
         ))
         #expect(appSource.components(separatedBy: ".sheet(").count - 1 == 1)
         #expect(appSource.contains(

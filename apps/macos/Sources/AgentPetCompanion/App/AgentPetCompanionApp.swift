@@ -61,11 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard AppSingleInstanceCoordinator.shared.claim == .primary else { return }
         AppDiagnostics.shared.log(.notice, category: "lifecycle", event: "app_did_finish_launching")
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        // Defer one turn so SwiftUI installs the primary activation handler
-        // and AppKit completes its launch-time scene ordering before the
-        // shared presenter fronts the registered Control Center window.
-        DispatchQueue.main.async {
+        // The presentation coordinator owns activation and key-window state.
+        // A bounded host-validation-only delay exercises both SwiftUI setup
+        // orderings without changing production launch timing.
+        ControlCenterColdLaunchTiming.schedule {
             AppSingleInstanceCoordinator.shared.activatePrimaryInstance()
         }
     }
@@ -208,7 +207,7 @@ struct AgentPetCompanionApp: App {
                     .apcInterfaceLanguage(store)
                     .background {
                         if AppLaunchMode.manualInstallationRequest == nil {
-                            InitialAppearanceWindowGateView(
+                            InitialAppearanceWindowView(
                                 readiness: store.initialAppearanceReadiness,
                                 theme: store.behavior.appearanceTheme
                             )
@@ -412,7 +411,6 @@ private struct AppStatusItemLabel: View {
             .onAppear {
                 store.setMainWindowPresenter {
                     openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
     }
@@ -508,7 +506,7 @@ private struct MainWindowContent: View {
             .background {
                 ZStack {
                     if AppLaunchMode.manualInstallationRequest == nil {
-                        InitialAppearanceWindowGateView(
+                        InitialAppearanceWindowView(
                             readiness: store.initialAppearanceReadiness,
                             theme: store.behavior.appearanceTheme
                         )
