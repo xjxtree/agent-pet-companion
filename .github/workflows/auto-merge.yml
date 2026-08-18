@@ -150,12 +150,31 @@ jobs:
             gh pr merge --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
             newly_merged=1
           fi
-          pull="$(
-            gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"
-          )"
+          pull=""
+          merge_observed=0
+          for attempt in 1 2 3 4 5 6; do
+            pull="$(
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"
+            )"
+            if jq -e \
+              --arg base_branch "$BASE_BRANCH" \
+              --arg head_sha "$HEAD_SHA" \
+              '.merged == true and
+               .base.ref == $base_branch and
+               .head.sha == $head_sha and
+               (.merge_commit_sha | strings | test("^[0-9a-f]{40}$"))' \
+              <<<"$pull" >/dev/null; then
+              merge_observed=1
+              break
+            fi
+            if ((attempt < 6)); then
+              sleep 2
+            fi
+          done
+          test "$merge_observed" = "1"
           test "$(jq -er '.merged' <<<"$pull")" = "true"
           test "$(jq -er '.base.ref' <<<"$pull")" = "$BASE_BRANCH"
           test "$(jq -er '.head.sha' <<<"$pull")" = "$HEAD_SHA"

@@ -1135,6 +1135,16 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn("./script/ci_proof_promotion.py delete-merged-head", source)
         self.assertIn("newly_merged=$newly_merged", source)
         self.assertIn('--allow-delete "$ALLOW_DELETE"', source)
+        merge_step = source[
+            source.index("Squash or recover only the PR proven") : source.index(
+                "Dispatch exact merged main commit validation"
+            )
+        ]
+        self.assertIn("merge_observed=0", merge_step)
+        self.assertIn("for attempt in 1 2 3 4 5 6", merge_step)
+        self.assertIn('test "$merge_observed" = "1"', merge_step)
+        self.assertIn(".merged == true", merge_step)
+        self.assertLess(merge_step.index("gh pr merge"), merge_step.index("merge_observed=0"))
         cleanup = source.index("./script/ci_proof_promotion.py delete-merged-head")
         self.assertGreater(cleanup, source.index("Squash or recover only the PR proven"))
         self.assertGreater(cleanup, source.index("Dispatch exact merged main commit validation"))
