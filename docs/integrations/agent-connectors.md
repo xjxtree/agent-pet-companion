@@ -10,6 +10,7 @@ Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode t
 | Claude Code | Managed hook settings fragment | Activity only |
 | Pi Coding Agent | Managed TypeScript extension | Activity only |
 | OpenCode | Managed JavaScript plugin | Activity only |
+| DeepSeek Harness | Managed Cordis plugin | Activity only |
 
 Templates live in [plugins](../../plugins/); the stable check/repair/refresh/uninstall interface and shared managed-tree engine live in [connections](../../crates/petcore/src/connections/), while each host's audited constants and templates are isolated under `connections/adapters/`.
 
@@ -37,6 +38,7 @@ Adapters record the actual App or CLI origin. Audited App markers override inher
 | Claude Code | Claude App host activation only | Exact Warp URL when present; otherwise known terminal host |
 | OpenCode | OpenCode App host activation only | Exact Warp URL when present; otherwise known terminal host |
 | Pi | No App surface | Exact Warp URL when present; otherwise known terminal host |
+| DeepSeek Harness | No App surface | Exact Warp URL when present; otherwise known terminal host |
 
 Claude hook UUIDs identify CLI transcripts, not existing Claude Desktop sessions, so they are never published as exact Desktop routes. Unknown terminals, malformed targets, source/surface mismatches, and ambiguous historical origins are unavailable rather than guessed. A source-matching audited App origin remains authoritative within one activity epoch even if a later terminal hook loses the marker; a genuine new activation may select a different surface.
 
@@ -46,7 +48,7 @@ Rows expose `exact_session`, `agent_host`, or `unavailable`. The App acknowledge
 
 Each projected session carries separate bounded fields for title, latest user message, Agent message, and normalized activity. The title is the latest explicit title, falling back to the first user message only until one exists. Later prompts update context without renaming the session. The bubble body selects only the newest Agent message or explicit thinking/plan text and retains it across user, tool, and lifecycle activity. Tool and other activity still update the closed status summary but do not enter or clear the body. Navigation notices remain a separate higher-priority presentation.
 
-Only root Agent sessions enter the session projection. Connectors use explicit host lineage—not user-facing titles or display order—to suppress child sessions: OpenCode `parentID`, Codex App Server sub-Agent source kinds and `parentThreadId`, Pi session-header `parentSession`, and Claude sidechain markers. Pi parallel subagent runners that omit `parentSession` are additionally recognized only through Pi's closed, host-reserved `subagent-*` session-name namespace; arbitrary session names are not classified. The suppression marker contains only the child session identity; it deletes any earlier projection for that identity, blocks later events, and never persists the parent identity or reserved name. Sub-Agent lifecycle may still update the owning root session's status, but it never creates another desktop card.
+Only root Agent sessions enter the session projection. Connectors use explicit host lineage—not user-facing titles or display order—to suppress child sessions: OpenCode `parentID`, Codex App Server sub-Agent source kinds and `parentThreadId`, Pi session-header `parentSession`, Claude sidechain markers, and DeepSeek Harness `session.header.origin === 'subagent'` / `parentSession`. Pi parallel subagent runners that omit `parentSession` are additionally recognized only through Pi's closed, host-reserved `subagent-*` session-name namespace; arbitrary session names are not classified. The suppression marker contains only the child session identity; it deletes any earlier projection for that identity, blocks later events, and never persists the parent identity or reserved name. Sub-Agent lifecycle may still update the owning root session's status, but it never creates another desktop card.
 
 OpenCode queues bounded existing-session discovery for the first task after Plugin activation instead of entering its own in-process Server API while that activation is still being constructed. Every session-bearing live hook waits behind the same lineage gate, so activation can complete without deadlocking while an already-running child is still classified before any of its activity can enter the projection. Cleanup-marker delivery is queued asynchronously after classification and does not carry the parent identity.
 
@@ -62,6 +64,7 @@ Activity normalization selects only bounded semantic scalars such as reasoning, 
 | Claude Code | Tool descriptions, commands/results/errors, permission/input requests, sub-Agent and compaction hooks; no private model reasoning |
 | Pi | Tool input/output, bounded Agent reply, and explicit finalized `ThinkingContent.thinking`; no inference from token/timestamp churn |
 | OpenCode | Stable reasoning/plan boundaries, command/tool data, compaction, errors, and session steps |
+| DeepSeek Harness | Reasoning `block-start` boundaries, clean tool names, plan/todo snapshots, approval requests/decisions, and subagent lifecycle |
 
 ## Event mapping
 
@@ -84,6 +87,8 @@ Ordinary `session_active` is a bounded observation, not a permanent heartbeat. `
 Claude Code's delayed `idle_prompt` notification completes an ordinary turn only when the current session has no unresolved background-work fence. A `Stop` that reports `background_tasks` or `session_crons` opens that fence; the notification remains in bounded audit history but cannot replace the running projection or reject later same-turn tool/sub-Agent activity. A new Claude process boundary or an explicit `Stop`, `StopFailure`, `SessionEnd`, or `agent_completed` edge settles the fence. This distinction is Claude-specific and does not change ordinary `idle_prompt` completion or any other Agent's terminal mapping.
 
 Pi emits `input` before it validates the interactive session's selected model. When the public Extension context has no model at that boundary, the managed adapter closes that admitted input directly as `failed` with the closed `model_unavailable` outcome; it never inspects provider credentials or auth storage. Other Pi failures continue to settle only on a stable terminal host boundary.
+
+DeepSeek Harness emits stream chunks and lifecycle broadcasts through Cordis. The managed plugin subscribes only to broadcast `emit` events (`session/event`, `subagent/start`, `subagent/end`, `session/disposed`, `agent/status`); it explicitly avoids waterfall/interception events (`agent/pre-step`, `tools/pre-execute`, etc.) to prevent pure observers from stalling the driver chain. `assistant/chunk` events are filtered so only explicit `block-start{blockType:'reasoning'}` boundaries emit `thinking`, while all delta chunks and usage data are dropped locally. Active child subagents tracked via `subagent/start`/`subagent/end` maintain a per-parent background fence: a parent `turn/end{completed}` while subagents are running emits `background_active`, and the terminal `done/completed` is deferred until all child runs in that parent's fence settle.
 
 ## Managed connection operations
 
@@ -163,6 +168,7 @@ The post-update notice preserves a closed App-side reason for each failed Agent:
 - Connector parse warnings contain only closed source/field/failure categories; the rejected host value is never logged.
 - Internal Codex suggestion/Studio sessions are suppressed from ordinary desktop activity. Pet Studio persists its exact thread/job link before the first turn; Maker history is the only App projection for those threads, and its exact ChatGPT route is exposed only after live unarchived verification.
 - Host-declared child Agent sessions and subsessions are suppressed before projection; parent lineage is inspected locally and never persisted.
+- DeepSeek Harness plugin never reads `~/.dsh/.credentials.yaml`, `settings.yaml` provider credentials, or profile credentials; `subagent/end.lastAssistantMessage` (child content) is never forwarded; all `*-delta` chunks are dropped locally.
 - Managed connector files must be attributable, atomically replaced, and removable without modifying unrelated user configuration. Foreign or customized commands remain untouched and create a managed-path conflict.
 - UDS and loopback ingress are local-only; loopback requires the private App-managed capability token.
 
