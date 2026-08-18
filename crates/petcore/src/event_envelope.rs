@@ -64,6 +64,7 @@ pub(crate) fn event_requires_prior_user_activation(event: &AgentEvent) -> bool {
             Some("session.next.step.ended"),
         ) => true,
         (AgentSource::Opencode, AgentEventType::Failed, Some("session.next.step.failed")) => true,
+        (AgentSource::Dsh, AgentEventType::Done | AgentEventType::Failed, Some("turn/end")) => true,
         _ => false,
     }
 }
@@ -164,9 +165,21 @@ pub(crate) fn event_starts_new_activity_epoch(event: &AgentEvent) -> bool {
             ) || (source_event == Some("session.status")
                 && matches!(outcome, Some("busy" | "retry")))
         }
-        // T2 lands the dsh epoch vocabulary; until then no dsh source event
-        // starts a new activity epoch.
-        AgentSource::Dsh => false,
+        AgentSource::Dsh => {
+            matches!(
+                source_event,
+                Some(
+                    "turn/start"
+                        | "assistant/chunk"
+                        | "plan/mode"
+                        | "todo/write"
+                        | "tool/call"
+                        | "approval/asked"
+                        | "approval/decided"
+                )
+            ) || (source_event == Some("turn/end")
+                && matches!(outcome, Some("background_active" | "max_tokens")))
+        }
     }
 }
 

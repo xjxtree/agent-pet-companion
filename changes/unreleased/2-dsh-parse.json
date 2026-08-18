@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Added",
+  "scope": "connections",
+  "summary_en": "Add DeepSeek Harness (dsh) hook event normalization covering all seven semantic states, reasoning boundaries, and background fence.",
+  "summary_zh": "新增 DeepSeek Harness（dsh）Hook 事件归一化，覆盖全部七种语义状态、reasoning 边界与后台工作栅栏。"
+}
