@@ -841,9 +841,9 @@ if by_id["pet_bytebudcodex"].get("active") is not False:
 
 with sqlite3.connect(os.environ["BUNDLED_DB"]) as database:
     schema_version = database.execute("PRAGMA user_version").fetchone()[0]
-if schema_version != 6:
+if schema_version != 7:
     raise SystemExit(
-        f"app bundle validation failed: bundled seed changed database schema to {schema_version}, expected 6"
+        f"app bundle validation failed: bundled seed changed database schema to {schema_version}, expected 7"
     )
 PY
 
