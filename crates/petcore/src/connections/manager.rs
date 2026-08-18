@@ -1517,9 +1517,8 @@ fn connection_install_paths(paths: &AppPaths, source: AgentSource) -> Vec<String
         AgentSource::ClaudeCode => {
             install_paths.push(claude_settings_path().display().to_string());
         }
+        // T3 lands the dsh managed patch-entry install; nothing installed yet.
         AgentSource::Pi | AgentSource::Opencode | AgentSource::Dsh => {}
-        // T3 lands the managed patch-entry install; nothing installed yet.
-        AgentSource::Dsh => {}
     }
     install_paths
 }
