@@ -20,7 +20,7 @@ Agent Pet Companion is a native macOS desktop pet for people who work with one o
 
 - **Switch windows less often** — see Agent activity on your desktop without repeatedly opening a terminal or Agent app.
 - **Notice tasks that need you** — get a clear visual response when an Agent needs input, finishes, or fails.
-- **Follow several Agents together** — bring activity from Codex, Claude Code, Pi Coding Agent, and OpenCode into one place.
+- **Follow several Agents together** — bring activity from Codex, Claude Code, Pi Coding Agent, OpenCode, and DeepSeek Harness into one place.
 - **Get back to work quickly** — when routing is available, open the relevant session, Agent app, or terminal from the bubble.
 - **Make the pet yours** — use one of three bundled pets, import a `.petpack`, or create and edit your own pet with AI Pet Maker.
 - **Keep data centered on your Mac** — pets, settings, limited session summaries, and diagnostics remain local. The App does not read Agent credentials, tokens, cookies, or API keys.

@@ -82,6 +82,26 @@
         {
           "path": "docs/integrations/agent-connectors.md",
           "risk": "amber"
+        },
+        {
+          "path": "AGENTS.md",
+          "risk": "amber"
+        },
+        {
+          "path": "README.md",
+          "risk": "amber"
+        },
+        {
+          "path": "README.zh-CN.md",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/architecture/data-model.md",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/architecture/overview.md",
+          "risk": "amber"
         }
       ],
       "durable_document": "docs/integrations/agent-connectors.md",

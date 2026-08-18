@@ -13,7 +13,7 @@ Use sources in this order when changing behavior or architecture:
 
 The repository keeps durable current-state documentation, not completed design proposals, task plans, progress ledgers, dated audits, or implementation diaries. Fresh command output, CI artifacts, commits, issues, and release notes are the evidence for a particular task, commit, or build. If current-state prose disagrees with code, schemas, or tests, investigate the implementation and update the owning durable document instead of recording the discrepancy as status.
 
-The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope.
+The V1 scope is intentionally narrow. Do not add public galleries, sharing/community features, Petdex import, Codex built-in pet asset export, Windows UI, cloud accounts, or a full agent mission-control platform unless the user explicitly changes scope. DeepSeek Harness (dsh) was explicitly authorized and included in scope by the user on 2026-08-18.
 
 ## Architecture And Data
 
@@ -34,6 +34,7 @@ plugins/codex/
 plugins/claude-code/
 plugins/pi/
 plugins/opencode/
+plugins/dsh/
 skills/agent-pet-studio/
 skills/agent-pet-maker/
 schemas/

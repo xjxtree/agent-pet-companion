@@ -20,7 +20,7 @@ Agent Pet Companion 是一款 macOS 原生桌宠 App，适合同时使用一个�
 
 - **少一些来回切换**：在桌面上直接看到 Agent 的工作状态，不必反复打开终端或 Agent App。
 - **不错过需要处理的任务**：等待输入、执行完成或失败时，桌宠会给出清晰反馈。
-- **同时关注多个 Agent**：统一查看 Codex、Claude Code、Pi Coding Agent 和 OpenCode 的任务动态。
+- **同时关注多个 Agent**：统一查看 Codex、Claude Code、Pi Coding Agent、OpenCode 与 DeepSeek Harness 的任务动态。
 - **快速回到工作现场**：路由可用时，从气泡打开对应会话、Agent App 或终端。
 - **拥有自己的桌宠**：使用三个内置宠物，导入 `.petpack`，或通过 AI 宠物制作创建和修改专属宠物。
 - **数据以本机为中心**：宠物、设置、有限的会话摘要和诊断信息保存在 Mac 上；App 不读取 Agent 的凭据、Token、Cookie 或 API Key。
