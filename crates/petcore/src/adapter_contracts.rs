@@ -400,7 +400,10 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
         },
         project_label: project_label(input),
         session_title: session_title(input),
-        session_open: Some(event != "session/disposed" && (event != "turn/end" || session_active)),
+        // A terminal turn ends current work, not the WebUI session itself.
+        // Keep completed, failed, and aborted sessions projected until dsh
+        // emits the authoritative session/disposed lifecycle boundary.
+        session_open: Some(event != "session/disposed"),
         session_surface: None,
         terminal_app: None,
         session_open_url: None,
@@ -2863,6 +2866,7 @@ mod dsh_adapter_tests {
         assert_eq!(done.kind, AgentEventType::Done);
         assert_eq!(done.outcome.as_deref(), Some("completed"));
         assert!(!done.session_active);
+        assert_eq!(done.session_open, Some(true));
 
         // 11. turn/end completed (fence active) -> Start / background_active / active
         let bg_active = parse(&json!({
@@ -2884,6 +2888,7 @@ mod dsh_adapter_tests {
         assert_eq!(failed.kind, AgentEventType::Failed);
         assert_eq!(failed.outcome.as_deref(), Some("api_failure"));
         assert!(!failed.session_active);
+        assert_eq!(failed.session_open, Some(true));
 
         // 13. turn/end blocked -> Waiting / blocked
         let blocked = parse(&json!({
@@ -2902,6 +2907,7 @@ mod dsh_adapter_tests {
         }));
         assert_eq!(aborted.kind, AgentEventType::Done);
         assert_eq!(aborted.outcome.as_deref(), Some("aborted"));
+        assert_eq!(aborted.session_open, Some(true));
 
         // 15. turn/end max-tokens -> Start / max_tokens / active
         let max_tokens = parse(&json!({

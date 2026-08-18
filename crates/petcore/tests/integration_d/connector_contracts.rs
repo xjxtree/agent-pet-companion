@@ -1413,12 +1413,14 @@ fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
     assert_eq!(completed.kind, AgentEventType::Done);
     assert_eq!(completed.outcome.as_deref(), Some("completed"));
     assert!(!completed.session_active);
+    assert_eq!(completed.session_open, Some(true));
 
     // 2. turn-end-error -> Failed / stable api_failure (host code/message not leaked)
     let error = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/turn-end-error.json");
     assert_eq!(error.kind, AgentEventType::Failed);
     assert_eq!(error.outcome.as_deref(), Some("api_failure"));
     assert!(!error.session_active);
+    assert_eq!(error.session_open, Some(true));
 
     // 3. block-start-reasoning -> Thinking / reasoning_started / active
     let thinking = parsed(
