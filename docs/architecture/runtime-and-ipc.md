@@ -66,6 +66,8 @@ After replacement, the runtime transaction converges PetCore, CLI, missing or up
 
 The Codex plugin plus bundled Studio and Maker Skills form one versioned capability bundle. Content changes require a greater plugin version; Studio upgrades additionally preserve the previous shipped Skill digest in the append-only retired ownership history.
 
+The DeepSeek Harness connector manages two attributable artifacts: an `agent-pet-companion.js` plugin in the App connectors directory and a single owned `- insert:` entry in the default `web` profile's `cordis.patch.yml`. Patch entry changes are atomic and leave unrelated profile rows intact.
+
 The separately exposed portable Maker Skill is managed through closed no-parameter PetCore RPCs for status, install/reinstall/update, and uninstall. Those mutations share the Agent-capability operation gate, target only `~/agent/skills/agent-pet-maker`, and never inspect Agent configuration or discovery behavior. App update convergence does not silently install this target; the management sheet compares its explicit installation with the bundled version and waits for a user action.
 
 ## Local transports
