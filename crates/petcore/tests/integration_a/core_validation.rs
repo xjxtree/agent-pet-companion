@@ -60,7 +60,12 @@ impl Drop for EnvVarGuard {
 }
 
 fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-    crate::test_support::lock_process_state()
+    let guard = crate::test_support::lock_process_state();
+    assert!(
+        generation::wait_for_generation_workers_idle(Duration::from_secs(10)),
+        "a previous generation worker did not stop before process-wide test configuration changed"
+    );
+    guard
 }
 
 fn projected_event_id(value: &str) -> String {
