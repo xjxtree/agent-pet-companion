@@ -221,7 +221,8 @@ struct TimedCandidate<'a> {
 /// session instead of allowing older activity to reappear. A host
 /// `session_active` hint extends ordinary activity only through the configured
 /// session window; it is not durable proof that a connector session is still
-/// running. Waiting and failed attention states do not expire locally.
+/// running. Waiting and failed attention states do not expire locally, but an
+/// explicit host close/archive edge removes the closed session immediately.
 pub fn select_active_agent_state(
     behavior: &BehaviorSettings,
     candidates: &[SequencedAgentEvent],
@@ -243,7 +244,7 @@ pub fn select_active_agent_state_with_acknowledgements(
     latest_candidates_by_session(candidates, now)
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
-        .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
+        .filter(|candidate| !candidate_is_explicitly_closed_session(candidate.candidate))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
             !candidate_is_acknowledged(candidate.candidate, acknowledged_session_activations)
@@ -276,7 +277,8 @@ pub fn select_active_agent_state_with_acknowledgements(
 /// and reappear when the next user activation/start event arrives. A completed
 /// session whose host explicitly reports `session_open = false` is already
 /// archived/closed and leaves the bubble immediately while remaining in audit
-/// history.
+/// history. The same explicit close also resolves a previously latched failure
+/// in that activity epoch instead of restoring it after PetCore restarts.
 pub fn select_display_agent_states(
     behavior: &BehaviorSettings,
     candidates: &[SequencedAgentEvent],
@@ -302,7 +304,7 @@ pub fn select_display_agent_states_with_acknowledgements(
     let mut visible = latest_candidates_by_session(candidates, now)
         .into_values()
         .filter(|candidate| event_enabled(behavior, &candidate.candidate.event))
-        .filter(|candidate| !event_is_explicitly_closed_completion(&candidate.candidate.event))
+        .filter(|candidate| !candidate_is_explicitly_closed_session(candidate.candidate))
         .filter(|candidate| terminal_event_has_prior_activation(candidate))
         .filter(|candidate| {
             !candidate_is_acknowledged(candidate.candidate, acknowledged_session_activations)
@@ -465,19 +467,36 @@ fn latest_candidates_by_session<'a>(
                         .is_none_or(|boundary| candidate_order(candidate) >= boundary)
                 })
                 .collect::<Vec<_>>();
-            // A host may publish Failed and then its normal idle/close tail.
-            // Keep the failure latched within that activity epoch; a later
-            // non-terminal event starts a new epoch and permits progression.
+            // A host may publish Failed and then its normal idle tail. Keep the
+            // failure latched within that activity epoch, except when a newer
+            // edge explicitly proves that the whole session was closed. A
+            // later non-terminal event starts a new epoch and permits normal
+            // progression.
             let latest_failed = current_epoch
                 .iter()
                 .filter(|candidate| candidate.candidate.event.event_type == AgentEventType::Failed)
+                .max_by_key(|candidate| candidate_order(candidate))
+                .copied();
+            let latest_explicit_close = current_epoch
+                .iter()
+                .filter(|candidate| {
+                    payload_explicitly_closes_session(&candidate.candidate.event.payload_json)
+                })
                 .max_by_key(|candidate| candidate_order(candidate))
                 .copied();
             let latest = current_epoch
                 .iter()
                 .max_by_key(|candidate| candidate_order(candidate))
                 .copied();
-            latest_failed.or(latest).map(|candidate| (key, candidate))
+            let selected = match (latest_failed, latest_explicit_close) {
+                (Some(failed), Some(closed))
+                    if candidate_order(&closed) >= candidate_order(&failed) =>
+                {
+                    Some(closed)
+                }
+                _ => latest_failed.or(latest),
+            };
+            selected.map(|candidate| (key, candidate))
         })
         .collect()
 }
@@ -520,16 +539,24 @@ fn terminal_event_has_prior_activation(candidate: &TimedCandidate<'_>) -> bool {
         || candidate.candidate.session_activated_at.is_some()
 }
 
-/// A successful completion remains useful in the return bubble only while the
-/// host still exposes a destination. An explicit close/archive edge is durable
-/// audit history, not an unavailable message the user must manually dismiss.
-fn event_is_explicitly_closed_completion(event: &AgentEvent) -> bool {
-    event.event_type == AgentEventType::Done
-        && event
-            .payload_json
-            .get("session_open")
-            .and_then(serde_json::Value::as_bool)
-            == Some(false)
+/// Completion and failure states remain useful only while the host still
+/// exposes their session. The storage projection attaches navigation from a
+/// later terminal edge to a latched failure; honor that explicit close as well
+/// as a close carried by the selected event itself. The immutable events remain
+/// available in audit history.
+fn candidate_is_explicitly_closed_session(candidate: &SequencedAgentEvent) -> bool {
+    payload_explicitly_closes_session(&candidate.event.payload_json)
+        || candidate
+            .latest_terminal_navigation_payload
+            .as_ref()
+            .is_some_and(payload_explicitly_closes_session)
+}
+
+fn payload_explicitly_closes_session(payload: &serde_json::Value) -> bool {
+    payload
+        .get("session_open")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
 }
 
 fn active_state_from_candidate(

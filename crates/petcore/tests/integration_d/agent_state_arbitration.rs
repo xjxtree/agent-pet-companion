@@ -3320,9 +3320,21 @@ fn active_waiting_and_compaction_starts_open_epochs_without_faking_user_activati
 }
 
 #[test]
-fn latched_failure_keeps_status_but_merges_later_terminal_navigation() {
-    let (_temp, state) = ready();
-    for (source, session_id, activation, failure, close, expected_open) in [
+fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths.clone());
+    state.ensure_ready().unwrap();
+
+    for (source, session_id, activation, failure, close, session_open) in [
+        (
+            "codex",
+            "019f5b0f-88ff-7413-8953-29de4ed0951c",
+            "UserPromptSubmit",
+            "app_server_activity",
+            "app_server_activity",
+            false,
+        ),
         (
             "claude_code",
             "claude-failed-navigation",
@@ -3393,39 +3405,67 @@ fn latched_failure_keeps_status_but_merges_later_terminal_navigation() {
                 "outcome": "session_closed",
                 "affects_activity": true,
                 "session_active": false,
-                "session_open": expected_open,
+                "session_open": session_open,
                 "session_surface": "cli_terminal",
                 "terminal_app": "terminal"
             }),
         );
     }
-    let snapshot = snapshot(&state);
-    for (session_id, expected_open) in [
-        ("claude-failed-navigation", true),
-        ("pi-failed-navigation", false),
-        ("opencode-failed-navigation", false),
-    ] {
-        let session = snapshot["active_agent_sessions"]
+
+    let assert_projection = |current: &Value| {
+        let session = current["active_agent_sessions"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|session| session["session_id"] == projected_session_id(session_id))
-            .unwrap();
+            .find(|session| {
+                session["session_id"] == projected_session_id("claude-failed-navigation")
+            })
+            .expect("openable Claude session keeps its failed status");
         assert_eq!(session["official_status"], "blocked");
         assert_eq!(
             session["overlay_display"]["navigation"]["session_open"],
-            expected_open
+            true
         );
         assert_eq!(
             session["overlay_display"]["navigation"]["capability"],
-            if expected_open {
-                "agent_host"
-            } else {
-                "unavailable"
-            }
+            "agent_host"
         );
         assert_eq!(session["overlay_display"]["summary_kind"], "failed");
+
+        for session_id in [
+            "019f5b0f-88ff-7413-8953-29de4ed0951c",
+            "pi-failed-navigation",
+            "opencode-failed-navigation",
+        ] {
+            assert!(
+                current["active_agent_sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|session| session["session_id"] != projected_session_id(session_id)),
+                "explicitly closed failure reappeared for {session_id}"
+            );
+        }
+    };
+
+    let current = snapshot(&state);
+    assert_projection(&current);
+    for event_id in [
+        "019f5b0f-88ff-7413-8953-29de4ed0951c-close",
+        "pi-failed-navigation-close",
+        "opencode-failed-navigation-close",
+    ] {
+        assert!(current["recent_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["id"] == projected_event_id(event_id)));
     }
+
+    drop(state);
+    let restarted = CoreState::new(paths);
+    restarted.ensure_ready().unwrap();
+    assert_projection(&snapshot(&restarted));
 }
 
 #[test]
