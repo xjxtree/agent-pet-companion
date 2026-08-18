@@ -70,6 +70,10 @@
         {
           "path": "crates/petcore/src/runtime_manifest.rs",
           "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
+          "risk": "amber"
         }
       ],
       "durable_document": "docs/integrations/agent-connectors.md",

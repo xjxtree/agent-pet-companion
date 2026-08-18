@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Added",
+  "scope": "connections",
+  "summary_en": "Add DeepSeek Harness (dsh) to App-side runtime manifest and Agent Connections UI surfaces.",
+  "summary_zh": "在 App 端运行时清单与 Agent 连接设置页面中接入 DeepSeek Harness（dsh）。"
+}
