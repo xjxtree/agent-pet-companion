@@ -1405,3 +1405,76 @@ fn every_cli_connector_exposes_display_and_navigation_lifecycle_fields() {
     assert_eq!(claude_closed.outcome.as_deref(), Some("session_closed"));
     assert_eq!(claude_closed.session_open, Some(true));
 }
+
+#[test]
+fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
+    // 1. turn-end-completed -> Done / completed / inactive
+    let completed = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/turn-end-completed.json");
+    assert_eq!(completed.kind, AgentEventType::Done);
+    assert_eq!(completed.outcome.as_deref(), Some("completed"));
+    assert!(!completed.session_active);
+
+    // 2. turn-end-error -> Failed / llm_failure_TRANSPORT (closed code, message not leaked)
+    let error = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/turn-end-error.json");
+    assert_eq!(error.kind, AgentEventType::Failed);
+    assert_eq!(error.outcome.as_deref(), Some("llm_failure_TRANSPORT"));
+    assert!(!error.session_active);
+
+    // 3. block-start-reasoning -> Thinking / reasoning_started / active
+    let thinking = parsed(
+        AgentSource::Dsh,
+        "dsh-v0.1.0-rc.6/block-start-reasoning.json",
+    );
+    assert_eq!(thinking.kind, AgentEventType::Thinking);
+    assert_eq!(thinking.outcome.as_deref(), Some("reasoning_started"));
+    assert!(thinking.session_active);
+
+    // 4. tool-result-failure -> Tool / tool_failure_ENOENT / active (recoverable)
+    let tool_fail = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/tool-result-failure.json");
+    assert_eq!(tool_fail.kind, AgentEventType::Tool);
+    assert_eq!(tool_fail.outcome.as_deref(), Some("tool_failure_ENOENT"));
+    assert!(tool_fail.session_active);
+
+    // 5. approval-decided -> Start / approval_decided_allowed-once
+    let approval = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/approval-decided.json");
+    assert_eq!(approval.kind, AgentEventType::Start);
+    assert_eq!(
+        approval.outcome.as_deref(),
+        Some("approval_decided_allowed-once")
+    );
+
+    // 6. Negative fixtures: text-delta and unknown turn/end kind must return None (fail-open)
+    assert!(parse_contract_event(
+        AgentSource::Dsh,
+        &fixture("dsh-v0.1.0-rc.6/text-delta-ignored.json")
+    )
+    .unwrap()
+    .is_none());
+    assert!(parse_contract_event(
+        AgentSource::Dsh,
+        &fixture("dsh-v0.1.0-rc.6/unknown-turn-end-kind.json")
+    )
+    .unwrap()
+    .is_none());
+
+    // 7. Privacy fixtures: arguments and child messages must NOT cross into contract event
+    let privacy_tool = parsed(
+        AgentSource::Dsh,
+        "dsh-v0.1.0-rc.6/privacy-leak-attempt.json",
+    );
+    assert_eq!(privacy_tool.tool_name.as_deref(), Some("bash"));
+    assert_eq!(privacy_tool.activity_kind.as_deref(), Some("command"));
+    assert!(privacy_tool
+        .activity_content
+        .as_deref()
+        .map_or(true, |c| !c.contains("credentials")
+            && !c.contains("rm -rf")));
+
+    // subagent/end is not an activity-driving event (subagent lifecycle stays in plugin fence)
+    assert!(parse_contract_event(
+        AgentSource::Dsh,
+        &fixture("dsh-v0.1.0-rc.6/subagent-end-no-leak.json")
+    )
+    .unwrap()
+    .is_none());
+}
