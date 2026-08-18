@@ -8,9 +8,15 @@
         "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Connections/**",
         "apps/macos/Sources/AgentPetCompanion/Views/AgentConnectionsView.swift",
         "crates/petcore/src/connections/**",
-        "crates/petcore/tests/connector_contracts.rs",
-        "crates/petcore/tests/connector_ordering.rs",
-        "plugins/**"
+        "plugins/**",
+        "crates/petcore/src/adapter_contracts.rs",
+        "crates/petcore/src/event_envelope.rs",
+        "crates/petcore/src/agent_state.rs",
+        "crates/petcore-cli/src/main.rs",
+        "crates/petcore/tests/integration_d/**",
+        "schemas/agent-event.schema.json",
+        "schemas/agent-event-ingest.schema.json",
+        "fixtures/contracts/dsh/**"
       ],
       "dependencies": [
         "app-shell-runtime",
@@ -27,6 +33,38 @@
         },
         {
           "path": "crates/petcore-types/src/**",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanionCore/Contracts/**",
+          "risk": "amber"
+        },
+        {
+          "path": "changes/unreleased/**",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/AgentIconProvider.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Tests/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/diagnostics.rs",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/storage/**",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/tests/integration_a/**",
+          "risk": "amber"
+        },
+        {
+          "path": "development/domains.json",
           "risk": "amber"
         }
       ],
@@ -92,9 +130,25 @@
         {
           "id": "connections-shared",
           "paths": [
-            "crates/petcore/src/connections/**",
-            "crates/petcore/tests/connector_contracts.rs",
-            "crates/petcore/tests/connector_ordering.rs"
+            "crates/petcore/src/connections/**"
+          ]
+        },
+        {
+          "id": "dsh-connector",
+          "paths": [
+            "crates/petcore/src/connections/adapters/dsh.rs",
+            "plugins/dsh/**",
+            "crates/petcore/src/adapter_contracts.rs",
+            "crates/petcore/src/event_envelope.rs",
+            "crates/petcore/src/agent_state.rs",
+            "crates/petcore-cli/src/main.rs",
+            "crates/petcore/tests/integration_d/**",
+            "schemas/agent-event.schema.json",
+            "schemas/agent-event-ingest.schema.json",
+            "fixtures/contracts/dsh/**",
+            "crates/petcore/src/connections/capabilities.rs",
+            "crates/petcore/src/connections/evidence.rs",
+            "crates/petcore/src/connections/manager.rs"
           ]
         }
       ]

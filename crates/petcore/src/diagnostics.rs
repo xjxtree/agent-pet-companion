@@ -1815,19 +1815,20 @@ fn validate_app_environment(environment: &AppEnvironmentSnapshot) -> Result<()> 
     if environment.runtime.pet_count > 1_000_000
         || environment.runtime.active_session_count > 1_000_000
         || environment.runtime.recent_event_count > 1_000_000
-        || environment.connections.len() > 4
+        || environment.connections.len() > 5
     {
         return Err(invalid_app_environment(
             "app_environment runtime limits are invalid",
         ));
     }
-    let mut seen_sources = [false; 4];
+    let mut seen_sources = [false; 5];
     for connection in &environment.connections {
         let index = match connection.source {
             AgentSource::Codex => 0,
             AgentSource::ClaudeCode => 1,
             AgentSource::Pi => 2,
             AgentSource::Opencode => 3,
+            AgentSource::Dsh => 4,
         };
         if std::mem::replace(&mut seen_sources[index], true)
             || connection.blocking_count > 10_000

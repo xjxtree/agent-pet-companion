@@ -83,7 +83,7 @@ fn newer_database_schema_is_rejected_without_downgrade() {
 
 #[test]
 fn runtime_manifest_advertises_the_additive_v2_database_contract() {
-    assert_eq!(DATABASE_SCHEMA_VERSION, 6);
+    assert_eq!(DATABASE_SCHEMA_VERSION, 7);
     assert_eq!(
         RuntimeReleaseManifest::compiled().maximum_database_schema_version,
         DATABASE_SCHEMA_VERSION

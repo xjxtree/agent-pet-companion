@@ -5,6 +5,7 @@ public enum AgentSource: String, CaseIterable, Identifiable, Codable, Sendable {
     case claudeCode = "claude_code"
     case pi
     case opencode
+    case dsh
 
     public var id: String { rawValue }
 
@@ -14,6 +15,7 @@ public enum AgentSource: String, CaseIterable, Identifiable, Codable, Sendable {
         case .claudeCode: "Claude Code"
         case .pi: "Pi Coding Agent"
         case .opencode: "OpenCode"
+        case .dsh: "DeepSeek Harness"
         }
     }
 
@@ -23,6 +25,7 @@ public enum AgentSource: String, CaseIterable, Identifiable, Codable, Sendable {
         case .claudeCode: "Claude"
         case .pi: "Pi"
         case .opencode: "OpenCode"
+        case .dsh: "dsh"
         }
     }
 }

@@ -1804,9 +1804,11 @@ fn runtime_agent_app_surface(
         {
             Some("opencode_app")
         }
-        AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Pi | AgentSource::Opencode => {
-            None
-        }
+        AgentSource::Codex
+        | AgentSource::ClaudeCode
+        | AgentSource::Pi
+        | AgentSource::Opencode
+        | AgentSource::Dsh => None,
     }
 }
 

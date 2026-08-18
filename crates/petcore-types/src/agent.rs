@@ -8,6 +8,7 @@ pub enum AgentSource {
     ClaudeCode,
     Pi,
     Opencode,
+    Dsh,
 }
 
 impl AgentSource {
@@ -17,6 +18,7 @@ impl AgentSource {
             Self::ClaudeCode => "Claude Code",
             Self::Pi => "Pi Coding Agent",
             Self::Opencode => "OpenCode",
+            Self::Dsh => "DeepSeek Harness",
         }
     }
 }

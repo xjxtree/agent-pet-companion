@@ -164,6 +164,9 @@ pub(crate) fn event_starts_new_activity_epoch(event: &AgentEvent) -> bool {
             ) || (source_event == Some("session.status")
                 && matches!(outcome, Some("busy" | "retry")))
         }
+        // T2 lands the dsh epoch vocabulary; until then no dsh source event
+        // starts a new activity epoch.
+        AgentSource::Dsh => false,
     }
 }
 
