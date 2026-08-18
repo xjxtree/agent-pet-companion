@@ -152,7 +152,8 @@
             "fixtures/contracts/**",
             "crates/petcore/src/connections/capabilities.rs",
             "crates/petcore/src/connections/evidence.rs",
-            "crates/petcore/src/connections/manager.rs"
+            "crates/petcore/src/connections/manager.rs",
+            "plugins/connector-privacy.test.mjs"
           ]
         }
       ]
