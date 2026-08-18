@@ -66,6 +66,10 @@
         {
           "path": "development/domains.json",
           "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/runtime_manifest.rs",
+          "risk": "amber"
         }
       ],
       "durable_document": "docs/integrations/agent-connectors.md",
