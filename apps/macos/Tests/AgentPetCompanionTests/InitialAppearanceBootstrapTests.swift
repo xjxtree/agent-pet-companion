@@ -731,7 +731,8 @@ struct InitialAppearanceBootstrapTests {
                 codex: "codex-hooks.v1",
                 claudeCode: "claude-hooks.v1",
                 pi: "pi-extension.v1",
-                opencode: "opencode-plugin.v1"
+                opencode: "opencode-plugin.v1",
+                dsh: "dsh-plugin.v1"
             )
         )
     }
