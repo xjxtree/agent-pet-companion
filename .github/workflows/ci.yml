@@ -17,7 +17,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Metadata edits still get a cheap routing run, but must never cancel an
+  # in-flight source validation for the same PR head. Base-ref edits remain
+  # independently fail-closed because the merge verifier rechecks the exact
+  # current base identity before accepting either run.
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('edited-{0}', github.run_id) || 'validation' }}
   cancel-in-progress: true
 
 env:

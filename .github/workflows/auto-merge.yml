@@ -88,7 +88,19 @@ jobs:
             test "$(jq -er '.head.ref' <<<"$resolved_pull")" = "$HEAD_BRANCH"
             test "$(jq -er '.head.sha' <<<"$resolved_pull")" = "$HEAD_SHA"
             test "$(jq -er '.merged_at | type' <<<"$resolved_pull")" = "string"
-            merge_commit="$(jq -er '.merge_commit_sha' <<<"$resolved_pull")"
+            merged_pr="$(
+              gh pr view "$pr_number" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json number,state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,isCrossRepository
+            )"
+            test "$(jq -er '.number' <<<"$merged_pr")" = "$pr_number"
+            test "$(jq -er '.state' <<<"$merged_pr")" = "MERGED"
+            test "$(jq -er '.baseRefName' <<<"$merged_pr")" = "$base_branch"
+            test "$(jq -er '.headRefName' <<<"$merged_pr")" = "$HEAD_BRANCH"
+            test "$(jq -er '.headRefOid' <<<"$merged_pr")" = "$HEAD_SHA"
+            test "$(jq -er '.isCrossRepository' <<<"$merged_pr")" = "false"
+            test "$(jq -er '.mergedAt | type' <<<"$merged_pr")" = "string"
+            merge_commit="$(jq -er '.mergeCommit.oid' <<<"$merged_pr")"
             [[ "$merge_commit" =~ ^[0-9a-f]{40}$ ]]
           fi
 
@@ -151,8 +163,9 @@ jobs:
             newly_merged=1
           fi
           pull=""
+          merged_pr=""
           merge_observed=0
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in $(seq 1 15); do
             pull="$(
               gh api \
                 -H 'Accept: application/vnd.github+json' \
@@ -165,12 +178,33 @@ jobs:
               '.merged == true and
                .base.ref == $base_branch and
                .head.sha == $head_sha and
-               (.merge_commit_sha | strings | test("^[0-9a-f]{40}$"))' \
+               (.merged_at | type) == "string"' \
               <<<"$pull" >/dev/null; then
-              merge_observed=1
-              break
+              if ! merged_pr="$(
+                gh pr view "$PR_NUMBER" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --json number,state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,isCrossRepository
+              )"; then
+                merged_pr=""
+              elif jq -e \
+                --argjson pr_number "$PR_NUMBER" \
+                --arg base_branch "$BASE_BRANCH" \
+                --arg head_branch "$HEAD_BRANCH" \
+                --arg head_sha "$HEAD_SHA" \
+                '.number == $pr_number and
+                 .state == "MERGED" and
+                 .baseRefName == $base_branch and
+                 .headRefName == $head_branch and
+                 .headRefOid == $head_sha and
+                 .isCrossRepository == false and
+                 (.mergedAt | type) == "string" and
+                 (.mergeCommit.oid | strings | test("^[0-9a-f]{40}$"))' \
+                <<<"$merged_pr" >/dev/null; then
+                merge_observed=1
+                break
+              fi
             fi
-            if ((attempt < 6)); then
+            if ((attempt < 15)); then
               sleep 2
             fi
           done
@@ -178,7 +212,7 @@ jobs:
           test "$(jq -er '.merged' <<<"$pull")" = "true"
           test "$(jq -er '.base.ref' <<<"$pull")" = "$BASE_BRANCH"
           test "$(jq -er '.head.sha' <<<"$pull")" = "$HEAD_SHA"
-          merge_commit="$(jq -er '.merge_commit_sha' <<<"$pull")"
+          merge_commit="$(jq -er '.mergeCommit.oid' <<<"$merged_pr")"
           [[ "$merge_commit" =~ ^[0-9a-f]{40}$ ]]
           if [[ "$PR_STATE" == "closed" ]]; then
             test "$merge_commit" = "$RECOVERED_COMMIT"
