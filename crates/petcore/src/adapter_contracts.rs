@@ -2993,7 +2993,7 @@ mod dsh_adapter_tests {
         assert!(tool_call
             .activity_content
             .as_deref()
-            .map_or(true, |c| !c.contains("credentials")));
+            .is_none_or(|c| !c.contains("credentials")));
 
         // LlmFailure.message must not enter outcome
         let err_event = parse_contract_event(
