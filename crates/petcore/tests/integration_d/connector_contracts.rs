@@ -1467,8 +1467,7 @@ fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
     assert!(privacy_tool
         .activity_content
         .as_deref()
-        .map_or(true, |c| !c.contains("credentials")
-            && !c.contains("rm -rf")));
+        .is_none_or(|c| !c.contains("credentials") && !c.contains("rm -rf")));
 
     // subagent/end is not an activity-driving event (subagent lifecycle stays in plugin fence)
     assert!(parse_contract_event(
