@@ -21,7 +21,7 @@ struct BehaviorSettingsViewTests {
 
     @Test
     func messageCatalogContainsOnlyTheSupportedSourcesAndEvents() {
-        #expect(BehaviorSettingsCatalog.sources == [.codex, .claudeCode, .pi, .opencode])
+        #expect(BehaviorSettingsCatalog.sources == [.codex, .claudeCode, .pi, .opencode, .dsh])
         #expect(
             BehaviorSettingsCatalog.events
                 == [.start, .thinking, .plan, .tool, .waiting, .done, .failed]

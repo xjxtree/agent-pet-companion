@@ -145,6 +145,7 @@ impl Default for BehaviorSettings {
             AgentSource::ClaudeCode,
             AgentSource::Pi,
             AgentSource::Opencode,
+            AgentSource::Dsh,
         ] {
             sources.insert(source, true);
         }

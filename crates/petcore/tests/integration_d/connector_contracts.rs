@@ -1414,10 +1414,10 @@ fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
     assert_eq!(completed.outcome.as_deref(), Some("completed"));
     assert!(!completed.session_active);
 
-    // 2. turn-end-error -> Failed / llm_failure_TRANSPORT (closed code, message not leaked)
+    // 2. turn-end-error -> Failed / stable api_failure (host code/message not leaked)
     let error = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/turn-end-error.json");
     assert_eq!(error.kind, AgentEventType::Failed);
-    assert_eq!(error.outcome.as_deref(), Some("llm_failure_TRANSPORT"));
+    assert_eq!(error.outcome.as_deref(), Some("api_failure"));
     assert!(!error.session_active);
 
     // 3. block-start-reasoning -> Thinking / reasoning_started / active
@@ -1429,19 +1429,16 @@ fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
     assert_eq!(thinking.outcome.as_deref(), Some("reasoning_started"));
     assert!(thinking.session_active);
 
-    // 4. tool-result-failure -> Tool / tool_failure_ENOENT / active (recoverable)
+    // 4. tool-result-failure -> Tool / stable tool_failure / active (recoverable)
     let tool_fail = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/tool-result-failure.json");
     assert_eq!(tool_fail.kind, AgentEventType::Tool);
-    assert_eq!(tool_fail.outcome.as_deref(), Some("tool_failure_ENOENT"));
+    assert_eq!(tool_fail.outcome.as_deref(), Some("tool_failure"));
     assert!(tool_fail.session_active);
 
-    // 5. approval-decided -> Start / approval_decided_allowed-once
+    // 5. approval-decided -> Start / closed permission outcome
     let approval = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/approval-decided.json");
     assert_eq!(approval.kind, AgentEventType::Start);
-    assert_eq!(
-        approval.outcome.as_deref(),
-        Some("approval_decided_allowed-once")
-    );
+    assert_eq!(approval.outcome.as_deref(), Some("permission_replied_once"));
 
     // 6. Negative fixtures: text-delta and unknown turn/end kind must return None (fail-open)
     assert!(parse_contract_event(

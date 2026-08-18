@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "connections",
+  "summary_en": "Complete DSH acceptance across five-Agent defaults, checks, receipts, display context, explicit session close, stable event identity, safe managed configuration, and legacy runtime rollback decoding.",
+  "summary_zh": "完成 DSH 五 Agent 默认设置、检查与回执、气泡上下文、会话显式关闭、稳定事件身份、安全托管配置及旧运行时回滚解码的验收修复。"
+}

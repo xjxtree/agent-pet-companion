@@ -27,7 +27,7 @@ Path authority lives in [paths.rs](../../crates/petcore/src/paths.rs) and the Ap
 
 ## SQLite
 
-The current schema is version 6. PetCore enables WAL, foreign keys, secure deletion, and integrity checks; it rejects a database newer than the running runtime. Candidate replacement uses a private digest-bound rollback checkpoint. Only a complete `ready` checkpoint for the exact source/candidate pair can restore data, and a restored checkpoint cannot be replayed.
+The current schema is version 7. PetCore enables WAL, foreign keys, secure deletion, and integrity checks; it rejects a database newer than the running runtime. Candidate replacement uses a private digest-bound rollback checkpoint. Only a complete `ready` checkpoint for the exact source/candidate pair can restore data, and a restored checkpoint cannot be replayed.
 
 | Table | Purpose and invariant |
 |---|---|
@@ -99,7 +99,7 @@ The [V3 specification](../specifications/AgentPetCompanion_Petpack_Whitepaper_V3
 
 ## Agent events and session projection
 
-Supported sources are `codex`, `claude_code`, `pi`, and `opencode`. Persisted events are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and `failed`. The event title is canonical audit data; localized UI labels and pet-action mapping are separate.
+Supported sources are `codex`, `claude_code`, `pi`, `opencode`, and `dsh`. Persisted events are `start`, `thinking`, `plan`, `tool`, `waiting`, `done`, and `failed`. The event title is canonical audit data; localized UI labels and pet-action mapping are separate.
 
 `apc.agent-event.v1` accepts only bounded fields needed for identity, ordering, navigation, and display. Session title, first/latest user message, Agent message, and selected scalar activity detail are distinct stored fields. The bubble-body projection chooses the newest Agent message or explicit thinking/plan content and retains it across user, tool, and lifecycle events; those other events continue to own context, semantic state, and the status indicator but never replace body copy. Activity normalization may retain bounded reasoning, commands, tool input/output, and errors, but never stringifies arbitrary host objects or exports credential-shaped containers, headers, complete environments, or transcripts. String ceilings are enforced as UTF-8 bytes by both schema and PetCore.
 
@@ -115,7 +115,7 @@ Group disclosure, flat-list stable slots, manual bubble hiding, and transient na
 |---|---|---|
 | Runtime set | `apc.runtime-manifest.v1` | Rust/Swift runtime manifests |
 | PetCore RPC | `apc.petcore-rpc.v2` | Rust server and Swift client |
-| SQLite | schema `6` | `storage/migrations.rs` |
+| SQLite | schema `7` | `storage/migrations.rs` |
 | Product convergence | `apc.product-convergence-receipt.v1` | database and RPC |
 | Onboarding | `apc.onboarding-progress.v1` | Rust type and Swift mirror |
 | Agent event | `apc.agent-event.v1` | event envelope and schema |

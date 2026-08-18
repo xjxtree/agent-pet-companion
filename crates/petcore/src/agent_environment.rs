@@ -8,6 +8,7 @@ pub(crate) const CONNECTOR_ROOT_ENV_KEYS: &[&str] = &[
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     "PI_CODING_AGENT_DIR",
+    "DSH_HOME",
     "OPENCODE_CONFIG_DIR",
     "OPENCODE_CONFIG",
     "XDG_CONFIG_HOME",
@@ -18,6 +19,7 @@ pub(crate) const AGENT_CLI_OVERRIDE_ENV_KEYS: &[&str] = &[
     "APC_CLAUDE_CLI_PATH",
     "APC_PI_CLI_PATH",
     "APC_OPENCODE_CLI_PATH",
+    "APC_DSH_CLI_PATH",
 ];
 
 const MAX_VERSION_MANAGER_INSTALLATIONS: usize = 32;

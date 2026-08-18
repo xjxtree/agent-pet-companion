@@ -111,6 +111,7 @@ mkdir -p \
   "$TMP_DIR/agent-home/.claude" \
   "$TMP_DIR/agent-home/.pi/agent" \
   "$TMP_DIR/agent-home/.config/opencode" \
+  "$TMP_DIR/agent-home/.dsh" \
   "$TMP_DIR/home"
 
 cat >"$TMP_DIR/agent-home/.codex/auth.json" <<'EOF'
@@ -125,12 +126,16 @@ EOF
 cat >"$TMP_DIR/agent-home/.config/opencode/cookies.json" <<'EOF'
 {"cookie":"APC_SECRET_SENTINEL_OPENCODE_COOKIE"}
 EOF
+cat >"$TMP_DIR/agent-home/.dsh/.credentials.yaml" <<'EOF'
+token: APC_SECRET_SENTINEL_DSH_CREDENTIAL
+EOF
 
 chmod 000 \
   "$TMP_DIR/agent-home/.codex/auth.json" \
   "$TMP_DIR/agent-home/.claude/oauth.json" \
   "$TMP_DIR/agent-home/.pi/agent/token.json" \
-  "$TMP_DIR/agent-home/.config/opencode/cookies.json"
+  "$TMP_DIR/agent-home/.config/opencode/cookies.json" \
+  "$TMP_DIR/agent-home/.dsh/.credentials.yaml"
 
 cargo build --workspace >/dev/null
 
@@ -148,14 +153,14 @@ for _ in {1..100}; do
 done
 [[ -f "$TMP_DIR/ready" ]]
 
-for source in codex claude_code pi opencode; do
+for source in codex claude_code pi opencode dsh; do
   REPAIR="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections repair --source "$source" 2>&1)"
   assert_no_secret "connections repair $source" "$REPAIR"
-  assert_json "$REPAIR" 'data["source"] in ["codex", "claude_code", "pi", "opencode"]'
+  assert_json "$REPAIR" 'data["source"] in ["codex", "claude_code", "pi", "opencode", "dsh"]'
 
   CHECK="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check --source "$source" 2>&1)"
   assert_no_secret "connections check $source" "$CHECK"
-  assert_json "$CHECK" 'data["source"] in ["codex", "claude_code", "pi", "opencode"]'
+  assert_json "$CHECK" 'data["source"] in ["codex", "claude_code", "pi", "opencode", "dsh"]'
 done
 
 SNAPSHOT="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" snapshot 2>&1)"

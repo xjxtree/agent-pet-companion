@@ -28,6 +28,34 @@
           "risk": "amber"
         },
         {
+          "path": "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Common/**",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Connections/**",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/Views/AgentConnectionsView.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "apps/macos/Sources/AgentPetCompanion/Views/BehaviorSettingsView.swift",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/agent_environment.rs",
+          "risk": "amber"
+        },
+        {
+          "path": "crates/petcore/src/agent_session_filters.rs",
+          "risk": "amber"
+        },
+        {
           "path": "crates/petcore/src/rpc/**",
           "risk": "amber"
         },
@@ -101,6 +129,38 @@
         },
         {
           "path": "docs/architecture/overview.md",
+          "risk": "amber"
+        },
+        {
+          "path": "script/test_all.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_app_bundle.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_connectors_runtime.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_event_storm.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_overlay_non_mouse.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_real_agent_connectors.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_security_boundaries.sh",
+          "risk": "amber"
+        },
+        {
+          "path": "script/validate_test_isolation.sh",
           "risk": "amber"
         }
       ],

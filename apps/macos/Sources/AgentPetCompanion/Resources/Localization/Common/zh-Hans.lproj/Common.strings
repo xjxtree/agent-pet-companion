@@ -71,7 +71,7 @@
 "common.value_of_total.format" = "%@ %d/%d";
 "app.action.check_connections" = "检查 Agent 连接";
 "app.agent_connections.checking.title" = "正在检查 Agent 连接";
-"app.agent_connections.checking.detail" = "本次启动正在对 Codex、Claude Code、Pi 与 OpenCode 执行一次完整检查。";
+"app.agent_connections.checking.detail" = "本次启动正在对 Codex、Claude Code、Pi、OpenCode 与 DeepSeek Harness 执行一次完整检查。";
 "app.agent_connections.attention.title" = "Agent 连接需要处理";
 "app.agent_connections.attention.detail_format" = "%@。打开“Agent 连接”查看具体处理步骤。";
 "app.agent_connections.check_failed.title" = "Agent 连接操作未完成";
@@ -94,7 +94,7 @@
 "app.help.more" = "更多 App 操作";
 "app.help.service_status" = "%@，打开服务与诊断";
 "content.service_status.label" = "服务状态：%@";
-"about.tagline" = "本地优先的 macOS 桌面宠物，让 Codex、Claude Code、Pi 与 OpenCode 的工作状态安静地出现在桌面。";
+"about.tagline" = "本地优先的 macOS 桌面宠物，让 Codex、Claude Code、Pi、OpenCode 与 DeepSeek Harness 的工作状态安静地出现在桌面。";
 "about.link.project" = "项目主页";
 "about.link.privacy" = "隐私说明";
 "about.link.license" = "开源许可";

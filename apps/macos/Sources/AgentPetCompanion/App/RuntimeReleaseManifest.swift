@@ -8,7 +8,7 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     let claudeCode: String
     let pi: String
     let opencode: String
-    let dsh: String
+    let dsh: String?
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case codex
@@ -19,9 +19,15 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     }
 
     var allArePresent: Bool {
-        [codex, claudeCode, pi, opencode, dsh].allSatisfy {
+        [codex, claudeCode, pi, opencode].allSatisfy {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        } && dsh?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    var publishedV1ContractsArePresent: Bool {
+        [codex, claudeCode, pi, opencode].allSatisfy {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } && dsh == nil
     }
 }
 
@@ -137,7 +143,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     }
 
     private func validateStrictV3() throws {
-        try validateSharedIdentity()
+        try validateSharedIdentity(requireCurrentConnectorContracts: true)
         guard petpackSchemaVersion == Self.requiredPetpackVersion,
               petpackReadVersions == [Self.requiredPetpackVersion],
               petpackWriteVersion == Self.requiredPetpackVersion
@@ -146,7 +152,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         }
     }
 
-    private func validateSharedIdentity() throws {
+    private func validateSharedIdentity(requireCurrentConnectorContracts: Bool) throws {
         guard schemaVersion == Self.schemaVersion else {
             throw RuntimeManifestError.invalid("运行时清单协议不受支持")
         }
@@ -162,7 +168,9 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         guard matchesNonempty(appVersion), matchesNonempty(appBuild),
               matchesNonempty(agentEventSchemaVersion), matchesNonempty(petpackSchemaVersion),
               matchesNonempty(petpackWriteVersion), !petpackReadVersions.isEmpty,
-              connectorContracts.allArePresent
+              (requireCurrentConnectorContracts
+                  ? connectorContracts.allArePresent
+                  : connectorContracts.publishedV1ContractsArePresent)
         else {
             throw RuntimeManifestError.invalid("运行时清单缺少版本信息")
         }
@@ -175,7 +183,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
     }
 
     private func validatePublishedV1Rollback() throws {
-        try validateSharedIdentity()
+        try validateSharedIdentity(requireCurrentConnectorContracts: false)
         guard releaseChannel == "release",
               minimumDatabaseSchemaVersion == 0,
               agentEventSchemaVersion == "apc.agent-event.v1",
@@ -207,7 +215,7 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         claudeCode: "claude-hooks-2026-07-17-activity-v5",
         pi: "pi-extension-0.80.10-activity-v7",
         opencode: "opencode-v1.18.0-activity-v8",
-        dsh: "dsh-v0.1.0-rc.6-events-v1"
+        dsh: nil
     )
 
     private static let publishedV1ReleaseIdentities = [

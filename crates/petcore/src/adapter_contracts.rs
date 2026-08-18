@@ -16,7 +16,7 @@ pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
 pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v15";
 pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v16";
-pub const DSH_PLUGIN_CONTRACT_VERSION: &str = "dsh-v0.1.0-rc.6-events-v1";
+pub const DSH_PLUGIN_CONTRACT_VERSION: &str = "dsh-v0.1.0-rc.6-events-v2";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -287,15 +287,19 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
 
     let (kind, outcome, session_active) = match event {
         "turn/start" => (AgentEventType::Start, "started".to_string(), true),
+        "user/message" => (AgentEventType::Start, "started".to_string(), true),
         "assistant/chunk" => {
             // Only the explicit reasoning block boundary is a legal thinking
             // edge; every delta, usage, finish, and non-reasoning block-start
             // is ignored (fail-open).
+            let chunk_type = string_at(input, &[&["chunk", "type"], &["data", "chunk", "type"]]);
             let block_type = string_at(
                 input,
                 &[&["chunk", "blockType"], &["data", "chunk", "blockType"]],
             );
-            if block_type.as_deref() != Some("reasoning") {
+            if chunk_type.as_deref() != Some("block-start")
+                || block_type.as_deref() != Some("reasoning")
+            {
                 return Ok(None);
             }
             (
@@ -304,7 +308,7 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
                 true,
             )
         }
-        "assistant/message" => return Ok(None), // display-only; never a state event
+        "assistant/message" => return Ok(None), // cached for a later terminal edge
         "plan/mode" => {
             if bool_at(input, &[&["active"], &["data", "active"]]) {
                 (AgentEventType::Plan, "plan_mode_entered".to_string(), true)
@@ -317,7 +321,7 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
         "tool/result" => {
             let code = string_at(input, &[&["error", "code"], &["data", "error", "code"]]);
             match code {
-                Some(code) => (AgentEventType::Tool, format!("tool_failure_{code}"), true),
+                Some(_) => (AgentEventType::Tool, "tool_failure".to_string(), true),
                 None => (AgentEventType::Tool, "completed".to_string(), true),
             }
         }
@@ -327,26 +331,20 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
             true,
         ),
         "approval/decided" => {
-            let decided = string_at(input, &[&["outcome"], &["data", "outcome"]])
-                .unwrap_or_default()
-                .to_string();
-            (
-                AgentEventType::Start,
-                format!("approval_decided_{decided}"),
-                true,
-            )
+            let decided = match string_at(input, &[&["outcome"], &["data", "outcome"]]).as_deref() {
+                Some("allowed-once" | "allow-once") => "permission_replied_once",
+                Some("allowed-always" | "allow-always" | "allowed") => "permission_replied_allow",
+                Some("denied" | "deny" | "rejected" | "reject") => "permission_replied_deny",
+                _ => "permission_replied",
+            };
+            (AgentEventType::Start, decided.to_string(), true)
         }
         "turn/end" => match reason_kind.as_deref() {
             Some("completed") if bool_at(input, &[&["background_active"]]) => {
                 (AgentEventType::Start, "background_active".to_string(), true)
             }
             Some("completed") => (AgentEventType::Done, "completed".to_string(), false),
-            Some("error") => {
-                let code = string_at(input, &[&["reason", "error", "code"]])
-                    .or_else(|| string_at(input, &[&["data", "reason", "error", "code"]]))
-                    .unwrap_or_else(|| "unknown".to_string());
-                (AgentEventType::Failed, format!("llm_failure_{code}"), false)
-            }
+            Some("error") => (AgentEventType::Failed, "api_failure".to_string(), false),
             Some("blocked") => (AgentEventType::Waiting, "blocked".to_string(), true),
             Some("aborted") => (AgentEventType::Done, "aborted".to_string(), false),
             Some("max-tokens") => (AgentEventType::Start, "max_tokens".to_string(), true),
@@ -356,16 +354,14 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
             _ => return Ok(None),
         },
         "session/title" => (AgentEventType::Start, "metadata_updated".to_string(), false),
+        "session/disposed" => (AgentEventType::Done, "session_closed".to_string(), false),
         "session.child" => (AgentEventType::Start, "child_session".to_string(), false),
         "connector.probe" => (AgentEventType::Start, "observed".to_string(), false),
         _ => return Ok(None),
     };
 
-    let message_role = match event {
-        "user/message" => Some("user".to_string()),
-        "assistant/message" => Some("assistant".to_string()),
-        _ => None,
-    };
+    let message_role = string_at(input, &[&["message_role"], &["properties", "message_role"]])
+        .filter(|role| matches!(role.as_str(), "user" | "assistant"));
     let message_content = message_role.as_ref().and_then(|_| {
         display_message_at(
             input,
@@ -379,10 +375,7 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
         _ => None,
     };
 
-    let affects_activity = !matches!(
-        event,
-        "connector.probe" | "session/title" | "session.child" | "assistant/message"
-    );
+    let affects_activity = !matches!(event, "connector.probe" | "session/title" | "session.child");
     let mut contract = ContractEvent {
         source,
         external_event_id: None,
@@ -407,7 +400,7 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
         },
         project_label: project_label(input),
         session_title: session_title(input),
-        session_open: Some(event != "turn/end" || session_active),
+        session_open: Some(event != "session/disposed" && (event != "turn/end" || session_active)),
         session_surface: None,
         terminal_app: None,
         session_open_url: None,
@@ -2380,7 +2373,12 @@ mod claude_transcript_tests {
     /// local transcript in its hook payload, so no other source may read one.
     #[test]
     fn transcript_recovery_never_applies_to_another_source() {
-        for source in [AgentSource::Codex, AgentSource::Pi, AgentSource::Opencode] {
+        for source in [
+            AgentSource::Codex,
+            AgentSource::Pi,
+            AgentSource::Opencode,
+            AgentSource::Dsh,
+        ] {
             let payload = json!({"transcript_path": "/tmp/anything.jsonl"});
             // The extractor itself is source-agnostic; the adapter boundary is
             // what scopes it, and every caller checks the source first.
@@ -2779,6 +2777,16 @@ mod dsh_adapter_tests {
         assert_eq!(start.outcome.as_deref(), Some("started"));
         assert!(start.session_active);
 
+        let user_message = parse(&json!({
+            "type": "user/message",
+            "session_id": "s1",
+            "message_role": "user",
+            "message_content": "Review DSH"
+        }));
+        assert_eq!(user_message.kind, AgentEventType::Start);
+        assert_eq!(user_message.message_role.as_deref(), Some("user"));
+        assert_eq!(user_message.message_content.as_deref(), Some("Review DSH"));
+
         // 2. assistant/chunk (reasoning block-start) -> Thinking / reasoning_started
         let reasoning = parse(&json!({
             "type": "assistant/chunk",
@@ -2820,7 +2828,7 @@ mod dsh_adapter_tests {
         assert_eq!(tool_ok.kind, AgentEventType::Tool);
         assert_eq!(tool_ok.outcome.as_deref(), Some("completed"));
 
-        // 7. tool/result (failure with closed code) -> Tool / tool_failure_<code>
+        // 7. tool/result failure -> Tool / stable tool_failure (host codes stay private)
         let tool_err = parse(&json!({
             "type": "tool/result",
             "session_id": "s1",
@@ -2828,7 +2836,7 @@ mod dsh_adapter_tests {
             "error": {"name": "FsError", "code": "ENOENT"}
         }));
         assert_eq!(tool_err.kind, AgentEventType::Tool);
-        assert_eq!(tool_err.outcome.as_deref(), Some("tool_failure_ENOENT"));
+        assert_eq!(tool_err.outcome.as_deref(), Some("tool_failure"));
         assert!(tool_err.session_active); // recoverable failure stays active
 
         // 8. approval/asked -> Waiting / approval_requested
@@ -2837,17 +2845,14 @@ mod dsh_adapter_tests {
         assert_eq!(ask.outcome.as_deref(), Some("approval_requested"));
         assert_eq!(ask.interaction_kind.as_deref(), Some("approval_required"));
 
-        // 9. approval/decided -> Start / approval_decided_<outcome>
+        // 9. approval/decided -> Start / closed permission outcome
         let decided = parse(&json!({
             "type": "approval/decided",
             "session_id": "s1",
             "outcome": "allowed-once"
         }));
         assert_eq!(decided.kind, AgentEventType::Start);
-        assert_eq!(
-            decided.outcome.as_deref(),
-            Some("approval_decided_allowed-once")
-        );
+        assert_eq!(decided.outcome.as_deref(), Some("permission_replied_once"));
 
         // 10. turn/end completed (fence empty) -> Done / completed / inactive
         let done = parse(&json!({
@@ -2870,14 +2875,14 @@ mod dsh_adapter_tests {
         assert_eq!(bg_active.outcome.as_deref(), Some("background_active"));
         assert!(bg_active.session_active);
 
-        // 12. turn/end error -> Failed / llm_failure_<code> (closed code, no message)
+        // 12. turn/end error -> Failed / stable api_failure (no host code/message)
         let failed = parse(&json!({
             "type": "turn/end",
             "session_id": "s1",
             "reason": {"kind": "error", "error": {"code": "TRANSPORT", "message": "sensitive transport error"}}
         }));
         assert_eq!(failed.kind, AgentEventType::Failed);
-        assert_eq!(failed.outcome.as_deref(), Some("llm_failure_TRANSPORT"));
+        assert_eq!(failed.outcome.as_deref(), Some("api_failure"));
         assert!(!failed.session_active);
 
         // 13. turn/end blocked -> Waiting / blocked
@@ -2907,6 +2912,13 @@ mod dsh_adapter_tests {
         assert_eq!(max_tokens.kind, AgentEventType::Start);
         assert_eq!(max_tokens.outcome.as_deref(), Some("max_tokens"));
         assert!(max_tokens.session_active);
+
+        // 16. session/disposed -> explicit close that cannot survive as a bubble.
+        let disposed = parse(&json!({"type": "session/disposed", "session_id": "s1"}));
+        assert_eq!(disposed.kind, AgentEventType::Done);
+        assert_eq!(disposed.outcome.as_deref(), Some("session_closed"));
+        assert!(!disposed.session_active);
+        assert_eq!(disposed.session_open, Some(false));
     }
 
     #[test]
@@ -2947,7 +2959,7 @@ mod dsh_adapter_tests {
         assert!(parse(&json!({
             "type": "assistant/chunk",
             "session_id": "s1",
-            "chunk": {"type": "reasoning-delta", "text": "churn"}
+            "chunk": {"type": "reasoning-delta", "blockType": "reasoning", "text": "churn"}
         }))
         .is_none());
         assert!(parse(&json!({
@@ -3015,7 +3027,7 @@ mod dsh_adapter_tests {
         )
         .expect("parsed")
         .expect("contract");
-        assert_eq!(err_event.outcome.as_deref(), Some("llm_failure_TRANSPORT"));
+        assert_eq!(err_event.outcome.as_deref(), Some("api_failure"));
         assert!(!err_event.outcome.unwrap().contains("secret_api_token"));
     }
 

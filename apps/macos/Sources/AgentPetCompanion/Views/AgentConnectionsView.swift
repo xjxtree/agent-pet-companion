@@ -2,7 +2,7 @@ import AgentPetCompanionCore
 import SwiftUI
 
 enum AgentConnectionsCatalog {
-    static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
+    static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode, .dsh]
 }
 
 enum AgentConnectionVisualTone: Equatable {

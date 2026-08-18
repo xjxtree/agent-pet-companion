@@ -65,7 +65,7 @@ print(json.loads(os.environ["JSON"])["revision"])
 PY
 )"
 
-sources=(codex claude_code pi opencode)
+sources=(codex claude_code pi opencode dsh)
 events=(start thinking plan tool waiting done failed)
 start_seconds="$SECONDS"
 for ((index = 0; index < EVENT_COUNT; index++)); do
@@ -116,7 +116,7 @@ assert "evt_storm_0" in ids, ids
 assert f"evt_storm_{expected - 1}" in ids, ids
 if expected >= 12:
     assert {event["source"] for event in events} == {
-        "codex", "claude_code", "pi", "opencode"
+        "codex", "claude_code", "pi", "opencode", "dsh"
     }
     assert {event["event_type"] for event in events} == {
         "start", "thinking", "plan", "tool", "waiting", "done", "failed"

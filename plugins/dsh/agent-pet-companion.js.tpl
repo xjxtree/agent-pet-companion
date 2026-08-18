@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_DSH_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_DSH_CONTRACT_VERSION = "dsh-v0.1.0-rc.6-events-v1";
+export const APC_DSH_CONTRACT_VERSION = "dsh-v0.1.0-rc.6-events-v2";
 
 // Audited dsh broadcast events. Agent Pet Companion subscribes ONLY to emit/
 // broadcast events. Waterfall/interception events (agent/pre-step,
@@ -74,6 +74,32 @@ function cleanText(value) {
   return stripped.length > 0 ? stripped : undefined;
 }
 
+function opaqueEventID(sessionID, sequence, discriminator = "event") {
+  if (!sessionID) return undefined;
+  const durableSequence = typeof sequence === "number" || typeof sequence === "string"
+    ? String(sequence)
+    : randomUUID();
+  return createHash("sha256")
+    .update("apc.dsh.event.v2\0")
+    .update(String(sessionID))
+    .update("\0")
+    .update(discriminator)
+    .update("\0")
+    .update(durableSequence)
+    .digest("hex");
+}
+
+function displayContext(sessionID, role) {
+  const message = role === "user"
+    ? latestUserMessages.get(sessionID)
+    : latestAssistantMessages.get(sessionID);
+  return {
+    session_title: sessionTitles.get(sessionID),
+    message_role: message ? role : undefined,
+    message_content: message,
+  };
+}
+
 function sendEvent(allowlisted) {
   return new Promise((resolve) => {
     let finished = false;
@@ -84,7 +110,7 @@ function sendEvent(allowlisted) {
     };
     let child;
     const controller = new AbortController();
-    const terminalWaiting = deliveryItems.some((item) => isTerminalDelivery(item.event));
+    const terminalWaiting = deliveryItems.some((item) => isCriticalDelivery(item.event));
     const timeout = setTimeout(
       () => controller.abort(),
       terminalWaiting ? TERMINAL_PRELUDE_TIMEOUT_MS : DELIVERY_TIMEOUT_MS,
@@ -122,14 +148,23 @@ function sendEvent(allowlisted) {
   });
 }
 
-function isTerminalDelivery(event) {
-  return event?.type === "turn/end" && event?.reason?.kind === "completed";
+function isCriticalDelivery(event) {
+  return event?.type === "turn/end"
+    || event?.type === "session/disposed"
+    || event?.type === "session.child";
 }
 
 function enqueueDelivery(event) {
   if (!event || typeof event !== "object") return;
   if (deliveryItems.length >= MAX_PENDING_DELIVERIES) {
-    deliveryItems.shift();
+    const expendableIndex = deliveryItems.findIndex((item) => !isCriticalDelivery(item.event));
+    if (expendableIndex >= 0) {
+      deliveryItems.splice(expendableIndex, 1);
+    } else if (!isCriticalDelivery(event)) {
+      return;
+    } else {
+      deliveryItems.shift();
+    }
   }
   deliveryItems.push({ event });
   scheduleDrain();
@@ -164,7 +199,8 @@ export function apply(ctx) {
   if (connectorProbe || connectorDiagnostic) {
     enqueueDelivery({
       type: "connector.probe",
-      session_id: connectorProbeID ?? "probe",
+      session_id: connectorProbeID ?? `apc-dsh-probe-${randomUUID()}`,
+      eventID: opaqueEventID(connectorProbeID ?? "diagnostic", randomUUID(), "probe"),
       diagnostic: true,
     });
   }
@@ -193,6 +229,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "session.child",
             session_id: sid,
+            eventID: opaqueEventID(sid, event.seq, "session.child"),
           });
         }
         return;
@@ -200,13 +237,16 @@ export function apply(ctx) {
 
       const type = event.type;
       const data = event.data ?? {};
+      const eventID = opaqueEventID(sid, event.seq, type);
 
       switch (type) {
         case "turn/start": {
           enqueueDelivery({
             type: "turn/start",
             session_id: sid,
+            eventID,
             turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
+            ...displayContext(sid, "user"),
           });
           break;
         }
@@ -216,6 +256,7 @@ export function apply(ctx) {
             enqueueDelivery({
               type: "assistant/chunk",
               session_id: sid,
+              eventID,
               turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
               chunk: { type: "block-start", blockType: "reasoning" },
             });
@@ -234,7 +275,17 @@ export function apply(ctx) {
           if (sourceKind === "user") {
             const text = extractAssistantText(data.message);
             if (text) {
-              remember(latestUserMessages, sid, boundString(text, BOUND_MESSAGE_BYTES));
+              const message = boundString(text, BOUND_MESSAGE_BYTES);
+              remember(latestUserMessages, sid, message);
+              latestAssistantMessages.delete(sid);
+              enqueueDelivery({
+                type: "user/message",
+                session_id: sid,
+                eventID,
+                session_title: sessionTitles.get(sid),
+                message_role: "user",
+                message_content: message,
+              });
             }
           }
           break;
@@ -246,6 +297,7 @@ export function apply(ctx) {
             enqueueDelivery({
               type: "session/title",
               session_id: sid,
+              eventID,
               session_title: title,
             });
           }
@@ -256,6 +308,7 @@ export function apply(ctx) {
             enqueueDelivery({
               type: "plan/mode",
               session_id: sid,
+              eventID,
               active: true,
             });
           }
@@ -265,6 +318,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "todo/write",
             session_id: sid,
+            eventID,
           });
           break;
         }
@@ -273,6 +327,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "tool/call",
             session_id: sid,
+            eventID,
             tool_name: toolName,
             turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
           });
@@ -284,6 +339,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "tool/result",
             session_id: sid,
+            eventID,
             tool_name: toolName,
             turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
             error: hasError ? { code: boundString(data.error.code) ?? "unknown" } : undefined,
@@ -294,6 +350,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "approval/asked",
             session_id: sid,
+            eventID,
             tool_name: boundString(data.toolName),
           });
           break;
@@ -303,6 +360,7 @@ export function apply(ctx) {
           enqueueDelivery({
             type: "approval/decided",
             session_id: sid,
+            eventID,
             outcome,
           });
           break;
@@ -318,14 +376,17 @@ export function apply(ctx) {
             enqueueDelivery({
               type: "turn/end",
               session_id: sid,
+              eventID,
               turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
               reason: { kind: "completed" },
               background_active: true,
+              ...displayContext(sid, "assistant"),
             });
           } else {
             enqueueDelivery({
               type: "turn/end",
               session_id: sid,
+              eventID,
               turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
               reason: typeof reason === "object"
                 ? {
@@ -333,6 +394,7 @@ export function apply(ctx) {
                     error: reason.error ? { code: boundString(reason.error.code) } : undefined,
                   }
                 : { kind: boundString(reason) },
+              ...displayContext(sid, "assistant"),
             });
           }
           break;
@@ -408,6 +470,12 @@ export function apply(ctx) {
         return;
       }
 
+      enqueueDelivery({
+        type: "session/disposed",
+        session_id: sid,
+        eventID: opaqueEventID(sid, "disposed", "session/disposed"),
+        session_title: sessionTitles.get(sid),
+      });
       parentFences.delete(sid);
       pendingCompletedTurns.delete(sid);
       latestUserMessages.delete(sid);
@@ -446,7 +514,9 @@ function checkFenceDrain(parentId) {
       enqueueDelivery({
         type: "turn/end",
         session_id: parentId,
+        eventID: opaqueEventID(parentId, randomUUID(), "fence-drained"),
         reason: { kind: "completed" },
+        ...displayContext(parentId, "assistant"),
       });
     }
   }

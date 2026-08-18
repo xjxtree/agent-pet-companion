@@ -242,11 +242,13 @@ struct PetCoreProcessManagerTests {
                 "CODEX_HOME": "~/codex-home",
                 "CLAUDE_CONFIG_DIR": "/tmp/claude-config",
                 "PI_CODING_AGENT_DIR": "relative/pi",
+                "DSH_HOME": "/tmp/dsh-home",
                 "OPENCODE_CONFIG_DIR": "/tmp/opencode-config",
                 "OPENCODE_CONFIG": "  ",
                 "XDG_CONFIG_HOME": "/tmp/xdg",
                 "APC_PI_CLI_PATH": "/tmp/bin/pi",
-                "APC_OPENCODE_CLI_PATH": "relative/opencode"
+                "APC_OPENCODE_CLI_PATH": "relative/opencode",
+                "APC_DSH_CLI_PATH": "/tmp/bin/dsh"
             ],
             userHome: "/Users/tester"
         )
@@ -256,9 +258,11 @@ struct PetCoreProcessManagerTests {
         #expect(environment["CODEX_HOME"] == "/Users/tester/codex-home")
         #expect(environment["CLAUDE_CONFIG_DIR"] == "/tmp/claude-config")
         #expect(environment["OPENCODE_CONFIG_DIR"] == "/tmp/opencode-config")
+        #expect(environment["DSH_HOME"] == "/tmp/dsh-home")
         #expect(environment["XDG_CONFIG_HOME"] == "/tmp/xdg")
         #expect(environment["APC_PI_CLI_PATH"] == "/tmp/bin/pi")
         #expect(environment["APC_OPENCODE_CLI_PATH"] == nil)
+        #expect(environment["APC_DSH_CLI_PATH"] == "/tmp/bin/dsh")
         #expect(environment["PI_CODING_AGENT_DIR"] == nil)
         #expect(environment["OPENCODE_CONFIG"] == nil)
         #expect(Set(environment.keys).isSubset(of: Set(
@@ -702,6 +706,45 @@ struct PetCoreProcessManagerTests {
         #expect(throws: RuntimeManifestError.self) {
             try legacy.validateForApp()
         }
+    }
+
+    @Test
+    func strictV3RequiresDshWhilePublishedV1DecodesWithoutThatKey() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("runtime-manifest.json")
+
+        var current = try #require(
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(runtimeManifest(buildID: "build-a"))
+            ) as? [String: Any]
+        )
+        var currentContracts = try #require(current["connector_contracts"] as? [String: Any])
+        currentContracts.removeValue(forKey: "dsh")
+        current["connector_contracts"] = currentContracts
+        try JSONSerialization.data(withJSONObject: current).write(to: url)
+        #expect(throws: RuntimeManifestError.self) {
+            try RuntimeReleaseManifest.read(from: url)
+        }
+
+        let published = publishedV021RuntimeManifest()
+        let publishedData = try JSONEncoder().encode(published)
+        let publishedObject = try #require(
+            try JSONSerialization.jsonObject(with: publishedData) as? [String: Any]
+        )
+        let publishedContracts = try #require(
+            publishedObject["connector_contracts"] as? [String: Any]
+        )
+        #expect(publishedContracts["dsh"] == nil)
+        try publishedData.write(to: url)
+        #expect(
+            try RuntimeReleaseManifest.read(
+                from: url,
+                validationProfile: .publishedV1Rollback
+            ) == published
+        )
     }
 
     @Test
@@ -2064,7 +2107,7 @@ struct PetCoreProcessManagerTests {
                 claudeCode: "claude-hooks-2026-07-17-activity-v5",
                 pi: "pi-extension-0.80.10-activity-v7",
                 opencode: "opencode-v1.18.0-activity-v8",
-                dsh: "dsh-v0.1.0-rc.6-events-v1"
+                dsh: nil
             )
         )
     }

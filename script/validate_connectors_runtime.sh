@@ -38,6 +38,11 @@ printf '%s\n' \
   'printf '\''opencode serve starts a headless opencode server\n'\''' \
   >"$SIMULATED_AGENT_BIN/opencode"
 chmod +x "$SIMULATED_AGENT_BIN/opencode"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''dsh 0.1.0-rc.6\n'\''' \
+  >"$SIMULATED_AGENT_BIN/dsh"
+chmod +x "$SIMULATED_AGENT_BIN/dsh"
 
 assert_recent_event() {
   local source="$1"
@@ -118,7 +123,7 @@ for _ in {1..100}; do
 done
 [[ -f "$TMP_DIR/ready" ]]
 
-for source in codex claude_code pi opencode; do
+for source in codex claude_code pi opencode dsh; do
   APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections repair --source "$source" >/dev/null
 done
 
@@ -127,7 +132,7 @@ assert_json_expr "$CHECK_CODEX" 'data["source"] == "codex"'
 CHECK_PI="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check --source pi)"
 assert_json_expr "$CHECK_PI" 'data["source"] == "pi"'
 CHECK_ALL="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check)"
-assert_json_expr "$CHECK_ALL" 'isinstance(data, list) and {item["source"] for item in data} == {"codex", "claude_code", "pi", "opencode"}'
+assert_json_expr "$CHECK_ALL" 'isinstance(data, list) and {item["source"] for item in data} == {"codex", "claude_code", "pi", "opencode", "dsh"}'
 assert_json_expr "$CHECK_ALL" 'any(item["source"] == "opencode" and any(check["name"] == "OpenCode CLI" for check in item["items"]) and any(check["name"] == "OpenCode Server" for check in item["items"]) and len([check for check in item["items"] if check["name"] == "Server"]) == 0 for item in data)'
 assert_json_expr "$CHECK_ALL" 'any(item["source"] == "pi" and any(check["name"] == "Extension 运行时" and check["status"] == "unverified" for check in item["items"]) for item in data)'
 assert_json_expr "$CHECK_ALL" 'any(item["source"] == "opencode" and any(check["name"] == "Plugin 运行时" and check["status"] == "unverified" for check in item["items"]) for item in data)'
@@ -352,14 +357,48 @@ for expected in ["TOKEN=secret-command", "secret-output", "secret-error", "secre
     assert expected in serialized, expected
 assert "secret-call" not in serialized, "raw invocation identity crossed the connector boundary"
 PY
+
+  DSH_MODULE="$TMP_DIR/dsh-connector.mjs"
+  cp "$TMP_DIR/home/connectors/dsh/agent-pet-companion.js" "$DSH_MODULE"
+  APC_HOME="$TMP_DIR/home" node --input-type=module --eval "
+const mod = await import('file://$DSH_MODULE');
+const handlers = new Map();
+mod.apply({ on: (name, callback) => handlers.set(name, callback) });
+const expected = ['session/event', 'session/disposed', 'subagent/start', 'subagent/end'].sort();
+const actual = [...handlers.keys()].sort();
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  throw new Error('dsh handler set mismatch: ' + JSON.stringify(actual));
+}
+if (handlers.has('agent/status')) throw new Error('dsh agent/status must remain audit-only');
+const session = { id: 'sess_runtime_dsh', header: {} };
+handlers.get('session/event')(session, {
+  type: 'user/message', seq: 1,
+  data: { message: { source: { kind: 'user' }, content: [{ type: 'text', text: 'DSH runtime prompt' }] } },
+});
+handlers.get('session/event')(session, { type: 'turn/start', seq: 2, data: { turn: 1 } });
+handlers.get('session/event')(session, { type: 'tool/call', seq: 3, data: { turn: 1, name: 'read' } });
+handlers.get('session/event')(session, { type: 'tool/call', seq: 4, data: { turn: 1, name: 'read' } });
+handlers.get('session/event')(session, {
+  type: 'assistant/message', seq: 5,
+  data: { message: { content: [{ type: 'text', text: 'DSH runtime response' }] } },
+});
+handlers.get('session/event')(session, {
+  type: 'turn/end', seq: 6, data: { turn: 1, reason: { kind: 'completed' } },
+});
+handlers.get('session/disposed')(session);
+await new Promise((resolve) => setTimeout(resolve, 900));
+"
+  assert_recent_event dsh start sess_runtime_dsh
+  assert_recent_event dsh tool sess_runtime_dsh
+  assert_recent_event dsh done sess_runtime_dsh
 else
-  echo "Skipping Pi/OpenCode Node connector runtime smoke; node is not available"
+  echo "Skipping Pi/OpenCode/dsh Node connector runtime smoke; node is not available"
 fi
 
-for source in codex claude_code pi opencode; do
+for source in codex claude_code pi opencode dsh; do
   APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections uninstall --source "$source" >/dev/null
 done
 CHECK_AFTER_UNINSTALL="$(APC_HOME="$TMP_DIR/home" "$ROOT_DIR/target/debug/petcore-cli" connections check)"
-assert_json_expr "$CHECK_AFTER_UNINSTALL" 'all(not any(check["name"] in {"插件源", "Hook", "Pet Studio Skill", "Codex marketplace", "Codex 插件安装", "Hooks", "事件通道", "Claude settings.json", "Extension", "Extension 运行时", "Plugin", "Plugin 运行时"} and check["status"] == "ok" for check in item["items"]) for item in data)'
+assert_json_expr "$CHECK_AFTER_UNINSTALL" 'all(not any(check["name"] in {"插件源", "Hook", "Pet Studio Skill", "Codex marketplace", "Codex 插件安装", "Hooks", "事件通道", "Claude settings.json", "Extension", "Extension 运行时", "Plugin", "dsh Plugin", "dsh cordis.patch.yml", "Plugin 运行时"} and check["status"] == "ok" for check in item["items"]) for item in data)'
 
 echo "Connector runtime validation ok"

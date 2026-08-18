@@ -416,7 +416,7 @@ fi
 
 OVERLAY_NON_MOUSE_VALIDATOR="$ROOT_DIR/script/validate_overlay_non_mouse.sh"
 for current_contract in \
-  'requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"]' \
+  'requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode", "DeepSeek Harness"]' \
   'overlay.group.agent-claude_code' \
   'overlay.session.session-claude_code-' \
   'overlay.group.agent-codex' \
@@ -510,7 +510,7 @@ done
 
 EVENT_STORM_VALIDATOR="$ROOT_DIR/script/validate_event_storm.sh"
 for event_storm_contract in \
-  'sources=(codex claude_code pi opencode)' \
+  'sources=(codex claude_code pi opencode dsh)' \
   'events=(start thinking plan tool waiting done failed)' \
   'len(data["events"]) <= 8' \
   'len(data["active_agent_sessions"]) <= 8' \
