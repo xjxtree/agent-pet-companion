@@ -62,7 +62,7 @@ Automatic and manual checks use GitHub's public latest-Release endpoint. A respo
 
 Release handoff accepts only the real canonical `/Applications/AgentPetCompanion.app` identity. A replacement is revalidated immediately before quit/relaunch and waits for protected user mutations, connector work, generation work, or placement persistence. If safety cannot be established, the old App stays open and presents manual recovery.
 
-After replacement, the runtime transaction converges PetCore, CLI, missing or updated trusted bundled-pet revisions, and only integrations already managed by Agent Pet Companion. Core failure rolls back the runtime. A connector failure is isolated to that Agent and remains repairable. A completed convergence receipt is written only for the exact runtime build and complete typed four-Agent result.
+After replacement, the runtime transaction converges PetCore, CLI, missing or updated trusted bundled-pet revisions, and only integrations already managed by Agent Pet Companion. Core failure rolls back the runtime. A connector failure is isolated to that Agent and remains repairable. A completed convergence receipt is written only for the exact runtime build and complete typed five-Agent result.
 
 The Codex plugin plus bundled Studio and Maker Skills form one versioned capability bundle. Content changes require a greater plugin version; Studio upgrades additionally preserve the previous shipped Skill digest in the append-only retired ownership history.
 
