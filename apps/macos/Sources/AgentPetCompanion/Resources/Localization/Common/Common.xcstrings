@@ -102,13 +102,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A local-first macOS desktop pet that quietly reflects work from Codex, Claude Code, Pi, and OpenCode."
+            "value": "A local-first macOS desktop pet that quietly reflects work from Codex, Claude Code, Pi, OpenCode, and DeepSeek Harness."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本地优先的 macOS 桌面宠物，让 Codex、Claude Code、Pi 与 OpenCode 的工作状态安静地出现在桌面。"
+            "value": "本地优先的 macOS 桌面宠物，让 Codex、Claude Code、Pi、OpenCode 与 DeepSeek Harness 的工作状态安静地出现在桌面。"
           }
         }
       }
@@ -342,13 +342,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The App is running a full check of Codex, Claude Code, Pi, and OpenCode for this launch."
+            "value": "The App is running a full check of Codex, Claude Code, Pi, OpenCode, and DeepSeek Harness for this launch."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本次启动正在对 Codex、Claude Code、Pi 与 OpenCode 执行一次完整检查。"
+            "value": "本次启动正在对 Codex、Claude Code、Pi、OpenCode 与 DeepSeek Harness 执行一次完整检查。"
           }
         }
       }

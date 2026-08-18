@@ -1369,8 +1369,9 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     )));
 
     // --- DeepSeek Harness (dsh) template privacy and filtering tests ---
+    delete process.env.APC_CONNECTOR_PROBE_ID;
     const dsh = await importTemplate("./dsh/agent-pet-companion.js.tpl", "dsh-privacy");
-    assert.equal(dsh.APC_DSH_CONTRACT_VERSION, "dsh-v0.1.0-rc.6-events-v1");
+    assert.equal(dsh.APC_DSH_CONTRACT_VERSION, "dsh-v0.1.0-rc.6-events-v2");
     assert.equal(dsh.APC_DSH_AUDITED_EVENTS.length, 5);
 
     const dshListeners = new Map();
@@ -1384,6 +1385,14 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     assert.ok(dshListeners.has("subagent/start"), "dsh must listen to subagent/start");
     assert.ok(dshListeners.has("subagent/end"), "dsh must listen to subagent/end");
     assert.ok(dshListeners.has("session/disposed"), "dsh must listen to session/disposed");
+    assert.ok(!dshListeners.has("agent/status"), "unattributed agent/status must remain audit-only");
+    assert.ok(captured.some((item) => (
+      item.source === "dsh"
+      && item.payload.type === "connector.probe"
+      && item.payload.session_id.startsWith("apc-dsh-probe-")
+      && item.payload.session_id !== "probe"
+      && /^[0-9a-f]{64}$/.test(item.payload.eventID)
+    )), "fallback dsh probes must use fresh content-free identities");
 
     // Test 1: session.child emission on child session first sight
     const childSession = {
@@ -1446,6 +1455,76 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     });
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(captured.length, countBeforeDelta, "text-delta chunks must be dropped");
+
+    // Test 4: bounded display context travels on semantic edges, not private envelopes.
+    dshListeners.get("session/event")(parentSession, {
+      type: "session/title",
+      seq: 20,
+      data: { title: "DSH acceptance" },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "user/message",
+      seq: 21,
+      data: { message: { source: { kind: "user" }, content: [{ type: "text", text: "Review DSH" }] } },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "turn/start",
+      seq: 22,
+      data: { turn: 2 },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "assistant/message",
+      seq: 23,
+      data: { message: { content: [{ type: "text", text: "DSH is ready" }] } },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "turn/end",
+      seq: 24,
+      data: { turn: 2, reason: { kind: "completed" } },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    const startPayload = captured.find((item) => (
+      item.source === "dsh" && item.payload.type === "turn/start" && item.payload.turn_id === "2"
+    ))?.payload;
+    assert.equal(startPayload?.message_role, "user");
+    assert.equal(startPayload?.message_content, "Review DSH");
+    assert.equal(startPayload?.session_title, "DSH acceptance");
+    const donePayload = captured.find((item) => (
+      item.source === "dsh" && item.payload.type === "turn/end" && item.payload.turn_id === "2"
+    ))?.payload;
+    assert.equal(donePayload?.message_role, "assistant");
+    assert.equal(donePayload?.message_content, "DSH is ready");
+    assert.equal(donePayload?.session_title, "DSH acceptance");
+
+    // Test 5: durable host sequence differentiates otherwise identical tool events.
+    dshListeners.get("session/event")(parentSession, {
+      type: "tool/call", seq: 25, data: { turn: 3, name: "read" },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "tool/call", seq: 26, data: { turn: 3, name: "read" },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const repeatedTools = captured.filter((item) => (
+      item.source === "dsh" && item.payload.type === "tool/call" && item.payload.turn_id === "3"
+    ));
+    assert.equal(repeatedTools.length, 2);
+    assert.notEqual(repeatedTools[0].payload.eventID, repeatedTools[1].payload.eventID);
+    assert.ok(repeatedTools.every((item) => /^[0-9a-f]{64}$/.test(item.payload.eventID)));
+
+    // Test 6: root disposal emits an explicit close; child disposal stays suppressed.
+    dshListeners.get("session/disposed")(parentSession);
+    dshListeners.get("session/disposed")(childSession);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(captured.filter((item) => (
+      item.source === "dsh"
+      && item.payload.type === "session/disposed"
+      && item.payload.session_id === "parent-sess-1"
+    )).length, 1);
+    assert.equal(captured.filter((item) => (
+      item.source === "dsh"
+      && item.payload.type === "session/disposed"
+      && item.payload.session_id === "child-sess-1"
+    )).length, 0);
 
   } finally {
     childProcess.spawn = originalSpawn;

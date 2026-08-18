@@ -2280,7 +2280,7 @@ fn new_user_activation_retains_previous_reply_until_agent_responds() {
 fn every_agent_keeps_only_the_latest_agent_or_thinking_message_across_tool_activity() {
     let (_temp, state) = ready();
 
-    for source in ["codex", "claude_code", "pi", "opencode"] {
+    for source in ["codex", "claude_code", "pi", "opencode", "dsh"] {
         let session_id = format!("{source}-single-bubble-message");
         let event_id = |suffix: &str| format!("{session_id}-{suffix}");
         let session = || {
@@ -3359,6 +3359,14 @@ fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
             "session.deleted",
             false,
         ),
+        (
+            "dsh",
+            "dsh-failed-navigation",
+            "turn/start",
+            "turn/end",
+            "session/disposed",
+            false,
+        ),
     ] {
         ingest_source_payload(
             &state,
@@ -3436,6 +3444,7 @@ fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
             "019f5b0f-88ff-7413-8953-29de4ed0951c",
             "pi-failed-navigation",
             "opencode-failed-navigation",
+            "dsh-failed-navigation",
         ] {
             assert!(
                 current["active_agent_sessions"]
@@ -3454,6 +3463,7 @@ fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
         "019f5b0f-88ff-7413-8953-29de4ed0951c-close",
         "pi-failed-navigation-close",
         "opencode-failed-navigation-close",
+        "dsh-failed-navigation-close",
     ] {
         assert!(current["recent_events"]
             .as_array()

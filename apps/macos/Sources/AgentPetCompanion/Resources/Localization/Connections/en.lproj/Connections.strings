@@ -104,7 +104,7 @@
 "connections.managed_actions.detail" = "Reapply or remove only files owned by Agent Pet Companion. This does not install or update the Agent itself.";
 "connections.action.check_all" = "Check All";
 "connections.hint.busy" = "Wait for the current connection operation to finish.";
-"connections.hint.check_all" = "Check all four agents.";
+"connections.hint.check_all" = "Check all five agents.";
 "connections.action.repair_all" = "Set Up or Repair All";
 "connections.action.uninstall_all" = "Uninstall All Managed Connections";
 "connections.action.bulk" = "Bulk Actions";

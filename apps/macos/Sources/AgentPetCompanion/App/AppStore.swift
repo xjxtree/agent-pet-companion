@@ -2162,7 +2162,7 @@ final class AppStore: ObservableObject {
         appUpdater.checkAutomaticallyIfDue()
     }
 
-    /// Runs one authoritative four-Agent runtime check for this App process.
+    /// Runs one authoritative five-Agent runtime check for this App process.
     /// Product convergence retains priority because it may refresh the same
     /// managed host artifacts; the startup check begins as soon as that flow
     /// and any user-started connection operation release the shared gate.

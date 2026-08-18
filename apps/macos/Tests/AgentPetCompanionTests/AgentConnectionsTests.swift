@@ -6,10 +6,10 @@ import Testing
 @Suite
 struct AgentConnectionsTests {
     @Test
-    func pageKeepsTheFourSupportedAgentsInProductOrder() {
+    func pageKeepsTheFiveSupportedAgentsInProductOrder() {
         #expect(
             AgentConnectionsCatalog.sources
-                == [.codex, .claudeCode, .pi, .opencode]
+                == [.codex, .claudeCode, .pi, .opencode, .dsh]
         )
     }
 

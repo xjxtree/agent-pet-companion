@@ -113,7 +113,7 @@ Validation profiles:
   [fast/core] deterministic local checks for Rust, PetCore, CLI, schemas, Swift core, and security boundaries.
   [simulated integration] temp-home integration, local Pet Studio fallback, generated connector templates, or fake sentinel inputs; not real end-to-end acceptance.
   [macos runtime] real macOS app bundle and overlay runtime checks; environment-gated.
-  [real agent connectors] current user Codex/Claude/Pi/OpenCode connector files sending diagnostic events into the current app; environment-gated.
+  [real agent connectors] current user Codex/Claude/Pi/OpenCode/DSH connector files sending diagnostic events into the current app; environment-gated.
   [real app server] real Codex App Server stdio session; environment-gated.
   [perf/nightly] bounded stress and budget checks; enabled explicitly with --include-stress.
 Default test_all covers deterministic, simulated, and security checks. Stress, host UI, and real-agent checks require explicit opt-in and otherwise print skip reasons.
@@ -335,9 +335,9 @@ else
 fi
 
 if real_agent_connectors_skip_reason="$(real_agent_connectors_skip_reason)"; then
-  log_skip "real agent connectors" "current user Codex/Claude/Pi/OpenCode connector roundtrip" "$real_agent_connectors_skip_reason"
+  log_skip "real agent connectors" "current user Codex/Claude/Pi/OpenCode/DSH connector roundtrip" "$real_agent_connectors_skip_reason"
 else
-  run_step "real agent connectors" "current user Codex/Claude/Pi/OpenCode connector roundtrip" "$ROOT_DIR/script/validate_real_agent_connectors.sh"
+  run_step "real agent connectors" "current user Codex/Claude/Pi/OpenCode/DSH connector roundtrip" "$ROOT_DIR/script/validate_real_agent_connectors.sh"
 fi
 
 if real_app_server_skip_reason="$(real_app_server_skip_reason)"; then

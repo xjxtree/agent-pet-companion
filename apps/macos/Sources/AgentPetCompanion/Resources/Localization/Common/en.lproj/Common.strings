@@ -71,7 +71,7 @@
 "common.value_of_total.format" = "%@ %d/%d";
 "app.action.check_connections" = "Check Agent Connections";
 "app.agent_connections.checking.title" = "Checking Agent connections";
-"app.agent_connections.checking.detail" = "The App is running a full check of Codex, Claude Code, Pi, and OpenCode for this launch.";
+"app.agent_connections.checking.detail" = "The App is running a full check of Codex, Claude Code, Pi, OpenCode, and DeepSeek Harness for this launch.";
 "app.agent_connections.attention.title" = "Agent connections need attention";
 "app.agent_connections.attention.detail_format" = "%@. Open Agent Connections for the exact recovery steps.";
 "app.agent_connections.check_failed.title" = "Agent connection operation did not finish";
@@ -94,7 +94,7 @@
 "app.help.more" = "More app actions";
 "app.help.service_status" = "%@. Open Service & Diagnostics.";
 "content.service_status.label" = "Service status: %@";
-"about.tagline" = "A local-first macOS desktop pet that quietly reflects work from Codex, Claude Code, Pi, and OpenCode.";
+"about.tagline" = "A local-first macOS desktop pet that quietly reflects work from Codex, Claude Code, Pi, OpenCode, and DeepSeek Harness.";
 "about.link.project" = "Project";
 "about.link.privacy" = "Privacy";
 "about.link.license" = "License";

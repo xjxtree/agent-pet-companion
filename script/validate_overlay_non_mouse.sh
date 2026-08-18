@@ -119,7 +119,7 @@ behavior["status_bubble"] = True
 behavior["click_menu"] = True
 behavior["auto_hide"] = False
 behavior["group_sessions_by_agent"] = True
-for key in ["codex", "claude_code", "pi", "opencode"]:
+for key in ["codex", "claude_code", "pi", "opencode", "dsh"]:
     behavior.setdefault("sources", {})[key] = True
 for key in ["start", "thinking", "plan", "tool", "waiting", "done", "failed"]:
     behavior.setdefault("events", {})[key] = True
@@ -302,7 +302,7 @@ guard let pet = sortedPetCandidates.first else {
 }
 
 let values = bubble.nodes.flatMap(\.strings)
-let requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode"]
+let requiredAgentHeaders = ["Codex", "Claude Code", "Pi Coding Agent", "OpenCode", "DeepSeek Harness"]
 let missingAgentHeaders = requiredAgentHeaders.filter { !values.contains($0) }
 if !missingAgentHeaders.isEmpty {
     fputs("overlay non-mouse validation failed: grouped bubble is missing agent headers \(missingAgentHeaders)\n", stderr)
@@ -634,7 +634,7 @@ import os
 data = json.loads(os.environ["SNAPSHOT"])
 behavior = dict(data["behavior"])
 behavior.pop("mouse_passthrough", None)
-for key in ["codex", "claude_code", "pi", "opencode"]:
+for key in ["codex", "claude_code", "pi", "opencode", "dsh"]:
     behavior.setdefault("sources", {})[key] = key == "codex"
 print(json.dumps(behavior, ensure_ascii=False))
 PY

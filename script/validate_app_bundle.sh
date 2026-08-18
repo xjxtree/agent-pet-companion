@@ -847,7 +847,7 @@ if schema_version != 7:
     )
 PY
 
-  for source in codex claude_code pi opencode; do
+  for source in codex claude_code pi opencode dsh; do
     APC_HOME="$TMP_DIR/home" "$PETCORE_CLI" connections repair --source "$source" >/dev/null
   done
 

@@ -64,7 +64,11 @@ pub(crate) fn event_requires_prior_user_activation(event: &AgentEvent) -> bool {
             Some("session.next.step.ended"),
         ) => true,
         (AgentSource::Opencode, AgentEventType::Failed, Some("session.next.step.failed")) => true,
-        (AgentSource::Dsh, AgentEventType::Done | AgentEventType::Failed, Some("turn/end")) => true,
+        (
+            AgentSource::Dsh,
+            AgentEventType::Done | AgentEventType::Failed,
+            Some("turn/end" | "session/disposed"),
+        ) => true,
         _ => false,
     }
 }
@@ -203,6 +207,7 @@ pub(crate) fn source_event_proves_ordinary_activity(
                 | "session.idle"
                 | "session.status"
                 | "session.error"
+                | "session/disposed"
                 | "session.next.step.ended"
                 | "session.next.step.failed"
                 | "connector.probe"
@@ -842,6 +847,18 @@ fn normalized_source_event(value: &str) -> &'static str {
         "session.compaction.started" => "session.compaction.started",
         "session.compaction.ended" => "session.compaction.ended",
         "session.plan.updated" => "session.plan.updated",
+        "turn/start" => "turn/start",
+        "user/message" => "user/message",
+        "assistant/chunk" => "assistant/chunk",
+        "plan/mode" => "plan/mode",
+        "todo/write" => "todo/write",
+        "tool/call" => "tool/call",
+        "tool/result" => "tool/result",
+        "approval/asked" => "approval/asked",
+        "approval/decided" => "approval/decided",
+        "turn/end" => "turn/end",
+        "session/title" => "session/title",
+        "session/disposed" => "session/disposed",
         "connector.probe" => "connector.probe",
         "connection.test" => "connection.test",
         "app_server_activity" => "app_server_activity",
@@ -889,6 +906,13 @@ fn normalized_outcome(value: &str) -> String {
         | "observed"
         | "auto_denied"
         | "background_active"
+        | "reasoning_started"
+        | "plan_mode_entered"
+        | "todo_updated"
+        | "approval_requested"
+        | "blocked"
+        | "aborted"
+        | "max_tokens"
         | "agent_completed" => value.to_string(),
         "session_closed" | "input_requested" | "message" | "continued" | "prompt_admitted" => {
             value.to_string()

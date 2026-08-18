@@ -104,7 +104,7 @@
 "connections.managed_actions.detail" = "只重新写入或移除 Agent Pet Companion 管理的文件，不会安装或更新 Agent 本身。";
 "connections.action.check_all" = "全部检查";
 "connections.hint.busy" = "等待当前连接操作完成";
-"connections.hint.check_all" = "检查全部四个 Agent";
+"connections.hint.check_all" = "检查全部五个 Agent";
 "connections.action.repair_all" = "一键设置或修复";
 "connections.action.uninstall_all" = "卸载所有受管连接";
 "connections.action.bulk" = "批量操作";

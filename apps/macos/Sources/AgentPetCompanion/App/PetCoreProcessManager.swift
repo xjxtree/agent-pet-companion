@@ -178,13 +178,15 @@ enum PetCoreServiceEnvironmentPolicy {
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
         "PI_CODING_AGENT_DIR",
+        "DSH_HOME",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_CONFIG",
         "XDG_CONFIG_HOME",
         "APC_CODEX_CLI_PATH",
         "APC_CLAUDE_CLI_PATH",
         "APC_PI_CLI_PATH",
-        "APC_OPENCODE_CLI_PATH"
+        "APC_OPENCODE_CLI_PATH",
+        "APC_DSH_CLI_PATH"
     ]
 
     static func userPathEnvironment(

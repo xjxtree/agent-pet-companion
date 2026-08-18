@@ -145,6 +145,43 @@ fn pi_input_is_a_first_class_allowlisted_lifecycle_event() {
 }
 
 #[test]
+fn dsh_lifecycle_and_closed_outcomes_survive_strict_ingest() {
+    for (source_event, event_type, outcome) in [
+        ("turn/start", "start", "started"),
+        ("user/message", "start", "started"),
+        ("assistant/chunk", "thinking", "reasoning_started"),
+        ("plan/mode", "plan", "plan_mode_entered"),
+        ("todo/write", "plan", "todo_updated"),
+        ("tool/call", "tool", "started"),
+        ("tool/result", "tool", "tool_failure"),
+        ("approval/asked", "waiting", "approval_requested"),
+        ("approval/decided", "start", "permission_replied_once"),
+        ("turn/end", "done", "aborted"),
+        ("session/title", "start", "observed"),
+        ("session/disposed", "done", "session_closed"),
+    ] {
+        let event = NormalizedAgentEvent::from_external(
+            AgentSource::Dsh,
+            json!({
+                "id": format!("dsh-{source_event}"),
+                "session_id": "dsh-strict-session",
+                "event_type": event_type,
+                "payload": {
+                    "source_event": source_event,
+                    "outcome": outcome,
+                    "diagnostic": false
+                }
+            }),
+            received_at(),
+        )
+        .unwrap();
+
+        assert_eq!(event.payload_json["source_event"], source_event);
+        assert_eq!(event.payload_json["outcome"], outcome);
+    }
+}
+
+#[test]
 fn pi_model_unavailable_outcome_survives_the_envelope_vocabularies() {
     let event = NormalizedAgentEvent::from_external(
         AgentSource::Pi,

@@ -17,7 +17,7 @@ enum BehaviorSettingsSection: String, CaseIterable, Identifiable {
 }
 
 enum BehaviorSettingsCatalog {
-    static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode]
+    static let sources: [AgentSource] = [.codex, .claudeCode, .pi, .opencode, .dsh]
     static let events: [AgentEventKind] = [
         .start, .thinking, .plan, .tool, .waiting, .done, .failed,
     ]

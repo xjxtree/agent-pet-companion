@@ -1485,6 +1485,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     assert_eq!(decoded.sources.get(&AgentSource::ClaudeCode), Some(&true));
     assert_eq!(decoded.sources.get(&AgentSource::Pi), Some(&true));
     assert_eq!(decoded.sources.get(&AgentSource::Opencode), Some(&true));
+    assert_eq!(decoded.sources.get(&AgentSource::Dsh), Some(&true));
     assert_eq!(decoded.events.get(&AgentEventType::Tool), Some(&false));
     assert_eq!(decoded.events.get(&AgentEventType::Start), Some(&true));
     assert_eq!(decoded.events.get(&AgentEventType::Waiting), Some(&true));
@@ -1504,6 +1505,7 @@ fn behavior_settings_decode_legacy_sparse_json_with_defaults() {
     assert_eq!(stored.session_group_display, SessionGroupDisplay::Stacked);
     assert_eq!(stored.sources.get(&AgentSource::Codex), Some(&false));
     assert_eq!(stored.sources.get(&AgentSource::ClaudeCode), Some(&true));
+    assert_eq!(stored.sources.get(&AgentSource::Dsh), Some(&true));
     assert_eq!(stored.events.get(&AgentEventType::Tool), Some(&false));
     assert_eq!(stored.events.get(&AgentEventType::Done), Some(&true));
 }

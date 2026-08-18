@@ -409,9 +409,11 @@ impl Default for EventRetentionPolicy {
     }
 }
 
-// Schema 6 adds the smallest durable authority needed for content-free,
-// stable anonymous-session aliases. Runtime replacement preflight blocks a
-// schema-5 daemon from opening the upgraded database.
+// Schema 6 added the smallest durable authority needed for content-free,
+// stable anonymous-session aliases. Schema 7 widens the convergence receipt
+// to the current five-Agent product contract. Runtime replacement preflight
+// and rollback checkpoints keep a schema-6 last-known-good database available
+// until a schema-7 candidate has completed its handoff.
 //
 // `product_convergence_receipt` is an additive singleton table and
 // intentionally remains compatible with schema-6 last-known-good runtimes:
@@ -422,9 +424,9 @@ impl Default for EventRetentionPolicy {
 // preserves metadata for pre-V3 quality rows and removed state contracts that
 // the current runtime cannot decode, while their package and rendered assets
 // remain untouched in the owned store.
-// V3 pet metadata and retired-record storage are additive extensions of the
-// released schema-6 tables. Keeping the version at 6 lets the last-known-good
-// V1 runtime reopen the database after a failed candidate handoff.
+// V3 pet metadata and retired-record storage remain additive extensions of the
+// released schema-6 tables; the explicit v7 migration is limited to rebuilding
+// the singleton convergence table with the wider closed source count.
 pub const DATABASE_SCHEMA_VERSION: u32 = 7;
 const DEFAULT_PET_STATES_JSON: &str = r#"[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[260,220,240,260,380,640],"playback":{"mode":"periodic","cooldown_ms":[2500,5000]},"reduced_motion_frame_index":2},{"name":"thinking","frames_dir":"assets/frames/thinking","frame_durations_ms":[120,140,160,180],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[100,100,110,110,120,130,160,230],"playback":{"mode":"burst_then_settle","entry_repeat_count":3,"settle_frame_index":7},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[80,80,90,100,110,120,190,290],"playback":{"mode":"burst_then_settle","entry_repeat_count":3,"settle_frame_index":7},"reduced_motion_frame_index":2},{"name":"acknowledge","frames_dir":"assets/frames/acknowledge","frame_durations_ms":[180,140,180,300],"playback":{"mode":"once_then_return"},"reduced_motion_frame_index":1},{"name":"drag_left","frames_dir":"assets/frames/drag_left","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2},{"name":"drag_right","frames_dir":"assets/frames/drag_right","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2}]"#;
 const EVENT_PRIVACY_MIGRATION_KEY: &str = "event-envelope-v4-secure-vacuum";

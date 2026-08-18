@@ -210,10 +210,11 @@ fn check_all_with_runtime_smoke(
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ];
     if run_runtime_smoke {
         // Native hosts are comparatively heavy and may all cold-start Node,
-        // settings discovery, project trust, and plugin loading. Running four
+        // settings discovery, project trust, and plugin loading. Running five
         // canaries at once creates deadline-sensitive false negatives and can
         // trigger several macOS protected-folder prompts simultaneously.
         return sources
@@ -646,6 +647,8 @@ fn check_source_with_runtime_smoke(
             let root_check =
                 check_managed_connector_root(&install_root, "dsh 连接器目录", root_state, None);
             let plugin_path = install_root.join(DSH_MANAGED_PLUGIN_FILENAME);
+            let plugin_ownership =
+                managed_connector_script_ownership(&plugin_path, AgentSource::Dsh);
             let expected_plugin = render_dsh_plugin(DSH_PLUGIN_TEMPLATE, &connector_cli);
             let plugin_check = check_exact_connector_file(
                 &plugin_path,
@@ -654,9 +657,14 @@ fn check_source_with_runtime_smoke(
                 AgentSource::Dsh,
             );
             let patch_check = check_dsh_patch_file(&plugin_path);
-            let patch_state = config_file_path_state(&dsh_patch_file_path());
+            let patch_state = match dsh_profile_directory_state() {
+                ManagedPathState::Safe => config_file_path_state(&dsh_patch_file_path()),
+                state => state,
+            };
             let managed_path_conflict = root_state == ManagedPathState::Conflict
-                || patch_state == ManagedPathState::Conflict;
+                || patch_state == ManagedPathState::Conflict
+                || plugin_ownership == ManagedConnectorScriptOwnership::Foreign
+                || dsh_patch_file_conflicts(&plugin_path);
             let repairable_connector_issue = has_repairable_managed_connector_issue(
                 managed_path_conflict,
                 &[&plugin_check, &patch_check],
@@ -1810,6 +1818,8 @@ pub(crate) fn connection_light_cache_revision(paths: &AppPaths) -> u64 {
         "APC_CLAUDE_CLI_PATH",
         "APC_PI_CLI_PATH",
         "APC_OPENCODE_CLI_PATH",
+        "APC_DSH_CLI_PATH",
+        "DSH_HOME",
     ] {
         key.hash(&mut revision);
         if let Some(value) = std::env::var_os(key) {
@@ -1839,6 +1849,7 @@ fn agent_cli_cache_candidates() -> Vec<PathBuf> {
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ];
     let mut candidates = shared_command_search_dirs()
         .into_iter()
@@ -2012,6 +2023,11 @@ fn installed_static_connector_release_version(
         }
         AgentSource::Dsh => {
             let path = install_root.join(DSH_MANAGED_PLUGIN_FILENAME);
+            if managed_connector_script_ownership(&path, source)
+                != ManagedConnectorScriptOwnership::Owned
+            {
+                return None;
+            }
             let content = fs::read_to_string(path).ok()?;
             connector_release_version_constant(&content, "APC_DSH_CONNECTOR_RELEASE_VERSION")
         }
@@ -2366,10 +2382,22 @@ pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentCo
         }
         AgentSource::Dsh => {
             let plugin_path = root.join(DSH_MANAGED_PLUGIN_FILENAME);
-            remove_dsh_patch_entry(&plugin_path)?;
-            if plugin_path.is_file() {
-                fs::remove_file(&plugin_path)?;
+            if dsh_managed_root_state(&root) == ManagedPathState::Conflict {
+                return Err(PetCoreError::Conflict(format!(
+                    "拒绝通过 dsh 管理目录符号链接或非目录路径卸载：{}",
+                    root.display()
+                )));
             }
+            if managed_connector_script_ownership(&plugin_path, AgentSource::Dsh)
+                == ManagedConnectorScriptOwnership::Foreign
+            {
+                return Err(PetCoreError::Conflict(format!(
+                    "拒绝删除无法识别为 Agent Pet Companion 的 dsh Plugin：{}",
+                    plugin_path.display()
+                )));
+            }
+            remove_dsh_patch_entry(&plugin_path)?;
+            remove_owned_connector_script(&plugin_path, AgentSource::Dsh)?;
         }
     }
     let status = check_source(paths, source);
@@ -3214,11 +3242,9 @@ fn connector_artifacts_present(paths: &AppPaths, source: AgentSource) -> bool {
         AgentSource::Dsh => {
             let plugin_path = root.join(DSH_MANAGED_PLUGIN_FILENAME);
             dsh_managed_root_state(&root) == ManagedPathState::Safe
-                && (plugin_path.is_file()
-                    || patch_file_contains_owned_entry(
-                        &fs::read_to_string(dsh_patch_file_path()).unwrap_or_default(),
-                        &plugin_path,
-                    ))
+                && (managed_connector_script_ownership(&plugin_path, AgentSource::Dsh)
+                    == ManagedConnectorScriptOwnership::Owned
+                    || check_dsh_patch_file(&plugin_path).status == CheckStatus::Ok)
         }
     }
 }
@@ -3280,8 +3306,18 @@ fn refresh_managed_installation_state(
         }
         AgentSource::Dsh => {
             let root_state = dsh_managed_root_state(&root);
-            let patch_state = config_file_path_state(&dsh_patch_file_path());
-            if root_state == ManagedPathState::Conflict || patch_state == ManagedPathState::Conflict
+            let patch_state = match dsh_profile_directory_state() {
+                ManagedPathState::Safe => config_file_path_state(&dsh_patch_file_path()),
+                state => state,
+            };
+            let plugin_path = root.join(DSH_MANAGED_PLUGIN_FILENAME);
+            let plugin_ownership =
+                managed_connector_script_ownership(&plugin_path, AgentSource::Dsh);
+            let patch_conflict = dsh_patch_file_conflicts(&plugin_path);
+            if root_state == ManagedPathState::Conflict
+                || patch_state == ManagedPathState::Conflict
+                || plugin_ownership == ManagedConnectorScriptOwnership::Foreign
+                || patch_conflict
             {
                 return ManagedInstallationState::Conflict;
             }
@@ -3702,7 +3738,8 @@ fn value_contains_command(value: &Value, command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::dsh::{
-        dsh_patch_file_path, DSH_MANAGED_PATCH_ENTRY_ID, DSH_MANAGED_PLUGIN_FILENAME,
+        dsh_home, dsh_patch_file_path, DSH_MANAGED_PATCH_ENTRY_ID, DSH_MANAGED_PLUGIN_FILENAME,
+        DSH_PLUGIN_TEMPLATE,
     };
     use super::AgentExtensionKind;
     use super::{
@@ -3725,7 +3762,8 @@ mod tests {
         uninstall_codex_plugin_if_possible, verification_requires_item,
         write_owned_connector_script, ManagedConnectorScriptOwnership,
         CODEX_APP_SERVER_HOOK_EVENTS, CODEX_LOCAL_HOOK_EVENTS, CODEX_PLUGIN_JSON,
-        OPENCODE_PLUGIN_TEMPLATE, PI_EXTENSION_TEMPLATE, PI_NATIVE_PROBE_TIMEOUT,
+        MAX_MANAGED_CONNECTOR_SCRIPT_BYTES, OPENCODE_PLUGIN_TEMPLATE, PI_EXTENSION_TEMPLATE,
+        PI_NATIVE_PROBE_TIMEOUT,
     };
     use super::{repair_source, uninstall_source};
     use crate::adapter_contracts::PI_EXTENSION_CONTRACT_VERSION;
@@ -3990,6 +4028,7 @@ mod tests {
             AgentSource::ClaudeCode,
             AgentSource::Pi,
             AgentSource::Opencode,
+            AgentSource::Dsh,
         ] {
             let status = check_source_with_runtime_smoke(&paths, source, false, temp.path(), None);
             assert!(!status.items.is_empty());
@@ -4253,6 +4292,19 @@ mod tests {
             .audited_events
             .iter()
             .any(|event| event.ends_with("tool.definition")));
+        let dsh = capabilities_for_source(AgentSource::Dsh);
+        assert_eq!(
+            (dsh.audited_events.len(), dsh.subscribed_events.len()),
+            (5, 4)
+        );
+        assert!(dsh
+            .audited_events
+            .iter()
+            .any(|event| event.ends_with("agent/status")));
+        assert!(!dsh
+            .subscribed_events
+            .iter()
+            .any(|event| event.contains("agent/status")));
     }
 
     #[test]
@@ -4336,6 +4388,11 @@ mod tests {
                 "agent-pet-companion.js",
                 OPENCODE_PLUGIN_TEMPLATE,
             ),
+            (
+                AgentSource::Dsh,
+                DSH_MANAGED_PLUGIN_FILENAME,
+                DSH_PLUGIN_TEMPLATE,
+            ),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let config_home = temp.path().join("agent-home");
@@ -4372,6 +4429,11 @@ mod tests {
                 AgentSource::Opencode,
                 "agent-pet-companion.js",
                 OPENCODE_PLUGIN_TEMPLATE,
+            ),
+            (
+                AgentSource::Dsh,
+                DSH_MANAGED_PLUGIN_FILENAME,
+                DSH_PLUGIN_TEMPLATE,
             ),
         ] {
             let temp = tempfile::tempdir().unwrap();
@@ -7132,6 +7194,9 @@ exit 0
         let _connector_cli = EnvVarGuard::set("APC_CONNECTOR_CLI_PATH", &connector_cli);
         let paths = AppPaths::new(temp.path().join("app-home"));
         paths.ensure().unwrap();
+        let seeded_patch = dsh_home.join("profiles/web/cordis.patch.yml");
+        std::fs::create_dir_all(seeded_patch.parent().unwrap()).unwrap();
+        std::fs::write(&seeded_patch, "# Keep this user comment.\n[]\n").unwrap();
 
         // 1. Initial check: not installed
         let initial =
@@ -7146,8 +7211,11 @@ exit 0
         assert!(plugin_path.is_file());
         assert!(patch_path.is_file());
         let patch_content = std::fs::read_to_string(&patch_path).unwrap();
+        assert!(patch_content.contains("# Keep this user comment."));
+        assert!(!patch_content.lines().any(|line| line.trim() == "[]"));
         assert!(patch_content.contains(DSH_MANAGED_PATCH_ENTRY_ID));
         assert!(patch_content.contains(&plugin_path.display().to_string()));
+        assert!(patch_content.contains("name: \""));
 
         // 3. Check after repair: installed
         let checked =
@@ -7168,5 +7236,59 @@ exit 0
         assert!(!plugin_path.is_file());
         let clean_patch = std::fs::read_to_string(&patch_path).unwrap();
         assert!(!clean_patch.contains(DSH_MANAGED_PATCH_ENTRY_ID));
+        assert!(clean_patch.contains("# Keep this user comment."));
+        assert!(clean_patch.lines().any(|line| line.trim() == "[]"));
+    }
+
+    #[test]
+    fn dsh_isolation_precedes_host_home_and_rejects_profile_ancestor_symlinks() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let isolated_home = temp.path().join("isolated-agent-home");
+        let external_home = temp.path().join("external-dsh");
+        let external_profile = external_home.join("profiles/web");
+        std::fs::create_dir_all(&isolated_home).unwrap();
+        std::fs::create_dir_all(&external_profile).unwrap();
+        let foreign_patch = external_profile.join("cordis.patch.yml");
+        std::fs::write(&foreign_patch, "# external\n[]\n").unwrap();
+        std::os::unix::fs::symlink(&external_home, isolated_home.join(".dsh")).unwrap();
+
+        let _agent_home = EnvVarGuard::set("APC_AGENT_CONFIG_HOME", &isolated_home);
+        let _dsh_home = EnvVarGuard::set("DSH_HOME", temp.path().join("ignored-dsh-home"));
+        assert_eq!(dsh_home(), isolated_home.join(".dsh"));
+
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+        assert!(repair_source(&paths, AgentSource::Dsh).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&foreign_patch).unwrap(),
+            "# external\n[]\n"
+        );
+        assert!(!install_root(&paths, AgentSource::Dsh)
+            .join(DSH_MANAGED_PLUGIN_FILENAME)
+            .exists());
+    }
+
+    #[test]
+    fn dsh_repair_refuses_oversized_patch_without_publishing_a_plugin() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dsh_home = temp.path().join("dsh-home");
+        let profile = dsh_home.join("profiles/web");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(
+            profile.join("cordis.patch.yml"),
+            vec![b'#'; MAX_MANAGED_CONNECTOR_SCRIPT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let _dsh_home = EnvVarGuard::set("DSH_HOME", &dsh_home);
+        let _agent_home = EnvVarGuard::unset("APC_AGENT_CONFIG_HOME");
+        let paths = AppPaths::new(temp.path().join("app-home"));
+        paths.ensure().unwrap();
+
+        assert!(repair_source(&paths, AgentSource::Dsh).is_err());
+        assert!(!install_root(&paths, AgentSource::Dsh)
+            .join(DSH_MANAGED_PLUGIN_FILENAME)
+            .exists());
     }
 }

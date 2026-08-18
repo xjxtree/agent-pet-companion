@@ -360,7 +360,7 @@ fn onboarding_persistence_never_creates_agent_or_session_records() {
 
     let receipts = handle_request(&state, request("connections.receipts", json!({}))).unwrap();
     let receipts = receipts.as_array().unwrap();
-    assert_eq!(receipts.len(), 4);
+    assert_eq!(receipts.len(), 5);
     for receipt in receipts {
         assert!(receipt["ordinary"].is_null());
         assert!(receipt["diagnostic"].is_null());

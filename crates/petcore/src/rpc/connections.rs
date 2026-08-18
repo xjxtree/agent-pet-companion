@@ -45,6 +45,7 @@ pub(super) fn handle(state: &CoreState, request: RpcRequest) -> Result<Value> {
                 AgentSource::ClaudeCode,
                 AgentSource::Pi,
                 AgentSource::Opencode,
+                AgentSource::Dsh,
             ]
             .into_iter()
             .map(|source| {

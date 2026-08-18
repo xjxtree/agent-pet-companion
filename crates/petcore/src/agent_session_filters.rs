@@ -110,6 +110,7 @@ mod tests {
             AgentSource::ClaudeCode,
             AgentSource::Pi,
             AgentSource::Opencode,
+            AgentSource::Dsh,
         ] {
             let event = AgentEvent {
                 id: "child-marker".to_string(),

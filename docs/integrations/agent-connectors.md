@@ -1,6 +1,6 @@
 # Agent Connectors
 
-Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, and OpenCode through host-native managed adapters. They emit a bounded local event contract; only Codex App Server is an in-App AI Pet Maker backend.
+Agent Pet Companion supports Codex, Claude Code, Pi Coding Agent, OpenCode, and DeepSeek Harness through host-native managed adapters. They emit a bounded local event contract; only Codex App Server is an in-App AI Pet Maker backend.
 
 ## Integrations
 
@@ -88,7 +88,7 @@ Claude Code's delayed `idle_prompt` notification completes an ordinary turn only
 
 Pi emits `input` before it validates the interactive session's selected model. When the public Extension context has no model at that boundary, the managed adapter closes that admitted input directly as `failed` with the closed `model_unavailable` outcome; it never inspects provider credentials or auth storage. Other Pi failures continue to settle only on a stable terminal host boundary.
 
-DeepSeek Harness emits stream chunks and lifecycle broadcasts through Cordis. The managed plugin subscribes only to broadcast `emit` events (`session/event`, `subagent/start`, `subagent/end`, `session/disposed`, `agent/status`); it explicitly avoids waterfall/interception events (`agent/pre-step`, `tools/pre-execute`, etc.) to prevent pure observers from stalling the driver chain. `assistant/chunk` events are filtered so only explicit `block-start{blockType:'reasoning'}` boundaries emit `thinking`, while all delta chunks and usage data are dropped locally. Active child subagents tracked via `subagent/start`/`subagent/end` maintain a per-parent background fence: a parent `turn/end{completed}` while subagents are running emits `background_active`, and the terminal `done/completed` is deferred until all child runs in that parent's fence settle.
+DeepSeek Harness emits stream chunks and lifecycle broadcasts through Cordis. The managed plugin subscribes only to the four session-scoped broadcast `emit` events (`session/event`, `subagent/start`, `subagent/end`, and `session/disposed`); `agent/status` is audited but intentionally not subscribed because it has no session identity. It explicitly avoids waterfall/interception events (`agent/pre-step`, `tools/pre-execute`, etc.) to prevent pure observers from stalling the driver chain. `assistant/chunk` events are filtered so only explicit `block-start{blockType:'reasoning'}` boundaries emit `thinking`, while all delta chunks and usage data are dropped locally. Stable host sequence numbers become opaque event identities so repeated same-tool events do not collapse. Bounded user/assistant text and title caches are attached only to semantic start/terminal edges. Active child subagents tracked via `subagent/start`/`subagent/end` maintain a per-parent background fence: a parent `turn/end{completed}` while subagents are running emits `background_active`, and the terminal `done/completed` is deferred until all child runs in that parent's fence settle. Root `session/disposed` is an explicit close and immediately removes any waiting, completed, or failed bubble for that session.
 
 ## Managed connection operations
 
@@ -101,11 +101,11 @@ The App offers Agent-scoped operations:
 
 PetCore supplies typed capabilities for safe repair and removal; the App never infers mutation authority from text. Missing capability denies mutation. Operations are serialized, publish inline progress/result, and do not prevent switching Agent rows.
 
-Every authoritative App snapshot includes a bounded light check for all four
+Every authoritative App snapshot includes a bounded light check for all five
 Agents. Agent Connections presents a healthy light result as **Basic check
 complete** and immediately exposes specific missing-host or managed-repair
 findings; it never labels an available light result as if no check ran. Every
-App launch schedules one full four-Agent runtime check after the authoritative
+App launch schedules one full five-Agent runtime check after the authoritative
 light projections are loaded and release connector convergence is idle. This
 check runs even when a prior runtime projection is available, but remains
 outside the launch-critical snapshot and window-presentation path because host

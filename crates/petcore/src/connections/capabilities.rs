@@ -199,10 +199,9 @@ pub(super) fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapa
                     "session/disposed（会话释放边界，兜底子会话存活集合）",
                     "subagent/start（一等子 Agent 启动广播，入 fence）",
                     "subagent/end（一等子 Agent 结束广播，出 fence）",
-                    "agent/status（live 状态广播：idle | running）",
                 ]),
                 mapped_information: strings(&[
-                    "5 个官方 Cordis 广播事件提供任务开始/完成、工具调用/结果、审批、计划与子 Agent 完整生命周期",
+                    "4 个带会话归属的 Cordis 广播提供任务开始/完成、工具调用/结果、审批、计划与子 Agent 完整生命周期；agent/status 仅审计、不订阅",
                     "assistant/chunk 的 reasoning block-start 作为显式结构化思考边界，不转发 token churn",
                     "subagent/start + subagent/end 驱动父会话 background fence，子会话存活期间父 completed 保持活跃",
                     "session.header 的 origin:'subagent' / parentSession 用于子会话抑制，子事件不产生独立气泡",

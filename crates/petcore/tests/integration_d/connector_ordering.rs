@@ -138,7 +138,7 @@ fn newer_metadata_does_not_hide_the_latest_activity_for_a_session() {
 }
 
 #[test]
-fn concurrent_single_source_status_writes_preserve_all_four_agents() {
+fn concurrent_single_source_status_writes_preserve_all_five_agents() {
     let temp = tempfile::tempdir().unwrap();
     let database = Database::new(temp.path().join("agent-pet.sqlite"));
     database.init().unwrap();
@@ -147,6 +147,7 @@ fn concurrent_single_source_status_writes_preserve_all_four_agents() {
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ];
     let barrier = Arc::new(Barrier::new(sources.len()));
     let threads = sources.map(|source| {

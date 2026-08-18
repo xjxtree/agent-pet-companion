@@ -6,7 +6,7 @@ This document is the orientation map for component ownership and end-to-end flow
 
 ```mermaid
 flowchart LR
-    Hosts["Codex · Claude Code · Pi · OpenCode"] --> Adapters["Managed hooks · plugins · extensions"]
+    Hosts["Codex · Claude Code · Pi · OpenCode · DSH"] --> Adapters["Managed hooks · plugins · extensions"]
     Adapters --> CLI["petcore-cli"]
     CLI -->|"local validated event ingress"| Core["PetCore daemon<br/>Rust"]
     App["macOS App<br/>SwiftUI · AppKit"] <-->|"JSON-RPC over Unix socket"| Core

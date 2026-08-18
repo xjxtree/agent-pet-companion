@@ -69,6 +69,7 @@ path_keys = [
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     "PI_CODING_AGENT_DIR",
+    "DSH_HOME",
     "OPENCODE_CONFIG_DIR",
     "OPENCODE_CONFIG",
     "XDG_CONFIG_HOME",
@@ -76,6 +77,7 @@ path_keys = [
     "APC_CLAUDE_CLI_PATH",
     "APC_PI_CLI_PATH",
     "APC_OPENCODE_CLI_PATH",
+    "APC_DSH_CLI_PATH",
 ]
 
 def absolute_value(value):
@@ -175,6 +177,16 @@ required = {
         "事件回传",
         "PetCore 通道自检",
     },
+    "dsh": {
+        "dsh CLI",
+        "DeepSeek Harness 版本",
+        "本地事件 CLI",
+        "dsh 连接器目录",
+        "dsh Plugin",
+        "dsh cordis.patch.yml",
+        "事件回传",
+        "PetCore 通道自检",
+    },
 }
 
 try:
@@ -222,12 +234,14 @@ expected_contracts = {
     "claude_code": "claude-hooks-2026-08-01-events-v9",
     "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
+    "dsh": "dsh-v0.1.0-rc.6-events-v2",
 }
 expected_capability_counts = {
     "codex": (80, 11),
     "claude_code": (30, 27),
     "pi": (33, 33),
     "opencode": (112, 9),
+    "dsh": (5, 4),
 }
 for source, expected in expected_contracts.items():
     entry = by_source[source]
@@ -293,6 +307,7 @@ contracts = {
     "claude_code": "claude-hooks-2026-08-01-events-v9",
     "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
+    "dsh": "dsh-v0.1.0-rc.6-events-v2",
 }
 task_events = {
     "codex": (
@@ -318,6 +333,11 @@ task_events = {
             "session.idle", "session.status", "session.error",
             "session.next.step.ended", "session.next.step.failed",
         },
+    ),
+    "dsh": (
+        {"user/message", "turn/start"},
+        {"tool/call", "tool/result", "todo/write"},
+        {"turn/end"},
     ),
 }
 failures = []
@@ -374,6 +394,7 @@ require_or_skip "codex command is not available" agent_command_available codex A
 require_or_skip "claude command is not available" agent_command_available claude APC_CLAUDE_CLI_PATH
 require_or_skip "pi command is not available" agent_command_available pi APC_PI_CLI_PATH
 require_or_skip "opencode command is not available" agent_command_available opencode APC_OPENCODE_CLI_PATH
+require_or_skip "dsh command is not available" agent_command_available dsh APC_DSH_CLI_PATH
 
 CODEX_HOOKS="$HOME/.agents/plugins/plugins/agent-pet-companion/hooks/hooks.json"
 CLAUDE_SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
@@ -385,15 +406,25 @@ else
   OPENCODE_CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 fi
 OPENCODE_PLUGIN="$OPENCODE_CONFIG_ROOT/plugins/agent-pet-companion.js"
+if [[ -n "${APC_AGENT_CONFIG_HOME:-}" ]]; then
+  DSH_CONFIG_ROOT="$APC_AGENT_CONFIG_HOME/.dsh"
+else
+  DSH_CONFIG_ROOT="${DSH_HOME:-$HOME/.dsh}"
+fi
+DSH_PATCH="$DSH_CONFIG_ROOT/profiles/web/cordis.patch.yml"
 
 printf 'Checking current app connection diagnostics...\n'
-for source in codex claude_code pi opencode; do
+for source in codex claude_code pi opencode dsh; do
   "$PETCORE_CLI" connections repair --source "$source" --cwd "$ROOT_DIR" >/dev/null
 done
+DSH_CONNECTOR_ROOT="$("$PETCORE_CLI" connections check --source dsh --cwd "$ROOT_DIR" | python3 -c 'import json, sys; print(json.load(sys.stdin)["install_paths"][0])')"
+DSH_PLUGIN="$DSH_CONNECTOR_ROOT/agent-pet-companion.js"
 require_or_skip "Codex hook file is missing after repair at $CODEX_HOOKS" test -f "$CODEX_HOOKS"
 require_or_skip "Claude settings file is missing after repair at $CLAUDE_SETTINGS" test -f "$CLAUDE_SETTINGS"
 require_or_skip "Pi extension file is missing after repair at $PI_EXTENSION" test -f "$PI_EXTENSION"
 require_or_skip "OpenCode plugin file is missing after repair at $OPENCODE_PLUGIN" test -f "$OPENCODE_PLUGIN"
+require_or_skip "dsh plugin file is missing after repair at $DSH_PLUGIN" test -f "$DSH_PLUGIN"
+require_or_skip "dsh patch file is missing after repair at $DSH_PATCH" test -f "$DSH_PATCH"
 CONNECTIONS_JSON="$("$PETCORE_CLI" connections check --cwd "$ROOT_DIR")"
 assert_real_connection_items_ok "$CONNECTIONS_JSON"
 
