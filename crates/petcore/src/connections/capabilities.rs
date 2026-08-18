@@ -3,8 +3,8 @@ use super::manager::{
     OPENCODE_AUDITED_BUS_EVENTS, OPENCODE_AUDITED_PLUGIN_HOOKS, PI_AUDITED_EVENTS,
 };
 use crate::adapter_contracts::{
-    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, OPENCODE_CONTRACT_VERSION,
-    PI_EXTENSION_CONTRACT_VERSION,
+    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, DSH_PLUGIN_CONTRACT_VERSION,
+    OPENCODE_CONTRACT_VERSION, PI_EXTENSION_CONTRACT_VERSION,
 };
 use petcore_types::{AgentConnectorCapabilities, AgentSource};
 
@@ -14,6 +14,7 @@ pub(crate) fn contract_version_for_source(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => CLAUDE_HOOKS_CONTRACT_VERSION,
         AgentSource::Pi => PI_EXTENSION_CONTRACT_VERSION,
         AgentSource::Opencode => OPENCODE_CONTRACT_VERSION,
+        AgentSource::Dsh => DSH_PLUGIN_CONTRACT_VERSION,
     }
 }
 
@@ -184,5 +185,11 @@ pub(super) fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapa
                 ..Default::default()
             }
         }
+        // T3/T4 land the audited event inventory and plugin template; the
+        // capability row stays minimal and installable=false until then.
+        AgentSource::Dsh => AgentConnectorCapabilities {
+            contract_version: DSH_PLUGIN_CONTRACT_VERSION.to_string(),
+            ..Default::default()
+        },
     }
 }

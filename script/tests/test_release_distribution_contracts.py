@@ -647,7 +647,7 @@ class ValidationOrderTests(unittest.TestCase):
         self.assertIn('marker.get("frame_counts")', bundled_gate)
         self.assertIn("expected_count = len(durations)", bundled_gate)
         self.assertIn("for frame in frames:", bundled_gate)
-        self.assertIn("if schema_version != 6:", bundled_gate)
+        self.assertIn("if schema_version != 7:", bundled_gate)
 
     def test_adhoc_signature_gate_precedes_packaged_code_execution(self) -> None:
         source = (ROOT / "script/validate_app_bundle.sh").read_text(encoding="utf-8")
