@@ -74,6 +74,14 @@
         {
           "path": "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
           "risk": "amber"
+        },
+        {
+          "path": "docs/architecture/runtime-and-ipc.md",
+          "risk": "amber"
+        },
+        {
+          "path": "docs/integrations/agent-connectors.md",
+          "risk": "amber"
         }
       ],
       "durable_document": "docs/integrations/agent-connectors.md",
