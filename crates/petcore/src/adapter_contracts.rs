@@ -16,6 +16,7 @@ pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
 pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v15";
 pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v16";
+pub const DSH_PLUGIN_CONTRACT_VERSION: &str = "dsh-v0.1.0-rc.6-events-v1";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -89,6 +90,9 @@ pub fn parse_contract_event(source: AgentSource, input: &Value) -> Result<Option
         AgentSource::ClaudeCode => parse_claude(source, input),
         AgentSource::Pi => parse_pi(source, input),
         AgentSource::Opencode => parse_opencode(source, input),
+        // T2 lands the full dsh mapping; until then no dsh hook input is
+        // recognized (fail-open no-op, never an error).
+        AgentSource::Dsh => Ok(None),
     }
 }
 
@@ -847,6 +851,7 @@ fn contract_version(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => CLAUDE_HOOKS_CONTRACT_VERSION,
         AgentSource::Pi => PI_EXTENSION_CONTRACT_VERSION,
         AgentSource::Opencode => OPENCODE_CONTRACT_VERSION,
+        AgentSource::Dsh => DSH_PLUGIN_CONTRACT_VERSION,
     }
 }
 
@@ -896,6 +901,7 @@ fn source_identity(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => "claude_code",
         AgentSource::Pi => "pi",
         AgentSource::Opencode => "opencode",
+        AgentSource::Dsh => "dsh",
     }
 }
 

@@ -58,6 +58,11 @@ enum AgentIconCandidates {
                 .resource("/Applications/OpenCode.app/Contents/Resources/icon.icns"),
                 .resource("/Applications/opencode.app/Contents/Resources/icon.icns")
             ] + executableCandidates(named: "opencode")
+        case .dsh:
+            candidates = discoveredAppPaths.map(AgentIconCandidate.appBundle) + [
+                .appBundle("/Applications/DeepSeek.app"),
+                .appBundle("/Applications/DeepSeek Harness.app")
+            ] + executableCandidates(named: "dsh")
         }
         var seen = Set<String>()
         return candidates.filter { seen.insert("\($0.kind):\($0.path)").inserted }
@@ -101,6 +106,8 @@ enum AgentIconProvider {
             identifiers = []
         case .opencode:
             identifiers = ["ai.opencode.desktop", "com.opencode.desktop"]
+        case .dsh:
+            identifiers = []
         }
         return identifiers.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.path }
     }
@@ -157,6 +164,7 @@ struct AgentIconView: View {
         case .claudeCode: "Cl"
         case .pi: "π"
         case .opencode: "O"
+        case .dsh: "DS"
         case .none: "A"
         }
     }
@@ -167,6 +175,7 @@ struct AgentIconView: View {
         case .claudeCode: Color(red: 0.78, green: 0.39, blue: 0.25)
         case .pi: Color(red: 0.04, green: 0.04, blue: 0.05)
         case .opencode: Color(red: 0.12, green: 0.12, blue: 0.14)
+        case .dsh: Color(red: 0.30, green: 0.42, blue: 1.00)
         case .none: Color.secondary
         }
     }

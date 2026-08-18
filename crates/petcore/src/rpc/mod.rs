@@ -1767,10 +1767,11 @@ fn validated_product_convergence_receipt(
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ];
     if params.connector_report.results.len() != expected_sources.len() {
         return Err(invalid_params(
-            "connector_report must contain exactly four source results",
+            "connector_report must contain exactly five source results",
         ));
     }
 
@@ -3854,6 +3855,7 @@ done
                 skipped_refresh_result(AgentSource::ClaudeCode),
                 skipped_refresh_result(AgentSource::Pi),
                 skipped_refresh_result(AgentSource::Opencode),
+                skipped_refresh_result(AgentSource::Dsh),
             ],
         }
     }
@@ -3906,10 +3908,10 @@ done
             updated["build_id"],
             RuntimeReleaseManifest::compiled().build_id
         );
-        assert_eq!(updated["connector_report_summary"]["total_sources"], 4);
+        assert_eq!(updated["connector_report_summary"]["total_sources"], 5);
         assert_eq!(updated["connector_report_summary"]["managed_sources"], 1);
         assert_eq!(updated["connector_report_summary"]["verified_sources"], 1);
-        assert_eq!(updated["connector_report_summary"]["skipped_sources"], 3);
+        assert_eq!(updated["connector_report_summary"]["skipped_sources"], 4);
         assert_eq!(
             updated["connector_report_summary"]["codex_skills_sha256"],
             connections::compiled_codex_plugin_identity(&state.paths)
@@ -3945,12 +3947,13 @@ done
         report.results[1] = managed_static_refresh_result(AgentSource::ClaudeCode);
         report.results[2] = managed_static_refresh_result(AgentSource::Pi);
         report.results[3] = managed_static_refresh_result(AgentSource::Opencode);
+        report.results[4] = managed_static_refresh_result(AgentSource::Dsh);
 
         let updated =
             handle_request(&state, convergence_update_request(report)).expect("current report");
 
-        assert_eq!(updated["connector_report_summary"]["managed_sources"], 4);
-        assert_eq!(updated["connector_report_summary"]["verified_sources"], 4);
+        assert_eq!(updated["connector_report_summary"]["managed_sources"], 5);
+        assert_eq!(updated["connector_report_summary"]["verified_sources"], 5);
         assert_eq!(updated["connector_report_summary"]["skipped_sources"], 0);
     }
 

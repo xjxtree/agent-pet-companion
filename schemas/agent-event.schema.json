@@ -17,7 +17,7 @@
   ],
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S", "x-maxUtf8Bytes": 256 },
-    "source": { "enum": ["codex", "claude_code", "pi", "opencode"] },
+    "source": { "enum": ["codex", "claude_code", "pi", "opencode", "dsh"] },
     "project_path": { "type": ["string", "null"], "maxLength": 1024, "x-maxUtf8Bytes": 1024 },
     "session_id": { "type": ["string", "null"], "maxLength": 256, "x-maxUtf8Bytes": 256 },
     "event_type": { "enum": ["start", "thinking", "plan", "tool", "waiting", "done", "failed"] },

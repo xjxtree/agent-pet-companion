@@ -188,7 +188,8 @@ enum AgentSessionDeepLink {
         // Claude Desktop's `claude://resume` imports a CLI transcript as a new
         // Desktop session rather than locating the existing one, so there is no
         // truthful exact-session link to build for Claude Code.
-        case .claudeCode, .pi, .opencode:
+        // dsh V1 has no App surface and no session deep link, like Pi.
+        case .claudeCode, .pi, .opencode, .dsh:
             return nil
         }
     }

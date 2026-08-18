@@ -2620,7 +2620,7 @@ fn database_migrates_v2_pet_generation_source_columns() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema_version, 6);
+    assert_eq!(schema_version, 7);
 
     pet.generator = Some("codex-app-server-brief-petpack-v3".to_string());
     pet.provenance = Some("codex_app_server_brief".to_string());

@@ -237,7 +237,7 @@ impl Database {
               app_version TEXT NOT NULL CHECK(length(app_version) BETWEEN 1 AND 128),
               completed_at TEXT NOT NULL CHECK(length(completed_at) BETWEEN 20 AND 64),
               connector_total_sources INTEGER NOT NULL
-                CHECK(connector_total_sources BETWEEN 0 AND 4),
+                CHECK(connector_total_sources BETWEEN 0 AND 5),
               connector_managed_sources INTEGER NOT NULL
                 CHECK(connector_managed_sources BETWEEN 0 AND connector_total_sources),
               connector_verified_sources INTEGER NOT NULL
@@ -285,6 +285,9 @@ impl Database {
         self.migrate_internal_pet_studio_sessions(&mut connection)?;
         self.scrub_legacy_connector_diagnostics(&mut connection)?;
         self.normalize_legacy_pi_tool_failures(&mut connection)?;
+        if previous_schema_version < 7 {
+            self.widen_convergence_source_count_check(&mut connection)?;
+        }
         if previous_schema_version < DATABASE_SCHEMA_VERSION {
             connection.execute(
                 r#"
@@ -866,6 +869,71 @@ impl Database {
                 [],
             )?;
         }
+        Ok(())
+    }
+
+    /// Schema v7: the fifth Agent source (dsh) widens the convergence
+    /// receipt's `connector_total_sources` CHECK from `0..=4` to `0..=5`.
+    /// SQLite cannot alter a CHECK in place, so the receipt table is rebuilt
+    /// only when it still carries the old bound; existing receipts (at most
+    /// one singleton row) are copied verbatim.
+    fn widen_convergence_source_count_check(&self, connection: &mut Connection) -> Result<()> {
+        let old_bound: i64 = connection
+            .query_row(
+                r#"
+                SELECT instr(sql, 'BETWEEN 0 AND 4') > 0
+                FROM sqlite_schema
+                WHERE type = 'table' AND name = 'product_convergence_receipt'
+                "#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0);
+        if old_bound == 0 {
+            return Ok(());
+        }
+        connection.execute_batch(
+            r#"
+            BEGIN IMMEDIATE;
+            CREATE TABLE product_convergence_receipt_v7 (
+              singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+              schema_version TEXT NOT NULL
+                CHECK(schema_version = 'apc.product-convergence-receipt.v1'),
+              build_id TEXT NOT NULL CHECK(length(build_id) BETWEEN 1 AND 128),
+              app_version TEXT NOT NULL CHECK(length(app_version) BETWEEN 1 AND 128),
+              completed_at TEXT NOT NULL CHECK(length(completed_at) BETWEEN 20 AND 64),
+              connector_total_sources INTEGER NOT NULL
+                CHECK(connector_total_sources BETWEEN 0 AND 5),
+              connector_managed_sources INTEGER NOT NULL
+                CHECK(connector_managed_sources BETWEEN 0 AND connector_total_sources),
+              connector_verified_sources INTEGER NOT NULL
+                CHECK(connector_verified_sources BETWEEN 0 AND connector_total_sources),
+              connector_skipped_sources INTEGER NOT NULL
+                CHECK(connector_skipped_sources BETWEEN 0 AND connector_total_sources),
+              connector_report_sha256 TEXT NOT NULL
+                CHECK(length(connector_report_sha256) = 64 AND
+                      connector_report_sha256 NOT GLOB '*[^0-9a-f]*'),
+              codex_skills_sha256 TEXT
+                CHECK(codex_skills_sha256 IS NULL OR
+                      (length(codex_skills_sha256) = 64 AND
+                       codex_skills_sha256 NOT GLOB '*[^0-9a-f]*')),
+              codex_content_sha256 TEXT
+                CHECK(codex_content_sha256 IS NULL OR
+                      (length(codex_content_sha256) = 64 AND
+                       codex_content_sha256 NOT GLOB '*[^0-9a-f]*')),
+              CHECK(connector_managed_sources + connector_skipped_sources =
+                    connector_total_sources),
+              CHECK(connector_verified_sources = connector_managed_sources),
+              CHECK((codex_skills_sha256 IS NULL) =
+                    (codex_content_sha256 IS NULL))
+            );
+            INSERT INTO product_convergence_receipt_v7 SELECT * FROM product_convergence_receipt;
+            DROP TABLE product_convergence_receipt;
+            ALTER TABLE product_convergence_receipt_v7
+              RENAME TO product_convergence_receipt;
+            COMMIT;
+            "#,
+        )?;
         Ok(())
     }
 

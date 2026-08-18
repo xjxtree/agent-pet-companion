@@ -2,6 +2,8 @@
 mod claude_code;
 #[path = "adapters/codex.rs"]
 mod codex;
+#[path = "adapters/dsh.rs"]
+pub(crate) mod dsh;
 #[path = "adapters/opencode.rs"]
 mod opencode;
 #[path = "adapters/pi.rs"]
@@ -19,6 +21,7 @@ pub(super) use self::{
         CODEX_APP_SERVER_NOTIFICATION_EVENTS, CODEX_LOCAL_HOOK_EVENTS, CODEX_TASK_ACTIVITY_EVENTS,
         CODEX_TASK_COMPLETION_EVENTS, CODEX_TASK_START_EVENTS,
     },
+    dsh::{DSH_TASK_ACTIVITY_EVENTS, DSH_TASK_COMPLETION_EVENTS, DSH_TASK_START_EVENTS},
     opencode::{
         OPENCODE_AUDITED_BUS_EVENTS, OPENCODE_AUDITED_PLUGIN_HOOKS, OPENCODE_TASK_ACTIVITY_EVENTS,
         OPENCODE_TASK_COMPLETION_EVENTS, OPENCODE_TASK_START_EVENTS,
@@ -635,6 +638,10 @@ fn check_source_with_runtime_smoke(
                 managed_components,
             )
         }
+        // T1: dsh reports a clean not-installed state. The generic AgentCli
+        // item above already reflects host availability; T3 replaces this
+        // arm with the real plugin-file + patch-entry checks.
+        AgentSource::Dsh => (false, false, true, Vec::new()),
     };
     if runtime_processes_allowed {
         items.push(check_event_roundtrip(paths, &connector_cli, source));
@@ -823,6 +830,11 @@ fn verification_guidance(source: AgentSource) -> (&'static str, &'static str, &'
             "OpenCode Plugin 宿主加载",
             "重启 OpenCode 以重新加载全局 Plugin，然后重新检查。使用 --pure 的单次启动会明确绕过外部 Plugin。",
         ),
+        AgentSource::Dsh => (
+            "Plugin 运行时",
+            "DeepSeek Harness 宿主加载",
+            "重启 dsh 会话以重新加载受管 Cordis 插件，然后重新检查。",
+        ),
     }
 }
 
@@ -952,6 +964,7 @@ fn verification_for_source_with_freshness(
         AgentSource::ClaudeCode | AgentSource::Pi | AgentSource::Opencode => {
             observed_receipt.is_some() || diagnostic_receipt.is_some()
         }
+        AgentSource::Dsh => observed_receipt.is_some() || diagnostic_receipt.is_some(),
     };
     let has_current_ordinary_receipt =
         has_required_ordinary_task_evidence(source, ordinary_receipt.is_some());
@@ -1073,7 +1086,7 @@ fn verification_for_source_with_freshness(
             AgentSource::Opencode => {
                 format!("{detail} 注意：--pure 单次启动会绕过外部 Plugin。")
             }
-            AgentSource::Codex => detail,
+            AgentSource::Codex | AgentSource::Dsh => detail,
         }
     } else {
         detail
@@ -1101,6 +1114,10 @@ fn verification_for_source_with_freshness(
                 ),
                 AgentSource::Opencode => Some(
                     "当前只有宿主加载或被动生命周期回执。请重启所有已打开的 OpenCode 会话以重新加载 Plugin，再运行一条真实任务；attach/run --attach 模式还必须确保目标 server 进程加载了该 Plugin。"
+                        .to_string(),
+                ),
+                AgentSource::Dsh => Some(
+                    "当前只有宿主加载或被动生命周期回执。请重启所有已打开的 dsh 会话以重新加载插件，再运行一条真实任务。"
                         .to_string(),
                 ),
             }
@@ -1485,6 +1502,9 @@ fn managed_connector_artifacts_match_current_installation(
                 .status
                     == CheckStatus::Ok
         }
+        // Nothing is installed for dsh until T3, so "matches the current
+        // installation" is vacuously true.
+        AgentSource::Dsh => true,
     }
 }
 
@@ -1497,7 +1517,9 @@ fn connection_install_paths(paths: &AppPaths, source: AgentSource) -> Vec<String
         AgentSource::ClaudeCode => {
             install_paths.push(claude_settings_path().display().to_string());
         }
-        AgentSource::Pi | AgentSource::Opencode => {}
+        AgentSource::Pi | AgentSource::Opencode | AgentSource::Dsh => {}
+        // T3 lands the managed patch-entry install; nothing installed yet.
+        AgentSource::Dsh => {}
     }
     install_paths
 }
@@ -1568,7 +1590,9 @@ fn managed_script_root_spec(source: AgentSource) -> Option<(PathBuf, Vec<&'stati
                 Some((user_home(), vec![".config", "opencode", "plugins"]))
             }
         }
-        AgentSource::Codex | AgentSource::ClaudeCode => None,
+        // T3: dsh's managed root is the App connectors dir plus a managed
+        // entry in the profile's cordis.patch.yml, not a script root.
+        AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Dsh => None,
     }
 }
 
@@ -1656,6 +1680,8 @@ fn managed_connector_artifacts(paths: &AppPaths, source: AgentSource) -> Vec<Pat
             ]
         }
         AgentSource::Pi => vec![root.join("agent-pet-companion.ts")],
+        // T3 adds the dsh plugin file and managed patch entry.
+        AgentSource::Dsh => Vec::new(),
         AgentSource::Opencode => vec![root.join("agent-pet-companion.js")],
     }
 }
@@ -1671,6 +1697,7 @@ pub(crate) fn connection_light_cache_revision(paths: &AppPaths) -> u64 {
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ] {
         let root = install_root(paths, source);
         match source {
@@ -1694,6 +1721,8 @@ pub(crate) fn connection_light_cache_revision(paths: &AppPaths) -> u64 {
             ]),
             AgentSource::Pi => artifacts.push(root.join("agent-pet-companion.ts")),
             AgentSource::Opencode => artifacts.push(root.join("agent-pet-companion.js")),
+            // T3 adds the dsh plugin file and profile patch entry here.
+            AgentSource::Dsh => {}
         }
     }
     artifacts.extend(agent_cli_cache_candidates());
@@ -1870,7 +1899,8 @@ fn static_managed_components(
         AgentSource::ClaudeCode => ("agent-pet-companion-hooks", AgentExtensionKind::Connector),
         AgentSource::Pi => ("agent-pet-companion.ts", AgentExtensionKind::Extension),
         AgentSource::Opencode => ("agent-pet-companion.js", AgentExtensionKind::Plugin),
-        AgentSource::Codex => return Vec::new(),
+        // T3 reports the dsh plugin + patch-entry components.
+        AgentSource::Codex | AgentSource::Dsh => return Vec::new(),
     };
     let expected_version = APP_MANAGED_CONNECTOR_RELEASE_VERSION.to_string();
     let active_version = installed_static_connector_release_version(source, install_root);
@@ -1919,7 +1949,8 @@ fn installed_static_connector_release_version(
             let content = fs::read_to_string(path).ok()?;
             connector_release_version_constant(&content, "APC_OPENCODE_CONNECTOR_RELEASE_VERSION")
         }
-        AgentSource::Codex => None,
+        // T3 reads the dsh plugin's release-version constant.
+        AgentSource::Codex | AgentSource::Dsh => None,
     }
 }
 
@@ -2000,6 +2031,13 @@ pub fn repair_source_at(
         AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
         AgentSource::Pi => repair_pi(&root, &cli_path)?,
         AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
+        // T3 lands the dsh repair (plugin file + patch entry).
+        AgentSource::Dsh => {
+            return Err(PetCoreError::Validation(format!(
+                "{} 连接器尚未支持安装管理",
+                source.display_name()
+            )))
+        }
     }
     Ok(check_source_at(paths, source, probe_cwd))
 }
@@ -2010,6 +2048,7 @@ pub fn refresh_installed_sources(paths: &AppPaths) -> InstalledSourcesRefreshRep
         AgentSource::ClaudeCode,
         AgentSource::Pi,
         AgentSource::Opencode,
+        AgentSource::Dsh,
     ]
     .into_iter()
     .map(|source| refresh_installed_source(paths, source))
@@ -2186,6 +2225,13 @@ fn refresh_managed_source(
         AgentSource::ClaudeCode => repair_claude(&root, &cli_path)?,
         AgentSource::Pi => repair_pi(&root, &cli_path)?,
         AgentSource::Opencode => repair_opencode(&root, &cli_path)?,
+        // T3 lands the dsh update path.
+        AgentSource::Dsh => {
+            return Err(PetCoreError::Validation(format!(
+                "{} 连接器尚未支持安装管理",
+                source.display_name()
+            )))
+        }
         AgentSource::Codex => unreachable!("handled above"),
     }
     if !managed_connector_artifacts_match_current_installation(paths, source) {
@@ -2264,6 +2310,13 @@ pub fn uninstall_source(paths: &AppPaths, source: AgentSource) -> Result<AgentCo
             }
             remove_claude_settings_hooks(&root, &connector_cli_path(paths))?;
             remove_owned_claude_connector_files(&root)?;
+        }
+        // T3 lands the dsh uninstall (plugin file + patch entry).
+        AgentSource::Dsh => {
+            return Err(PetCoreError::Validation(format!(
+                "{} 连接器尚未支持安装管理",
+                source.display_name()
+            )))
         }
     }
     let status = check_source(paths, source);
@@ -2571,7 +2624,7 @@ fn managed_connector_script_ownership(
             content.contains("APC_OPENCODE_CONTRACT_VERSION")
                 && content.contains("\"--source\", \"opencode\"")
         }
-        AgentSource::Codex | AgentSource::ClaudeCode => false,
+        AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Dsh => false,
     };
     if owned {
         ManagedConnectorScriptOwnership::Owned
@@ -3013,6 +3066,7 @@ fn source_cli_arg(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => "claude_code",
         AgentSource::Pi => "pi",
         AgentSource::Opencode => "opencode",
+        AgentSource::Dsh => "dsh",
     }
 }
 
@@ -3041,6 +3095,7 @@ fn agent_cli_override_key(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => "APC_CLAUDE_CLI_PATH",
         AgentSource::Pi => "APC_PI_CLI_PATH",
         AgentSource::Opencode => "APC_OPENCODE_CLI_PATH",
+        AgentSource::Dsh => "APC_DSH_CLI_PATH",
     }
 }
 
@@ -3055,6 +3110,7 @@ fn install_root(paths: &AppPaths, source: AgentSource) -> PathBuf {
         AgentSource::ClaudeCode => paths.connectors_dir.join("claude-code"),
         AgentSource::Pi => pi_extensions_dir(),
         AgentSource::Opencode => opencode_plugins_dir(),
+        AgentSource::Dsh => paths.connectors_dir.join("dsh"),
     }
 }
 
@@ -3098,6 +3154,8 @@ fn connector_artifacts_present(paths: &AppPaths, source: AgentSource) -> bool {
                     AgentSource::Opencode,
                 ) == ManagedConnectorScriptOwnership::Owned
         }
+        // T3 lands the plugin-file + patch-entry ownership check.
+        AgentSource::Dsh => false,
     }
 }
 
@@ -3148,7 +3206,7 @@ fn refresh_managed_installation_state(
             let path = match source {
                 AgentSource::Pi => root.join("agent-pet-companion.ts"),
                 AgentSource::Opencode => root.join("agent-pet-companion.js"),
-                AgentSource::Codex | AgentSource::ClaudeCode => unreachable!(),
+                AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Dsh => unreachable!(),
             };
             match managed_connector_script_ownership(&path, source) {
                 ManagedConnectorScriptOwnership::Owned => ManagedInstallationState::Managed,
@@ -3156,6 +3214,8 @@ fn refresh_managed_installation_state(
                 ManagedConnectorScriptOwnership::Foreign => ManagedInstallationState::Conflict,
             }
         }
+        // Nothing is installed for dsh until T3 lands the managed artifacts.
+        AgentSource::Dsh => ManagedInstallationState::NotManaged,
     }
 }
 
@@ -3210,6 +3270,7 @@ fn cli_name(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => "claude",
         AgentSource::Pi => "pi",
         AgentSource::Opencode => "opencode",
+        AgentSource::Dsh => "dsh",
     }
 }
 
@@ -3219,6 +3280,7 @@ fn cli_label(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => "Claude CLI",
         AgentSource::Pi => "Pi CLI",
         AgentSource::Opencode => "OpenCode CLI",
+        AgentSource::Dsh => "dsh CLI",
     }
 }
 
@@ -4322,7 +4384,7 @@ mod tests {
             let version = match source {
                 AgentSource::Pi => "pi 0.80.10",
                 AgentSource::Opencode => "opencode 1.18.0",
-                AgentSource::Codex | AgentSource::ClaudeCode => unreachable!(),
+                AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Dsh => unreachable!(),
             };
             std::fs::write(
                 &host_cli,
@@ -4367,7 +4429,7 @@ mod tests {
             let runtime_name = match source {
                 AgentSource::Pi => "Extension 运行时",
                 AgentSource::Opencode => "Plugin 运行时",
-                AgentSource::Codex | AgentSource::ClaudeCode => unreachable!(),
+                AgentSource::Codex | AgentSource::ClaudeCode | AgentSource::Dsh => unreachable!(),
             };
             let runtime = status
                 .items
