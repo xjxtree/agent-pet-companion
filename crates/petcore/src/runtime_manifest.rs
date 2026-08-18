@@ -1,6 +1,6 @@
 use crate::adapter_contracts::{
-    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, OPENCODE_CONTRACT_VERSION,
-    PI_EXTENSION_CONTRACT_VERSION,
+    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, DSH_PLUGIN_CONTRACT_VERSION,
+    OPENCODE_CONTRACT_VERSION, PI_EXTENSION_CONTRACT_VERSION,
 };
 use crate::db::DATABASE_SCHEMA_VERSION;
 use crate::event_envelope::EVENT_ENVELOPE_SCHEMA_VERSION;
@@ -36,6 +36,7 @@ pub struct ConnectorContracts {
     pub claude_code: String,
     pub pi: String,
     pub opencode: String,
+    pub dsh: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ impl RuntimeReleaseManifest {
                 claude_code: CLAUDE_HOOKS_CONTRACT_VERSION.to_string(),
                 pi: PI_EXTENSION_CONTRACT_VERSION.to_string(),
                 opencode: OPENCODE_CONTRACT_VERSION.to_string(),
+                dsh: DSH_PLUGIN_CONTRACT_VERSION.to_string(),
             },
         }
     }
