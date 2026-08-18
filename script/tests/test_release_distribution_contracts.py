@@ -1117,6 +1117,14 @@ class CIWorkflowContractTests(unittest.TestCase):
         self.assertIn('"$GITHUB_SHA" != "$EXPECTED_SHA"', source)
         self.assertIn("MAIN_PARENT: ${{ needs.scope.outputs.base }}", source)
 
+    def test_ci_metadata_edits_do_not_cancel_source_validation(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        concurrency = source[source.index("concurrency:") : source.index("env:")]
+        self.assertIn("github.event.action == 'edited'", concurrency)
+        self.assertIn("format('edited-{0}', github.run_id)", concurrency)
+        self.assertIn("|| 'validation'", concurrency)
+        self.assertIn("cancel-in-progress: true", concurrency)
+
     def test_successful_protected_pr_ci_merges_and_dispatches_main_without_pr_code(self) -> None:
         source = (ROOT / ".github/workflows/auto-merge.yml").read_text(
             encoding="utf-8"
@@ -1141,9 +1149,13 @@ class CIWorkflowContractTests(unittest.TestCase):
             )
         ]
         self.assertIn("merge_observed=0", merge_step)
-        self.assertIn("for attempt in 1 2 3 4 5 6", merge_step)
+        self.assertIn("for attempt in $(seq 1 15)", merge_step)
         self.assertIn('test "$merge_observed" = "1"', merge_step)
         self.assertIn(".merged == true", merge_step)
+        self.assertIn("gh pr view \"$PR_NUMBER\"", merge_step)
+        self.assertIn('if ! merged_pr="$(', merge_step)
+        self.assertIn(".mergeCommit.oid", merge_step)
+        self.assertNotIn(".merge_commit_sha", merge_step)
         self.assertLess(merge_step.index("gh pr merge"), merge_step.index("merge_observed=0"))
         cleanup = source.index("./script/ci_proof_promotion.py delete-merged-head")
         self.assertGreater(cleanup, source.index("Squash or recover only the PR proven"))
@@ -1181,10 +1193,9 @@ class CIWorkflowContractTests(unittest.TestCase):
             'test "$(jq -er \'.head.sha\' <<<"$resolved_pull")" = "$HEAD_SHA"',
             closed_replay,
         )
-        self.assertIn(
-            'merge_commit="$(jq -er \'.merge_commit_sha\' <<<"$resolved_pull")"',
-            closed_replay,
-        )
+        self.assertIn('gh pr view "$pr_number"', closed_replay)
+        self.assertIn(".mergeCommit.oid", closed_replay)
+        self.assertNotIn(".merge_commit_sha", closed_replay)
 
     def test_ci_prepares_producer_image_dependencies_and_pins_actions(self) -> None:
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
