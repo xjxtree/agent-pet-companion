@@ -1384,6 +1384,10 @@ impl Database {
                             'message.user',
                             'session.next.prompt.admitted'
                           )
+                          OR (
+                            source = 'dsh'
+                            AND json_extract(payload_json, '$.source_event') = 'turn/start'
+                          )
                         )
                        THEN created_at
                      END) OVER (PARTITION BY source, session_key) AS session_activated_at,
@@ -1469,6 +1473,27 @@ impl Database {
                               OR (
                                 json_extract(payload_json, '$.source_event') = 'session.status'
                                 AND json_extract(payload_json, '$.outcome') IN ('busy', 'retry')
+                              )
+                            )
+                          )
+                          OR (
+                            source = 'dsh'
+                            AND (
+                              json_extract(payload_json, '$.source_event') IN (
+                                'turn/start',
+                                'assistant/chunk',
+                                'plan/mode',
+                                'todo/write',
+                                'tool/call',
+                                'approval/asked',
+                                'approval/decided'
+                              )
+                              OR (
+                                json_extract(payload_json, '$.source_event') = 'turn/end'
+                                AND json_extract(payload_json, '$.outcome') IN (
+                                  'background_active',
+                                  'max_tokens'
+                                )
                               )
                             )
                           )

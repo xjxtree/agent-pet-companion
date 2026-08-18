@@ -3479,6 +3479,128 @@ fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
 }
 
 #[test]
+fn dsh_turn_start_without_message_role_activates_terminal_projection_and_new_epoch() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::new(temp.path().join("home"));
+    let state = CoreState::new(paths.clone());
+    state.ensure_ready().unwrap();
+
+    let ingest_dsh = |state: &CoreState,
+                      event_id: &str,
+                      session_id: &str,
+                      event_type: &str,
+                      source_event: &str,
+                      outcome: &str,
+                      seconds_ago: i64,
+                      session_active: bool| {
+        ingest_source_payload(
+            state,
+            "dsh",
+            event_id,
+            session_id,
+            event_type,
+            &timestamp(seconds_ago),
+            json!({
+                "source_event": source_event,
+                "outcome": outcome,
+                "affects_activity": true,
+                "session_active": session_active,
+                "session_open": true,
+                "session_surface": "cli_terminal"
+            }),
+        );
+    };
+
+    ingest_dsh(
+        &state,
+        "dsh-completed-start",
+        "dsh-completed-real-shape",
+        "start",
+        "turn/start",
+        "started",
+        12,
+        true,
+    );
+    ingest_dsh(
+        &state,
+        "dsh-completed-end",
+        "dsh-completed-real-shape",
+        "done",
+        "turn/end",
+        "completed",
+        11,
+        false,
+    );
+
+    ingest_dsh(
+        &state,
+        "dsh-retry-start-1",
+        "dsh-retry-real-shape",
+        "start",
+        "turn/start",
+        "started",
+        10,
+        true,
+    );
+    ingest_dsh(
+        &state,
+        "dsh-retry-failed",
+        "dsh-retry-real-shape",
+        "failed",
+        "turn/end",
+        "api_failure",
+        9,
+        false,
+    );
+    ingest_dsh(
+        &state,
+        "dsh-retry-start-2",
+        "dsh-retry-real-shape",
+        "start",
+        "turn/start",
+        "started",
+        2,
+        true,
+    );
+    ingest_dsh(
+        &state,
+        "dsh-retry-thinking",
+        "dsh-retry-real-shape",
+        "thinking",
+        "assistant/chunk",
+        "reasoning_started",
+        1,
+        true,
+    );
+
+    let assert_projection = |current: &Value| {
+        let sessions = current["active_agent_sessions"].as_array().unwrap();
+        let completed = sessions
+            .iter()
+            .find(|session| {
+                session["session_id"] == projected_session_id("dsh-completed-real-shape")
+            })
+            .expect("a real-shape DSH completion remains visible");
+        assert_eq!(completed["official_status"], "ready");
+        assert_eq!(completed["event"]["event_type"], "done");
+
+        let retried = sessions
+            .iter()
+            .find(|session| session["session_id"] == projected_session_id("dsh-retry-real-shape"))
+            .expect("a new real-shape DSH turn clears the prior failure epoch");
+        assert_eq!(retried["official_status"], "running");
+        assert_eq!(retried["event"]["event_type"], "thinking");
+    };
+
+    assert_projection(&snapshot(&state));
+    drop(state);
+
+    let restarted = CoreState::new(paths);
+    restarted.ensure_ready().unwrap();
+    assert_projection(&snapshot(&restarted));
+}
+
+#[test]
 fn every_agent_refreshes_reply_completion_and_next_user_turn() {
     let (_temp, state) = ready();
     for (source, session_id, user_event, reply_event, reply_type, followup_done_event) in [

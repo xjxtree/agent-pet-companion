@@ -66,7 +66,7 @@ const MAX_CODEX_THREAD_DISPLAY_CACHE_ENTRIES: usize = 64;
 const CODEX_ACTIVITY_REFRESH_SECONDS: u64 = 1;
 const CONNECTION_LIGHT_STATUS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const CONNECTION_EVIDENCE_REFRESH_COALESCE_WINDOW: Duration = Duration::from_secs(5);
-const MAX_CACHED_CONNECTION_STATUSES: usize = 4;
+const MAX_CACHED_CONNECTION_STATUSES: usize = 5;
 const MAX_CACHED_SESSION_DISPLAY_ENTRIES: usize = 16;
 const MAX_SNAPSHOT_REVISION_RETRIES: usize = 8;
 const MAX_FALLBACK_SESSION_TITLE_CHARS: usize = 80;
@@ -3405,6 +3405,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn connection_light_status_cache_retains_the_full_five_agent_catalog() {
+        let cache = ConnectionLightStatusCache::default();
+        let statuses = [
+            AgentSource::Codex,
+            AgentSource::ClaudeCode,
+            AgentSource::Pi,
+            AgentSource::Opencode,
+            AgentSource::Dsh,
+        ]
+        .into_iter()
+        .map(|source| AgentConnectionStatus {
+            source,
+            items: Vec::new(),
+            install_paths: Vec::new(),
+            connector_installed: false,
+            verification: petcore_types::AgentVerification::default(),
+            capabilities: petcore_types::AgentConnectorCapabilities::default(),
+            check_mode: petcore_types::ConnectionCheckMode::Light,
+            checked_at: now_rfc3339(),
+        })
+        .collect::<Vec<_>>();
+
+        let cached = cache
+            .get_or_try_refresh(Instant::now(), CONNECTION_LIGHT_STATUS_CACHE_TTL, 1, || {
+                Ok(statuses)
+            })
+            .unwrap();
+
+        assert_eq!(cached.len(), 5);
+        assert_eq!(
+            cached.last().map(|status| status.source),
+            Some(AgentSource::Dsh)
+        );
     }
 
     #[test]
