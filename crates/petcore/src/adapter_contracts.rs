@@ -291,7 +291,10 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
             // Only the explicit reasoning block boundary is a legal thinking
             // edge; every delta, usage, finish, and non-reasoning block-start
             // is ignored (fail-open).
-            let block_type = string_at(input, &[&["chunk", "blockType"]]);
+            let block_type = string_at(
+                input,
+                &[&["chunk", "blockType"], &["data", "chunk", "blockType"]],
+            );
             if block_type.as_deref() != Some("reasoning") {
                 return Ok(None);
             }
