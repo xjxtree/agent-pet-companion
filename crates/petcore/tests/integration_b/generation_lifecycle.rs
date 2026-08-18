@@ -1,6 +1,7 @@
 use petcore::paths::AppPaths;
 use petcore::petpack::{build_petpack, write_generated_petpack_dir, write_sample_petpack_dir};
 use petcore::rpc::{handle_request, CoreState, RpcRequest};
+use petcore::PetCoreError;
 use petcore_types::{
     GenerationForm, GenerationJobStatus, PetOrigin, PetStateName, PetSummary, QualityLevel,
     MAX_GENERATION_DESCRIPTION_CHARS,
@@ -154,6 +155,26 @@ fn request(method: &str, params: Value) -> RpcRequest {
         id: Some(json!("test")),
         method: method.to_string(),
         params,
+    }
+}
+
+fn state_snapshot_with_revision_retry(state: &CoreState) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match handle_request(state, request("state.snapshot", json!({}))) {
+            Ok(snapshot) => return snapshot,
+            Err(PetCoreError::Conflict(message))
+                if message
+                    == "state changed while hydrating session displays; retry the snapshot" =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "state snapshot did not stabilize while generation remained active"
+                );
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("state snapshot failed unexpectedly: {error}"),
+        }
     }
 }
 
@@ -1017,7 +1038,7 @@ fn imported_pet_can_start_codex_edit_as_same_id_revision() {
     .unwrap();
     assert_eq!(historical_edit["baseline_revision_id"], original_revision);
     let historical_job_id = historical_edit["job_id"].as_str().unwrap();
-    let active_snapshot = handle_request(&state, request("state.snapshot", json!({}))).unwrap();
+    let active_snapshot = state_snapshot_with_revision_retry(&state);
     assert_eq!(
         active_snapshot["active_generation"]["baseline_revision_id"],
         original_revision

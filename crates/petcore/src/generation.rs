@@ -186,6 +186,34 @@ fn wait_for_generation_worker_stop(job_id: &str, timeout: Duration) -> bool {
         .unwrap_or(false)
 }
 
+/// Waits for every generation worker that is currently registered to finish.
+///
+/// This is intentionally public only for process-isolation tests. Generation
+/// workers can outlive the RPC that launched them, so a test must not replace
+/// process-wide App Server configuration until older workers have released it.
+#[doc(hidden)]
+pub fn wait_for_generation_workers_idle(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let job_ids = generation_worker_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        if job_ids.is_empty() {
+            return true;
+        }
+
+        for job_id in job_ids {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || !wait_for_generation_worker_stop(&job_id, remaining) {
+                return false;
+            }
+        }
+    }
+}
+
 impl ProductionReadiness {
     fn usable(self) -> bool {
         self.build_ok && self.package_ok && self.interaction_ok && self.runtime_ok && self.visual_ok
