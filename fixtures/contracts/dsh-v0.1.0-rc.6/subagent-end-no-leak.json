@@ -1,0 +1,1 @@
+{"type":"subagent/end","session_id":"session-child","data":{"runId":"r1","provider":"spawn","id":"session-child","local":true,"stopReason":"completed","lastAssistantMessage":[{"type":"text","text":"secret child content"}]}}

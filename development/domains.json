@@ -16,7 +16,7 @@
         "crates/petcore/tests/integration_d/**",
         "schemas/agent-event.schema.json",
         "schemas/agent-event-ingest.schema.json",
-        "fixtures/contracts/dsh/**"
+        "fixtures/contracts/**"
       ],
       "dependencies": [
         "app-shell-runtime",
@@ -145,7 +145,7 @@
             "crates/petcore/tests/integration_d/**",
             "schemas/agent-event.schema.json",
             "schemas/agent-event-ingest.schema.json",
-            "fixtures/contracts/dsh/**",
+            "fixtures/contracts/**",
             "crates/petcore/src/connections/capabilities.rs",
             "crates/petcore/src/connections/evidence.rs",
             "crates/petcore/src/connections/manager.rs"

@@ -1,0 +1,1 @@
+{"type":"assistant/chunk","session_id":"session-abc","data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":1,"text":"partial"}}}
