@@ -8,16 +8,18 @@ struct RuntimeConnectorContracts: Codable, Equatable, Sendable {
     let claudeCode: String
     let pi: String
     let opencode: String
+    let dsh: String
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case codex
         case claudeCode = "claude_code"
         case pi
         case opencode
+        case dsh
     }
 
     var allArePresent: Bool {
-        [codex, claudeCode, pi, opencode].allSatisfy {
+        [codex, claudeCode, pi, opencode, dsh].allSatisfy {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
@@ -204,7 +206,8 @@ struct RuntimeReleaseManifest: Codable, Equatable, Sendable {
         codex: "codex-hooks-2026-07-17-schema-v6",
         claudeCode: "claude-hooks-2026-07-17-activity-v5",
         pi: "pi-extension-0.80.10-activity-v7",
-        opencode: "opencode-v1.18.0-activity-v8"
+        opencode: "opencode-v1.18.0-activity-v8",
+        dsh: "dsh-v0.1.0-rc.6-events-v1"
     )
 
     private static let publishedV1ReleaseIdentities = [

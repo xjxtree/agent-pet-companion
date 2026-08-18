@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Added",
+  "scope": "documentation",
+  "summary_en": "Incorporate DeepSeek Harness (dsh) connector contract, event mapping, privacy boundaries, and managed patch architecture into durable documentation.",
+  "summary_zh": "将 DeepSeek Harness（dsh）连接器契约、事件映射、隐私边界与受管 patch 架构并入正式技术文档。"
+}

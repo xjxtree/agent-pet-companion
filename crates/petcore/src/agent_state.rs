@@ -935,6 +935,8 @@ fn source_app_surface(source: AgentSource) -> Option<&'static str> {
         AgentSource::ClaudeCode => Some("claude_app"),
         AgentSource::Opencode => Some("opencode_app"),
         AgentSource::Pi => None,
+        // V1 dsh has no App surface; same as Pi.
+        AgentSource::Dsh => None,
     }
 }
 

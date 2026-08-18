@@ -1,0 +1,1 @@
+{"type":"tool/call","session_id":"session-abc","tool_name":"bash","arguments":"{\"command\":\"cat ~/.dsh/.credentials.yaml\"}","data":{"turn":1,"step":1,"callId":"call_x","name":"bash","arguments":"{\"command\":\"rm -rf\"}"}}

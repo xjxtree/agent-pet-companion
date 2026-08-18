@@ -1,10 +1,11 @@
 use super::manager::{
     CLAUDE_AUDITED_HOOK_EVENTS, CODEX_APP_SERVER_NOTIFICATION_EVENTS, CODEX_LOCAL_HOOK_EVENTS,
-    OPENCODE_AUDITED_BUS_EVENTS, OPENCODE_AUDITED_PLUGIN_HOOKS, PI_AUDITED_EVENTS,
+    DSH_AUDITED_EVENTS, OPENCODE_AUDITED_BUS_EVENTS, OPENCODE_AUDITED_PLUGIN_HOOKS,
+    PI_AUDITED_EVENTS,
 };
 use crate::adapter_contracts::{
-    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, OPENCODE_CONTRACT_VERSION,
-    PI_EXTENSION_CONTRACT_VERSION,
+    CLAUDE_HOOKS_CONTRACT_VERSION, CODEX_HOOKS_CONTRACT_VERSION, DSH_PLUGIN_CONTRACT_VERSION,
+    OPENCODE_CONTRACT_VERSION, PI_EXTENSION_CONTRACT_VERSION,
 };
 use petcore_types::{AgentConnectorCapabilities, AgentSource};
 
@@ -14,6 +15,7 @@ pub(crate) fn contract_version_for_source(source: AgentSource) -> &'static str {
         AgentSource::ClaudeCode => CLAUDE_HOOKS_CONTRACT_VERSION,
         AgentSource::Pi => PI_EXTENSION_CONTRACT_VERSION,
         AgentSource::Opencode => OPENCODE_CONTRACT_VERSION,
+        AgentSource::Dsh => DSH_PLUGIN_CONTRACT_VERSION,
     }
 }
 
@@ -180,6 +182,38 @@ pub(super) fn capabilities_for_source(source: AgentSource) -> AgentConnectorCapa
                     "不注册 config/tool/tool.definition/auth 等会修改配置、工具定义或认证行为的 Hook",
                     "不转发 provider headers/env/auth、认证存储、完整 transcript 或任意宿主 envelope",
                     "高频 token delta 不逐条持久化；使用稳定完成事件的有界内容",
+                ]),
+                ..Default::default()
+            }
+        }
+        AgentSource::Dsh => {
+            let audited_events: Vec<String> = DSH_AUDITED_EVENTS
+                .iter()
+                .map(|event| format!("Cordis Emit · {event}"))
+                .collect();
+            AgentConnectorCapabilities {
+                contract_version: DSH_PLUGIN_CONTRACT_VERSION.to_string(),
+                audited_events,
+                subscribed_events: strings(&[
+                    "session/event（订阅持久化事件流：turn/start, assistant/chunk, tool/call, tool/result, approval, turn/end 等）",
+                    "session/disposed（会话释放边界，兜底子会话存活集合）",
+                    "subagent/start（一等子 Agent 启动广播，入 fence）",
+                    "subagent/end（一等子 Agent 结束广播，出 fence）",
+                    "agent/status（live 状态广播：idle | running）",
+                ]),
+                mapped_information: strings(&[
+                    "5 个官方 Cordis 广播事件提供任务开始/完成、工具调用/结果、审批、计划与子 Agent 完整生命周期",
+                    "assistant/chunk 的 reasoning block-start 作为显式结构化思考边界，不转发 token churn",
+                    "subagent/start + subagent/end 驱动父会话 background fence，子会话存活期间父 completed 保持活跃",
+                    "session.header 的 origin:'subagent' / parentSession 用于子会话抑制，子事件不产生独立气泡",
+                    "tool/call.name（干净工具名）与有界用户/助手消息正文用于本地气泡展示",
+                ]),
+                privacy_exclusions: strings(&[
+                    "禁止订阅任何 waterfall/拦截事件（agent/pre-step, tools/pre-execute 等），避免纯观察者破坏驱动链",
+                    "不保存 tool/call.arguments、tool/result 完整内容、request/header 或 request/context",
+                    "不读取 ~/.dsh/.credentials.yaml、settings.yaml 凭据段、auth headers 或完整环境变量",
+                    "所有 *-delta 流式增量 chunk 永久禁止转发",
+                    "subagent/end.lastAssistantMessage（子会话内容）不转发",
                 ]),
                 ..Default::default()
             }

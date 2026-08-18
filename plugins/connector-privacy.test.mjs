@@ -17,7 +17,7 @@ async function importTemplate(relativePath, cacheKey = "default", testExports = 
   return import(`data:text/javascript;base64,${encoded}#${cacheKey}`);
 }
 
-test("Pi and OpenCode expose bounded local activity without leaking host-private context", async () => {
+test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-private context", async () => {
   const captured = [];
   const originalSpawn = childProcess.spawn;
   const originalDiagnostic = process.env.APC_CONNECTOR_DIAGNOSTIC;
@@ -1367,6 +1367,86 @@ test("Pi and OpenCode expose bounded local activity without leaking host-private
       && item.payload.properties?.diagnostic === true
       && item.payload.properties?.sessionID === process.env.APC_CONNECTOR_PROBE_ID
     )));
+
+    // --- DeepSeek Harness (dsh) template privacy and filtering tests ---
+    const dsh = await importTemplate("./dsh/agent-pet-companion.js.tpl", "dsh-privacy");
+    assert.equal(dsh.APC_DSH_CONTRACT_VERSION, "dsh-v0.1.0-rc.6-events-v1");
+    assert.equal(dsh.APC_DSH_AUDITED_EVENTS.length, 5);
+
+    const dshListeners = new Map();
+    const fakeCtx = {
+      on: (event, handler) => {
+        dshListeners.set(event, handler);
+      },
+    };
+    dsh.apply(fakeCtx);
+    assert.ok(dshListeners.has("session/event"), "dsh must listen to session/event");
+    assert.ok(dshListeners.has("subagent/start"), "dsh must listen to subagent/start");
+    assert.ok(dshListeners.has("subagent/end"), "dsh must listen to subagent/end");
+    assert.ok(dshListeners.has("session/disposed"), "dsh must listen to session/disposed");
+
+    // Test 1: session.child emission on child session first sight
+    const childSession = {
+      id: "child-sess-1",
+      header: { origin: "subagent", parentSession: "parent-sess-1", delegationDepth: 1 },
+    };
+    dshListeners.get("session/event")(childSession, { type: "turn/start", data: { turn: 1 } });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(captured.some((item) => (
+      item.source === "dsh"
+      && item.payload.type === "session.child"
+      && item.payload.session_id === "child-sess-1"
+    )), "dsh must emit session.child on child session detection");
+
+    // Subsequent events from child are dropped locally
+    const countBefore = captured.length;
+    dshListeners.get("session/event")(childSession, {
+      type: "assistant/chunk",
+      data: { turn: 1, step: 1, chunk: { type: "block-start", blockType: "reasoning" } },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(captured.length, countBefore, "child events after first sight must be dropped");
+
+    // Test 2: parent turn/end with active background fence emits background_active
+    const parentSession = {
+      id: "parent-sess-1",
+      header: { origin: undefined, parentSession: undefined },
+    };
+    // subagent/start puts run in parent's fence
+    dshListeners.get("subagent/start")({ runId: "run-1", id: "child-sess-1", local: true });
+    // parent completes turn while fence has active run
+    dshListeners.get("session/event")(parentSession, {
+      type: "turn/end",
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(captured.some((item) => (
+      item.source === "dsh"
+      && item.payload.type === "turn/end"
+      && item.payload.session_id === "parent-sess-1"
+      && item.payload.background_active === true
+    )), "parent turn/end with active fence must emit background_active");
+
+    // subagent/end drains fence -> emits deferred completed turn/end
+    dshListeners.get("subagent/end")({ runId: "run-1" });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(captured.some((item) => (
+      item.source === "dsh"
+      && item.payload.type === "turn/end"
+      && item.payload.session_id === "parent-sess-1"
+      && item.payload.background_active === undefined
+      && item.payload.reason?.kind === "completed"
+    )), "subagent/end fence drain must emit deferred completed turn/end");
+
+    // Test 3: delta chunks dropped (zero churn)
+    const countBeforeDelta = captured.length;
+    dshListeners.get("session/event")(parentSession, {
+      type: "assistant/chunk",
+      data: { turn: 2, step: 1, chunk: { type: "text-delta", text: "churn" } },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(captured.length, countBeforeDelta, "text-delta chunks must be dropped");
+
   } finally {
     childProcess.spawn = originalSpawn;
     syncBuiltinESMExports();

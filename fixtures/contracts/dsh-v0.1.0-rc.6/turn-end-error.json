@@ -1,0 +1,1 @@
+{"type":"turn/end","session_id":"session-abc","turn_id":"t1","data":{"turn":3,"reason":{"kind":"error","error":{"message":"terminated","code":"TRANSPORT"}}}}

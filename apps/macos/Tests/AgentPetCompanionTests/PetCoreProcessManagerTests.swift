@@ -2023,7 +2023,8 @@ struct PetCoreProcessManagerTests {
                 codex: codexContract,
                 claudeCode: "claude-hooks.v1",
                 pi: "pi-extension.v1",
-                opencode: "opencode-plugin.v1"
+                opencode: "opencode-plugin.v1",
+                dsh: "dsh-plugin.v1"
             )
         )
     }
@@ -2062,7 +2063,8 @@ struct PetCoreProcessManagerTests {
                 codex: "codex-hooks-2026-07-17-schema-v6",
                 claudeCode: "claude-hooks-2026-07-17-activity-v5",
                 pi: "pi-extension-0.80.10-activity-v7",
-                opencode: "opencode-v1.18.0-activity-v8"
+                opencode: "opencode-v1.18.0-activity-v8",
+                dsh: "dsh-v0.1.0-rc.6-events-v1"
             )
         )
     }

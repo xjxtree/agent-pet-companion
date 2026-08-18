@@ -43,7 +43,7 @@ The current schema is version 6. PetCore enables WAL, foreign keys, secure delet
 | `privacy_migrations` | Recoverable privacy-scrub state, not product history |
 | `pet_asset_validation` | Cached package/runtime-asset validation result; explicit repair bypasses it |
 | `settings` | Versioned behavior, onboarding, placement/intent, completion acknowledgement, and connector state |
-| `product_convergence_receipt` | Exact-build typed four-Agent convergence receipt |
+| `product_convergence_receipt` | Exact-build typed five-Agent convergence receipt |
 | `state_revision` | Monotonic revision advanced by durable state mutations |
 
 The exact schema and ordered migrations are in [storage/migrations.rs](../../crates/petcore/src/storage/migrations.rs). [storage/mod.rs](../../crates/petcore/src/storage/mod.rs) retains the single `Database`, connection policy, busy retry, and shared transaction helpers; settings, connection, Agent/event, generation, and pet queries are crate-private domain modules. Do not duplicate SQL in prose or introduce App/CLI SQLite access.
