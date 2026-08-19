@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "overlay",
-  "summary_en": "Explicitly closed Agent sessions no longer restore stale failure bubbles when the pet or PetCore reopens.",
-  "summary_zh": "已明确关闭的 Agent 会话不会在宠物或 PetCore 重新打开后恢复陈旧的失败气泡。"
-}

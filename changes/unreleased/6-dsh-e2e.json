@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Added",
-  "scope": "connections",
-  "summary_en": "Add end-to-end integration tests for DeepSeek Harness (dsh) verifying contract fixtures, bounds, and privacy enforcement.",
-  "summary_zh": "新增 DeepSeek Harness（dsh）端到端集成测试，验证契约测试用例、字段有界性与隐私约束。"
-}

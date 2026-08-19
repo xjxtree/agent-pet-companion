@@ -14,6 +14,68 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-19
+
+### Added / 新增
+
+<!-- apc-fragment:1-dsh-source-type -->
+- Extend the Agent source vocabulary to include DeepSeek Harness (dsh) with conservative no-op behavior while connector management lands.
+
+  Agent 来源词汇扩展纳入 DeepSeek Harness（dsh），在连接器管理落地前保持保守无行为扩展。
+<!-- apc-fragment:2-dsh-parse -->
+- Add DeepSeek Harness (dsh) hook event normalization covering all seven semantic states, reasoning boundaries, and background fence.
+
+  新增 DeepSeek Harness（dsh）Hook 事件归一化，覆盖全部七种语义状态、reasoning 边界与后台工作栅栏。
+<!-- apc-fragment:3-dsh-connections -->
+- Add DeepSeek Harness (dsh) connector managed lifecycle: check, repair, refresh, and uninstall targeting the web profile cordis.patch.yml.
+
+  新增 DeepSeek Harness（dsh）连接器受管生命周期：面向 web profile cordis.patch.yml 的 check、repair、refresh 与 uninstall 操作。
+<!-- apc-fragment:4-dsh-plugin-template -->
+- Add DeepSeek Harness (dsh) Cordis plugin template implementing single-flight delivery, reasoning block-start thinking, child session suppression, and background fence.
+
+  新增 DeepSeek Harness（dsh）Cordis 插件模板，实现单飞队列交付、reasoning block-start 思考边界、子会话抑制与后台工作栅栏。
+<!-- apc-fragment:5-dsh-app-surface -->
+- Add DeepSeek Harness (dsh) to App-side runtime manifest and Agent Connections UI surfaces.
+
+  在 App 端运行时清单与 Agent 连接设置页面中接入 DeepSeek Harness（dsh）。
+<!-- apc-fragment:6-dsh-e2e -->
+- Add end-to-end integration tests for DeepSeek Harness (dsh) verifying contract fixtures, bounds, and privacy enforcement.
+
+  新增 DeepSeek Harness（dsh）端到端集成测试，验证契约测试用例、字段有界性与隐私约束。
+<!-- apc-fragment:7-dsh-docs -->
+- Incorporate DeepSeek Harness (dsh) connector contract, event mapping, privacy boundaries, and managed patch architecture into durable documentation.
+
+  将 DeepSeek Harness（dsh）连接器契约、事件映射、隐私边界与受管 patch 架构并入正式技术文档。
+<!-- apc-fragment:8-dsh-scope -->
+- Expand repository product scope from four to five supported Agents, incorporating DeepSeek Harness across AGENTS.md, README, and architecture documentation.
+
+  扩展产品范围支持五款 Agent，在 AGENTS.md、中英文 README 与架构文档中同步纳入 DeepSeek Harness。
+
+### Changed / 变更
+
+<!-- apc-fragment:20260819-dsh-webui-icon -->
+- DeepSeek Harness now uses the official WebUI fish icon throughout the App.
+
+  DeepSeek Harness 现已在 App 各处统一使用官方 WebUI 鱼形图标。
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260819-dsh-bubble-message -->
+- DeepSeek Harness tasks now keep the latest Agent, thinking, or plan text in the desktop bubble while tools run, instead of showing an empty body until the task ends.
+
+  DeepSeek Harness 任务在工具运行期间，桌面气泡会持续保留最新的 Agent、思考或计划正文，不再在任务结束前一直显示空正文。
+<!-- apc-fragment:closed-failed-bubble-restart-87e069b -->
+- Explicitly closed Agent sessions no longer restore stale failure bubbles when the pet or PetCore reopens.
+
+  已明确关闭的 Agent 会话不会在宠物或 PetCore 重新打开后恢复陈旧的失败气泡。
+<!-- apc-fragment:dsh-acceptance-hardening-9f4c2a1 -->
+- Complete DSH acceptance across five-Agent defaults, checks, receipts, display context, explicit session close, stable event identity, safe managed configuration, and legacy runtime rollback decoding.
+
+  完成 DSH 五 Agent 默认设置、检查与回执、气泡上下文、会话显式关闭、稳定事件身份、安全托管配置及旧运行时回滚解码的验收修复。
+<!-- apc-fragment:dsh-live-bubble-projection-4d7f18a -->
+- Keep DeepSeek Harness visible in the five-Agent connection snapshot and preserve completed or failed WebUI session bubbles across terminal turn events until the normal timeout, acknowledgement, or explicit session disposal applies.
+
+  在五 Agent 连接快照中保留 DeepSeek Harness，并让已完成或失败的 WebUI 会话气泡在终结轮次后继续显示，直至正常超时、用户确认或宿主明确释放会话。
 ## [0.4.6] - 2026-08-17
 
 ### Changed / 变更

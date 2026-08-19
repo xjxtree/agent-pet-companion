@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Added",
-  "scope": "connections",
-  "summary_en": "Extend the Agent source vocabulary to include DeepSeek Harness (dsh) with conservative no-op behavior while connector management lands.",
-  "summary_zh": "Agent 来源词汇扩展纳入 DeepSeek Harness（dsh），在连接器管理落地前保持保守无行为扩展。"
-}

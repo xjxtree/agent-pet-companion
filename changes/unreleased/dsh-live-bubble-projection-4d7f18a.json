@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "connections",
-  "summary_en": "Keep DeepSeek Harness visible in the five-Agent connection snapshot and preserve completed or failed WebUI session bubbles across terminal turn events until the normal timeout, acknowledgement, or explicit session disposal applies.",
-  "summary_zh": "在五 Agent 连接快照中保留 DeepSeek Harness，并让已完成或失败的 WebUI 会话气泡在终结轮次后继续显示，直至正常超时、用户确认或宿主明确释放会话。"
-}
