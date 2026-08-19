@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "dsh",
+  "summary_en": "DeepSeek Harness Web sessions no longer appear as CLI sessions or route bubbles back to the terminal that launched the Web server.",
+  "summary_zh": "DeepSeek Harness Web 会话不再显示为 CLI，也不会从气泡跳回启动 Web 服务的终端。"
+}

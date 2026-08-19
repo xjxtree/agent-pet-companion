@@ -3610,7 +3610,7 @@ fn explicit_close_removes_latched_failure_and_stays_closed_across_restart() {
 }
 
 #[test]
-fn dsh_turn_start_without_message_role_activates_terminal_projection_and_new_epoch() {
+fn dsh_turn_start_without_message_role_activates_web_projection_and_new_epoch() {
     let temp = tempfile::tempdir().unwrap();
     let paths = AppPaths::new(temp.path().join("home"));
     let state = CoreState::new(paths.clone());
@@ -3637,7 +3637,7 @@ fn dsh_turn_start_without_message_role_activates_terminal_projection_and_new_epo
                 "affects_activity": true,
                 "session_active": session_active,
                 "session_open": true,
-                "session_surface": "cli_terminal"
+                "session_surface": "unknown"
             }),
         );
     };
@@ -3714,6 +3714,14 @@ fn dsh_turn_start_without_message_role_activates_terminal_projection_and_new_epo
             .expect("a real-shape DSH completion remains visible");
         assert_eq!(completed["official_status"], "ready");
         assert_eq!(completed["event"]["event_type"], "done");
+        assert_eq!(
+            completed["overlay_display"]["navigation"]["capability"],
+            "unavailable"
+        );
+        assert_eq!(
+            completed["overlay_display"]["navigation"]["surface"],
+            "unknown"
+        );
 
         let retried = sessions
             .iter()

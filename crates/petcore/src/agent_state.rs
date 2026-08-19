@@ -820,6 +820,20 @@ pub(crate) fn overlay_navigation(event: &AgentEvent) -> OverlaySessionNavigation
     let session_open = payload
         .get("session_open")
         .and_then(serde_json::Value::as_bool);
+    if event.source == AgentSource::Dsh {
+        // The managed dsh integration observes its Web profile. Current dsh
+        // session selection is browser-local and has no external deep link;
+        // older events may still carry the terminal that launched the server,
+        // but that terminal is never a truthful return destination.
+        return OverlaySessionNavigation {
+            capability: OverlayNavigationCapability::Unavailable,
+            session_open,
+            surface: Some("unknown".to_string()),
+            terminal_app: None,
+            open_url: None,
+            routable_session_id: None,
+        };
+    }
     let surface = payload
         .get("session_surface")
         .and_then(serde_json::Value::as_str)
@@ -1220,6 +1234,26 @@ mod tests {
             missing_codex_surface.capability,
             OverlayNavigationCapability::Unavailable
         );
+    }
+
+    #[test]
+    fn dsh_web_navigation_rejects_legacy_launch_terminal_metadata() {
+        let dsh = overlay_navigation(&navigation_event(
+            AgentSource::Dsh,
+            "dsh-web-session",
+            json!({
+                "session_open": true,
+                "session_surface": "cli_terminal",
+                "terminal_app": "warp",
+                "session_open_url": "warp://session/0123456789abcdef0123456789abcdef"
+            }),
+        ));
+        assert_eq!(dsh.capability, OverlayNavigationCapability::Unavailable);
+        assert_eq!(dsh.session_open, Some(true));
+        assert_eq!(dsh.surface.as_deref(), Some("unknown"));
+        assert_eq!(dsh.terminal_app, None);
+        assert_eq!(dsh.open_url, None);
+        assert_eq!(dsh.routable_session_id, None);
     }
 
     #[test]

@@ -38,9 +38,17 @@ Adapters record the actual App or CLI origin. Audited App markers override inher
 | Claude Code | Claude App host activation only | Exact Warp URL when present; otherwise known terminal host |
 | OpenCode | OpenCode App host activation only | Exact Warp URL when present; otherwise known terminal host |
 | Pi | No App surface | Exact Warp URL when present; otherwise known terminal host |
-| DeepSeek Harness | No App surface | Exact Warp URL when present; otherwise known terminal host |
+| DeepSeek Harness | Web UI; exact-session return unavailable | Headless is one-shot and has no return target |
 
 Claude hook UUIDs identify CLI transcripts, not existing Claude Desktop sessions, so they are never published as exact Desktop routes. Unknown terminals, malformed targets, source/surface mismatches, and ambiguous historical origins are unavailable rather than guessed. A source-matching audited App origin remains authoritative within one activity epoch even if a later terminal hook loses the marker; a genuine new activation may select a different surface.
+
+The managed DeepSeek Harness connector runs in the default Web profile. DSH's
+browser client selects a session through page-local `sessions.open(sessionId)`
+state and currently exposes only the Web UI root URL, not an externally
+addressable session URL or command. DSH events therefore publish an unknown
+surface with unavailable navigation: inherited `TERM_PROGRAM` and Warp focus
+metadata from the shell that launched the Web server are deliberately ignored,
+because returning to that terminal cannot locate the browser session.
 
 Rows expose `exact_session`, `agent_host`, or `unavailable`. The App acknowledges a completed row only after its declared route succeeds. Opening a host after an exact deep-link failure is recovery assistance, not proof that the session opened, so the row remains visible with a retryable error.
 
