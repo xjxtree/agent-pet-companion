@@ -12,6 +12,11 @@ import SwiftUI
 /// same values, so a taller row is measured before the panel is sized rather
 /// than discovered as clipped text.
 enum OverlayBubbleTypography {
+    /// Standalone cards render the title and retained Agent body as one inline
+    /// summary. Capping the title at two thirds of that line keeps enough room
+    /// for a reply or narrative activity to remain visible on the first line.
+    static let standaloneSessionTitleLineFraction: CGFloat = 2.0 / 3.0
+
     static func pointSize(
         _ style: NSFont.TextStyle,
         scale: BubbleFontScale
@@ -32,6 +37,46 @@ enum OverlayBubbleTypography {
         scale: BubbleFontScale
     ) -> NSFont {
         NSFont.systemFont(ofSize: pointSize(style, scale: scale))
+    }
+
+    static func standaloneSessionTitle(
+        _ title: String,
+        availableLineWidth: CGFloat,
+        scale: BubbleFontScale
+    ) -> String {
+        guard availableLineWidth.isFinite, availableLineWidth > 0 else {
+            return title
+        }
+        let maximumWidth = availableLineWidth * standaloneSessionTitleLineFraction
+        let font = NSFont.systemFont(
+            ofSize: pointSize(.callout, scale: scale),
+            weight: .semibold
+        )
+        guard measuredTextWidth(title, font: font) > maximumWidth else {
+            return title
+        }
+
+        let ellipsis = "…"
+        guard measuredTextWidth(ellipsis, font: font) <= maximumWidth else {
+            return ""
+        }
+        let characters = Array(title)
+        var lowerBound = 0
+        var upperBound = characters.count
+        while lowerBound < upperBound {
+            let candidateCount = (lowerBound + upperBound + 1) / 2
+            let candidate = String(characters.prefix(candidateCount)) + ellipsis
+            if measuredTextWidth(candidate, font: font) <= maximumWidth {
+                lowerBound = candidateCount
+            } else {
+                upperBound = candidateCount - 1
+            }
+        }
+        return String(characters.prefix(lowerBound)) + ellipsis
+    }
+
+    static func measuredTextWidth(_ text: String, font: NSFont) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
 
     /// Scales a control box that exists only to hold bubble text or a glyph

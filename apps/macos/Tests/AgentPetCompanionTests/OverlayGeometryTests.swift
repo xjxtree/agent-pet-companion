@@ -77,6 +77,65 @@ struct OverlayGeometryTests {
     }
 
     @Test
+    func standaloneSessionTitleUsesAtMostTwoThirdsOfTheSummaryLine() {
+        let availableLineWidth: CGFloat = 300
+        let maximumTitleWidth = availableLineWidth
+            * OverlayBubbleTypography.standaloneSessionTitleLineFraction
+        let longTitles = [
+            "Verify the latest GitHub release app and every desktop integration",
+            "实机验证本产品更新到最新版应用后所有桌宠和智能体连接是否正常",
+        ]
+
+        for fontScale in BubbleFontScale.allCases {
+            let font = NSFont.systemFont(
+                ofSize: OverlayBubbleTypography.pointSize(.callout, scale: fontScale),
+                weight: .semibold
+            )
+            for title in longTitles {
+                let displayed = OverlayBubbleTypography.standaloneSessionTitle(
+                    title,
+                    availableLineWidth: availableLineWidth,
+                    scale: fontScale
+                )
+                #expect(displayed.hasSuffix("…"))
+                #expect(displayed != title)
+                #expect(
+                    OverlayBubbleTypography.measuredTextWidth(displayed, font: font)
+                        <= maximumTitleWidth
+                )
+            }
+        }
+    }
+
+    @Test
+    func standaloneSessionTitleKeepsShortVisualCopyAndFullAccessibilityCopy() {
+        let fullTitle = "A complete title that remains available to VoiceOver after visual truncation"
+        let session = OverlaySessionContent(
+            id: "title-accessibility",
+            source: .codex,
+            sessionID: "title-accessibility",
+            eventType: .thinking,
+            sessionTitle: fullTitle,
+            messageText: "The retained Agent message stays visible.",
+            statusText: "Thinking"
+        )
+        let shortTitle = "Inspect release"
+
+        #expect(OverlayBubbleTypography.standaloneSessionTitle(
+            shortTitle,
+            availableLineWidth: 300,
+            scale: .standard
+        ) == shortTitle)
+        #expect(OverlayBubbleTypography.standaloneSessionTitle(
+            fullTitle,
+            availableLineWidth: 300,
+            scale: .standard
+        ) != fullTitle)
+        #expect(session.accessibilityReadingOrder.contains(fullTitle))
+        #expect(session.accessibilityReadingOrder.contains(session.messageText))
+    }
+
+    @Test
     func displayWidthContractUsesExactRangeAspectAndDefault() {
         #expect(OverlayGeometry.minimumDisplayWidthPt == 100)
         #expect(OverlayGeometry.defaultDisplayWidthPt == 112)
