@@ -1734,6 +1734,18 @@ fn runtime_navigation_from_values(
     opencode_client: Option<&str>,
     codex_internal_originator: Option<&str>,
 ) -> RuntimeNavigation {
+    if source == AgentSource::Dsh {
+        return RuntimeNavigation {
+            // The managed dsh connector runs inside the Web profile. The Web
+            // client selects sessions through browser-local runtime state and
+            // exposes no audited session URL, so the terminal that launched
+            // the server is neither the session surface nor a return target.
+            session_surface: Some("unknown".to_string()),
+            terminal_app: None,
+            session_open_url: None,
+        };
+    }
+
     if let Some(session_surface) = runtime_agent_app_surface(
         source,
         bundle_identifier,
@@ -2306,6 +2318,22 @@ mod tests {
         );
         assert_eq!(rejected.session_open_url, None);
         assert_eq!(rejected.session_surface.as_deref(), Some("cli_terminal"));
+    }
+
+    #[test]
+    fn dsh_web_sessions_do_not_inherit_the_server_launch_terminal() {
+        let navigation = runtime_navigation_from_values(
+            AgentSource::Dsh,
+            Some("warp://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"),
+            Some("WarpTerminal"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(navigation.session_surface.as_deref(), Some("unknown"));
+        assert_eq!(navigation.terminal_app, None);
+        assert_eq!(navigation.session_open_url, None);
     }
 
     #[test]
