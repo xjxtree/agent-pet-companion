@@ -1284,11 +1284,23 @@ struct PetCoreProcessManagerTests {
         let pi = AgentIconCandidates.candidates(for: .pi)
         #expect(pi.first == .bundledResource("PiBadge.svg"))
 
+        let dsh = AgentIconCandidates.candidates(for: .dsh)
+        #expect(dsh.first == .embeddedVector(AgentEmbeddedIconAssets.dshWebUIFishName))
+
         for source in AgentSource.allCases {
             let candidates = AgentIconCandidates.candidates(for: source)
             #expect(!candidates.isEmpty)
             #expect(Set(candidates.map { "\($0.kind):\($0.path)" }).count == candidates.count)
         }
+    }
+
+    @Test @MainActor
+    func dshAgentIconUsesTheWebUIVectorAsATemplate() throws {
+        let image = try #require(AgentIconProvider.image(for: .dsh))
+
+        #expect(image.isValid)
+        #expect(image.isTemplate)
+        #expect(image.size == NSSize(width: 32, height: 32))
     }
 
     @Test
