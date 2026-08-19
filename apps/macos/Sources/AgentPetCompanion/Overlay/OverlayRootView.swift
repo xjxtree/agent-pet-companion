@@ -450,41 +450,68 @@ private struct ConversationBubble: View {
     }
 
     private func standaloneSessionSurface(_ session: OverlaySessionContent) -> some View {
-        let accessoryWidth = OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale)
-            + OverlayGeometry.bubbleHeaderGap
-        return ZStack(alignment: .topTrailing) {
-            SessionBubbleRow(
-                session: session,
-                action: { performPrimarySessionAction(session) },
-                dismissAction: nil,
-                presentation: .standaloneSummary,
-                agentName: content.agentName,
-                reservedTrailingAccessoryWidth: accessoryWidth,
-                primaryActionLabel: primarySessionActionLabel
+        GeometryReader { proxy in
+            let lineWidth = max(
+                0,
+                proxy.size.width - OverlayGeometry.bubbleSessionHorizontalPadding * 2
             )
+            let visualSession = standaloneVisualSession(
+                session,
+                availableLineWidth: lineWidth
+            )
+            let accessoryWidth = OverlayGeometry.bubbleHeaderButtonSize(fontScale: fontScale)
+                + OverlayGeometry.bubbleHeaderGap
 
-            HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
-                if content.canDismiss {
-                    BubbleIconButton(
-                        systemImage: "xmark",
-                        accessibilityLabel: accessibilityModel.closeActionLabel
-                            ?? APCLocalization.text(.overlayCloseBubbleAccessibility),
-                        accessibilityHint: accessibilityModel.closeActionHint
-                            ?? APCLocalization.text(.overlayCloseBubbleHint),
-                        action: onClose
-                    )
-                    .opacity(hovered || keyboardNavigationActive ? 1 : 0.001)
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .easeOut(duration: OverlayMotion.controlFadeDuration),
-                        value: hovered || keyboardNavigationActive
-                    )
-                    .allowsHitTesting(hovered || keyboardNavigationActive)
-                    .accessibilityHidden(false)
+            ZStack(alignment: .topTrailing) {
+                SessionBubbleRow(
+                    session: visualSession,
+                    action: { performPrimarySessionAction(session) },
+                    dismissAction: nil,
+                    presentation: .standaloneSummary,
+                    agentName: content.agentName,
+                    reservedTrailingAccessoryWidth: accessoryWidth,
+                    primaryActionLabel: primarySessionActionLabel
+                )
+                // Only the visual copy is shortened. VoiceOver continues to
+                // receive the complete source title and retained body message.
+                .accessibilityLabel(session.accessibilityLabel)
+
+                HStack(spacing: OverlayGeometry.bubbleHeaderGap) {
+                    if content.canDismiss {
+                        BubbleIconButton(
+                            systemImage: "xmark",
+                            accessibilityLabel: accessibilityModel.closeActionLabel
+                                ?? APCLocalization.text(.overlayCloseBubbleAccessibility),
+                            accessibilityHint: accessibilityModel.closeActionHint
+                                ?? APCLocalization.text(.overlayCloseBubbleHint),
+                            action: onClose
+                        )
+                        .opacity(hovered || keyboardNavigationActive ? 1 : 0.001)
+                        .animation(
+                            reduceMotion
+                                ? nil
+                                : .easeOut(duration: OverlayMotion.controlFadeDuration),
+                            value: hovered || keyboardNavigationActive
+                        )
+                        .allowsHitTesting(hovered || keyboardNavigationActive)
+                        .accessibilityHidden(false)
+                    }
                 }
             }
         }
+    }
+
+    private func standaloneVisualSession(
+        _ session: OverlaySessionContent,
+        availableLineWidth: CGFloat
+    ) -> OverlaySessionContent {
+        var visualSession = session
+        visualSession.sessionTitle = OverlayBubbleTypography.standaloneSessionTitle(
+            session.sessionTitle,
+            availableLineWidth: availableLineWidth,
+            scale: fontScale
+        )
+        return visualSession
     }
 
     private var groupedSessionSurface: some View {
