@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Added",
-  "scope": "documentation",
-  "summary_en": "Expand repository product scope from four to five supported Agents, incorporating DeepSeek Harness across AGENTS.md, README, and architecture documentation.",
-  "summary_zh": "扩展产品范围支持五款 Agent，在 AGENTS.md、中英文 README 与架构文档中同步纳入 DeepSeek Harness。"
-}

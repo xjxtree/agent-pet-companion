@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Changed",
-  "scope": "dsh",
-  "summary_en": "DeepSeek Harness now uses the official WebUI fish icon throughout the App.",
-  "summary_zh": "DeepSeek Harness 现已在 App 各处统一使用官方 WebUI 鱼形图标。"
-}

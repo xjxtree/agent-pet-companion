@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Added",
-  "scope": "connections",
-  "summary_en": "Add DeepSeek Harness (dsh) connector managed lifecycle: check, repair, refresh, and uninstall targeting the web profile cordis.patch.yml.",
-  "summary_zh": "新增 DeepSeek Harness（dsh）连接器受管生命周期：面向 web profile cordis.patch.yml 的 check、repair、refresh 与 uninstall 操作。"
-}

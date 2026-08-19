@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Added",
-  "scope": "connections",
-  "summary_en": "Add DeepSeek Harness (dsh) Cordis plugin template implementing single-flight delivery, reasoning block-start thinking, child session suppression, and background fence.",
-  "summary_zh": "新增 DeepSeek Harness（dsh）Cordis 插件模板，实现单飞队列交付、reasoning block-start 思考边界、子会话抑制与后台工作栅栏。"
-}
