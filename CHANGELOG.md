@@ -14,6 +14,21 @@ Keep each user-visible change in its own bullet. Write the English text first, t
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-19
+
+### Changed / 变更
+
+<!-- apc-fragment:20260819-standalone-session-title-width -->
+- Standalone Agent session bubbles cap long visual titles at two thirds of the summary line so retained replies remain visible.
+
+  独立 Agent 会话气泡将过长标题的可视宽度限制为摘要行的三分之二，为后续回复保留展示空间。
+
+### Fixed / 修复
+
+<!-- apc-fragment:20260819-dsh-web-session-navigation -->
+- DeepSeek Harness Web sessions no longer appear as CLI sessions or route bubbles back to the terminal that launched the Web server.
+
+  DeepSeek Harness Web 会话不再显示为 CLI，也不会从气泡跳回启动 Web 服务的终端。
 ## [0.5.0] - 2026-08-19
 
 ### Added / 新增

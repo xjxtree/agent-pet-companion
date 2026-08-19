@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Changed",
-  "scope": "overlay",
-  "summary_en": "Standalone Agent session bubbles cap long visual titles at two thirds of the summary line so retained replies remain visible.",
-  "summary_zh": "独立 Agent 会话气泡将过长标题的可视宽度限制为摘要行的三分之二，为后续回复保留展示空间。"
-}
