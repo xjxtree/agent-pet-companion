@@ -16,7 +16,7 @@ pub const CODEX_HOOKS_CONTRACT_VERSION: &str = "codex-hooks-2026-08-01-events-v9
 pub const CLAUDE_HOOKS_CONTRACT_VERSION: &str = "claude-hooks-2026-08-01-events-v9";
 pub const PI_EXTENSION_CONTRACT_VERSION: &str = "pi-extension-0.80.10-events-v15";
 pub const OPENCODE_CONTRACT_VERSION: &str = "opencode-v1.18.4-events-v16";
-pub const DSH_PLUGIN_CONTRACT_VERSION: &str = "dsh-v0.1.0-rc.6-events-v2";
+pub const DSH_PLUGIN_CONTRACT_VERSION: &str = "dsh-v0.1.0-rc.7-events-v3";
 const MAX_MESSAGE_BYTES: usize = 4_096;
 const MAX_IDENTITY_BYTES: usize = 256;
 
@@ -308,7 +308,15 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
                 true,
             )
         }
-        "assistant/message" => return Ok(None), // cached for a later terminal edge
+        "assistant/message" => {
+            // An assembled final assistant message is a display-only edge that
+            // must persist its bounded visible text and/or explicit thinking
+            // content during execution, instead of waiting for a terminal edge.
+            // It never overrides the live tool/thinking activity (`affects_activity`
+            // stays false below). The Start kind here is refined to Thinking
+            // after extraction when only explicit reasoning is present.
+            (AgentEventType::Start, "message".to_string(), true)
+        }
         "plan/mode" => {
             if bool_at(input, &[&["active"], &["data", "active"]]) {
                 (AgentEventType::Plan, "plan_mode_entered".to_string(), true)
@@ -372,10 +380,40 @@ fn parse_dsh(source: AgentSource, input: &Value) -> Result<Option<ContractEvent>
     let activity_kind = match event {
         "tool/call" | "tool/result" => Some(activity_kind_for_tool(tool_name.as_deref())),
         "todo/write" => Some("plan".to_string()),
+        // A final assistant message projects explicit reasoning as thinking body
+        // copy; the plugin only sets activity_kind when reasoning is present.
+        "assistant/message" => string_at(
+            input,
+            &[&["activity_kind"], &["properties", "activity_kind"]],
+        )
+        .filter(|kind| kind == "thinking"),
         _ => None,
     };
 
-    let affects_activity = !matches!(event, "connector.probe" | "session/title" | "session.child");
+    // An empty assistant/message envelope (no visible text and no explicit
+    // thinking) carries no display content and must fail open, never
+    // synthesizing a spurious start state.
+    if event == "assistant/message" && message_content.is_none() && activity_kind.is_none() {
+        return Ok(None);
+    }
+
+    // A final assistant message is display-only: it refreshes the bubble body
+    // (message/activity content) but must not restart a thinking animation or
+    // pull an in-progress tool state back to start/thinking.
+    let affects_activity = !matches!(
+        event,
+        "connector.probe" | "session/title" | "session.child" | "assistant/message"
+    );
+
+    // Refine a reasoning-only final message to the Thinking kind so it projects
+    // as explicit thinking body copy; a message carrying visible text keeps the
+    // Start carrier and lets the visible text win the same-sequence selection.
+    let (kind, outcome) = if event == "assistant/message" && activity_kind.is_some() {
+        (AgentEventType::Thinking, "reasoning".to_string())
+    } else {
+        (kind, outcome)
+    };
+
     let mut contract = ContractEvent {
         source,
         external_event_id: None,
@@ -2975,7 +3013,8 @@ mod dsh_adapter_tests {
         }))
         .is_none());
 
-        // assistant/message -> Ok(None) (display-only, does not emit a pet state)
+        // assistant/message with no display content -> Ok(None) (empty envelope
+        // must fail open, never synthesize a start state).
         assert!(parse(&json!({
             "type": "assistant/message",
             "session_id": "s1"
@@ -2984,6 +3023,66 @@ mod dsh_adapter_tests {
 
         // Unattributed event -> Ok(None) (no synthetic global session)
         assert!(parse(&json!({"type": "turn/start"})).is_none());
+    }
+
+    #[test]
+    fn assistant_message_projects_display_content_without_overriding_activity() {
+        let parse = |input: &Value| {
+            parse_contract_event(AgentSource::Dsh, input)
+                .expect("parsed")
+                .expect("contract")
+        };
+
+        // Visible text only -> Start/message carrier persisting the Agent body.
+        let text_only = parse(&json!({
+            "type": "assistant/message",
+            "session_id": "s1",
+            "turn_id": "2",
+            "message_role": "assistant",
+            "message_content": "我先检查工作树。"
+        }));
+        assert_eq!(text_only.kind, AgentEventType::Start);
+        assert_eq!(text_only.outcome.as_deref(), Some("message"));
+        assert_eq!(text_only.message_role.as_deref(), Some("assistant"));
+        assert_eq!(
+            text_only.message_content.as_deref(),
+            Some("我先检查工作树。")
+        );
+        assert_eq!(text_only.activity_kind, None);
+        assert!(!text_only.affects_activity);
+        assert!(text_only.session_active);
+
+        // Reasoning only -> Thinking/reasoning carrying explicit thinking body.
+        let reasoning_only = parse(&json!({
+            "type": "assistant/message",
+            "session_id": "s1",
+            "activity_kind": "thinking",
+            "activity_content": "工作树干净，接下来核对最近提交。"
+        }));
+        assert_eq!(reasoning_only.kind, AgentEventType::Thinking);
+        assert_eq!(reasoning_only.outcome.as_deref(), Some("reasoning"));
+        assert_eq!(reasoning_only.activity_kind.as_deref(), Some("thinking"));
+        assert_eq!(
+            reasoning_only.activity_content.as_deref(),
+            Some("工作树干净，接下来核对最近提交。")
+        );
+        assert_eq!(reasoning_only.message_content, None);
+        assert!(!reasoning_only.affects_activity);
+
+        // Both text and reasoning in one final message -> the visible text wins
+        // the body while the thinking content stays available on the same row.
+        let both = parse(&json!({
+            "type": "assistant/message",
+            "session_id": "s1",
+            "message_role": "assistant",
+            "message_content": "可见正文。",
+            "activity_kind": "thinking",
+            "activity_content": "显式思考。"
+        }));
+        assert_eq!(both.message_content.as_deref(), Some("可见正文。"));
+        assert_eq!(both.activity_kind.as_deref(), Some("thinking"));
+        assert_eq!(both.activity_content.as_deref(), Some("显式思考。"));
+        assert!(!both.affects_activity);
     }
 
     #[test]

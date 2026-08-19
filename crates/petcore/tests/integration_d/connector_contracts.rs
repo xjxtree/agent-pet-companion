@@ -1475,4 +1475,42 @@ fn dsh_contract_fixtures_parse_authoritatively_with_bounds_and_privacy() {
     )
     .unwrap()
     .is_none());
+
+    // 8. Final assistant/message with visible text -> Start/message display body
+    //    during execution, without overriding the live activity.
+    let assistant_text = parsed(
+        AgentSource::Dsh,
+        "dsh-v0.1.0-rc.6/assistant-message-text.json",
+    );
+    assert_eq!(assistant_text.kind, AgentEventType::Start);
+    assert_eq!(assistant_text.outcome.as_deref(), Some("message"));
+    assert_eq!(assistant_text.message_role.as_deref(), Some("assistant"));
+    assert_eq!(
+        assistant_text.message_content.as_deref(),
+        Some("我来探索这个项目。让我先了解一下项目的基本结构和关键文件。")
+    );
+    assert!(!assistant_text.affects_activity);
+
+    // 9. Final assistant/message with only explicit reasoning -> Thinking body.
+    let assistant_reasoning = parsed(
+        AgentSource::Dsh,
+        "dsh-v0.1.0-rc.6/assistant-message-reasoning.json",
+    );
+    assert_eq!(assistant_reasoning.kind, AgentEventType::Thinking);
+    assert_eq!(assistant_reasoning.outcome.as_deref(), Some("reasoning"));
+    assert_eq!(
+        assistant_reasoning.activity_kind.as_deref(),
+        Some("thinking")
+    );
+    assert_eq!(
+        assistant_reasoning.activity_content.as_deref(),
+        Some("先列出目录，再读 README 与入口文件。")
+    );
+    assert!(!assistant_reasoning.affects_activity);
+
+    // 10. todo/write -> Plan with one bounded selected plan line.
+    let todo = parsed(AgentSource::Dsh, "dsh-v0.1.0-rc.6/todo-write-plan.json");
+    assert_eq!(todo.kind, AgentEventType::Plan);
+    assert_eq!(todo.activity_kind.as_deref(), Some("plan"));
+    assert_eq!(todo.activity_content.as_deref(), Some("梳理项目结构"));
 }

@@ -1,0 +1,7 @@
+{
+  "schema_version": "apc.changelog-fragment.v1",
+  "kind": "Fixed",
+  "scope": "dsh",
+  "summary_en": "DeepSeek Harness tasks now keep the latest Agent, thinking, or plan text in the desktop bubble while tools run, instead of showing an empty body until the task ends.",
+  "summary_zh": "DeepSeek Harness 任务在工具运行期间，桌面气泡会持续保留最新的 Agent、思考或计划正文，不再在任务结束前一直显示空正文。"
+}

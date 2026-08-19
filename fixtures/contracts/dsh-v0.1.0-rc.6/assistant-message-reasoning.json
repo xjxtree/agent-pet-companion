@@ -1,0 +1,1 @@
+{"type":"assistant/message","session_id":"session-abc","turn_id":"t1","activity_kind":"thinking","activity_content":"先列出目录，再读 README 与入口文件。","contract_version":"dsh-v0.1.0-rc.7-events-v3"}

@@ -2458,6 +2458,137 @@ fn every_agent_keeps_only_the_latest_agent_or_thinking_message_across_tool_activ
     }
 }
 
+// Real-chain regression: raw DSH connector envelopes are parsed by the actual
+// `parse_dsh` contract (not pre-normalized fixtures) and ingested through the
+// same agent.ingest projection the bubble reads. This proves the DSH connector
+// itself produces the events that keep Agent/thinking body copy alive under
+// tool activity, instead of only asserting PetCore's generic arbitration.
+#[test]
+fn dsh_real_chain_keeps_latest_agent_and_thinking_body_across_tool_activity() {
+    use petcore::adapter_contracts::parse_contract_event;
+
+    let (_temp, state) = ready();
+    let session_id = "dsh-real-chain-bubble";
+    let projected = projected_session_id(session_id);
+    let session = || {
+        snapshot(&state)["active_agent_sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["session_id"] == projected)
+            .unwrap()
+            .clone()
+    };
+    // Parse a raw DSH envelope through the real contract, then ingest the
+    // normalized fields exactly as the CLI hook path would.
+    let ingest_raw = |id: &str, seconds_ago: i64, raw: Value| {
+        let contract = parse_contract_event(AgentSource::Dsh, &raw)
+            .expect("dsh parse")
+            .expect("dsh contract");
+        let event_type = match contract.kind {
+            AgentEventType::Start => "start",
+            AgentEventType::Thinking => "thinking",
+            AgentEventType::Plan => "plan",
+            AgentEventType::Tool => "tool",
+            AgentEventType::Waiting => "waiting",
+            AgentEventType::Done => "done",
+            AgentEventType::Failed => "failed",
+        };
+        ingest_source_payload(
+            &state,
+            "dsh",
+            id,
+            session_id,
+            event_type,
+            &timestamp(seconds_ago),
+            json!({
+                "source_event": contract.source_event,
+                "outcome": contract.outcome,
+                "affects_activity": contract.affects_activity,
+                "session_active": contract.session_active,
+                "session_open": contract.session_open,
+                "message_role": contract.message_role,
+                "message_content": contract.message_content,
+                "activity_kind": contract.activity_kind,
+                "activity_content": contract.activity_content,
+                "session_title": contract.session_title,
+            }),
+        );
+    };
+
+    // turn/start then a final assistant/message carrying visible text.
+    ingest_raw(
+        "rc-start",
+        50,
+        json!({"type": "turn/start", "session_id": session_id, "data": {"turn": 1}}),
+    );
+    ingest_raw(
+        "rc-agent-text",
+        40,
+        json!({
+            "type": "assistant/message",
+            "session_id": session_id,
+            "turn_id": "1",
+            "message_role": "assistant",
+            "message_content": "我先检查工作树。"
+        }),
+    );
+    let after_text = session();
+    assert_eq!(
+        after_text["session_message"],
+        json!({"role": "assistant", "content": "我先检查工作树。"}),
+        "the final assistant/message must project its visible text immediately"
+    );
+
+    // A tool call must flip the state to tool while preserving the Agent body.
+    ingest_raw(
+        "rc-tool",
+        30,
+        json!({"type": "tool/call", "session_id": session_id, "tool_name": "bash", "data": {"turn": 1, "step": 1, "callId": "c1", "name": "bash", "arguments": "{}"}}),
+    );
+    let after_tool = session();
+    assert_eq!(after_tool["event"]["event_type"], "tool");
+    assert_eq!(
+        after_tool["session_message"],
+        json!({"role": "assistant", "content": "我先检查工作树。"}),
+        "tool activity must not clear the retained Agent text"
+    );
+
+    // A reasoning-only final message replaces the body with explicit thinking.
+    ingest_raw(
+        "rc-reasoning",
+        20,
+        json!({
+            "type": "assistant/message",
+            "session_id": session_id,
+            "turn_id": "1",
+            "activity_kind": "thinking",
+            "activity_content": "工作树干净，接下来核对最近提交。"
+        }),
+    );
+    let after_reasoning = session();
+    assert_eq!(after_reasoning["session_message"], Value::Null);
+    assert_eq!(
+        after_reasoning["session_activity"],
+        json!({"kind": "thinking", "content": "工作树干净，接下来核对最近提交。"}),
+        "reasoning-only final message must project explicit thinking body"
+    );
+
+    // A later tool call keeps the thinking body.
+    ingest_raw(
+        "rc-tool-2",
+        10,
+        json!({"type": "tool/call", "session_id": session_id, "tool_name": "read", "data": {"turn": 1, "step": 2, "callId": "c2", "name": "read", "arguments": "{}"}}),
+    );
+    let after_tool_2 = session();
+    assert_eq!(after_tool_2["event"]["event_type"], "tool");
+    assert_eq!(
+        after_tool_2["session_activity"],
+        json!({"kind": "thinking", "content": "工作树干净，接下来核对最近提交。"}),
+        "tool activity must not clear the retained thinking body"
+    );
+}
+
 #[test]
 fn equal_timestamp_messages_follow_persisted_arrival_order() {
     let (_temp, state) = ready();
