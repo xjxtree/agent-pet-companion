@@ -1371,7 +1371,7 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     // --- DeepSeek Harness (dsh) template privacy and filtering tests ---
     delete process.env.APC_CONNECTOR_PROBE_ID;
     const dsh = await importTemplate("./dsh/agent-pet-companion.js.tpl", "dsh-privacy");
-    assert.equal(dsh.APC_DSH_CONTRACT_VERSION, "dsh-v0.1.0-rc.6-events-v2");
+    assert.equal(dsh.APC_DSH_CONTRACT_VERSION, "dsh-v0.1.0-rc.7-events-v3");
     assert.equal(dsh.APC_DSH_AUDITED_EVENTS.length, 5);
 
     const dshListeners = new Map();
@@ -1457,6 +1457,7 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     assert.equal(captured.length, countBeforeDelta, "text-delta chunks must be dropped");
 
     // Test 4: bounded display context travels on semantic edges, not private envelopes.
+    // Real rc.7 shape: `user/message` data IS the UserMessage directly.
     dshListeners.get("session/event")(parentSession, {
       type: "session/title",
       seq: 20,
@@ -1465,7 +1466,7 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     dshListeners.get("session/event")(parentSession, {
       type: "user/message",
       seq: 21,
-      data: { message: { source: { kind: "user" }, content: [{ type: "text", text: "Review DSH" }] } },
+      data: { source: { kind: "user" }, content: [{ type: "text", text: "Review DSH" }] },
     });
     dshListeners.get("session/event")(parentSession, {
       type: "turn/start",
@@ -1475,7 +1476,7 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     dshListeners.get("session/event")(parentSession, {
       type: "assistant/message",
       seq: 23,
-      data: { message: { content: [{ type: "text", text: "DSH is ready" }] } },
+      data: { turn: 2, step: 1, message: { content: [{ type: "text", text: "DSH is ready" }] } },
     });
     dshListeners.get("session/event")(parentSession, {
       type: "turn/end",
@@ -1489,12 +1490,116 @@ test("Pi, OpenCode, and dsh expose bounded local activity without leaking host-p
     assert.equal(startPayload?.message_role, "user");
     assert.equal(startPayload?.message_content, "Review DSH");
     assert.equal(startPayload?.session_title, "DSH acceptance");
+    // The final assistant/message now delivers its visible text immediately at
+    // the message boundary, not only via a later terminal edge.
+    const assistantPayload = captured.find((item) => (
+      item.source === "dsh" && item.payload.type === "assistant/message" && item.payload.turn_id === "2"
+    ))?.payload;
+    assert.equal(assistantPayload?.message_role, "assistant");
+    assert.equal(assistantPayload?.message_content, "DSH is ready");
+    assert.equal(assistantPayload?.session_title, "DSH acceptance");
     const donePayload = captured.find((item) => (
       item.source === "dsh" && item.payload.type === "turn/end" && item.payload.turn_id === "2"
     ))?.payload;
     assert.equal(donePayload?.message_role, "assistant");
     assert.equal(donePayload?.message_content, "DSH is ready");
     assert.equal(donePayload?.session_title, "DSH acceptance");
+
+    // Test 4b: reasoning-only final message projects explicit thinking content.
+    const reasoningBefore = captured.length;
+    dshListeners.get("session/event")(parentSession, {
+      type: "assistant/message",
+      seq: 27,
+      data: { turn: 3, step: 1, message: { content: [{ type: "reasoning", text: "internal plan" }] } },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const reasoningPayload = captured.slice(reasoningBefore).find((item) => (
+      item.source === "dsh" && item.payload.type === "assistant/message" && item.payload.turn_id === "3"
+    ))?.payload;
+    assert.equal(reasoningPayload?.activity_kind, "thinking");
+    assert.equal(reasoningPayload?.activity_content, "internal plan");
+    assert.equal(reasoningPayload?.message_content, undefined);
+
+    // Test 4c: a final message with both text and reasoning projects text as the
+    // Agent body and keeps reasoning as the thinking content on the same event.
+    dshListeners.get("session/event")(parentSession, {
+      type: "assistant/message",
+      seq: 28,
+      data: { turn: 4, step: 1, message: { content: [
+        { type: "reasoning", text: "thinking text" },
+        { type: "text", text: "visible text" },
+      ] } },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const bothPayload = captured.find((item) => (
+      item.source === "dsh" && item.payload.type === "assistant/message" && item.payload.turn_id === "4"
+    ))?.payload;
+    assert.equal(bothPayload?.message_content, "visible text");
+    assert.equal(bothPayload?.activity_content, "thinking text");
+
+    // Test 4d: a text-less final assistant/message emits nothing and clears the
+    // cached assistant text so a terminal edge cannot resurrect stale body copy.
+    const emptyBefore = captured.length;
+    dshListeners.get("session/event")(parentSession, {
+      type: "assistant/message",
+      seq: 29,
+      data: { turn: 5, step: 1, message: { content: [{ type: "reasoning", text: "" }] } },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(
+      captured.slice(emptyBefore).filter((item) => item.payload?.type === "assistant/message").length,
+      0,
+      "an assistant/message with no text or reasoning must not be delivered",
+    );
+
+    // Test 4e: historical nested user/message shape still projects; a non-user
+    // source kind is ignored as user context.
+    dshListeners.get("session/event")(parentSession, {
+      type: "user/message",
+      seq: 30,
+      data: { message: { source: { kind: "user" }, content: [{ type: "text", text: "legacy nested" }] } },
+    });
+    dshListeners.get("session/event")(parentSession, {
+      type: "user/message",
+      seq: 31,
+      data: { source: { kind: "plugin", plugin: "skill" }, content: [{ type: "text", text: "injected" }] },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(captured.some((item) => (
+      item.source === "dsh"
+      && item.payload.type === "user/message"
+      && item.payload.message_content === "legacy nested"
+    )), "historical nested user/message shape must remain bounded-compatible");
+    assert.ok(!captured.some((item) => (
+      item.payload?.type === "user/message" && item.payload?.message_content === "injected"
+    )), "non-user source kinds must never project as user context");
+
+    // Test 4f: todo/write projects one bounded plan line and never the array.
+    dshListeners.get("session/event")(parentSession, {
+      type: "todo/write",
+      seq: 32,
+      data: { todos: [
+        { content: "done step", status: "completed" },
+        { content: "current step", status: "in_progress" },
+        { content: "later step", status: "pending" },
+      ] },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const todoPayload = captured.find((item) => (
+      item.source === "dsh" && item.payload.type === "todo/write"
+    ))?.payload;
+    assert.equal(todoPayload?.activity_kind, "plan");
+    assert.equal(todoPayload?.activity_content, "current step");
+    assert.equal(typeof todoPayload?.activity_content, "string");
+    // Empty / malformed todo shapes project no plan body.
+    const todoEmptyBefore = captured.length;
+    dshListeners.get("session/event")(parentSession, { type: "todo/write", seq: 33, data: { todos: [] } });
+    dshListeners.get("session/event")(parentSession, { type: "todo/write", seq: 34, data: { todos: [{ content: 42, status: "in_progress" }] } });
+    dshListeners.get("session/event")(parentSession, { type: "todo/write", seq: 35, data: { todos: "not-an-array" } });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(captured.slice(todoEmptyBefore).every((item) => (
+      item.payload?.type !== "todo/write" || item.payload?.activity_content === undefined
+    )), "empty, non-string-content, and non-array todos must project no plan body");
 
     // Test 5: durable host sequence differentiates otherwise identical tool events.
     dshListeners.get("session/event")(parentSession, {

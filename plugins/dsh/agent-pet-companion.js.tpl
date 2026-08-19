@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 const CLI_PATH = __APC_CLI_JSON__;
 export const APC_DSH_CONNECTOR_RELEASE_VERSION = "__APC_CONNECTOR_RELEASE_VERSION__";
-export const APC_DSH_CONTRACT_VERSION = "dsh-v0.1.0-rc.6-events-v2";
+export const APC_DSH_CONTRACT_VERSION = "dsh-v0.1.0-rc.7-events-v3";
 
 // Audited dsh broadcast events. Agent Pet Companion subscribes ONLY to emit/
 // broadcast events. Waterfall/interception events (agent/pre-step,
@@ -195,6 +195,48 @@ function extractAssistantText(message) {
   return cleanText(parts.join(""));
 }
 
+// Explicit thinking content is only projected from an assembled final message:
+// a complete, non-redacted string `reasoning` block. Streaming reasoning-delta
+// churn is dropped locally and never reaches this extractor.
+function extractAssistantReasoning(message) {
+  if (!message || !Array.isArray(message.content)) return undefined;
+  const parts = [];
+  for (const block of message.content) {
+    if (block?.type === "reasoning" && typeof block.text === "string") {
+      parts.push(block.text);
+    }
+  }
+  return cleanText(parts.join(""));
+}
+
+// `todo/write` carries a whole-list snapshot. Project exactly one bounded,
+// user-readable plan line: the first in-progress item, else the first pending,
+// else the last completed. Never serialize the array or unknown fields.
+function selectTodoPlanContent(todos) {
+  if (!Array.isArray(todos)) return undefined;
+  const contentOf = (item) => (typeof item?.content === "string" ? item.content : undefined);
+  const first = (status) => {
+    for (const item of todos) {
+      if (item?.status === status) {
+        const content = cleanText(contentOf(item));
+        if (content) return content;
+      }
+    }
+    return undefined;
+  };
+  const inProgress = first("in_progress");
+  if (inProgress) return inProgress;
+  const pending = first("pending");
+  if (pending) return pending;
+  for (let index = todos.length - 1; index >= 0; index -= 1) {
+    if (todos[index]?.status === "completed") {
+      const content = cleanText(contentOf(todos[index]));
+      if (content) return content;
+    }
+  }
+  return undefined;
+}
+
 export function apply(ctx) {
   if (connectorProbe || connectorDiagnostic) {
     enqueueDelivery({
@@ -264,19 +306,44 @@ export function apply(ctx) {
           break;
         }
         case "assistant/message": {
+          // The assembled final message is the display boundary. Emit bounded
+          // visible text (and explicit reasoning) now instead of caching it for
+          // a terminal edge, so the bubble keeps body copy during long tool
+          // phases. Streaming text/reasoning deltas stay dropped locally.
           const text = extractAssistantText(data.message);
-          if (text) {
+          const reasoning = extractAssistantReasoning(data.message);
+          if (!text) {
+            // A text-less step must not let the terminal fallback resurrect the
+            // previous step's older Agent text over newer thinking content.
+            latestAssistantMessages.delete(sid);
+          } else {
             remember(latestAssistantMessages, sid, boundString(text, BOUND_MESSAGE_BYTES));
           }
+          if (!text && !reasoning) break;
+          enqueueDelivery({
+            type: "assistant/message",
+            session_id: sid,
+            eventID,
+            turn_id: typeof data.turn === "number" ? String(data.turn) : undefined,
+            session_title: sessionTitles.get(sid),
+            message_role: text ? "assistant" : undefined,
+            message_content: text ? boundString(text, BOUND_MESSAGE_BYTES) : undefined,
+            activity_kind: reasoning ? "thinking" : undefined,
+            activity_content: reasoning ? boundString(reasoning, BOUND_MESSAGE_BYTES) : undefined,
+          });
           break;
         }
         case "user/message": {
-          const sourceKind = data.message?.source?.kind;
-          if (sourceKind === "user") {
-            const text = extractAssistantText(data.message);
+          // rc.7 contract: `event.data` IS the UserMessage directly. Keep a
+          // bounded historical `{ message: {...} }` nested fallback. Only a
+          // real human `source.kind === "user"` counts as user context; system,
+          // skill, plugin, and injected messages are never projected.
+          const message = data.message ?? data;
+          if (message?.source?.kind === "user") {
+            const text = extractAssistantText(message);
             if (text) {
-              const message = boundString(text, BOUND_MESSAGE_BYTES);
-              remember(latestUserMessages, sid, message);
+              const bounded = boundString(text, BOUND_MESSAGE_BYTES);
+              remember(latestUserMessages, sid, bounded);
               latestAssistantMessages.delete(sid);
               enqueueDelivery({
                 type: "user/message",
@@ -284,7 +351,7 @@ export function apply(ctx) {
                 eventID,
                 session_title: sessionTitles.get(sid),
                 message_role: "user",
-                message_content: message,
+                message_content: bounded,
               });
             }
           }
@@ -315,10 +382,13 @@ export function apply(ctx) {
           break;
         }
         case "todo/write": {
+          const plan = selectTodoPlanContent(data.todos);
           enqueueDelivery({
             type: "todo/write",
             session_id: sid,
             eventID,
+            activity_kind: plan ? "plan" : undefined,
+            activity_content: plan ? boundString(plan, BOUND_MESSAGE_BYTES) : undefined,
           });
           break;
         }

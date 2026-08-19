@@ -234,7 +234,7 @@ expected_contracts = {
     "claude_code": "claude-hooks-2026-08-01-events-v9",
     "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
-    "dsh": "dsh-v0.1.0-rc.6-events-v2",
+    "dsh": "dsh-v0.1.0-rc.7-events-v3",
 }
 expected_capability_counts = {
     "codex": (80, 11),
@@ -307,7 +307,7 @@ contracts = {
     "claude_code": "claude-hooks-2026-08-01-events-v9",
     "pi": "pi-extension-0.80.10-events-v15",
     "opencode": "opencode-v1.18.4-events-v16",
-    "dsh": "dsh-v0.1.0-rc.6-events-v2",
+    "dsh": "dsh-v0.1.0-rc.7-events-v3",
 }
 task_events = {
     "codex": (
