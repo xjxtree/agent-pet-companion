@@ -7,16 +7,16 @@
         "apps/macos/Sources/AgentPetCompanion/Features/Connections/**",
         "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Connections/**",
         "apps/macos/Sources/AgentPetCompanion/Views/AgentConnectionsView.swift",
-        "crates/petcore/src/connections/**",
-        "plugins/**",
-        "crates/petcore/src/adapter_contracts.rs",
-        "crates/petcore/src/event_envelope.rs",
-        "crates/petcore/src/agent_state.rs",
         "crates/petcore-cli/src/main.rs",
+        "crates/petcore/src/adapter_contracts.rs",
+        "crates/petcore/src/agent_state.rs",
+        "crates/petcore/src/connections/**",
+        "crates/petcore/src/event_envelope.rs",
         "crates/petcore/tests/integration_d/**",
-        "schemas/agent-event.schema.json",
+        "fixtures/contracts/**",
+        "plugins/**",
         "schemas/agent-event-ingest.schema.json",
-        "fixtures/contracts/**"
+        "schemas/agent-event.schema.json"
       ],
       "dependencies": [
         "app-shell-runtime",
@@ -257,6 +257,7 @@
         "apps/macos/Sources/AgentPetCompanion/App/AgentPetCompanionApp.swift",
         "apps/macos/Sources/AgentPetCompanion/App/AppManualInstallation.swift",
         "apps/macos/Sources/AgentPetCompanion/App/AppRuntimeLifecycle.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
         "apps/macos/Sources/AgentPetCompanion/App/BrandAssets.swift",
         "apps/macos/Sources/AgentPetCompanion/App/BundledPetInventory.swift",
         "apps/macos/Sources/AgentPetCompanion/App/InitialAppearanceWindowAppearance.swift",
@@ -267,9 +268,13 @@
         "apps/macos/Sources/AgentPetCompanion/App/PetCoreProcessManager.swift",
         "apps/macos/Sources/AgentPetCompanion/App/ProductConvergence.swift",
         "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
+        "apps/macos/Sources/AgentPetCompanion/App/SequencedTaskSlot.swift",
         "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Common/**",
         "apps/macos/Sources/AgentPetCompanion/Views/ContentView.swift",
-        "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
+        "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift",
+        "apps/macos/Sources/AgentPetCompanionCore/PetCoreTransport.swift",
+        "apps/macos/Tests/AgentPetCompanionCoreTests/BoundedConcurrencyGateTests.swift",
+        "apps/macos/Tests/AgentPetCompanionTests/SequencedTaskSlotTests.swift"
       ],
       "dependencies": [
         "shared-contracts"
@@ -338,7 +343,12 @@
             "apps/macos/Sources/AgentPetCompanion/App/RuntimeReleaseManifest.swift",
             "apps/macos/Sources/AgentPetCompanion/Resources/Localization/Common/**",
             "apps/macos/Sources/AgentPetCompanion/Views/ContentView.swift",
-            "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift"
+            "apps/macos/Sources/AgentPetCompanion/Views/ControlCenterShell.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/AppStore.swift",
+            "apps/macos/Sources/AgentPetCompanion/App/SequencedTaskSlot.swift",
+            "apps/macos/Sources/AgentPetCompanionCore/PetCoreTransport.swift",
+            "apps/macos/Tests/AgentPetCompanionTests/SequencedTaskSlotTests.swift",
+            "apps/macos/Tests/AgentPetCompanionCoreTests/BoundedConcurrencyGateTests.swift"
           ]
         }
       ]
@@ -410,7 +420,10 @@
         "apps/macos/Sources/AgentPetCompanion/Views/MakerSessionWorkspace.swift",
         "apps/macos/Sources/AgentPetCompanion/Views/PetMakerResultView.swift",
         "apps/macos/Sources/AgentPetCompanion/Views/PetStudioView.swift",
-        "crates/petcore/src/generation.rs",
+        "crates/petcore/src/app_server.rs",
+        "crates/petcore/src/generation/**",
+        "crates/petcore/src/portable_skill.rs",
+        "crates/petcore/src/reference_images.rs",
         "skills/agent-pet-maker/**",
         "skills/agent-pet-studio/**"
       ],
@@ -462,7 +475,10 @@
         {
           "id": "generation-runtime",
           "paths": [
-            "crates/petcore/src/generation.rs"
+            "crates/petcore/src/generation/**",
+            "crates/petcore/src/app_server.rs",
+            "crates/petcore/src/reference_images.rs",
+            "crates/petcore/src/portable_skill.rs"
           ]
         },
         {
@@ -604,14 +620,15 @@
     {
       "id": "petpack-format",
       "owned_paths": [
-        "crates/petcore/src/petpack.rs",
         "crates/petcore-cli/tests/petpack_build_metadata.rs",
         "crates/petcore-cli/tests/petpack_export_routing.rs",
         "crates/petcore-cli/tests/petpack_import_routing.rs",
+        "crates/petcore/src/petpack.rs",
         "crates/petcore/tests/petpack_export.rs",
         "crates/petcore/tests/petpack_import_atomic.rs",
         "crates/petcore/tests/petpack_resource_limits.rs",
         "crates/petcore/tests/petpack_v3_contract.rs",
+        "docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md",
         "schemas/petpack.schema.json"
       ],
       "dependencies": [
@@ -654,7 +671,8 @@
             "crates/petcore/tests/petpack_import_atomic.rs",
             "crates/petcore/tests/petpack_resource_limits.rs",
             "crates/petcore/tests/petpack_v3_contract.rs",
-            "schemas/petpack.schema.json"
+            "schemas/petpack.schema.json",
+            "docs/specifications/AgentPetCompanion_Petpack_Whitepaper_V3.md"
           ]
         }
       ]
@@ -672,15 +690,15 @@
         "script/development_domains.py",
         "script/development_flow.py",
         "script/engineering_metrics.py",
-        "script/interaction-contract-files.txt",
         "script/fixtures/MainWindowColdLaunchProbe.swift",
-        "script/resolve_release_source_proof.py",
+        "script/interaction-contract-files.txt",
         "script/release_source_proof.py",
+        "script/resolve_release_source_proof.py",
         "script/swift_build_artifact.py",
         "script/validate_build_scripts_safety.sh",
         "script/validate_github_release_api.py",
-        "script/validate_local_tests.sh",
         "script/validate_local_tests.py",
+        "script/validate_local_tests.sh",
         "script/validate_main_window_ui.sh",
         "script/validate_overlay_offline.sh",
         "script/validate_portable_pet_maker.sh",
@@ -930,6 +948,9 @@
       "owned_paths": [
         "apps/macos/Sources/AgentPetCompanionCore/Contracts/**",
         "crates/petcore-types/src/**",
+        "crates/petcore/src/daemon.rs",
+        "crates/petcore/src/fs_identity.rs",
+        "crates/petcore/src/lib.rs",
         "crates/petcore/src/rpc/**"
       ],
       "dependencies": [],
@@ -985,6 +1006,14 @@
           "id": "swift-contracts",
           "paths": [
             "apps/macos/Sources/AgentPetCompanionCore/Contracts/**"
+          ]
+        },
+        {
+          "id": "core-runtime",
+          "paths": [
+            "crates/petcore/src/lib.rs",
+            "crates/petcore/src/daemon.rs",
+            "crates/petcore/src/fs_identity.rs"
           ]
         }
       ]
@@ -1057,7 +1086,8 @@
         {
           "id": "migrations",
           "paths": [
-            "crates/petcore/src/storage/migrations.rs"
+            "crates/petcore/src/storage/migrations.rs",
+            "crates/petcore/src/storage/mod.rs"
           ]
         }
       ]
