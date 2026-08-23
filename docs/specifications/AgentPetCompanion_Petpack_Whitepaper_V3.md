@@ -529,7 +529,7 @@ table together.
 | Immutable local revisions | [pet_revision.rs](../../crates/petcore/src/pet_revision.rs) |
 | Safe Producer metadata | [metadata schemas](../../schemas/), [schema fixtures](../../fixtures/schemas/) |
 | Portable producer behavior | [agent-pet-maker](../../skills/agent-pet-maker/) |
-| In-app producer behavior | [agent-pet-studio](../../skills/agent-pet-studio/), [generation.rs](../../crates/petcore/src/generation.rs), [app_server.rs](../../crates/petcore/src/app_server.rs) |
+| In-app producer behavior | [agent-pet-studio](../../skills/agent-pet-studio/), [generation](../../crates/petcore/src/generation/mod.rs), [app_server.rs](../../crates/petcore/src/app_server.rs) |
 
 Run the schema fixtures, relevant PetCore tests, portable Skill tests, and
 packaged-App acceptance for a change that touches this contract. Results belong
