@@ -75,7 +75,13 @@ pub(super) const RPC_METHODS: &[RpcMethodSpec] = &[
     RpcMethodSpec {
         method: "overlay.placement.update",
         owner: RpcMethodOwner::Settings,
-        allowed_params: &["x", "y", "display_width_pt", "display_id", "expected_revision"],
+        allowed_params: &[
+            "x",
+            "y",
+            "display_width_pt",
+            "display_id",
+            "expected_revision",
+        ],
     },
     RpcMethodSpec {
         method: "overlay.placement.reposition",
@@ -304,7 +310,12 @@ pub(super) const RPC_METHODS: &[RpcMethodSpec] = &[
     RpcMethodSpec {
         method: "product.convergence.update",
         owner: RpcMethodOwner::Connections,
-        allowed_params: &["schema_version", "build_id", "app_version", "connector_report"],
+        allowed_params: &[
+            "schema_version",
+            "build_id",
+            "app_version",
+            "connector_report",
+        ],
     },
     RpcMethodSpec {
         method: "product.convergence.preflight",
@@ -338,7 +349,10 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate method in registry");
-        assert_eq!(total, 56, "method inventory changed; update this test deliberately");
+        assert_eq!(
+            total, 56,
+            "method inventory changed; update this test deliberately"
+        );
     }
 
     #[test]

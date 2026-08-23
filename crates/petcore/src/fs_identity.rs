@@ -7,10 +7,7 @@
 //! identity; uid/nlink/mode policy differs per call site and stays local.
 
 /// True when both stats describe the same underlying file or directory.
-pub(crate) fn same_file(
-    observed: &rustix::fs::Stat,
-    opened: &rustix::fs::Stat,
-) -> bool {
+pub(crate) fn same_file(observed: &rustix::fs::Stat, opened: &rustix::fs::Stat) -> bool {
     observed.st_dev == opened.st_dev && observed.st_ino == opened.st_ino
 }
 

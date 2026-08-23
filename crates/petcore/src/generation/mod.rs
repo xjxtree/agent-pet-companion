@@ -1,6 +1,8 @@
 pub(crate) mod messages;
 mod visual_qa;
 
+pub use visual_qa::verify_visual_production;
+
 use crate::db::{Database, GenerationJobRecord};
 use crate::interaction_attestation;
 use crate::paths::AppPaths;
@@ -4045,7 +4047,6 @@ fn ensure_timing_changed_frames(
     Ok(())
 }
 
-
 fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
@@ -4341,7 +4342,12 @@ fn validate_skill_source_identity(source_dir: &Path) -> Result<()> {
             if !report.is_file() || !review.is_file() {
                 continue;
             }
-            match visual_qa::verify_visual_production(source_dir, &report, &review, baseline_dir.as_deref()) {
+            match visual_qa::verify_visual_production(
+                source_dir,
+                &report,
+                &review,
+                baseline_dir.as_deref(),
+            ) {
                 Ok(_) => return Ok(()),
                 Err(error) => evidence_errors.push(error.to_string()),
             }
@@ -5224,8 +5230,8 @@ fn derive_pet_name(form: &GenerationForm, ai_brief: Option<&serde_json::Value>) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::visual_qa::*;
+    use super::*;
     use image::{ImageBuffer, Rgba};
     use petcore_types::QualityLevel;
 

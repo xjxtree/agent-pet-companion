@@ -36,8 +36,16 @@ public enum PetCoreTransportError: Error, Equatable, LocalizedError, Sendable {
 public actor PetCoreTransport {
     public static let maximumFrameBytes = 256 * 1_024
 
+    /// Bound on in-flight request operations. The daemon refuses connections
+    /// beyond its own concurrency permit, so an unbounded client-side fan-out
+    /// would only convert into `server busy` errors and needless thread
+    /// churn. Waiting is async (never a blocked dispatch thread) and permits
+    /// turn over quickly, so ordinary single-user traffic never queues.
+    private static let maximumConcurrentRequests = 16
+
     private let socketPath: String
     private let ioQueue: DispatchQueue
+    private let requestGate: BoundedConcurrencyGate
     private var nextRequestID: UInt64 = 0
 
     public init(socketPath: String) {
@@ -47,6 +55,7 @@ public actor PetCoreTransport {
             qos: .userInitiated,
             attributes: .concurrent
         )
+        requestGate = BoundedConcurrencyGate(limit: Self.maximumConcurrentRequests)
     }
 
     public func request(
@@ -89,6 +98,8 @@ public actor PetCoreTransport {
             maximumFrameBytes: Self.maximumFrameBytes
         )
 
+        await requestGate.wait()
+        defer { requestGate.signal() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 ioQueue.async {
@@ -334,5 +345,46 @@ private extension Duration {
     var timeInterval: TimeInterval {
         let components = self.components
         return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+}
+
+/// An async-counting gate: `wait` suspends instead of blocking a dispatch
+/// thread, so bounding concurrency never grows the concurrent queue's thread
+/// pool.
+final class BoundedConcurrencyGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let limit: Int
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if running < limit {
+                running += 1
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func signal() {
+        lock.lock()
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            lock.unlock()
+            // Hand the permit straight to the next waiter.
+            next.resume()
+            return
+        }
+        running = max(0, running - 1)
+        lock.unlock()
     }
 }

@@ -1,8 +1,8 @@
 mod agents;
-mod methods;
 #[path = "connections.rs"]
 mod connections_rpc;
 mod generation;
+mod methods;
 mod pets;
 mod settings;
 

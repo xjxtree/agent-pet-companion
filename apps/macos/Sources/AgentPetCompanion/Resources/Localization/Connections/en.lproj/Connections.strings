@@ -12,6 +12,13 @@
 "verification_status.unverified" = "Awaiting verification";
 "verification_status.not_required" = "Not required";
 "connections.pane.detail" = "Connection Details";
+"connections.check.done_all" = "Connection check finished";
+"connections.check.done_count_format" = "%d agent connection checks finished";
+"connections.check.done_one_format" = "%@ check finished";
+"connections.repair.done_format" = "Connection repair finished: %@";
+"connections.repair.pending_format" = "Repairs applied; still needs attention: %@";
+"connections.uninstall.done_format" = "Connection uninstall finished: %@";
+"connections.uninstall.pending_format" = "Uninstall applied; still needs attention: %@";
 "connections.pane.environment" = "Check Environment";
 "connections.health.pending" = "Not checked";
 "connections.health.attention_format" = "%d issues";

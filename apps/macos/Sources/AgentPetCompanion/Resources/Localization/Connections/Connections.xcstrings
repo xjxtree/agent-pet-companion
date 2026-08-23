@@ -1345,6 +1345,118 @@
         }
       }
     },
+    "connections.check.done_all": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection check finished"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接检查完成"
+          }
+        }
+      }
+    },
+    "connections.check.done_count_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d agent connection checks finished"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个 Agent 连接检查完成"
+          }
+        }
+      }
+    },
+    "connections.check.done_one_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ check finished"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 检查完成"
+          }
+        }
+      }
+    },
+    "connections.repair.done_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection repair finished: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接修复完成：%@"
+          }
+        }
+      }
+    },
+    "connections.repair.pending_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repairs applied; still needs attention: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修复已执行，仍需处理：%@"
+          }
+        }
+      }
+    },
+    "connections.uninstall.done_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection uninstall finished: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接卸载完成：%@"
+          }
+        }
+      }
+    },
+    "connections.uninstall.pending_format": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uninstall applied; still needs attention: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "卸载已执行，仍需处理：%@"
+          }
+        }
+      }
+    },
     "connections.confirm.managed_change_format": {
       "localizations": {
         "en": {

@@ -1,6 +1,7 @@
 extension APCLocalizationKey {
     static let overlayIdleDetail = APCLocalizationKey("overlay.idle.detail", table: .overlay)
     static let overlayStatusRunning = APCLocalizationKey("overlay.status.running", table: .overlay)
+    static let overlayPlacementSaveFailed = APCLocalizationKey("overlay.placement.save_failed", table: .overlay)
     static let overlayStatusTool = APCLocalizationKey("overlay.status.tool", table: .overlay)
     static let overlayStatusNeedsInput = APCLocalizationKey("overlay.status.needs_input", table: .overlay)
     static let overlayStatusReady = APCLocalizationKey("overlay.status.ready", table: .overlay)

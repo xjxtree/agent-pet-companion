@@ -52,9 +52,7 @@ pub enum PetCoreError {
     #[error("conflict: {0}")]
     Conflict(String),
     #[error("generation_active_conflict: {active_job}")]
-    GenerationConflict {
-        active_job: serde_json::Value,
-    },
+    GenerationConflict { active_job: serde_json::Value },
 }
 
 impl PetCoreError {

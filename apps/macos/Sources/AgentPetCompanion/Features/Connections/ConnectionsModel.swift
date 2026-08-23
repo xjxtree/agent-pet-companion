@@ -240,7 +240,7 @@ final class ConnectionsModel: ObservableObject {
             let data = try JSONSerialization.data(withJSONObject: result)
             replaceConnections(try JSONDecoder().decode([AgentConnectionStatus].self, from: data))
             checkedSink(Set(sources))
-            return "连接检查完成"
+            return APCLocalization.text(.connectionsCheckDoneAll)
         }
         for source in sources {
             let result = try await request(
@@ -252,8 +252,8 @@ final class ConnectionsModel: ObservableObject {
         }
         checkedSink(Set(sources))
         return sources.count == 1
-            ? "\(sources[0].title) 检查完成"
-            : "\(sources.count) 个 Agent 连接检查完成"
+            ? APCLocalization.format(.connectionsCheckDoneOneFormat, sources[0].title)
+            : APCLocalization.format(.connectionsCheckDoneCountFormat, sources.count)
     }
 
     private func performRepair(_ sources: [AgentSource]) async throws -> String {
@@ -282,8 +282,8 @@ final class ConnectionsModel: ObservableObject {
             throw AgentConnectionOperationExecutionError(.partialFailure)
         }
         return pending.isEmpty
-            ? "连接修复完成：\(repaired.joined(separator: "、"))"
-            : "修复已执行，仍需处理：\(pending.joined(separator: "、"))"
+            ? APCLocalization.format(.connectionsRepairDoneFormat, repaired.joined(separator: "、"))
+            : APCLocalization.format(.connectionsRepairPendingFormat, pending.joined(separator: "、"))
     }
 
     private func performUninstall(_ sources: [AgentSource]) async throws -> String {
@@ -312,8 +312,8 @@ final class ConnectionsModel: ObservableObject {
             throw AgentConnectionOperationExecutionError(.partialFailure)
         }
         return pending.isEmpty
-            ? "连接卸载完成：\(uninstalled.joined(separator: "、"))"
-            : "卸载已执行，仍需处理：\(pending.joined(separator: "、"))"
+            ? APCLocalization.format(.connectionsUninstallDoneFormat, uninstalled.joined(separator: "、"))
+            : APCLocalization.format(.connectionsUninstallPendingFormat, pending.joined(separator: "、"))
     }
 
     @discardableResult

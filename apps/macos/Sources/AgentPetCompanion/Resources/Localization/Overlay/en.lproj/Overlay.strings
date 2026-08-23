@@ -1,5 +1,6 @@
 /* Agent Pet Companion — Overlay */
 "overlay.idle.detail" = "No active agent session.";
+"overlay.placement.save_failed" = "Failed to save the pet position";
 "overlay.status.running" = "Started";
 "overlay.status.tool" = "Using a tool";
 "overlay.status.needs_input" = "Needs input";

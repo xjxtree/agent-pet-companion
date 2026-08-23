@@ -863,15 +863,13 @@ final class AppStore: ObservableObject {
     private var activeGenerationRecoveryProjection: SanitizedGenerationRecoveryProjection?
     private var runtimeBootstrapCompleted = false
     private var runtimeBootstrapRequiresFullRecovery = false
-    private var runtimeBootstrapSequence: UInt64 = 0
-    private var runtimeBootstrap: (id: UInt64, task: Task<Bool, Never>)?
+    private let runtimeBootstrapSlot = SequencedTaskSlot<Bool>()
     private var runtimeBootstrapRetryTask: Task<Void, Never>?
     private var runtimeBootstrapRetryDelaySeconds: UInt64 = 2
     private var startupConnectionCheckTask: Task<Void, Never>?
     private var bundledPetSeedRetryTask: Task<Void, Never>?
     private var initialAppearanceFallbackTask: Task<Void, Never>?
-    private var recoverySequence: UInt64 = 0
-    private var serviceRecovery: (id: UInt64, task: Task<Bool, Never>)?
+    private let serviceRecoverySlot = SequencedTaskSlot<Bool>()
     private var hasPresentedOverlay = false
     private var productConvergenceTask: Task<Void, Never>?
     private var productConvergenceVisibilityTask: Task<Void, Never>?
@@ -1150,8 +1148,8 @@ final class AppStore: ObservableObject {
             || overlayPlacementPreviewDriver.hasPending
             || overlayDisplayWidthCommitTask != nil
             || overlayPetDragInProgress
-            || runtimeBootstrap != nil
-            || serviceRecovery != nil
+            || runtimeBootstrapSlot.isRunning
+            || serviceRecoverySlot.isRunning
     }
 
     private var isSafeForProductConvergence: Bool {
@@ -1906,21 +1904,9 @@ final class AppStore: ObservableObject {
         startMode: RuntimeBootstrapStartMode
     ) async -> Bool {
         if runtimeBootstrapCompleted { return true }
-        if let runtimeBootstrap {
-            return await runtimeBootstrap.task.value
-        }
-
-        runtimeBootstrapSequence &+= 1
-        let id = runtimeBootstrapSequence
-        let task = Task { @MainActor [weak self] in
+        return await runtimeBootstrapSlot.run { [weak self] in
             await self?.performRuntimeBootstrap(startMode: startMode) ?? false
         }
-        runtimeBootstrap = (id, task)
-        let succeeded = await task.value
-        if runtimeBootstrap?.id == id {
-            runtimeBootstrap = nil
-        }
-        return succeeded
     }
 
     private func performRuntimeBootstrap(
@@ -2565,31 +2551,23 @@ final class AppStore: ObservableObject {
     }
 
     func recoverServiceConnection() async -> Bool {
-        if let runtimeBootstrap {
+        if let bootstrapping = await runtimeBootstrapSlot.joinExisting() {
             runtimeBootstrapRetryTask?.cancel()
             runtimeBootstrapRetryTask = nil
-            return await runtimeBootstrap.task.value
+            return bootstrapping
         }
         if runtimeBootstrapRequiresFullRecovery {
             runtimeBootstrapRetryTask?.cancel()
             runtimeBootstrapRetryTask = nil
             return await runRuntimeBootstrapIfNeeded(startMode: .recover)
         }
-        if let serviceRecovery {
-            return await serviceRecovery.task.value
+        if let recovered = await serviceRecoverySlot.joinExisting() {
+            return recovered
         }
 
-        recoverySequence &+= 1
-        let id = recoverySequence
-        let task = Task { @MainActor [weak self] in
+        return await serviceRecoverySlot.run { [weak self] in
             await self?.runServiceRecovery() ?? false
         }
-        serviceRecovery = (id, task)
-        let recovered = await task.value
-        if serviceRecovery?.id == id {
-            serviceRecovery = nil
-        }
-        return recovered
     }
 
     private func runServiceRecovery() async -> Bool {
@@ -2760,6 +2738,10 @@ final class AppStore: ObservableObject {
         }
     }
 
+    // The service-status family below stays intentionally zh-pinned: the
+    // mirror predicate classifies daemon-produced Chinese failure reasons by
+    // prefix, so localizing only the App-side copy would make mirroring
+    // locale-dependent. Type the daemon reasons before localizing this family.
     private func setServiceStatusText(_ value: String) {
         let shouldMirrorToStatus = statusText == serviceStatusText
             || statusText == "正在初始化"
@@ -6833,7 +6815,7 @@ final class AppStore: ObservableObject {
                     ]
                 )
                 if attempt >= retryDelays.count - 1 {
-                    statusText = "桌宠位置保存失败"
+                    statusText = APCLocalization.text(.overlayPlacementSaveFailed)
                 }
             }
         }

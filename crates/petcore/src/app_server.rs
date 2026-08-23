@@ -1413,7 +1413,10 @@ mod external_checkpoint_pause_tests {
             wall.error_message(),
             "external full source paused after the 12-hour continuation safety window"
         );
-        assert_eq!(ExternalCheckpointPauseKind::from_error_detail(&wall.error_message()), Some(wall));
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail(&wall.error_message()),
+            Some(wall)
+        );
 
         let stalled = ExternalCheckpointPauseKind::StalledCheckpointTurns { limit: 3 };
         assert_eq!(
@@ -1428,7 +1431,10 @@ mod external_checkpoint_pause_tests {
 
     #[test]
     fn unrelated_failure_details_do_not_parse_as_pause_kinds() {
-        assert_eq!(ExternalCheckpointPauseKind::from_error_detail("turn timed out"), None);
+        assert_eq!(
+            ExternalCheckpointPauseKind::from_error_detail("turn timed out"),
+            None
+        );
         assert_eq!(
             ExternalCheckpointPauseKind::from_error_detail(
                 "external full source paused after many consecutive checkpoint turns without durable workspace progress"
@@ -3475,8 +3481,7 @@ fn continue_external_source_at_checkpoints(
             >= MAX_EXTERNAL_CHECKPOINT_WALL_TIME
         {
             collected.completed = false;
-            collected.error =
-                Some(ExternalCheckpointPauseKind::WallWindowExceeded.error_message());
+            collected.error = Some(ExternalCheckpointPauseKind::WallWindowExceeded.error_message());
             break;
         }
 
@@ -4056,7 +4061,8 @@ fn collect_turn_events(
                     announced_post_processing = true;
                     on_update(PetStudioSessionUpdate {
                         kind: PetStudioSessionUpdateKind::Processing,
-                        content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES.to_string(),
+                        content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES
+                            .to_string(),
                         progress: 0.12,
                     });
                 }
@@ -4099,7 +4105,8 @@ fn collect_turn_events(
                         announced_post_processing = true;
                         on_update(PetStudioSessionUpdate {
                             kind: PetStudioSessionUpdateKind::Processing,
-                            content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES.to_string(),
+                            content: crate::generation::messages::PIPELINE_STAGE_TRANSPARENT_FRAMES
+                                .to_string(),
                             progress: 0.12,
                         });
                     }

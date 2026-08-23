@@ -375,7 +375,7 @@ pub(super) fn verify_presence_preview(
     Ok(())
 }
 
-pub(super) fn verify_visual_production(
+pub fn verify_visual_production(
     source_dir: &Path,
     report_path: &Path,
     review_path: &Path,
