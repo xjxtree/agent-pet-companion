@@ -59,7 +59,7 @@ impl Database {
         }
         let pre_v2_pet_table = table_exists(&connection, "pets")?
             && !table_has_column(&connection, "pets", "states_json")?;
-        connection.execute_batch(
+        connection.execute_batch(&format!(
             r#"
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
@@ -72,7 +72,7 @@ impl Database {
               quality TEXT NOT NULL,
               render_width INTEGER NOT NULL,
               render_height INTEGER NOT NULL,
-              states_json TEXT NOT NULL DEFAULT '[{"name":"idle","frames_dir":"assets/frames/idle","frame_durations_ms":[260,220,240,260,380,640],"playback":{"mode":"periodic","cooldown_ms":[2500,5000]},"reduced_motion_frame_index":2},{"name":"thinking","frames_dir":"assets/frames/thinking","frame_durations_ms":[120,140,160,180],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"tool","frames_dir":"assets/frames/tool","frame_durations_ms":[150,150,170,330],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"waiting","frames_dir":"assets/frames/waiting","frame_durations_ms":[100,100,110,110,120,130,160,230],"playback":{"mode":"burst_then_settle","entry_repeat_count":3,"settle_frame_index":7},"reduced_motion_frame_index":4},{"name":"done","frames_dir":"assets/frames/done","frame_durations_ms":[120,140,160,230],"playback":{"mode":"burst_then_idle","entry_repeat_count":3},"reduced_motion_frame_index":2},{"name":"failed","frames_dir":"assets/frames/failed","frame_durations_ms":[80,80,90,100,110,120,190,290],"playback":{"mode":"burst_then_settle","entry_repeat_count":3,"settle_frame_index":7},"reduced_motion_frame_index":2},{"name":"acknowledge","frames_dir":"assets/frames/acknowledge","frame_durations_ms":[180,140,180,300],"playback":{"mode":"once_then_return"},"reduced_motion_frame_index":1},{"name":"drag_left","frames_dir":"assets/frames/drag_left","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2},{"name":"drag_right","frames_dir":"assets/frames/drag_right","frame_durations_ms":[100,90,100,110,100,200],"playback":{"mode":"loop"},"reduced_motion_frame_index":2}]',
+              states_json TEXT NOT NULL DEFAULT '{DEFAULT_PET_STATES_JSON}',
               petpack_path TEXT NOT NULL,
               cover_path TEXT NOT NULL,
               origin TEXT NOT NULL DEFAULT 'external_import',
@@ -268,7 +268,7 @@ impl Database {
             );
             INSERT OR IGNORE INTO state_revision (singleton, revision) VALUES (1, 0);
             "#,
-        )?;
+        ))?;
         self.migrate_agent_events(&mut connection)?;
         self.ensure_pets_metadata_columns(&connection)?;
         self.ensure_retired_pet_record_columns(&mut connection)?;

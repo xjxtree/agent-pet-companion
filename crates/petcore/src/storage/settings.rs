@@ -44,7 +44,7 @@ impl Database {
 
     pub fn acknowledge_agent_session(&self, acknowledgement_id: &str) -> Result<bool> {
         if !is_valid_session_acknowledgement_id(acknowledgement_id) {
-            return Err(PetCoreError::InvalidRequest(
+            return Err(PetCoreError::InvalidParams(
                 "invalid params: acknowledgement_id is invalid".to_string(),
             ));
         }
@@ -210,7 +210,7 @@ impl Database {
         changes: &BehaviorSettingsPatch,
     ) -> Result<VersionedBehaviorSettings> {
         if changes.is_empty() {
-            return Err(PetCoreError::InvalidRequest(
+            return Err(PetCoreError::InvalidParams(
                 "invalid params: behavior changes must not be empty".to_string(),
             ));
         }

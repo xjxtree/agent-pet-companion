@@ -169,8 +169,7 @@ pub(crate) fn validate_private_recovery_reference_at<Fd: AsFd>(
         || opened.st_uid != current_uid
         || observed.st_nlink != 1
         || opened.st_nlink != 1
-        || observed.st_dev != opened.st_dev
-        || observed.st_ino != opened.st_ino
+        || !crate::fs_identity::same_file(&observed, &opened)
         || observed.st_size != opened.st_size
         || opened.st_size < 0
         || u64::try_from(opened.st_size).unwrap_or(u64::MAX) > MAX_REFERENCE_FILE_BYTES
