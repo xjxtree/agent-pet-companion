@@ -172,6 +172,34 @@ struct ControlCenterShellTests {
     }
 
     @Test
+    func placementSaveFailureExposesOneLocalizedRetryAction() throws {
+        #expect(ControlCenterOverlayPlacementBannerPresentation.resolve(
+            needsAttention: false,
+            localeIdentifier: "en"
+        ) == nil)
+
+        let english = try #require(
+            ControlCenterOverlayPlacementBannerPresentation.resolve(
+                needsAttention: true,
+                localeIdentifier: "en"
+            )
+        )
+        #expect(english.status.appearance == .error)
+        #expect(english.status.title == "Failed to save the pet position")
+        #expect(english.primaryAction.action == .retry)
+        #expect(english.primaryAction.title == "Retry")
+
+        let chinese = try #require(
+            ControlCenterOverlayPlacementBannerPresentation.resolve(
+                needsAttention: true,
+                localeIdentifier: "zh-Hans"
+            )
+        )
+        #expect(chinese.status.title == "桌宠位置保存失败")
+        #expect(chinese.primaryAction.title == "重试")
+    }
+
+    @Test
     func startupConnectionCheckAndConcreteIssuesUseOneGlobalRoute() throws {
         let checking = try #require(
             ControlCenterAgentConnectionBannerPresentation.resolve(
@@ -378,6 +406,8 @@ struct ControlCenterShellTests {
         #expect(contentSource.contains("titlebarSeparatorStyle = .none"))
         #expect(contentSource.contains("store.selection = .diagnostics"))
         #expect(contentSource.contains("if let serviceAttention"))
+        #expect(contentSource.contains("if let overlayPlacementBanner"))
+        #expect(contentSource.contains("store.retryPendingOverlayPlacementSave()"))
         #expect(!contentSource.contains("toolbar.service-status"))
         #expect(!contentSource.contains("toolbar.more"))
         #expect(!contentSource.contains("Button(APCLocalization.text(.navigationConnections))"))

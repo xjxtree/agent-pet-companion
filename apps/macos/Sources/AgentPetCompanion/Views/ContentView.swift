@@ -33,6 +33,23 @@ struct ContentView: View {
                             }
                             .padding(.horizontal, 24)
                             .padding(.top, 14)
+                            if let overlayPlacementBanner {
+                                InlineRecoveryBanner(
+                                    identity: ProductComponentIdentity(
+                                        scope: "shell",
+                                        instance: "overlay-placement"
+                                    ),
+                                    status: overlayPlacementBanner.status,
+                                    primaryAction: overlayPlacementBanner.primaryAction
+                                ) { action in
+                                    switch action {
+                                    case .retry:
+                                        store.retryPendingOverlayPlacementSave()
+                                    }
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.top, 14)
+                            }
                             if let agentConnectionBanner,
                                store.selection != .connections
                             {
@@ -192,6 +209,13 @@ struct ContentView: View {
     private var recoveryBanner: ControlCenterRecoveryBannerPresentation? {
         ControlCenterRecoveryBannerPresentation.resolve(
             for: store.petCoreOperationalState
+        )
+    }
+
+    private var overlayPlacementBanner:
+        ControlCenterOverlayPlacementBannerPresentation? {
+        ControlCenterOverlayPlacementBannerPresentation.resolve(
+            needsAttention: store.overlayPlacementSaveNeedsAttention
         )
     }
 

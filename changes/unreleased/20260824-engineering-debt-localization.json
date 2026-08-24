@@ -1,7 +1,0 @@
-{
-  "schema_version": "apc.changelog-fragment.v1",
-  "kind": "Fixed",
-  "scope": "localization",
-  "summary_en": "Connection check, repair, and uninstall results and the pet-position save-failure notice now resolve through the localization tables, so English-locale users see English copy instead of mixed Chinese. Chinese copy is unchanged.",
-  "summary_zh": "连接检查、修复、卸载的结果文案与桌宠位置保存失败提示改经本地化表解析，英文界面不再混入中文文案；中文界面文案保持不变。"
-}

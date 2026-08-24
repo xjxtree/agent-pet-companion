@@ -696,6 +696,7 @@ final class AppStore: ObservableObject {
     @Published var overlayScreenFrame = CGRect(x: 780, y: 140, width: 704, height: 640)
     @Published var overlayScreenVisibleFrame = NSScreen.main?.visibleFrame ?? .zero
     @Published var overlayPetScreenCenter = CGPoint.zero
+    @Published private(set) var overlayPlacementSaveNeedsAttention = false
     var overlayPresentedPetScreenCenter: CGPoint {
         overlayPetDragPresentationCenter ?? overlayPetScreenCenter
     }
@@ -6608,12 +6609,16 @@ final class AppStore: ObservableObject {
                 let outcome = await self.saveOverlayPlacement(commit)
                 switch outcome {
                 case .converged, .superseded:
+                    if self.overlayPlacementAuthority.pending == nil {
+                        self.overlayPlacementSaveNeedsAttention = false
+                    }
                     continue workerLoop
                 case let .exhausted(generation):
                     if self.overlayPlacementAuthority.pending?.localRevision
                         == generation {
                         self.overlayPlacementExhaustedGeneration =
                             generation
+                        self.overlayPlacementSaveNeedsAttention = true
                     }
                     break workerLoop
                 case .cancelled:
@@ -6814,9 +6819,6 @@ final class AppStore: ObservableObject {
                         "result_kind": .string("transport_or_protocol_failure"),
                     ]
                 )
-                if attempt >= retryDelays.count - 1 {
-                    statusText = APCLocalization.text(.overlayPlacementSaveFailed)
-                }
             }
         }
         if Task.isCancelled { return cancelled() }

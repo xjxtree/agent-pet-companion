@@ -185,6 +185,39 @@ struct ControlCenterRecoveryBannerPresentation: Equatable {
     }
 }
 
+enum ControlCenterOverlayPlacementAction: Hashable {
+    case retry
+}
+
+struct ControlCenterOverlayPlacementBannerPresentation: Equatable {
+    let status: ProductStatusPresentation
+    let primaryAction: ProductActionPresentation<ControlCenterOverlayPlacementAction>
+
+    static func resolve(
+        needsAttention: Bool,
+        localeIdentifier: String = APCLocalization.interfaceLocaleIdentifier
+    ) -> Self? {
+        guard needsAttention else { return nil }
+        return Self(
+            status: ProductStatusPresentation(
+                appearance: .error,
+                title: APCLocalization.text(
+                    .overlayPlacementSaveFailed,
+                    locale: localeIdentifier
+                )
+            ),
+            primaryAction: ProductActionPresentation(
+                action: .retry,
+                title: APCLocalization.text(
+                    .commonRetry,
+                    locale: localeIdentifier
+                ),
+                systemImage: "arrow.clockwise"
+            )
+        )
+    }
+}
+
 enum ControlCenterAgentConnectionAction: Hashable {
     case openConnections
 }
