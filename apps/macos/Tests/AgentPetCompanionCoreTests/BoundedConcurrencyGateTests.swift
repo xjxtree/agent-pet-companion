@@ -5,21 +5,22 @@ import Testing
 @Suite
 struct BoundedConcurrencyGateTests {
     @Test
-    func neverAdmitsMoreThanTheLimit() async {
+    func neverAdmitsMoreThanTheLimit() async throws {
         let limit = 3
         let gate = BoundedConcurrencyGate(limit: limit)
         let tracker = ConcurrencyTracker()
 
-        await withTaskGroup(of: Void.self) { group in
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 0..<20 {
                 group.addTask {
-                    await gate.wait()
-                    defer { gate.signal() }
-                    tracker.enter()
-                    await Task.yield()
-                    tracker.exit()
+                    try await gate.withPermit {
+                        tracker.enter()
+                        await Task.yield()
+                        tracker.exit()
+                    }
                 }
             }
+            try await group.waitForAll()
         }
 
         #expect(tracker.observedPeak <= limit)
@@ -27,13 +28,49 @@ struct BoundedConcurrencyGateTests {
     }
 
     @Test
-    func releasesPermitsWhenIdle() async {
+    func releasesPermitsWhenIdle() async throws {
         let gate = BoundedConcurrencyGate(limit: 1)
-        await gate.wait()
+        try await gate.wait()
         gate.signal()
         // The recycled permit must admit a new waiter immediately.
-        await gate.wait()
+        try await gate.wait()
         gate.signal()
+    }
+
+    @Test
+    func cancellingQueuedWorkRemovesItBeforeTheOperationStarts() async throws {
+        let gate = BoundedConcurrencyGate(limit: 1)
+        let tracker = ConcurrencyTracker()
+        try await gate.wait()
+
+        let queued = Task {
+            try await gate.withPermit {
+                tracker.enter()
+                tracker.exit()
+            }
+        }
+        for _ in 0..<1_000 where gate.queuedWaiterCount == 0 {
+            await Task.yield()
+        }
+        #expect(gate.queuedWaiterCount == 1)
+
+        queued.cancel()
+        do {
+            try await queued.value
+            Issue.record("Expected queued work to be cancelled")
+        } catch PetCoreTransportError.cancelled {
+            // Expected.
+        }
+
+        #expect(gate.queuedWaiterCount == 0)
+        #expect(tracker.totalEntries == 0)
+
+        gate.signal()
+        try await gate.withPermit {
+            tracker.enter()
+            tracker.exit()
+        }
+        #expect(tracker.totalEntries == 1)
     }
 }
 
